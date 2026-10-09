@@ -34,6 +34,39 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## User feedback fixes (2026-10-09)
+
+Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, with
+the same behavior on macOS and Windows.
+
+- **Drawing interaction fixes.** Whole-object and group rotation magnetically snaps to 15° steps,
+  while holding Shift during a drag uses exact 15° steps. A normal click selects and places a ring;
+  a long toolbar press opens its flyout; a ring that cannot attach is placed separately with an
+  accurate status message. Typing OMe, CF3, NO2, and other labels over a hovered atom continues the
+  label rather than activating a canvas shortcut, including during IME composition, and a text-box
+  editor survives focus moving to a palette flyout or popover. Orbital-lobe tips meet cleanly; a
+  lobe placed on an atom snaps its tip there and rotates about that tip.
+- **Chemistry-aware drawing features.** A Text-tool click on an atom opens its label editor. Automatic
+  text-to-label conversion is only for freshly placed text on the atom itself; the explicit Convert
+  Text to Atom Label command reaches one bond length. Centred double-bond position is available from
+  the inspector and canvas drag, imports and exports as CDXML `Center`, and is preserved through
+  clipboard, save/reopen, Spin 3D, flatten, and export. Position commands target every double bond
+  of wholly selected molecules, while part selections target their selected bonds. Every spin uses
+  one planner path with stereo and bold display suppressed during the spin. The pre-existing ring
+  status bug, which also existed on `main`, is fixed.
+- **Sketch-style stereo bonds.** Sketch rendering follows individual hashes, dashes, and wedge
+  outlines, so sketch-style hashed, dashed, and wedge bonds have no line through their hashes; canvas
+  and export agree.
+
+Decisions: Undo remains reachable through Edit ▸ Undo, ⌘Z/Ctrl+Z, and Customize Main Toolbar; there
+is no default toolbar button. Lobes snap to atoms only during placement and are not anchored
+afterwards. Centred double-bond commands apply to all double bonds of wholly selected molecules.
+
+Open items: the owner's screenshot circles the four-membered ring of a sketch-style penicillin core,
+but what that circle marks is unknown. A fresh text box cannot be auto-converted through real
+placement because the atom editor opens instead, so that code path is defensive. Windows hands-on
+verification of these interactive changes is pending.
+
 ## Aromatic bonds counted on a Kekulé structure (2026-09-27, branch `claude/aromatic-bond-order`)
 
 Aromatic bonds (MOL type 4, CDXML `Order="1.5"`, Ketcher V3000) used to be counted two different

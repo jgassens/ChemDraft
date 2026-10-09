@@ -80,3 +80,15 @@ CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a paste
 
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
+
+User-feedback surfaces added since: rotation snap on molecule, group, and art-object rotation —
+magnetic 15° steps and exact steps when Shift is held mid-drag; a one-click ring placement, a short
+toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
+placing separately with an accurate status message; OMe, CF3, and NO2 typed over a hovered atom
+building the label without activating the Eraser, including with an IME active; a text-box editor
+surviving focus moving to a palette flyout or popover and back; an orbital lobe placed on an atom
+putting its tip on the atom and rotating about that tip; a Text-tool click on an atom opening its
+label editor and Convert Text to Atom Label working on a selected text box; centred double-bond
+position from the inspector for a whole molecule and Shift-clicked bonds, by dragging the second line
+onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; and sketch-style
+hashed, dashed, and wedge bonds showing no line through the hashes.
