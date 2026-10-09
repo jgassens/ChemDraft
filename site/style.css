@@ -127,6 +127,10 @@ h2 { margin-bottom: 0; font-family: var(--font-display); font-size: clamp(1.8rem
 .feature-row-flip .feature-shot { order: 2; }
 .feature-row-text { grid-template-columns: 72px minmax(0, 1fr); gap: 1rem; padding-top: clamp(2rem, 5vw, 3rem); border-top: 1px solid var(--line); }
 .feature-copy { display: grid; gap: 1rem; min-width: 0; }
+.code-block { max-width: 100%; margin: 0; padding: 0.8rem 1rem; overflow-x: auto; border: 1px solid var(--line-dark); background: var(--surface); font-size: 0.85rem; }
+.code-block code, .assistants code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.assistants .feature-row-text .copy-stack { min-width: 0; }
+.assistants .feature-row-text .copy-stack p { overflow-wrap: anywhere; }
 .feature-shot { margin: 0; min-width: 0; }
 .feature-shot-link { display: block; }
 .feature-shot img {
