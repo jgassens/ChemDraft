@@ -64,7 +64,7 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { nativeBondLengthPx, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -6080,9 +6080,7 @@ export function MainWindow({
       return;
     }
     const currentDocument = documentRef.current;
-    // A Text-tool placement that misses the direct atom editor may still anchor within one drawn
-    // bond length of its intended atom; match the explicit command's conversion reach.
-    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, nativeBondLengthPx);
+    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
     if (labelResult.target) {
       if (labelResult.document !== currentDocument) {
         commitDocumentChange(labelResult.document, "Convert Text to Atom Label");
