@@ -4808,8 +4808,9 @@ function bondLineSegments(
  * then join each side to a different neighbour). At a bend the outer intersection lies behind
  * the atom: extend that neighbouring stroke only as far as the intersection so BOTH centered
  * lines meet actual ink, with no protruding tail. Labels and terminal ends retain their original
- * clearance/atom plane. Parallel/very acute joins use a short bevel back to the neighbouring
- * stroke's endpoint rather than an unbounded miter. Work from a snapshot so bond traversal order
+ * clearance/atom plane, as do ends with wedge, hashed or dashed neighbours. Parallel strokes
+ * remain untouched; very acute joins use a short bevel back to the neighbouring stroke's endpoint
+ * rather than an unbounded miter. Work from a snapshot so bond traversal order
  * cannot change the joins.
  */
 function joinCenteredDoubleBondSegments(
@@ -4838,7 +4839,11 @@ function joinCenteredDoubleBondSegments(
   for (const group of centeredGroups) {
     for (const atFrom of [true, false]) {
       const atomId = atFrom ? group.bond.fromAtomId : group.bond.toAtomId;
-      if (labeledAtoms.has(atomId)) {
+      const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
+      if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
+        const style = nativeBondDisplayStyle(bond);
+        return style === "wedge" || style === "hashed" || style === "dashed";
+      })) {
         continue;
       }
       for (const segment of group.segments) {
@@ -4852,13 +4857,18 @@ function joinCenteredDoubleBondSegments(
         }
         const inward = atFrom ? sourceGeometry.unit
           : { x: -sourceGeometry.unit.x, y: -sourceGeometry.unit.y };
-        const candidates = (incident.get(atomId) ?? []).flatMap((neighbor) => {
-          if (neighbor === group) {
-            return [];
-          }
+        // Compare unit vectors so the parallel tolerance is independent of bond length.
+        const isNonparallel = (line: PageBondLineSegment): boolean => {
+          const geometry = nativeSegmentVectorGeometry(line);
+          return geometry !== undefined && Math.abs(cross(sourceGeometry.unit, geometry.unit)) > 1e-8;
+        };
+        const candidates = neighbors.flatMap((neighbor) => {
           const neighborAtFrom = neighbor.bond.fromAtomId === atomId;
           return neighbor.segments.flatMap((neighborSegment) => {
             const line = original.get(neighborSegment)!;
+            if (!isNonparallel(line)) {
+              return [];
+            }
             const near = neighborAtFrom
               ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
             const far = neighborAtFrom
@@ -4888,13 +4898,18 @@ function joinCenteredDoubleBondSegments(
         );
         const join = candidates[0];
         if (!join) {
-          const neighbor = (incident.get(atomId) ?? []).filter((candidate) => candidate !== group)
-            .sort((left, right) => left.bond.id.localeCompare(right.bond.id))[0];
+          const neighbor = neighbors.filter((candidate) => {
+            const line = candidate.segments[0];
+            return line !== undefined && isNonparallel(original.get(line)!);
+          }).sort((left, right) => left.bond.id.localeCompare(right.bond.id))[0];
           const neighborSegment = neighbor?.segments[0];
           if (neighbor && neighborSegment) {
             const line = original.get(neighborSegment)!;
             const near = neighbor.bond.fromAtomId === atomId
               ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+            if (distance(near, endpoint) <= 1e-8) {
+              continue;
+            }
             bevels.push({ group: neighbor, segment: {
               x1: near.x, y1: near.y, x2: endpoint.x, y2: endpoint.y,
               segment: "outer", bond: neighbor.bond,

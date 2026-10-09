@@ -37,10 +37,14 @@ function chain(side: Side, branch = false): MoleculeObject {
   };
 }
 
-function lines(molecule: MoleculeObject): PageSvgElementFragment[] {
+function fragments(molecule: MoleculeObject): PageSvgElementFragment[] {
   const page = createEmptyDocument().pages[0];
   page.objects = [molecule];
-  return planPageSvgRender(page).fragments.flatMap(elementFragments).filter((fragment) =>
+  return planPageSvgRender(page).fragments.flatMap(elementFragments);
+}
+
+function lines(molecule: MoleculeObject): PageSvgElementFragment[] {
+  return fragments(molecule).filter((fragment) =>
     fragment.tag === "line" && String(fragment.attrs.class).startsWith("native-bond-line")
   );
 }
@@ -106,7 +110,52 @@ describe("explicit centered double bond geometry", () => {
     expect(signature({ ...molecule, bonds: [...molecule.bonds].reverse() })).toEqual(signature(molecule));
   });
 
-  it.each([0, 0.0001])("bevels parallel/acute neighbours without a long miter (%s radians)", (angle) => {
+  it.each([
+    { name: "straight chain", elements: ["C", "C", "C", "C"], orders: ["single", "double", "single"] },
+    { name: "allene", elements: ["C", "C", "C"], orders: ["double", "double"] },
+    { name: "ketene", elements: ["C", "C", "O"], orders: ["double", "double"] },
+    { name: "carbon dioxide", elements: ["O", "C", "O"], orders: ["double", "double"] },
+    { name: "cumulene", elements: ["C", "C", "C", "C"], orders: ["double", "double", "double"] }
+  ] as const)("leaves collinear $name junctions without crossbars or zero-length segments", ({ elements, orders }) => {
+    const molecule = chain("center");
+    molecule.atoms = elements.map((element, index) => ({
+      id: String(index), element, x: 30 + index * 60, y: 80, formalCharge: 0
+    }));
+    molecule.bonds = orders.map((order, index) => ({
+      id: String(index), fromAtomId: String(index), toAtomId: String(index + 1), order,
+      ...(order === "double" ? { display: { doubleBondSide: "center" as const } } : {})
+    }));
+    const rendered = lines(molecule);
+    expect(rendered).toHaveLength(orders.reduce((count, order) => count + (order === "double" ? 2 : 1), 0));
+    for (const line of rendered) {
+      const [start, end] = endpoints(line);
+      expect(start.y).toBe(end.y);
+      expect(Math.hypot(end.x - start.x, end.y - start.y)).toBeGreaterThan(1e-8);
+    }
+  });
+
+  it.each([0, 37, 90, 180])("leaves parallel neighbours untouched at %s degrees, including within epsilon", (degrees) => {
+    const molecule = chain("center");
+    molecule.atoms[0] = { ...molecule.atoms[0], x: 0, y: 80 + 60 * 1e-10 };
+    const angle = degrees * Math.PI / 180;
+    molecule.atoms = molecule.atoms.map((atom) => ({
+      ...atom, x: atom.x * Math.cos(angle) - atom.y * Math.sin(angle),
+      y: atom.x * Math.sin(angle) + atom.y * Math.cos(angle)
+    }));
+    const rendered = lines(molecule);
+    const neighbors = rendered.filter((line) => line.attrs["data-bond-id"] === "ab");
+    expect(neighbors).toHaveLength(1);
+    expect(endpoints(neighbors[0])[1]).toEqual({ x: molecule.atoms[1].x, y: molecule.atoms[1].y });
+    for (const line of rendered.filter((line) => line.attrs["data-bond-id"] === "bc")) {
+      const start = endpoints(line)[0];
+      const along = (start.x - molecule.atoms[1].x) * Math.cos(angle)
+        + (start.y - molecule.atoms[1].y) * Math.sin(angle);
+      expect(along).toBeCloseTo(0, 8);
+    }
+  });
+
+  it("bevels acute neighbours without a long miter", () => {
+    const angle = 0.0001;
     const molecule = chain("center");
     molecule.atoms[0] = { ...molecule.atoms[0], x: 0, y: 80 + 60 * Math.sin(angle) };
     const rendered = lines(molecule);
@@ -119,6 +168,42 @@ describe("explicit centered double bond geometry", () => {
     }
     for (const neighbor of neighbors) {
       expect(Math.max(...endpoints(neighbor).map((point) => point.x))).toBeLessThanOrEqual(60);
+      const [start, end] = endpoints(neighbor);
+      expect(Math.hypot(end.x - start.x, end.y - start.y)).toBeGreaterThan(1e-8);
+    }
+  });
+
+  it.each(["wedge", "hashed", "dashed"] as const)("keeps %s neighbours and their hit targets unchanged", (bondStyle) => {
+    for (const atFrom of [true, false]) {
+      for (const acute of [false, true]) {
+        const molecule = chain("center");
+        const neighborIndex = atFrom ? 0 : 2;
+        const atomIndex = atFrom ? 0 : 3;
+        const junction = molecule.atoms[atFrom ? 1 : 2];
+        if (acute) {
+          molecule.atoms[atomIndex] = { ...molecule.atoms[atomIndex],
+            x: junction.x + (atFrom ? -60 : 60), y: junction.y + 0.006 };
+        }
+        const neighbor = molecule.bonds[neighborIndex];
+        // Put the wedge's narrow (from) tip at the junction on either end.
+        molecule.bonds[neighborIndex] = { ...neighbor,
+          fromAtomId: junction.id, toAtomId: molecule.atoms[atomIndex].id,
+          display: { bondStyle } };
+        const baseline = chain("left");
+        baseline.atoms = molecule.atoms;
+        baseline.bonds[neighborIndex] = molecule.bonds[neighborIndex];
+        const neighborFragments = (m: MoleculeObject) => fragments(m).filter((fragment) =>
+          fragment.attrs["data-bond-id"] === neighbor.id
+        );
+        expect(JSON.stringify(neighborFragments(molecule))).toBe(JSON.stringify(neighborFragments(baseline)));
+        for (const line of lines(molecule).filter((line) => line.attrs["data-bond-id"] === "bc")) {
+          expect(endpoints(line)[atFrom ? 0 : 1].x).toBe(junction.x);
+        }
+        if (bondStyle === "wedge") {
+          const wedge = neighborFragments(molecule).find((fragment) => fragment.tag === "polygon")!;
+          expect(String(wedge.attrs.points).split(/\s+/)[0]).toBe(`${junction.x},${junction.y}`);
+        }
+      }
     }
   });
 
