@@ -303,27 +303,6 @@ function orbitalLobeTip(object: GraphicObject): PagePoint {
   };
 }
 
-function largestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
-  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  if (!atom) return undefined;
-  const angles = molecule.bonds.flatMap((bond) => {
-    const neighborId = bond.fromAtomId === atomId ? bond.toAtomId : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
-    const neighbor = molecule.atoms.find((candidate) => candidate.id === neighborId);
-    return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
-  }).sort((left, right) => left - right);
-  if (angles.length === 0) return undefined;
-  let gapStart = angles[0]!;
-  let gapSize = -Infinity;
-  angles.forEach((start, index) => {
-    const end = index === angles.length - 1 ? angles[0]! + Math.PI * 2 : angles[index + 1]!;
-    if (end - start > gapSize) {
-      gapStart = start;
-      gapSize = end - start;
-    }
-  });
-  return gapStart + gapSize / 2;
-}
-
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
   function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {
     const base = createPhase4Document("Unknown Bond Repair");
@@ -2005,16 +1984,14 @@ describe("Phase 4 document workflow", () => {
     expect(sOrbital?.style.fillMode).toBe("gloss");
   });
 
-  it("places a lobe tip on a two-bond atom and points it through that atom's largest bond gap", () => {
+  it("places a lobe tip on a cyclohexane vertex and points it radially away from the ring centre", () => {
     const withRing = insertNativeTemplateMolecule(createPhase4Document("Lobe Atom Placement"), { x: 400, y: 400 }, "cyclohexane");
     const molecule = selectedMolecule(withRing);
-    const atom = molecule.atoms.find((candidate) => molecule.bonds.filter(
-      (bond) => bond.fromAtomId === candidate.id || bond.toAtomId === candidate.id
-    ).length === 2);
+    const atom = molecule.atoms[0];
     if (!atom) throw new Error("Expected a two-bond ring atom.");
-
-    const expectedDirection = largestBondGapBisector(molecule, atom.id);
-    if (expectedDirection === undefined) throw new Error("Expected bond-gap direction.");
+    const centre = moleculeAtomCenter(molecule);
+    const radial = { x: atom.x - centre.x, y: atom.y - centre.y };
+    const radialLength = Math.hypot(radial.x, radial.y);
 
     for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
       const lobe = createNativeArtGraphicObject(withRing, atom, commandId);
@@ -2022,15 +1999,30 @@ describe("Phase 4 document workflow", () => {
       const tip = orbitalLobeTip(lobe);
       expect(tip.x).toBeCloseTo(atom.x, 6);
       expect(tip.y).toBeCloseTo(atom.y, 6);
-      expect(Math.cos(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(Math.cos(expectedDirection), 6);
-      expect(Math.sin(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(Math.sin(expectedDirection), 6);
+      expect(Math.cos(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(radial.x / radialLength, 6);
+      expect(Math.sin(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(radial.y / radialLength, 6);
     }
 
     const pOrbital = createNativeArtGraphicObject(withRing, atom, "tool.pOrbital");
     if (!pOrbital) throw new Error("Expected p orbital.");
     expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
     expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
-    expect(Math.cos(pOrbital.rotation * Math.PI / 180 - Math.PI / 2 - expectedDirection)).toBeCloseTo(0, 6);
+    const pAxis = pOrbital.rotation * Math.PI / 180 - Math.PI / 2;
+    expect(Math.cos(pAxis) * radial.x / radialLength + Math.sin(pAxis) * radial.y / radialLength).toBeCloseTo(0, 6);
+  });
+
+  it("points a lobe directly away from a one-bond neighbour", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("One Bond Orbital Placement"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(document);
+    const atom = molecule.atoms[0]!;
+    const neighbour = molecule.atoms[1]!;
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.lobe");
+    if (!lobe) throw new Error("Expected orbital lobe.");
+    const away = { x: atom.x - neighbour.x, y: atom.y - neighbour.y };
+    const awayLength = Math.hypot(away.x, away.y);
+    const direction = lobe.rotation * Math.PI / 180 - Math.PI / 2;
+    expect(Math.cos(direction)).toBeCloseTo(away.x / awayLength, 6);
+    expect(Math.sin(direction)).toBeCloseTo(away.y / awayLength, 6);
   });
 
   it("points a lobe up at a bondless atom and centres a p orbital on its atom", () => {
@@ -2058,6 +2050,19 @@ describe("Phase 4 document workflow", () => {
     expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
     expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
     expect(pOrbital.rotation).toBeCloseTo(0, 6);
+  });
+
+  it("keeps an atom-snapped lobe tip on an edge atom when the frame cannot fit the page", () => {
+    const empty = createPhase4Document("Edge Orbital Placement");
+    const seed = createNativeSingleBondMolecule(empty, { x: 300, y: 0 });
+    const atom = seed.atoms[0]!;
+    const loneAtom: MoleculeObject = { ...seed, atoms: [atom], bonds: [], x: atom.x, y: atom.y, width: 0, height: 0 };
+    const document = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: loneAtom }]);
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.lobe");
+    if (!lobe) throw new Error("Expected orbital lobe.");
+    expect(lobe.y).toBeLessThan(0);
+    expect(orbitalLobeTip(lobe).x).toBeCloseTo(atom.x, 6);
+    expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
   });
 
   it("keeps open-space orbital placement unchanged and holds lobe tips through snapped-drag and typed rotations", () => {
@@ -6560,7 +6565,6 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(result.document).atoms[1]).toMatchObject({ id: atom.id, x: atom.x, y: atom.y });
     expect(result.target).toEqual(target);
     expect(result.message).toContain(label);
-    expect(convertNativeTextObjectToAtom(withText, textId)).toEqual(result.document);
   });
 
   it.each(["OMe", "CH3", "NO2"])("keeps %s in open space as text", (label) => {

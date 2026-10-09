@@ -1961,6 +1961,9 @@ export function MainWindow({
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
+  // Only the first committed edit of a box placed by the Text tool may become an atom label.
+  // Existing captions always remain text when reopened; the explicit command remains available.
+  const textObjectAwaitingAutoConversionRef = useRef<string | undefined>(undefined);
   const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
   activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
@@ -5709,6 +5712,7 @@ export function MainWindow({
     const nextDocument = insertNativeTextObject(currentDocument, point, "Text", textStyleDefaults);
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
+    textObjectAwaitingAutoConversionRef.current = inserted?.id;
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(inserted?.id);
@@ -6126,6 +6130,10 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const convertCommittedText = useCallback((objectId: string) => {
+    if (textObjectAwaitingAutoConversionRef.current !== objectId) {
+      return;
+    }
+    textObjectAwaitingAutoConversionRef.current = undefined;
     const currentDocument = documentRef.current;
     const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
     if (labelResult.target) {
@@ -6136,7 +6144,9 @@ export function MainWindow({
       if (labelResult.message) setStatus(labelResult.message);
       return;
     }
-    const converted = convertNativeTextObjectToAtom(currentDocument, objectId);
+    // The label path above already performed the atom hit-test. Only its no-target path reaches
+    // the open-space element conversion, so do not repeat that hit-test here.
+    const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
     if (converted !== currentDocument) {
       commitDocumentChange(converted);
       const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
@@ -6147,7 +6157,7 @@ export function MainWindow({
   // Catch-all for text conversion: a text edit can end through MANY paths (Escape,
   // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
   // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
-  // unreliable). Whatever ended the edit, convert the object it was editing.
+  // unreliable). Whichever path ends the first edit of a newly placed object converts it.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const previous = previousTextEditObjectIdRef.current;
@@ -11031,11 +11041,13 @@ export function MainWindow({
     templateId: NonNullable<ReturnType<typeof nativeTemplateForToolCommand>>,
     target?: NativeMoleculeDeleteTarget
   ) => {
-    const plan = planNativeTemplatePlacement(documentRef.current, { point, target }, templateId);
+    const currentDocument = documentRef.current;
+    const plan = planNativeTemplatePlacement(currentDocument, { point, target }, templateId);
     const nextDocument = plan
-      ? applyNativeTemplatePlacementPlan(documentRef.current, plan)
-      : documentRef.current;
-    if (nextDocument !== documentRef.current) {
+      ? applyNativeTemplatePlacementPlan(currentDocument, plan)
+      : currentDocument;
+    const changed = nextDocument !== currentDocument;
+    if (changed) {
       commitDocumentChange(
         nextDocument,
         plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
@@ -11051,7 +11063,7 @@ export function MainWindow({
     templatePreviewKeyRef.current = undefined;
     templatePreviewTargetKeyRef.current = undefined;
     templatePreviewPlanRef.current = undefined;
-    setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current, plan?.fallbackReason));
+    setStatus(nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((

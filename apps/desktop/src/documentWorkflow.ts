@@ -1359,8 +1359,13 @@ export function createNativeArtGraphicObject(
 
   const page = firstPage(document);
   const orbitalPlacement = nativeOrbitalPlacementAtPoint(document, point, tool);
-  const x = orbitalPlacement?.x ?? clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
-  const y = orbitalPlacement?.y ?? clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  const clampedX = clamp(orbitalPlacement?.x ?? point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
+  const clampedY = clamp(orbitalPlacement?.y ?? point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  // An orbital snapped to an atom must keep its tip exactly on that atom. Apply the ordinary page
+  // clamp when it is already compatible with that invariant; near an edge, leave the frame
+  // overhanging rather than silently moving the tip away from the atom.
+  const x = orbitalPlacement && clampedX !== orbitalPlacement.x ? orbitalPlacement.x : clampedX;
+  const y = orbitalPlacement && clampedY !== orbitalPlacement.y ? orbitalPlacement.y : clampedY;
   const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
   const data = nativeArtToolDataForPlacement(toolData, x, y);
   return {
@@ -4242,37 +4247,86 @@ export interface TextToAtomLabelResult {
   disabledReason?: string;
 }
 
+function nativeTextObjectToAtomLabelTarget(
+  document: ChemDraftDocument,
+  objectId: string,
+  hitRadius: number
+): { text: TextObject; target?: NativeMoleculeDeleteTarget; molecule?: MoleculeObject } | undefined {
+  const page = firstPage(document);
+  const text = page.objects.find((object): object is TextObject => object.id === objectId && object.type === "text");
+  if (!text) {
+    return undefined;
+  }
+  const nearest = page.objects.flatMap((object, layerIndex) => {
+    if (object.type !== "molecule") return [];
+    const hit = findNearestAtomAtPoint({ atoms: object.atoms, point: text, hitRadius });
+    return hit ? [{ object, hit, layerIndex }] : [];
+  }).sort((left, right) => left.hit.distance - right.hit.distance || right.layerIndex - left.layerIndex)[0];
+  return {
+    text,
+    ...(nearest ? {
+      molecule: nearest.object,
+      target: {
+        objectId: nearest.object.id,
+        kind: "atom" as const,
+        atomId: nearest.hit.atomId,
+        distanceToPointer: nearest.hit.distance
+      }
+    } : {})
+  };
+}
+
+function nativeTextObjectToAtomLabelDisabledReason(
+  candidate: ReturnType<typeof nativeTextObjectToAtomLabelTarget>
+): string | undefined {
+  if (!candidate) {
+    return "Select one text box";
+  }
+  if (!candidate.target || !candidate.molecule) {
+    return "No atom within reach of the text anchor";
+  }
+  if (!isEditableNativeMoleculeGraph(candidate.molecule) || normalizeNativeAtomElementLabel(candidate.text.text).length === 0) {
+    return candidate.text.text.trim().length === 0
+      ? "Atom labels cannot be empty"
+      : "This molecule cannot be edited with the atom-label editor";
+  }
+  return undefined;
+}
+
+/** Cheap command availability check: it shares conversion's target and validation rules but applies no patches. */
+export function selectedTextToAtomLabelDisabledReason(document: ChemDraftDocument): string | undefined {
+  if (document.selection.objectIds.length !== 1) {
+    return "Select one text box";
+  }
+  const reason = nativeTextObjectToAtomLabelDisabledReason(
+    nativeTextObjectToAtomLabelTarget(document, document.selection.objectIds[0]!, nativeBondLengthPx)
+  );
+  return reason === "No atom within reach of the text anchor"
+    ? "No atom within one bond length of the text anchor"
+    : reason;
+}
+
 /** Use the inline editor's literal-label path; no abbreviation expansion or separate parser. */
 export function convertNativeTextObjectToAtomLabel(
   document: ChemDraftDocument,
   objectId: string,
   hitRadius = nativeAtomHitRadiusPx
 ): TextToAtomLabelResult {
-  const page = firstPage(document);
-  const text = page.objects.find((object): object is TextObject => object.id === objectId && object.type === "text");
-  if (!text) {
+  const candidate = nativeTextObjectToAtomLabelTarget(document, objectId, hitRadius);
+  if (!candidate) {
     return { document, disabledReason: "Select one text box" };
   }
-  const candidates = page.objects.flatMap((object, layerIndex) => {
-    if (object.type !== "molecule") return [];
-    const hit = findNearestAtomAtPoint({ atoms: object.atoms, point: text, hitRadius });
-    return hit ? [{ object, hit, layerIndex }] : [];
-  }).sort((left, right) => left.hit.distance - right.hit.distance || right.layerIndex - left.layerIndex);
-  const nearest = candidates[0];
-  if (!nearest) {
+  const { text, target, molecule } = candidate;
+  if (!target || !molecule) {
     return { document, disabledReason: "No atom within reach of the text anchor" };
   }
-  const target: NativeMoleculeDeleteTarget = {
-    objectId: nearest.object.id, kind: "atom", atomId: nearest.hit.atomId, distanceToPointer: nearest.hit.distance
-  };
   // These are the same guards used by applyNativeAtomElementTarget. An already identical label
   // is still accepted: the conversion removes the redundant text box.
-  if (!isEditableNativeMoleculeGraph(nearest.object) || normalizeNativeAtomElementLabel(text.text).length === 0) {
-    const disabledReason = text.text.trim().length === 0
-      ? "Atom labels cannot be empty"
-      : "This molecule cannot be edited with the atom-label editor";
+  const disabledReason = nativeTextObjectToAtomLabelDisabledReason(candidate);
+  if (disabledReason) {
     return { document, target, disabledReason, message: `Text kept: ${disabledReason}` };
   }
+  const page = firstPage(document);
   const labeled = applyNativeAtomElementTarget(document, target, text.text, { literal: true });
   return {
     document: applyPatches(labeled, [
@@ -4280,7 +4334,7 @@ export function convertNativeTextObjectToAtomLabel(
       { op: "setSelection", pageId: page.id, objectIds: [target.objectId] }
     ], { now: phase4Timestamp }),
     target,
-    message: `Converted text to atom label “${normalizeNativeAtomElementLabel(text.text)}” on ${target.atomId}`
+    message: `Converted “${normalizeNativeAtomElementLabel(text.text)}” to an atom label`
   };
 }
 
@@ -4301,11 +4355,14 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
-  objectId: string
+  objectId: string,
+  options: { skipAtomLabel?: boolean } = {}
 ): ChemDraftDocument {
-  const labelResult = convertNativeTextObjectToAtomLabel(document, objectId);
-  if (labelResult.target) {
-    return labelResult.document;
+  if (!options.skipAtomLabel) {
+    const labelResult = convertNativeTextObjectToAtomLabel(document, objectId);
+    if (labelResult.target) {
+      return labelResult.document;
+    }
   }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>

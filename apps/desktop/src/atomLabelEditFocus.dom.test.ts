@@ -8,7 +8,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { convertTextToAtomLabelCommandId } from "./commands";
@@ -257,7 +257,7 @@ describe("atom label editor focus", () => {
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
   });
 
-  it.each(["OMe", "CH3", "NO2", "   "])("commits text %j on a chain end through the atom-label path", async (label) => {
+  it.each(["OMe", "CH3", "NO2", "   "])("keeps re-edited existing text %j on a chain end as text", async (label) => {
     const base = chainDocument();
     const original = base.pages[0].objects[0] as MoleculeObject;
     const atom = original.atoms[1]!;
@@ -276,23 +276,11 @@ describe("atom label editor focus", () => {
     await act(async () => { editor.blur(); });
     focused.mockRestore();
     await settle();
-    if (label.trim().length === 0) {
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
-      expect(atomElement(atom.id)).toBe("C");
-      expect(container.querySelector('[role="status"]')?.textContent).toContain("Atom labels cannot be empty");
-    } else {
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
-      expect(atomElement(atom.id)).toBe(label);
-      expect(molecule().bonds).toEqual(original.bonds);
-      expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: atom.id });
-      expect(container.querySelector('[role="status"]')?.textContent).toContain(`Converted text to atom label “${label}”`);
-      await paletteCommand("edit.undo");
-      expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Convert Text to Atom Label");
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
-      expect(atomElement(atom.id)).toBe("C");
-      await paletteCommand("edit.undo");
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
-    }
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId))
+      .toMatchObject({ type: "text", text: label });
+    expect(atomElement(atom.id)).toBe("C");
+    expect(molecule().bonds).toEqual(original.bonds);
   });
 
   it("runs the explicit command as one labelled undo entry", async () => {
@@ -333,6 +321,55 @@ describe("atom label editor focus", () => {
     await settle();
     expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId)).toMatchObject({ type: "text", text: label });
     expect(molecule().atoms).toHaveLength(2);
+  });
+
+  it("reports a fused benzene template through the real placement handler", async () => {
+    const initial = ringDocument();
+    await renderMainWindow(initial);
+    const ring = molecule();
+    const bond = ring.bonds[0]!;
+    const from = ring.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = ring.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , {
+      x: (from.x + to.x) / 2,
+      y: (from.y + to.y) / 2
+    });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Fused benzene template");
+  });
+
+  it("reports a spiro benzene template through the real placement handler", async () => {
+    const initial = ringDocument();
+    await renderMainWindow(initial);
+    const ring = molecule();
+    const atom = ring.atoms[0]!;
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Made spiro benzene template");
+  });
+
+  it("reports a separately placed benzene fallback through the real placement handler", async () => {
+    const initial = ringDocument();
+    const ring = initial.pages[0].objects[0] as MoleculeObject;
+    const atom = ring.atoms[0]!;
+    const saturated: MoleculeObject = {
+      ...ring,
+      atoms: [
+        ...ring.atoms,
+        { id: "atom_fallback_1", element: "C", x: atom.x + 30, y: atom.y, formalCharge: 0 },
+        { id: "atom_fallback_2", element: "C", x: atom.x - 30, y: atom.y, formalCharge: 0 }
+      ],
+      bonds: [
+        ...ring.bonds,
+        { id: "bond_fallback_1", fromAtomId: atom.id, toAtomId: "atom_fallback_1", order: "single" },
+        { id: "bond_fallback_2", fromAtomId: atom.id, toAtomId: "atom_fallback_2", order: "single" }
+      ]
+    };
+    await renderMainWindow(applyPatches(initial, [{ op: "updateObject", objectId: ring.id, changes: saturated }]));
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toContain("Placed benzene separately: that atom has no free valence");
   });
 
   it.each([

@@ -23,7 +23,7 @@ import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
   nativeHotkeyElements,
-  selectedTextToAtomLabelResult,
+  selectedTextToAtomLabelDisabledReason,
   selectedGroupObjectIds,
   selectedArtBooleanEligibleObjectIds,
   type NativeHotkeyElement
@@ -70,7 +70,7 @@ export function createQuickActions(
 ): CommandSpec[] {
   const hasClipboardSelection =
     document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
-  const textLabelResult = selectedTextToAtomLabelResult(document);
+  const textLabelDisabledReason = selectedTextToAtomLabelDisabledReason(document);
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
@@ -84,8 +84,8 @@ export function createQuickActions(
       title: "Convert Text to Atom Label",
       icon: "atom",
       source: "core",
-      enabled: textLabelResult.disabledReason === undefined,
-      disabledReason: textLabelResult.disabledReason
+      enabled: textLabelDisabledReason === undefined,
+      disabledReason: textLabelDisabledReason
     },
     { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: hasClipboardSelection },
     { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: hasClipboardSelection },
