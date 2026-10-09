@@ -88,7 +88,6 @@ import {
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import type { PluginPanelReport } from "@chemdraft/plugin-api";
-import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -2227,9 +2226,12 @@ export function MainWindow({
   // template click can reuse exactly what the highlight is painting (see
   // currentTemplateTargetFromHoverOrHit) rather than recompute a possibly-disagreeing hit.
   const templateHoverTargetRef = useRef<TemplateHoverSample | undefined>(undefined);
-  // Memo key for the ghost preview so we only recompute the plan (and its Kekulé pass) when the
-  // hovered target or pointer cell changes, not on every sub-pixel pointer move.
+  // The target key prevents repeat Kekulé passes while the pointer stays on a fuse/spiro target.
+  // A rejected target is different: its standalone fallback starts at the pointer, so its cached
+  // plan intentionally replans on each move.
   const templatePreviewKeyRef = useRef<string | undefined>(undefined);
+  const templatePreviewTargetKeyRef = useRef<string | undefined>(undefined);
+  const templatePreviewPlanRef = useRef<NativeTemplatePlacementPlan | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   const viewportRef = useRef(viewport);
@@ -10163,6 +10165,11 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // WebKit reports the typed character during IME composition; WebView2 uses Process/229.
+      // Neither is a canvas shortcut or hover-label continuation until composition commits.
+      if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -10996,6 +11003,8 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setTemplatePreview(undefined);
     templatePreviewKeyRef.current = undefined;
+    templatePreviewTargetKeyRef.current = undefined;
+    templatePreviewPlanRef.current = undefined;
     setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
@@ -11061,6 +11070,8 @@ export function MainWindow({
     // The drag commits a live preview document, so the hover ghost would double up — drop it.
     setTemplatePreview(undefined);
     templatePreviewKeyRef.current = undefined;
+    templatePreviewTargetKeyRef.current = undefined;
+    templatePreviewPlanRef.current = undefined;
     event.currentTarget.setPointerCapture(event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
@@ -11212,6 +11223,8 @@ export function MainWindow({
       assignHoveredNativeDeleteTarget(undefined);
       setTemplatePreview(undefined);
       templatePreviewKeyRef.current = undefined;
+      templatePreviewTargetKeyRef.current = undefined;
+      templatePreviewPlanRef.current = undefined;
       return;
     }
 
@@ -11246,14 +11259,21 @@ export function MainWindow({
     // target (the shared edge/atom); standalone and rejected-target fallback rings follow the
     // pointer because their clear placement starts there.
     if (activeNativeTemplateId) {
-      const plan = planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId);
-      const previewKey = nativeTemplatePreviewKey(activeNativeTemplateId, target, point, plan);
-      if (previewKey !== templatePreviewKeyRef.current) {
-        templatePreviewKeyRef.current = previewKey;
-        setTemplatePreview(plan);
+      const targetKey = nativeTemplatePreviewTargetKey(activeNativeTemplateId, target, point);
+      if (shouldReplanNativeTemplatePreview(templatePreviewTargetKeyRef.current, targetKey, templatePreviewPlanRef.current)) {
+        const plan = planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId);
+        const previewKey = nativeTemplatePreviewKey(activeNativeTemplateId, target, point, plan);
+        templatePreviewTargetKeyRef.current = targetKey;
+        templatePreviewPlanRef.current = plan;
+        if (previewKey !== templatePreviewKeyRef.current) {
+          templatePreviewKeyRef.current = previewKey;
+          setTemplatePreview(plan);
+        }
       }
     } else if (templatePreviewKeyRef.current !== undefined) {
       templatePreviewKeyRef.current = undefined;
+      templatePreviewTargetKeyRef.current = undefined;
+      templatePreviewPlanRef.current = undefined;
       setTemplatePreview(undefined);
     }
 
@@ -19862,17 +19882,32 @@ export function nativeTemplateStatusForApplication(
     : `Made spiro ${nativeTemplateStatusLabel(templateId)} template`;
 }
 
-/**
- * Plain canvas keys must wait for a newly opened inline editor to receive focus. Command chords
- * remain routable: a forwarded Ctrl chord is accepted on macOS and a forwarded Command chord on
- * Windows so native menus and automation cannot leave a stale edit with a dead keyboard.
- */
+/** Plain canvas keys wait for a newly opened inline editor to receive focus; command chords route. */
 export function shouldBlockPendingInlineEditorCanvasKey(
-  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey">,
-  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey">
 ): boolean {
-  const platformCommandModifierHeld = platform === "macos" ? event.metaKey : event.ctrlKey;
-  return !platformCommandModifierHeld && !event.metaKey && !event.ctrlKey;
+  return !event.metaKey && !event.ctrlKey;
+}
+
+/** The stable portion of a template-hover cache key, known before the placement is planned. */
+export function nativeTemplatePreviewTargetKey(
+  templateId: NativeMoleculeTemplateId,
+  target: NativeMoleculeDeleteTarget | undefined,
+  point: ClientPoint
+): string {
+  if (!target) {
+    return ["standalone", templateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
+  }
+  return [templateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|");
+}
+
+/** Rejected attachment plans follow the pointer; successful fuse/spiro plans stay target-stable. */
+export function shouldReplanNativeTemplatePreview(
+  cachedTargetKey: string | undefined,
+  targetKey: string,
+  cachedPlan: NativeTemplatePlacementPlan | undefined
+): boolean {
+  return cachedTargetKey !== targetKey || Boolean(cachedPlan?.fallbackReason);
 }
 
 /**
@@ -19885,12 +19920,10 @@ export function nativeTemplatePreviewKey(
   point: ClientPoint,
   plan: NativeTemplatePlacementPlan | undefined
 ): string {
-  if (!target) {
-    return ["standalone", templateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
-  }
-  const targetKey = [templateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|");
+  const targetKey = nativeTemplatePreviewTargetKey(templateId, target, point);
+  if (!target) return targetKey;
   return plan?.fallbackReason
-    ? [targetKey, Math.round(point.x), Math.round(point.y)].join("|")
+    ? [targetKey, point.x, point.y].join("|")
     : targetKey;
 }
 

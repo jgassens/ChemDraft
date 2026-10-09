@@ -12,6 +12,8 @@ import { nativeBondLengthPx, tryNativeSingleBondGraphSmiles } from "@chemdraft/d
 import {
   nativeMoleculeRingSelectionFromPointerTarget,
   nativeTemplatePreviewKey,
+  nativeTemplatePreviewTargetKey,
+  shouldReplanNativeTemplatePreview,
   nativeTemplateStatusForApplication
 } from "./MainWindow";
 import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
@@ -156,6 +158,34 @@ describe("ring press (the shipped path)", () => {
     expect(ring?.atoms.every((ringAtom) => before.atoms.every((existingAtom) =>
       Math.hypot(ringAtom.x - existingAtom.x, ringAtom.y - existingAtom.y) >= nativeBondLengthPx
     ))).toBe(true);
+  });
+
+  it("plans once while hovering the same bond across several moves", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Preview cache"), { x: 300, y: 300 }, "benzene");
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const bond = molecule.bonds[0]!;
+    const target = {
+      objectId: molecule.id,
+      kind: "bond" as const,
+      bondId: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      distanceToPointer: 0
+    };
+    let cachedTargetKey: string | undefined;
+    let cachedPlan: ReturnType<typeof planNativeTemplatePlacement>;
+    let planCount = 0;
+
+    for (const point of [{ x: 300, y: 300 }, { x: 302, y: 301 }, { x: 305, y: 298 }]) {
+      const targetKey = nativeTemplatePreviewTargetKey("cyclohexane", target, point);
+      if (shouldReplanNativeTemplatePreview(cachedTargetKey, targetKey, cachedPlan)) {
+        cachedPlan = planNativeTemplatePlacement(document, { point, target }, "cyclohexane");
+        cachedTargetKey = targetKey;
+        planCount += 1;
+      }
+    }
+
+    expect(planCount).toBe(1);
   });
 
   it("commits a fallback ring at the last preview point", () => {

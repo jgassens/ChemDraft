@@ -220,7 +220,8 @@ describe("hover label typing", () => {
 
   it("ignores an IME composition key while hovering an atom", async () => {
     await hover(0);
-    const event = new KeyboardEvent("keydown", { key: "Process", bubbles: true, cancelable: true });
+    // WebKit exposes the actual character here, which previously entered hover-label typing.
+    const event = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
     Object.defineProperty(event, "isComposing", { value: true });
     await act(async () => { window.dispatchEvent(event); });
 

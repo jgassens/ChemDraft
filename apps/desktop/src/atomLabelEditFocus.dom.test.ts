@@ -9,7 +9,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
-import { MainWindow, shouldBlockPendingInlineEditorCanvasKey } from "./MainWindow";
+import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -62,6 +62,7 @@ describe("atom label editor focus", () => {
     vi.useRealTimers();
     saveKeybindingSettings({ scheme: "chemdraft" });
     window.history.replaceState(null, "", "/");
+    Reflect.deleteProperty(navigator, "platform");
     delete window.__CHEMDRAFT_AGENT__;
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
@@ -213,12 +214,46 @@ describe("atom label editor focus", () => {
     });
   }
 
+  async function pressOnCanvas(init: KeyboardEventInit): Promise<KeyboardEvent> {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    await act(async () => {
+      container.querySelector<HTMLElement>(".page")!.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  function setShortcutPlatform(platform: "macos" | "windows") {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: platform === "macos" ? "MacIntel" : "Win32"
+    });
+  }
+
   it.each([
-    ["macOS", "macos", { metaKey: true, ctrlKey: false }],
-    ["Windows", "windows", { metaKey: false, ctrlKey: true }]
-  ] as const)("lets %s undo chords pass a pending inline editor", (_name, platform, modifiers) => {
-    expect(shouldBlockPendingInlineEditorCanvasKey(modifiers, platform)).toBe(false);
-    expect(shouldBlockPendingInlineEditorCanvasKey({ metaKey: false, ctrlKey: false }, platform)).toBe(true);
+    ["macOS", "macos", { metaKey: true }],
+    ["Windows", "windows", { ctrlKey: true }]
+  ] as const)("routes %s canvas undo, but not Backspace, while an inline editor awaits focus", async (_name, platform, modifiers) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setShortcutPlatform(platform);
+    const firstRing = insertNativeTemplateMolecule(createPhase4Document("Pending editor undo"), { x: 200, y: 300 }, "cyclohexane");
+    const firstRingId = firstRing.pages[0].objects[0]!.id;
+    const twoRings = insertNativeTemplateMolecule(firstRing, { x: 500, y: 300 }, "cyclohexane");
+    await renderMainWindow(selectDocumentObjects(twoRings, twoRings.pages[0].id, [firstRingId]));
+    await pressOnCanvas({ key: "Delete" });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+
+    const atomId = await startLabelEdit();
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await loseFocusToAnotherWindow();
+    expect(labelEditor()).not.toBeNull();
+    expect(document.activeElement).not.toBe(labelEditor());
+
+    await pressOnCanvas({ key: "Backspace" });
+    expect(atomElement(atomId)).toBe("C");
+    expect(molecule().atoms).toHaveLength(6);
+
+    await pressOnCanvas({ key: "z", ...modifiers });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
   });
 
   it("focuses the label editor when an edit starts", async () => {
