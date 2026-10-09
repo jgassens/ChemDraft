@@ -1,7 +1,8 @@
 # Worked recipes
 
 Contents: workspace; question grid; stereochemistry; salt reaction; synthesis;
-properties table; mass peak; NMR handout; names dataset; slides; human edits.
+properties table; mass peak; NMR handout; names dataset; slides; human edits;
+a figure in a named chemist's style; a hand-sketched structure.
 
 ## Prepare an external workspace
 
@@ -182,6 +183,11 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --smiles
 
 Inspect the PNG, then place SVG if the slide software supports it; otherwise
 use PNG. Check contrast against the slide background. Keep the SMILES/options.
+Known limitation: `render` still paints an opaque white patch behind each
+atom label (the O and OH here) on a transparent background. On a coloured
+slide, build the figure with `document`, set
+`molecule.style.atomLabelBackgroundColor` to `"transparent"`, and render it
+with `render-document --background transparent` ([art](art.md)).
 
 ## 10. Human hand-edit loop via CDXML
 
@@ -189,8 +195,167 @@ use PNG. Check contrast against the slide background. Keep the SMILES/options.
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out "$scratch/editable-aspirin.cdxml"
 ```
 
-Have the human open this file in ChemDraft with File > Open, edit the
+Tell the human to save the current drawing first, because File > Open
+replaces the open document without asking. Then have them open this file in
+ChemDraft with File > Open, edit the
 structure and save a native document. Review the final chemistry and obtain
 updated SMILES before another headless render. This verified command creates
 the handoff file; the human editing/desktop reopening step needs a hands-on
 check on each platform. Do not automate editing through the testing bridge.
+
+## 11. A structure "in the style of" a named chemist: brevetoxin B, Nicolaou-style
+
+A request for a named chemist's or journal's style is a set of visual
+conventions to reproduce, not something to refuse. Nicolaou's ladder-
+polyether drawings use lettered rings, H at every ring-fusion
+stereocentre, Me labels and, in reviews, shaded ring interiors. All are
+native document art ([art](art.md)).
+
+Never type a structure this size from memory. Take it from PubChem CID
+10865865 (Brevetoxin B, C50H70O14) and cite the CID with the figure:
+
+```sh
+node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/10865865/property/Title,MolecularFormula,SMILES/JSON').then(r=>r.json()).then(j=>{const p=j.PropertyTable.Properties[0]; console.log(p.CID,p.Title,p.MolecularFormula,p.SMILES); require('node:fs').writeFileSync(require('node:path').join(process.argv[1],'brevetoxin-b-job.json'),JSON.stringify([{name:'brevetoxin-b',smiles:p.SMILES}]));})" "$scratch"
+```
+
+Build the editable document. POSIX shell:
+
+```sh
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/brevetoxin-b-job.json" --out-dir "$scratch" > "$scratch/brevetoxin-b-build.jsonl"
+```
+
+PowerShell:
+
+```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/brevetoxin-b-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/brevetoxin-b-build.jsonl"
+```
+
+Save this script as `brevetoxin-style.mjs` in the scratch directory. It
+fills the eleven rings with pastel colours, letters them A–K left to
+right at their centres, moves each ring-fusion stereo bond onto an
+explicit H (opposite wedge/hash, along the fused bond), and writes two
+files: `-carbon` (verifiable) and `-nicolaou` (methyls relabelled Me).
+
+```js
+// node brevetoxin-style.mjs <scratch>: shaded rings, ring letters A-K, H at ring fusions, Me labels.
+import fs from "node:fs";
+import path from "node:path";
+const dir = process.argv[2];
+const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^﻿/, ""));
+const build = read("brevetoxin-b-build.jsonl");
+const doc = read("brevetoxin-b.json");
+const page = doc.pages[0];
+const mol = page.objects.find((o) => o.type === "molecule");
+const atom = (id) => mol.atoms.find((a) => a.id === id);
+const neighbours = (id) => mol.bonds.flatMap((b) => b.fromAtomId === id ? [b.toAtomId] : b.toAtomId === id ? [b.fromAtomId] : []);
+const rings = [...build.molecules[0].rings].sort((a, b) => a.center.x - b.center.x);
+// Pastel ring interiors and italic serif ring letters, A to K from left to right.
+const fills = ["#f4b6b6", "#f7d2a6", "#f6eaa2", "#cfe8a9", "#a9dcc6", "#a8d4ec", "#b4bff0", "#d0b8ee", "#efb8dc", "#f4c4c4", "#e9d7b0"];
+mol.style.atomLabelBackgroundColor = "transparent";
+mol.style.ringStyles = Object.fromEntries(rings.map((r, i) => [r.ringKey, { fillColor: fills[i % fills.length], fillOpacity: 0.55 }]));
+rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text: String.fromCharCode(65 + i), spans: [],
+  x: r.center.x - 10, y: r.center.y - 0.64 * 20, width: 20, height: 24, rotation: 0,
+  style: { fontSizePx: 20, fontWeight: 700, fontStyle: "italic", textAlign: "center", color: "#3a3a3a", fontFamily: "Times New Roman, Times, serif" } }));
+// Ring-fusion CH stereocentres: move the stereo bond onto an explicit H along the fused bond.
+for (const a of [...mol.atoms]) {
+  const mine = rings.filter((r) => r.atomIds.includes(a.id));
+  const stereo = mol.bonds.find((b) => b.fromAtomId === a.id && ["wedge", "hashed"].includes(b.display?.bondStyle));
+  const partner = neighbours(a.id).find((id) => mine.every((r) => r.atomIds.includes(id)));
+  if (a.element !== "C" || mine.length < 2 || neighbours(a.id).length !== 3 || !stereo || !partner) continue;
+  const c = atom(a.id), p = atom(partner), d = Math.hypot(c.x - p.x, c.y - p.y);
+  mol.atoms.push({ id: `h_${a.id}`, element: "H", x: c.x + (c.x - p.x) / d * 22, y: c.y + (c.y - p.y) / d * 22, formalCharge: 0 });
+  mol.bonds.push({ id: `b_h_${a.id}`, fromAtomId: a.id, toAtomId: `h_${a.id}`, order: "single",
+    display: { bondStyle: stereo.display.bondStyle === "wedge" ? "hashed" : "wedge" } });
+  delete stereo.display.bondStyle;
+}
+fs.writeFileSync(path.join(dir, "brevetoxin-b-carbon.json"), JSON.stringify(doc));
+// Display-only last step: methyl carbons on ring atoms become "Me" labels.
+const ringAtoms = new Set(rings.flatMap((r) => r.atomIds));
+for (const a of mol.atoms) {
+  const n = neighbours(a.id);
+  const bond = mol.bonds.find((b) => b.fromAtomId === a.id || b.toAtomId === a.id);
+  if (a.element === "C" && n.length === 1 && ringAtoms.has(n[0]) && bond.order === "single") a.element = "Me";
+}
+fs.writeFileSync(path.join(dir, "brevetoxin-b-nicolaou.json"), JSON.stringify(doc));
+```
+
+Style, render and save:
+
+```sh
+node "$scratch/brevetoxin-style.mjs" "$scratch"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-carbon.json" --out "$scratch/brevetoxin-b-carbon.png" --width 2000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-nicolaou.json" --out "$scratch/brevetoxin-b-nicolaou" --format both --width 2000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-nicolaou.json" --out "$scratch/brevetoxin-b-nicolaou.chemdraft"
+```
+
+Check, as verified when this recipe was written:
+
+- The `-carbon` render reports 23 specified stereocentres, 0 unspecified.
+  Run `analyze --methods 'rdkit.canonical-smiles,rdkit.inchikey'` on the
+  PubChem SMILES and on the reported `canonicalSmiles`; both gave
+  InChIKey `LYTCVQQGCSNFJU-FGRVLNGBSA-N` and formula C50H70O14.
+- The `-nicolaou` render writes each Me as `*` and warns once per label;
+  its stereo counts read as unspecified for that reason. Replace `*` with
+  `C` in its `canonicalSmiles` and check the same InChIKey.
+- Look at the PNG: eleven shaded rings lettered A–K, fifteen fusion H
+  atoms, seven Me labels, no label sitting on a ring letter.
+
+## 12. A hand-sketched structure: penicillin G
+
+The sketch visual effect draws rough strokes over the bonds; a
+handwriting label font and a sketched circle finish the look. Structure
+from PubChem CID 5904 (Penicillin G, C16H18N2O4S):
+
+```sh
+node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/5904/property/Title,MolecularFormula,SMILES/JSON').then(r=>r.json()).then(j=>{const p=j.PropertyTable.Properties[0]; console.log(p.CID,p.Title,p.MolecularFormula,p.SMILES); require('node:fs').writeFileSync(require('node:path').join(process.argv[1],'penicillin-g-job.json'),JSON.stringify([{name:'penicillin-g',smiles:p.SMILES}]));})" "$scratch"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/penicillin-g-job.json" --out-dir "$scratch" > "$scratch/penicillin-g-build.jsonl"
+```
+
+In PowerShell, capture the `document` output with
+`| Set-Content -Encoding utf8` as in recipe 11. Save this as
+`penicillin-sketch.mjs` in the scratch directory:
+
+```js
+// node penicillin-sketch.mjs <scratch>: rough strokes, handwriting labels, a sketched circle and caption.
+import fs from "node:fs";
+import path from "node:path";
+const dir = process.argv[2];
+const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^﻿/, ""));
+const build = read("penicillin-g-build.jsonl");
+const doc = read("penicillin-g.json");
+const page = doc.pages[0];
+const mol = page.objects.find((o) => o.type === "molecule");
+const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
+mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, strokeWidth: 1, seed: 7, color: ink }];
+Object.assign(mol.style, { bondColor: ink, atomLabelColor: ink, atomLabelFontFamily: hand, atomLabelFontSizePx: 16 });
+// Keep wedges and hashes legible under the rough strokes.
+const stereo = mol.bonds.filter((b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed").map((b) => b.id);
+mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 9]));
+mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 5]));
+const lactam = build.molecules[0].rings.find((r) => r.size === 4);
+page.objects.push({ id: "lactam-circle", type: "graphic", graphicKind: "ellipse", rotation: 0,
+  x: lactam.center.x - 25, y: lactam.center.y - 25, width: 50, height: 50,
+  style: { fillColor: "none", visualEffects: [{ kind: "sketch", roughness: 2.2, bowing: 2, seed: 3, color: red, strokeWidth: 2 }] }, data: {} });
+page.objects.push({ id: "lactam-note", type: "text", text: "β-lactam", spans: [], rotation: 0,
+  x: lactam.center.x + 26, y: lactam.center.y - 58, width: 80, height: 20, style: { fontFamily: hand, fontSizePx: 15, color: red } });
+const xs = mol.atoms.map((a) => a.x), bottom = Math.max(...mol.atoms.map((a) => a.y));
+page.objects.push({ id: "caption", type: "text", text: "penicillin G", spans: [], rotation: 0,
+  x: Math.min(...xs), y: bottom + 24, width: Math.max(...xs) - Math.min(...xs), height: 26,
+  style: { fontFamily: hand, fontSizePx: 20, textAlign: "center", color: ink } });
+fs.writeFileSync(path.join(dir, "penicillin-g-sketch.json"), JSON.stringify(doc));
+```
+
+```sh
+node "$scratch/penicillin-sketch.mjs" "$scratch"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/penicillin-g-sketch.json" --out "$scratch/penicillin-g-sketch" --format both --width 1200
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/penicillin-g-sketch.json" --out "$scratch/penicillin-g-sketch.chemdraft"
+```
+
+Verified: the reported canonical SMILES equals the source's (InChIKey
+`JGSARLDLIJGVTE-MBNYWOFBSA-N`), with 3 specified stereocentres. The 1 unspecified centre is the bridgehead N,
+which the plain `render` and `stereo` report the same way; do not add
+stereo to it. Look at the image at full size: the sketch traces the
+centre of the hashed C–CO2H bond, which is why the script widens the
+hashes ([art](art.md), Known limits). Fonts are per machine; if neither
+handwriting font is installed, the generic `cursive` font is used.

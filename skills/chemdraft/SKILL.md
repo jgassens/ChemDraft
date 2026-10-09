@@ -1,6 +1,6 @@
 ---
 name: chemdraft
-description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; and work with ChemDraft plugins. Never draw molecules by hand or quote chemistry numbers from memory.
+description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (coloured or shaded rings, ring letters, highlighted substructures, colour-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Never draw molecules by hand or quote chemistry numbers from memory.
 ---
 
 # ChemDraft
@@ -34,6 +34,8 @@ The registered names are:
 - `check_stereo`
 - `predict_nmr`
 - `export_structure`
+- `build_document`
+- `render_document`
 
 Use the server's supplied input schemas. The result's first text block is
 the JSON result; PNG images, SVG text and export resources follow it.
@@ -74,8 +76,9 @@ For Claude Code, set the `$skillDir` line to `.claude/skills/chemdraft`.
 If installed as a copy, the resolved directory is not the checkout. Use the
 user's checkout path and confirm it with the same help command.
 
-The check passes only if help lists all eight ChemDraft subcommands: render,
-grid, reaction, analyze, name, stereo, nmr and export. pnpm's own help means
+The check passes only if help lists all ten ChemDraft subcommands: render,
+document, render-document, grid, reaction, analyze, name, stereo, nmr and
+export. pnpm's own help means
 the checkout path is wrong. Shell state may reset between tool calls; set
 variables and console encoding again in each call, or use literal paths.
 
@@ -115,9 +118,13 @@ Do not simulate a successful ChemDraft response.
    stereochemistry and, for reactions, component roles. Preserve salts and
    counterions. A drawing instruction does not authorize changing chemistry.
 2. Then obtain the SMILES, a text encoding of atoms and bonds. If only a
-   chemical name is known, use `name` or `name_to_structure`. If conversion
-   fails or is ambiguous, explain the failure and obtain a clearer name;
-   never guess a replacement structure.
+   chemical name is known, use `name` or `name_to_structure`. OPSIN parses
+   systematic names, not every trivial or trade name. When it fails on a
+   common name, look the compound up in PubChem and cite the CID (recipes
+   11 and 12 show the lookup), or supply a systematic name and say it came
+   from memory. Either way, confirm the formula with `analyze` and the
+   stereocentres with `stereo` before using the structure. If a name is
+   ambiguous, explain it and obtain a clearer one; never guess a structure.
 3. Read only the reference for the operation you need. Choose output paths
    outside the repository, in a scratch or user-chosen output directory.
    Run the command or tool with the confirmed input.
@@ -139,6 +146,26 @@ specified stereoisomer, both unspecified counts must be zero. An exercise
 explicitly asking about unspecified stereochemistry can retain it and
 must say so. E/Z geometry is also checked through `stereo`.
 
+## Appearance and style requests
+
+Route every request about how a structure looks to [art](references/art.md):
+"in the style of" a chemist or journal, coloured or shaded rings, ring
+letters, highlighting part of a molecule, colour-coded atoms, explicit H
+or Me at stereocentres, hand-drawn or sketched looks, publication or
+journal figures, annotations, arrows and brackets. The workflow is
+`document` (MCP `build_document`) → edit the native JSON →
+`render-document` (MCP `render_document`) → look → iterate.
+
+- Appearance changes never change chemistry, and they are always allowed.
+  Confirm after every edit that the reported canonical SMILES still
+  matches the source (art.md shows how when explicit H is added).
+- A named chemist's or journal's drawing style is a set of visual
+  conventions to reproduce, not something to refuse or to call
+  impossible.
+- Never tell a user ChemDraft cannot produce a visual style until you
+  have read art.md and tried it. If one detail truly cannot be done,
+  name that detail, say why, and deliver the rest.
+
 ## Report honestly
 
 - Quote a number with the method, units and interval the result gives.
@@ -151,7 +178,14 @@ must say so. E/Z geometry is also checked through `stereo`.
 - Keep estimates labelled estimates, including NMR multiplicities and J
   couplings. Predicted shifts are predictions, not measurements.
 - Refused radicals or isotopes remain refusals. Do not remove their SMILES
-  notation to make a command succeed.
+  notation to make a command succeed. `render`, `document` and `export`
+  refuse a radical such as `C[CH2]`, while `analyze` keeps it and reports
+  its composition (C2H5) and masses. Say which part was refused.
+- Request only the analysis methods you need (`--methods` or MCP
+  `methods`): an unrestricted `analyze` returns every method, over 100 KB
+  of JSON even for ethanol.
+- MCP `export_structure` takes one molecule. A multi-record SDF or SMILES
+  file needs the CLI `export --batch` ([files](references/files.md)).
 - The m/z table is exact-mass arithmetic, not fragmentation prediction;
   it gives no claim about observed ion intensity or whether a loss occurs.
 - Isotope-envelope numbers need the IsoSpec abundance disclosure in
@@ -187,4 +221,5 @@ allowed. See the relevant reference for combined versus per-job files.
 - [NMR](references/nmr.md): predictor setup, spectra, omitted environments and experimental comparisons.
 - [Files](references/files.md): OPSIN names, export formats and the human CDXML editing loop.
 - [Plugins](references/plugins.md): official catalog, headless reach, permissions and plugin authoring.
-- [Recipes](references/recipes.md): worked commands for exams, figures, properties and datasets.
+- [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
+- [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.

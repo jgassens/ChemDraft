@@ -1,7 +1,7 @@
 # Structure images, grids and reaction schemes
 
 Contents: common inputs; render options; grid options; reaction options;
-image/stereo checks; desktop-only drawing.
+image/stereo checks; styled figures and what still needs the desktop app.
 
 Use the `checkout` and external `scratch` variables established in
 [recipes](recipes.md). Commands below work in POSIX shells and PowerShell.
@@ -43,7 +43,11 @@ choices in one question; a grid also keeps a common bond-length scale.
 Use `--background transparent` for slide backgrounds; view on the actual
 slide background to check contrast. `both` writes `.svg` and `.png`.
 Check label masks too: a transparent canvas does not ensure that atom-label
-backgrounds blend with a coloured slide.
+backgrounds blend with a coloured slide. Known limitation: `render` paints
+an opaque white patch behind every atom label even with
+`--background transparent`. For a figure on a coloured background, use
+`document` and `render-document` with the molecule's
+`atomLabelBackgroundColor` set to `"transparent"` ([art](art.md)).
 Render results include specified and unspecified stereo counts and warnings.
 
 ## Grid
@@ -151,10 +155,20 @@ order. `stereo` reports `stereoCenters` and `doubleBonds` arrays, with
 from a render's numeric `stereoCenters` field. SMILES `@`/`@@` is
 ordering-dependent and must not be read as R/S.
 
-## Desktop-only drawing
+## Styled figures and the desktop app
 
-The eight headless commands have no input for arbitrary annotations,
-curved electron-pushing mechanism arrows or fishhooks. Reaction arrows
-are the four kinds above, not mechanism arrows. Those drawings need the
-desktop app and real editable document objects. Hand a human CDXML via
-[files](files.md); do not invent a canvas API or edit through the test bridge.
+`render`, `grid` and `reaction` take no styling options, but styling is
+available headlessly. `document` (MCP `build_document`) writes the native
+document with atom, bond and ring ids; edit its JSON and render it with
+`render-document` (MCP `render_document`). That covers ring fills and
+gradients, ring letters, bond and atom-label colours and weights, bold or
+hashed bonds, explicit H and Me, the sketch, shadow and glow effects,
+text, lines, curved arrows, mechanism arrows and fishhooks, and brackets.
+Read [art](art.md) before answering any appearance or "in the style of"
+request, and never call a visual style impossible without trying it there.
+
+The desktop app is still the place for interactive fine-tuning: save the
+result as `.chemdraft` and have the human open it ([files](files.md)).
+Reaction arrows from `reaction` are the four kinds above; electron-pushing
+arrows are separate art objects. Do not invent a canvas API or edit
+through the test bridge.

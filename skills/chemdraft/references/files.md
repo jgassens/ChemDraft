@@ -4,8 +4,20 @@
 
 `name` and MCP `name_to_structure` use the bundled OPSIN 2.9.0 runtime.
 OPSIN parses chemical names; it is not a universal synonym database.
-When only a name is known, run it before drawing. If it fails, request
-a systematic name or confirmed SMILES. Do not guess a structure.
+When only a name is known, run it before drawing. When it fails on a
+common, trivial or trade name, do one of these, never a guess:
+
+- Look the compound up in PubChem and cite the CID with the figure or
+  number. The PUG REST property URL
+  `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/<name>/property/Title,MolecularFormula,SMILES/JSON`
+  (or `.../compound/cid/<CID>/...`) returns the CID, formula and SMILES;
+  recipes 11 and 12 fetch one with Node.
+- Supply the systematic name yourself, say that it came from memory, and
+  convert it with `name`.
+
+Then confirm the formula with `analyze` (method `rdkit.composition`)
+against the database or expected formula, and the stereocentres with
+`stereo`. Otherwise request a systematic name or confirmed SMILES.
 
 | CLI flag | Meaning / default |
 |---|---|
@@ -66,8 +78,10 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch 
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft export --batch "$scratch/choices.json" --out "$scratch/choices.smi" --format smi
 ```
 
-MCP takes `smiles`, required `format`, optional `outDir` root; it creates a
-fresh child directory. SDF records include `SMILES`, `Index` and `Name`.
+MCP takes one `smiles`, required `format`, optional `outDir` root; it creates
+a fresh child directory. It has no batch input, so a multi-record SDF or
+SMILES dataset needs the CLI `--batch` form above. SDF records include
+`SMILES`, `Index` and `Name`.
 For a batch combined dataset, a failed job is omitted from the written
 records and reported as failed; do not claim a partial dataset is complete.
 
@@ -76,12 +90,17 @@ is reopened and checked; MOL/SDF/SMILES representations are checked through
 the engine. A mismatch fails the job. PDF is a visual export after source
 identity validation, not a chemical file that can be parsed back from a
 picture. Never claim a PDF chemical round trip. Refused radicals/isotopes
-must not be removed from the input to force success.
+must not be removed from the input to force success. `analyze` does accept
+radicals and keeps them in its composition and masses; report the export
+refusal and the computed numbers separately.
 
 ## Hand-edit loop and compatibility
 
-Export CDXML, then have the human open it through ChemDraft **File > Open**
-and edit the actual structure. On Windows use File > Open or Open with;
+Export CDXML. Tell the human to save the current drawing first, because
+File > Open replaces the open document without asking. Then have them open
+the file through ChemDraft **File > Open** and edit the actual structure.
+A styled `.chemdraft` file from `render-document` opens the same way
+([art](art.md)). On Windows use File > Open or Open with;
 ChemDraft registers `.chemdraft` only, not `.cdxml`. Save the edited native
 document; regenerate the final figure from the confirmed edited chemistry.
 The headless tools do not read back a user's edited CDXML as a new CLI input.

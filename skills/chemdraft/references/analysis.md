@@ -14,13 +14,22 @@ re-decide hydrogens, valence or aromaticity in a second chemistry engine.
 |---|---|
 | `--smiles` | One SMILES; exclusive with batch |
 | `--batch` | JSON array of `{name, smiles}` jobs |
-| `--methods` | Comma-separated IDs; omitted runs all registered methods |
+| `--methods` | Comma-separated IDs; omitted runs all registered methods (over 100 KB of JSON) |
 | `--format` | `json` (default), `md`, `text` |
 | `--out` | Single job's JSON or report file; forbidden with batch |
 | `--help` | Help |
 
 MCP takes `smiles`, optional `methods` array, and `format: "json"` or
 `"md"`. It has no text-format or batch parameter. Use CLI for batches.
+Select the methods the question needs (`--methods` or `methods`) unless
+the user asked for the full property report: without them every
+registered method runs and even ethanol returns more than 100 KB of JSON.
+For formula, masses and canonical identity, for example, ask for `'rdkit.composition,rdkit.monoisotopic-mass,rdkit.canonical-smiles,rdkit.inchikey'`.
+
+Radicals are a split: `render`, `document` and `export` refuse a radical
+SMILES such as `C[CH2]`, but `analyze` keeps the radical and reports its
+composition (C2H5) and masses. Report both outcomes; never drop the
+radical to make a drawing succeed.
 
 ```sh
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --smiles 'CC(=O)O' --format md --out "$scratch/acetic-acid.md"

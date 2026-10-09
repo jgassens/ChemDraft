@@ -282,7 +282,8 @@ function documentedFlagErrors(markdown: string, commands: ReadonlyMap<string, Re
       const names = new Set(cells.filter((name) => commands.has(name)));
       if (names.size) tableCommand = names.size === 1 ? [...names][0] : null;
     }
-    const invocation = /\bchemdraft\s+([a-z]+)\b/.exec(text);
+    // Hyphenated subcommands (render-document) are one name, not "render".
+    const invocation = /\bchemdraft\s+([a-z][a-z-]*)\b/.exec(text);
     const scope = tableCommand !== undefined ? tableCommand :
       [...headings].reverse().find((entry) => entry.command !== undefined)?.command;
     const command = invocation?.[1] ?? scope ?? undefined;
@@ -365,6 +366,15 @@ describe("ChemDraft agent skill drift guard", () => {
     expect(codeBlocks("```sh\r\nchemdraft render --help\r\n```\r\n")).toEqual(["chemdraft render --help"]);
   });
 
+  it("routes appearance requests to the art reference", () => {
+    expect(entrypoint).toMatch(/\]\(references\/art\.md\)/);
+    expect(entrypoint).toMatch(/Never tell a user ChemDraft cannot produce a visual style/);
+    // Text objects read fontSizePx; a fontSize key is silently ignored by the renderer.
+    const unread = markdownFiles(skillRoot).flatMap((path) =>
+      codeBlocks(read(path)).filter((block) => /\bfontSize\s*:/.test(block)).map(() => path));
+    expect(unread).toEqual([]);
+  });
+
   it("resolves every relative Markdown link", () => {
     for (const path of markdownFiles(skillRoot)) {
       // Markdown prose only; example code may legitimately contain brackets and parentheses.
@@ -407,6 +417,8 @@ describe("ChemDraft agent skill drift guard", () => {
     expect(documentedFlagErrors("## Render\n`pnpm -s --dir checkout chemdraft render --dir bad`", flags)).toHaveLength(1);
     expect(documentedFlagErrors("Use `--dir` here.", flags)).toHaveLength(1);
     expect(documentedFlagErrors("## Grid\r\n| `--gutterx` | spacing |", flags)).toHaveLength(1);
+    expect(documentedFlagErrors("`pnpm -s --config.shell-emulator=true --dir checkout chemdraft render-document --document doc.json --out a.png`", flags)).toEqual([]);
+    expect(documentedFlagErrors("`pnpm -s --config.shell-emulator=true --dir checkout chemdraft render --document doc.json`", flags)).toHaveLength(1);
   });
 
   it("detects drift and continuations without executing examples", () => {
