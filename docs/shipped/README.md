@@ -36,8 +36,8 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ## User feedback fixes (2026-10-09)
 
-Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, with
-the same behavior on macOS and Windows.
+Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, built
+to behave the same on macOS and Windows; Windows hands-on verification is pending (see Open items).
 
 - **Drawing interaction fixes.** Whole-object and group rotation magnetically snaps to 15° steps,
   while holding Shift during a drag uses exact 15° steps. A normal click selects and places a ring;
