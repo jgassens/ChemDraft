@@ -12845,7 +12845,7 @@ describe("Phase 4 document workflow", () => {
     );
   });
 
-  it("marks an aromatic spiro placement invalid but a saturated spiro valid (ghost warn rule)", () => {
+  it("places a separate ring rather than making an over-valent aromatic spiro", () => {
     const benzeneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Benzene"), { x: 360, y: 320 }, "benzene");
     const benzene = selectedMolecule(benzeneDocument);
     const benzeneSpiro = planNativeTemplatePlacement(
@@ -12853,9 +12853,10 @@ describe("Phase 4 document workflow", () => {
       { point: moleculeAtom(benzene, "atom_001"), target: moleculeAtomTarget(benzene, "atom_001") },
       "benzene"
     );
-    expect(benzeneSpiro?.kind).toBe("attach-atom");
-    // The shared carbon ends up in two aromatic rings — over-valent — so the ghost must warn.
-    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule).length).toBeGreaterThan(0);
+    expect(benzeneSpiro).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+    // The original aromatic ring stays chemically intact; only the separate proposed ring is new.
+    expect(benzeneSpiro!.molecule.atoms).toHaveLength(6);
+    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule)).toEqual([]);
 
     const cyclohexaneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Cyclohexane"), { x: 360, y: 320 }, "cyclohexane");
     const cyclohexane = selectedMolecule(cyclohexaneDocument);
@@ -13155,13 +13156,16 @@ describe("Phase 4 document workflow", () => {
 
       const spiroAtom = molecule.atoms.find((atom) => atomDegree(molecule, atom.id) < 4);
       if (spiroAtom && index % 3 === 0) {
-        document = applyNativeTemplateToolAtTarget(
-          document,
-          moleculeAtomTarget(molecule, spiroAtom.id),
-          moleculeAtom(molecule, spiroAtom.id),
-          fusedTemplates[(index + 1) % fusedTemplates.length]
-        );
-        molecule = selectedMolecule(document);
+        const target = moleculeAtomTarget(molecule, spiroAtom.id);
+        const point = moleculeAtom(molecule, spiroAtom.id);
+        const templateId = fusedTemplates[(index + 1) % fusedTemplates.length];
+        const plan = planNativeTemplatePlacement(document, { point, target }, templateId);
+        // This fixture only exercises transformed fused systems. A rejected attachment is
+        // covered directly above; selecting its standalone fallback would change its premise.
+        if (plan?.kind === "attach-atom") {
+          document = applyNativeTemplatePlacementPlan(document, plan);
+          molecule = selectedMolecule(document);
+        }
       }
 
       const editableBond = molecule.bonds[index % molecule.bonds.length];

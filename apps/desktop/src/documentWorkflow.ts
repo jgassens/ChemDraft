@@ -2713,7 +2713,15 @@ export type NativeTemplatePlacementPlan = {
   objectId?: string;
   addedAtomIds: readonly string[];
   addedBondIds: readonly string[];
+  /** Why a target click had to become a separate ring instead of changing the target molecule. */
+  fallbackReason?: NativeTemplateFallbackReason;
 };
+
+export type NativeTemplateFallbackReason =
+  | "structure-not-editable"
+  | "target-unavailable"
+  | "atom-no-free-valence"
+  | "bond-cannot-accept";
 
 /** Compute the placement a template click would make, without mutating the document. */
 export function planNativeTemplatePlacement(
@@ -2727,14 +2735,33 @@ export function planNativeTemplatePlacement(
       object.id === target.objectId && object.type === "molecule"
     );
     if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-      return undefined;
+      return standaloneNativeTemplateFallbackPlan(document, point, templateId, "structure-not-editable");
+    }
+
+    if (target.kind === "atom") {
+      const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+      if (!atom) {
+        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
+      }
+      const valenceUsed = atomBondOrderUsageMap(molecule.atoms, molecule.bonds).get(atom.id) ?? 0;
+      // A spiro ring adds two bonds at its shared atom. Refuse rather than creating an
+      // over-valent graph, then place the requested template separately.
+      const element = nativeElementFromAtomLabel(atom.element);
+      if (!element || !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
+        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
+      }
     }
 
     const nextMolecule = target.kind === "bond"
       ? fuseNativeTemplateRingToBond(molecule, target.bondId, point, templateId)
       : attachNativeTemplateRingToAtom(molecule, target.atomId, point, templateId);
     if (!nextMolecule) {
-      return undefined;
+      return standaloneNativeTemplateFallbackPlan(
+        document,
+        point,
+        templateId,
+        target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable"
+      );
     }
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
@@ -2766,6 +2793,74 @@ export function planNativeTemplatePlacement(
     addedAtomIds: molecule.atoms.map((atom) => atom.id),
     addedBondIds: molecule.bonds.map((bond) => bond.id)
   };
+}
+
+function standaloneNativeTemplateFallbackPlan(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  templateId: NativeMoleculeTemplateId,
+  fallbackReason: NativeTemplateFallbackReason
+): NativeTemplatePlacementPlan | undefined {
+  const molecule = createStandaloneTemplateAwayFromExistingAtoms(document, point, templateId);
+  if (!molecule) {
+    return undefined;
+  }
+  return {
+    kind: "standalone",
+    templateId,
+    molecule,
+    addedAtomIds: molecule.atoms.map((atom) => atom.id),
+    addedBondIds: molecule.bonds.map((bond) => bond.id),
+    fallbackReason
+  };
+}
+
+/**
+ * A rejected attachment must not leave a visually ambiguous near-overlap. Search positions near
+ * the click first, then the page grid, and accept only a ring whose atoms are at least one bond
+ * length from every existing molecule atom.
+ */
+function createStandaloneTemplateAwayFromExistingAtoms(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  templateId: NativeMoleculeTemplateId
+): MoleculeObject | undefined {
+  const page = firstPage(document);
+  const existingAtoms = page.objects
+    .filter((object): object is MoleculeObject => object.type === "molecule")
+    .flatMap((molecule) => molecule.atoms);
+  const isClear = (molecule: MoleculeObject) => molecule.atoms.every((atom) =>
+    existingAtoms.every((existing) => Math.hypot(atom.x - existing.x, atom.y - existing.y) >= nativeBondLength)
+  );
+  const candidates: PagePoint[] = [];
+  const addCandidate = (candidate: PagePoint) => {
+    if (!candidates.some((current) => current.x === candidate.x && current.y === candidate.y)) {
+      candidates.push(candidate);
+    }
+  };
+
+  // Start three bond lengths away: even a ring vertex facing the clicked atom remains clear.
+  for (let radius = nativeBondLength * 3; radius <= nativeBondLength * 9; radius += nativeBondLength * 2) {
+    for (let index = 0; index < 16; index += 1) {
+      const angle = index * Math.PI * 2 / 16;
+      addCandidate({ x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius });
+    }
+  }
+  // A dense drawing can occupy the local candidates. The grid guarantees a deterministic
+  // page-wide search without ever compromising the one-bond-length separation invariant.
+  for (let y = nativeBondLength; y <= page.height - nativeBondLength; y += nativeBondLength * 2) {
+    for (let x = nativeBondLength; x <= page.width - nativeBondLength; x += nativeBondLength * 2) {
+      addCandidate({ x, y });
+    }
+  }
+
+  for (const candidate of candidates) {
+    const molecule = createNativeTemplateMolecule(document, candidate, templateId);
+    if (isClear(molecule)) {
+      return molecule;
+    }
+  }
+  return undefined;
 }
 
 /** Commit a plan produced by {@link planNativeTemplatePlacement}. */

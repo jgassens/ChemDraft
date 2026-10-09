@@ -2,12 +2,15 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyNativeTemplatePlacementPlan,
   createPhase4Document,
-  insertNativeTemplateMolecule
+  insertNativeTemplateMolecule,
+  planNativeTemplatePlacement
 } from "./documentWorkflow";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
-import { nativeMoleculeRingSelectionFromPointerTarget } from "./MainWindow";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondLengthPx, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { nativeMoleculeRingSelectionFromPointerTarget, nativeTemplateStatusForApplication } from "./MainWindow";
+import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 
 /**
  * Coverage for the ring-press path the app actually runs.
@@ -98,5 +101,56 @@ describe("ring press (the shipped path)", () => {
     const outside = { x: molecule.x + molecule.width + 200, y: molecule.y + molecule.height + 200 };
 
     expect(nativeMoleculeRingSelectionFromPointerTarget(molecule, null, outside)).toBeUndefined();
+  });
+
+  it("places exactly one separate ring when a full-valence atom cannot accept the template", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Ring fallback"), { x: 320, y: 320 }, "cyclohexane");
+    const original = seed.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!original) throw new Error("Expected original molecule.");
+    const atom = original.atoms[0];
+    if (!atom) throw new Error("Expected ring atom.");
+    // Four single bonds make this carbon unable to accept the two new spiro bonds.
+    const saturated: MoleculeObject = {
+      ...original,
+      atoms: [
+        ...original.atoms,
+        { id: "atom_extra_1", element: "C", x: atom.x + 30, y: atom.y, formalCharge: 0 },
+        { id: "atom_extra_2", element: "C", x: atom.x - 30, y: atom.y, formalCharge: 0 }
+      ],
+      bonds: [
+        ...original.bonds,
+        { id: "bond_extra_1", fromAtomId: atom.id, toAtomId: "atom_extra_1", order: "single" },
+        { id: "bond_extra_2", fromAtomId: atom.id, toAtomId: "atom_extra_2", order: "single" }
+      ]
+    };
+    const document = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: saturated }]);
+    const before = document.pages[0].objects.find((object): object is MoleculeObject => object.id === original.id);
+    if (!before) throw new Error("Expected saturated molecule.");
+
+    const plan = planNativeTemplatePlacement(document, {
+      point: { x: atom.x, y: atom.y },
+      target: { objectId: before.id, kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    }, "benzene");
+    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+    expect(nativeTemplateStatusForApplication("benzene", {
+      objectId: before.id,
+      kind: "atom",
+      atomId: atom.id,
+      distanceToPointer: 0
+    }, true, plan?.fallbackReason)).toBe("Placed benzene separately: that atom has no free valence");
+    const placed = applyNativeTemplatePlacementPlan(document, plan!);
+    const unchanged = placed.pages[0].objects.find((object): object is MoleculeObject => object.id === before.id);
+    const ring = placed.pages[0].objects.find((object): object is MoleculeObject => object.id === plan!.molecule.id);
+
+    expect(tryNativeSingleBondGraphSmiles(unchanged?.atoms ?? [], unchanged?.bonds ?? [])).toEqual(
+      tryNativeSingleBondGraphSmiles(before.atoms, before.bonds)
+    );
+    expect(unchanged?.atoms).toHaveLength(before.atoms.length);
+    expect(unchanged?.bonds).toHaveLength(before.bonds.length);
+    expect(placed.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(placed.selection.objectIds).toEqual([plan!.molecule.id]);
+    expect(ring?.atoms.every((ringAtom) => before.atoms.every((existingAtom) =>
+      Math.hypot(ringAtom.x - existingAtom.x, ringAtom.y - existingAtom.y) >= nativeBondLengthPx
+    ))).toBe(true);
   });
 });

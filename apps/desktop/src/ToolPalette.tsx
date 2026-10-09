@@ -165,8 +165,8 @@ export type ToolbarFlyoutRequest = {
 };
 
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
-const DISTRIBUTE_MENU_HOLD_MS = 150;
-const COMMAND_FLYOUT_HOLD_MS = 150;
+/** A deliberate hold opens a toolbar flyout; a normal click always selects its primary tool. */
+export const TOOLBAR_FLYOUT_HOLD_MS = 400;
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
@@ -3775,7 +3775,7 @@ function ToolbarPaletteItem({
           if (hasSubmenu) {
             event.currentTarget.setPointerCapture?.(event.pointerId);
             clearHoldTimer();
-            holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
+            holdTimerRef.current = setTimeout(openMenu, TOOLBAR_FLYOUT_HOLD_MS);
           }
         }}
         onPointerUp={(event) => {
@@ -4343,7 +4343,7 @@ function DistributeCommandIconButton({
           holdOpenedRef.current = false;
           event.currentTarget.setPointerCapture?.(event.pointerId);
           clearHoldTimer();
-          holdTimerRef.current = setTimeout(openMenu, DISTRIBUTE_MENU_HOLD_MS);
+          holdTimerRef.current = setTimeout(openMenu, TOOLBAR_FLYOUT_HOLD_MS);
         }}
         onPointerUp={(event) => {
           event.stopPropagation();

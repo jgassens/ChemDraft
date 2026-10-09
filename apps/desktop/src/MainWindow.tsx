@@ -388,7 +388,9 @@ import {
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
   planNativeTemplatePlacement,
+  applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
+  type NativeTemplateFallbackReason,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -10886,11 +10888,15 @@ export function MainWindow({
     templateId: NonNullable<ReturnType<typeof nativeTemplateForToolCommand>>,
     target?: NativeMoleculeDeleteTarget
   ) => {
-    const nextDocument = target
-      ? applyNativeTemplateToolAtTarget(documentRef.current, target, point, templateId)
-      : applyNativeTemplateToolAtPoint(documentRef.current, point, templateId);
+    const plan = planNativeTemplatePlacement(documentRef.current, { point, target }, templateId);
+    const nextDocument = plan
+      ? applyNativeTemplatePlacementPlan(documentRef.current, plan)
+      : documentRef.current;
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(
+        nextDocument,
+        plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
+      );
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -10900,7 +10906,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setTemplatePreview(undefined);
     templatePreviewKeyRef.current = undefined;
-    setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current));
+    setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((
@@ -19728,10 +19734,11 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-function nativeTemplateStatusForApplication(
+export function nativeTemplateStatusForApplication(
   templateId: NativeMoleculeTemplateId,
   target: NativeMoleculeDeleteTarget | undefined,
-  changed: boolean
+  changed: boolean,
+  fallbackReason?: NativeTemplateFallbackReason
 ): string {
   if (!target) {
     return `Inserted ${nativeTemplateStatusLabel(templateId)} template`;
@@ -19739,6 +19746,17 @@ function nativeTemplateStatusForApplication(
 
   if (!changed) {
     return `${capitalizeLabel(nativeTemplateStatusLabel(templateId))} template not applied`;
+  }
+
+  if (fallbackReason) {
+    const reason = fallbackReason === "atom-no-free-valence"
+      ? "that atom has no free valence"
+      : fallbackReason === "structure-not-editable"
+        ? "that structure cannot be edited"
+        : fallbackReason === "bond-cannot-accept"
+          ? "that bond cannot accept a ring"
+          : "that target is unavailable";
+    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${reason}`;
   }
 
   return target.kind === "bond"
