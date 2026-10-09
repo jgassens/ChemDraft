@@ -1,3 +1,4 @@
+import { snapRotationDegrees } from "./rotationSnap";
 import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
@@ -10875,7 +10876,6 @@ export function nativeMoleculePartRotationPivot(
 /** How close a drag must get before the canonical-geometry magnet engages. */
 export const nativeDragSnapAngleToleranceDegrees = 6;
 export const nativeDragSnapLengthTolerancePx = 3;
-export const nativeRotationSnapToleranceDegrees = 3;
 
 /** Canonical drawing directions repeat every 30° (the 120° zig-zag lives on this grid). */
 const canonicalAngleGridDegrees = 30;
@@ -11011,18 +11011,19 @@ export function snapNativeMoleculePartDragDelta(
 export function snapNativeMoleculePartRotationDegrees(
   molecule: MoleculeObject,
   target: NativeMoleculePartMoveTarget,
-  angleDegrees: number
+  angleDegrees: number,
+  shiftKey = false
 ): number {
+  if (shiftKey) {
+    return snapRotationDegrees(angleDegrees, { shiftKey });
+  }
   const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
   const junctionId = nativeMoleculePartJunctionAtomId(molecule, targetAtomIds);
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const junction = junctionId ? atomById.get(junctionId) : undefined;
 
   if (!junction) {
-    const stepped = Math.round(angleDegrees / 15) * 15;
-    return Math.abs(wrapDegrees180(angleDegrees - stepped)) <= nativeRotationSnapToleranceDegrees
-      ? stepped
-      : angleDegrees;
+    return snapRotationDegrees(angleDegrees);
   }
 
   let referenceAngle: number | undefined;
@@ -11049,9 +11050,11 @@ export function snapNativeMoleculePartRotationDegrees(
     return angleDegrees;
   }
 
-  const rotatedAngle = referenceAngle + angleDegrees;
-  const snapped = nearestCanonicalAngleDegrees(rotatedAngle, stationaryBaseAngles, nativeRotationSnapToleranceDegrees);
-  return snapped === undefined ? angleDegrees : angleDegrees + wrapDegrees180(snapped - rotatedAngle);
+  return snapRotationDegrees(angleDegrees, {
+    referenceDegrees: referenceAngle,
+    stepDegrees: canonicalAngleGridDegrees,
+    additionalAbsoluteAngles: stationaryBaseAngles.flatMap((base) => [base + 120, base - 120])
+  });
 }
 
 export function rotateNativeMoleculeParts(

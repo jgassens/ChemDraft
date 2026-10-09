@@ -1,3 +1,4 @@
+import { snapRotationDegrees } from "./rotationSnap";
 import {
   createElement,
   memo,
@@ -1028,6 +1029,7 @@ type ObjectRotateDragState = {
   startPoint: ClientPoint;
   startRotationDegrees: number;
   latestPoint: ClientPoint;
+  shiftKey: boolean;
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   dragging: boolean;
   spin3dModel?: Spin3dRotateSnapshot;
@@ -1170,6 +1172,7 @@ type GroupTransformDragState = {
   center: ClientPoint;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
+  shiftKey: boolean;
   latestTiltXRad?: number;
   latestTiltYRad?: number;
   clamped?: boolean;
@@ -11547,17 +11550,16 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, graphicGradientDocumentFromDrag, replacePresentDocument]);
 
-  // Fragment rotations click onto canonical directions (30° grid, 120° off the junction's
-  // stationary bonds); center-pivoted part rotations click at 15° steps.
+  // One snap policy for live preview and release; fragments retain their bond-direction grid.
   const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     if (!drag.target) {
-      return degrees;
+      return snapRotationDegrees(degrees, { shiftKey: drag.shiftKey });
     }
     const molecule = findDocumentObject(drag.startDocument, drag.objectId);
     return molecule?.type === "molecule"
-      ? snapNativeMoleculePartRotationDegrees(molecule, drag.target, degrees)
-      : degrees;
+      ? snapNativeMoleculePartRotationDegrees(molecule, drag.target, degrees, drag.shiftKey)
+      : snapRotationDegrees(degrees, { shiftKey: drag.shiftKey });
   }, []);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
@@ -11836,7 +11838,7 @@ export function MainWindow({
     // re-projects from a consistent source instead of jumping.
     let committed = rotated;
     if (drag.spin3dModel && !drag.target) {
-      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      const degrees = objectRotateDragDegrees(drag, point);
       // NOTE the negated angle: flattenSpunMolecule flips Y on output (math y-up → document
       // y-down), so a +θ screen rotation (rotateDocumentObject, which is what the user sees)
       // corresponds to a −θ rotation about the math-frame +Z axis. Folding +θ here would store
@@ -11854,7 +11856,7 @@ export function MainWindow({
 
     commitDocumentHistoryFrom(drag.startDocument, committed);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
     const result = projectedPlaneTiltFromDrag(drag, point);
@@ -12578,7 +12580,9 @@ export function MainWindow({
     stretch = false
   ): ChemDraftDocument => {
     if (drag.mode === "rotate") {
-      const degrees = rotationDeltaDegrees(drag.center, drag.startPoint, point);
+      const degrees = snapRotationDegrees(rotationDeltaDegrees(drag.center, drag.startPoint, point), {
+        shiftKey: drag.shiftKey
+      });
       return rotateDocumentObjectsAroundPoint(drag.startDocument, drag.objectIds, drag.center, degrees);
     }
     if (drag.mode === "projected-plane-tilt") {
@@ -12629,6 +12633,7 @@ export function MainWindow({
       center: { x: bounds.centerX, y: bounds.centerY },
       startPoint: point,
       latestPoint: point,
+      shiftKey: event.shiftKey,
       dragging: false
     };
     groupTransformMachineRef.current = interactionReducer(initialInteractionState(), {
@@ -13067,6 +13072,7 @@ export function MainWindow({
         return;
       }
       groupTransform.latestPoint = point;
+      groupTransform.shiftKey = event.shiftKey;
       groupTransformMachineRef.current = interactionReducer(groupTransformMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = groupTransformMachineRef.current.phase === "dragging";
       if (!groupTransform.dragging && nowDragging) {
@@ -13173,6 +13179,7 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
+      objectRotateDrag.shiftKey = event.shiftKey;
       objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = objectRotateMachineRef.current.phase === "dragging";
       if (!objectRotateDrag.dragging && nowDragging) {
@@ -13504,7 +13511,9 @@ export function MainWindow({
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
+      const point = groupTransform.mode === "rotate"
+        ? groupTransform.latestPoint
+        : pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
       groupTransformMachineRef.current = initialInteractionState();
       if (groupTransform.dragging) {
         const result = groupTransform.mode === "projected-plane-tilt"
@@ -13605,7 +13614,8 @@ export function MainWindow({
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      // Commit the last visible angle even if Shift is released with the pointer.
+      const point = objectRotateDrag.latestPoint;
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
@@ -15138,6 +15148,7 @@ export function MainWindow({
         : object.rotation,
       latestPoint: point,
       artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
+      shiftKey: event.shiftKey,
       dragging: false,
       // Keep the stored conformer's orientation in sync when Z-rotating a modeled
       // whole molecule (whole-molecule only; fragments/text stay on the legacy path).
@@ -16125,6 +16136,7 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
+      objectRotateDrag.shiftKey = event.shiftKey;
       objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = objectRotateMachineRef.current.phase === "dragging";
       if (!objectRotateDrag.dragging && nowDragging) {
@@ -16395,7 +16407,7 @@ export function MainWindow({
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId && objectRotateDrag.objectId === objectId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      const point = objectRotateDrag.latestPoint;
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);

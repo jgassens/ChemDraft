@@ -3678,6 +3678,7 @@ describe("Phase 4 document workflow", () => {
     // Far from any canonical direction: unchanged (grid points sit 30° apart, 15 - 2 = 13° away).
     const betweenCanonicals = canonicalTarget - referenceAngle - 13;
     expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, betweenCanonicals)).toBe(betweenCanonicals);
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, 22, true)).toBe(15);
 
     // Center-pivoted selection (a ring bond) clicks at 15° steps.
     const ring = insertNativeTemplateMolecule(createPhase4Document("Rotate Snap Ring"), { x: 300, y: 300 }, "cyclohexane");
@@ -3686,6 +3687,7 @@ describe("Phase 4 document workflow", () => {
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 13.8)).toBe(15);
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22)).toBe(22);
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, -44)).toBe(-45);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22, true)).toBe(15);
   });
 
   it("keeps the bbox-center pivot for part rotations with zero or multiple junctions", () => {
