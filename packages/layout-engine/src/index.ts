@@ -1536,7 +1536,7 @@ function planNativeMoleculeGraphSvg(
     drawingStyle
   );
   const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
-    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey)
+    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey, resolution)
     : undefined;
   const effects = visualEffectPlansForStyle({
     objectId: object.id,
@@ -2451,17 +2451,63 @@ function moleculeBondEffectSourceFragments(
 function moleculeEffectSketchBasePathD(
   object: MoleculeObject,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
-  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  resolution: NativeBondOrderResolution
 ): string | undefined {
-  const bondPathParts = bondSegmentGroups.flatMap(({ bond, segments }) =>
+  const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
-      splitSegmentByCrossingGaps(
+      moleculeBondSketchPathParts(
+        object,
         segment,
-        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
-      ).map((visibleSegment) => linePathD(visibleSegment))
+        drawingStyle,
+        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
+        resolution
+      )
     )
   );
   return bondPathParts.join(" ") || undefined;
+}
+
+/**
+ * Sketch path pieces for one bond segment, tracing what the normal renderer draws: each hash of a
+ * hashed bond, each dash of a dashed bond, the outline of a wedge. Every other style is its centre
+ * line. The geometry comes from the same helpers `nativeBondSegmentFragments` uses.
+ */
+function moleculeBondSketchPathParts(
+  object: MoleculeObject,
+  segment: PageMoleculeBondSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[],
+  resolution: NativeBondOrderResolution
+): string[] {
+  const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wedge" && segment.segment === "primary") {
+    const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+    return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment) =>
+      polygonPathD(nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution))
+    );
+  }
+
+  if (bondStyle === "hashed" && segment.segment === "primary") {
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
+    return [
+      ...hashedWedge.hashes.flatMap((hash) =>
+        splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash) => linePathD(visibleHash))
+      ),
+      ...(hashedWedge.terminalJoin ? [polygonPathD(hashedWedge.terminalJoin.points)] : [])
+    ];
+  }
+
+  return splitSegmentByCrossingGaps(segment, crossingGaps).flatMap((visibleSegment) =>
+    bondStyle === "dashed"
+      ? nativeDashedBondDashes(visibleSegment, drawingStyle).map((dash) => linePathD(dash))
+      : [linePathD(visibleSegment)]
+  );
+}
+
+/** Closed path for an SVG `points` list ("x,y x,y ..."). */
+function polygonPathD(points: string): string {
+  return `M ${points.trim().split(/\s+/).map((point) => point.replace(",", " ")).join(" L ")} Z`;
 }
 
 function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
@@ -5474,10 +5520,42 @@ export function depthCuedBondStrokeWidth(baseWidthPx: number, depthWeight: numbe
   return baseWidthPx * (0.6 + clamp(depthWeight, 0, 1) * 0.8);
 }
 
+function nativeDashedBondPattern(drawingStyle: NativeDrawingStyle): { dash: number; gap: number } {
+  return {
+    dash: Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2),
+    gap: Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8)
+  };
+}
+
 function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
-  const dash = Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2);
-  const gap = Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8);
+  const { dash, gap } = nativeDashedBondPattern(drawingStyle);
   return `${formatNumber(dash)} ${formatNumber(gap)}`;
+}
+
+/** The dashes SVG draws for `stroke-dasharray` on one line: pattern restarts at the line's start. */
+function nativeDashedBondDashes(
+  segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
+  drawingStyle: NativeDrawingStyle
+): Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[] {
+  const length = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+  if (length === 0) {
+    return [];
+  }
+  // Use the rounded values the dasharray attribute carries, so these match the rendered dashes.
+  const [dash, gap] = nativeDashedBondDashArray(drawingStyle).split(" ").map(Number) as [number, number];
+  const ux = (segment.x2 - segment.x1) / length;
+  const uy = (segment.y2 - segment.y1) / length;
+  const dashes: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[] = [];
+  for (let start = 0; start < length; start += dash + gap) {
+    const end = Math.min(length, start + dash);
+    dashes.push({
+      x1: segment.x1 + ux * start,
+      y1: segment.y1 + uy * start,
+      x2: segment.x1 + ux * end,
+      y2: segment.y1 + uy * end
+    });
+  }
+  return dashes;
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
