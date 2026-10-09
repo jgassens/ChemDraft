@@ -1959,7 +1959,8 @@ describe("Phase 4 document workflow", () => {
     expect(shadedLobe?.data.pathClosed).toBe(true);
 
     const pOrbital = nativeArtToolForCommand("tool.pOrbital");
-    expect(pOrbital?.data.pathNodes).toHaveLength(4);
+    // The closed p-orbital contour visits its shared centre once per lobe so their handles remain independent.
+    expect(pOrbital?.data.pathNodes).toHaveLength(6);
     expect(pOrbital?.data.pathClosed).toBe(true);
 
     const sOrbital = nativeArtToolForCommand("tool.sOrbital");

@@ -593,30 +593,34 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
     artPathKind: "bezier",
     pathClosed: true,
     // Closed bezier fills need >= 3 nodes (art-engine pathKindSupportsClosedFill): tip plus two
-    // upper bulb nodes.
+    // upper bulb nodes. The tip is on the lower box edge so adjacent lobes meet exactly.
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
-      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
-      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } }
     ]
   }, artOutlineStyle, "tool.lobe"),
   artShapeTool("shadedLobe", "Shaded Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
-      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
-      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } }
     ]
   }, artGlossStyle, "tool.shadedLobe"),
-  artShapeTool("pOrbital", "p Orbital", "path", 40, 88, {
+  artShapeTool("pOrbital", "p Orbital", "path", 40, 120, {
     artPathKind: "bezier",
     pathClosed: true,
     pathNodes: [
-      { point: { x: 20, y: 44 }, inControl: { x: 6, y: 54 }, outControl: { x: 6, y: 34 } },
-      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 16 }, outControl: { x: 38, y: 16 } },
-      { point: { x: 20, y: 44 }, inControl: { x: 34, y: 34 }, outControl: { x: 34, y: 54 } },
-      { point: { x: 20, y: 84 }, inControl: { x: 38, y: 72 }, outControl: { x: 2, y: 72 } }
+      // A closed path must visit the self-touching centre twice: its incoming and outgoing handles
+      // belong to different lobes. Both visits use the exact same centre point.
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 70 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } },
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 70 } },
+      { point: { x: 6, y: 104 }, inControl: { x: 2, y: 92 }, outControl: { x: 10, y: 116 } },
+      { point: { x: 34, y: 104 }, inControl: { x: 30, y: 116 }, outControl: { x: 38, y: 92 } }
     ]
   }, artOutlineStyle, "tool.pOrbital"),
   artShapeTool("sOrbital", "s Orbital", "ellipse", 48, 48, {}, artGlossStyle, "tool.sOrbital")
