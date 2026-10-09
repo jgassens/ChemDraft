@@ -34,7 +34,8 @@ enough.
    text-box editor survives focus moving to another app window, as the atom label editor already
    does.
 4. **Orbital lobes meet cleanly.** Lobe tips sit on the shape's box edge; the p orbital's two lobes
-   match the single lobe, meet at one shared node, and have smooth outer ends.
+   match the single lobe, meet exactly at the centre point (two coincident nodes, so each lobe keeps
+   its own handles), and have smooth outer ends.
 
 ## Slice 2 — chemistry-aware drawing features
 
