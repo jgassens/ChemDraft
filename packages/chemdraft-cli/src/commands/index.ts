@@ -12,6 +12,8 @@ export interface LoadedCliCommand {
 
 /** The complete ChemDraft CLI command table used by dispatch and top-level help. */
 export const commands: readonly CliCommand[] = [
+  { name: "document", summary: "Build editable native document JSON and geometry ids.", load: async () => (await import("./document")).documentCommand },
+  { name: "render-document", summary: "Render a styled native document to SVG, PNG, PDF or ChemDraft.", load: async () => (await import("./renderDocument")).renderDocumentCommand },
   { name: "render", summary: "Render a SMILES structure to SVG or PNG.", load: async () => (await import("./render")).renderCommand },
   { name: "grid", summary: "Render a grid of named SMILES structures.", load: async () => (await import("./grid")).gridCommand },
   { name: "reaction", summary: "Render a reaction scheme from reaction SMILES.", load: async () => (await import("./reaction")).reactionCommand },

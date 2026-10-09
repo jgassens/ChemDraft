@@ -1,4 +1,5 @@
 export * from "./atoms";
+export * from "./documentInventory";
 export * from "./graph";
 export * from "./molecule";
 export * from "./moleculeSmiles";
