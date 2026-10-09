@@ -156,19 +156,14 @@ import {
   atomLabelRunFontSize,
   averageDefinedDepthWeights,
   bondRefKey,
-  depthCuedBondColor,
-  depthCuedBondStrokeWidth,
   depthCuedLabelColor,
   depthCuedLabelScale,
-  doubleBondMinimumVisibleSegmentPx,
   doubleBondRendersSymmetric,
   doubleBondSecondaryFlushEnds,
   ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
-  labelEndpointClearance,
   nativeBondOrderResolution,
   nativeMoleculeRings,
-  nativeMultipleBondGapPx,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
   planPageSvgRender,
@@ -446,6 +441,7 @@ import {
   type Spin3dEngineProvenance,
   type StereoPerceiver,
   flattenSpunMolecule,
+  doubleBondSideForPoint,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
   exportPhase4Cdxml,
@@ -598,6 +594,7 @@ import {
   type NativeBondDisplayStyle,
   type NativeMoleculeTemplateId,
   type NativeMoleculeDeleteHit,
+  type NativeMoleculeHitTolerance,
   type NativeMoleculeFragmentSelection,
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
@@ -750,7 +747,7 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { buildSpin3dFlattenStereoOptions } from "./spin3dFlattenStereoPolicy";
 import {
@@ -7013,7 +7010,7 @@ export function MainWindow({
     const position = moleculeDoubleBondPositionForCommand(commandId);
     if (position) {
       return {
-        document: applyMoleculeDoubleBondPosition(currentDocument, bondTargets, position.value),
+        document: applyMoleculeDoubleBondPosition(currentDocument, currentMoleculeInspector.structure.doubleBondTargets, position.value),
         handled: true,
         targeted: currentMoleculeInspector.structure.doubleBondTargetCount > 0,
         message: `Double-bond position: ${position.value}`
@@ -7216,6 +7213,8 @@ export function MainWindow({
     currentMoleculeInspector.targets.atomTargets,
     currentMoleculeInspector.targets.atomLabelTargets,
     currentMoleculeInspector.targets.bondTargets,
+    currentMoleculeInspector.structure.doubleBondTargets,
+    currentMoleculeInspector.structure.doubleBondTargetCount,
     currentMoleculeInspector.targets.moleculeObjectIds,
     selectedMoleculeRingTargetsForCommand
   ]);
@@ -11338,7 +11337,7 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.bond" && target) {
       const object = findDocumentObject(sourceDocument, target.objectId);
       setNativeDoubleBondSidePreview(object?.type === "molecule"
-        ? nativeDoubleBondSidePreviewFromHit(target.objectId, object, target, point)
+        ? nativeDoubleBondSidePreviewFromHit(target.objectId, object, target, point, hitToleranceForScale(viewportRef.current.scale))
         : undefined);
     } else {
       setNativeDoubleBondSidePreview(undefined);
@@ -11935,13 +11934,13 @@ export function MainWindow({
 
   const previewNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint) => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
-    const nextDocument = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point);
+    const nextDocument = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point, hitToleranceForScale(viewportRef.current.scale));
     replacePresentDocument(nextDocument);
   }, [replacePresentDocument]);
 
   const commitNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint): boolean => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
-    const moved = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point);
+    const moved = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point, hitToleranceForScale(viewportRef.current.scale));
     if (moved === selectedStartDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -19995,7 +19994,8 @@ function nativeDoubleBondSidePreviewFromHit(
   objectId: string,
   molecule: MoleculeObject,
   hit: NativeMoleculeDeleteHit,
-  point: ClientPoint
+  point: ClientPoint,
+  hitTolerance: NativeMoleculeHitTolerance
 ): NativeDoubleBondSidePreview | undefined {
   if (hit.kind !== "bond") {
     return undefined;
@@ -20006,34 +20006,8 @@ function nativeDoubleBondSidePreviewFromHit(
     return undefined;
   }
 
-  const fromAtom = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
-  const toAtom = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
-  if (!fromAtom || !toAtom) {
-    return undefined;
-  }
-
-  const dx = toAtom.x - fromAtom.x;
-  const dy = toAtom.y - fromAtom.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-
-  const normal = {
-    x: -dy / length,
-    y: dx / length
-  };
-  const midpoint = {
-    x: (fromAtom.x + toAtom.x) / 2,
-    y: (fromAtom.y + toAtom.y) / 2
-  };
-  const score = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
-
-  return {
-    objectId,
-    bondId: bond.id,
-    side: score >= 0 ? "left" : "right"
-  };
+  const side = doubleBondSideForPoint(molecule, bond, point, hitTolerance);
+  return side ? { objectId, bondId: bond.id, side } : undefined;
 }
 
 function updateVisibleToolsets(current: ReadonlySet<string>, toolsetId: string, visible: boolean): Set<string> {
@@ -20857,104 +20831,7 @@ function SpinOverlay({
           counts as painted (fill is rgba 0, not `none`), so every in-page click reaches
           handleSpinOverlayPointerDown, which routes inside-box → rotate, outside → flatten. */}
       <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="transparent" />
-      {state.sourceMolecule.bonds.some((bond) => bond.display?.doubleBondSide === "center")
-        ? spinJoinedBondFragments(state.sourceMolecule, projection, depthWeights).map(renderStaticPageSvgFragment)
-        : projection.bonds.map((bond, index) => {
-        const a = projection.atoms[bond.from];
-        const b = projection.atoms[bond.to];
-        // The SAME depth-cue helpers AND the SAME weight the committed 2D drawing uses
-        // (flatten bakes the identical weight into display.depthWeight) — releasing changes
-        // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
-        const weight = depthWeights[bond.index];
-        const render = state.bondRender[bond.index]
-          ?? { order: 1, bold: false, symmetric: false, secondaryFlush: { from: false, to: false }, neighborIndices: [] };
-        const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
-        const baseWidth = render.bold ? drawingStyle.bondBoldWidthPx : drawingStyle.bondStrokeWidthPx;
-        const width = depthCuedBondStrokeWidth(baseWidth, weight);
-        const rawDx = b.sx - a.sx;
-        const rawDy = b.sy - a.sy;
-        const rawLength = Math.hypot(rawDx, rawDy) || 1;
-        const ux = rawDx / rawLength, uy = rawDy / rawLength;
-        const nx = -uy, ny = ux; // screen-space normal
-        // Trim bond ends back from atom labels exactly like the 2D renderer does, so
-        // lines never strike through an O / NH2 / charge label while spinning.
-        const clearance = labelEndpointClearance(
-          state.atoms[bond.from],
-          state.atoms[bond.to],
-          state.atomLabels[bond.from],
-          state.atomLabels[bond.to],
-          drawingStyle,
-          rawLength,
-          { x: ux, y: uy },
-          state.atomLabelStyles[bond.from],
-          state.atomLabelStyles[bond.to]
-        );
-        const ax = a.sx + ux * clearance.from, ay = a.sy + uy * clearance.from;
-        const bx = b.sx - ux * clearance.to, by = b.sy - uy * clearance.to;
-        const length = Math.hypot(bx - ax, by - ay) || 1;
-        const gap = nativeMultipleBondGapPx(drawingStyle);
-        const key = (suffix: string) => `${bond.from}-${bond.to}-${index}-${suffix}`;
-        const line = (sx1: number, sy1: number, sx2: number, sy2: number, suffix: string) => (
-          <line key={key(suffix)} x1={sx1} y1={sy1} x2={sx2} y2={sy2}
-            stroke={stroke} strokeWidth={width} strokeLinecap={drawingStyle.bondLineCap} />
-        );
-        if (render.order === 2 && render.symmetric) {
-          // Terminal heteroatom double (C=O …): two full lines straddling the axis — same as 2D.
-          const o = gap / 2;
-          return [
-            line(ax + nx * o, ay + ny * o, bx + nx * o, by + ny * o, "p"),
-            line(ax - nx * o, ay - ny * o, bx - nx * o, by - ny * o, "s")
-          ];
-        }
-        if (render.order === 2) {
-          // 2D convention: primary line on the bond axis, shorter secondary line a full gap to
-          // one side. The side is chosen per frame from PROJECTED positions so it tracks the
-          // rotation and matches the flattened drawing. For a RING bond the inner line points
-          // toward the projected ring CENTROID (true interior) — this is the fix for aromatic
-          // rings whose exocyclic substituents used to flip the neighbor-mass heuristic below
-          // and push the double bond outside. Non-ring doubles keep the substituent-rich rule,
-          // which is exactly what defaultDoubleBondSide falls back to on commit.
-          const mx = (ax + bx) / 2, my = (ay + by) / 2;
-          let score = 0;
-          if (render.ringAtomIndices && render.ringAtomIndices.length > 0) {
-            let cx = 0, cy = 0, n = 0;
-            for (const ringIndex of render.ringAtomIndices) {
-              const p = projection.atoms[ringIndex];
-              if (p) { cx += p.sx; cy += p.sy; n += 1; }
-            }
-            if (n > 0) score = (cx / n - mx) * nx + (cy / n - my) * ny;
-          }
-          if (score === 0) {
-            for (const neighborIndex of render.neighborIndices) {
-              const p = projection.atoms[neighborIndex];
-              if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
-            }
-          }
-          const dir = score >= 0 ? 1 : -1;
-          const secondary = spinDoubleBondSecondaryLine({
-            from: { x: ax, y: ay },
-            to: { x: bx, y: by },
-            unit: { x: ux, y: uy },
-            normal: { x: nx, y: ny },
-            gap,
-            side: dir,
-            insetPx: drawingStyle.doubleBondInsetPx,
-            minimumVisiblePx: doubleBondMinimumVisibleSegmentPx,
-            flush: render.secondaryFlush
-          });
-          return [
-            line(ax, ay, bx, by, "p"),
-            line(secondary.x1, secondary.y1, secondary.x2, secondary.y2, "s")
-          ];
-        }
-        if (render.order === 3) {
-          // Triple: three full-length lines at -gap / 0 / +gap — same as 2D.
-          return [-1, 0, 1].map((step) =>
-            line(ax + nx * gap * step, ay + ny * gap * step, bx + nx * gap * step, by + ny * gap * step, `t${step}`)
-          );
-        }
-        return line(ax, ay, bx, by, "p");
-      })}
+      {spinJoinedBondFragments(state.sourceMolecule, projection, depthWeights).map(renderStaticPageSvgFragment)}
       {/* Labels, painted far → near, depth-cued to match the bonds: far labels fade lighter and
           shrink slightly, near labels stay dark and full-size. The knockout is a glyph-hugging
           halo (paint-order stroke, painted UNDER the fill) instead of an opaque box, so bonds

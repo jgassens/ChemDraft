@@ -1,4 +1,5 @@
 import { snapRotationDegrees } from "./rotationSnap";
+import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
@@ -123,12 +124,12 @@ import {
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
-  doubleBondRendersSymmetric,
+  nativeMultipleBondGapPx,
+  nativeMoleculeBondDrawingStyle,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
-  resolvePageAnchorPoint,
-  ringInteriorDoubleBondSides
+  resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
 import {
   extractRxnMolfileBlocks,
@@ -8418,7 +8419,8 @@ export function applyMoleculeDoubleBondPosition(
 export function applyNativeDoubleBondSideTarget(
   document: ChemDraftDocument,
   target: NativeBondOrderTarget,
-  point: PagePoint
+  point: PagePoint,
+  hitTolerance: NativeMoleculeHitTolerance = {}
 ): ChemDraftDocument {
   const page = firstPage(document);
   const molecule = page.objects.find((object): object is MoleculeObject =>
@@ -8433,7 +8435,7 @@ export function applyNativeDoubleBondSideTarget(
     return document;
   }
 
-  const doubleBondSide = doubleBondSideForPoint(molecule, bond, point);
+  const doubleBondSide = doubleBondSideForPoint(molecule, bond, point, hitTolerance);
   if (!doubleBondSide || bond.display?.doubleBondSide === doubleBondSide) {
     return document;
   }
@@ -16428,26 +16430,8 @@ export function flattenSpunMolecule(
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
-  const ringInteriorSides = ringInteriorDoubleBondSides(sideMolecule);
-  const nextBonds = projectedBonds.map((bond, bondIndex) => {
+  const nextBonds = projectedDoubleBondSides(sideMolecule).map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
-    if (bond.order === "double") {
-      // Baking a side unconditionally broke "releasing changes nothing visually": a bond that
-      // renders as the symmetric straddle has no side, and writing one turned it one-sided the
-      // instant the spin was committed. An explicit side is itself one of the conditions that
-      // suppresses the straddle, so only bonds that really draw with a side get one.
-      const fromAtom = nextAtoms.find((atom) => atom.id === bond.fromAtomId);
-      const toAtom = nextAtoms.find((atom) => atom.id === bond.toAtomId);
-      const symmetric = fromAtom !== undefined && toAtom !== undefined &&
-        doubleBondRendersSymmetric(fromAtom, toAtom, sideMolecule, bond, ringInteriorSides.get(bond.id));
-      if (bond.display?.doubleBondSide === "center") {
-        display.doubleBondSide = "center";
-      } else if (symmetric) {
-        delete display.doubleBondSide;
-      } else {
-        display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
-      }
-    }
     const depthWeight = depthWeightFor(bondIndex);
     if (depthWeight !== undefined) display.depthWeight = depthWeight;
     else delete display.depthWeight;
@@ -18386,10 +18370,11 @@ function nativeBondDisplayObject(
   return bondStyle ? { display: { bondStyle } } : {};
 }
 
-function doubleBondSideForPoint(
+export function doubleBondSideForPoint(
   molecule: MoleculeObject,
   bond: MoleculeBond,
-  point: PagePoint
+  point: PagePoint,
+  hitTolerance: NativeMoleculeHitTolerance = {}
 ): NativeDoubleBondSide | undefined {
   const geometry = bondGeometry(molecule, bond);
   if (!geometry) {
@@ -18401,8 +18386,9 @@ function doubleBondSideForPoint(
     y: (geometry.fromAtom.y + geometry.toAtom.y) / 2
   };
   const score = (point.x - midpoint.x) * geometry.normal.x + (point.y - midpoint.y) * geometry.normal.y;
-  // A narrow axis zone lets the existing second-line drag select Center without a modifier.
-  if (Math.abs(score) <= 2) return "center";
+  const gap = nativeMultipleBondGapPx(nativeMoleculeBondDrawingStyle(molecule, bond.id));
+  const centerRadius = Math.max(gap / 2, hitTolerance.bondHitRadius ?? 0);
+  if (Math.abs(score) <= centerRadius) return "center";
   return score >= 0 ? "left" : "right";
 }
 

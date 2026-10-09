@@ -14,8 +14,8 @@
  */
 
 import { createEmptyDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
-import { planPageSvgRender, doubleBondRendersSymmetric, ringInteriorDoubleBondSides, type PageSvgElementFragment } from "@chemdraft/layout-engine";
-import { defaultDoubleBondSide } from "@chemdraft/document-workflow-core";
+import { planPageSvgRender, type PageSvgElementFragment } from "@chemdraft/layout-engine";
+import { projectedDoubleBondSides } from "./projectedDoubleBondSides";
 import {
   projectPoint,
   quatFromAxisAngle,
@@ -27,7 +27,7 @@ import {
   type Vec3
 } from "./rotation3d";
 
-/** Use the canvas planner for centered bonds and their joined neighbours during spin. */
+/** One bond renderer for every spin projection; stereo display is restored on flatten. */
 export function spinJoinedBondFragments(
   molecule: MoleculeObject,
   projection: SpinProjection,
@@ -37,19 +37,9 @@ export function spinJoinedBondFragments(
     ...molecule,
     rotation: 0,
     atoms: molecule.atoms.map((atom, index) => ({ ...atom, x: projection.atoms[index].sx, y: projection.atoms[index].sy })),
-    bonds: molecule.bonds.map((bond, index) => ({ ...bond, display: { ...bond.display, depthWeight: weights[index] } }))
+    bonds: molecule.bonds.map((bond, index) => ({ ...bond, display: { ...bond.display, bondStyle: undefined, depthWeight: weights[index] } }))
   };
-  // Match flatten's recomputed sides for any other doubles in this molecule.
-  const ringSides = ringInteriorDoubleBondSides(projected);
-  projected.bonds = projected.bonds.map((bond) => {
-    if (bond.order !== "double" || bond.display?.doubleBondSide === "center") return bond;
-    const from = projected.atoms.find((atom) => atom.id === bond.fromAtomId)!;
-    const to = projected.atoms.find((atom) => atom.id === bond.toAtomId)!;
-    const display = { ...bond.display };
-    if (doubleBondRendersSymmetric(from, to, projected, bond, ringSides.get(bond.id))) delete display.doubleBondSide;
-    else display.doubleBondSide = defaultDoubleBondSide(projected, bond);
-    return { ...bond, display };
-  });
+  projected.bonds = projectedDoubleBondSides(projected);
   const page = { ...createEmptyDocument().pages[0], objects: [projected] };
   const layers: PageSvgElementFragment[] = [];
   const visit = (fragment: PageSvgElementFragment) => {

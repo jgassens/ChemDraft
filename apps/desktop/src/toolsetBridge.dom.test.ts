@@ -148,6 +148,20 @@ describe("toolset bridge interactions", () => {
     return target;
   }
 
+  it("centers every double bond of a whole selected molecule as one undo entry", async () => {
+    const initial = insertNativeTemplateMolecule(createPhase4Document("Whole molecule position"), { x: 300, y: 300 }, "benzene");
+    const molecule = initial.pages[0].objects[0] as MoleculeObject;
+    await renderMainWindow(initial);
+    const count = () => container.querySelectorAll('.native-bond-line[data-double-bond-side="center"]').length;
+    await act(async () => { routeCommand(moleculeDoubleBondPositionCommandId("center")); });
+    expect(count()).toBe(molecule.bonds.filter((bond) => bond.order === "double").length * 2);
+    await act(async () => { routeCommand("edit.undo"); });
+    expect(count()).toBe(0);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Double-bond position: center");
+    await act(async () => { routeCommand("edit.redo"); });
+    expect(count()).toBe(6);
+  });
+
   it("centers selected double bonds with one labelled undo entry and retains the bond selection", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Centered selection"), { x: 300, y: 300 }, "benzene");
     const molecule = initial.pages[0].objects[0] as MoleculeObject;

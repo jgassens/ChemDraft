@@ -1,3 +1,4 @@
+import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
@@ -106,6 +107,7 @@ import {
   applyNativeWarningSuppressionToScope,
   nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
+  doubleBondSideForPoint,
   applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
@@ -6790,6 +6792,29 @@ describe("Phase 4 document workflow", () => {
     });
     expect(selectedMolecule(changed).structure).toBe(selectedMolecule(doubleBond).structure);
     expect(selectedMolecule(changed).chemistry).toEqual(selectedMolecule(doubleBond).chemistry);
+  });
+
+  it.each([0.5, 1, 2])("shares preview and commit Center zones at zoom %s", (scale) => {
+    const document = setNativeBondOrder(insertNativeSingleBondMolecule(createPhase4Document("Zoom position"), { x: 200, y: 220 }), "bond_001", "double");
+    const molecule = selectedMolecule(document);
+    const bond = molecule.bonds[0];
+    const [a, b] = molecule.atoms;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const normal = { x: -(b.y - a.y) / length, y: (b.x - a.x) / length };
+    const gap = layoutEngine.nativeMultipleBondGapPx(layoutEngine.nativeMoleculeBondDrawingStyle(molecule, bond.id));
+    const tolerance = hitToleranceForScale(scale);
+    const radius = Math.max(gap / 2, tolerance.bondHitRadius!);
+    const target = { objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: a.id, toAtomId: b.id, distanceToPointer: 0 };
+    for (const [offset, expected] of [[radius - 0.1, "center"], [radius + 0.1, "left"], [-radius - 0.1, "right"]] as const) {
+      const point = { x: (a.x + b.x) / 2 + normal.x * offset, y: (a.y + b.y) / 2 + normal.y * offset };
+      expect(doubleBondSideForPoint(molecule, bond, point, tolerance)).toBe(expected);
+      expect(selectedMolecule(applyNativeDoubleBondSideTarget(document, target, point, tolerance)).bonds[0].display?.doubleBondSide).toBe(expected);
+    }
+    // The half-gap still governs when the drawing style uses a wider separation.
+    const wide = { ...molecule, style: { ...molecule.style, multipleBondGapPx: radius * 4 } };
+    const wideGap = layoutEngine.nativeMultipleBondGapPx(layoutEngine.nativeMoleculeBondDrawingStyle(wide, bond.id));
+    const point = { x: (a.x + b.x) / 2 + normal.x * wideGap * 0.49, y: (a.y + b.y) / 2 + normal.y * wideGap * 0.49 };
+    expect(doubleBondSideForPoint(wide, bond, point, tolerance)).toBe("center");
   });
 
   it("reaches Center by dragging to the axis, preserving defaults, chemistry, save and clipboard", () => {

@@ -76,6 +76,7 @@ export interface MoleculeInspectorStructureModel {
   enabled: boolean;
   doubleBondPosition: ArtInspectorMixedValue<"left" | "center" | "right" | "automatic">;
   doubleBondTargetCount: number;
+  doubleBondTargets: readonly MoleculeInspectorBondTarget[];
   doubleBondDisabledReason?: string;
   targetCount: number;
   targetKind: "molecule" | "atom" | "bond";
@@ -166,12 +167,23 @@ export function createMoleculeInspectorModel(
 ): MoleculeInspectorModel {
   const targets = resolveMoleculeInspectorTargets(document, selection);
   const targetObjects = moleculeObjectsForTargets(document, targets.moleculeObjectIds);
+  // Position alone expands whole-object selections to their double bonds.
+  // Keep the other bond-style controls scoped to the original part targets.
+  const doubleBondTargets = [...targets.bondTargets];
+  const parts = selection.selectedParts?.length ? selection.selectedParts : selection.selectedPart ? [selection.selectedPart] : [];
+  const partObjectIds = new Set(parts.map((part) => part.objectId));
+  for (const object of targetObjects) {
+    if (!selection.selectedObjectIds.includes(object.id) || partObjectIds.has(object.id)) continue;
+    for (const bond of object.bonds) {
+      if (bond.order === "double") doubleBondTargets.push({ objectId: object.id, bondId: bond.id });
+    }
+  }
 
   return {
     targets,
     suggestedTab: suggestedTabForContext(targets.context),
     rings: createRingsModel(targetObjects, targets.ringTargets),
-    structure: createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets),
+    structure: createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets, doubleBondTargets),
     atomLabels: createAtomLabelsModel(targetObjects, targets.atomLabelTargets)
   };
 }
@@ -339,7 +351,8 @@ function createRingsModel(
 function createStructureModel(
   targetObjects: readonly MoleculeObject[],
   atomTargets: readonly MoleculeInspectorAtomLabelTarget[],
-  bondTargets: readonly MoleculeInspectorBondTarget[]
+  bondTargets: readonly MoleculeInspectorBondTarget[],
+  positionTargets: readonly MoleculeInspectorBondTarget[]
 ): MoleculeInspectorStructureModel {
   const objectById = new Map(targetObjects.map((object) => [object.id, object]));
   const bondEntries = bondTargets.flatMap((target) => {
@@ -369,7 +382,7 @@ function createStructureModel(
     ? bondEntries.length
     : targetKind === "atom" ? atomEntries.length : moleculeEntries.length;
   const fallback = DefaultNativeDrawingStyle;
-  const doubleBonds = bondTargets.flatMap((target) => {
+  const doubleBonds = positionTargets.flatMap((target) => {
     const bond = objectById.get(target.objectId)?.bonds.find((candidate) => candidate.id === target.bondId);
     return bond?.order === "double" ? [bond] : [];
   });
@@ -378,6 +391,7 @@ function createStructureModel(
     enabled: targetCount > 0,
     doubleBondPosition: uniformValue(doubleBonds, (bond) => bond.display?.doubleBondSide ?? "automatic", "automatic"),
     doubleBondTargetCount: doubleBonds.length,
+    doubleBondTargets: positionTargets,
     doubleBondDisabledReason: doubleBonds.length > 0 ? undefined : "Select a double bond",
     targetCount,
     targetKind,
