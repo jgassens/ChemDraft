@@ -99,6 +99,8 @@ Do not simulate a successful ChemDraft response.
 | Need | CLI subcommand | MCP tool |
 |---|---|---|
 | One molecule image | `render` | `render_structure` |
+| Editable native document and ring ids | `document` | `build_document` |
+| Styled native document figure | `render-document` | `render_document` |
 | Multiple-choice structure grid | `grid` | `render_grid` |
 | Reaction scheme | `reaction` | `render_reaction` |
 | Properties, masses, pKa, isotope envelope | `analyze` | `analyze_structure` |

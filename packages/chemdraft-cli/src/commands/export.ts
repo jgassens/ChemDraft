@@ -228,7 +228,7 @@ async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promis
 }
 
 /** Serialize installation, export, and exact restoration of process-global DOM shims. */
-async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+export async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
   const run = pdfDomQueue.then(() => withInstalledPdfDom(callback));
   pdfDomQueue = run.then(() => undefined, () => undefined);
   return run;

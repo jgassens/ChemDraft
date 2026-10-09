@@ -2,6 +2,7 @@ import { Resvg } from "@resvg/resvg-js";
 
 import {
   createEmptyDocument,
+  isDativeBond,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
   UnknownBondOrderError,
@@ -229,7 +230,7 @@ function sourceBondSemantics(molfile: string): SourceBondSemantics {
   return { unspecifiedDoubleBondIndices, dativeBondIndices };
 }
 
-async function canonicalSmiles(structure: string, label: "input" | "output"): Promise<string> {
+export async function canonicalSmiles(structure: string, label: string): Promise<string> {
   const identifiers = await computeStructureIdentifiers(structure);
   if (!identifiers?.smiles) {
     throw new Error(`Unable to verify chemical identity: RDKit could not canonicalize the ${label}.`);
@@ -384,6 +385,38 @@ function identityMolfile(
     ),
     format: "molfile-v2000"
   };
+}
+
+/** Regenerate the current graph, preserving source-only unknown E/Z flags only when the
+ * regenerated connection table matches the stored one. The native bond schema has no unknown-E/Z
+ * field; trusting the stored molfile without this comparison would hide agent chemical edits.
+ */
+export function currentMoleculeIdentityMolfile(molecule: MoleculeObject, warnings: string[] = []) {
+  const currentDativeIndices = molecule.bonds.flatMap((bond, index) => isDativeBond(bond) ? [index] : []);
+  const storedSemantics = sourceBondSemantics(molecule.structure);
+  const current = { unspecifiedDoubleBondIndices: [], dativeBondIndices: currentDativeIndices };
+  if (storedSemantics.unspecifiedDoubleBondIndices.length === 0) return identityMolfile(molecule, current, warnings);
+  const candidate = identityMolfile(molecule, {
+    unspecifiedDoubleBondIndices: storedSemantics.unspecifiedDoubleBondIndices,
+    dativeBondIndices: currentDativeIndices
+  });
+  // Ignore title/header and line-ending differences, but compare every CTAB field, including
+  // coordinates, charge, atom labels, bond order and wedge/hash stereo. Styling does not alter them.
+  const connectionTable = (contents: string) => {
+    const lines = contents.replace(/\r\n?/g, "\n").trimEnd().split("\n");
+    const countsIndex = lines.findIndex((line) => /\bV(?:2000|3000)\b/.test(line));
+    return countsIndex < 0 ? undefined : lines.slice(countsIndex).join("\n");
+  };
+  if (connectionTable(candidate.contents) === connectionTable(molecule.structure)) {
+    warnings.push(`E/Z unspecified for ${storedSemantics.unspecifiedDoubleBondIndices.length} double bond(s); the 2D drawing necessarily shows one geometry`);
+    // Collect any writer warnings on the final path exactly once.
+    return identityMolfile(molecule, {
+      unspecifiedDoubleBondIndices: storedSemantics.unspecifiedDoubleBondIndices,
+      dativeBondIndices: currentDativeIndices
+    }, warnings);
+  }
+  warnings.push("Stored unknown E/Z flags could not be verified against the edited graph; reported double-bond stereochemistry follows current coordinates.");
+  return identityMolfile(molecule, current, warnings);
 }
 
 class UnsupportedMolfileLabelError extends Error {}
@@ -609,7 +642,7 @@ function includePlannedGeometry(bounds: Bounds, fragment: PageSvgFragment): void
 }
 
 /** Visible bounds for the first page, including every molecule label and native text object. */
-export function documentVisualBounds(document: ChemDraftDocument): Bounds {
+export function documentVisualBounds(document: ChemDraftDocument, includeObjectFrames = false): Bounds {
   const bounds: Bounds = {
     minX: Number.POSITIVE_INFINITY,
     minY: Number.POSITIVE_INFINITY,
@@ -621,6 +654,12 @@ export function documentVisualBounds(document: ChemDraftDocument): Bounds {
   if (!page) throw new Error("The render document has no page.");
 
   for (const object of page.objects) {
+    if (includeObjectFrames && object.type !== "molecule" && object.type !== "text") {
+      // Native object frames conservatively include art paths which are not line/polygon fragments.
+      const cx = object.x + object.width / 2, cy = object.y + object.height / 2;
+      const radius = Math.hypot(object.width, object.height) / 2;
+      includePoint(bounds, cx, cy, radius);
+    }
     if (object.type === "molecule") {
       object.atoms.forEach((atom) => includePoint(bounds, atom.x, atom.y));
       planMoleculeAtomLabels(object).forEach((plan) => {
@@ -684,9 +723,10 @@ export function cropDocumentSvgToContent(
   svg: string,
   document: ChemDraftDocument,
   padding: number,
-  background: RenderBackground
+  background: RenderBackground,
+  includeObjectFrames = false
 ): { svg: string; viewBox: RenderedSmiles["viewBox"] } {
-  const bounds = documentVisualBounds(document);
+  const bounds = documentVisualBounds(document, includeObjectFrames);
   const contentPadding = finiteNonNegative(padding, "Padding");
   const viewBox = {
     x: bounds.minX - contentPadding,

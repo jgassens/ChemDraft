@@ -38,7 +38,7 @@ describe("chemdraft CLI dispatch", () => {
     expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, warnings: [] });
   }, 60_000);
 
-  it("lists all eight subcommands in top-level help", async () => {
+  it("lists all ten subcommands in top-level help", async () => {
     const stdout: string[] = [];
     const code = await runCli(["--help"], {
       stdout: (line) => stdout.push(line),
@@ -46,7 +46,7 @@ describe("chemdraft CLI dispatch", () => {
     });
 
     expect(code).toBe(0);
-    for (const name of ["render", "grid", "reaction", "analyze", "name", "stereo", "nmr", "export"]) {
+    for (const name of ["render", "document", "render-document", "grid", "reaction", "analyze", "name", "stereo", "nmr", "export"]) {
       expect(stdout.join("\n")).toMatch(new RegExp(`\\b${name}\\b`));
     }
   });
