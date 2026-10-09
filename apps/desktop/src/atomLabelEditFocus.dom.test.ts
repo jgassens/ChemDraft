@@ -10,7 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { convertTextToAtomLabelCommandId } from "./commands";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -228,6 +229,111 @@ describe("atom label editor focus", () => {
       value: platform === "macos" ? "MacIntel" : "Win32"
     });
   }
+
+  async function pointerPress(element: Element, point: { x: number; y: number }) {
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true,
+        button: 0, buttons: 1, clientX: point.x, clientY: point.y });
+      Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 7 }, pointerType: { value: "mouse" } });
+      element.dispatchEvent(event);
+    });
+    await settle();
+  }
+
+  function chainDocument() {
+    return insertNativeSingleBondMolecule(createPhase4Document("Text label conversion"), { x: 300, y: 300 });
+  }
+
+  it.each(["macos", "windows"] as const)("Text click on a plain carbon needs no prior hover (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    expect(bridge().snapshot().hoveredNativeTarget).toBeUndefined();
+    // Dispatch on the page itself: an invisible carbon vertex need not have a DOM glyph.
+    await pointerPress(container.querySelector(".page")!, atom);
+    expect(labelEditor()?.getAttribute("data-atom-id")).toBe(atom.id);
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+  });
+
+  it.each(["OMe", "CH3", "NO2", "   "])("commits text %j on a chain end through the atom-label path", async (label) => {
+    const base = chainDocument();
+    const original = base.pages[0].objects[0] as MoleculeObject;
+    const atom = original.atoms[1]!;
+    const initial = insertNativeTextObject(base, atom, "Placeholder");
+    const textId = initial.selection.objectIds[0]!;
+    await renderMainWindow(initial);
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(`[data-object-id="${textId}"]`)!, atom);
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    expect(editor).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, label);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    await settle();
+    if (label.trim().length === 0) {
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+      expect(atomElement(atom.id)).toBe("C");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Atom labels cannot be empty");
+    } else {
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+      expect(atomElement(atom.id)).toBe(label);
+      expect(molecule().bonds).toEqual(original.bonds);
+      expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: atom.id });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(`Converted text to atom label “${label}”`);
+      await paletteCommand("edit.undo");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Convert Text to Atom Label");
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+      expect(atomElement(atom.id)).toBe("C");
+      await paletteCommand("edit.undo");
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    }
+  });
+
+  it("runs the explicit command as one labelled undo entry", async () => {
+    const base = chainDocument();
+    const atom = (base.pages[0].objects[0] as MoleculeObject).atoms[1]!;
+    const initial = insertNativeTextObject(base, { x: atom.x, y: atom.y + 15 }, "OMe");
+    await renderMainWindow(initial);
+    await paletteCommand(convertTextToAtomLabelCommandId);
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(atomElement(atom.id)).toBe("OMe");
+    expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: atom.id });
+    await paletteCommand("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Convert Text to Atom Label");
+    expect(atomElement(atom.id)).toBe("C");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    await paletteCommand("edit.undo");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+  });
+
+  it("explains a refused explicit conversion without changing the document", async () => {
+    const initial = insertNativeTextObject(chainDocument(), { x: 100, y: 100 }, "OMe");
+    await renderMainWindow(initial);
+    const before = bridge().snapshot().document;
+    await paletteCommand(convertTextToAtomLabelCommandId);
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("No atom within one bond length");
+  });
+
+  it.each(["OMe", "CH3", "NO2"])("keeps committed %s in open space as text", async (label) => {
+    const initial = insertNativeTextObject(chainDocument(), { x: 100, y: 100 }, label);
+    const textId = initial.selection.objectIds[0]!;
+    await renderMainWindow(initial);
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(`[data-object-id="${textId}"]`)!, { x: 100, y: 100 });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { container.querySelector<HTMLTextAreaElement>(".text-object-editor")!.blur(); });
+    focused.mockRestore();
+    await settle();
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId)).toMatchObject({ type: "text", text: label });
+    expect(molecule().atoms).toHaveLength(2);
+  });
 
   it.each([
     ["macOS", "macos", { metaKey: true }],

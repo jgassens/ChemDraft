@@ -43,6 +43,45 @@ import {
   textFontFamilyForCommand,
   textStylePatchForCommand
 } from "./commands";
+import { allShellCommands, convertTextToAtomLabelCommandId } from "./commands";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, getSelectedMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { buildAppMenuModel, flattenAppMenuCommands } from "./appMenu";
+
+describe("Convert Text to Atom Label command", () => {
+  const spec = (document: ReturnType<typeof createPhase4Document>) =>
+    allShellCommands(document).find((command) => command.id === convertTextToAtomLabelCommandId)!;
+
+  it("is registered and enabled for one qualifying text box", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const atom = getSelectedMolecule(base)!.atoms[1]!;
+    const document = insertNativeTextObject(base, { x: atom.x, y: atom.y + 15 }, "OMe");
+    expect(spec(document)).toMatchObject({ title: "Convert Text to Atom Label", enabled: true });
+    expect(spec(document).disabledReason).toBeUndefined();
+  });
+
+  it("gives a disabled reason for no text, multiple selections, distant text, and rejected labels", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const atom = getSelectedMolecule(base)!.atoms[1]!;
+    const distant = insertNativeTextObject(base, { x: 100, y: 100 }, "OMe");
+    const empty = insertNativeTextObject(base, atom, "   ");
+    const multiple = selectDocumentObjects(distant, distant.pages[0].id, distant.pages[0].objects.map((object) => object.id));
+    for (const document of [base, distant, empty, multiple]) {
+      expect(spec(document).enabled).toBe(false);
+      expect(spec(document).disabledReason).toBeTruthy();
+    }
+    expect(spec(distant).disabledReason).toContain("one bond length");
+    expect(spec(empty).disabledReason).toBe("Atom labels cannot be empty");
+  });
+
+  it("appears next to structure cleanup and reflects availability in the browser menu", () => {
+    for (const enabled of [true, false]) {
+      const model = buildAppMenuModel({ rulersVisible: false, crosshairsVisible: false, canUndo: false, canRedo: false,
+        hasSelection: enabled, hasSelectedMolecule: false, toolbars: [], canConvertTextToAtomLabel: enabled });
+      const structure = model.find((section) => section.id === "structure")!;
+      expect(flattenAppMenuCommands([structure])[1]).toMatchObject({ commandId: convertTextToAtomLabelCommandId, enabled });
+    }
+  });
+});
 
 describe("Arrow marker commands", () => {
   it("round-trips every marker kind command for both ends", () => {

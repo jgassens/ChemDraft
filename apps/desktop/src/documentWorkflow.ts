@@ -4127,18 +4127,78 @@ function nativeTemplateSpiroCrowding(
     ), 0);
 }
 
+export interface TextToAtomLabelResult {
+  document: ChemDraftDocument;
+  target?: NativeMoleculeDeleteTarget;
+  message?: string;
+  disabledReason?: string;
+}
+
+/** Use the inline editor's literal-label path; no abbreviation expansion or separate parser. */
+export function convertNativeTextObjectToAtomLabel(
+  document: ChemDraftDocument,
+  objectId: string,
+  hitRadius = nativeAtomHitRadiusPx
+): TextToAtomLabelResult {
+  const page = firstPage(document);
+  const text = page.objects.find((object): object is TextObject => object.id === objectId && object.type === "text");
+  if (!text) {
+    return { document, disabledReason: "Select one text box" };
+  }
+  const candidates = page.objects.flatMap((object, layerIndex) => {
+    if (object.type !== "molecule") return [];
+    const hit = findNearestAtomAtPoint({ atoms: object.atoms, point: text, hitRadius });
+    return hit ? [{ object, hit, layerIndex }] : [];
+  }).sort((left, right) => left.hit.distance - right.hit.distance || right.layerIndex - left.layerIndex);
+  const nearest = candidates[0];
+  if (!nearest) {
+    return { document, disabledReason: "No atom within reach of the text anchor" };
+  }
+  const target: NativeMoleculeDeleteTarget = {
+    objectId: nearest.object.id, kind: "atom", atomId: nearest.hit.atomId, distanceToPointer: nearest.hit.distance
+  };
+  // These are the same guards used by applyNativeAtomElementTarget. An already identical label
+  // is still accepted: the conversion removes the redundant text box.
+  if (!isEditableNativeMoleculeGraph(nearest.object) || normalizeNativeAtomElementLabel(text.text).length === 0) {
+    const disabledReason = text.text.trim().length === 0
+      ? "Atom labels cannot be empty"
+      : "This molecule cannot be edited with the atom-label editor";
+    return { document, target, disabledReason, message: `Text kept: ${disabledReason}` };
+  }
+  const labeled = applyNativeAtomElementTarget(document, target, text.text, { literal: true });
+  return {
+    document: applyPatches(labeled, [
+      { op: "removeObject", objectId },
+      { op: "setSelection", pageId: page.id, objectIds: [target.objectId] }
+    ], { now: phase4Timestamp }),
+    target,
+    message: `Converted text to atom label “${normalizeNativeAtomElementLabel(text.text)}” on ${target.atomId}`
+  };
+}
+
+export function selectedTextToAtomLabelResult(document: ChemDraftDocument): TextToAtomLabelResult {
+  if (document.selection.objectIds.length !== 1) {
+    return { document, disabledReason: "Select one text box" };
+  }
+  const result = convertNativeTextObjectToAtomLabel(document, document.selection.objectIds[0]!, nativeBondLengthPx);
+  return result.disabledReason === "No atom within reach of the text anchor"
+    ? { ...result, disabledReason: "No atom within one bond length of the text anchor" }
+    : result;
+}
+
 /**
- * When a committed text box holds exactly an element symbol ("C", "fe", "Br"…), turn it into a
- * real naked atom: a one-atom molecule at the text's position, participating in hover hotkeys,
- * bonding, and valence checking. A bare neutral atom of a covalent-table element shows the
- * invalid badge until it gains bonds; elements outside the covalent valence tables (all d-block
- * metals, the noble gases) have no single correct valence to violate, so they convert unflagged
- * by design. Any other text stays a text object.
+ * Text anchored on an atom uses the literal label editor's path. In open space, keep the
+ * existing exact-element conversion: a one-atom molecule at the text box's center. Other text
+ * stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
   objectId: string
 ): ChemDraftDocument {
+  const labelResult = convertNativeTextObjectToAtomLabel(document, objectId);
+  if (labelResult.target) {
+    return labelResult.document;
+  }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"

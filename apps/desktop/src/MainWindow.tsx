@@ -216,6 +216,7 @@ import {
   artBooleanOperationCommandIds,
   createLayerActions,
   createQuickActions,
+  convertTextToAtomLabelCommandId,
   distributeModeCommandIds,
   editActions,
   objectColorForCommand,
@@ -555,6 +556,8 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
+  convertNativeTextObjectToAtomLabel,
+  selectedTextToAtomLabelResult,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
   updateNativeGraphicLinearGradientHandle,
@@ -6116,7 +6119,26 @@ export function MainWindow({
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
 
-  // Catch-all for the element-symbol conversion: a text edit can end through MANY paths (Escape,
+  const convertCommittedText = useCallback((objectId: string) => {
+    const currentDocument = documentRef.current;
+    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
+    if (labelResult.target) {
+      if (labelResult.document !== currentDocument) {
+        commitDocumentChange(labelResult.document, "Convert Text to Atom Label");
+        setSelectedNativeMoleculePart(labelResult.target);
+      }
+      if (labelResult.message) setStatus(labelResult.message);
+      return;
+    }
+    const converted = convertNativeTextObjectToAtom(currentDocument, objectId);
+    if (converted !== currentDocument) {
+      commitDocumentChange(converted);
+      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
+      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+    }
+  }, [commitDocumentChange]);
+
+  // Catch-all for text conversion: a text edit can end through MANY paths (Escape,
   // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
   // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
   // unreliable). Whatever ended the edit, convert the object it was editing.
@@ -6127,14 +6149,8 @@ export function MainWindow({
     if (!previous || previous === activeTextEditObjectId) {
       return;
     }
-    const currentDocument = documentRef.current;
-    const converted = convertNativeTextObjectToAtom(currentDocument, previous);
-    if (converted !== currentDocument) {
-      commitDocumentChange(converted);
-      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
-    }
-  }, [activeTextEditObjectId, commitDocumentChange]);
+    convertCommittedText(previous);
+  }, [activeTextEditObjectId, convertCommittedText]);
 
   const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
     // The editor's blur passes its own object id: a click-away clears activeTextEditObjectId in a
@@ -6145,17 +6161,8 @@ export function MainWindow({
     if (!objectId) {
       return;
     }
-    // A text box holding exactly an element symbol becomes a real naked atom on commit — it
-    // joins the molecule model with hover hotkeys and valence checking instead of staying inert
-    // text drawn near the structure.
-    const currentDocument = documentRef.current;
-    const converted = convertNativeTextObjectToAtom(currentDocument, objectId);
-    if (converted !== currentDocument) {
-      commitDocumentChange(converted);
-      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
-    }
-  }, [activeTextEditObjectId, commitDocumentChange]);
+    convertCommittedText(objectId);
+  }, [activeTextEditObjectId, convertCommittedText]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
     const currentDocument = documentRef.current;
@@ -8114,6 +8121,18 @@ export function MainWindow({
 
     quickActions.forEach((action) => {
       register(action, async () => {
+        if (action.id === convertTextToAtomLabelCommandId) {
+          const result = selectedTextToAtomLabelResult(documentRef.current);
+          if (result.disabledReason) {
+            setStatus(result.disabledReason);
+            return;
+          }
+          commitDocumentChange(result.document, "Convert Text to Atom Label");
+          setActiveTextEditObjectId(undefined);
+          setSelectedNativeMoleculePart(result.target);
+          if (result.message) setStatus(result.message);
+          return;
+        }
         if (action.id === "document.new") {
           resetDocumentHistory(createPhase4Document());
           clearDocumentInteractionState({ clearSpin3dModelCache: true });
@@ -9267,6 +9286,13 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (commandId === convertTextToAtomLabelCommandId) {
+      const result = selectedTextToAtomLabelResult(documentRef.current);
+      if (result.disabledReason) {
+        setStatus(result.disabledReason);
+        return;
+      }
+    }
     if (commandId === "view.customizeToolbars") {
       setCustomizeToolbarsOpen(true);
       return;
@@ -13109,10 +13135,10 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
-      // Same hover-honoring rule as the charge tools: a highlighted atom means this press
-      // edits that atom's label, not "drop a text box on top of the molecule".
-      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
-      if (hoveredTarget?.kind === "atom" && startAtomLabelEdit(hoveredTarget, { clearDraft: true })) {
+      const target = nativeMoleculeCanvasHoverTarget(
+        documentRef.current, point, event.target, hitToleranceForScale(viewportRef.current.scale)
+      );
+      if (target?.kind === "atom" && startAtomLabelEdit(target, { clearDraft: true })) {
         return;
       }
       applyTextDocumentAtPoint(point);
@@ -16982,6 +17008,7 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
+        canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
         keybindingScheme
@@ -16992,6 +17019,7 @@ export function MainWindow({
       canUndo,
       canRedo,
       document.selection.objectIds.length,
+      quickActions,
       keybindingScheme,
       selectedMolecule,
       visibleToolsetIds,

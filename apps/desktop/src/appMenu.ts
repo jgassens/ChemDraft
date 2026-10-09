@@ -1,5 +1,6 @@
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
+import { convertTextToAtomLabelCommandId } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 
 /**
@@ -93,6 +94,13 @@ export interface AppMenuContext {
   canRedo: boolean;
   hasSelection: boolean;
   hasSelectedMolecule: boolean;
+  /**
+   * Frontend text-label command availability; supplied by the document window.
+   * TODO(desktop): add text.convertToAtomLabel to the native Structure menu and MENU_COMMAND_IDS
+   * in src-tauri/src/lib.rs, then include it in the base menu parity test. Native files are outside
+   * this worker's owned paths.
+   */
+  canConvertTextToAtomLabel?: boolean;
   /** Dynamic View ▸ Toolbars entries, e.g. from `getToolbarsMenuModel(visibleToolsetIds, registry)`. */
   toolbars: readonly AppMenuToolbarToggle[];
   /**
@@ -295,6 +303,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       label: "Structure",
       items: [
         command("structure.cleanup2d", "Clean up Structure 2D", { accelerator: "Shift+Cmd+K" }),
+        ...(context.canConvertTextToAtomLabel === undefined ? [] : [
+          command(convertTextToAtomLabelCommandId, "Convert Text to Atom Label", {
+            enabled: context.canConvertTextToAtomLabel
+          })
+        ]),
         separator(),
         command("structure.openInteractive3d", "Interactive 3D Workspace…")
       ]

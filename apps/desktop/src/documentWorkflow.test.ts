@@ -165,6 +165,8 @@ import {
   type PagePoint,
   insertNativeSymbolGlyph,
   convertNativeTextObjectToAtom,
+  convertNativeTextObjectToAtomLabel,
+  selectedTextToAtomLabelResult,
   insertNativeTextObject,
   nativeArtToolForCommand,
   nativeBracketDefaultSize,
@@ -6426,6 +6428,63 @@ describe("Phase 4 document workflow", () => {
     const prose = insertNativeTextObject(createPhase4Document("Prose Text"), { x: 300, y: 300 }, "hello");
     const proseObject = prose.pages[0].objects.find((object) => object.type === "text");
     expect(convertNativeTextObjectToAtom(prose, proseObject?.id ?? "")).toBe(prose);
+  });
+
+  it.each(["OMe", "CH3", "NO2", "O"])("converts text %s at a chain end through the literal label path", (label) => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Text label"), { x: 300, y: 300 });
+    const original = selectedMolecule(base);
+    const atom = original.atoms[1]!;
+    const withText = insertNativeTextObject(base, atom, label);
+    const textId = withText.selection.objectIds[0]!;
+    const target = { objectId: original.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 };
+    const expected = applyNativeAtomElementTarget(withText, target, label, { literal: true });
+    const result = convertNativeTextObjectToAtomLabel(withText, textId);
+    expect(result.document.pages[0].objects).toHaveLength(1);
+    expect(selectedMolecule(result.document)).toEqual(expected.pages[0].objects.find((object) => object.id === original.id));
+    expect(selectedMolecule(result.document).bonds).toEqual(original.bonds);
+    expect(selectedMolecule(result.document).atoms[0]).toEqual(original.atoms[0]);
+    expect(selectedMolecule(result.document).atoms[1]).toMatchObject({ id: atom.id, x: atom.x, y: atom.y });
+    expect(result.target).toEqual(target);
+    expect(result.message).toContain(label);
+    expect(convertNativeTextObjectToAtom(withText, textId)).toEqual(result.document);
+  });
+
+  it.each(["OMe", "CH3", "NO2"])("keeps %s in open space as text", (label) => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(base, { x: 100, y: 100 }, label);
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+  });
+
+  it("keeps rejected empty labels on the atom with an explanation", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(base, selectedMolecule(base).atoms[1]!, "   ");
+    const result = convertNativeTextObjectToAtomLabel(withText, withText.selection.objectIds[0]!);
+    expect(result.document).toBe(withText);
+    expect(result.message).toBe("Text kept: Atom labels cannot be empty");
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+  });
+
+  it("removes redundant text even when the atom already has the same literal label", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const molecule = selectedMolecule(base);
+    const atom = molecule.atoms[1]!;
+    const labeled = applyNativeAtomElementTarget(base, {
+      objectId: molecule.id, kind: "atom", atomId: atom.id, distanceToPointer: 0
+    }, "OMe", { literal: true });
+    const withText = insertNativeTextObject(labeled, atom, "OMe");
+    const result = convertNativeTextObjectToAtomLabel(withText, withText.selection.objectIds[0]!);
+    expect(result.disabledReason).toBeUndefined();
+    expect(result.document.pages[0].objects).toEqual(labeled.pages[0].objects);
+  });
+
+  it("explicit conversion chooses the nearest atom within one bond length, beyond the hover radius", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const atom = selectedMolecule(base).atoms[1]!;
+    const withText = insertNativeTextObject(base, { x: atom.x, y: atom.y + 15 }, "OMe");
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+    const result = selectedTextToAtomLabelResult(withText);
+    expect(result.target?.kind === "atom" && result.target.atomId).toBe(atom.id);
+    expect(result.document.pages[0].objects).toHaveLength(1);
   });
 
   it("labels literal typed atoms bare and flags them hypovalent; drawn atoms stay hydrides", () => {
