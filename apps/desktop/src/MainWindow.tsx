@@ -1252,7 +1252,13 @@ type AtomLabelEditState = {
 type AtomLabelFinishReason = "commit" | "blur";
 type AtomLabelEditOptions = {
   clearDraft?: boolean;
+  draft?: string;
 };
+
+/** A native palette/popover deactivates the document; that blur does not finish an inline edit. */
+function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
+  return editor.ownerDocument.hasFocus();
+}
 type SelectionMarqueeState = {
   pointerId: number;
   startPoint: ClientPoint;
@@ -1949,6 +1955,8 @@ export function MainWindow({
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
+  const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
+  activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
   // The line-family art arrow/line currently open for in-place editing while a line-draw art tool is
@@ -2179,6 +2187,7 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
+  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string } | undefined>(undefined);
   // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
   // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
@@ -2616,7 +2625,9 @@ export function MainWindow({
   );
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
-    if (!target || target.kind !== "atom") {
+    const assignment = hoverLabelAssignmentRef.current;
+    if (target?.kind !== "atom" || target.objectId !== assignment?.objectId || target.atomId !== assignment.atomId) {
+      hoverLabelAssignmentRef.current = undefined;
     }
     setHoveredNativeDeleteTarget(target);
   }, []);
@@ -5404,14 +5415,18 @@ export function MainWindow({
     replacePresentDocument((current) => selectDocumentObject(current, target.objectId));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit({
+    const edit: AtomLabelEditState = {
       objectId: target.objectId,
       atomId: target.atomId,
       initialElement: atom.element,
       initialLiteral: atom.labelLiteral === true,
-      draft: options.clearDraft ? "" : atom.element,
+      draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
-    });
+    };
+    // Own the keyboard immediately, including before React mounts/focuses the input.
+    activeAtomLabelEditRef.current = edit;
+    hoverLabelAssignmentRef.current = undefined;
+    setActiveAtomLabelEdit(edit);
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
@@ -9519,7 +9534,8 @@ export function MainWindow({
     }
 
     focusTextObjectEditor(activeTextEditObjectId);
-  }, [activeTextEditObjectId, document, focusTextObjectEditor]);
+    return clearScheduledTextEditorFocus;
+  }, [activeTextEditObjectId, clearScheduledTextEditorFocus, document, focusTextObjectEditor]);
 
   // Harden focus once per atom-label edit (not per keystroke: the draft changes on every key).
   const atomLabelEditObjectId = activeAtomLabelEdit?.objectId;
@@ -9534,6 +9550,21 @@ export function MainWindow({
     // window again over whatever the user moved on to.
     return clearScheduledTextEditorFocus;
   }, [atomLabelEditAtomId, atomLabelEditObjectId, clearScheduledTextEditorFocus, focusAtomLabelEditor]);
+
+  // Startup retries are finite. Resume a surviving edit even if another app window held focus
+  // longer than those retries, for both kinds of inline editor.
+  useEffect(() => {
+    const resumeInlineEditor = () => {
+      const atomEdit = activeAtomLabelEditRef.current;
+      if (atomEdit) {
+        focusAtomLabelEditor(atomEdit.objectId, atomEdit.atomId);
+      } else if (activeTextEditObjectIdRef.current) {
+        focusTextObjectEditor(activeTextEditObjectIdRef.current);
+      }
+    };
+    window.addEventListener("focus", resumeInlineEditor);
+    return () => window.removeEventListener("focus", resumeInlineEditor);
+  }, [focusAtomLabelEditor, focusTextObjectEditor]);
 
   // The one place an atom-label edit's close is handled. Dozens of paths end an edit by clearing
   // `activeAtomLabelEdit` directly — a tool picked in the palette, a palette command, a click on the
@@ -10147,6 +10178,14 @@ export function MainWindow({
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
       }
+      // Target-based shortcut filtering alone misses an editor waiting for native focus (or a
+      // palette that temporarily took it). An open edit owns every key during that interval too.
+      if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey || (!/^[a-z0-9]$/i.test(event.key) && event.key !== "Shift")) {
+        hoverLabelAssignmentRef.current = undefined;
+      }
 
       if (event.key === "Escape" && graphicCornerRadiusDragRef.current) {
         const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
@@ -10269,6 +10308,25 @@ export function MainWindow({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+        const assignment = hoverLabelAssignmentRef.current;
+        if (event.key !== "Shift") {
+          hoverLabelAssignmentRef.current = undefined;
+        }
+        if (
+          assignment && hoveredTarget?.kind === "atom" &&
+          hoveredTarget.objectId === assignment.objectId && hoveredTarget.atomId === assignment.atomId &&
+          /^[a-z0-9]$/i.test(event.key)
+        ) {
+          const object = findDocumentObject(documentRef.current, assignment.objectId);
+          const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
+          const draft = `${assignment.label}${event.key}`;
+          if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, { draft })) {
+            event.preventDefault();
+            updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
+            return;
+          }
+        }
         const hoveredTargetCommandId = activeNativeTargetShortcutCommand(
           documentRef.current,
           selectedNativeMoleculePart,
@@ -10279,6 +10337,19 @@ export function MainWindow({
         if (hoveredTargetCommandId) {
           event.preventDefault();
           invokeCommandRef.current(hoveredTargetCommandId);
+          // Only a label assignment made by a hover key starts continuation. Other keys and
+          // selected-atom assignments retain their existing shortcut behavior.
+          const assignedElement = nativeElementFromKeyboardKey(event.key);
+          if (
+            keybindingSchemeRef.current === "chemdraft" && hoveredTarget?.kind === "atom" &&
+            assignedElement
+          ) {
+            const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
+            const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
+            if (atom?.element === assignedElement) {
+              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element };
+            }
+          }
           return;
         }
       }
@@ -10314,8 +10385,10 @@ export function MainWindow({
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
     shortcutRegistry,
+    startAtomLabelEdit,
     switchToSelectTool,
-    syncPathArtPreview
+    syncPathArtPreview,
+    updateAtomLabelDraft
   ]);
 
   useEffect(() => {
@@ -24155,7 +24228,7 @@ function DocumentObjectViewContent({
                     // deactivated (a native palette or popover became key), not the user leaving
                     // the editor. Keep the edit open: the browser hands focus back to this input
                     // when the window is reactivated, so the rest of the word still lands here.
-                    if (!event.currentTarget.ownerDocument.hasFocus()) {
+                    if (!inlineEditorBlurEndsEdit(event.currentTarget)) {
                       return;
                     }
                     onAtomLabelFinish(editingAtomLabel, "blur");
@@ -24356,7 +24429,11 @@ function DocumentObjectViewContent({
               }}
               // Click-away commits like Escape does (element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
-              onBlur={() => onTextEditFinish(object.id)}
+              onBlur={(event) => {
+                if (inlineEditorBlurEndsEdit(event.currentTarget)) {
+                  onTextEditFinish(object.id);
+                }
+              }}
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}

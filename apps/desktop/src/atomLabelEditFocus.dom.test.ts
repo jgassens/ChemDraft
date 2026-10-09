@@ -10,7 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -297,6 +297,56 @@ describe("atom label editor focus", () => {
     expect(labelEditor()).toBe(editor);
     expect(editor.value).toBe("OMe");
     expect(molecule().atoms.find((atom) => atom.id === atomId)?.element).not.toBe("C");
+  });
+
+  it("keeps a text-box edit open across native window blur and resumes on window focus", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const initialDocument = insertNativeTextObject(ringDocument(), { x: 200, y: 200 }, "Substituent");
+    const textId = initialDocument.selection.objectIds[0]!;
+    await renderMainWindow(initialDocument);
+    await paletteCommand("tool.text");
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 210, clientY: 210 });
+      Object.defineProperties(event, {
+        isPrimary: { value: true }, pointerId: { value: 7 }, pointerType: { value: "mouse" }
+      });
+      container.querySelector(`[data-object-id="${textId}"]`)!
+        .dispatchEvent(event);
+    });
+    const textEditor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+    const editor = textEditor()!;
+    expect(editor).not.toBeNull();
+    expect(document.activeElement).toBe(editor);
+    const toolBeforeBlur = bridge().snapshot().activeToolCommandId;
+    // Exhaust startup retries before losing focus: recovery must also work much later.
+    await act(async () => { vi.advanceTimersByTime(100); });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await act(async () => { editor.blur(); });
+    hasFocus.mockRestore();
+    expect(textEditor()).toBe(editor);
+    expect(document.activeElement).not.toBe(editor);
+    for (const key of ["e", "Backspace", "Delete", "Escape"]) {
+      await pressOnWindow(key);
+      expect(textEditor()).toBe(editor);
+      expect(bridge().snapshot().activeToolCommandId).toBe(toolBeforeBlur);
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    }
+    await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
+    expect(document.activeElement).toBe(editor);
+    await pressWhereFocused("e");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "Substituente");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(textEditor()?.value).toBe("Substituente");
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId))
+      .toMatchObject({ type: "text", text: "Substituente" });
+    expect(bridge().snapshot().activeToolCommandId).toBe(toolBeforeBlur);
+    // An actual move elsewhere within the focused document still ends the edit.
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    expect(textEditor()).toBeNull();
   });
 
   it("leaves no atom selected when a palette tool click closes the edit", async () => {
