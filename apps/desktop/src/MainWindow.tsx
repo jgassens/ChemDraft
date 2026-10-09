@@ -64,7 +64,7 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { nativeBondLengthPx, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -158,9 +158,6 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
-  doubleBondRendersSymmetric,
-  doubleBondSecondaryFlushEnds,
-  ringInteriorDoubleBondSides,
   isTerminalHeteroatomDoubleBond,
   nativeBondOrderResolution,
   nativeMoleculeRings,
@@ -169,7 +166,6 @@ import {
   planPageSvgRender,
   planNativeArtVisual,
   sameBondRef,
-  smallestRingAtomIdsByBondId,
   styleColorMapValue,
   textObjectSpansForRendering,
   type PageSvgAttributeValue,
@@ -556,6 +552,7 @@ import {
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
   convertNativeTextObjectToAtomLabel,
+  selectedTextToAtomLabelDisabledReason,
   selectedTextToAtomLabelResult,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
@@ -1958,9 +1955,11 @@ export function MainWindow({
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
-  // Only the first committed edit of a box placed by the Text tool may become an atom label.
+  // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
-  const textObjectAwaitingAutoConversionRef = useRef<string | undefined>(undefined);
+  // A second placement can end an earlier edit before React observes it, so pending ids cannot be
+  // kept in one overwriteable slot.
+  const textObjectIdsAwaitingAutoConversionRef = useRef<Set<string>>(new Set());
   const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
   activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
@@ -4110,67 +4109,18 @@ export function MainWindow({
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
   const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array, orientation?: Quaternion): {
     bondPairs: [number, number][];
-    bondRender: SpinBondRenderInfo[];
     atomLabels: (string | undefined)[];
     atomLabelStyles: (NativeDrawingStyle | undefined)[];
     atoms: readonly MoleculeAtom[];
     placement: ScreenPlacement;
   } => {
     const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
-    const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom] as const));
-    // Adjacency (atom index → neighbor indices) for the double-bond side heuristic.
-    const adjacency = new Map<number, number[]>();
-    for (const bond of molecule.bonds) {
-      const from = atomIndex.get(bond.fromAtomId);
-      const to = atomIndex.get(bond.toAtomId);
-      if (from === undefined || to === undefined) continue;
-      (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(to);
-      (adjacency.get(to) ?? adjacency.set(to, []).get(to)!).push(from);
-    }
-    // Smallest ring per bond, as atom INDICES — so a ring double bond's inner line can point
-    // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
-    // instead of the substituent-count heuristic that flips outward on substituted rings.
-    const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
-    // Same per-molecule ring-interior map the committed drawing uses, so the symmetric decision
-    // below is answered from identical inputs.
-    const ringInteriorSides = ringInteriorDoubleBondSides(molecule);
     const bondPairs: [number, number][] = [];
-    const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
       const from = atomIndex.get(bond.fromAtomId);
       const to = atomIndex.get(bond.toAtomId);
       if (from === undefined || to === undefined) continue;
       bondPairs.push([from, to]);
-      const fromAtom = atomById.get(bond.fromAtomId);
-      const toAtom = atomById.get(bond.toAtomId);
-      const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
-        .filter((index) => index !== from && index !== to);
-      const ringAtomIds = ringAtomIdsByBond.get(bond.id);
-      const ringAtomIndices = ringAtomIds
-        ? ringAtomIds
-            .map((atomId) => atomIndex.get(atomId))
-            .filter((index): index is number => index !== undefined)
-        : undefined;
-      bondRender.push({
-        // aromatic/unknown render as a single line ON PURPOSE: the 2D layout engine
-        // (bondLineSegments) only draws inner lines for double/triple, so matching it here
-        // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
-        order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
-        bold: bond.display?.bondStyle === "bold",
-        // Ask the layout engine the same question the committed drawing asks. Testing only
-        // `isTerminalHeteroatomDoubleBond` used the last of four clauses, so an aldehyde or amide
-        // C=O with a derivable inner side drew one-sided on canvas but symmetric while spinning.
-        symmetric: fromAtom !== undefined && toAtom !== undefined &&
-          doubleBondRendersSymmetric(fromAtom, toAtom, molecule, bond, ringInteriorSides.get(bond.id)),
-        // Likewise for the secondary line's end insets. A terminal methylene (=CH2) draws flush,
-        // and copying only the inset formula shortened ethylene and every terminal alkene here
-        // while the committed drawing left it flush.
-        secondaryFlush: fromAtom !== undefined && toAtom !== undefined
-          ? doubleBondSecondaryFlushEnds(fromAtom, toAtom, molecule, bond)
-          : { from: false, to: false },
-        neighborIndices,
-        ringAtomIndices
-      });
     }
     // The exact labels the 2D drawing shows (element + implicit H + charge; plain
     // bonded carbons stay unlabeled) so the spinning structure reads as the SAME one.
@@ -4183,7 +4133,7 @@ export function MainWindow({
     const scale = orientation
       ? orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))
       : overlayScale(points2d, coords3d, bondPairs);
-    return { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
+    return { bondPairs, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
   const startSpin3d = useCallback(async () => {
@@ -4289,13 +4239,12 @@ export function MainWindow({
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
+      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
       applySpin({
         objectId,
         quat: reopen.quat,
         coords3d: reopen.coords3d,
         bondPairs,
-        bondRender,
         sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
@@ -4396,7 +4345,7 @@ export function MainWindow({
         return;
       }
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
@@ -4404,7 +4353,6 @@ export function MainWindow({
         quat: initialViewQuaternion(coords3d),
         coords3d,
         bondPairs,
-        bondRender,
         sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
@@ -4438,12 +4386,11 @@ export function MainWindow({
         message: conformer.forceField?.status
       });
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         ...state,
         coords3d,
         bondPairs,
-        bondRender,
         sourceMolecule: molecule,
         atomLabels,
         placement,
@@ -5709,7 +5656,9 @@ export function MainWindow({
     const nextDocument = insertNativeTextObject(currentDocument, point, "Text", textStyleDefaults);
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
-    textObjectAwaitingAutoConversionRef.current = inserted?.id;
+    if (inserted) {
+      textObjectIdsAwaitingAutoConversionRef.current.add(inserted.id);
+    }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(inserted?.id);
@@ -6127,12 +6076,13 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const convertCommittedText = useCallback((objectId: string) => {
-    if (textObjectAwaitingAutoConversionRef.current !== objectId) {
+    if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
       return;
     }
-    textObjectAwaitingAutoConversionRef.current = undefined;
     const currentDocument = documentRef.current;
-    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
+    // A Text-tool placement that misses the direct atom editor may still anchor within one drawn
+    // bond length of its intended atom; match the explicit command's conversion reach.
+    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId, nativeBondLengthPx);
     if (labelResult.target) {
       if (labelResult.document !== currentDocument) {
         commitDocumentChange(labelResult.document, "Convert Text to Atom Label");
@@ -9316,9 +9266,9 @@ export function MainWindow({
 
   const invoke = useCallback(async (commandId: string) => {
     if (commandId === convertTextToAtomLabelCommandId) {
-      const result = selectedTextToAtomLabelResult(documentRef.current);
-      if (result.disabledReason) {
-        setStatus(result.disabledReason);
+      const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
+      if (disabledReason) {
+        setStatus(disabledReason);
         return;
       }
     }
@@ -20667,35 +20617,12 @@ function CrosshairOverlay({
 // one of the atoms it touches invalid — the same predicate that paints the red "!" — so valid
 // spiro rings (cyclohexane/cyclopentane, degree-4 sp3) stay neutral and only genuinely bad
 // products (e.g. a spiro carbon shared by two aromatic rings) warn.
-/** How one bond draws in the spin overlay — mirrors the 2D renderer's conventions. */
-interface SpinBondRenderInfo {
-  order: 1 | 2 | 3;
-  bold: boolean;
-  /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
-   *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
-  symmetric: boolean;
-  /** Which ends draw the secondary line flush rather than inset, from layout-engine's
-   *  `doubleBondSecondaryFlushEnds` — a terminal methylene (=CH2) has no junction to tuck away
-   *  from. Copying the inset formula without this exception shortened ethylene and every terminal
-   *  alkene while spinning, then drew it flush on commit. */
-  secondaryFlush: { from: boolean; to: boolean };
-  /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
-   *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
-  neighborIndices: number[];
-  /** Atom indices of the smallest ring the bond lies on, if any. A ring double bond's inner
-   *  line points toward this ring's PROJECTED centroid (true interior), overriding the
-   *  neighbor-mass rule which flips outward when exocyclic substituents dominate. */
-  ringAtomIndices?: number[];
-}
-
 interface Spin3dState {
   sourceMolecule: MoleculeObject;
   objectId: string;
   quat: Quaternion;
   coords3d: Float64Array;
   bondPairs: [number, number][];
-  /** Per bondPairs entry: how the bond renders, mirroring the 2D drawing conventions. */
-  bondRender: SpinBondRenderInfo[];
   /** Per atom: the exact label the 2D drawing shows (undefined = unlabeled carbon). */
   atomLabels: (string | undefined)[];
   /** Per atom: resolved label drawing style, including sparse atom-specific overrides. */

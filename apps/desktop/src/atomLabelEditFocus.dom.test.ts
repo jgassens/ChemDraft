@@ -257,6 +257,46 @@ describe("atom label editor focus", () => {
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
   });
 
+  it.each(["macos", "windows"] as const)("converts freshly placed text to an atom label (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    // This takes the real Text-tool placement path, just outside its immediate atom hit target but
+    // within the later label-conversion radius.
+    await pointerPress(container.querySelector(".page")!, { x: atom.x, y: atom.y + 15 });
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "OMe");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    await settle();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(atomElement(atom.id)).toBe("OMe");
+  });
+
+  it("converts the first fresh text box when a second placement ends its edit", async () => {
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(".page")!, { x: atom.x, y: atom.y + 15 });
+    const firstEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(firstEditor, "OMe");
+      firstEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // Text placement returns to the prior tool after each stamp, so reactivate it without ending
+    // the editor before placing the next caption. Both fresh ids stay pending until their own
+    // first commits.
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(".page")!, { x: 100, y: 100 });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    expect(atomElement(atom.id)).toBe("OMe");
+  });
+
   it.each(["OMe", "CH3", "NO2", "   "])("keeps re-edited existing text %j on a chain end as text", async (label) => {
     const base = chainDocument();
     const original = base.pages[0].objects[0] as MoleculeObject;
