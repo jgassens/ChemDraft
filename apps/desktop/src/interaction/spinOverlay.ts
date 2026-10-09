@@ -13,7 +13,9 @@
  * document; it is transient until the user releases (Phase 5) or presses Esc.
  */
 
-import type { ViewMatrix } from "@chemdraft/chem-core";
+import { createEmptyDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
+import { planPageSvgRender, doubleBondRendersSymmetric, ringInteriorDoubleBondSides, type PageSvgElementFragment } from "@chemdraft/layout-engine";
+import { defaultDoubleBondSide } from "@chemdraft/document-workflow-core";
 import {
   projectPoint,
   quatFromAxisAngle,
@@ -24,6 +26,44 @@ import {
   type Quaternion,
   type Vec3
 } from "./rotation3d";
+
+/** Use the canvas planner for centered bonds and their joined neighbours during spin. */
+export function spinJoinedBondFragments(
+  molecule: MoleculeObject,
+  projection: SpinProjection,
+  weights: readonly (number | undefined)[]
+): PageSvgElementFragment[] {
+  const projected: MoleculeObject = {
+    ...molecule,
+    rotation: 0,
+    atoms: molecule.atoms.map((atom, index) => ({ ...atom, x: projection.atoms[index].sx, y: projection.atoms[index].sy })),
+    bonds: molecule.bonds.map((bond, index) => ({ ...bond, display: { ...bond.display, depthWeight: weights[index] } }))
+  };
+  // Match flatten's recomputed sides for any other doubles in this molecule.
+  const ringSides = ringInteriorDoubleBondSides(projected);
+  projected.bonds = projected.bonds.map((bond) => {
+    if (bond.order !== "double" || bond.display?.doubleBondSide === "center") return bond;
+    const from = projected.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = projected.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const display = { ...bond.display };
+    if (doubleBondRendersSymmetric(from, to, projected, bond, ringSides.get(bond.id))) delete display.doubleBondSide;
+    else display.doubleBondSide = defaultDoubleBondSide(projected, bond);
+    return { ...bond, display };
+  });
+  const page = { ...createEmptyDocument().pages[0], objects: [projected] };
+  const layers: PageSvgElementFragment[] = [];
+  const visit = (fragment: PageSvgElementFragment) => {
+    if (fragment.attrs["data-bond-layer-id"]) {
+      layers.push({ ...fragment, children: fragment.children.filter((child) =>
+        child.kind === "element" && !String(child.attrs.class ?? "").includes("hit-target") &&
+        !String(child.attrs.class ?? "").includes("hover")) });
+    } else fragment.children.forEach((child) => { if (child.kind === "element") visit(child); });
+  };
+  planPageSvgRender(page).fragments.forEach((fragment) => { if (fragment.kind === "element") visit(fragment); });
+  const depths = new Map(molecule.bonds.map((bond, index) => [bond.id, weights[index] ?? 0.5]));
+  return layers.sort((a, b) => (depths.get(String(a.attrs["data-bond-layer-id"])) ?? 0.5) -
+    (depths.get(String(b.attrs["data-bond-layer-id"])) ?? 0.5));
+}
 
 function vlen(v: Vec3): number {
   return Math.hypot(v[0], v[1], v[2]);

@@ -3853,6 +3853,7 @@ function refreshNativeCyclicDoubleBondSides(molecule: MoleculeObject): MoleculeO
     }
 
     const currentSide = bond.display?.doubleBondSide;
+    if (currentSide === "center") return bond;
     const cycle =
       owningCycles.find((candidate) => doubleBondSideTowardPoint(fromAtom, toAtom, candidate.center) === currentSide)
       ?? owningCycles[0];
@@ -8334,6 +8335,27 @@ export function applyNativeMoleculeBondOrderValueTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/** Display-only edit: retain chemistry, coordinates, and the current selection. */
+export function applyMoleculeDoubleBondPosition(
+  document: ChemDraftDocument,
+  targets: readonly { objectId: string; bondId: string }[],
+  position: "left" | "center" | "right" | "automatic"
+): ChemDraftDocument {
+  return targets.reduce((current, target) => {
+    const molecule = firstPage(current).objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id === target.objectId);
+    const bond = molecule?.bonds.find((candidate) => candidate.id === target.bondId);
+    if (!molecule || !bond || bond.order !== "double") return current;
+    const side = position === "automatic" ? undefined : position;
+    if (bond.display?.doubleBondSide === side) return current;
+    const display = { ...bond.display };
+    if (side === undefined) delete display.doubleBondSide;
+    else display.doubleBondSide = side;
+    const bonds = molecule.bonds.map((candidate) => candidate.id === bond.id ? { ...candidate, display } : candidate);
+    return applyPatch(current, { op: "updateObject", objectId: molecule.id, changes: { bonds } }, { now: phase4Timestamp });
+  }, document);
 }
 
 export function applyNativeDoubleBondSideTarget(
@@ -16361,7 +16383,9 @@ export function flattenSpunMolecule(
       const toAtom = nextAtoms.find((atom) => atom.id === bond.toAtomId);
       const symmetric = fromAtom !== undefined && toAtom !== undefined &&
         doubleBondRendersSymmetric(fromAtom, toAtom, sideMolecule, bond, ringInteriorSides.get(bond.id));
-      if (symmetric) {
+      if (bond.display?.doubleBondSide === "center") {
+        display.doubleBondSide = "center";
+      } else if (symmetric) {
         delete display.doubleBondSide;
       } else {
         display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
@@ -18320,6 +18344,8 @@ function doubleBondSideForPoint(
     y: (geometry.fromAtom.y + geometry.toAtom.y) / 2
   };
   const score = (point.x - midpoint.x) * geometry.normal.x + (point.y - midpoint.y) * geometry.normal.y;
+  // A narrow axis zone lets the existing second-line drag select Center without a modifier.
+  if (Math.abs(score) <= 2) return "center";
   return score >= 0 ? "left" : "right";
 }
 

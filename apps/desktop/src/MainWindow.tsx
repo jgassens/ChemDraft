@@ -216,6 +216,8 @@ import {
   artBooleanOperationCommandIds,
   createLayerActions,
   createQuickActions,
+  createDoubleBondPositionActions,
+  moleculeDoubleBondPositionForCommand,
   convertTextToAtomLabelCommandId,
   distributeModeCommandIds,
   editActions,
@@ -375,6 +377,7 @@ import {
   applyNativeRingAttachAtAtomTarget,
   applyNativeRingFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
+  applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -747,7 +750,7 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { buildSpin3dFlattenStereoOptions } from "./spin3dFlattenStereoPolicy";
 import {
@@ -4293,6 +4296,7 @@ export function MainWindow({
         coords3d: reopen.coords3d,
         bondPairs,
         bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
         atoms,
@@ -4401,6 +4405,7 @@ export function MainWindow({
         coords3d,
         bondPairs,
         bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
         atoms,
@@ -4439,6 +4444,7 @@ export function MainWindow({
         coords3d,
         bondPairs,
         bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         placement,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
@@ -6994,6 +7000,15 @@ export function MainWindow({
       return baseStyleResult(patch, field);
     };
     const bondTargets = currentMoleculeInspector.targets.bondTargets;
+    const position = moleculeDoubleBondPositionForCommand(commandId);
+    if (position) {
+      return {
+        document: applyMoleculeDoubleBondPosition(currentDocument, bondTargets, position.value),
+        handled: true,
+        targeted: currentMoleculeInspector.structure.doubleBondTargetCount > 0,
+        message: `Double-bond position: ${position.value}`
+      };
+    }
     const bondTargetCount = bondTargets.length;
     const bondStyleResult = (patch: Parameters<typeof applyMoleculeBondStylePatch>[2], field: string) => {
       if (bondTargetCount > 0) {
@@ -7202,11 +7217,11 @@ export function MainWindow({
     }
 
     if (!result.targeted) {
-      setStatus("Select a molecule before changing Drawn Structure Settings style");
+      setStatus(moleculeDoubleBondPositionForCommand(commandId) ? "Select a double bond" : "Select a molecule before changing Drawn Structure Settings style");
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -7239,7 +7254,7 @@ export function MainWindow({
       return;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
   }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentChange, replacePresentDocument]);
@@ -8079,6 +8094,10 @@ export function MainWindow({
       });
     };
 
+    createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
+      register(action, () => { applyMoleculeInspectorCommand(action.id); });
+    });
+
     register(
       {
         id: PLUGIN_MANAGER_COMMAND_ID,
@@ -8705,6 +8724,7 @@ export function MainWindow({
     applyObjectStyleCommand,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
+    currentMoleculeInspector,
     performCopyAs,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
@@ -20683,6 +20703,7 @@ interface SpinBondRenderInfo {
 }
 
 interface Spin3dState {
+  sourceMolecule: MoleculeObject;
   objectId: string;
   quat: Quaternion;
   coords3d: Float64Array;
@@ -20824,7 +20845,9 @@ function SpinOverlay({
           counts as painted (fill is rgba 0, not `none`), so every in-page click reaches
           handleSpinOverlayPointerDown, which routes inside-box → rotate, outside → flatten. */}
       <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="transparent" />
-      {projection.bonds.map((bond, index) => {
+      {state.sourceMolecule.bonds.some((bond) => bond.display?.doubleBondSide === "center")
+        ? spinJoinedBondFragments(state.sourceMolecule, projection, depthWeights).map(renderStaticPageSvgFragment)
+        : projection.bonds.map((bond, index) => {
         const a = projection.atoms[bond.from];
         const b = projection.atoms[bond.to];
         // The SAME depth-cue helpers AND the SAME weight the committed 2D drawing uses

@@ -106,6 +106,7 @@ import {
   applyNativeWarningSuppressionToScope,
   nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
+  applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -6785,6 +6786,50 @@ describe("Phase 4 document workflow", () => {
     });
     expect(selectedMolecule(changed).structure).toBe(selectedMolecule(doubleBond).structure);
     expect(selectedMolecule(changed).chemistry).toEqual(selectedMolecule(doubleBond).chemistry);
+  });
+
+  it("reaches Center by dragging to the axis, preserving defaults, chemistry, save and clipboard", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Centered bond"), { x: 200, y: 220 });
+    const document = setNativeBondOrder(seeded, "bond_001", "double");
+    const original = selectedMolecule(document);
+    expect(original.bonds[0].display?.doubleBondSide).toBe("left");
+    const [a, b] = original.atoms;
+    const centered = applyNativeDoubleBondSideTarget(document, {
+      objectId: original.id, kind: "bond", bondId: "bond_001",
+      fromAtomId: a.id, toAtomId: b.id, distanceToPointer: 0
+    }, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    expect(selectedMolecule(centered).bonds[0].display?.doubleBondSide).toBe("center");
+    expect(selectedMolecule(centered).atoms).toEqual(original.atoms);
+    expect(selectedMolecule(centered).chemistry).toEqual(original.chemistry);
+    expect(selectedMolecule(centered).structure).toBe(original.structure);
+    const opened = deserializeDocument(serializeDocument(centered));
+    expect(selectedMolecule(opened).bonds[0].display?.doubleBondSide).toBe("center");
+    for (const payload of [createSelectionClipboardPayload(opened), createSelectionClipboardPayload(
+      selectDocumentObjects(opened, opened.pages[0].id, []),
+      [{ objectId: original.id, atomIds: original.atoms.map((atom) => atom.id), bondIds: ["bond_001"] }]
+    )]) {
+      const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      const pasted = pasteSelectionClipboardPayload(createPhase4Document("Pasted"), parsed, { x: 300, y: 300 });
+      expect(selectedMolecule(pasted).bonds[0].display?.doubleBondSide).toBe("center");
+    }
+  });
+
+  it("changes only selected double-bond display values in a batch and preserves selection", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Batch position"), { x: 300, y: 300 }, "benzene");
+    const original = selectedMolecule(document);
+    const doubles = original.bonds.filter((bond) => bond.order === "double").slice(0, 2);
+    const single = original.bonds.find((bond) => bond.order === "single")!;
+    const targets = [...doubles, single].map((bond) => ({ objectId: original.id, bondId: bond.id }));
+    const changed = applyMoleculeDoubleBondPosition(document, targets, "center");
+    for (const bond of selectedMolecule(changed).bonds) {
+      if (doubles.some((target) => target.id === bond.id)) expect(bond.display?.doubleBondSide).toBe("center");
+      else expect(bond).toEqual(original.bonds.find((candidate) => candidate.id === bond.id));
+    }
+    expect(changed.selection).toEqual(document.selection);
+    expect(selectedMolecule(changed).structure).toBe(original.structure);
+    expect(selectedMolecule(changed).chemistry).toEqual(original.chemistry);
+    expect(applyMoleculeDoubleBondPosition(changed, targets, "center")).toBe(changed);
+    expect(selectedMolecule(applyMoleculeDoubleBondPosition(changed, targets, "automatic")).bonds.find((bond) => bond.id === doubles[0].id)?.display?.doubleBondSide).toBeUndefined();
   });
 
   it("defaults cyclic double-bond secondary lines toward the ring interior", () => {

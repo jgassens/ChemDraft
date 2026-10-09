@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDoubleBondPositionActions,
+  moleculeDoubleBondPositionCommandId,
+  moleculeDoubleBondPositionForCommand,
   moleculeAtomLabelAlignmentCommandId,
   moleculeAtomLabelAlignmentForCommand,
   moleculeAtomLabelBackgroundColorCommandId,
@@ -43,6 +46,19 @@ import {
   textFontFamilyForCommand,
   textStylePatchForCommand
 } from "./commands";
+
+describe("double-bond position commands", () => {
+  it("encodes every position in its command ID and rejects unknown values", () => {
+    for (const value of ["left", "center", "right", "automatic"] as const) {
+      expect(moleculeDoubleBondPositionForCommand(moleculeDoubleBondPositionCommandId(value))).toEqual({ value });
+    }
+    expect(moleculeDoubleBondPositionForCommand("molecule.structure.doubleBondPosition:set")).toBeUndefined();
+  });
+  it("enables multi-bond edits and disables empty selections with a reason", () => {
+    expect(createDoubleBondPositionActions(2).every((action) => action.enabled && !action.disabledReason)).toBe(true);
+    expect(createDoubleBondPositionActions(0).every((action) => !action.enabled && action.disabledReason === "Select a double bond")).toBe(true);
+  });
+});
 import { allShellCommands, convertTextToAtomLabelCommandId } from "./commands";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, getSelectedMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { buildAppMenuModel, flattenAppMenuCommands } from "./appMenu";

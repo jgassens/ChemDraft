@@ -14,7 +14,7 @@ import {
   selectDocumentObjects
 } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
-import { objectFillOpacityCommandId } from "./commands";
+import { objectFillOpacityCommandId, moleculeDoubleBondPositionCommandId } from "./commands";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -147,6 +147,36 @@ describe("toolset bridge interactions", () => {
     }
     return target;
   }
+
+  it("centers selected double bonds with one labelled undo entry and retains the bond selection", async () => {
+    const initial = insertNativeTemplateMolecule(createPhase4Document("Centered selection"), { x: 300, y: 300 }, "benzene");
+    const molecule = initial.pages[0].objects[0] as MoleculeObject;
+    const doubles = molecule.bonds.filter((bond) => bond.order === "double").slice(0, 2);
+    await renderMainWindow(selectDocumentObjects(initial, initial.pages[0].id, []));
+    for (const [index, bond] of doubles.entries()) {
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+      const point = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      await act(async () => {
+        const target = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+        dispatchPointer(target, "pointerdown", point, 101 + index, { shiftKey: true });
+        dispatchPointer(target, "pointerup", point, 101 + index, { shiftKey: true });
+      });
+    }
+    const centerCount = () => container.querySelectorAll('.native-bond-line[data-double-bond-side="center"]').length;
+    await act(async () => { routeCommand(moleculeDoubleBondPositionCommandId("center")); });
+    expect(centerCount()).toBe(4);
+    await act(async () => { routeCommand("edit.undo"); });
+    expect(centerCount()).toBe(0);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Double-bond position: center");
+    await act(async () => { routeCommand("edit.redo"); });
+    expect(centerCount()).toBe(4);
+    // A further position command still targets both selected bonds after undo/redo.
+    await act(async () => { routeCommand(moleculeDoubleBondPositionCommandId("right")); });
+    expect(centerCount()).toBe(0);
+    await act(async () => { routeCommand("edit.undo"); });
+    expect(centerCount()).toBe(4);
+  });
 
   it("does not double-toggle toolset commands after StrictMode remounts bridge effects", async () => {
     await renderMainWindow();

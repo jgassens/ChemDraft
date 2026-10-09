@@ -5,7 +5,7 @@ import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depicti
 
 import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
 import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
-import { bondDepthWeights, projectSpin, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, projectSpin, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
 
 const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
@@ -235,6 +235,27 @@ describe("flattenSpunMolecule — ScreenPlacement parity", () => {
 });
 
 describe("flattenSpunMolecule — styrene keeps its double bonds in place", () => {
+  it("uses joined layout-engine geometry during spin and retains explicit Center on release", async () => {
+    const { mol, coords3d } = await conformerFromSmiles("C=Cc1ccccc1", "mol_center");
+    mol.bonds = mol.bonds.map((bond) => bond.order === "double"
+      ? { ...bond, display: { ...bond.display, doubleBondSide: "center" } } : bond);
+    const pairs: [number, number][] = mol.bonds.map((bond) => [
+      mol.atoms.findIndex((atom) => atom.id === bond.fromAtomId),
+      mol.atoms.findIndex((atom) => atom.id === bond.toAtomId)
+    ]);
+    const quat = quatFromAxisAngle([0, 1, 0], Math.PI / 6);
+    const placement = { centerX: 300, centerY: 300, scale: 20 };
+    const projection = projectSpin(coords3d, pairs, quat, placement);
+    const fragments = spinJoinedBondFragments(mol, projection, bondDepthWeights(coords3d, pairs, quatToViewMatrix(quat)));
+    expect(fragments).toHaveLength(mol.bonds.length);
+    expect(JSON.stringify(fragments)).toContain('"data-double-bond-side":"center"');
+    expect(JSON.stringify(fragments)).not.toContain("hit-target");
+    const outcome = flattenSpunMolecule(documentWith(mol), mol.id, coords3d, quatToViewMatrix(quat), { placement });
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+    const next = moleculeOf(outcome.document, mol.id);
+    expect(next.bonds.filter((bond) => bond.order === "double").every((bond) => bond.display?.doubleBondSide === "center")).toBe(true);
+    expect(next.bonds.map((bond) => bond.order)).toEqual(mol.bonds.map((bond) => bond.order));
+  });
   it("flattens styrene with every double bond on its original atom pair", async () => {
     const { mol, coords3d, embedStatus } = await conformerFromSmiles("C=Cc1ccccc1", "mol_styrene");
     expect(embedStatus).toBe("ok");

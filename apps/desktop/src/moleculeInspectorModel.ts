@@ -74,6 +74,9 @@ export interface MoleculeInspectorRingsModel {
 
 export interface MoleculeInspectorStructureModel {
   enabled: boolean;
+  doubleBondPosition: ArtInspectorMixedValue<"left" | "center" | "right" | "automatic">;
+  doubleBondTargetCount: number;
+  doubleBondDisabledReason?: string;
   targetCount: number;
   targetKind: "molecule" | "atom" | "bond";
   values: {
@@ -366,9 +369,16 @@ function createStructureModel(
     ? bondEntries.length
     : targetKind === "atom" ? atomEntries.length : moleculeEntries.length;
   const fallback = DefaultNativeDrawingStyle;
+  const doubleBonds = bondTargets.flatMap((target) => {
+    const bond = objectById.get(target.objectId)?.bonds.find((candidate) => candidate.id === target.bondId);
+    return bond?.order === "double" ? [bond] : [];
+  });
 
   return {
     enabled: targetCount > 0,
+    doubleBondPosition: uniformValue(doubleBonds, (bond) => bond.display?.doubleBondSide ?? "automatic", "automatic"),
+    doubleBondTargetCount: doubleBonds.length,
+    doubleBondDisabledReason: doubleBonds.length > 0 ? undefined : "Select a double bond",
     targetCount,
     targetKind,
     values: {

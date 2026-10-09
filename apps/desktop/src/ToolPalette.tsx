@@ -93,6 +93,8 @@ import {
   moleculeStructureBondSpacingPercentCommandId,
   moleculeStructureMultipleBondGapCommandId,
   moleculeStructureDoubleBondInsetCommandId,
+  moleculeDoubleBondPositionCommandId,
+  type DoubleBondPosition,
   moleculeStructureBondMarginWidthCommandId,
   moleculeStructureBondHashSpacingCommandId,
   moleculeStructureOverlapClearanceCommandId,
@@ -1257,6 +1259,26 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
       {numericControl("Margin width", structure?.values.bondMarginWidthPx.value, structure?.values.bondMarginWidthPx.mixed, moleculeStructureNumberRanges.bondMarginWidthPx, moleculeStructureBondMarginWidthCommandId, structureDisabled)}
       {numericControl("Hash spacing", structure?.values.bondHashSpacingPx.value, structure?.values.bondHashSpacingPx.mixed, moleculeStructureNumberRanges.bondHashSpacingPx, moleculeStructureBondHashSpacingCommandId, structureDisabled)}
       {numericControl("Double-bond inset", structure?.values.doubleBondInsetPx.value, structure?.values.doubleBondInsetPx.mixed, moleculeStructureNumberRanges.doubleBondInsetPx, moleculeStructureDoubleBondInsetCommandId, structureDisabled)}
+      <label className="molecule-inspector-field molecule-inspector-select-field">
+        <span>Double-bond position</span>
+        <select
+          aria-label="Double-bond position"
+          title={structure?.doubleBondDisabledReason ?? (structure ? undefined : "Select a double bond")}
+          disabled={!structure?.doubleBondTargetCount}
+          value={structure?.doubleBondPosition.mixed ? "mixed" : structure?.doubleBondPosition.value ?? "automatic"}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") invokeOrCommit(moleculeDoubleBondPositionCommandId(event.currentTarget.value as DoubleBondPosition));
+          }}
+        >
+          {structure?.doubleBondPosition.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="automatic">Automatic</option>
+          <option value="left">Left</option>
+          <option value="center">Center</option>
+          <option value="right">Right</option>
+        </select>
+      </label>
       {numericControl("Overlap clearance", structure?.values.bondOverlapClearancePx.value, structure?.values.bondOverlapClearancePx.mixed, moleculeStructureNumberRanges.bondOverlapClearancePx, moleculeStructureOverlapClearanceCommandId, structureDisabled)}
       <label className="molecule-inspector-field molecule-inspector-select-field">
         <span>Line cap</span>

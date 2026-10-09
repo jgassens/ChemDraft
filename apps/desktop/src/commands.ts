@@ -808,6 +808,25 @@ export const customMoleculeStructureBondSpacingModeCommandPrefix = "molecule.str
 export const customMoleculeStructureBondSpacingPercentCommandPrefix = "molecule.structure.bondSpacingPercent:";
 export const customMoleculeStructureMultipleBondGapCommandPrefix = "molecule.structure.multipleBondGap:";
 export const customMoleculeStructureDoubleBondInsetCommandPrefix = "molecule.structure.doubleBondInset:";
+export type DoubleBondPosition = "left" | "center" | "right" | "automatic";
+export function moleculeDoubleBondPositionCommandId(value: DoubleBondPosition): string {
+  return `molecule.structure.doubleBondPosition:${value}`;
+}
+export function moleculeDoubleBondPositionForCommand(commandId: string): { value: DoubleBondPosition } | undefined {
+  return (["left", "center", "right", "automatic"] as const)
+    .map((value) => ({ value }))
+    .find(({ value }) => moleculeDoubleBondPositionCommandId(value) === commandId);
+}
+export function createDoubleBondPositionActions(targetCount: number): CommandSpec[] {
+  return (["left", "center", "right", "automatic"] as const).map((value) => ({
+    id: moleculeDoubleBondPositionCommandId(value),
+    title: `Double-bond position: ${value}`,
+    source: "core",
+    icon: "bond",
+    enabled: targetCount > 0,
+    disabledReason: targetCount > 0 ? undefined : "Select a double bond"
+  }));
+}
 export const customMoleculeStructureBondMarginWidthCommandPrefix = "molecule.structure.bondMarginWidth:";
 export const customMoleculeStructureBondHashSpacingCommandPrefix = "molecule.structure.bondHashSpacing:";
 export const customMoleculeStructureOverlapClearanceCommandPrefix = "molecule.structure.overlapClearance:";
