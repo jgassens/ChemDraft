@@ -429,7 +429,7 @@ function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
   }
 }
 
-function stereoCenterCounts(
+export function stereoCenterCounts(
   centers: ReadonlyArray<{ isStereoCenter: boolean; descriptor: "R" | "S" | "unspecified" }>
 ): { stereoCenters: number; unspecifiedStereoCenters: number } {
   return {

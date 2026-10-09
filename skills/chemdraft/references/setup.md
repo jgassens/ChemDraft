@@ -166,8 +166,8 @@ the MCP server above. A skill upload alone does not run local chemistry.
 
 ## Verification checklist
 
-- CLI help lists eight commands; name conversion returns `ok: true`.
-- The client discovers all eight tools listed in [SKILL.md](../SKILL.md).
+- CLI help lists 10 commands; name conversion returns `ok: true`.
+- The client discovers all 10 tools listed in [SKILL.md](../SKILL.md).
 - Render ethanol once using [recipes](recipes.md); view the image.
 - Analysis returns status-bearing values with full method contracts.
 - Optional NMR works only after the owner reviews the trust entry.

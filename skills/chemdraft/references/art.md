@@ -70,6 +70,16 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
 
+Windows PowerShell (write UTF-8 instead of Windows PowerShell 5.1's default UTF-16):
+
+```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --smiles 'C1CCC2C(C1)CCC3C2CCC4CCCC34' --out "$scratch/gonane.json" | Set-Content -Encoding utf8 "$scratch/gonane-build.json"
+node "$scratch/style.mjs"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.png" --width 1200
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
+```
+
 `--format svg|png|pdf|chemdraft|both` follows the extension by default;
 `--background transparent`, `--padding` and `--width` work as in `render`.
 Use absolute paths: the launcher runs the command inside the checkout,
@@ -91,8 +101,8 @@ position in the SMILES); `bonds` with `id`, `fromAtomId`, `toAtomId`,
 `center` and `size`. Use the reported `ringKey` (sorted bond ids joined
 by `|`) instead of building one. The ring list is not in drawing order:
 sort by `center.x` (left to right) or `center.y` when you letter rings.
-Hydrogens written in the SMILES are not kept as atoms; add them yourself
-(pattern 2).
+Ordinary separately written hydrogen atoms are removed by existing depiction;
+add them yourself (pattern 2).
 
 Every pattern below starts from a script like this:
 
@@ -100,7 +110,7 @@ Every pattern below starts from a script like this:
 // style.mjs - run with: node style.mjs
 import fs from "node:fs";
 const dir = "<scratch>";                                  // the scratch directory
-const build = JSON.parse(fs.readFileSync(`${dir}/gonane-build.json`, "utf8"));
+const build = JSON.parse(fs.readFileSync(`${dir}/gonane-build.json`, "utf8").replace(/^﻿/, ""));
 const doc = JSON.parse(fs.readFileSync(`${dir}/gonane.json`, "utf8"));
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");
@@ -305,3 +315,4 @@ left out with no warning, so anchor at a `point` on the bond instead.
   or omitted with a warning. SVG, PNG and PDF render only the first page.
 - A `.chemdraft` save warns that colours outside the standard CDXML
   colour table are kept exactly only in the embedded native payload.
+- OpenChemLib stereo perception can report 0 specified/0 unspecified for ring-symmetric fused centres (for example `C[C@@]12CCCC[C@H]1CCCC2`) while canonical SMILES retains `@`; compare canonical SMILES or InChIKey to confirm chemistry, not stereo counts alone.

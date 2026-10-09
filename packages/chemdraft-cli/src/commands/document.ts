@@ -37,6 +37,8 @@ async function inputAtomIndices(built: BuiltSmilesDocument): Promise<(number | n
       : token[0];
     return { element: element[0]!.toUpperCase() + element.slice(1), index };
   });
+  // A wildcard has no element identity to verify against a depicted native atom.
+  if (input.some((entry) => entry.element === "*")) return unmapped;
   const elements = built.molecule.atoms.map((atom) => atom.element);
   const sameElements = (entries: typeof input) => entries.length === elements.length &&
     entries.every((entry, index) => entry.element === elements[index]);

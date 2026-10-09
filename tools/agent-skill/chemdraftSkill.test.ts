@@ -369,10 +369,18 @@ describe("ChemDraft agent skill drift guard", () => {
   it("routes appearance requests to the art reference", () => {
     expect(entrypoint).toMatch(/\]\(references\/art\.md\)/);
     expect(entrypoint).toMatch(/Never tell a user ChemDraft cannot produce a visual style/);
-    // Text objects read fontSizePx; a fontSize key is silently ignored by the renderer.
-    const unread = markdownFiles(skillRoot).flatMap((path) =>
-      codeBlocks(read(path)).filter((block) => /\bfontSize\s*:/.test(block)).map(() => path));
+    // Text objects read fontSizePx; fontSize as a key is silently ignored by the renderer.
+    const textStyleDocs = [...markdownFiles(skillRoot),
+      join(root, "packages", "chemdraft-cli", "README.md"),
+      join(root, "packages", "chemdraft-mcp", "README.md")];
+    const unread = textStyleDocs.filter((path) => /\bfontSize(?!Px)\s*:/.test(read(path)));
     expect(unread).toEqual([]);
+  });
+
+  it("keeps setup's CLI and MCP counts aligned with source registrations", () => {
+    const setup = read(join(skillRoot, "references", "setup.md"));
+    expect(setup).toContain(`CLI help lists ${flags.size} commands`);
+    expect(setup).toContain(`all ${tools.length} tools`);
   });
 
   it("resolves every relative Markdown link", () => {

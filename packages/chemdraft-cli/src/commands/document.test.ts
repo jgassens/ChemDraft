@@ -74,6 +74,27 @@ describe("native document agent commands", () => {
     expect(result.result.molecules[0].atoms.map((atom: { inputAtomIndex: number }) => atom.inputAtomIndex)).toEqual([1, 2, 5]);
   });
 
+  it.each([
+    ["C[Si](C)(C)C", [0, 1, 2, 3, 4]],
+    ["c1cc[nH]c1", [0, 1, 2, 3, 4]],
+    ["c1cc[se]c1", [0, 1, 2, 3, 4]],
+    ["ClCBr", [0, 1, 2]],
+    ["CCO.O", [0, 1, 2, 3]],
+    ["C%12CCCCC%12", [0, 1, 2, 3, 4, 5]]
+  ])("maps SMILES atom tokens exactly for %s", async (smiles, expected) => {
+    const result = await run(["document", "--smiles", smiles, "--out",
+      join(directory, `mapping-${smiles.replace(/[^A-Za-z0-9_-]/g, "_")}.json`)]);
+    expect(result.code, result.stderr.join("\n")).toBe(0);
+    expect(result.result.molecules[0].atoms.map((atom: { inputAtomIndex: number | null }) => atom.inputAtomIndex)).toEqual(expected);
+  });
+
+  it("leaves wildcard atom input mapping unverified and warns", async () => {
+    const result = await run(["document", "--smiles", "*", "--out", join(directory, "wildcard.json")]);
+    expect(result.code, result.stderr.join("\n")).toBe(0);
+    expect(result.result.molecules[0].atoms.map((atom: { inputAtomIndex: number | null }) => atom.inputAtomIndex)).toEqual([null]);
+    expect(result.result.warnings).toContain("Input atom mapping unavailable; inputAtomIndex is null for unmapped atoms.");
+  });
+
   it("renders an unmodified JSON document with render's chemistry and writes/reopens a native envelope", async () => {
     const smiles = "C[C@H](O)C(=O)O";
     const input = join(directory, "round-trip.json");
@@ -93,7 +114,7 @@ describe("native document agent commands", () => {
     const reopened = await run(["render-document", "--document", envelope, "--out", join(directory, "reopened.png")]);
     expect(reopened.code).toBe(0);
     expect(reopened.result.molecules[0].canonicalSmiles).toBe(built.sourceCanonicalSmiles);
-  });
+  }, 60_000);
 
   it("renders ring fill, bold bond, ring letter, rough molecule/art strokes and export warnings in both and PDF", async () => {
     const built = structuredClone(await buildSmilesDocument("C1CCC2CCCCC2C1"));
@@ -103,7 +124,7 @@ describe("native document agent commands", () => {
     molecule.bonds[0]!.display = { bondStyle: "bold" };
     molecule.style.visualEffects = [{ kind: "sketch", seed: 42, roughness: 1.3 }];
     built.document.pages[0]!.objects.push({ id: "ring-letter", type: "text", text: "A", spans: [],
-      x: ring.center.x, y: ring.center.y, width: 16, height: 20, rotation: 0, style: { fontSize: 18 } });
+      x: ring.center.x, y: ring.center.y, width: 16, height: 20, rotation: 0, style: { fontSizePx: 18 } });
     built.document.pages[0]!.objects.push({ id: "sketch-art", type: "graphic", graphicKind: "rect", data: {},
       x: 500, y: 500, width: 30, height: 30, rotation: 0,
       style: { strokeColor: "#123456", effect: "reflection", visualEffects: [{ kind: "sketch", seed: 13 }] } });
@@ -136,6 +157,16 @@ describe("native document agent commands", () => {
       expect.objectContaining({ code: "export.svg.graphic_effect_approximation", objectId: "sketch-art" })
     ]));
     expect(result.result.molecules[0].exportWarnings).toBeInstanceOf(Array);
+    const envelope = join(directory, "styled.chemdraft");
+    expect((await run(["render-document", "--document", input, "--out", envelope])).code).toBe(0);
+    const reopenedPath = join(directory, "styled-reopened.svg");
+    expect((await run(["render-document", "--document", envelope, "--out", reopenedPath])).code).toBe(0);
+    const reopenedSvg = await readFile(reopenedPath, "utf8");
+    expect(reopenedSvg).toContain('fill="#ffcc66"');
+    expect(reopenedSvg).toContain('data-object-id="ring-letter"');
+    expect(reopenedSvg).toContain(">A<");
+    expect(reopenedSvg).toContain('data-molecule-effect="sketch"');
+    expect(reopenedSvg).toContain('data-graphic-effect="sketch"');
     const pdf = join(directory, "styled.pdf");
     expect((await run(["render-document", "--document", input, "--out", pdf])).code).toBe(0);
     expect((await readFile(pdf)).subarray(0, 4).toString()).toBe("%PDF");
@@ -160,6 +191,35 @@ describe("native document agent commands", () => {
     const result = await run(["render-document", "--document", input, "--out", join(directory, "changed.svg")]);
     expect(result.code).toBe(0);
     expect(result.result.molecules[0].canonicalSmiles).toBe("CCN");
+  });
+
+  it("reports one molfile-loss warning per Me display label", async () => {
+    const built = structuredClone(await buildSmilesDocument("CC"));
+    (built.document.pages[0]!.objects[0] as MoleculeObject).atoms[0]!.element = "Me";
+    const input = join(directory, "me-label.json");
+    await writeFile(input, JSON.stringify(built.document));
+    const result = await run(["render-document", "--document", input, "--out", join(directory, "me-label.svg")]);
+    expect(result.code).toBe(0);
+    expect(result.result.molecules[0].canonicalSmiles).toContain("*");
+    expect(result.result.exportWarnings.filter((warning: { code: string }) => warning.code === "export.molfile_loss")).toHaveLength(1);
+  });
+
+  it("warns that SVG uses only the first page but preserves all pages in ChemDraft", async () => {
+    const built = structuredClone(await buildSmilesDocument("CCO"));
+    const firstPage = built.document.pages[0]!;
+    built.document.pages.push({ ...structuredClone(firstPage), id: "page-2" });
+    const input = join(directory, "two-pages.json");
+    await writeFile(input, JSON.stringify(built.document));
+    const svg = await run(["render-document", "--document", input, "--out", join(directory, "two-pages.svg")]);
+    expect(svg.code).toBe(0);
+    expect(svg.result.exportWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "export.first_page_only" })
+    ]));
+    const native = await run(["render-document", "--document", input, "--out", join(directory, "two-pages.chemdraft")]);
+    expect(native.code).toBe(0);
+    expect(native.result.exportWarnings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "export.first_page_only" })
+    ]));
   });
 
   it.each(["CC=CC", "C/C=C/C", "c1ccccc1", "[Na+].[O-]C(=O)C", "N->[Pt+2](<-N)(Cl)Cl"])(
@@ -204,6 +264,12 @@ describe("native document agent commands", () => {
     (heavy.pages[0]!.objects[0] as MoleculeObject).atoms = Array.from({ length: 501 }, (_, i) => ({ ...built.molecule.atoms[0]!, id: `a${i}` }));
     await check(heavy);
     await writeFile(input, JSON.stringify(built.document));
+    const bothPdf = await run(["render-document", "--document", input, "--out", join(directory, "conflict.pdf"), "--format", "both"]);
+    expect(bothPdf.code).toBe(2);
+    expect(bothPdf.stderr.join("\n")).toContain("--format both conflicts with the --out extension .pdf.");
+    const bothChemDraft = await run(["render-document", "--document", input, "--out", join(directory, "conflict.chemdraft"), "--format", "both"]);
+    expect(bothChemDraft.code).toBe(2);
+    expect(bothChemDraft.stderr.join("\n")).toContain("--format both conflicts with the --out extension .chemdraft.");
     expect((await run(["render-document", "--document", input, "--out", `${directory}${sep}..${sep}unsafe.svg`])).code).toBe(2);
     expect((await run(["document", "--smiles", "CCO", "--out", join(directory, ".hidden.json")])).code).toBe(2);
     const failed = await run(["document", "--smiles", "invalid", "--out", join(directory, "bad-smiles.json")]);

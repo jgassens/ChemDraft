@@ -6,7 +6,8 @@ import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-co
 import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
-import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, renderDefaults, svgToPng, validateRasterWidth } from "../document";
+import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, renderDefaults,
+  stereoCenterCounts, svgToPng, validateRasterWidth } from "../document";
 import { loadAgentDocument, validateDocumentOutputPath } from "../documentInput";
 import { installNodeEngines } from "../engine";
 import { installNodeRendering } from "../nodeRendering";
@@ -28,7 +29,7 @@ Usage: pnpm -s chemdraft render-document --document <file> --out <file>
   --background white|transparent     SVG/PNG background (default white)
   --padding <px>                     SVG/PNG crop padding (default 24)
 SVG/PNG/PDF render the first page. PDF retains native page size. ChemDraft retains every page.
-Input limit: 5 MB, 100 pages, 2000 objects/page, 500 heavy atoms/molecule.
+Input limit: 5 MB, 100 pages, 2000 objects/page, 500 heavy atoms/molecule, 2000 atoms/molecule, 4000 bonds/molecule.
 Result: canonical SMILES and stereo counts per molecule, plus every export warning.
 Exit 0 success, 1 export/chemistry failure (ok:false), 2 invalid input or arguments.`;
 
@@ -46,11 +47,10 @@ async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarn
     assertMolfileHasKnownBondOrders(molfile);
     // The same RDKit identifiers used by app/CLI exports, with no native/stored-SMILES fallback.
     const canonical = await canonicalSmiles(molfile, `molecule ${molecule.id}`);
-    const centers = perceiveStereoCentersFromMolfile(molfile);
+    const centers = stereoCenterCounts(perceiveStereoCentersFromMolfile(molfile));
     const doubleBonds = await perceiveDoubleBondStereo(molfile);
     results.push({ objectId: molecule.id, canonicalSmiles: canonical,
-      stereoCenters: centers.filter((center) => center.isStereoCenter && center.descriptor !== "unspecified").length,
-      unspecifiedStereoCenters: centers.filter((center) => center.isStereoCenter && center.descriptor === "unspecified").length,
+      ...centers,
       unspecifiedDoubleBonds: doubleBonds.filter((bond) => bond.descriptor === "unspecified").length });
   }
   return results;
@@ -72,6 +72,9 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     }
     if (requested && format !== "both" && ["svg", "png", "pdf", "chemdraft"].includes(extension) && extension !== format) {
       throw new CliUsageError(`--format ${format} conflicts with the --out extension .${extension}.`);
+    }
+    if (format === "both" && ["pdf", "chemdraft"].includes(extension)) {
+      throw new CliUsageError(`--format both conflicts with the --out extension .${extension}.`);
     }
     const background = stringOption(parsed, "--background") ?? renderDefaults.background;
     if (background !== "white" && background !== "transparent") throw new CliUsageError("--background must be white or transparent.");

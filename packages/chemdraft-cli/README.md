@@ -119,7 +119,7 @@ molecule.style.visualEffects = [{ kind: "sketch", seed: 42, roughness: 1.3 }];
 document.pages[0].objects.push({
   id: "ring-letter", type: "text", text: "A", spans: [],
   x: ring.center.x - 6, y: ring.center.y - 9, width: 12, height: 18,
-  rotation: 0, style: { fontSize: 18 }
+  rotation: 0, style: { fontSizePx: 18 }
 });
 ~~~
 
