@@ -158,7 +158,6 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
-  isTerminalHeteroatomDoubleBond,
   nativeBondOrderResolution,
   nativeMoleculeRings,
   defaultMechanismArrowControls,

@@ -79,10 +79,10 @@ describe("atom label editor focus", () => {
     return selectDocumentObjects(withRing, withRing.pages[0].id, []);
   }
 
-  async function renderMainWindow(initialDocument: ChemDraftDocument) {
+  async function renderMainWindow(initialDocument: ChemDraftDocument, initialActiveToolCommandId = "tool.atom") {
     await act(async () => {
       root.render(createElement(MainWindow, {
-        initialActiveToolCommandId: "tool.atom",
+        initialActiveToolCommandId,
         initialCrosshairsVisible: false,
         initialDocument,
         initialPaletteMode: "hidden",
@@ -258,6 +258,20 @@ describe("atom label editor focus", () => {
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
   });
 
+  it.each(["macos", "windows"] as const)("Text click inside the 8 px atom-label conversion reach edits the atom instead of placing text (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    // The Text tool's atom-first hit test and fresh-text conversion both use the 8 px atom
+    // radius. Therefore a real Text-tool placement cannot leave a new text anchor within that
+    // conversion reach: the same click opens the atom-label editor first.
+    await pointerPress(container.querySelector(".page")!, { x: atom.x, y: atom.y + 7 });
+    expect(labelEditor()?.getAttribute("data-atom-id")).toBe(atom.id);
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+  });
+
   it.each(["macos", "windows"] as const)("keeps fresh text near, but outside, the atom hit radius (%s)", async (platform) => {
     setShortcutPlatform(platform);
     await renderMainWindow(chainDocument());
@@ -279,6 +293,30 @@ describe("atom label editor focus", () => {
     expect(objects).toHaveLength(2);
     expect(objects.find((object) => object.type === "text")).toMatchObject({ type: "text", text: "OMe", x: textPoint.x, y: textPoint.y });
     expect(molecule().atoms.find((atom) => atom.id === originalAtom.id)).toEqual(originalAtom);
+  });
+
+  it("commits the first of two fresh Text-tool placements when the second placement ends its edit", async () => {
+    // Start with Text active so its first stamp stays active for the next click. The second
+    // pointer handler then registers its fresh id before React observes the first editor ending.
+    await renderMainWindow(chainDocument(), "tool.text");
+    // Both captions go through real Text-tool placement. The first one is an exact element in
+    // open space, so its first commit takes the automatic standalone-atom path.
+    await pointerPress(container.querySelector(".page")!, { x: 100, y: 100 });
+    const firstEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(firstEditor, "N");
+      firstEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // React observes the first editor ending after this second placement has registered its own
+    // fresh id. A single-slot ref loses the first id here; the Set commits it to an atom.
+    await pointerPress(container.querySelector(".page")!, { x: 150, y: 100 });
+
+    const objects = bridge().snapshot().document.pages[0].objects;
+    expect(objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(objects.find((object) => object.type === "text")).toMatchObject({
+      type: "text", text: "Text", x: 150, y: 100
+    });
+    expect(objects.some((object) => object.type === "text" && object.text === "N")).toBe(false);
   });
 
   it.each(["OMe", "CH3", "NO2", "   "])("keeps re-edited existing text %j on a chain end as text", async (label) => {
