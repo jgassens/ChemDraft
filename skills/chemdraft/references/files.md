@@ -94,6 +94,10 @@ must not be removed from the input to force success. `analyze` does accept
 radicals and keeps them in its composition and masses; report the export
 refusal and the computed numbers separately.
 
+PDF output currently misplaces atom labels and text ("HO" split, O, N
+and S off their atoms, even for unstyled aspirin). View every PDF before
+delivering it, and prefer SVG or PNG figures until this is fixed.
+
 ## Hand-edit loop and compatibility
 
 Export CDXML. Tell the human to save the current drawing first, because

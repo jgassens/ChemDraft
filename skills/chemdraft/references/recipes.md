@@ -206,10 +206,13 @@ check on each platform. Do not automate editing through the testing bridge.
 ## 11. A structure "in the style of" a named chemist: brevetoxin B, Nicolaou-style
 
 A request for a named chemist's or journal's style is a set of visual
-conventions to reproduce, not something to refuse. Nicolaou's ladder-
-polyether drawings use lettered rings, H at every ring-fusion
-stereocentre, Me labels and, in reviews, shaded ring interiors. All are
-native document art ([art](art.md)).
+conventions to reproduce, not something to refuse. Nicolaou's calling card
+is vivid colour: every ring of the ladder polyether filled with its own
+loud, saturated colour. Lettered rings, H at every ring-fusion
+stereocentre and Me labels complete it. A black-and-white figure with ring
+letters is not his style, and pale pastel tints undersell it: the
+coloured figure below is the answer, not an optional variant. All of it
+is native document art ([art](art.md)).
 
 Never type a structure this size from memory. Take it from PubChem CID
 10865865 (Brevetoxin B, C50H70O14) and cite the CID with the figure:
@@ -232,13 +235,17 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batc
 ```
 
 Save this script as `brevetoxin-style.mjs` in the scratch directory. It
-fills the eleven rings with pastel colours, letters them A–K left to
-right at their centres, moves each ring-fusion stereo bond onto an
+fills the eleven rings with saturated colours (no two neighbours alike),
+letters them A–K left to right at their centres in white or near-black,
+whichever reads on that fill, moves each ring-fusion stereo bond onto an
 explicit H (opposite wedge/hash, along the fused bond), and writes two
-files: `-carbon` (verifiable) and `-nicolaou` (methyls relabelled Me).
+files. `-carbon` keeps every methyl a carbon (drawn CH3): it is the
+verifiable structure and the editable file to hand over. `-nicolaou`
+relabels the methyls Me for the picture only, because a Me label is not
+a carbon (see the check below).
 
 ```js
-// node brevetoxin-style.mjs <scratch>: shaded rings, ring letters A-K, H at ring fusions, Me labels.
+// node brevetoxin-style.mjs <scratch>: vivid ring fills, ring letters A-K, H at ring fusions, Me labels.
 import fs from "node:fs";
 import path from "node:path";
 const dir = process.argv[2];
@@ -250,13 +257,14 @@ const mol = page.objects.find((o) => o.type === "molecule");
 const atom = (id) => mol.atoms.find((a) => a.id === id);
 const neighbours = (id) => mol.bonds.flatMap((b) => b.fromAtomId === id ? [b.toAtomId] : b.toAtomId === id ? [b.fromAtomId] : []);
 const rings = [...build.molecules[0].rings].sort((a, b) => a.center.x - b.center.x);
-// Pastel ring interiors and italic serif ring letters, A to K from left to right.
-const fills = ["#f4b6b6", "#f7d2a6", "#f6eaa2", "#cfe8a9", "#a9dcc6", "#a8d4ec", "#b4bff0", "#d0b8ee", "#efb8dc", "#f4c4c4", "#e9d7b0"];
+// Saturated ring fills, A to K from left to right, each paired with the letter colour that reads on it.
+const fills = [["#e53935", "#ffffff"], ["#fb8c00", "#1a1a1a"], ["#fdd835", "#1a1a1a"], ["#43a047", "#ffffff"], ["#00acc1", "#1a1a1a"],
+  ["#1e88e5", "#ffffff"], ["#8e24aa", "#ffffff"], ["#d81b60", "#ffffff"], ["#7cb342", "#1a1a1a"], ["#ff7043", "#1a1a1a"], ["#3949ab", "#ffffff"]];
 mol.style.atomLabelBackgroundColor = "transparent";
-mol.style.ringStyles = Object.fromEntries(rings.map((r, i) => [r.ringKey, { fillColor: fills[i % fills.length], fillOpacity: 0.55 }]));
+mol.style.ringStyles = Object.fromEntries(rings.map((r, i) => [r.ringKey, { fillColor: fills[i % fills.length][0], fillOpacity: 0.9 }]));
 rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text: String.fromCharCode(65 + i), spans: [],
   x: r.center.x - 10, y: r.center.y - 0.64 * 20, width: 20, height: 24, rotation: 0,
-  style: { fontSizePx: 20, fontWeight: 700, fontStyle: "italic", textAlign: "center", color: "#3a3a3a", fontFamily: "Times New Roman, Times, serif" } }));
+  style: { fontSizePx: 20, fontWeight: 700, fontStyle: "italic", textAlign: "center", color: fills[i % fills.length][1], fontFamily: "Times New Roman, Times, serif" } }));
 // Ring-fusion CH stereocentres: move the stereo bond onto an explicit H along the fused bond.
 for (const a of [...mol.atoms]) {
   const mine = rings.filter((r) => r.atomIds.includes(a.id));
@@ -269,44 +277,57 @@ for (const a of [...mol.atoms]) {
     display: { bondStyle: stereo.display.bondStyle === "wedge" ? "hashed" : "wedge" } });
   delete stereo.display.bondStyle;
 }
-fs.writeFileSync(path.join(dir, "brevetoxin-b-carbon.json"), JSON.stringify(doc));
-// Display-only last step: methyl carbons on ring atoms become "Me" labels.
+// Methyl carbons on ring atoms: drawn CH3 in the editable file, relabelled Me only in the picture.
 const ringAtoms = new Set(rings.flatMap((r) => r.atomIds));
-for (const a of mol.atoms) {
+const methyls = mol.atoms.filter((a) => {
   const n = neighbours(a.id);
   const bond = mol.bonds.find((b) => b.fromAtomId === a.id || b.toAtomId === a.id);
-  if (a.element === "C" && n.length === 1 && ringAtoms.has(n[0]) && bond.order === "single") a.element = "Me";
-}
+  return a.element === "C" && n.length === 1 && ringAtoms.has(n[0]) && bond.order === "single";
+});
+mol.style.atomLabelShowTerminalCarbonsByAtomId = Object.fromEntries(methyls.map((a) => [a.id, true]));
+fs.writeFileSync(path.join(dir, "brevetoxin-b-carbon.json"), JSON.stringify(doc));
+// Display-only last step: setting element to "Me" makes each methyl a placeholder atom, not a carbon.
+for (const a of methyls) a.element = "Me";
 fs.writeFileSync(path.join(dir, "brevetoxin-b-nicolaou.json"), JSON.stringify(doc));
 ```
 
-Style, render and save:
+Style, render and save. The `.chemdraft` comes from the `-carbon` file so
+the editable structure stays the true molecule; the `-nicolaou` PNG and
+SVG are the picture:
 
 ```sh
 node "$scratch/brevetoxin-style.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-carbon.json" --out "$scratch/brevetoxin-b-carbon.png" --width 2000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-carbon.json" --out "$scratch/brevetoxin-b.chemdraft"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-nicolaou.json" --out "$scratch/brevetoxin-b-nicolaou" --format both --width 2000
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-nicolaou.json" --out "$scratch/brevetoxin-b-nicolaou.chemdraft"
 ```
 
 Check, as verified when this recipe was written:
 
-- The `-carbon` render reports 23 specified stereocentres, 0 unspecified.
-  Run `analyze --methods 'rdkit.canonical-smiles,rdkit.inchikey'` on the
-  PubChem SMILES and on the reported `canonicalSmiles`; both gave
-  InChIKey `LYTCVQQGCSNFJU-FGRVLNGBSA-N` and formula C50H70O14.
-- The `-nicolaou` PNG render writes each Me as `*` and emits one warning
-  per label. The `.chemdraft` save emits two distinct warnings per Me label:
-  one for molfile loss and one saying it was exported as a CDXML element
-  label. Its stereo counts read as unspecified for that reason. Replace
-  `*` with `C` in its `canonicalSmiles` and check the same InChIKey.
-- Look at the PNG: eleven shaded rings lettered A–K, fifteen fusion H
-  atoms, seven Me labels, no label sitting on a ring letter.
+- The `-carbon` PNG and the `.chemdraft` save each report 23 specified
+  stereocentres, 0 unspecified. Run
+  `analyze --methods 'rdkit.canonical-smiles,rdkit.inchikey'` on the
+  PubChem SMILES and on each reported `canonicalSmiles`; all gave
+  InChIKey `LYTCVQQGCSNFJU-FGRVLNGBSA-N` and formula C50H70O14. Hand
+  over `brevetoxin-b.chemdraft`: whoever opens or copies it gets
+  brevetoxin B, with CH3 where the picture shows Me.
+- The `-nicolaou` render writes each Me as `*` and emits one warning per
+  label, and its stereo counts read as unspecified: the Me-labelled
+  document is seven placeholder atoms short of brevetoxin B. Use it only
+  as the picture; never save it as the `.chemdraft` you deliver. Say
+  this trade-off when you hand over both files.
+- Look at the PNG: eleven vividly coloured rings, no two neighbours alike,
+  lettered A–K with every letter readable on its fill, fifteen fusion H
+  atoms, seven Me labels, ring O labels readable at the ring corners, no
+  label sitting on a ring letter.
 
 ## 12. A hand-sketched structure: penicillin G
 
 The sketch visual effect draws rough strokes over the bonds; a
-handwriting label font and a sketched circle finish the look. Structure
+handwriting label font and a sketched circle finish the look. A rough
+stroke can make a plain bond taper like a wedge and can run through a
+hashed bond so it reads as solid, so this recipe uses settings that were
+checked by eye for this molecule and also writes an unsketched copy. Structure
 from PubChem CID 5904 (Penicillin G, C16H18N2O4S):
 
 ```sh
@@ -324,7 +345,8 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batc
 Save this as `penicillin-sketch.mjs` in the scratch directory:
 
 ```js
-// node penicillin-sketch.mjs <scratch>: rough strokes, handwriting labels, a sketched circle and caption.
+// node penicillin-sketch.mjs <scratch>: rough strokes, handwriting labels, a sketched circle and caption,
+// plus an unsketched copy for when the stereochemistry must be unambiguous.
 import fs from "node:fs";
 import path from "node:path";
 const dir = process.argv[2];
@@ -334,12 +356,13 @@ const doc = read("penicillin-g.json");
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");
 const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
-mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, strokeWidth: 1, seed: 7, color: ink }];
+// Low roughness and bowing and a thin stroke keep plain bonds even; seed 4 was checked by eye for this molecule.
+mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, strokeWidth: 0.6, seed: 4, color: ink }];
 Object.assign(mol.style, { bondColor: ink, atomLabelColor: ink, atomLabelFontFamily: hand, atomLabelFontSizePx: 16 });
-// Keep wedges and hashes legible under the rough strokes.
+// Wide, well-spaced hashes and wide wedges stay readable under the rough strokes.
 const stereo = mol.bonds.filter((b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed").map((b) => b.id);
-mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 9]));
-mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 5]));
+mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 12]));
+mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 8]));
 const lactam = build.molecules[0].rings.find((r) => r.size === 4);
 page.objects.push({ id: "lactam-circle", type: "graphic", graphicKind: "ellipse", rotation: 0,
   x: lactam.center.x - 25, y: lactam.center.y - 25, width: 50, height: 50,
@@ -351,18 +374,30 @@ page.objects.push({ id: "caption", type: "text", text: "penicillin G", spans: []
   x: Math.min(...xs), y: bottom + 24, width: Math.max(...xs) - Math.min(...xs), height: 26,
   style: { fontFamily: hand, fontSizePx: 20, textAlign: "center", color: ink } });
 fs.writeFileSync(path.join(dir, "penicillin-g-sketch.json"), JSON.stringify(doc));
+// The same figure without the rough strokes: every wedge and hash drawn clean.
+mol.style.visualEffects = [];
+fs.writeFileSync(path.join(dir, "penicillin-g-clean.json"), JSON.stringify(doc));
 ```
 
 ```sh
 node "$scratch/penicillin-sketch.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/penicillin-g-sketch.json" --out "$scratch/penicillin-g-sketch" --format both --width 1200
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/penicillin-g-sketch.json" --out "$scratch/penicillin-g-sketch.chemdraft"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/penicillin-g-clean.json" --out "$scratch/penicillin-g-clean.png" --width 1200
 ```
 
 Verified: the reported canonical SMILES equals the source's (InChIKey
-`JGSARLDLIJGVTE-MBNYWOFBSA-N`), with 3 specified stereocentres. The 1 unspecified centre is the bridgehead N,
-which the plain `render` and `stereo` report the same way; do not add
-stereo to it. Look at the image at full size: the sketch traces the
-centre of the hashed C–CO2H bond, which is why the script widens the
-hashes ([art](art.md), Known limits). Fonts are per machine; if neither
+`JGSARLDLIJGVTE-MBNYWOFBSA-N`), with 3 specified stereocentres. The 1
+unspecified centre is the bridgehead N, which the plain `render` and
+`stereo` report the same way; do not add stereo to it.
+
+Then look at every wedge and hash in the sketched PNG at full size, and
+at every plain bond next to them. With these settings the gem-dimethyl
+and ring bonds stay even, the C–S and C–N wedges read as wedges, and the
+hashed C–CO2H bond shows its wide ticks, though a thin rough line still
+runs through them ([art](art.md), Known limits). If any plain bond tapers
+like a wedge or a hash reads as solid, try another `seed` and look
+again. Deliver the sketch with `penicillin-g-clean.png` alongside, and
+offer the clean one wherever the stereochemistry must be unambiguous
+(an exam, a key, a paper). Fonts are per machine; if neither
 handwriting font is installed, the generic `cursive` font is used.

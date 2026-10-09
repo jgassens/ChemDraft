@@ -115,6 +115,9 @@ Do not simulate a successful ChemDraft response.
 | Predicted ¹H/¹³C NMR shifts and spectra | `nmr` | `predict_nmr` |
 | CDXML, PDF, SDF, MOL, SMILES files | `export` | `export_structure` |
 
+PDF output currently misplaces atom labels and text. View every PDF
+before delivering it, and prefer SVG or PNG figures until this is fixed.
+
 ## Core workflow
 
 1. Decide what chemistry the user intends: compounds, charges, isotopes,
@@ -165,6 +168,17 @@ journal figures, annotations, arrows and brackets. The workflow is
 - A named chemist's or journal's drawing style is a set of visual
   conventions to reproduce, not something to refuse or to call
   impossible.
+- "Nicolaou style" means vivid coloured rings: loud, saturated, per-ring
+  fills are the core of the look, with ring letters, fusion H and Me
+  labels on top. Deliver the coloured figure as the answer, not as an
+  optional variant; black and white with ring letters, or pale pastels,
+  is not his style (recipe 11).
+- A label such as Me set as an atom's element replaces that carbon with
+  a placeholder atom. Keep the editable file with real carbons and use
+  the Me-labelled copy only as the picture (art.md, pattern 2).
+- Sketched looks can make plain bonds read as wedges and hashes as solid
+  lines. Look at every wedge and hash after sketching, and offer an
+  unsketched version when stereochemistry must be unambiguous.
 - Never tell a user ChemDraft cannot produce a visual style until you
   have read art.md and tried it. If one detail truly cannot be done,
   name that detail, say why, and deliver the rest.

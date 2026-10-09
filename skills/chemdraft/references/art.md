@@ -12,6 +12,13 @@ style of" a named chemist or journal is a set of visual conventions to
 reproduce with them, not a request to refuse. Every pattern below was
 rendered and inspected with the commands shown.
 
+**"Nicolaou style" means vivid coloured rings.** Loud, saturated,
+clearly different fills, one per ring, are the core of the look; ring
+letters, fusion H and Me labels go on top. The coloured figure is the
+answer, not an optional variant: a black-and-white figure with ring
+letters is not his style, and pale pastel tints undersell it. Recipe 11
+in [recipes](recipes.md) is the worked version.
+
 ## What the native model can draw
 
 | Look | Where it lives in the document JSON |
@@ -80,7 +87,8 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
 
-`--format svg|png|pdf|chemdraft|both` follows the extension by default;
+`--format svg|png|pdf|chemdraft|both` follows the extension by default
+(PDF currently misplaces labels; see Known limits);
 `--background transparent`, `--padding` and `--width` work as in `render`.
 Use absolute paths: the launcher runs the command inside the checkout,
 so a relative path resolves there, not in your working directory.
@@ -172,6 +180,15 @@ one glowing) with letters A–D centred, SMILES unchanged. On coloured
 fills, set `mol.style.atomLabelBackgroundColor = "transparent"` so
 heteroatom labels do not sit on white patches.
 
+For a vivid look (Nicolaou style), use saturated colours at
+`fillOpacity` about 0.9, never two alike side by side, and pick each
+ring letter's colour for its fill: white on red, green, blue, purple or
+magenta; near-black on yellow, orange, cyan or light green. Recipe 11
+has an eleven-colour palette checked this way. A per-atom white
+`atomLabelBackgroundColors` patch on ring O atoms looked worse (a speck
+of fill shows inside the O); black O labels on the transparent default
+stayed readable at the ring corners.
+
 ### 2. Explicit H at a ring fusion, bold fusion bond, CH3 or Me
 
 The depiction puts each stereo bond on a ring bond starting at the
@@ -199,11 +216,25 @@ Verified on `C[C@@]12CCCC[C@H]1CCCC2`: hashed H below the fusion, bold
 fusion bond, CH3 label; identical InChIKey. Always confirm: if the
 InChIKey changes, swap the H's wedge and hash.
 
-A `Me` label (`atom.element = "Me"`) draws "Me", but the identity check
-writes it as a dummy atom `*` with a warning, and the stereo counts then
-read every centre as unspecified. Verify the figure with carbons first;
-relabel to `Me` as the last, display-only step; then replace each `*` in
-the reported SMILES with `C` and confirm the InChIKey still matches.
+**Setting an atom's element to a label string changes the chemistry.**
+`atom.element` is the atom's identity, not its caption: `"Me"`, `"Et"`,
+`"Ph"` or any other string that is not an element turns that atom into a
+placeholder. A `Me` label (`atom.element = "Me"`) draws "Me", but the
+identity check writes it as a dummy atom `*` with a warning, the stereo
+counts then read every centre as unspecified, and a `.chemdraft` saved
+from that document holds `*` atoms, so anyone who opens or copies it
+gets the wrong molecule. The atom schema (`packages/chem-core`) has no
+display-label field that keeps the element C while showing "Me"; the
+closest is `atomLabelShowTerminalCarbonsByAtomId`, which draws CH3 and
+keeps the carbon.
+
+So the trade-off is: the Me-labelled document is a picture only. Verify
+and save the figure with carbons (drawn CH3), relabel to `Me` as the
+last, display-only step, and render the picture from that copy. Hand
+over the carbon `.chemdraft` as the editable file and say that it shows
+CH3 where the picture shows Me. To check the picture, replace each `*`
+in its reported SMILES with `C` and confirm the InChIKey still matches.
+Recipe 11 does exactly this.
 
 ### 3. Highlight a substructure
 
@@ -236,10 +267,14 @@ Verified on paracetamol: red bold O and OH, blue bold NH.
 ### 5. Hand-sketched look
 
 ```js
-mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, strokeWidth: 1, seed: 7, color: "#1f2a44" }];
+mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, strokeWidth: 0.6, seed: 4, color: "#1f2a44" }];
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
 mol.style.atomLabelFontFamily = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
+// Wide, well-spaced hashes and wedges stay readable under the rough strokes.
+const stereo = mol.bonds.filter((b) => ["wedge", "hashed"].includes(b.display?.bondStyle)).map((b) => b.id);
+mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 12]));
+mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 8]));
 page.objects.push({ id: "ring-circle", type: "graphic", graphicKind: "ellipse", x: 341, y: 509, width: 50, height: 50, rotation: 0,
   style: { fillColor: "none", visualEffects: [{ kind: "sketch", roughness: 2.2, bowing: 2, seed: 3, color: "#c0392b", strokeWidth: 2 }] },
   data: {} });
@@ -254,6 +289,22 @@ labels stay clean, so a handwriting `atomLabelFontFamily` completes the
 look. Fonts come from the machine: Bradley Hand is on macOS, Segoe Print
 on Windows; list both with a generic fallback. Verified on penicillin G
 (recipe 12).
+
+**The sketch can mislead about stereochemistry.** A rough stroke that
+bows away from a plain bond makes it taper, so it reads as a wedge, and
+the stroke runs down the middle of a hashed bond, so the hash can read as
+a solid line. In evaluation runs both happened with the old defaults
+(roughness 1.25, bowing 1, strokeWidth 1). Keep roughness and bowing low
+(about 0.6 and 0.4 with `strokeWidth` 0.6 was the evenest on penicillin G;
+roughness 1 and bowing 0.8 still tapered some bonds), widen and space
+the stereo bonds with `bondBoldWidths` (about 12) and `bondHashSpacings`
+(about 8), and treat `seed` as a choice you check by eye: the same
+settings with another seed can taper a different bond. After every
+sketched render, look at each wedge and hash at full size, and at the
+plain bonds beside them; if any plain bond tapers like a wedge or a hash
+reads as solid, change the seed and look again. When the stereochemistry
+must be unambiguous (exams, answer keys, papers), also render the same
+document with `visualEffects` removed and offer that clean version.
 
 ### 6. Arrows, brackets and annotations
 
@@ -309,10 +360,15 @@ left out with no warning, so anchor at a `point` on the bond instead.
   characters (`C₆H₁₀O`) in one span avoid the gaps but may fall back to
   another font. Look at the image either way.
 - The molecule sketch traces the centre line of wedge and hashed bonds,
-  so a hashed bond reads as a spine with ticks. Keep `strokeWidth` near 1,
-  widen stereo bonds with `bondBoldWidths` (about 9) and
-  `bondHashSpacings` (about 5), inspect at full size, and say so when
+  so a hashed bond reads as a spine with ticks, and it can make a plain
+  bond taper like a wedge. Use the settings in pattern 5, inspect every
+  wedge and hash at full size, and offer an unsketched version when
   stereo must be unambiguous.
+- **PDF output misplaces atom labels and text.** In three independent
+  runs, even an unstyled aspirin `export` to PDF split "HO" and left O,
+  N and S labels off their atoms; `render-document --format pdf` of the
+  same aspirin document shows the same fault. View every PDF before
+  delivering it, and prefer SVG or PNG until this is fixed.
 - `image` graphics fall back to a placeholder in exports
   (`export.svg.graphic_fallback`); the reflection effect is approximated
   or omitted with a warning. SVG, PNG and PDF render only the first page.
