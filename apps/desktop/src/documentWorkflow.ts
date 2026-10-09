@@ -1358,8 +1358,9 @@ export function createNativeArtGraphicObject(
   }
 
   const page = firstPage(document);
-  const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
-  const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  const orbitalPlacement = nativeOrbitalPlacementAtPoint(document, point, tool);
+  const x = orbitalPlacement?.x ?? clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
+  const y = orbitalPlacement?.y ?? clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
   const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
   const data = nativeArtToolDataForPlacement(toolData, x, y);
   return {
@@ -1369,7 +1370,7 @@ export function createNativeArtGraphicObject(
     y,
     width: tool.width,
     height: tool.height,
-    rotation: 0,
+    rotation: orbitalPlacement?.rotation ?? 0,
     style: {
       ...toolStyle,
       source: "chemdraft-native-art",
@@ -1386,6 +1387,112 @@ export function createNativeArtGraphicObject(
       artToolId: tool.id
     }
   };
+}
+
+type NativeOrbitalPlacement = Pick<GraphicObject, "x" | "y" | "rotation">;
+
+/**
+ * Place orbital art at the atom under the pointer, without creating a persistent anchor.
+ *
+ * A single lobe's local tip is at the bottom centre of its frame, and a p orbital's
+ * coincident lobe nodes are at its frame centre. The angle is chosen from the largest
+ * unoccupied angular gap around the atom, which leaves the lobe pointing away from bonds.
+ */
+function nativeOrbitalPlacementAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  tool: NativeArtToolDefinition
+): NativeOrbitalPlacement | undefined {
+  if (tool.id !== "lobe" && tool.id !== "shadedLobe" && tool.id !== "pOrbital") {
+    return undefined;
+  }
+
+  const target = nativeOrbitalAtomAtPoint(document, point);
+  if (!target) {
+    return undefined;
+  }
+
+  const gapBisector = nativeAtomLargestBondGapBisector(target.molecule, target.atom.id);
+  if (tool.id === "pOrbital") {
+    // The p-orbital's local axis is vertical. Its axis, unlike a single lobe's direction,
+    // is perpendicular to the unoccupied-gap bisector.
+    const rotation = gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
+    return {
+      x: target.atom.x - tool.width / 2,
+      y: target.atom.y - tool.height / 2,
+      rotation: normalizeDegrees(rotation)
+    };
+  }
+
+  // The unrotated lobe points straight up from its bottom-centre tip.
+  const rotationRadians = (gapBisector ?? -Math.PI / 2) + Math.PI / 2;
+  const rotation = normalizeDegrees(radiansToDegrees(rotationRadians));
+  const tipOffset = rotatePointAround(
+    { x: tool.width / 2, y: tool.height },
+    { x: tool.width / 2, y: tool.height / 2 },
+    degreesToRadians(rotation)
+  );
+  return {
+    x: target.atom.x - tipOffset.x,
+    y: target.atom.y - tipOffset.y,
+    rotation
+  };
+}
+
+function nativeOrbitalAtomAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint
+): { molecule: MoleculeObject; atom: MoleculeAtom } | undefined {
+  const target = firstPage(document).objects
+    .map((object, layerIndex) => {
+      if (object.type !== "molecule") {
+        return undefined;
+      }
+      const hit = findNativeMoleculeDeleteHit(object, point);
+      if (hit?.kind !== "atom") {
+        return undefined;
+      }
+      const atom = object.atoms.find((candidate) => candidate.id === hit.atomId);
+      return atom ? { molecule: object, atom, distance: hit.distanceToPointer, layerIndex } : undefined;
+    })
+    .filter((candidate): candidate is {
+      molecule: MoleculeObject;
+      atom: MoleculeAtom;
+      distance: number;
+      layerIndex: number;
+    } => candidate !== undefined)
+    .sort((left, right) => left.distance - right.distance || right.layerIndex - left.layerIndex)[0];
+  return target ? { molecule: target.molecule, atom: target.atom } : undefined;
+}
+
+function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const angles = molecule.bonds.flatMap((bond) => {
+    const neighborId = bond.fromAtomId === atomId
+      ? bond.toAtomId
+      : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
+    const neighbor = neighborId ? molecule.atoms.find((candidate) => candidate.id === neighborId) : undefined;
+    return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
+  }).sort((left, right) => left - right);
+  if (angles.length === 0) {
+    return undefined;
+  }
+
+  let gapStart = angles[0]!;
+  let largestGap = -Infinity;
+  for (let index = 0; index < angles.length; index += 1) {
+    const start = angles[index]!;
+    const end = index === angles.length - 1 ? angles[0]! + Math.PI * 2 : angles[index + 1]!;
+    const gap = end - start;
+    if (gap > largestGap) {
+      gapStart = start;
+      largestGap = gap;
+    }
+  }
+  return gapStart + largestGap / 2;
 }
 
 export function createNativeFreehandGraphicObject(
@@ -11192,6 +11299,28 @@ export function rotateDocumentObject(
     );
   }
 
+  if (isNativeOrbitalLobe(object)) {
+    const rotation = normalizeDegrees(object.rotation + angleDegrees);
+    const tip = nativeOrbitalLobeTip(object, object.rotation);
+    const nextTip = nativeOrbitalLobeTip(object, rotation);
+    const dx = tip.x - nextTip.x;
+    const dy = tip.y - nextTip.y;
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: object.x + dx,
+          y: object.y + dy,
+          data: translateGraphicObjectData(object.data, dx, dy),
+          rotation
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
   return applyPatch(
     document,
     {
@@ -11202,6 +11331,20 @@ export function rotateDocumentObject(
       }
     },
     { now: phase4Timestamp }
+  );
+}
+
+function isNativeOrbitalLobe(object: DocumentObject): object is GraphicObject {
+  return object.type === "graphic" && (object.data.artToolId === "lobe" || object.data.artToolId === "shadedLobe");
+}
+
+/** The page-relative local tip, after the graphic's ordinary centre rotation. */
+function nativeOrbitalLobeTip(object: GraphicObject, rotationDegrees: number): PagePoint {
+  const center = { x: object.width / 2, y: object.height / 2 };
+  return rotatePointAround(
+    { x: object.width / 2, y: object.height },
+    center,
+    degreesToRadians(rotationDegrees)
   );
 }
 

@@ -289,6 +289,40 @@ function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
   return molecule;
 }
 
+function orbitalLobeTip(object: GraphicObject): PagePoint {
+  const point = object.data.pathNodes?.[0]?.point;
+  if (!point) throw new Error("Expected orbital lobe tip node.");
+  const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+  const radians = object.rotation * Math.PI / 180;
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+    y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+  };
+}
+
+function largestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) return undefined;
+  const angles = molecule.bonds.flatMap((bond) => {
+    const neighborId = bond.fromAtomId === atomId ? bond.toAtomId : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
+    const neighbor = molecule.atoms.find((candidate) => candidate.id === neighborId);
+    return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
+  }).sort((left, right) => left - right);
+  if (angles.length === 0) return undefined;
+  let gapStart = angles[0]!;
+  let gapSize = -Infinity;
+  angles.forEach((start, index) => {
+    const end = index === angles.length - 1 ? angles[0]! + Math.PI * 2 : angles[index + 1]!;
+    if (end - start > gapSize) {
+      gapStart = start;
+      gapSize = end - start;
+    }
+  });
+  return gapStart + gapSize / 2;
+}
+
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
   function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {
     const base = createPhase4Document("Unknown Bond Repair");
@@ -1968,6 +2002,85 @@ describe("Phase 4 document workflow", () => {
     const sOrbital = nativeArtToolForCommand("tool.sOrbital");
     expect(sOrbital).toMatchObject({ graphicKind: "ellipse" });
     expect(sOrbital?.style.fillMode).toBe("gloss");
+  });
+
+  it("places a lobe tip on a two-bond atom and points it through that atom's largest bond gap", () => {
+    const withRing = insertNativeTemplateMolecule(createPhase4Document("Lobe Atom Placement"), { x: 400, y: 400 }, "cyclohexane");
+    const molecule = selectedMolecule(withRing);
+    const atom = molecule.atoms.find((candidate) => molecule.bonds.filter(
+      (bond) => bond.fromAtomId === candidate.id || bond.toAtomId === candidate.id
+    ).length === 2);
+    if (!atom) throw new Error("Expected a two-bond ring atom.");
+
+    const expectedDirection = largestBondGapBisector(molecule, atom.id);
+    if (expectedDirection === undefined) throw new Error("Expected bond-gap direction.");
+
+    for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
+      const lobe = createNativeArtGraphicObject(withRing, atom, commandId);
+      if (!lobe) throw new Error("Expected orbital lobe.");
+      const tip = orbitalLobeTip(lobe);
+      expect(tip.x).toBeCloseTo(atom.x, 6);
+      expect(tip.y).toBeCloseTo(atom.y, 6);
+      expect(Math.cos(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(Math.cos(expectedDirection), 6);
+      expect(Math.sin(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(Math.sin(expectedDirection), 6);
+    }
+
+    const pOrbital = createNativeArtGraphicObject(withRing, atom, "tool.pOrbital");
+    if (!pOrbital) throw new Error("Expected p orbital.");
+    expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
+    expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
+    expect(Math.cos(pOrbital.rotation * Math.PI / 180 - Math.PI / 2 - expectedDirection)).toBeCloseTo(0, 6);
+  });
+
+  it("points a lobe up at a bondless atom and centres a p orbital on its atom", () => {
+    const empty = createPhase4Document("Bondless Orbital Placement");
+    const seed = createNativeSingleBondMolecule(empty, { x: 300, y: 300 });
+    const atom = seed.atoms[0]!;
+    const loneAtom: MoleculeObject = {
+      ...seed,
+      atoms: [atom],
+      bonds: [],
+      x: atom.x,
+      y: atom.y,
+      width: 0,
+      height: 0,
+      structure: "C"
+    };
+    const document = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: loneAtom }]);
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.shadedLobe");
+    const pOrbital = createNativeArtGraphicObject(document, atom, "tool.pOrbital");
+    if (!lobe || !pOrbital) throw new Error("Expected orbital art objects.");
+
+    expect(orbitalLobeTip(lobe).x).toBeCloseTo(atom.x, 6);
+    expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
+    expect(lobe.rotation).toBeCloseTo(0, 6);
+    expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
+    expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
+    expect(pOrbital.rotation).toBeCloseTo(0, 6);
+  });
+
+  it("keeps open-space orbital placement unchanged and holds lobe tips through snapped-drag and typed rotations", () => {
+    const blank = createPhase4Document("Lobe Rotation");
+    const openSpaceLobe = createNativeArtGraphicObject(blank, { x: 400, y: 320 }, "tool.lobe");
+    if (!openSpaceLobe) throw new Error("Expected orbital lobe.");
+    expect(openSpaceLobe.x + openSpaceLobe.width / 2).toBeCloseTo(400, 6);
+    expect(openSpaceLobe.y + openSpaceLobe.height / 2).toBeCloseTo(320, 6);
+    expect(openSpaceLobe.rotation).toBe(0);
+
+    for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
+      const placed = insertNativeArtGraphicObject(blank, { x: 400, y: 320 }, commandId);
+      const objectId = placed.selection.objectIds[0]!;
+      const initialTip = orbitalLobeTip(graphicById(placed, objectId));
+      // Rotate-handle drags pass their snapped delta (15° here) to this shared object rotate path.
+      const dragRotated = rotateDocumentObject(placed, objectId, 15);
+      const typedRotated = rotateDocumentObject(dragRotated, objectId, 32);
+
+      [dragRotated, typedRotated].forEach((document) => {
+        const tip = orbitalLobeTip(graphicById(document, objectId));
+        expect(tip.x).toBeCloseTo(initialTip.x, 6);
+        expect(tip.y).toBeCloseTo(initialTip.y, 6);
+      });
+    }
   });
 
   it("maps arrow tool commands to reaction-arrow kinds", () => {
