@@ -1527,12 +1527,14 @@ function planNativeMoleculeGraphSvg(
 
     return [{ bond, drawingStyle: bondDrawingStyle, segments }];
   });
+  const labeledAtomIds = new Set(labelPlanByAtomId.keys());
+  joinCenteredDoubleBondSegments(bondSegmentGroups, labeledAtomIds);
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
     : "connected-carbon-chain";
   const carbonJunctionPlans = nativeCarbonJunctionPlans(
     object,
-    new Set(atomLabels.map((plan) => plan.atom.id)),
+    labeledAtomIds,
     drawingStyle
   );
   const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
@@ -4707,6 +4709,16 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
+    if (bond.display?.doubleBondSide === "center") {
+      return [gap / 2, -gap / 2].map((offset, index) => ({
+        x1: x1 + normal.x * offset,
+        y1: y1 + normal.y * offset,
+        x2: x2 + normal.x * offset,
+        y2: y2 + normal.y * offset,
+        segment: index === 0 ? "primary" : "secondary",
+        doubleBondSide: "center"
+      }));
+    }
     const terminalHeteroatomSide = terminalHeteroatomDoubleBondInnerSide(
       fromAtom,
       toAtom,
@@ -4788,6 +4800,138 @@ function bondLineSegments(
   }
 
   return [{ x1, y1, x2, y2, segment: "primary" }];
+}
+
+/**
+ * Miter each explicit centered line to the nearest incident stroke's centreline. Prefer an
+ * intersection on the neighbour's visible segment over its extension (a branched junction can
+ * then join each side to a different neighbour). At a bend the outer intersection lies behind
+ * the atom: extend that neighbouring stroke only as far as the intersection so BOTH centered
+ * lines meet actual ink, with no protruding tail. Labels and terminal ends retain their original
+ * clearance/atom plane. Parallel/very acute joins use a short bevel back to the neighbouring
+ * stroke's endpoint rather than an unbounded miter. Work from a snapshot so bond traversal order
+ * cannot change the joins.
+ */
+function joinCenteredDoubleBondSegments(
+  groups: readonly PageMoleculeBondSegmentGroup[],
+  labeledAtoms: ReadonlySet<string>
+): void {
+  const centeredGroups = groups.filter(({ bond }) =>
+    bond.order === "double" && bond.display?.doubleBondSide === "center"
+  );
+  if (centeredGroups.length === 0) {
+    return;
+  }
+  const incident = new Map<string, PageMoleculeBondSegmentGroup[]>();
+  const original = new Map<PageMoleculeBondSegment, PageBondLineSegment>();
+  const bevels: { group: PageMoleculeBondSegmentGroup; segment: PageMoleculeBondSegment }[] = [];
+  for (const group of groups) {
+    for (const id of [group.bond.fromAtomId, group.bond.toAtomId]) {
+      const connections = incident.get(id) ?? [];
+      connections.push(group);
+      incident.set(id, connections);
+    }
+    for (const segment of group.segments) {
+      original.set(segment, { ...segment });
+    }
+  }
+  for (const group of centeredGroups) {
+    for (const atFrom of [true, false]) {
+      const atomId = atFrom ? group.bond.fromAtomId : group.bond.toAtomId;
+      if (labeledAtoms.has(atomId)) {
+        continue;
+      }
+      for (const segment of group.segments) {
+        const source = original.get(segment)!;
+        const start = { x: source.x1, y: source.y1 };
+        const end = { x: source.x2, y: source.y2 };
+        const endpoint = atFrom ? start : end;
+        const sourceGeometry = nativeSegmentVectorGeometry(source);
+        if (!sourceGeometry) {
+          continue;
+        }
+        const inward = atFrom ? sourceGeometry.unit
+          : { x: -sourceGeometry.unit.x, y: -sourceGeometry.unit.y };
+        const candidates = (incident.get(atomId) ?? []).flatMap((neighbor) => {
+          if (neighbor === group) {
+            return [];
+          }
+          const neighborAtFrom = neighbor.bond.fromAtomId === atomId;
+          return neighbor.segments.flatMap((neighborSegment) => {
+            const line = original.get(neighborSegment)!;
+            const near = neighborAtFrom
+              ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+            const far = neighborAtFrom
+              ? { x: line.x2, y: line.y2 } : { x: line.x1, y: line.y1 };
+            const point = infiniteLineIntersection(start, end, near, far);
+            const geometry = nativeSegmentVectorGeometry(line);
+            if (!point || !geometry) {
+              return [];
+            }
+            const outward = neighborAtFrom ? geometry.unit
+              : { x: -geometry.unit.x, y: -geometry.unit.y };
+            const along = (point.x - near.x) * outward.x + (point.y - near.y) * outward.y;
+            // Do not join beyond the far end (which may already be label-trimmed), or invert
+            // this centered segment at a very acute/degenerate junction.
+            const centeredAlong = (point.x - endpoint.x) * inward.x + (point.y - endpoint.y) * inward.y;
+            if (along > geometry.length || along < -geometry.length / 2 ||
+              Math.abs(centeredAlong) >= sourceGeometry.length / 2) {
+              return [];
+            }
+            return [{ point, along, neighborSegment, neighborAtFrom, near, outward,
+              score: distance(endpoint, point) }];
+          });
+        });
+        candidates.sort((left, right) =>
+          Number(left.along < 0) - Number(right.along < 0) ||
+          left.score - right.score || left.neighborSegment.key.localeCompare(right.neighborSegment.key)
+        );
+        const join = candidates[0];
+        if (!join) {
+          const neighbor = (incident.get(atomId) ?? []).filter((candidate) => candidate !== group)
+            .sort((left, right) => left.bond.id.localeCompare(right.bond.id))[0];
+          const neighborSegment = neighbor?.segments[0];
+          if (neighbor && neighborSegment) {
+            const line = original.get(neighborSegment)!;
+            const near = neighbor.bond.fromAtomId === atomId
+              ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+            bevels.push({ group: neighbor, segment: {
+              x1: near.x, y1: near.y, x2: endpoint.x, y2: endpoint.y,
+              segment: "outer", bond: neighbor.bond,
+              key: `${neighbor.bond.id}-center-join-${segment.key}-${atomId}`
+            } });
+          }
+          continue;
+        }
+        if (atFrom) {
+          segment.x1 = join.point.x;
+          segment.y1 = join.point.y;
+        } else {
+          segment.x2 = join.point.x;
+          segment.y2 = join.point.y;
+        }
+        if (join.along < 0) {
+          const current = join.neighborAtFrom
+            ? { x: join.neighborSegment.x1, y: join.neighborSegment.y1 }
+            : { x: join.neighborSegment.x2, y: join.neighborSegment.y2 };
+          const currentAlong = (current.x - join.near.x) * join.outward.x
+            + (current.y - join.near.y) * join.outward.y;
+          if (join.along < currentAlong) {
+            if (join.neighborAtFrom) {
+              join.neighborSegment.x1 = join.point.x;
+              join.neighborSegment.y1 = join.point.y;
+            } else {
+              join.neighborSegment.x2 = join.point.x;
+              join.neighborSegment.y2 = join.point.y;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (const bevel of bevels) {
+    bevel.group.segments.push(bevel.segment);
+  }
 }
 
 export function labelEndpointClearance(
@@ -6216,10 +6360,12 @@ export function doubleBondRendersSymmetric(
 ): boolean {
   return (
     bond.order === "double" &&
-    bond.display?.doubleBondSide === undefined &&
-    ringInteriorSide === undefined &&
-    terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
-    isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
+    (bond.display?.doubleBondSide === "center" || (
+      bond.display?.doubleBondSide === undefined &&
+      ringInteriorSide === undefined &&
+      terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
+      isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
+    ))
   );
 }
 
