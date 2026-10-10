@@ -1,3 +1,4 @@
+import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
@@ -51,6 +52,7 @@ import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
   createSmilesMolecule,
+  insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
   smilesPasteBondLengthPx,
@@ -113,6 +115,8 @@ import {
   applyNativeWarningSuppressionToScope,
   nativeAtomHasExplicitLabel,
   applyNativeDoubleBondSideTarget,
+  doubleBondSideForPoint,
+  applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -172,6 +176,8 @@ import {
   type PagePoint,
   insertNativeSymbolGlyph,
   convertNativeTextObjectToAtom,
+  convertNativeTextObjectToAtomLabel,
+  selectedTextToAtomLabelResult,
   insertNativeTextObject,
   nativeArtToolForCommand,
   nativeBracketDefaultSize,
@@ -292,6 +298,19 @@ function selectedMolecule(document: ChemDraftDocument): MoleculeObject {
     throw new Error("Expected selected molecule.");
   }
   return molecule;
+}
+
+function orbitalLobeTip(object: GraphicObject): PagePoint {
+  const point = object.data.pathNodes?.[0]?.point;
+  if (!point) throw new Error("Expected orbital lobe tip node.");
+  const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+  const radians = object.rotation * Math.PI / 180;
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return {
+    x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+    y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+  };
 }
 
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
@@ -1715,6 +1734,16 @@ describe("Phase 4 document workflow", () => {
     }).length).toBeLessThanOrEqual(201);
   });
 
+  it.each([false, true])("keeps a curved flexible-chain path unchanged by placement modifiers (Alt: %s)", (placementAltKey) => {
+    const blank = createPhase4Document("Curved chain placement");
+    const start = { x: 200, y: 200 };
+    const pathPoints = [start, { x: 350, y: 260 }, { x: 430, y: 400 }, { x: 320, y: 500 }];
+    const end = pathPoints.at(-1)!;
+    const expected = applyNativeChainTool(blank, start, end, undefined, { pathPoints });
+    const placed = applyNativeChainTool(blank, start, end, undefined, { pathPoints, placementAltKey });
+    expect(placed).toEqual(expected);
+  });
+
   it("draws a flexible chain along the pointer path via applyNativeChainTool options", () => {
     const blank = createPhase4Document("Flexible Chain Fixture");
     const reach = 22 * Math.cos((Math.PI / 180) * 30);
@@ -2041,12 +2070,118 @@ describe("Phase 4 document workflow", () => {
     expect(shadedLobe?.data.pathClosed).toBe(true);
 
     const pOrbital = nativeArtToolForCommand("tool.pOrbital");
-    expect(pOrbital?.data.pathNodes).toHaveLength(4);
+    // The closed p-orbital contour visits its shared centre once per lobe so their handles remain independent.
+    expect(pOrbital?.data.pathNodes).toHaveLength(6);
     expect(pOrbital?.data.pathClosed).toBe(true);
 
     const sOrbital = nativeArtToolForCommand("tool.sOrbital");
     expect(sOrbital).toMatchObject({ graphicKind: "ellipse" });
     expect(sOrbital?.style.fillMode).toBe("gloss");
+  });
+
+  it("places a lobe tip on a cyclohexane vertex and points it radially away from the ring centre", () => {
+    const withRing = insertNativeTemplateMolecule(createPhase4Document("Lobe Atom Placement"), { x: 400, y: 400 }, "cyclohexane");
+    const molecule = selectedMolecule(withRing);
+    const atom = molecule.atoms[0];
+    if (!atom) throw new Error("Expected a two-bond ring atom.");
+    const centre = moleculeAtomCenter(molecule);
+    const radial = { x: atom.x - centre.x, y: atom.y - centre.y };
+    const radialLength = Math.hypot(radial.x, radial.y);
+
+    for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
+      const lobe = createNativeArtGraphicObject(withRing, atom, commandId);
+      if (!lobe) throw new Error("Expected orbital lobe.");
+      const tip = orbitalLobeTip(lobe);
+      expect(tip.x).toBeCloseTo(atom.x, 6);
+      expect(tip.y).toBeCloseTo(atom.y, 6);
+      expect(Math.cos(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(radial.x / radialLength, 6);
+      expect(Math.sin(lobe.rotation * Math.PI / 180 - Math.PI / 2)).toBeCloseTo(radial.y / radialLength, 6);
+    }
+
+    const pOrbital = createNativeArtGraphicObject(withRing, atom, "tool.pOrbital");
+    if (!pOrbital) throw new Error("Expected p orbital.");
+    expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
+    expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
+    const pAxis = pOrbital.rotation * Math.PI / 180 - Math.PI / 2;
+    expect(Math.cos(pAxis) * radial.x / radialLength + Math.sin(pAxis) * radial.y / radialLength).toBeCloseTo(0, 6);
+  });
+
+  it("points a lobe directly away from a one-bond neighbour", () => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("One Bond Orbital Placement"), { x: 300, y: 300 });
+    const molecule = selectedMolecule(document);
+    const atom = molecule.atoms[0]!;
+    const neighbour = molecule.atoms[1]!;
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.lobe");
+    if (!lobe) throw new Error("Expected orbital lobe.");
+    const away = { x: atom.x - neighbour.x, y: atom.y - neighbour.y };
+    const awayLength = Math.hypot(away.x, away.y);
+    const direction = lobe.rotation * Math.PI / 180 - Math.PI / 2;
+    expect(Math.cos(direction)).toBeCloseTo(away.x / awayLength, 6);
+    expect(Math.sin(direction)).toBeCloseTo(away.y / awayLength, 6);
+  });
+
+  it("points a lobe up at a bondless atom and centres a p orbital on its atom", () => {
+    const empty = createPhase4Document("Bondless Orbital Placement");
+    const seed = createNativeSingleBondMolecule(empty, { x: 300, y: 300 });
+    const atom = seed.atoms[0]!;
+    const loneAtom: MoleculeObject = {
+      ...seed,
+      atoms: [atom],
+      bonds: [],
+      x: atom.x,
+      y: atom.y,
+      width: 0,
+      height: 0,
+      structure: "C"
+    };
+    const document = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: loneAtom }]);
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.shadedLobe");
+    const pOrbital = createNativeArtGraphicObject(document, atom, "tool.pOrbital");
+    if (!lobe || !pOrbital) throw new Error("Expected orbital art objects.");
+
+    expect(orbitalLobeTip(lobe).x).toBeCloseTo(atom.x, 6);
+    expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
+    expect(lobe.rotation).toBeCloseTo(0, 6);
+    expect(pOrbital.x + pOrbital.width / 2).toBeCloseTo(atom.x, 6);
+    expect(pOrbital.y + pOrbital.height / 2).toBeCloseTo(atom.y, 6);
+    expect(pOrbital.rotation).toBeCloseTo(0, 6);
+  });
+
+  it("keeps an atom-snapped lobe tip on an edge atom when the frame cannot fit the page", () => {
+    const empty = createPhase4Document("Edge Orbital Placement");
+    const seed = createNativeSingleBondMolecule(empty, { x: 300, y: 0 });
+    const atom = seed.atoms[0]!;
+    const loneAtom: MoleculeObject = { ...seed, atoms: [atom], bonds: [], x: atom.x, y: atom.y, width: 0, height: 0 };
+    const document = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: loneAtom }]);
+    const lobe = createNativeArtGraphicObject(document, atom, "tool.lobe");
+    if (!lobe) throw new Error("Expected orbital lobe.");
+    expect(lobe.y).toBeLessThan(0);
+    expect(orbitalLobeTip(lobe).x).toBeCloseTo(atom.x, 6);
+    expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
+  });
+
+  it("keeps open-space orbital placement unchanged and holds lobe tips through snapped-drag and typed rotations", () => {
+    const blank = createPhase4Document("Lobe Rotation");
+    const openSpaceLobe = createNativeArtGraphicObject(blank, { x: 400, y: 320 }, "tool.lobe");
+    if (!openSpaceLobe) throw new Error("Expected orbital lobe.");
+    expect(openSpaceLobe.x + openSpaceLobe.width / 2).toBeCloseTo(400, 6);
+    expect(openSpaceLobe.y + openSpaceLobe.height / 2).toBeCloseTo(320, 6);
+    expect(openSpaceLobe.rotation).toBe(0);
+
+    for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
+      const placed = insertNativeArtGraphicObject(blank, { x: 400, y: 320 }, commandId);
+      const objectId = placed.selection.objectIds[0]!;
+      const initialTip = orbitalLobeTip(graphicById(placed, objectId));
+      // Rotate-handle drags pass their snapped delta (15° here) to this shared object rotate path.
+      const dragRotated = rotateDocumentObject(placed, objectId, 15);
+      const typedRotated = rotateDocumentObject(dragRotated, objectId, 32);
+
+      [dragRotated, typedRotated].forEach((document) => {
+        const tip = orbitalLobeTip(graphicById(document, objectId));
+        expect(tip.x).toBeCloseTo(initialTip.x, 6);
+        expect(tip.y).toBeCloseTo(initialTip.y, 6);
+      });
+    }
   });
 
   it("maps arrow tool commands to reaction-arrow kinds", () => {
@@ -3759,6 +3894,7 @@ describe("Phase 4 document workflow", () => {
     // Far from any canonical direction: unchanged (grid points sit 30° apart, 15 - 2 = 13° away).
     const betweenCanonicals = canonicalTarget - referenceAngle - 13;
     expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, betweenCanonicals)).toBe(betweenCanonicals);
+    expect(snapNativeMoleculePartRotationDegrees(molecule, fragment, 22, true)).toBe(15);
 
     // Center-pivoted selection (a ring bond) clicks at 15° steps.
     const ring = insertNativeTemplateMolecule(createPhase4Document("Rotate Snap Ring"), { x: 300, y: 300 }, "cyclohexane");
@@ -3767,6 +3903,7 @@ describe("Phase 4 document workflow", () => {
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 13.8)).toBe(15);
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22)).toBe(22);
     expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, -44)).toBe(-45);
+    expect(snapNativeMoleculePartRotationDegrees(ringMolecule, ringBond, 22, true)).toBe(15);
   });
 
   it("keeps the bbox-center pivot for part rotations with zero or multiple junctions", () => {
@@ -6088,6 +6225,21 @@ describe("Phase 4 document workflow", () => {
     expect(newAtom).toMatchObject(releasePoint);
   });
 
+  it.each([false, true])("keeps custom-length placement aim snapped unless Alt is held (Alt: %s)", (placementAltKey) => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Snapped custom length"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const source = molecule.atoms[1];
+    const radians = 23 * Math.PI / 180;
+    const point = { x: source.x + 240 * Math.cos(radians), y: source.y + 240 * Math.sin(radians) };
+    const preview = previewNativeMoleculeFreeformBondGrowth(molecule, source.id, point, 816, 1056, { placementAltKey })!;
+    expect(preview.customLength).toBe(true);
+    expect(preview.length).toBeCloseTo(240, 8);
+    expect(Math.atan2(preview.newAtomPoint.y - source.y, preview.newAtomPoint.x - source.x) * 180 / Math.PI).toBeCloseTo(placementAltKey ? 23 : 30, 8);
+    const placed = applyFreeformSingleBondToolAtPoint(document, molecule.id, source.id, point, { placementAltKey });
+    expect(selectedMolecule(placed).atoms.at(-1)).toMatchObject(preview.newAtomPoint);
+    expect(selectedMolecule(placed).chemistry).toMatchObject({ formula: "C3H8", atomCount: 3, bondCount: 2 });
+  });
+
   it("keeps unlocked freeform drag custom so it can make shorter bonds", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Short Custom Freeform Bond"), { x: 200, y: 220 });
     const molecule = selectedMolecule(document);
@@ -6507,6 +6659,62 @@ describe("Phase 4 document workflow", () => {
     expect(convertNativeTextObjectToAtom(prose, proseObject?.id ?? "")).toBe(prose);
   });
 
+  it.each(["OMe", "CH3", "NO2", "O"])("converts text %s at a chain end through the literal label path", (label) => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Text label"), { x: 300, y: 300 });
+    const original = selectedMolecule(base);
+    const atom = original.atoms[1]!;
+    const withText = insertNativeTextObject(base, atom, label);
+    const textId = withText.selection.objectIds[0]!;
+    const target = { objectId: original.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 };
+    const expected = applyNativeAtomElementTarget(withText, target, label, { literal: true });
+    const result = convertNativeTextObjectToAtomLabel(withText, textId);
+    expect(result.document.pages[0].objects).toHaveLength(1);
+    expect(selectedMolecule(result.document)).toEqual(expected.pages[0].objects.find((object) => object.id === original.id));
+    expect(selectedMolecule(result.document).bonds).toEqual(original.bonds);
+    expect(selectedMolecule(result.document).atoms[0]).toEqual(original.atoms[0]);
+    expect(selectedMolecule(result.document).atoms[1]).toMatchObject({ id: atom.id, x: atom.x, y: atom.y });
+    expect(result.target).toEqual(target);
+    expect(result.message).toContain(label);
+  });
+
+  it.each(["OMe", "CH3", "NO2"])("keeps %s in open space as text", (label) => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(base, { x: 100, y: 100 }, label);
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+  });
+
+  it("keeps rejected empty labels on the atom with an explanation", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const withText = insertNativeTextObject(base, selectedMolecule(base).atoms[1]!, "   ");
+    const result = convertNativeTextObjectToAtomLabel(withText, withText.selection.objectIds[0]!);
+    expect(result.document).toBe(withText);
+    expect(result.message).toBe("Text kept: Atom labels cannot be empty");
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+  });
+
+  it("removes redundant text even when the atom already has the same literal label", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const molecule = selectedMolecule(base);
+    const atom = molecule.atoms[1]!;
+    const labeled = applyNativeAtomElementTarget(base, {
+      objectId: molecule.id, kind: "atom", atomId: atom.id, distanceToPointer: 0
+    }, "OMe", { literal: true });
+    const withText = insertNativeTextObject(labeled, atom, "OMe");
+    const result = convertNativeTextObjectToAtomLabel(withText, withText.selection.objectIds[0]!);
+    expect(result.disabledReason).toBeUndefined();
+    expect(result.document.pages[0].objects).toEqual(labeled.pages[0].objects);
+  });
+
+  it("explicit conversion chooses the nearest atom within one bond length, beyond the hover radius", () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+    const atom = selectedMolecule(base).atoms[1]!;
+    const withText = insertNativeTextObject(base, { x: atom.x, y: atom.y + 15 }, "OMe");
+    expect(convertNativeTextObjectToAtom(withText, withText.selection.objectIds[0]!)).toBe(withText);
+    const result = selectedTextToAtomLabelResult(withText);
+    expect(result.target?.kind === "atom" && result.target.atomId).toBe(atom.id);
+    expect(result.document.pages[0].objects).toHaveLength(1);
+  });
+
   it("labels literal typed atoms bare and flags them hypovalent; drawn atoms stay hydrides", () => {
     // Only the text tool creates literal atoms: bare symbol, no invented hydrogens, and the
     // incomplete-valence badge until real bonds arrive.
@@ -6626,6 +6834,61 @@ describe("Phase 4 document workflow", () => {
       .toMatchObject({ atomId: "atom_001", availableBonds: 4 });
   });
 
+  it.each(["O", "N", "S"])("creates automatic C=%s through order cycling and the 2-key path", (element) => {
+    const original = insertNativeSingleBondMolecule(createPhase4Document("C=X defaults"), { x: 200, y: 220 });
+    const mol = selectedMolecule(original);
+    const document = applyNativeAtomElementTarget(original, {
+      objectId: mol.id, kind: "atom", atomId: mol.atoms[1].id, distanceToPointer: 0
+    }, element);
+    for (const changed of [cycleNativeBondOrder(document, "bond_001"), setNativeBondOrder(document, "bond_001", "double")]) {
+      const next = selectedMolecule(changed);
+      expect(next.bonds[0].order).toBe("double");
+      expect(next.bonds[0].display).toBeUndefined();
+    }
+  });
+
+  it("leaves SMILES and name native carbonyls automatic while retaining alkene defaults", () => {
+    const document = createPhase4Document("Imported defaults");
+    const depiction: PastedStructureDepiction = {
+      atoms: [
+        { element: "C", x: 0, y: 0, charge: 0 }, { element: "C", x: 1, y: 1, charge: 0 },
+        { element: "C", x: 2, y: 1, charge: 0 }, { element: "C", x: 3, y: 0, charge: 0 },
+        { element: "O", x: 4, y: 0, charge: 0 }
+      ],
+      bonds: [
+        { from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "double", wedge: null },
+        { from: 2, to: 3, order: "single", wedge: null }, { from: 3, to: 4, order: "double", wedge: null }
+      ]
+    };
+    const nameSource = { objectIdPrefix: "name", styleSource: "name", warningCode: "name.generated", warningMessage: "Generated from name." };
+    for (const object of [
+      createSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O"),
+      createSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O", nameSource),
+      selectedMolecule(insertSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O"))
+    ]) {
+      expect(object.type).toBe("molecule");
+      const molecule = object as MoleculeObject;
+      expect(molecule.bonds[3].display).toBeUndefined();
+      expect(["left", "right"]).toContain(molecule.bonds[1].display?.doubleBondSide);
+      expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "C", "C", "C", "O"]);
+      expect(molecule.bonds.map((bond) => bond.order)).toEqual(["single", "double", "single", "double"]);
+    }
+  });
+
+  it.each(["S", "P", "N"])("creates terminal %s=O automatically and keeps it automatic through relayout", (element) => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Terminal heteroatom defaults"), { x: 200, y: 220 });
+    const changed = setNativeAtomElement(setNativeAtomElement(seeded, "atom_001", element), "atom_002", "O");
+    for (const document of [cycleNativeBondOrder(changed, "bond_001"), setNativeBondOrder(changed, "bond_001", "double")]) {
+      const original = selectedMolecule(document);
+      expect(original.bonds[0].order).toBe("double");
+      expect(original.bonds[0].display).toBeUndefined();
+      const relaid = applyNativeMoleculeEngineRelayout(document, original.id, relayoutMolfile2D);
+      expect(selectedMolecule(relaid).bonds[0].display).toBeUndefined();
+      expect(selectedMolecule(relaid).atoms.map((atom) => atom.element)).toEqual([element, "O"]);
+      expect(selectedMolecule(relaid).bonds[0].order).toBe("double");
+    }
+  });
+
   it("cycles a hovered carbon-carbon bond from single to double to triple and back to single", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Bond Orders"), { x: 200, y: 220 });
     const doubleBond = cycleNativeBondOrder(document, "bond_001");
@@ -6692,6 +6955,186 @@ describe("Phase 4 document workflow", () => {
     });
     expect(selectedMolecule(changed).structure).toBe(selectedMolecule(doubleBond).structure);
     expect(selectedMolecule(changed).chemistry).toEqual(selectedMolecule(doubleBond).chemistry);
+  });
+
+  it.each([
+    ["left", { x: 120, y: 140 }],
+    ["right", { x: 120, y: 100 }],
+    ["center", { x: 120, y: 120 }]
+  ] as const)("keeps an imported stereochemical graph byte-for-byte intact when dragging the second line %s", (side, point) => {
+    const base = createPhase4Document("Imported stereo double bond side");
+    const imported: MoleculeObject = {
+      id: "imported_stereo",
+      type: "molecule",
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 40,
+      rotation: 0,
+      style: {},
+      // This imported molfile retains wedge/hash stereo that native SMILES serialization cannot
+      // represent. Moving a parallel double-bond line must never replace it with a SMILES graph.
+      structureFormat: "molfile-v2000",
+      structure: [
+        "Imported stereochemical molfile",
+        "  ChemDraft",
+        "",
+        "  4  3  0  0  0  0            999 V2000",
+        "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "    1.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "   -0.5000    0.8660    0.0000 F   0  0  0  0  0  0  0  0  0  0  0  0",
+        "    1.5000    0.8660    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "  1  2  2  0  0  0  0",
+        "  1  3  1  1  0  0  0",
+        "  2  4  1  6  0  0  0",
+        "M  END"
+      ].join("\n"),
+      chemistry: {
+        formula: "C2H3F",
+        atomCount: 4,
+        bondCount: 3,
+        isotopeLabels: [],
+        stereochemistry: ["a1: wedge/hash stereo retained only by the imported molfile"],
+        warnings: []
+      },
+      atoms: [
+        { id: "a1", element: "C", x: 100, y: 120, formalCharge: 0, labelOffset: { x: 1, y: -2 } },
+        { id: "a2", element: "C", x: 140, y: 120, formalCharge: 0, hydrogenCount: 1 },
+        { id: "a3", element: "F", x: 90, y: 100, formalCharge: 0 },
+        { id: "a4", element: "C", x: 150, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "double", fromAtomId: "a1", toAtomId: "a2", order: "double" },
+        { id: "wedge", fromAtomId: "a1", toAtomId: "a3", order: "single", display: { bondStyle: "wedge" } },
+        { id: "hashed", fromAtomId: "a2", toAtomId: "a4", order: "single", display: { bondStyle: "hashed" } }
+      ],
+      superatoms: [],
+      rGroups: []
+    };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: imported },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [imported.id] }
+    ]);
+    const before = selectedMolecule(document);
+    const changed = applyNativeDoubleBondSideTarget(document, {
+      objectId: imported.id,
+      kind: "bond",
+      bondId: "double",
+      fromAtomId: "a1",
+      toAtomId: "a2",
+      distanceToPointer: 0
+    }, point);
+    const result = selectedMolecule(changed);
+
+    expect(result.bonds.find((bond) => bond.id === "double")?.display?.doubleBondSide).toBe(side);
+    expect(result.structure).toBe(before.structure);
+    expect(result.structureFormat).toBe(before.structureFormat);
+    expect(result.chemistry).toEqual(before.chemistry);
+    expect(JSON.stringify(result.atoms)).toBe(JSON.stringify(before.atoms));
+    for (const beforeBond of before.bonds) {
+      const after = result.bonds.find((bond) => bond.id === beforeBond.id);
+      const { display: _beforeDisplay, ...beforeNonDisplay } = beforeBond;
+      const { display: _afterDisplay, ...afterNonDisplay } = after ?? {};
+      expect(JSON.stringify(afterNonDisplay)).toBe(JSON.stringify(beforeNonDisplay));
+    }
+    expect(result.bonds.find((bond) => bond.id === "wedge")).toEqual(before.bonds[1]);
+    expect(result.bonds.find((bond) => bond.id === "hashed")).toEqual(before.bonds[2]);
+
+    // The drag commit records this one complete display patch as its one undo entry.
+    const history = { past: [document], present: changed, future: [] };
+    expect(history.past).toHaveLength(1);
+    expect(undo(history).present).toBe(document);
+    expect(redo(undo(history)).present).toBe(changed);
+  });
+
+  it.each([0.5, 1, 2])("shares preview and commit Center zones at zoom %s", (scale) => {
+    const document = setNativeBondOrder(insertNativeSingleBondMolecule(createPhase4Document("Zoom position"), { x: 200, y: 220 }), "bond_001", "double");
+    const molecule = selectedMolecule(document);
+    const bond = molecule.bonds[0];
+    const [a, b] = molecule.atoms;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const normal = { x: -(b.y - a.y) / length, y: (b.x - a.x) / length };
+    const gap = layoutEngine.nativeMultipleBondGapPx(layoutEngine.nativeMoleculeBondDrawingStyle(molecule, bond.id));
+    const tolerance = hitToleranceForScale(scale);
+    const radius = Math.max(gap / 2, tolerance.bondHitRadius!);
+    const target = { objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: a.id, toAtomId: b.id, distanceToPointer: 0 };
+    for (const [offset, expected] of [[radius - 0.1, "center"], [radius + 0.1, "left"], [-radius - 0.1, "right"]] as const) {
+      const point = { x: (a.x + b.x) / 2 + normal.x * offset, y: (a.y + b.y) / 2 + normal.y * offset };
+      expect(doubleBondSideForPoint(molecule, bond, point, tolerance)).toBe(expected);
+      expect(selectedMolecule(applyNativeDoubleBondSideTarget(document, target, point, tolerance)).bonds[0].display?.doubleBondSide).toBe(expected);
+    }
+    // The half-gap still governs when the drawing style uses a wider separation.
+    const wide = { ...molecule, style: { ...molecule.style, multipleBondGapPx: radius * 4 } };
+    const wideGap = layoutEngine.nativeMultipleBondGapPx(layoutEngine.nativeMoleculeBondDrawingStyle(wide, bond.id));
+    const point = { x: (a.x + b.x) / 2 + normal.x * wideGap * 0.49, y: (a.y + b.y) / 2 + normal.y * wideGap * 0.49 };
+    expect(doubleBondSideForPoint(wide, bond, point, tolerance)).toBe("center");
+  });
+
+  it("reaches Center by dragging to the axis, preserving defaults, chemistry, save and clipboard", () => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Centered bond"), { x: 200, y: 220 });
+    const document = setNativeBondOrder(seeded, "bond_001", "double");
+    const original = selectedMolecule(document);
+    expect(original.bonds[0].display?.doubleBondSide).toBe("left");
+    const [a, b] = original.atoms;
+    const centered = applyNativeDoubleBondSideTarget(document, {
+      objectId: original.id, kind: "bond", bondId: "bond_001",
+      fromAtomId: a.id, toAtomId: b.id, distanceToPointer: 0
+    }, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    expect(selectedMolecule(centered).bonds[0].display?.doubleBondSide).toBe("center");
+    expect(selectedMolecule(centered).atoms).toEqual(original.atoms);
+    expect(selectedMolecule(centered).chemistry).toEqual(original.chemistry);
+    expect(selectedMolecule(centered).structure).toBe(original.structure);
+    const opened = deserializeDocument(serializeDocument(centered));
+    expect(selectedMolecule(opened).bonds[0].display?.doubleBondSide).toBe("center");
+    for (const payload of [createSelectionClipboardPayload(opened), createSelectionClipboardPayload(
+      selectDocumentObjects(opened, opened.pages[0].id, []),
+      [{ objectId: original.id, atomIds: original.atoms.map((atom) => atom.id), bondIds: ["bond_001"] }]
+    )]) {
+      const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      const pasted = pasteSelectionClipboardPayload(createPhase4Document("Pasted"), parsed, { x: 300, y: 300 });
+      expect(selectedMolecule(pasted).bonds[0].display?.doubleBondSide).toBe("center");
+    }
+  });
+
+  it.each([undefined, "left", "center"] as const)("preserves carbonyl %s through native save and whole/fragment paste", (side) => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Carbonyl clipboard"), { x: 200, y: 220 });
+    const changed = setNativeAtomElement(seeded, "atom_002", "O");
+    const automatic = setNativeBondOrder(changed, "bond_001", "double");
+    const original = selectedMolecule(automatic);
+    const document = side ? applyMoleculeDoubleBondPosition(automatic, [{ objectId: original.id, bondId: "bond_001" }], side) : automatic;
+    const relaid = applyNativeMoleculeEngineRelayout(document, original.id, relayoutMolfile2D);
+    expect(selectedMolecule(relaid).bonds[0].display?.doubleBondSide).toBe(side);
+    const opened = deserializeDocument(serializeDocument(document));
+    expect(selectedMolecule(opened).bonds[0].display?.doubleBondSide).toBe(side);
+    for (const payload of [createSelectionClipboardPayload(opened), createSelectionClipboardPayload(
+      selectDocumentObjects(opened, opened.pages[0].id, []),
+      [{ objectId: original.id, atomIds: original.atoms.map((atom) => atom.id), bondIds: ["bond_001"] }]
+    )]) {
+      const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      const pasted = pasteSelectionClipboardPayload(createPhase4Document("Pasted"), parsed, { x: 300, y: 300 });
+      const molecule = selectedMolecule(pasted);
+      expect(molecule.bonds[0].display?.doubleBondSide).toBe(side);
+      expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "O"]);
+      expect(molecule.bonds[0].order).toBe("double");
+    }
+  });
+
+  it("changes only selected double-bond display values in a batch and preserves selection", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Batch position"), { x: 300, y: 300 }, "benzene");
+    const original = selectedMolecule(document);
+    const doubles = original.bonds.filter((bond) => bond.order === "double").slice(0, 2);
+    const single = original.bonds.find((bond) => bond.order === "single")!;
+    const targets = [...doubles, single].map((bond) => ({ objectId: original.id, bondId: bond.id }));
+    const changed = applyMoleculeDoubleBondPosition(document, targets, "center");
+    for (const bond of selectedMolecule(changed).bonds) {
+      if (doubles.some((target) => target.id === bond.id)) expect(bond.display?.doubleBondSide).toBe("center");
+      else expect(bond).toEqual(original.bonds.find((candidate) => candidate.id === bond.id));
+    }
+    expect(changed.selection).toEqual(document.selection);
+    expect(selectedMolecule(changed).structure).toBe(original.structure);
+    expect(selectedMolecule(changed).chemistry).toEqual(original.chemistry);
+    expect(applyMoleculeDoubleBondPosition(changed, targets, "center")).toBe(changed);
+    expect(selectedMolecule(applyMoleculeDoubleBondPosition(changed, targets, "automatic")).bonds.find((bond) => bond.id === doubles[0].id)?.display?.doubleBondSide).toBeUndefined();
   });
 
   it("defaults cyclic double-bond secondary lines toward the ring interior", () => {
@@ -6795,6 +7238,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(oxygen).toBeDefined();
     expect(carbonylBond).toMatchObject({ order: "double" });
+    expect(carbonylBond?.display?.doubleBondSide).toBeUndefined();
     expect(oxygen?.y).toBeLessThan(carbon.y);
     expect(carbonylMolecule.structure).toContain("=O");
     expect(carbonylMolecule.chemistry).toMatchObject({ formula: "C2H4O", atomCount: 3, bondCount: 2 });
@@ -12914,6 +13358,47 @@ describe("Phase 4 document workflow", () => {
     expect(plan?.addedAtomIds).toHaveLength(5); // cyclohexane spiro shares one atom, adds five
   });
 
+  it("attaches a spiro ring to a pseudo-atom label without inventing a valence limit", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Pseudo-atom spiro"), { x: 360, y: 320 }, "cyclohexane");
+    const original = selectedMolecule(seed);
+    const atom = original.atoms[0]!;
+    const document = applyPatches(seed, [{
+      op: "updateObject",
+      objectId: original.id,
+      changes: { ...original, atoms: original.atoms.map((candidate) =>
+        candidate.id === atom.id ? { ...candidate, element: "R" } : candidate
+      ) }
+    }]);
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: { x: atom.x, y: atom.y }, target: moleculeAtomTarget(original, atom.id) },
+      "cyclohexane"
+    );
+
+    expect(plan?.kind).toBe("attach-atom");
+    expect(plan?.fallbackReason).toBeUndefined();
+  });
+
+  it("counts radical marks before allowing a spiro ring", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Radical spiro"), { x: 360, y: 320 }, "cyclohexane");
+    const original = selectedMolecule(seed);
+    const atom = original.atoms[0]!;
+    const document = applyPatches(seed, [{
+      op: "updateObject",
+      objectId: original.id,
+      changes: { ...original, atoms: original.atoms.map((candidate) =>
+        candidate.id === atom.id ? { ...candidate, markRadicals: 1 } : candidate
+      ) }
+    }]);
+    const plan = planNativeTemplatePlacement(
+      document,
+      { point: { x: atom.x, y: atom.y }, target: moleculeAtomTarget(original, atom.id) },
+      "cyclohexane"
+    );
+
+    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+  });
+
   it("returns no plan when an empty-canvas standalone tool path produces nothing new", () => {
     // Sanity: the standalone path always yields a plan, and the wrapper matches it.
     const document = createPhase4Document("Plan Wrapper");
@@ -12926,7 +13411,7 @@ describe("Phase 4 document workflow", () => {
     );
   });
 
-  it("marks an aromatic spiro placement invalid but a saturated spiro valid (ghost warn rule)", () => {
+  it("places a separate ring rather than making an over-valent aromatic spiro", () => {
     const benzeneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Benzene"), { x: 360, y: 320 }, "benzene");
     const benzene = selectedMolecule(benzeneDocument);
     const benzeneSpiro = planNativeTemplatePlacement(
@@ -12934,9 +13419,10 @@ describe("Phase 4 document workflow", () => {
       { point: moleculeAtom(benzene, "atom_001"), target: moleculeAtomTarget(benzene, "atom_001") },
       "benzene"
     );
-    expect(benzeneSpiro?.kind).toBe("attach-atom");
-    // The shared carbon ends up in two aromatic rings — over-valent — so the ghost must warn.
-    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule).length).toBeGreaterThan(0);
+    expect(benzeneSpiro).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+    // The original aromatic ring stays chemically intact; only the separate proposed ring is new.
+    expect(benzeneSpiro!.molecule.atoms).toHaveLength(6);
+    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule)).toEqual([]);
 
     const cyclohexaneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Cyclohexane"), { x: 360, y: 320 }, "cyclohexane");
     const cyclohexane = selectedMolecule(cyclohexaneDocument);
@@ -13236,13 +13722,16 @@ describe("Phase 4 document workflow", () => {
 
       const spiroAtom = molecule.atoms.find((atom) => atomDegree(molecule, atom.id) < 4);
       if (spiroAtom && index % 3 === 0) {
-        document = applyNativeTemplateToolAtTarget(
-          document,
-          moleculeAtomTarget(molecule, spiroAtom.id),
-          moleculeAtom(molecule, spiroAtom.id),
-          fusedTemplates[(index + 1) % fusedTemplates.length]
-        );
-        molecule = selectedMolecule(document);
+        const target = moleculeAtomTarget(molecule, spiroAtom.id);
+        const point = moleculeAtom(molecule, spiroAtom.id);
+        const templateId = fusedTemplates[(index + 1) % fusedTemplates.length];
+        const plan = planNativeTemplatePlacement(document, { point, target }, templateId);
+        // This fixture only exercises transformed fused systems. A rejected attachment is
+        // covered directly above; selecting its standalone fallback would change its premise.
+        if (plan?.kind === "attach-atom") {
+          document = applyNativeTemplatePlacementPlan(document, plan);
+          molecule = selectedMolecule(document);
+        }
       }
 
       const editableBond = molecule.bonds[index % molecule.bonds.length];

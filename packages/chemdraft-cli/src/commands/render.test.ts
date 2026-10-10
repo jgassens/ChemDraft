@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
-import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
+import { atomLabelHaloWidthPx, planMoleculeAtomLabels, planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 import {
   generateSmiles2DMolfile,
   RdkitNotConfiguredError,
@@ -169,6 +170,43 @@ function expectSvgLabelExtentsInsideViewBox(rendered: RenderedSmiles): void {
 }
 
 describe("headless ChemDraft rendering", () => {
+  it.each(["CC=O", "CS(=O)C"])("renders %s with the canvas's automatic joined Center geometry", async (smiles) => {
+    const rendered = await renderSmilesToAssets(smiles);
+    const doubles = rendered.molecule.bonds.filter((bond) => bond.order === "double");
+    expect(doubles).toHaveLength(1);
+    expect(doubles[0].display).toBeUndefined();
+    const bondId = doubles[0].id;
+    const canvasLines = planPageSvgRender(rendered.document.pages[0]).fragments.flatMap(elementFragments)
+      .filter((fragment) => fragment.tag === "line" &&
+        fragment.attrs["data-bond-id"] === bondId && String(fragment.attrs.class).startsWith("native-bond-line"));
+    expect(canvasLines).toHaveLength(2);
+    const out = join(outputDirectory, `centered-${smiles === "CC=O" ? "aldehyde" : "dmso"}.svg`);
+    const stdout: string[] = [];
+    expect(await runCli(["--smiles", smiles, "--out", out], {
+      stdout: (line) => stdout.push(line), stderr: () => undefined
+    })).toBe(0);
+    expect(JSON.parse(stdout[0]).ok).toBe(true);
+    const svg = await readFile(out, "utf8");
+    const svgLines = [...svg.matchAll(/<line\b[^>]*>/g)].map((match) => match[0])
+      .filter((tag) => tag.includes(`data-bond-id="${bondId}"`));
+    expect(svgLines).toHaveLength(2);
+    for (const [index, tag] of svgLines.entries()) {
+      expect(tag).toContain('data-double-bond-side="center"');
+      const canvas = canvasLines[index];
+      expect(canvas.attrs["data-double-bond-side"]).toBe("center");
+      for (const attribute of ["x1", "y1", "x2", "y2"]) {
+        const value = tag.match(new RegExp(`\\b${attribute}="([^"]+)"`))?.[1];
+        expect(value).toBeDefined();
+        expect(Number(value)).toBe(Number(Number(canvas.attrs[attribute]).toFixed(3)));
+      }
+    }
+    const explicitPage = { ...rendered.document.pages[0], objects: [{ ...rendered.molecule,
+      bonds: rendered.molecule.bonds.map((bond) => bond.order === "double"
+        ? { ...bond, display: { doubleBondSide: "center" as const } } : bond)
+    }] };
+    expect(planPageSvgRender(rendered.document.pages[0]).fragments).toEqual(planPageSvgRender(explicitPage).fragments);
+  });
+
   const cases = [
     { name: "ethanol", smiles: "CCO", label: "OH" },
     { name: "benzene", smiles: "c1ccccc1" },

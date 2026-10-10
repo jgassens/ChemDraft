@@ -22,7 +22,7 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { applyPatches, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
+import { applyPatches, serializeDocument, deserializeDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
 import {
   depictSmiles2D,
   ensureOclResources,
@@ -269,6 +269,22 @@ describe("Phase 6 — repeat-edit: re-flatten never duplicates markers", () => {
 });
 
 describe("spin release does not change how a double bond draws", () => {
+  it("keeps Center through flatten, native save/reopen and a second spin", () => {
+    const mol = molecule("mol_center", [
+      { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "C", x: 40, y: 0, formalCharge: 0 }
+    ], [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "double", display: { doubleBondSide: "center" } }]);
+    const coords = new Float64Array([0, 0, 0, 1.4, 0, 0]);
+    const first = flattenSpunMolecule(documentWith(mol), mol.id, coords, IDENTITY);
+    expect(first.status).toBe("committed");
+    const opened = deserializeDocument(serializeDocument(first.document));
+    expect(moleculeOf(opened, mol.id).bonds[0].display?.doubleBondSide).toBe("center");
+    const second = flattenSpunMolecule(opened, mol.id, coords, TILTED_Y_30);
+    expect(second.status).toBe("committed");
+    expect(moleculeOf(second.document, mol.id).bonds[0]).toMatchObject({
+      order: "double", fromAtomId: "a1", toAtomId: "a2", display: { doubleBondSide: "center" }
+    });
+  });
   it("leaves a symmetric C=O without a baked side", () => {
     // A terminal heteroatom double bond with no derivable inner side renders as the symmetric
     // +/-gap/2 straddle — it has no side at all. Flatten baked `doubleBondSide` onto every double

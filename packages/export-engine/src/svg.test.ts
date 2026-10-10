@@ -222,6 +222,41 @@ describe("SVG export serialization", () => {
     expect(result.contents).not.toContain("data-ring-hit-key");
   });
 
+  it("exports sketched hashed bonds as per-hash strokes, not a full-length centre line", () => {
+    const base = nativeBondMolecule();
+    const molecule = {
+      ...base,
+      id: "mol_svg_sketch_hashed",
+      atoms: [
+        { id: "atom_001", element: "C", x: 120, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 140, formalCharge: 0 }
+      ],
+      bonds: [{ ...base.bonds[0]!, display: { bondStyle: "hashed" } }],
+      style: {
+        source: "chemdraft-native-drawing",
+        visualEffects: [{ kind: "sketch", color: "#111111", seed: 5, roughness: 0, bowing: 0 }]
+      }
+    } as MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ title: "Sketch hashed", now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+    const contents = exportDocumentToSvg(document).contents;
+    const sketchD = [...contents.matchAll(/<path\b[^>]*>/g)]
+      .map((m) => m[0])
+      .filter((tag) => tag.includes('data-molecule-effect="sketch"'))
+      .map((tag) => / d="([^"]+)"/.exec(tag)?.[1] ?? "")
+      .join(" ");
+
+    expect(sketchD).not.toBe("");
+    for (const sub of sketchD.split("M").filter((part) => part.trim())) {
+      const numbers = sub.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      const length = Math.hypot(numbers[numbers.length - 2]! - numbers[0]!, numbers[numbers.length - 1]! - numbers[1]!);
+      expect(length).toBeLessThan(15);
+    }
+  });
+
   it("exports shared visual effect SVG for native molecules", () => {
     const molecule = {
       ...nativeBondMolecule(),

@@ -8,11 +8,30 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { convertTextToAtomLabelCommandId } from "./commands";
 import { saveKeybindingSettings } from "./keybindingSettings";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { DOM_COMMAND_EVENT, focusCurrentWindowAndWebview } from "./window-manager";
+
+const nativeFocus = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  windowSetFocus: vi.fn(),
+  webviewSetFocus: vi.fn()
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeFocus.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ label: "main", setFocus: nativeFocus.windowSetFocus })
+}));
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ setFocus: nativeFocus.webviewSetFocus })
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn().mockResolvedValue(undefined),
+  listen: vi.fn().mockResolvedValue(() => {})
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -40,6 +59,9 @@ describe("atom label editor focus", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
+    nativeFocus.invoke.mockReset().mockResolvedValue(undefined);
+    nativeFocus.windowSetFocus.mockReset().mockResolvedValue(undefined);
+    nativeFocus.webviewSetFocus.mockReset().mockResolvedValue(undefined);
     saveKeybindingSettings({ scheme: "chemdraft" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
@@ -62,7 +84,9 @@ describe("atom label editor focus", () => {
     vi.useRealTimers();
     saveKeybindingSettings({ scheme: "chemdraft" });
     window.history.replaceState(null, "", "/");
+    Reflect.deleteProperty(navigator, "platform");
     delete window.__CHEMDRAFT_AGENT__;
+    Reflect.deleteProperty(globalThis, "__TAURI__");
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
     } else {
@@ -76,10 +100,10 @@ describe("atom label editor focus", () => {
     return selectDocumentObjects(withRing, withRing.pages[0].id, []);
   }
 
-  async function renderMainWindow(initialDocument: ChemDraftDocument) {
+  async function renderMainWindow(initialDocument: ChemDraftDocument, initialActiveToolCommandId = "tool.atom") {
     await act(async () => {
       root.render(createElement(MainWindow, {
-        initialActiveToolCommandId: "tool.atom",
+        initialActiveToolCommandId,
         initialCrosshairsVisible: false,
         initialDocument,
         initialPaletteMode: "hidden",
@@ -213,6 +237,375 @@ describe("atom label editor focus", () => {
     });
   }
 
+  async function pressOnCanvas(init: KeyboardEventInit): Promise<KeyboardEvent> {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    await act(async () => {
+      container.querySelector<HTMLElement>(".page")!.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  function setShortcutPlatform(platform: "macos" | "windows") {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: platform === "macos" ? "MacIntel" : "Win32"
+    });
+  }
+
+  async function pointerPress(element: Element, point: { x: number; y: number }) {
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true,
+        button: 0, buttons: 1, clientX: point.x, clientY: point.y });
+      Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 7 }, pointerType: { value: "mouse" } });
+      element.dispatchEvent(event);
+    });
+    await settle();
+  }
+
+  function enableMockDesktop(raised: boolean) {
+    Object.defineProperty(globalThis, "__TAURI__", { configurable: true, value: {} });
+    nativeFocus.invoke.mockImplementation(async (command: string) =>
+      command === "focus_main_document_window_if_app_active" ? raised : undefined
+    );
+  }
+
+  function expectNoWindowRaise() {
+    expect(nativeFocus.invoke.mock.calls.filter(([command]) =>
+      command === "focus_main_document_window" || command === "focus_main_document_window_if_app_active"
+    )).toEqual([]);
+    expect(nativeFocus.windowSetFocus).not.toHaveBeenCalled();
+    expect(nativeFocus.webviewSetFocus).not.toHaveBeenCalled();
+  }
+
+  async function startInlineEdit(kind: "atom" | "text") {
+    if (kind === "atom") {
+      await startLabelEdit();
+      return labelEditor()!;
+    }
+    await pointerPress(container.querySelector(".page")!, { x: 100, y: 100 });
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+    expect(editor).not.toBeNull();
+    return editor!;
+  }
+
+  describe.each(["macos", "windows"] as const)("inline activation guard (%s)", (platform) => {
+    it.each(["atom", "text"] as const)("hides canvas modifier hints while the %s editor owns focus", async (kind) => {
+      setShortcutPlatform(platform);
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const editor = await startInlineEdit(kind);
+      expect(document.activeElement).toBe(editor);
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift", shiftKey: true }));
+      });
+      expect(container.querySelector("[data-modifier-hint]")).toBeNull();
+      expect(document.activeElement).toBe(editor);
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Shift", shiftKey: false }));
+      });
+      expect(container.querySelector("[data-modifier-hint]")).toBeNull();
+      expect(document.activeElement).toBe(editor);
+    });
+
+    it.each(["atom", "text"] as const)("window focus restores only the %s editor's DOM focus", async (kind) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      enableMockDesktop(true);
+      const editor = await startInlineEdit(kind);
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      hasFocus.mockReturnValue(false);
+      await act(async () => { editor.blur(); });
+      expect(document.activeElement).not.toBe(editor);
+      nativeFocus.invoke.mockClear();
+      nativeFocus.windowSetFocus.mockClear();
+      nativeFocus.webviewSetFocus.mockClear();
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      // Even if hasFocus has not caught up to the event, this path must restore only DOM focus.
+      await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
+      expectNoWindowRaise();
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+
+    it.each(["atom", "text"] as const)("focused document schedules %s DOM retries without raising", async (kind) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      enableMockDesktop(true);
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      const editor = await startInlineEdit(kind);
+      expect(document.activeElement).toBe(editor);
+      // Keep the edit open through blur, then model an already focused document for the retries.
+      hasFocus.mockReturnValue(false);
+      await act(async () => { editor.blur(); });
+      hasFocus.mockReturnValue(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
+      expectNoWindowRaise();
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("unfocused document follows the native activation decision (%s)", async (raised) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument());
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      enableMockDesktop(raised);
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      const editor = await startInlineEdit("atom");
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      const focusCommands = nativeFocus.invoke.mock.calls.filter(([command]) =>
+        command.startsWith("focus_main_document_window")
+      );
+      expect(focusCommands).toHaveLength(4);
+      expect(focusCommands.every(([command]) => command === "focus_main_document_window_if_app_active")).toBe(true);
+      expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
+      expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
+      expect(document.activeElement).toBe(editor);
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses JS activation if the guarded native command fails", async () => {
+    enableMockDesktop(false);
+    nativeFocus.invoke.mockRejectedValue(new Error("Native focus unavailable"));
+    await focusCurrentWindowAndWebview({ onlyIfAppActive: true });
+    expect(nativeFocus.windowSetFocus).not.toHaveBeenCalled();
+    expect(nativeFocus.webviewSetFocus).not.toHaveBeenCalled();
+  });
+
+  it("preserves unguarded activation and its fallback for other callers", async () => {
+    enableMockDesktop(false);
+    nativeFocus.invoke.mockRejectedValue(new Error("Native focus unavailable"));
+    await focusCurrentWindowAndWebview();
+    expect(nativeFocus.invoke).toHaveBeenCalledWith("focus_main_document_window");
+    expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(1);
+    expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(1);
+  });
+
+  function chainDocument() {
+    return insertNativeSingleBondMolecule(createPhase4Document("Text label conversion"), { x: 300, y: 300 });
+  }
+
+  it.each(["macos", "windows"] as const)("Text click on a plain carbon needs no prior hover (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    expect(bridge().snapshot().hoveredNativeTarget).toBeUndefined();
+    // Dispatch on the page itself: an invisible carbon vertex need not have a DOM glyph.
+    await pointerPress(container.querySelector(".page")!, atom);
+    expect(labelEditor()?.getAttribute("data-atom-id")).toBe(atom.id);
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+  });
+
+  it.each(["macos", "windows"] as const)("Text click inside the 8 px atom-label conversion reach edits the atom instead of placing text (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const atom = molecule().atoms[1]!;
+    await paletteCommand("tool.text");
+    // The Text tool's atom-first hit test and fresh-text conversion both use the 8 px atom
+    // radius. Therefore a real Text-tool placement cannot leave a new text anchor within that
+    // conversion reach: the same click opens the atom-label editor first.
+    await pointerPress(container.querySelector(".page")!, { x: atom.x, y: atom.y + 7 });
+    expect(labelEditor()?.getAttribute("data-atom-id")).toBe(atom.id);
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+  });
+
+  it.each(["macos", "windows"] as const)("keeps fresh text near, but outside, the atom hit radius (%s)", async (platform) => {
+    setShortcutPlatform(platform);
+    await renderMainWindow(chainDocument());
+    const originalAtom = { ...molecule().atoms[1]! };
+    const textPoint = { x: originalAtom.x, y: originalAtom.y + nativeBondLengthPx * (2 / 3) };
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(".page")!, textPoint);
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "OMe");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    await settle();
+
+    const objects = bridge().snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(2);
+    expect(objects.find((object) => object.type === "text")).toMatchObject({ type: "text", text: "OMe", x: textPoint.x, y: textPoint.y });
+    expect(molecule().atoms.find((atom) => atom.id === originalAtom.id)).toEqual(originalAtom);
+  });
+
+  it("commits the first of two fresh Text-tool placements when the second placement ends its edit", async () => {
+    // Start with Text active so its first stamp stays active for the next click. The second
+    // pointer handler then registers its fresh id before React observes the first editor ending.
+    await renderMainWindow(chainDocument(), "tool.text");
+    // Both captions go through real Text-tool placement. The first one is an exact element in
+    // open space, so its first commit takes the automatic standalone-atom path.
+    await pointerPress(container.querySelector(".page")!, { x: 100, y: 100 });
+    const firstEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(firstEditor, "N");
+      firstEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // React observes the first editor ending after this second placement has registered its own
+    // fresh id. A single-slot ref loses the first id here; the Set commits it to an atom.
+    await pointerPress(container.querySelector(".page")!, { x: 150, y: 100 });
+
+    const objects = bridge().snapshot().document.pages[0].objects;
+    expect(objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(objects.find((object) => object.type === "text")).toMatchObject({
+      type: "text", text: "Text", x: 150, y: 100
+    });
+    expect(objects.some((object) => object.type === "text" && object.text === "N")).toBe(false);
+  });
+
+  it.each(["OMe", "CH3", "NO2", "   "])("keeps re-edited existing text %j on a chain end as text", async (label) => {
+    const base = chainDocument();
+    const original = base.pages[0].objects[0] as MoleculeObject;
+    const atom = original.atoms[1]!;
+    const initial = insertNativeTextObject(base, atom, "Placeholder");
+    const textId = initial.selection.objectIds[0]!;
+    await renderMainWindow(initial);
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(`[data-object-id="${textId}"]`)!, atom);
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    expect(editor).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, label);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    await settle();
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId))
+      .toMatchObject({ type: "text", text: label });
+    expect(atomElement(atom.id)).toBe("C");
+    expect(molecule().bonds).toEqual(original.bonds);
+  });
+
+  it("runs the explicit command as one labelled undo entry", async () => {
+    const base = chainDocument();
+    const atom = (base.pages[0].objects[0] as MoleculeObject).atoms[1]!;
+    const initial = insertNativeTextObject(base, { x: atom.x, y: atom.y + 15 }, "OMe");
+    await renderMainWindow(initial);
+    await paletteCommand(convertTextToAtomLabelCommandId);
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(atomElement(atom.id)).toBe("OMe");
+    expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: atom.id });
+    await paletteCommand("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Convert Text to Atom Label");
+    expect(atomElement(atom.id)).toBe("C");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    await paletteCommand("edit.undo");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+  });
+
+  it("explains a refused explicit conversion without changing the document", async () => {
+    const initial = insertNativeTextObject(chainDocument(), { x: 100, y: 100 }, "OMe");
+    await renderMainWindow(initial);
+    const before = bridge().snapshot().document;
+    await paletteCommand(convertTextToAtomLabelCommandId);
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("No atom within one bond length");
+  });
+
+  it.each(["OMe", "CH3", "NO2"])("keeps committed %s in open space as text", async (label) => {
+    const initial = insertNativeTextObject(chainDocument(), { x: 100, y: 100 }, label);
+    const textId = initial.selection.objectIds[0]!;
+    await renderMainWindow(initial);
+    await paletteCommand("tool.text");
+    await pointerPress(container.querySelector(`[data-object-id="${textId}"]`)!, { x: 100, y: 100 });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { container.querySelector<HTMLTextAreaElement>(".text-object-editor")!.blur(); });
+    focused.mockRestore();
+    await settle();
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId)).toMatchObject({ type: "text", text: label });
+    expect(molecule().atoms).toHaveLength(2);
+  });
+
+  it("reports a fused benzene template through the real placement handler", async () => {
+    const initial = ringDocument();
+    await renderMainWindow(initial);
+    const ring = molecule();
+    const bond = ring.bonds[0]!;
+    const from = ring.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = ring.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , {
+      x: (from.x + to.x) / 2,
+      y: (from.y + to.y) / 2
+    });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Fused benzene template");
+  });
+
+  it("reports a spiro benzene template through the real placement handler", async () => {
+    const initial = ringDocument();
+    await renderMainWindow(initial);
+    const ring = molecule();
+    const atom = ring.atoms[0]!;
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Made spiro benzene template");
+  });
+
+  it("reports a separately placed benzene fallback through the real placement handler", async () => {
+    const initial = ringDocument();
+    const ring = initial.pages[0].objects[0] as MoleculeObject;
+    const atom = ring.atoms[0]!;
+    const saturated: MoleculeObject = {
+      ...ring,
+      atoms: [
+        ...ring.atoms,
+        { id: "atom_fallback_1", element: "C", x: atom.x + 30, y: atom.y, formalCharge: 0 },
+        { id: "atom_fallback_2", element: "C", x: atom.x - 30, y: atom.y, formalCharge: 0 }
+      ],
+      bonds: [
+        ...ring.bonds,
+        { id: "bond_fallback_1", fromAtomId: atom.id, toAtomId: "atom_fallback_1", order: "single" },
+        { id: "bond_fallback_2", fromAtomId: atom.id, toAtomId: "atom_fallback_2", order: "single" }
+      ]
+    };
+    await renderMainWindow(applyPatches(initial, [{ op: "updateObject", objectId: ring.id, changes: saturated }]));
+    await paletteCommand("tool.benzene");
+    await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toContain("Placed benzene separately: that atom has no free valence");
+  });
+
+  it.each([
+    ["macOS", "macos", { metaKey: true }],
+    ["Windows", "windows", { ctrlKey: true }]
+  ] as const)("routes %s canvas undo, but not Backspace, while an inline editor awaits focus", async (_name, platform, modifiers) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setShortcutPlatform(platform);
+    const firstRing = insertNativeTemplateMolecule(createPhase4Document("Pending editor undo"), { x: 200, y: 300 }, "cyclohexane");
+    const firstRingId = firstRing.pages[0].objects[0]!.id;
+    const twoRings = insertNativeTemplateMolecule(firstRing, { x: 500, y: 300 }, "cyclohexane");
+    await renderMainWindow(selectDocumentObjects(twoRings, twoRings.pages[0].id, [firstRingId]));
+    await pressOnCanvas({ key: "Delete" });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+
+    const atomId = await startLabelEdit();
+    await act(async () => { vi.advanceTimersByTime(100); });
+    await loseFocusToAnotherWindow();
+    expect(labelEditor()).not.toBeNull();
+    expect(document.activeElement).not.toBe(labelEditor());
+
+    await pressOnCanvas({ key: "Backspace" });
+    expect(atomElement(atomId)).toBe("C");
+    expect(molecule().atoms).toHaveLength(6);
+
+    await pressOnCanvas({ key: "z", ...modifiers });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+  });
+
   it("focuses the label editor when an edit starts", async () => {
     await renderMainWindow(ringDocument());
     await startLabelEdit();
@@ -297,6 +690,56 @@ describe("atom label editor focus", () => {
     expect(labelEditor()).toBe(editor);
     expect(editor.value).toBe("OMe");
     expect(molecule().atoms.find((atom) => atom.id === atomId)?.element).not.toBe("C");
+  });
+
+  it("keeps a text-box edit open across native window blur and resumes on window focus", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const initialDocument = insertNativeTextObject(ringDocument(), { x: 200, y: 200 }, "Substituent");
+    const textId = initialDocument.selection.objectIds[0]!;
+    await renderMainWindow(initialDocument);
+    await paletteCommand("tool.text");
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 210, clientY: 210 });
+      Object.defineProperties(event, {
+        isPrimary: { value: true }, pointerId: { value: 7 }, pointerType: { value: "mouse" }
+      });
+      container.querySelector(`[data-object-id="${textId}"]`)!
+        .dispatchEvent(event);
+    });
+    const textEditor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+    const editor = textEditor()!;
+    expect(editor).not.toBeNull();
+    expect(document.activeElement).toBe(editor);
+    const toolBeforeBlur = bridge().snapshot().activeToolCommandId;
+    // Exhaust startup retries before losing focus: recovery must also work much later.
+    await act(async () => { vi.advanceTimersByTime(100); });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await act(async () => { editor.blur(); });
+    hasFocus.mockRestore();
+    expect(textEditor()).toBe(editor);
+    expect(document.activeElement).not.toBe(editor);
+    for (const key of ["e", "Backspace", "Delete", "Escape"]) {
+      await pressOnWindow(key);
+      expect(textEditor()).toBe(editor);
+      expect(bridge().snapshot().activeToolCommandId).toBe(toolBeforeBlur);
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+    }
+    await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
+    expect(document.activeElement).toBe(editor);
+    await pressWhereFocused("e");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "Substituente");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(textEditor()?.value).toBe("Substituente");
+    expect(bridge().snapshot().document.pages[0].objects.find((object) => object.id === textId))
+      .toMatchObject({ type: "text", text: "Substituente" });
+    expect(bridge().snapshot().activeToolCommandId).toBe(toolBeforeBlur);
+    // An actual move elsewhere within the focused document still ends the edit.
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => { editor.blur(); });
+    focused.mockRestore();
+    expect(textEditor()).toBeNull();
   });
 
   it("leaves no atom selected when a palette tool click closes the edit", async () => {
