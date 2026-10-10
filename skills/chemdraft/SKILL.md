@@ -115,6 +115,9 @@ Do not simulate a successful ChemDraft response.
 | Predicted ¹H/¹³C NMR shifts and spectra | `nmr` | `predict_nmr` |
 | CDXML, PDF, SDF, MOL, SMILES files | `export` | `export_structure` |
 
+PDF output currently misplaces atom labels and text. View every PDF
+before delivering it, and prefer SVG or PNG figures until this is fixed.
+
 ## Core workflow
 
 1. Decide what chemistry the user intends: compounds, charges, isotopes,
@@ -165,6 +168,23 @@ journal figures, annotations, arrows and brackets. The workflow is
 - A named chemist's or journal's drawing style is a set of visual
   conventions to reproduce, not something to refuse or to call
   impossible.
+- "Nicolaou style" is a style for any molecule, not one structure: loud,
+  saturated fills, one per lettered ring with no two neighbours alike,
+  are the core of the look, with italic serif ring letters, fusion H and
+  Me labels on top. Deliver the coloured figure as the answer, not as an
+  optional variant; black and white with ring letters, or pale pastels,
+  is not the style. `scripts/ring-style.mjs` applies it to any molecule
+  and checks the result against PubChem (recipe 11). Its figure checks
+  fail a drawing with sliver rings, stretched bonds or wedges, shrunk
+  letters, hidden rings or dropped fusion H: such a figure is not
+  finished. Say what failed and offer the plain drawing, or the coloured
+  one with the failures named.
+- A label such as Me set as an atom's element replaces that carbon with
+  a placeholder atom. Keep the editable file with real carbons and use
+  the Me-labelled copy only as the picture (art.md, pattern 2).
+- A sketched look can make a hashed bond read as a solid line. Look at
+  every wedge and hash after sketching, and offer an
+  unsketched version when stereochemistry must be unambiguous.
 - Never tell a user ChemDraft cannot produce a visual style until you
   have read art.md and tried it. If one detail truly cannot be done,
   name that detail, say why, and deliver the rest.
@@ -226,3 +246,4 @@ allowed. See the relevant reference for combined versus per-job files.
 - [Plugins](references/plugins.md): official catalog, headless reach, permissions and plugin authoring.
 - [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
 - [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.
+- `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity and figure checks (recipe 11; `--help` lists commands and options).

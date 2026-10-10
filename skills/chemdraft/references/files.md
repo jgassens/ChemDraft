@@ -11,7 +11,9 @@ common, trivial or trade name, do one of these, never a guess:
   number. The PUG REST property URL
   `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/<name>/property/Title,MolecularFormula,SMILES/JSON`
   (or `.../compound/cid/<CID>/...`) returns the CID, formula and SMILES;
-  recipes 11 and 12 fetch one with Node.
+  recipe 12 fetches one with Node, and `scripts/ring-style.mjs pubchem`
+  (recipe 11) takes a name or CID and also keeps PubChem's InChIKey for
+  the identity check.
 - Supply the systematic name yourself, say that it came from memory, and
   convert it with `name`.
 
@@ -93,6 +95,11 @@ picture. Never claim a PDF chemical round trip. Refused radicals/isotopes
 must not be removed from the input to force success. `analyze` does accept
 radicals and keeps them in its composition and masses; report the export
 refusal and the computed numbers separately.
+
+PDF output currently misplaces atom labels and text: labels are drawn off
+their atoms (and sometimes twice), "HO" splits into separate letters, and
+fonts are replaced, even for unstyled molecules such as aspirin. View every
+PDF before delivering it, and prefer SVG or PNG figures until this is fixed.
 
 ## Hand-edit loop and compatibility
 
