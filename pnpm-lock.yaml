@@ -297,6 +297,9 @@ importers:
       '@chemdraft/rdkit-adapter':
         specifier: workspace:*
         version: link:../rdkit-adapter
+      '@chemdraft/template-library':
+        specifier: workspace:*
+        version: link:../template-library
 
   packages/editor-adapter:
     dependencies:

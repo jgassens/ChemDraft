@@ -6,3 +6,17 @@ export interface TemplateLibraryEntry {
 }
 
 export const builtInTemplateEntries: TemplateLibraryEntry[] = [];
+
+export {
+  type AbbreviationAtom,
+  type AbbreviationBond,
+  type AbbreviationDefinition,
+  abbreviationBondedSpellings,
+  abbreviationDefinitions,
+  abbreviationElementCounts,
+  abbreviationForBondedElementLabel,
+  abbreviationForLabel,
+  abbreviationSpellings,
+  abbreviationSpellingSuggestion
+} from "./abbreviations";
+export { isGenericAtomLabel } from "./genericLabels";

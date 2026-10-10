@@ -11,6 +11,7 @@ export {
   nativeComponents,
   subtreeSize
 } from "./graph";
+export * from "./labelGroups";
 export * from "./molecule";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";
