@@ -1,5 +1,6 @@
-// Element tables, valence and charge rules, and atom validation for native molecules.
-// Moved verbatim from apps/desktop/src/documentWorkflow.ts; see this package's README.
+// Element tables, valence and charge rules, atom validation, and atom-label reading for native
+// molecules. The validation and tables began as a move from apps/desktop/src/documentWorkflow.ts; see
+// this package's README.
 
 import {
   type ChemicalMetadata,

@@ -1,5 +1,5 @@
 // How an atom label reads, and how many bonds it takes. Pure label grammar: no molecule, no
-// engine. The badge, formula and exports that use it are tested in labelGroups.test.ts.
+// engine. The table's data is checked in abbreviationTable.test.ts.
 
 import { describe, expect, it } from "vitest";
 import { abbreviationDefinitions } from "@chemdraft/template-library";

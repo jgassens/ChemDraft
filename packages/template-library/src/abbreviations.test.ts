@@ -106,7 +106,7 @@ describe("abbreviation lookup", () => {
       expect(isGenericAtomLabel(label), label).toBe(true);
     }
     // Z is Cbz's old name, so it is not waved through; case and spelling variants are not placeholders.
-    for (const label of ["Z", "r", "nu", "R123", "R'''", "Rx", "Ome", ""]) {
+    for (const label of ["Z", "r", "nu", "R0", "R00", "R01", "R100", "R123", "R'''", "Rx", "Ome", ""]) {
       expect(isGenericAtomLabel(label), label).toBe(false);
     }
   });
