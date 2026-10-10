@@ -168,11 +168,13 @@ journal figures, annotations, arrows and brackets. The workflow is
 - A named chemist's or journal's drawing style is a set of visual
   conventions to reproduce, not something to refuse or to call
   impossible.
-- "Nicolaou style" means vivid coloured rings: loud, saturated, per-ring
-  fills are the core of the look, with ring letters, fusion H and Me
-  labels on top. Deliver the coloured figure as the answer, not as an
+- "Nicolaou style" is a style for any molecule, not one structure: loud,
+  saturated fills, one per lettered ring with no two neighbours alike,
+  are the core of the look, with italic serif ring letters, fusion H and
+  Me labels on top. Deliver the coloured figure as the answer, not as an
   optional variant; black and white with ring letters, or pale pastels,
-  is not his style (recipe 11).
+  is not the style. `scripts/ring-style.mjs` applies it to any molecule
+  and checks the result against PubChem (recipe 11).
 - A label such as Me set as an atom's element replaces that carbon with
   a placeholder atom. Keep the editable file with real carbons and use
   the Me-labelled copy only as the picture (art.md, pattern 2).
@@ -240,3 +242,4 @@ allowed. See the relevant reference for combined versus per-job files.
 - [Plugins](references/plugins.md): official catalog, headless reach, permissions and plugin authoring.
 - [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
 - [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.
+- `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity check (recipe 11).

@@ -203,123 +203,179 @@ updated SMILES before another headless render. This verified command creates
 the handoff file; the human editing/desktop reopening step needs a hands-on
 check on each platform. Do not automate editing through the testing bridge.
 
-## 11. A structure "in the style of" a named chemist: brevetoxin B, Nicolaou-style
+## 11. A structure in the Nicolaou style, for any molecule
 
 A request for a named chemist's or journal's style is a set of visual
-conventions to reproduce, not something to refuse. Nicolaou's calling card
-is vivid colour: every ring of the ladder polyether filled with its own
-loud, saturated colour. Lettered rings, H at every ring-fusion
-stereocentre and Me labels complete it. A black-and-white figure with ring
-letters is not his style, and pale pastel tints undersell it: the
-coloured figure below is the answer, not an optional variant. All of it
-is native document art ([art](art.md)).
+conventions to reproduce, not something to refuse. Nicolaou is a style,
+not a molecule. Its calling card is vivid colour: every lettered ring
+filled with its own loud, saturated colour, no two neighbouring rings
+alike. Ring letters in italic serif, H drawn at ring-fusion stereocentres
+and Me labels on ring methyls complete it. Pastel tints, or black and
+white with ring letters, are not the style: the coloured figure is the
+answer, not an optional variant. All of it is native document art
+([art](art.md)).
 
-Never type a structure this size from memory. Take it from PubChem CID
-10865865 (Brevetoxin B, C50H70O14) and cite the CID with the figure:
+`scripts/ring-style.mjs` in this skill applies the style to any molecule.
+It is plain Node with no dependencies and runs on macOS and Windows. It
+edits document JSON only; ChemDraft builds, renders and checks the
+chemistry.
+
+### The rules it applies
+
+1. **Which rings.** It fills and letters the core ring system(s): rings
+   that share atoms with another ring (fused, bridged or spiro). Isolated
+   substituent rings, such as paclitaxel's three phenyls, stay plain
+   unless the user or the literature letters them; then set
+   `"rings": "all"` and letter them in an explicit `letters` map.
+2. **Which letter.** Use the literature's letters when the compound class
+   has them. A convention names each ring by its chemistry (size,
+   heteroatoms, aromaticity, ring double bonds, which lettered rings it
+   shares a bond with), never by its position on the page:
+
+   | `convention` | Letters |
+   |---|---|
+   | `taxane` | A the cyclohexene (one ring C=C), B the eight-membered ring, C the saturated cyclohexane fused to B, D the oxetane (optional) |
+   | `steroid` | D the cyclopentane, C the six-membered ring fused to D, B the one fused to C, A the one fused to B |
+   | `morphinan` | A the aromatic ring, B the carbocycle fused to A, C the other carbocycle, D the piperidine, E the tetrahydrofuran (optional) |
+   | `walk` (default) | breadth-first from a terminal ring across rings that share atoms; ties go left to right, then top to bottom |
+
+   Ladder polyethers are lettered along the ladder from the ring the
+   literature calls A: a walk with a `start` selector (brevetoxins start
+   at the lactone, `{"carbonyl": true}`). For any other class with a
+   convention, write it as a `letters` map of selectors, assigned in the
+   order given, for example
+   `{"letters": {"A": {"size": 6, "aromatic": true}, "B": {"size": 5, "hetero": {"N": 1}, "sharesBondWith": ["A"]}}}`.
+   Selector fields: `size`, `hetero` (`{"O": 1}`; `{}` is a carbocycle),
+   `aromatic`, `ringDoubleBonds` (outside aromatic rings), `carbonyl` (a
+   ring carbon with an exocyclic =O), `sharesBondWith` and
+   `notSharesBondWith` (letters given earlier), `atoms` (0-based SMILES
+   atom indices the ring contains), `optional`. A rule that matches no
+   ring or several stops the script with every candidate listed, and so
+   does a core ring left without a letter; never guess past either. With
+   no convention, the walk is the rule: say so in the caption or report.
+3. **Where the letter goes.** At the most open point inside its ring,
+   clear of atoms, bonds and labels (such as a gem-dimethyl pointing into
+   the ring), in bold italic serif at 20 px, shrinking only to fit.
+4. **Letter colour.** White on a dark fill, near-black on a light one,
+   chosen by the fill's relative luminance as drawn (white below 0.34).
+5. **Fill colours.** Twelve saturated colours in letter order, so each
+   ring gets its own; beyond twelve, a greedy colouring over ring
+   adjacency keeps rings that share an atom apart.
+6. **Fusion H.** At every CH stereocentre shared by two lettered rings,
+   the wedge or hash that starts there moves onto a new explicit H with
+   the opposite style (a wedged ring bond becomes a hashed H), and the
+   ring bond goes plain. The stereochemistry is unchanged, and the check
+   below proves it. The H points outward in the clearest direction; an
+   atom in three rings has no room and keeps its ring wedge (warned).
+7. **Me.** Methyls on lettered rings are drawn CH3 in `<name>-carbon.json`,
+   the true structure and the editable file. Its CH3 labels are wider than
+   Me and can crowd neighbours. `<name>-nicolaou.json` relabels them Me
+   for the picture only: a Me label is a placeholder atom (`*`), not a
+   carbon ([art](art.md), pattern 2).
+8. **Collisions.** `check` measures every atom label and ring letter in
+   the rendered SVGs and lists the pairs that nearly touch, naming each
+   atom and the atom it hangs from.
+9. **Identity.** `check` requires every rendered InChIKey to equal
+   PubChem's own InChIKey, and the specified and unspecified stereocentre
+   counts to equal PubChem's.
+
+### Run it
+
+Get the structure from a database record, never from memory. OPSIN
+(`name`) parses systematic names, not trivial ones such as "paclitaxel":
+for a trivial name, `pubchem` looks the name up in PubChem (it also takes
+a CID). A name lookup prints every CID it matched and uses the first;
+confirm the title and formula, and cite the CID with the figure. If
+PubChem has no record, convert a systematic name with `name`, build from
+that SMILES, compare InChIKeys as in [art](art.md) "Check the chemistry",
+and say the check only shows the drawing kept the SMILES you started
+from.
+
+POSIX shell, paclitaxel (CID 36314), taxane letters:
 
 ```sh
-node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/10865865/property/Title,MolecularFormula,SMILES/JSON').then(r=>r.json()).then(j=>{const p=j.PropertyTable.Properties[0]; console.log(p.CID,p.Title,p.MolecularFormula,p.SMILES); require('node:fs').writeFileSync(require('node:path').join(process.argv[1],'brevetoxin-b-job.json'),JSON.stringify([{name:'brevetoxin-b',smiles:p.SMILES}]));})" "$scratch"
+skill="$checkout/skills/chemdraft"
+node "$skill/scripts/ring-style.mjs" pubchem "$scratch" paclitaxel 36314
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" > "$scratch/paclitaxel-build.jsonl"
+printf '%s' '{"convention":"taxane"}' > "$scratch/paclitaxel-options.json"
+node "$skill/scripts/ring-style.mjs" style "$scratch" paclitaxel "$scratch/paclitaxel-options.json"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 > "$scratch/paclitaxel-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" >> "$scratch/paclitaxel-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 >> "$scratch/paclitaxel-render.jsonl"
+node "$skill/scripts/ring-style.mjs" identity-jobs "$scratch" paclitaxel
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/paclitaxel-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' > "$scratch/paclitaxel-identity.jsonl"
+node "$skill/scripts/ring-style.mjs" check "$scratch" paclitaxel
 ```
 
-Build the editable document. POSIX shell:
-
-```sh
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/brevetoxin-b-job.json" --out-dir "$scratch" > "$scratch/brevetoxin-b-build.jsonl"
-```
-
-PowerShell:
+PowerShell (the script also reads UTF-16 files, but write UTF-8):
 
 ```powershell
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/brevetoxin-b-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/brevetoxin-b-build.jsonl"
+$ringStyle = Join-Path $checkout 'skills/chemdraft/scripts/ring-style.mjs'
+node $ringStyle pubchem $scratch paclitaxel 36314
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/paclitaxel-build.jsonl"
+Set-Content -Encoding utf8 "$scratch/paclitaxel-options.json" '{"convention":"taxane"}'
+node $ringStyle style $scratch paclitaxel "$scratch/paclitaxel-options.json"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 | Set-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
+node $ringStyle identity-jobs $scratch paclitaxel
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/paclitaxel-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' | Set-Content -Encoding utf8 "$scratch/paclitaxel-identity.jsonl"
+node $ringStyle check $scratch paclitaxel
 ```
 
-Save this script as `brevetoxin-style.mjs` in the scratch directory. It
-fills the eleven rings with saturated colours (no two neighbours alike),
-letters them A–K left to right at their centres in white or near-black,
-whichever reads on that fill, moves each ring-fusion stereo bond onto an
-explicit H (opposite wedge/hash, along the fused bond), and writes two
-files. `-carbon` keeps every methyl a carbon (drawn CH3): it is the
-verifiable structure and the editable file to hand over. `-nicolaou`
-relabels the methyls Me for the picture only, because a Me label is not
-a carbon (see the check below).
+`style` prints each ring's letter, colour and chemistry, the fusion H
+and Me it added, and any warning; `<name>-style.json` keeps the same.
+`check` prints PubChem's InChIKey and stereo counts beside each render's,
+then the near-touching labels, and exits 1 if an InChIKey or count
+differs. A failed check means the figure is not the molecule: do not
+deliver it.
 
-```js
-// node brevetoxin-style.mjs <scratch>: vivid ring fills, ring letters A-K, H at ring fusions, Me labels.
-import fs from "node:fs";
-import path from "node:path";
-const dir = process.argv[2];
-const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8").replace(/^\uFEFF/, ""));
-const build = read("brevetoxin-b-build.jsonl");
-const doc = read("brevetoxin-b.json");
-const page = doc.pages[0];
-const mol = page.objects.find((o) => o.type === "molecule");
-const atom = (id) => mol.atoms.find((a) => a.id === id);
-const neighbours = (id) => mol.bonds.flatMap((b) => b.fromAtomId === id ? [b.toAtomId] : b.toAtomId === id ? [b.fromAtomId] : []);
-const rings = [...build.molecules[0].rings].sort((a, b) => a.center.x - b.center.x);
-// Saturated ring fills, A to K from left to right, each paired with the letter colour that reads on it.
-const fills = [["#e53935", "#ffffff"], ["#fb8c00", "#1a1a1a"], ["#fdd835", "#1a1a1a"], ["#43a047", "#ffffff"], ["#00acc1", "#1a1a1a"],
-  ["#1e88e5", "#ffffff"], ["#8e24aa", "#ffffff"], ["#d81b60", "#ffffff"], ["#7cb342", "#1a1a1a"], ["#ff7043", "#1a1a1a"], ["#3949ab", "#ffffff"]];
-mol.style.atomLabelBackgroundColor = "transparent";
-mol.style.ringStyles = Object.fromEntries(rings.map((r, i) => [r.ringKey, { fillColor: fills[i % fills.length][0], fillOpacity: 0.9 }]));
-rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text: String.fromCharCode(65 + i), spans: [],
-  x: r.center.x - 10, y: r.center.y - 0.64 * 20, width: 20, height: 24, rotation: 0,
-  style: { fontSizePx: 20, fontWeight: 700, fontStyle: "italic", textAlign: "center", color: fills[i % fills.length][1], fontFamily: "Times New Roman, Times, serif" } }));
-// Ring-fusion CH stereocentres: move the stereo bond onto an explicit H along the fused bond.
-for (const a of [...mol.atoms]) {
-  const mine = rings.filter((r) => r.atomIds.includes(a.id));
-  const stereo = mol.bonds.find((b) => b.fromAtomId === a.id && ["wedge", "hashed"].includes(b.display?.bondStyle));
-  const partner = neighbours(a.id).find((id) => mine.every((r) => r.atomIds.includes(id)));
-  if (a.element !== "C" || mine.length < 2 || neighbours(a.id).length !== 3 || !stereo || !partner) continue;
-  const c = atom(a.id), p = atom(partner), d = Math.hypot(c.x - p.x, c.y - p.y);
-  mol.atoms.push({ id: `h_${a.id}`, element: "H", x: c.x + (c.x - p.x) / d * 22, y: c.y + (c.y - p.y) / d * 22, formalCharge: 0 });
-  mol.bonds.push({ id: `b_h_${a.id}`, fromAtomId: a.id, toAtomId: `h_${a.id}`, order: "single",
-    display: { bondStyle: stereo.display.bondStyle === "wedge" ? "hashed" : "wedge" } });
-  delete stereo.display.bondStyle;
-}
-// Methyl carbons on ring atoms: drawn CH3 in the editable file, relabelled Me only in the picture.
-const ringAtoms = new Set(rings.flatMap((r) => r.atomIds));
-const methyls = mol.atoms.filter((a) => {
-  const n = neighbours(a.id);
-  const bond = mol.bonds.find((b) => b.fromAtomId === a.id || b.toAtomId === a.id);
-  return a.element === "C" && n.length === 1 && ringAtoms.has(n[0]) && bond.order === "single";
-});
-mol.style.atomLabelShowTerminalCarbonsByAtomId = Object.fromEntries(methyls.map((a) => [a.id, true]));
-fs.writeFileSync(path.join(dir, "brevetoxin-b-carbon.json"), JSON.stringify(doc));
-// Display-only last step: setting element to "Me" makes each methyl a placeholder atom, not a carbon.
-for (const a of methyls) a.element = "Me";
-fs.writeFileSync(path.join(dir, "brevetoxin-b-nicolaou.json"), JSON.stringify(doc));
-```
+### Look, fix, look again
 
-Style, render and save. The `.chemdraft` comes from the `-carbon` file so
-the editable structure stays the true molecule; the `-nicolaou` PNG and
-SVG are the picture:
+Open each PNG at full size and check: every letter sits in the ring the
+convention names and reads on its fill; the colours are loud and no two
+touching rings match; every wedge and hash is where it was, including on
+each new H; no label is clipped or sits on another label or a letter. A
+ring fill also runs under a ring heteroatom's label to the atom centre,
+so a coloured point pokes into the O (paclitaxel's oxetane, morphine's
+furan): look for it, and see [art](art.md), Known limits.
 
-```sh
-node "$scratch/brevetoxin-style.mjs" "$scratch"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-carbon.json" --out "$scratch/brevetoxin-b-carbon.png" --width 2000
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-carbon.json" --out "$scratch/brevetoxin-b.chemdraft"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/brevetoxin-b-nicolaou.json" --out "$scratch/brevetoxin-b-nicolaou" --format both --width 2000
-```
+- **Labels nearly touch.** Turn one substituent about its attachment atom
+  and restyle: add `"rotate": [{"atom": "a52", "about": "a10", "degrees": 25}]`
+  to the options (positive turns clockwise on the page; take the ids
+  from `check`, which prints each label's atom and the atom it hangs
+  from). Then render and run `identity-jobs`, `analyze` and `check`
+  again: turning a group beside a stereocentre can change what its
+  wedge means, and the InChIKey shows it.
+- **A ring is crushed, or a letter will not fit.** Bridged systems can be
+  laid out with one ring squeezed under another. `relayout` rewrites the
+  job with ChemDraft's canonical SMILES (the same molecule in another
+  atom order, which `document` lays out afresh); rebuild and restyle.
+  When one lettered ring is still drawn around another, the script paints
+  the outer ring's fill as a path object under the molecule so the inner
+  ring keeps its own colour (it says so).
+- **A letter rule fails.** Read the candidates it lists and write a
+  `letters` map with tighter selectors or `atoms` indices.
 
-Check, as verified when this recipe was written:
+Hand over `<name>.chemdraft` (saved from the carbon document) as the
+editable file and the `-nicolaou` PNG or SVG as the picture, and say that
+the editable file shows CH3 where the picture shows Me.
 
-- The `-carbon` PNG and the `.chemdraft` save each report 23 specified
-  stereocentres, 0 unspecified. Run
-  `analyze --methods 'rdkit.canonical-smiles,rdkit.inchikey'` on the
-  PubChem SMILES and on each reported `canonicalSmiles`; all gave
-  InChIKey `LYTCVQQGCSNFJU-FGRVLNGBSA-N` and formula C50H70O14. Hand
-  over `brevetoxin-b.chemdraft`: whoever opens or copies it gets
-  brevetoxin B, with CH3 where the picture shows Me.
-- The `-nicolaou` render writes each Me as `*` and emits one warning per
-  label, and its stereo counts read as unspecified: the Me-labelled
-  document is seven placeholder atoms short of brevetoxin B. Use it only
-  as the picture; never save it as the `.chemdraft` you deliver. Say
-  this trade-off when you hand over both files.
-- Look at the PNG: eleven vividly coloured rings, no two neighbours alike,
-  lettered A–K with every letter readable on its fill, fifteen fusion H
-  atoms, seven Me labels, ring O labels readable at the ring corners, no
-  label sitting on a ring letter.
+### Verified examples
+
+Run from empty folders with the commands above (morphine after
+`relayout`). Atom ids belong to these builds; read your own.
+
+| Molecule (PubChem CID) | Options | Checked |
+|---|---|---|
+| paclitaxel (36314) | `{"convention": "taxane", "rotate": [{"atom": "a52", "about": "a10", "degrees": 25}, {"atom": "a56", "about": "a7", "degrees": -20}]}` | A–D lettered, phenyls plain; 2 fusion H, 4 Me; InChIKey `RCINICONZNJXQF-MZXODVADSA-N`; 11 specified, 0 unspecified |
+| cholesterol (5997) | `{"convention": "steroid", "rotate": [{"atom": "a26", "about": "a20", "degrees": -30}]}` | A–D; 3 fusion H, 2 Me; `HVYWMOMLDIMFJA-DPAQBDIFSA-N`; 8 and 0 |
+| morphine (5288826) | `{"convention": "morphinan"}` after `relayout` | A–E; 2 fusion H (C14, in three rings, keeps its ring wedge), N–Me; B's fill drawn as a path under D; `BQJCRHHNABKAKU-KBQPJGBKSA-N`; 5 and 0 |
+| brevetoxin B (10865865) | `{"start": {"carbonyl": true}, "rotate": [{"atom": "a62", "about": "a59", "degrees": -15}]}` | A–K along the ladder from the lactone; 15 fusion H, 7 Me; `LYTCVQQGCSNFJU-FGRVLNGBSA-N`; 23 and 0 |
+
+The rotations cleared the near-touching pairs `check` reported (the
+paclitaxel C3-H beside the C4 acetate among them).
 
 ## 12. A hand-sketched structure: penicillin G
 

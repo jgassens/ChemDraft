@@ -11,7 +11,9 @@ common, trivial or trade name, do one of these, never a guess:
   number. The PUG REST property URL
   `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/<name>/property/Title,MolecularFormula,SMILES/JSON`
   (or `.../compound/cid/<CID>/...`) returns the CID, formula and SMILES;
-  recipes 11 and 12 fetch one with Node.
+  recipe 12 fetches one with Node, and `scripts/ring-style.mjs pubchem`
+  (recipe 11) takes a name or CID and also keeps PubChem's InChIKey for
+  the identity check.
 - Supply the systematic name yourself, say that it came from memory, and
   convert it with `name`.
 

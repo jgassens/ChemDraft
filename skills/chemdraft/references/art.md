@@ -12,12 +12,15 @@ style of" a named chemist or journal is a set of visual conventions to
 reproduce with them, not a request to refuse. Every pattern below was
 rendered and inspected with the commands shown.
 
-**"Nicolaou style" means vivid coloured rings.** Loud, saturated,
-clearly different fills, one per ring, are the core of the look; ring
-letters, fusion H and Me labels go on top. The coloured figure is the
-answer, not an optional variant: a black-and-white figure with ring
-letters is not his style, and pale pastel tints undersell it. Recipe 11
-in [recipes](recipes.md) is the worked version.
+**"Nicolaou style" means vivid coloured rings, on any molecule.** It is
+a style, not a particular structure. Loud, saturated, clearly different
+fills, one per lettered ring, with no two neighbouring rings alike, are
+the core of the look; italic serif ring letters, H at ring-fusion
+stereocentres and Me labels on ring methyls go on top. The coloured
+figure is the answer, not an optional variant: a black-and-white figure
+with ring letters is not the style, and pale pastel tints undersell it.
+`scripts/ring-style.mjs` applies it to any molecule (pattern 7); recipe
+11 in [recipes](recipes.md) is the worked version.
 
 ## What the native model can draw
 
@@ -110,8 +113,10 @@ with `id`, `element`, page `x`/`y` and `inputAtomIndex` (the 0-based atom
 position in the SMILES); `bonds` with `id`, `fromAtomId`, `toAtomId`,
 `order` and `display`; and `rings` with `ringKey`, `atomIds`, `bondIds`,
 `center` and `size`. Use the reported `ringKey` (sorted bond ids joined
-by `|`) instead of building one. The ring list is not in drawing order:
-sort by `center.x` (left to right) or `center.y` when you letter rings.
+by `|`) instead of building one. The ring list is not in drawing order,
+and position alone is a poor way to letter rings: it interleaves pendant
+rings with the core. Letter by the literature's convention or a ring walk
+(pattern 7).
 Ordinary separately written hydrogen atoms are removed by existing depiction;
 add them yourself (pattern 2).
 
@@ -182,9 +187,10 @@ heteroatom labels do not sit on white patches.
 
 For a vivid look (Nicolaou style), use saturated colours at
 `fillOpacity` about 0.9, never two alike side by side, and pick each
-ring letter's colour for its fill: white on red, green, blue, purple or
-magenta; near-black on yellow, orange, cyan or light green. Recipe 11
-has an eleven-colour palette checked this way. A per-atom white
+ring letter's colour for its fill by luminance: white on red, green,
+blue, purple or magenta; near-black on yellow, orange, cyan or light
+green. `scripts/ring-style.mjs` (pattern 7) does all of this with a
+twelve-colour palette. A per-atom white
 `atomLabelBackgroundColors` patch on ring O atoms looked worse (a speck
 of fill shows inside the O); black O labels on the transparent default
 stayed readable at the ring corners.
@@ -234,7 +240,7 @@ last, display-only step, and render the picture from that copy. Hand
 over the carbon `.chemdraft` as the editable file and say that it shows
 CH3 where the picture shows Me. To check the picture, replace each `*`
 in its reported SMILES with `C` and confirm the InChIKey still matches.
-Recipe 11 does exactly this.
+`scripts/ring-style.mjs` does exactly this (pattern 7).
 
 ### 3. Highlight a substructure
 
@@ -335,6 +341,35 @@ Mechanism-arrow anchors that render are `atom`, `point` and `object`.
 A `bond` anchor is not resolved by the exporter: the arrow is silently
 left out with no warning, so anchor at a `point` on the bond instead.
 
+### 7. Nicolaou-style rings on any molecule: `scripts/ring-style.mjs`
+
+The skill ships a plain Node script (no dependencies, macOS and Windows)
+that applies patterns 1 and 2 to any molecule. Recipe 11 in
+[recipes](recipes.md) has the full commands and the rules; in short:
+
+- `node <skill>/scripts/ring-style.mjs pubchem <dir> <name> <cid or name>`
+  fetches the SMILES, InChIKey and stereo counts from PubChem and writes
+  the `document` batch.
+- `style <dir> <name> [options.json]` reads the `document` output and
+  writes `<name>-carbon.json` (true structure, methyls drawn CH3: render
+  it and save the `.chemdraft` from it) and `<name>-nicolaou.json` (the
+  picture, methyls relabelled Me). It fills and letters the core ring
+  system (rings sharing atoms with another ring, not pendant phenyls),
+  letters by a literature convention (`taxane`, `steroid`, `morphinan`),
+  an explicit `letters` map of chemistry selectors, or a ring walk, and
+  stops when a rule matches no ring or several. Letters go at the most
+  open point in each ring, in white or near-black by fill luminance;
+  touching rings never share a colour; each fusion CH stereocentre gets
+  an explicit H carrying its wedge or hash.
+- `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
+  SMILES when a bridged ring is laid out crushed.
+- `identity-jobs` and `check` compare every rendered InChIKey and the
+  stereocentre counts with PubChem's, and list labels that nearly touch;
+  the options' `rotate` turns a substituent about its attachment atom to
+  clear one.
+
+Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
+
 ## Style keys worth knowing
 
 | Object | Keys |
@@ -365,6 +400,20 @@ left out with no warning, so anchor at a `point` on the bond instead.
   fonts were replaced; `render-document --format pdf` of the same aspirin
   document shows the same fault. View every PDF before
   delivering it, and prefer SVG or PNG until this is fixed.
+- **A ring fill runs under a ring heteroatom's label to the atom centre.**
+  With `atomLabelBackgroundColor` transparent (needed on coloured fills),
+  the fill polygon's corner shows inside the label, so a coloured point
+  pokes into the O of an oxetane or furan. Look for it at full size; it
+  cannot be hidden from the document today.
+- **Ring fills are painted in a fixed order the document cannot change.**
+  Where a bridged ring is drawn around another ring (morphine's B around
+  D), the outer fill can cover the inner one. `scripts/ring-style.mjs`
+  then paints the outer ring as a closed `path` graphic under the
+  molecule; that path does not follow the atoms if they are moved in the
+  app.
+- **CH3 labels are wider than Me.** The carbon copy of a Me-labelled
+  figure can crowd neighbouring labels that cleared in the picture; check
+  both renders.
 - `image` graphics fall back to a placeholder in exports
   (`export.svg.graphic_fallback`); the reflection effect is approximated
   or omitted with a warning. SVG, PNG and PDF render only the first page.
