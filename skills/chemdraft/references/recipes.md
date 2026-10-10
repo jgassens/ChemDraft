@@ -566,11 +566,10 @@ What remains, and why:
 ## 12. A hand-sketched structure: penicillin G
 
 The sketch effect draws rough strokes of uneven weight over the bonds; a
-handwriting label font and a sketched circle finish the look. The one
-real hazard is that the rough stroke runs down the middle of a hashed
-bond, so the hash can read as solid. This recipe widens and spaces the
-stereo bonds and also writes an unsketched copy. Structure from PubChem
-CID 5904 (Penicillin G, C16H18N2O4S):
+handwriting label font and a sketched circle finish the look. Inspect each
+wedge and hash at full size, and write an unsketched copy when
+stereochemistry must be unambiguous. Structure from PubChem CID 5904
+(Penicillin G, C16H18N2O4S):
 
 ```sh
 node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/5904/property/Title,MolecularFormula,SMILES/JSON').then(r=>r.json()).then(j=>{const p=j.PropertyTable.Properties[0]; console.log(p.CID,p.Title,p.MolecularFormula,p.SMILES); require('node:fs').writeFileSync(require('node:path').join(process.argv[1],'penicillin-g-job.json'),JSON.stringify([{name:'penicillin-g',smiles:p.SMILES}]));})" "$scratch"
@@ -602,10 +601,6 @@ const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic
 // fixes the wobble so re-renders match.
 mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: ink }];
 Object.assign(mol.style, { bondColor: ink, atomLabelColor: ink, atomLabelFontFamily: hand, atomLabelFontSizePx: 16 });
-// Wide, well-spaced hashes and wide wedges stay readable under the rough strokes.
-const stereo = mol.bonds.filter((b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed").map((b) => b.id);
-mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 12]));
-mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 8]));
 const lactam = build.molecules[0].rings.find((r) => r.size === 4);
 page.objects.push({ id: "lactam-circle", type: "graphic", graphicKind: "ellipse", rotation: 0,
   x: lactam.center.x - 25, y: lactam.center.y - 25, width: 50, height: 50,
@@ -635,11 +630,8 @@ unspecified centre is the bridgehead N, which the plain `render` and
 `stereo` report the same way; do not add stereo to it.
 
 Then look at every wedge and hash in the sketched PNG at full size. The
-C–S and C–N wedges read as wedges, and the hashed C–CO2H bond shows its
-wide ticks with a rough line running through them ([art](art.md), Known
-limits). Uneven or tapering plain bonds are expected and fine; if a hash
-reads as solid, try another `seed` and look again. Deliver the sketch
-with `penicillin-g-clean.png` alongside, and offer the clean one wherever
-the stereochemistry must be unambiguous (an exam, a key, a paper). Fonts
-are per machine; if neither handwriting font is installed, the generic
-`cursive` font is used.
+C–S and C–N wedges read as wedges, and the hashed C–CO2H bond shows
+separate rough ticks. Deliver the sketch with `penicillin-g-clean.png`
+alongside, and offer the clean one wherever the stereochemistry must be
+unambiguous (an exam, a key, a paper). Fonts are per machine; if neither
+handwriting font is installed, the generic `cursive` font is used.

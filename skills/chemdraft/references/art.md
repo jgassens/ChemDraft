@@ -27,7 +27,7 @@ with ring letters is not the style, and pale pastel tints undersell it.
 | Look | Where it lives in the document JSON |
 |---|---|
 | Shaded, coloured or gradient ring interiors | `molecule.style.ringStyles[ringKey]`: `fillColor`, `fillOpacity`, `fillPaint`, `visualEffects`; drawn under the bonds |
-| Bold, wedge, hashed, dashed bonds | `bond.display.bondStyle`; a wedge's narrow end is at `fromAtomId`; `bond.display.doubleBondSide` |
+| Bold, wedge, hashed, dashed bonds | `bond.display.bondStyle`; a wedge's narrow end is at `fromAtomId`; `bond.display.doubleBondSide`: `left` \| `right` \| `center`; unset is automatic: a double bond that is not in a ring draws centred when it joins C to an atom other than C or H (C=O, C=N, C=S) or ends on a terminal heteroatom (S=O, P=O); other double bonds, such as ring bonds and C=C, sit to one side |
 | Per-bond colour and weight | `molecule.style.bondColors`, `bondStrokeWidths`, `bondBoldWidths`, `bondHashSpacings`, `bondLineCaps` (maps keyed by bond id) |
 | Per-atom label look | `atomLabelColors`, `atomLabelFontSizes`, `atomLabelFontWeights`, `atomLabelFontStyles`, `atomLabelBackgroundColors`, `atomLabelPlacements`, `atomLabelShowTerminalCarbonsByAtomId`, `atomLabelHideImplicitHydrogensByAtomId` (maps keyed by atom id) |
 | Whole-molecule look | `molecule.style` keys such as `bondColor`, `bondStrokeWidthPx`, `atomLabelColor`, `atomLabelFontFamily`, `atomLabelFontSizePx`, `atomLabelBackgroundColor`, `visualEffects` |
@@ -277,10 +277,6 @@ mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
 mol.style.atomLabelFontFamily = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
-// Wide, well-spaced hashes and wedges stay readable under the rough strokes.
-const stereo = mol.bonds.filter((b) => ["wedge", "hashed"].includes(b.display?.bondStyle)).map((b) => b.id);
-mol.style.bondBoldWidths = Object.fromEntries(stereo.map((id) => [id, 12]));
-mol.style.bondHashSpacings = Object.fromEntries(stereo.map((id) => [id, 8]));
 page.objects.push({ id: "ring-circle", type: "graphic", graphicKind: "ellipse", x: 341, y: 509, width: 50, height: 50, rotation: 0,
   style: { fillColor: "none", visualEffects: [{ kind: "sketch", roughness: 2.2, bowing: 2, seed: 3, color: "#c0392b", strokeWidth: 2 }] },
   data: {} });
@@ -298,14 +294,10 @@ Bradley Hand is on macOS, Segoe Print on Windows; list both with a generic
 fallback. Verified on penicillin G
 (recipe 12).
 
-**The sketch can mislead about stereochemistry.** Uneven, tapering stroke
-weight is the intended hand-drawn look, including on plain bonds. The
-real stereo hazard is that the stroke runs down the middle of a hashed
-bond, so a hash can read as a solid line. Widen and space the stereo
-bonds with `bondBoldWidths` (about 12) and `bondHashSpacings` (about 8).
-After every sketched render, look at each wedge and hash at full size; if
-a hash reads as solid, try another seed. When stereochemistry must be
-unambiguous (exams, answer keys, papers), also render the document with
+**Check sketched stereochemistry.** Uneven, tapering stroke weight is the
+intended hand-drawn look. After every sketched render, look at each wedge
+and hash at full size. When stereochemistry must be unambiguous (exams,
+answer keys, papers), also render the document with
 `visualEffects` removed and offer that clean version.
 
 ### 6. Arrows, brackets and annotations
@@ -413,10 +405,6 @@ style step cannot repair).
   `H`… reads "C 6 H 10 O" in the SVG and PNG. Unicode subscript
   characters (`C₆H₁₀O`) in one span avoid the gaps but may fall back to
   another font. Look at the image either way.
-- The molecule sketch traces the centre line of wedge and hashed bonds,
-  so a hashed bond reads as a spine with ticks. Use the settings in
-  pattern 5, inspect every wedge and hash at full size, and offer an
-  unsketched version when stereo must be unambiguous.
 - **PDF output misplaces atom labels and text.** In three independent
   runs, even for unstyled molecules such as aspirin, labels were drawn off
   their atoms (and sometimes twice), "HO" split into separate letters, and
