@@ -41,6 +41,7 @@
       "@chemdraft/layout-engine": ["packages/layout-engine/src/index.ts"],
       "@chemdraft/layout-engine/testing": ["packages/layout-engine/src/testing.ts"],
       "@chemdraft/document-workflow-core": ["packages/document-workflow-core/src/index.ts"],
+      "@chemdraft/document-workflow-core/testing": ["packages/document-workflow-core/src/testing.ts"],
       "@chemdraft/shortcut-engine": ["packages/shortcut-engine/src/index.ts"],
       "@chemdraft/mechanism-tools": ["packages/mechanism-tools/src/index.ts"],
       "@chemdraft/template-library": ["packages/template-library/src/index.ts"],
