@@ -93,7 +93,9 @@ describe("open warnings list", () => {
         initialCrosshairsVisible: false,
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        // In-window toolbars: native palette windows cannot open here, and giving up on them
+        // writes its own status line some time later, racing the status this suite reads.
+        nativePalette: false
       }));
     });
     for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
