@@ -22,6 +22,7 @@ const ADVANCE_EM: Record<string, number> = {
   "2": 0.556,
   C: 0.722,
   E: 0.667,
+  H: 0.722,
   M: 0.833,
   O: 0.778,
   e: 0.556,
@@ -137,13 +138,24 @@ describe("atom label editor width", () => {
     }
   });
 
-  async function renderRing() {
+  /** Cyclohexane; `editedAtomStyle` adds per-atom label style maps for the atom the edit opens on. */
+  async function renderRing(editedAtomStyle: Record<string, unknown> = {}) {
     const withRing = insertNativeTemplateMolecule(createPhase4Document("Label width"), { x: 300, y: 300 }, "cyclohexane");
+    const ring = withRing.pages[0].objects[0] as MoleculeObject;
+    const atomId = ring.atoms[0]!.id;
+    const styled: MoleculeObject = {
+      ...ring,
+      style: {
+        ...ring.style,
+        ...Object.fromEntries(Object.entries(editedAtomStyle).map(([key, value]) => [key, { [atomId]: value }]))
+      }
+    };
+    const styledDocument = { ...withRing, pages: [{ ...withRing.pages[0], objects: [styled] }] };
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.atom",
         initialCrosshairsVisible: false,
-        initialDocument: selectDocumentObjects(withRing, withRing.pages[0].id, []),
+        initialDocument: selectDocumentObjects(styledDocument, styledDocument.pages[0].id, []),
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: true
@@ -228,7 +240,8 @@ describe("atom label editor width", () => {
     ["OMe", 2.5],
     ["Cl", 1],
     ["CO2Et", 0.5],
-    ["CO2Et", 4]
+    ["CO2Et", 4],
+    ["OCH2CH2OCH2CH2OCH2CH2OCH2CH2OMe", 1]
   ])("leaves room for all of %s and the caret at page scale %s", async (label, pageScale) => {
     await renderRing();
     await startLabelEdit();
@@ -254,6 +267,17 @@ describe("atom label editor width", () => {
     );
   });
 
+  it("measures a bold italic label in bold italic", async () => {
+    await renderRing({ atomLabelFontWeights: 700, atomLabelFontStyles: "italic", atomLabelFontSizes: 20 });
+    await startLabelEdit();
+    await typeIntoEditor("OMe");
+
+    const editor = labelEditor();
+    expect(editor.style.fontWeight).toBe("700");
+    expect(editor.style.fontStyle).toBe("italic");
+    expect(measuringContext.measuredFonts.at(-1)).toBe(`italic 700 20px ${editor.style.fontFamily}`);
+  });
+
   it("falls back to character count when the canvas rejects the label font", () => {
     // style-compat puts an imported family in front of the default stack unquoted; a name that is
     // not a CSS identifier makes the whole shorthand invalid. The canvas would keep its previous
@@ -264,12 +288,14 @@ describe("atom label editor width", () => {
     expect(atomLabelEditorWidth("OMe", DefaultNativeDrawingStyle)).toMatch(/px \* var\(--page-scale\)/);
   });
 
-  it("keeps the one-character width for an empty draft", async () => {
+  it("leaves an empty draft's inline width as it was", async () => {
     await renderRing();
     await startLabelEdit();
     await typeIntoEditor("");
 
     expect(labelEditor().getAttribute("data-atom-label-draft-empty")).toBe("true");
+    // Unchanged from before this fix. What shows is App.css's min-width (0.75em), which is wider
+    // than 1ch in the label fonts; jsdom does not load App.css, so only the inline value is checked.
     expect(labelEditor().style.width).toBe("1ch");
   });
 });
@@ -282,7 +308,7 @@ describe("atomLabelEditorWidth without a measuring context", () => {
     expect(resolvePx(width, 1, fontPx)).toBeGreaterThan(resolvePx("1ch", 1, fontPx));
   });
 
-  it("keeps the one-character width for an empty draft", () => {
+  it("leaves an empty draft's inline width as it was, measured or not", () => {
     expect(atomLabelEditorWidth("", DefaultNativeDrawingStyle, () => undefined)).toBe("1ch");
     expect(atomLabelEditorWidth("", DefaultNativeDrawingStyle, () => 0)).toBe("1ch");
   });

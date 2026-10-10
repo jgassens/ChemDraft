@@ -80,6 +80,8 @@ export function atomLabelEditorWidth(
   style: AtomLabelEditorFont,
   measure: AtomLabelTextMeasurer = measureTextWithCanvas
 ): string {
+  // An empty draft keeps the inline width it always had. What shows is App.css's min-width
+  // (0.75em), which is wider than 1ch in the label fonts.
   if (draft.length === 0) {
     return "1ch";
   }
