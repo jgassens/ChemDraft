@@ -38,6 +38,7 @@ export default defineConfig({
       "@chemdraft/fixtures": workspacePackage("./packages/fixtures/src/index.ts"),
       "@chemdraft/layout-engine/testing": workspacePackage("./packages/layout-engine/src/testing.ts"),
       "@chemdraft/layout-engine": workspacePackage("./packages/layout-engine/src/index.ts"),
+      "@chemdraft/document-workflow-core/testing": workspacePackage("./packages/document-workflow-core/src/testing.ts"),
       "@chemdraft/document-workflow-core": workspacePackage("./packages/document-workflow-core/src/index.ts"),
       "@chemdraft/plugin-api": workspacePackage("./packages/plugin-api/src/index.ts"),
       "@chemdraft/plugin-host": workspacePackage("./packages/plugin-host/src/index.ts"),

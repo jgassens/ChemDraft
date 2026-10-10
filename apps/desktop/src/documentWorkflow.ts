@@ -987,6 +987,10 @@ export interface NativeChainToolOptions {
    * pulled off a 300-atom structure re-walks all 300 atoms per frame. Nothing on screen reads those
    * fields; the renderer draws atoms and bonds. The commit at the end of the gesture runs without
    * this flag and derives once, so what lands in the document is always fully derived.
+   *
+   * An anchored frame keeps the molecule's pre-drag `structure` and `chemistry`. A free chain has
+   * no earlier SMILES, so its frames carry an empty (unavailable) `structure` and freshly derived
+   * `chemistry`, which is a single linear pass.
    */
   preview?: boolean;
   /**
@@ -1282,7 +1286,10 @@ export function applyNativeChainTool(
       unknown: {}
     },
     structureFormat: "smiles",
-    structure: nativeSingleBondGraphSmiles(atoms, bonds),
+    // A drag frame skips the SMILES walk (see `NativeChainToolOptions.preview`). A new chain has no
+    // earlier SMILES to keep, so its frames carry the schema's "unavailable" empty string; the
+    // commit derives it. The metadata is one linear pass and stays derived.
+    structure: options.preview ? "" : nativeSingleBondGraphSmiles(atoms, bonds),
     chemistry: nativeSingleBondGraphMetadata(atoms, bonds),
     atoms,
     bonds,
@@ -17531,8 +17538,14 @@ function appendNativeCarbonVertices(
   let added = 0;
 
   for (const vertex of vertices) {
-    // Valence is checked against the graph as grown so far, not the original molecule.
-    if (!canGrowNativeAtom({ ...molecule, atoms, bonds }, attachAtomId)) {
+    // Valence is checked against the graph as grown so far. Only the source atom needs the
+    // whole-molecule bond-order resolution; every later attach point is a carbon this loop just
+    // made, holding one plain single bond. Resolving the growing molecule per vertex made a drag
+    // O(chain × molecule), and re-kekulized every aromatic ring per vertex.
+    const canGrow = added === 0
+      ? canGrowNativeAtom(molecule, attachAtomId)
+      : nativeAtomAvailableBondCount(atoms[atoms.length - 1], 1) > 0;
+    if (!canGrow) {
       break;
     }
     const newAtom: MoleculeAtom = {
