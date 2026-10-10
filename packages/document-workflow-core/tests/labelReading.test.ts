@@ -80,6 +80,28 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeAtomLabelFreeValence("NiPr2")).toBe(1);
   });
 
+  it("never splits a symbol that can be a head: tin and silicon stay tin and silicon", () => {
+    expect(groupOf("SnMe3")).toMatchObject({ kind: "composite", head: "Sn", substituents: [{ label: "Me" }, { label: "Me" }, { label: "Me" }] });
+    expect(groupOf("SiMe3")).toMatchObject({ kind: "composite", head: "Si" });
+    expect(groupOf("SiPr3")).toMatchObject({ kind: "composite", head: "Si", substituents: [{ name: "n-propyl" }, { name: "n-propyl" }, { name: "n-propyl" }] });
+    expect(groupOf("SnPr3")).toMatchObject({ kind: "composite", head: "Sn" });
+    expect(nativeAtomLabelFreeValence("SnMe3")).toBe(1);
+    expect(nativeAtomLabelFreeValence("SiPr3")).toBe(1);
+    // "Bu" alone is not a table spelling, so SnBu3 does not read as a group at all — and never as
+    // sulfur carrying three n-butyls.
+    const tributyl = nativeAtomLabelReading("SnBu3");
+    expect(tributyl.kind).not.toBe("group");
+    expect(tributyl.kind).toBe("unrecognized");
+    // Indium is no covalent head either, but a halogen never takes its place: "InBu3" is not an
+    // iodine carrying three butyls.
+    for (const label of ["InBu", "InnBu3"]) {
+      const reading = nativeAtomLabelReading(label);
+      expect(reading.kind === "group" && reading.group.kind === "composite" ? reading.group.head : undefined, label).not.toBe("I");
+    }
+    // P + tBu2: di-tert-butylphosphino, not platinum.
+    expect(groupOf("PtBu2")).toMatchObject({ kind: "composite", head: "P", substituents: [{ label: "tBu" }, { label: "tBu" }] });
+  });
+
   it("reads heavy hydrogen", () => {
     expect(nativeAtomLabelReading("D")).toEqual({ kind: "heavy-hydrogen", element: "D" });
     expect(nativeAtomLabelReading("T")).toEqual({ kind: "heavy-hydrogen", element: "T" });
