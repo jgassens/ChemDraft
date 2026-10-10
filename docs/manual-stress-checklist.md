@@ -46,6 +46,8 @@ release outside the capture window must land exactly at the pointer; junction-pi
 holding the junction and attachment bond fixed; and switching the keybinding scheme live with the
 main window, detached palettes, and the native menu accelerators all following.
 
+File open: with ChemDraft quit, double-click a `.chemdraft` in Finder (macOS) / Explorer (Windows); the app opens with that document and does not crash.
+
 Windows surfaces added since (the port on `windows-port`; `pnpm smoke:windows-menu-churn` automates
 the crash part): a second launch and a double-clicked `.chemdraft` file handed to the running app by
 single-instance, which then opens and can save that file; closing the document window (title-bar ✕,
