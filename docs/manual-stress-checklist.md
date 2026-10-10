@@ -1,5 +1,13 @@
 # Manual stress checklist
 
+Multiple documents: open two files in separate tabs, edit both, switch tabs, undo and redo in
+each, zoom/pan, save and Save As, then confirm each file receives its own drawing. Cancel a
+dirty tab close, save another, and discard a third. Open two document windows, alternate native
+menu and palette actions, minimize either window, close the original window first, and confirm
+the remaining window and palettes still work. Quit with unsaved tabs in both windows and verify
+Save, Discard, and Cancel, including cancellation of the native save picker. Check OS file opens
+and a second app launch while another document is active. Run on macOS and Windows.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

@@ -2,6 +2,15 @@
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+File > New (Ctrl+N on Windows, Cmd+N on macOS) adds a canvas tab. File > Open opens a file
+in a new tab. The tab strip switches between drawings, retaining each document's undo history,
+file association, selection, and viewport. File > New Window (Ctrl+Shift+N / Cmd+Shift+N)
+opens another document window with its own tabs. File > Close Canvas Tab closes the active tab;
+unsaved changes offer Save, Discard, or Cancel. Closing a window checks every dirty tab, and
+quitting checks all document windows. Native menus and shared floating palettes follow the
+active document window. Working-session snapshots include all tabs and are stored separately
+per document window; startup still opens a fresh workspace.
+
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked width and height, DPI and physical width, page/content cropping, background controls,
 numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses

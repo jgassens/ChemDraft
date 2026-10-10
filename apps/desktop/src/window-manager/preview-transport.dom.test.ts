@@ -6,6 +6,11 @@ const tauriEventBus = vi.hoisted(() => {
   const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
   return {
     listeners,
+    activeLabel: "main",
+    currentLabel: "main",
+    emitTo: vi.fn(async (_label: string, eventName: string, payload: unknown) => {
+      for (const listener of listeners.get(eventName) ?? []) listener({ payload });
+    }),
     emit: vi.fn(async (eventName: string, payload: unknown) => {
       for (const listener of listeners.get(eventName) ?? []) {
         listener({ payload });
@@ -23,8 +28,15 @@ const tauriEventBus = vi.hoisted(() => {
 });
 
 vi.mock("@tauri-apps/api/event", () => ({
+  emitTo: tauriEventBus.emitTo,
   emit: tauriEventBus.emit,
   listen: tauriEventBus.listen
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => tauriEventBus.activeLabel)
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: tauriEventBus.currentLabel, listen: tauriEventBus.listen })
 }));
 import {
   broadcastToolsetCommandSpecs,
@@ -54,9 +66,30 @@ afterEach(() => {
   tauriEventBus.listeners.clear();
   tauriEventBus.emit.mockClear();
   tauriEventBus.listen.mockClear();
+  tauriEventBus.emitTo.mockClear();
+  tauriEventBus.activeLabel = "main";
+  tauriEventBus.currentLabel = "main";
 });
 
 describe("window-manager palette preview transport", () => {
+  it("targets native preview commands to the active document exactly once", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    tauriEventBus.activeLabel = "document-2";
+    const preview = vi.fn();
+    const unlisten = await listenForPaletteCommandPreviews(preview);
+    await sendPaletteCommandPreview("molecule.structure.bondLength:96");
+    expect(preview).toHaveBeenCalledOnce();
+    expect(tauriEventBus.emitTo).toHaveBeenCalledWith("document-2", "chemdraft://palette-command-preview", {
+      commandId: "molecule.structure.bondLength:96"
+    });
+    unlisten();
+  });
+  it("does not publish another document's toolbar snapshot", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    tauriEventBus.activeLabel = "document-2";
+    await broadcastToolsetCommandSpecs([]);
+    expect(tauriEventBus.emit).not.toHaveBeenCalled();
+  });
   it("fingerprints command content instead of fresh array/object identity", () => {
     const first = [{ id: "edit.undo", title: "Undo", icon: "undo", source: "core", enabled: false }] as const;
     const equalCopy = [{ ...first[0] }];

@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-document-window-creation"
+description = "Allows opening another ChemDraft document window."
+commands.allow = ["new_document_window"]
+
+[[permission]]
+identifier = "allow-active-document-window-routing"
+description = "Allows the native palette bridge to find the active document window."
+commands.allow = ["active_document_window_label"]

@@ -44,6 +44,60 @@ use objc2_foundation::NSString;
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+static ACTIVE_DOCUMENT_WINDOW: Mutex<Option<String>> = Mutex::new(None);
+static DOCUMENT_WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
+static CLOSE_DOCUMENT_WINDOW: Mutex<Option<String>> = Mutex::new(None);
+
+fn is_document_window(label: &str) -> bool {
+    label == MAIN_WINDOW_LABEL || label.starts_with("document-")
+}
+
+fn active_document_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<tauri::WebviewWindow<R>> {
+    let label = ACTIVE_DOCUMENT_WINDOW
+        .lock()
+        .ok()
+        .and_then(|label| label.clone());
+    label
+        .and_then(|label| app.get_webview_window(&label))
+        .or_else(|| app.get_webview_window(MAIN_WINDOW_LABEL))
+        .or_else(|| {
+            app.webview_windows()
+                .into_values()
+                .find(|window| is_document_window(window.label()))
+        })
+}
+
+#[tauri::command]
+fn active_document_window_label(app: tauri::AppHandle) -> Result<String, String> {
+    active_document_window(&app)
+        .map(|window| window.label().to_string())
+        .ok_or_else(|| "No document window is available".to_string())
+}
+
+#[tauri::command]
+async fn new_document_window(app: tauri::AppHandle) -> Result<(), String> {
+    let label = format!(
+        "document-{}",
+        DOCUMENT_WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+    let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::App("/".into()))
+        .title(main_window_title())
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 640.0)
+        .resizable(true)
+        .accept_first_mouse(true)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())?;
+    configure_document_webview(&window)?;
+    #[cfg(not(target_os = "macos"))]
+    window
+        .set_menu(create_app_menu(&app).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
 
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
@@ -124,11 +178,11 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    let Some(window) = active_document_window(app) else {
         quit_now(app);
         return;
-    }
-    if let Err(error) = app.emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ()) {
+    };
+    if let Err(error) = window.emit(QUIT_FLUSH_REQUEST_EVENT, ()) {
         QUIT_REQUESTED.store(false, Ordering::SeqCst);
         eprintln!("Could not request ChemDraft save confirmation: {error}");
     }
@@ -144,13 +198,42 @@ fn quit_now<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
 #[tauri::command]
-fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now(&app);
+fn quit_after_flush(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    let only_close = CLOSE_DOCUMENT_WINDOW
+        .lock()
+        .ok()
+        .and_then(|mut label| label.take())
+        .is_some();
+    let next = app
+        .webview_windows()
+        .into_values()
+        .find(|other| is_document_window(other.label()) && other.label() != window.label());
+    if let Some(next) = next {
+        if let Ok(mut active) = ACTIVE_DOCUMENT_WINDOW.lock() {
+            *active = Some(next.label().to_string());
+        }
+        reparent_document_utilities(&app, &next);
+        if let Err(error) = window.destroy() {
+            eprintln!("Could not close document window: {error}");
+            QUIT_REQUESTED.store(false, Ordering::SeqCst);
+            return;
+        }
+        let _ = next.set_focus();
+        QUIT_REQUESTED.store(false, Ordering::SeqCst);
+        if !only_close {
+            request_quit(&app);
+        }
+    } else {
+        quit_now(&app);
+    }
 }
 
 #[tauri::command]
 fn cancel_quit() {
     QUIT_REQUESTED.store(false, Ordering::SeqCst);
+    if let Ok(mut label) = CLOSE_DOCUMENT_WINDOW.lock() {
+        *label = None;
+    }
 }
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -167,6 +250,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "clipboard.copyAs.svg",
     "clipboard.copyAs.png",
     "document.new",
+    "document.newWindow",
+    "document.closeTab",
     "document.open",
     "document.save",
     "document.saveAs",
@@ -331,7 +416,10 @@ async fn suspend_toolset_windows(app: tauri::AppHandle, suspended: bool) -> Resu
             })
             .collect();
         {
-            let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+            let mut state = directory
+                .suspension
+                .lock()
+                .map_err(|error| error.to_string())?;
             if state.active {
                 return Ok(());
             }
@@ -351,7 +439,10 @@ async fn suspend_toolset_windows(app: tauri::AppHandle, suspended: bool) -> Resu
         }
     } else {
         let restore = {
-            let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+            let mut state = directory
+                .suspension
+                .lock()
+                .map_err(|error| error.to_string())?;
             state.active = false;
             std::mem::take(&mut state.restore_labels)
         };
@@ -534,7 +625,7 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
-            if webview.label() == MAIN_WINDOW_LABEL
+            if is_document_window(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
                 // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
@@ -563,7 +654,6 @@ pub fn run() {
                 }
                 return;
             }
-            #[cfg(not(target_os = "macos"))]
             if command_id == APP_QUIT_COMMAND_ID {
                 request_quit(app);
                 return;
@@ -581,32 +671,56 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            if window.label() == MAIN_WINDOW_LABEL {
+            if is_document_window(window.label()) {
                 match event {
-                    // macOS: closing the document window hides it and the app lives on in the
-                    // Dock (RunEvent::Reopen brings it back).
-                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if let Err(error) = window.hide() {
-                            eprintln!("Could not hide ChemDraft main window: {error}");
+                        if QUIT_REQUESTED.load(Ordering::SeqCst) {
+                            return;
                         }
-                    }
-                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
-                    // prewarmed popovers would keep a windowless process alive: closing the
-                    // document window quits after resolving unsaved changes.
-                    #[cfg(not(target_os = "macos"))]
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
+                        if let Ok(mut active) = ACTIVE_DOCUMENT_WINDOW.lock() {
+                            *active = Some(window.label().to_string());
+                        }
+                        if let Ok(mut label) = CLOSE_DOCUMENT_WINDOW.lock() {
+                            *label = Some(window.label().to_string());
+                        }
                         request_quit(window.app_handle());
+                    }
+                    WindowEvent::Focused(true) => {
+                        if let Ok(mut active) = ACTIVE_DOCUMENT_WINDOW.lock() {
+                            *active = Some(window.label().to_string());
+                        }
+                        if let Some(document) =
+                            window.app_handle().get_webview_window(window.label())
+                        {
+                            reparent_document_utilities(window.app_handle(), &document);
+                        }
+                        for event in [
+                            "chemdraft://toolset-active-tool-request",
+                            "chemdraft://toolset-text-style-request",
+                            "chemdraft://toolset-command-specs-request",
+                            "chemdraft://toolset-definitions-request",
+                            "chemdraft://toolset-customize-mode-request",
+                        ] {
+                            let _ = window.emit(event, ());
+                        }
                     }
                     WindowEvent::Destroyed => {
                         // The close button only hides the main window, so its actual destruction
                         // means the app is dying — including SIGTERM teardowns that never fire
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
-                        APP_QUITTING.store(true, Ordering::SeqCst);
-                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        if !window
+                            .app_handle()
+                            .webview_windows()
+                            .into_values()
+                            .any(|other| {
+                                is_document_window(other.label()) && other.label() != window.label()
+                            })
+                        {
+                            APP_QUITTING.store(true, Ordering::SeqCst);
+                            window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        }
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -641,11 +755,12 @@ pub fn run() {
                             window.label()
                         );
                     }
-                    if let Err(error) = window.app_handle().emit_to(
-                        MAIN_WINDOW_LABEL,
-                        PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
-                        window.label(),
-                    ) {
+                    if let Err(error) = active_document_window(window.app_handle())
+                        .map(|document| {
+                            document.emit(PLUGIN_PANEL_WINDOW_CLOSED_EVENT, window.label())
+                        })
+                        .transpose()
+                    {
                         eprintln!(
                             "Could not report the closed panel window {}: {error}",
                             window.label()
@@ -760,6 +875,8 @@ pub fn run() {
             save_toolset_customization_state,
             load_document_session,
             save_document_session,
+            new_document_window,
+            active_document_window_label,
             set_toolbars_menu,
             focus_main_document_window,
             set_menu_checked,
@@ -819,7 +936,13 @@ pub fn run() {
             // Cmd+Q on macOS ends the event loop without ExitRequested and only Exit arrives, so
             // both shut the engine down (shutdown is idempotent); otherwise a quit during an
             // install would leave uv running and writing into the staging tree.
-            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+            RunEvent::ExitRequested { api, .. } => {
+                if !APP_QUITTING.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    request_quit(app);
+                }
+            }
+            RunEvent::Exit => {
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
@@ -855,7 +978,7 @@ fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+    let window = match active_document_window(app) {
         Some(window) => window,
         None => create_main_window(app)?,
     };
@@ -907,8 +1030,7 @@ fn configure_document_webview<R: Runtime>(_window: &tauri::WebviewWindow<R>) -> 
 fn focus_main_document_window_impl<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
-    let window = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let window = active_document_window(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
 
     window
@@ -961,7 +1083,15 @@ fn window_title_for(label: Option<&str>) -> String {
 
 #[cfg(test)]
 mod window_title_tests {
-    use super::window_title_for;
+    use super::{is_document_window, window_title_for};
+
+    #[test]
+    fn document_labels_exclude_utility_windows() {
+        assert!(is_document_window("main"));
+        assert!(is_document_window("document-2"));
+        assert!(!is_document_window("toolset-core-main"));
+        assert!(!is_document_window("preferences"));
+    }
 
     #[test]
     fn unlabeled_builds_get_the_plain_title() {
@@ -1200,8 +1330,19 @@ fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Val
 /// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
 /// opaque JSON, exactly like the toolbar customization state.
 #[tauri::command]
-fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
-    let path = document_session_path(&app)?;
+fn save_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    let path = if window.label() == MAIN_WINDOW_LABEL {
+        document_session_path(&app)?
+    } else {
+        app.path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
+            .join(format!("document-session-{}.json", window.label()))
+    };
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
 }
@@ -1592,7 +1733,7 @@ async fn open_plugin_panel_window(
     .decorations(false)
     .shadow(false)
     .skip_taskbar(true);
-    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+    if let Some(main) = active_document_window(&app) {
         builder = builder.parent(&main).map_err(|error| error.to_string())?;
     }
     if let Some(position) = position {
@@ -1609,7 +1750,7 @@ fn analysis_window_initial_position<R: Runtime>(
     width: f64,
     height: f64,
 ) -> Option<tauri::LogicalPosition<f64>> {
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = active_document_window(app)?;
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
@@ -1799,7 +1940,7 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
 /// hidden main window is left alone, because attaching to it would tie the child to its visibility.
 #[cfg(target_os = "macos")]
 fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, child: &NSWindow) {
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = active_document_window(app) else {
         return;
     };
     let Ok(main_ptr) = main.ns_window() else {
@@ -1922,10 +2063,7 @@ mod document_key_after_unhide_tests {
 
 #[cfg(target_os = "macos")]
 fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
-    let pointer = app
-        .get_webview_window(MAIN_WINDOW_LABEL)?
-        .ns_window()
-        .ok()?;
+    let pointer = active_document_window(app)?.ns_window().ok()?;
     // The main window is never destroyed while the app runs (closing only hides it).
     unsafe { (pointer as *mut NSWindow).as_ref() }
 }
@@ -2494,7 +2632,7 @@ fn write_clipboard_image_checked(app: &tauri::AppHandle, png_bytes: &[u8]) -> Re
 /// clipboard ownerless, and every SetClipboardData after it fails.
 #[cfg(windows)]
 fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
-    app.get_webview_window(MAIN_WINDOW_LABEL)
+    active_document_window(app)
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
         .unwrap_or(std::ptr::null_mut())
@@ -2897,7 +3035,7 @@ fn window_is_covered_by_document<R: Runtime>(window: &tauri::WebviewWindow<R>) -
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
 
-    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = active_document_window(window.app_handle()) else {
         return false;
     };
     let (Ok(main_hwnd), Ok(target_hwnd)) = (main.hwnd(), window.hwnd()) else {
@@ -3620,8 +3758,7 @@ fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> Result<(), String> {
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = active_document_window(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
     let payload = ToolsetCommandPayload {
         command_id: command_id.to_string(),
@@ -3808,7 +3945,9 @@ fn emit_open_document_to_main<R: Runtime>(
     // Deliver via the Tauri event for a running window; a cold start (window not yet
     // listening) is covered by the pending-document state drained on mount. We deliberately
     // do not `eval` document contents into the webview to avoid a script-injection surface.
-    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+    let window = active_document_window(app).ok_or("No document window is available")?;
+    window
+        .emit(OPEN_DOCUMENT_EVENT, payload.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -3816,11 +3955,13 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    if active_document_window(app).is_none() {
         return Ok(());
     }
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    let window = active_document_window(app).ok_or("No document window is available")?;
+    window
+        .emit(TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -3945,7 +4086,7 @@ fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tau
     app.set_menu(menu)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(window) = active_document_window(app) else {
             return Ok(());
         };
         window.set_menu(menu)?;
@@ -4079,6 +4220,20 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 true,
                 &[
                     &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.newWindow",
+                        "New Window",
+                        true,
+                        Some("CmdOrCtrl+Shift+N"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.closeTab",
+                        "Close Canvas Tab",
+                        true,
+                        None::<&str>,
+                    )?,
                     &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
                     &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
                     &MenuItem::with_id(
@@ -4376,7 +4531,13 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            &MenuItem::with_id(
+                app,
+                APP_QUIT_COMMAND_ID,
+                "Quit ChemDraft",
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?,
         ],
     )
 }
@@ -4646,7 +4807,10 @@ fn defer_toolset_window_for_dialog<R: Runtime>(
     label: &str,
 ) -> Result<bool, String> {
     let directory = app.state::<ToolsetWindowDirectory>();
-    let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+    let mut state = directory
+        .suspension
+        .lock()
+        .map_err(|error| error.to_string())?;
     if !state.active {
         return Ok(false);
     }
@@ -4910,6 +5074,51 @@ fn configure_toolset_utility_window<R: Runtime>(
 /// - **not focused when shown**: tao then shows it with `SW_SHOWNOACTIVATE`. With the default
 ///   `focused(true)` every show was `SW_SHOW`, which activated the palette (despite
 ///   `focusable(false)`), greyed the document's title bar and took its keystrokes.
+#[cfg(windows)]
+fn reparent_document_utilities<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    document: &tauri::WebviewWindow<R>,
+) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_HWNDPARENT};
+    let Ok(owner) = document.hwnd() else {
+        return;
+    };
+    for window in app.webview_windows().into_values() {
+        if is_document_window(window.label()) {
+            continue;
+        }
+        if let Ok(handle) = window.hwnd() {
+            // These windows were created owned and non-activating. Changing only the owner keeps
+            // their popup/taskbar styles and transfers minimize/close ownership to this document.
+            unsafe {
+                SetWindowLongPtrW(handle.0 as _, GWLP_HWNDPARENT, owner.0 as isize);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reparent_document_utilities<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    document: &tauri::WebviewWindow<R>,
+) {
+    let target = app.clone();
+    let _ = run_on_main_thread_blocking(document, move || {
+        for window in target.webview_windows().into_values() {
+            if !is_document_window(window.label()) && window.is_visible().unwrap_or(false) {
+                attach_webview_window_to_main(&window);
+            }
+        }
+    });
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn reparent_document_utilities<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _document: &tauri::WebviewWindow<R>,
+) {
+}
+
 fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
     app: &tauri::AppHandle<R>,
@@ -4917,10 +5126,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
-        match app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .and_then(|main| main.hwnd().ok())
-        {
+        match active_document_window(app).and_then(|main| main.hwnd().ok()) {
             Some(owner) => builder.owner_raw(owner),
             None => builder,
         }
@@ -5116,9 +5322,8 @@ fn toolset_frame_is_transient<R: Runtime>(
     window: &tauri::Window<R>,
 ) -> bool {
     let palette_minimized = window.is_minimized().unwrap_or(false);
-    let document_minimized = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .is_some_and(|main| main.is_minimized().unwrap_or(false));
+    let document_minimized =
+        active_document_window(app).is_some_and(|main| main.is_minimized().unwrap_or(false));
     toolset_frame_state_is_transient(palette_minimized, document_minimized)
 }
 
@@ -5462,9 +5667,7 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     #[cfg(target_os = "macos")]
     let menu = app.menu();
     #[cfg(not(target_os = "macos"))]
-    let menu = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .and_then(|window| window.menu());
+    let menu = active_document_window(app).and_then(|window| window.menu());
     let Some(menu) = menu else {
         return Ok(());
     };

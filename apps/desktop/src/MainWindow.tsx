@@ -1467,7 +1467,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.03.08-codex";
+const CURRENT_BUILD_STAMP = "10.10.04.03-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7449,6 +7449,89 @@ export function MainWindow({
     setLastAnalysis(null);
   }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession]);
 
+  const [canvasTabs, setCanvasTabs] = useState([{ id: "initial", title: "Untitled" }]);
+  const activeCanvasTabRef = useRef("initial");
+  const canvasTabSnapshotsRef = useRef(new Map<string, {
+    history: DocumentHistory;
+    file: NativeFileState;
+    viewport: typeof viewport;
+  }>());
+  const snapshotCanvasTab = useCallback(() => {
+    canvasTabSnapshotsRef.current.set(activeCanvasTabRef.current, {
+      history: documentHistoryRef.current,
+      file: fileStateRef.current,
+      viewport: viewportRef.current
+    });
+  }, []);
+  const activateCanvasTab = useCallback((id: string) => {
+    if (id === activeCanvasTabRef.current) return;
+    const snapshot = canvasTabSnapshotsRef.current.get(id);
+    if (!snapshot) return;
+    snapshotCanvasTab();
+    clearDocumentInteractionState({ clearSpin3dModelCache: true });
+    documentIdentityRef.current += 1;
+    activeCanvasTabRef.current = id;
+    toolbarStyleTargetRef.current = undefined;
+    installDocumentHistory(snapshot.history);
+    fileStateRef.current = snapshot.file;
+    setFileState(snapshot.file);
+    viewportRef.current = snapshot.viewport;
+    setViewport(snapshot.viewport);
+    setPageFitPrompt(undefined);
+    setExportDialog(undefined);
+    setAnalysisReport(undefined);
+    setStatus(snapshot.file.path ? nativePathBasename(snapshot.file.path) : "Untitled document");
+  }, [clearDocumentInteractionState, installDocumentHistory, snapshotCanvasTab]);
+  const addCanvasTab = useCallback((title: string) => {
+    snapshotCanvasTab();
+    const id = crypto.randomUUID();
+    activeCanvasTabRef.current = id;
+    setCanvasTabs((tabs) => [...tabs, { id, title }]);
+  }, [snapshotCanvasTab]);
+  const closingCanvasTabRef = useRef(false);
+  const quitReviewedTabsRef = useRef(new Set<string>());
+  const canvasTabsRef = useRef(canvasTabs);
+  canvasTabsRef.current = canvasTabs;
+  const removeCurrentCanvasTab = useCallback(() => {
+    const id = activeCanvasTabRef.current;
+    const remaining = canvasTabsRef.current.filter((tab) => tab.id !== id);
+    if (remaining.length > 0) {
+      activateCanvasTab(remaining[0]!.id);
+      canvasTabSnapshotsRef.current.delete(id);
+      setCanvasTabs(remaining);
+    } else {
+      resetDocumentHistory(createPhase4Document());
+      clearDocumentInteractionState({ clearSpin3dModelCache: true });
+      canvasTabSnapshotsRef.current.clear();
+      setCanvasTabs([{ id, title: "Untitled" }]);
+    }
+    setQuitPromptOpen(false);
+  }, [activateCanvasTab, clearDocumentInteractionState, resetDocumentHistory]);
+  const closeCanvasTab = useCallback(() => {
+    closingCanvasTabRef.current = true;
+    if (fileStateRef.current.dirty) setQuitPromptOpen(true);
+    else removeCurrentCanvasTab();
+  }, [removeCurrentCanvasTab]);
+  const continueWindowClose = useCallback(async () => {
+    snapshotCanvasTab();
+    const next = canvasTabsRef.current.find((tab) =>
+      !quitReviewedTabsRef.current.has(tab.id) && canvasTabSnapshotsRef.current.get(tab.id)?.file.dirty);
+    if (next) {
+      activateCanvasTab(next.id);
+      setQuitPromptOpen(true);
+    } else {
+      setQuitPromptOpen(false);
+      await confirmQuitAfterFlush();
+    }
+  }, [activateCanvasTab, snapshotCanvasTab]);
+  const acceptClosePrompt = useCallback(async () => {
+    if (closingCanvasTabRef.current) removeCurrentCanvasTab();
+    else {
+      quitReviewedTabsRef.current.add(activeCanvasTabRef.current);
+      await continueWindowClose();
+    }
+  }, [continueWindowClose, removeCurrentCanvasTab]);
+
   const openDocumentContents = useCallback((
     contents: string,
     displayName: string,
@@ -7469,6 +7552,7 @@ export function MainWindow({
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
     const dirty = options?.dirty ?? false;
+    addCanvasTab(displayName);
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
@@ -7477,7 +7561,7 @@ export function MainWindow({
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
-  }, [clearDocumentInteractionState, resetDocumentHistory]);
+  }, [addCanvasTab, clearDocumentInteractionState, resetDocumentHistory]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -7653,7 +7737,15 @@ export function MainWindow({
         path ? nativePathBasename(path) : payload.filename,
         documentIsBlank(documentRef.current)
       );
-      await saveDocumentSession(envelope, { strict: options?.strict });
+      snapshotCanvasTab();
+      const tabs = canvasTabsRef.current.map((tab) => {
+        const snapshot = canvasTabSnapshotsRef.current.get(tab.id)!;
+        const saved = createNativeSavePayload(snapshot.history.present);
+        return buildDocumentSessionEnvelope(saved, snapshot.file,
+          snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title,
+          documentIsBlank(snapshot.history.present));
+      });
+      await saveDocumentSession({ ...envelope, tabs, activeTabId: activeCanvasTabRef.current }, { strict: options?.strict });
     } catch (error) {
       if (options?.strict) {
         throw error;
@@ -7661,7 +7753,7 @@ export function MainWindow({
       // Serialization or the write must never break editing (or block a quit); the previous
       // autosave stays.
     }
-  }, []);
+  }, [snapshotCanvasTab]);
 
   // Keep a debounced session snapshot for the updater; startup does not restore it.
   useEffect(() => {
@@ -7775,6 +7867,8 @@ export function MainWindow({
   }, []);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
+    const savingTabId = activeCanvasTabRef.current;
+    const savingDocument = documentRef.current;
     const payload = createNativeSavePayload(documentRef.current);
 
     if (!isDesktopRuntime()) {
@@ -7805,8 +7899,16 @@ export function MainWindow({
       await writeNativeTextFile(finalPath, payload.contents);
       const nextFileState = {
         path: finalPath,
-        dirty: false
+        dirty: (savingTabId === activeCanvasTabRef.current
+          ? documentRef.current
+          : canvasTabSnapshotsRef.current.get(savingTabId)?.history.present) !== savingDocument
       };
+      if (savingTabId !== activeCanvasTabRef.current) {
+        const snapshot = canvasTabSnapshotsRef.current.get(savingTabId);
+        if (snapshot) canvasTabSnapshotsRef.current.set(savingTabId, { ...snapshot, file: nextFileState });
+        setCanvasTabs((tabs) => [...tabs]);
+        return true;
+      }
       fileStateRef.current = nextFileState;
       setFileState(nextFileState);
       setStatus(formatSaveStatus(nativePathBasename(finalPath), payload.warnings));
@@ -7822,17 +7924,15 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenForQuitFlushRequest(async () => {
-      if (fileStateRef.current.dirty) {
-        setQuitPromptOpen(true);
-        return;
-      }
-      await confirmQuitAfterFlush();
+      closingCanvasTabRef.current = false;
+      quitReviewedTabsRef.current.clear();
+      await continueWindowClose();
     }).then((cleanup) => {
       if (disposed) cleanup();
       else unlisten = cleanup;
     });
     return () => { disposed = true; unlisten?.(); };
-  }, []);
+  }, [continueWindowClose]);
 
   const cancelQuitPrompt = useCallback(() => {
     setQuitPromptOpen(false);
@@ -7842,7 +7942,7 @@ export function MainWindow({
   const saveAndQuit = useCallback(async () => {
     setQuitSaveBusy(true);
     try {
-      if (await saveCurrentDocument(false)) await confirmQuitAfterFlush();
+      if (await saveCurrentDocument(false)) await acceptClosePrompt();
       else cancelQuitPrompt();
     } catch (error) {
       setStatus("Save failed: " + (error instanceof Error ? error.message : String(error)));
@@ -7850,7 +7950,7 @@ export function MainWindow({
     } finally {
       setQuitSaveBusy(false);
     }
-  }, [saveCurrentDocument, cancelQuitPrompt]);
+  }, [saveCurrentDocument, cancelQuitPrompt, acceptClosePrompt]);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -8064,10 +8164,18 @@ export function MainWindow({
     quickActions.forEach((action) => {
       register(action, async () => {
         if (action.id === "document.new") {
+          addCanvasTab("Untitled");
           resetDocumentHistory(createPhase4Document());
           clearDocumentInteractionState({ clearSpin3dModelCache: true });
           setPageFitPrompt(undefined);
           setStatus("Blank native document");
+        }
+        if (action.id === "document.closeTab") closeCanvasTab();
+        if (action.id === "document.newWindow") {
+          if (isDesktopRuntime()) {
+            const { invoke: invokeNative } = await import("@tauri-apps/api/core");
+            await invokeNative("new_document_window");
+          } else window.open(window.location.pathname + window.location.search, "_blank");
         }
         if (action.id === "edit.undo") {
           restoreDocumentHistory("undo");
@@ -8624,6 +8732,8 @@ export function MainWindow({
 
     return bindings;
   }, [
+    addCanvasTab,
+    closeCanvasTab,
     activeToolState,
     analysisBusy,
     analysisInterpretation,
@@ -16930,7 +17040,7 @@ export function MainWindow({
           <h2 id="quit-prompt-title">Save changes before closing?</h2>
           <p>Your document has unsaved changes.</p>
           <button type="button" disabled={quitSaveBusy} onClick={() => { void saveAndQuit(); }}>Save</button>
-          <button type="button" disabled={quitSaveBusy} onClick={() => { void confirmQuitAfterFlush(); }}>Discard</button>
+          <button type="button" disabled={quitSaveBusy} onClick={() => { void acceptClosePrompt(); }}>Discard</button>
           <button type="button" disabled={quitSaveBusy} onClick={cancelQuitPrompt}>Cancel</button>
         </dialog>
       ) : null}
@@ -16952,6 +17062,46 @@ export function MainWindow({
       />
 
       {showAppMenuBar ? <MenuBar sections={appMenuSections} onInvoke={invoke} /> : null}
+      <div className="canvas-tabs">
+        <div className="canvas-tabs-list" role="tablist" aria-label="Open canvases">
+        {canvasTabs.map((tab) => {
+          const active = tab.id === activeCanvasTabRef.current;
+          const tabFile = active ? fileState : canvasTabSnapshotsRef.current.get(tab.id)?.file;
+          const title = tabFile?.path ? nativePathBasename(tabFile.path) : tab.title;
+          return <div className={`canvas-tab${active ? " is-active" : ""}`} key={tab.id} role="presentation">
+            <button className="canvas-tab-select" type="button" role="tab" aria-selected={active}
+              title={title} onClick={() => activateCanvasTab(tab.id)}>
+              <svg className="canvas-tab-file" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 2.5h5l3 3v8H4zM9 2.5v3h3" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+              </svg>
+              <span className="canvas-tab-title">{title}</span>
+              {tabFile?.dirty ? <span className="canvas-tab-dirty" aria-label="Unsaved changes" /> : null}
+            </button>
+            <button className="canvas-tab-close" type="button" aria-label={active ? "Close canvas tab" : `Close ${title}`}
+              title={`Close ${title}`} onClick={() => {
+                activateCanvasTab(tab.id);
+                void invoke("document.closeTab");
+              }}>
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="m3 3 6 6m0-6-6 6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>;
+        })}
+        </div>
+        <button className="canvas-tabs-action" type="button" aria-label="New canvas tab" title="New canvas tab"
+          onClick={() => { void invoke("document.new"); }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button className="canvas-tabs-action canvas-tabs-new-window" type="button" aria-label="New window" title="New window"
+          onClick={() => { void invoke("document.newWindow"); }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3H3v10h10v-3M8 3h5v5M7 9l6-6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
 
       {pluginManagerOpen ? (
         <PluginManagerDialog
@@ -28198,8 +28348,8 @@ async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayloa
 async function listenForNativeOpenDocuments(
   handler: (payload: NativeOpenDocumentPayload) => void
 ): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
-  return listen<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().listen<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
     if (isNativeOpenDocumentPayload(event.payload)) {
       handler(event.payload);
     }

@@ -71,6 +71,8 @@ export function createQuickActions(
     document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
+    { id: "document.newWindow", title: "New Window", icon: "new", shortcut: "Shift+Cmd+N", source: "core" },
+    { id: "document.closeTab", title: "Close Canvas Tab", icon: "new", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
     { id: "document.save", title: "Save Native Document", icon: "save", shortcut: "Cmd+S", source: "core" },
     { id: "document.saveAs", title: "Save Native Document As", icon: "save", shortcut: "Shift+Cmd+S", source: "core" },

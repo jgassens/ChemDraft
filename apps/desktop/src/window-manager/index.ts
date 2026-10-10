@@ -670,15 +670,22 @@ export async function routeToolsetCommand(commandId: string): Promise<void> {
   await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
 }
 
+async function isActiveDocumentWindow(): Promise<boolean> {
+  if (!isDesktopRuntime()) return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  return getCurrentWebviewWindow().label === await invoke<string>("active_document_window_label");
+}
 async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
   const payload = createToolsetCommandPayload(commandId);
-  dispatchDomToolsetEvent(eventName, payload);
   if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(eventName, payload);
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandPayload>(eventName, payload);
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await emitTo<ToolsetCommandPayload>(await invoke<string>("active_document_window_label"), eventName, payload);
 }
 
 /** What a detached palette asks the main window to do on its behalf. */
@@ -687,15 +694,17 @@ export type PaletteInspectorAction =
   | { kind: "interpretation"; interpretationId: string | undefined };
 
 export async function sendPaletteInspectorAction(action: PaletteInspectorAction): Promise<void> {
-  dispatchDomToolsetEvent(PALETTE_INSPECTOR_ACTION_EVENT, action as unknown as ToolsetCommandPayload);
   if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(PALETTE_INSPECTOR_ACTION_EVENT, action as unknown as ToolsetCommandPayload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await emitTo<PaletteInspectorAction>(await invoke<string>("active_document_window_label"), PALETTE_INSPECTOR_ACTION_EVENT, action);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   const payload = createToolsetActiveToolPayload(commandId);
   dispatchDomToolsetEvent(TOOLSET_ACTIVE_TOOL_EVENT, payload);
   if (!isDesktopRuntime()) {
@@ -717,6 +726,7 @@ export async function requestToolsetActiveTool(): Promise<void> {
 }
 
 export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   dispatchDomToolsetEvent(TOOLSET_TEXT_STYLE_EVENT, payload);
   if (!isDesktopRuntime()) {
     return;
@@ -872,8 +882,8 @@ export async function listenForPaletteInspectorActions(
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen<unknown>(PALETTE_INSPECTOR_ACTION_EVENT, (event) => {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const unlistenTauri = await getCurrentWebviewWindow().listen<unknown>(PALETTE_INSPECTOR_ACTION_EVENT, (event) => {
     // Validated rather than cast: this arrives over the event bus from another webview, and
     // dereferencing a field on a malformed payload throws inside the listener.
     if (isPaletteInspectorAction(event.payload)) handler(event.payload);
@@ -942,6 +952,7 @@ export async function listenForPalettePointerLeave(
  *  dialog's item hides/reorders/renames never reach an already-open palette. Desktop only — the
  *  browser renders palettes in-window straight from MainWindow state. */
 export async function broadcastToolsetLayoutState(layoutState: unknown): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   if (!isDesktopRuntime()) {
     return;
   }
@@ -975,7 +986,7 @@ export async function listenForToolsetLayoutStateRequests(handler: () => void): 
     return () => undefined;
   }
   const { listen } = await import("@tauri-apps/api/event");
-  return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
+  return listen(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
 }
 
 // The effective command catalog is runtime state: undo/redo availability changes with history, and
@@ -1000,6 +1011,7 @@ function isToolsetCommandSpecsPayload(value: unknown): value is ToolsetCommandSp
 
 /** Main → palettes: publish the current command metadata and enabled state. */
 export async function broadcastToolsetCommandSpecs(commands: readonly CommandSpec[]): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   const payload: ToolsetCommandSpecsPayload = { commands: [...commands] };
   if (!isDesktopRuntime()) {
     dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, payload);
@@ -1042,7 +1054,7 @@ export async function listenForToolsetCommandSpecsRequests(handler: () => void):
     return listenForDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
   }
   const { listen } = await import("@tauri-apps/api/event");
-  return listen(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
+  return listen(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
 }
 
 // A native palette webview only ships with the CORE toolset manifest. Plugin toolsets are contributed
@@ -1067,6 +1079,7 @@ function isToolsetDefinitionsPayload(value: unknown): value is ToolsetDefinition
 
 /** Main → palettes: publish the current plugin toolset definitions. */
 export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefinition[]): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   const payload: ToolsetDefinitionsPayload = { toolsets: [...toolsets] };
   if (!isDesktopRuntime()) {
     dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
@@ -1109,7 +1122,7 @@ export async function listenForToolsetDefinitionsRequests(handler: () => void): 
     return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
   }
   const { listen } = await import("@tauri-apps/api/event");
-  return listen(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
+  return listen(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
 }
 
 // ————————————————————————————————————————————————————————————————————————————————————————————————
@@ -1193,6 +1206,7 @@ export async function listenForToolsetLayoutEdits(
 
 /** Main → palettes: customize mode turned on/off for a toolset. */
 export async function broadcastToolsetCustomizeMode(payload: ToolsetCustomizeModePayload): Promise<void> {
+  if (isDesktopRuntime() && !await isActiveDocumentWindow()) return;
   dispatchDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
   if (!isDesktopRuntime()) {
     return;
@@ -1240,7 +1254,7 @@ export async function listenForToolsetCustomizeModeRequests(handler: () => void)
     return unlistenDom;
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listen(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1343,7 +1357,7 @@ export async function listenForToolsetActiveToolRequests(handler: () => void): P
   }
 
   const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listen(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1380,7 +1394,7 @@ export async function listenForToolsetTextStyleRequests(handler: () => void): Pr
   }
 
   const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listen(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => { void isActiveDocumentWindow().then((active) => { if (active) handler(); }); });
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1419,7 +1433,10 @@ async function listenForToolsetCommandPayload(eventName: string, handler: (comma
   }
 
   const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen<ToolsetCommandPayload>(eventName, (event) => {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const listenHere = [PALETTE_COMMAND_PREVIEW_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_CANCEL_EVENT].includes(eventName)
+    ? getCurrentWebviewWindow().listen.bind(getCurrentWebviewWindow()) : listen;
+  const unlistenTauri = await listenHere<ToolsetCommandPayload>(eventName, (event) => {
     if (typeof event.payload?.commandId === "string") {
       handler(event.payload.commandId);
     }

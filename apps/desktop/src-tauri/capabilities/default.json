@@ -4,6 +4,7 @@
   "description": "Allow the ChemDraft document window and native toolset windows to use core window/event APIs and the narrow toolset command bridge.",
   "windows": [
     "main",
+    "document-*",
     "toolset-*",
     "spin3d-debugger",
     "preferences"
@@ -20,6 +21,8 @@
     "core:window:allow-set-size",
     "core:webview:allow-set-webview-focus",
     "allow-open-toolset-window",
+    "allow-document-window-creation",
+    "allow-active-document-window-routing",
     "allow-close-toolset-window",
     "allow-list-toolset-window-states",
     "allow-load-toolset-customization-state",

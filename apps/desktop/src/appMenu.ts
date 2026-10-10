@@ -224,6 +224,8 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       label: "File",
       items: [
         command("document.new", "New", { accelerator: "Cmd+N" }),
+        command("document.newWindow", "New Window", { accelerator: "Shift+Cmd+N" }),
+        command("document.closeTab", "Close Canvas Tab"),
         command("document.open", "Open…", { accelerator: "Cmd+O" }),
         command("document.save", "Save", { accelerator: "Cmd+S" }),
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
