@@ -1,3 +1,4 @@
+import type { MoleculeObject } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
 
 import { quatFromAxisAngle, quatIdentity, quatToViewMatrix, type Vec3 } from "./rotation3d";
@@ -10,7 +11,7 @@ import {
   orientedOverlayScale,
   overlayScale,
   projectSpin,
-  spinDoubleBondSecondaryLine
+  spinJoinedBondFragments
 } from "./spinOverlay";
 
 const Z: Vec3 = [0, 0, 1];
@@ -157,55 +158,37 @@ describe("spinOverlay — bondDepthWeights (overlay ↔ flatten parity)", () => 
   });
 });
 
-describe("spinOverlay — double-bond secondary line", () => {
-  // A horizontal bond from (0,0) to (40,0): unit along +x, normal along +y (screen-space, y-down).
-  const base = {
-    from: { x: 0, y: 0 },
-    to: { x: 40, y: 0 },
-    unit: { x: 1, y: 0 },
-    normal: { x: 0, y: 1 },
-    gap: 3,
-    side: 1,
-    insetPx: 6,
-    minimumVisiblePx: 13
-  };
-
-  it("insets both ends of an internal double bond", () => {
-    const line = spinDoubleBondSecondaryLine({ ...base, flush: { from: false, to: false } });
-    expect(line).toEqual({ x1: 6, y1: 3, x2: 34, y2: 3 });
-  });
-
-  it("draws flush at a terminal methylene end, and only that end", () => {
-    // Terminal alkene: the CH2 end reaches the same plane as the primary line, the substituted
-    // junction still tucks in. The spin overlay copied the inset formula but not this exception,
-    // so it drew both ends inset while the committed 2D drawing drew this one flush.
-    expect(spinDoubleBondSecondaryLine({ ...base, flush: { from: false, to: true } }))
-      .toEqual({ x1: 6, y1: 3, x2: 40, y2: 3 });
-    expect(spinDoubleBondSecondaryLine({ ...base, flush: { from: true, to: false } }))
-      .toEqual({ x1: 0, y1: 3, x2: 34, y2: 3 });
-  });
-
-  it("spans the whole bond for ethylene, where both ends are terminal", () => {
-    const line = spinDoubleBondSecondaryLine({ ...base, flush: { from: true, to: true } });
-    expect(line).toEqual({ x1: 0, y1: 3, x2: 40, y2: 3 });
-    // Full length, so the symmetric molecule renders symmetrically.
-    expect(Math.hypot(line.x2 - line.x1, line.y2 - line.y1)).toBeCloseTo(40, 6);
-  });
-
-  it("puts the line on the other side of the axis when the side flips", () => {
-    expect(spinDoubleBondSecondaryLine({ ...base, side: -1, flush: { from: false, to: false } }))
-      .toEqual({ x1: 6, y1: -3, x2: 34, y2: -3 });
-  });
-
-  it("clamps the inset so a short bond keeps a visible secondary line", () => {
-    // 16px bond, 13px minimum: the two insets may take only 1.5px each, not the requested 6.
-    const short = spinDoubleBondSecondaryLine({
-      ...base,
-      to: { x: 16, y: 0 },
-      flush: { from: false, to: false }
-    });
-    expect(short.x1).toBeCloseTo(1.5, 6);
-    expect(short.x2).toBeCloseTo(14.5, 6);
-    expect(short.x2 - short.x1).toBeCloseTo(13, 6);
+describe("spin overlay display consistency", () => {
+  it.each(["wedge", "hashed", "dashed", "bold"] as const)("renders %s as the same plain stroke beside Center or Left", (bondStyle) => {
+    const molecule: MoleculeObject = {
+      id: "spin", type: "molecule", x: 0, y: 0, width: 90, height: 30, rotation: 0,
+      style: {}, structureFormat: "smiles", structure: "C=CCC", superatoms: [], rGroups: [],
+      atoms: [
+        { id: "a", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "b", element: "C", x: 30, y: 0, formalCharge: 0 },
+        { id: "c", element: "C", x: 60, y: 30, formalCharge: 0 },
+        { id: "d", element: "C", x: 90, y: 30, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "double", fromAtomId: "a", toAtomId: "b", order: "double", display: { doubleBondSide: "center" } },
+        { id: "join", fromAtomId: "b", toAtomId: "c", order: "single" },
+        { id: "styled", fromAtomId: "c", toAtomId: "d", order: "single", display: { bondStyle } }
+      ]
+    };
+    const original = structuredClone(molecule);
+    const projection = projectSpin([0, 0, 0, 30, 0, 0, 60, -30, 0, 90, -30, 0],
+      [[0, 1], [1, 2], [2, 3]], quatIdentity(), { centerX: 100, centerY: 100, scale: 1 });
+    const styledLayer = (source: MoleculeObject) => spinJoinedBondFragments(source, projection, [])
+      .find((fragment) => fragment.attrs["data-bond-layer-id"] === "styled")!;
+    const centered = styledLayer(molecule);
+    const plain = styledLayer({ ...molecule, bonds: molecule.bonds.map((bond) =>
+      bond.id === "styled" ? { ...bond, display: undefined } : bond) });
+    const left = styledLayer({ ...molecule, bonds: molecule.bonds.map((bond) =>
+      bond.id === "double" ? { ...bond, display: { doubleBondSide: "left" } } : bond) });
+    expect(centered).toEqual(left);
+    expect(centered).toEqual(plain);
+    expect(centered.children).toHaveLength(1);
+    expect(centered.children[0]).toMatchObject({ kind: "element", tag: "line" });
+    expect(molecule).toEqual(original);
   });
 });

@@ -3,8 +3,15 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import {
+  createPhase4Document,
+  insertNativeSingleBondMolecule,
+  insertNativeTemplateMolecule,
+  nativeMoleculeCenter,
+  nativeMoleculeTransformState
+} from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,7 +33,7 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe("freehand native art interactions", () => {
+describe("freehand art and rotation interactions", () => {
   let container: HTMLDivElement;
   let root: Root;
   let originalResizeObserver: typeof ResizeObserver | undefined;
@@ -76,13 +83,17 @@ describe("freehand native art interactions", () => {
 
   async function renderMainWindow(
     commandId: string,
-    options: { initialPaletteMode?: "floating" | "hidden"; nativePalette?: boolean } = {}
+    options: {
+      initialPaletteMode?: "floating" | "hidden";
+      nativePalette?: boolean;
+      initialDocument?: ChemDraftDocument;
+    } = {}
   ) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: commandId,
         initialCrosshairsVisible: false,
-        initialDocument: createPhase4Document("Freehand Drag"),
+        initialDocument: options.initialDocument ?? createPhase4Document("Freehand Drag"),
         initialPaletteMode: options.initialPaletteMode ?? "hidden",
         initialRulersVisible: false,
         nativePalette: options.nativePalette ?? true
@@ -123,7 +134,8 @@ describe("freehand native art interactions", () => {
     type: "pointerdown" | "pointermove" | "pointerup",
     point: { x: number; y: number },
     pointerId: number,
-    pressure: number
+    pressure: number,
+    shiftKey = false
   ) {
     const event = new MouseEvent(type, {
       bubbles: true,
@@ -131,7 +143,8 @@ describe("freehand native art interactions", () => {
       buttons: type === "pointerup" ? 0 : 1,
       cancelable: true,
       clientX: point.x,
-      clientY: point.y
+      clientY: point.y,
+      shiftKey
     });
     Object.defineProperties(event, {
       isPrimary: { value: true },
@@ -454,6 +467,193 @@ describe("freehand native art interactions", () => {
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
 
+  it.each(["bond", "ring"] as const)("snaps a whole %s rigidly without changing chemistry", async (kind) => {
+    const seed = createPhase4Document("Molecule Rotation Snap");
+    const initialDocument = kind === "bond"
+      ? insertNativeSingleBondMolecule(seed, { x: 200, y: 220 })
+      : insertNativeTemplateMolecule(seed, { x: 300, y: 300 }, "cyclohexane");
+    const original = initialDocument.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!original) throw new Error("Expected molecule.");
+    await renderMainWindow("tool.select", { initialDocument });
+    await holdShiftForRotationHandles();
+    const handle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    if (!handle) throw new Error("Expected molecule rotate handle.");
+    const center = nativeMoleculeCenter(original);
+    const start = { x: center.x + 100, y: center.y };
+    const at = (degrees: number) => ({ x: start.x, y: start.y + degrees });
+    const molecule = () => {
+      const object = window.__CHEMDRAFT_AGENT__?.snapshot().document.pages[0].objects.find((object) => object.id === original.id);
+      if (object?.type !== "molecule") throw new Error("Expected molecule snapshot.");
+      return object;
+    };
+    // Establish a freely drawn 7° orientation before testing a second drag's absolute grid.
+    const freeStart = { ...start, x: start.x + 30 };
+    const freeEnd = { ...freeStart, y: freeStart.y + 7 };
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", freeStart, 89, 0.5);
+      dispatchPointer(pageElement(), "pointermove", freeEnd, 89, 0.5);
+      dispatchPointer(pageElement(), "pointerup", freeEnd, 89, 0.5);
+    });
+    const before = molecule();
+    expect(nativeMoleculeTransformState(before).rotationDegrees).toBe(7);
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", start, 90, 0.5);
+      dispatchPointer(pageElement(), "pointermove", at(6.9), 90, 0.5);
+    });
+    expect(nativeMoleculeTransformState(molecule()).rotationDegrees).toBe(15);
+    await act(async () => dispatchPointer(pageElement(), "pointermove", at(19), 90, 0.5));
+    expect(nativeMoleculeTransformState(molecule()).rotationDegrees).toBe(26);
+    await act(async () => dispatchPointer(pageElement(), "pointermove", at(19), 90, 0.5, true));
+    const preview = molecule();
+    expect(nativeMoleculeTransformState(preview).rotationDegrees).toBe(30);
+    await act(async () => dispatchPointer(pageElement(), "pointerup", at(24), 90, 0.5));
+    const after = molecule();
+    expect(after).toEqual(preview);
+    expect(after.bonds).toEqual(before.bonds);
+    expect(after.structure).toBe(before.structure);
+    expect(after.chemistry).toEqual(before.chemistry);
+    const identity = ({ x: _x, y: _y, ...atom }: MoleculeObject["atoms"][number]) => atom;
+    expect(after.atoms.map(identity)).toEqual(before.atoms.map(identity));
+    for (let i = 0; i < before.atoms.length; i++) {
+      for (let j = 0; j < i; j++) {
+        expect(Math.hypot(after.atoms[i].x - after.atoms[j].x, after.atoms[i].y - after.atoms[j].y))
+          .toBeCloseTo(Math.hypot(before.atoms[i].x - before.atoms[j].x, before.atoms[i].y - before.atoms[j].y), 3);
+      }
+    }
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(molecule()).toEqual(before);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(molecule()).toEqual(original);
+  });
+
+  it("snaps a whole-object drag and reads Shift changes on every move, committing one undo entry", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(91);
+    await holdShiftForRotationHandles();
+    const rotateHandle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    if (!rotateHandle || !graphic) throw new Error("Expected rotation handle and graphic.");
+
+    const original = debugArtObject(objectId).object;
+    const start = { x: original.x + original.width + 20, y: original.y + original.height / 2 };
+    // The handle measures tangential travel at one degree per page pixel.
+    const point = (degrees: number) => ({ x: start.x, y: start.y + degrees });
+    const previewRotation = () => graphic.querySelector<HTMLElement>(".graphic-visual-shell")?.style.transform;
+
+    const freeStart = { ...start, x: start.x + 30 };
+    const freeEnd = { ...freeStart, y: freeStart.y + 7 };
+    await act(async () => {
+      dispatchPointer(rotateHandle, "pointerdown", freeStart, 88, 0.5);
+      dispatchPointer(pageElement(), "pointermove", freeEnd, 88, 0.5);
+    });
+    await waitForPreviewFrame();
+    await act(async () => dispatchPointer(pageElement(), "pointerup", freeEnd, 88, 0.5));
+    const before = debugArtObject(objectId).object;
+    expect(before.rotation).toBe(7);
+    await act(async () => {
+      dispatchPointer(rotateHandle, "pointerdown", start, 92, 0.5);
+      dispatchPointer(pageElement(), "pointermove", point(6.9), 92, 0.5);
+    });
+    await waitForPreviewFrame();
+    expect(previewRotation()).toContain("rotate(15deg)");
+
+    // Exercise the object move handler as well as the page's captured-pointer handler.
+    await act(async () => dispatchPointer(graphic, "pointermove", point(19), 92, 0.5));
+    await waitForPreviewFrame();
+    expect(previewRotation()).toContain("rotate(26deg)");
+    await act(async () => dispatchPointer(graphic, "pointermove", point(19), 92, 0.5, true));
+    await waitForPreviewFrame();
+    expect(previewRotation()).toContain("rotate(30deg)");
+    await act(async () => dispatchPointer(pageElement(), "pointermove", point(19), 92, 0.5));
+    await waitForPreviewFrame();
+    expect(previewRotation()).toContain("rotate(26deg)");
+    await act(async () => dispatchPointer(pageElement(), "pointermove", point(19), 92, 0.5, true));
+    await waitForPreviewFrame();
+    expect(previewRotation()).toContain("rotate(30deg)");
+
+    // A changed release point/modifier must not jump away from the last visible preview.
+    await act(async () => dispatchPointer(pageElement(), "pointerup", point(24), 92, 0.5));
+    expect(debugArtObject(objectId).object.rotation).toBe(30);
+    expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(debugArtObject(objectId).object.rotation).toBe(before.rotation);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(debugArtObject(objectId).object.rotation).toBe(original.rotation);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(snapshotObjectCount()).toBe(0);
+  });
+
+  it.each([[-7, 90], [4, 105]])("Shift snaps an art object at 100° with delta %s° to %s°", async (delta, expected) => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(93);
+    await holdShiftForRotationHandles();
+    const handle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    const graphic = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
+    if (!handle || !graphic) throw new Error("Expected rotation handle and graphic.");
+    const original = debugArtObject(objectId).object;
+    const start = { x: original.x + original.width + 20, y: original.y + original.height / 2 };
+    const at = (degrees: number) => ({ x: start.x, y: start.y + degrees });
+    const freeStart = { ...start, x: start.x + 30 };
+    const freeEnd = { ...freeStart, y: freeStart.y + 100 };
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", freeStart, 94, 0.5);
+      dispatchPointer(pageElement(), "pointermove", freeEnd, 94, 0.5);
+    });
+    await waitForPreviewFrame();
+    await act(async () => dispatchPointer(pageElement(), "pointerup", freeEnd, 94, 0.5));
+    expect(debugArtObject(objectId).object.rotation).toBe(100);
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", start, 95, 0.5, true);
+      dispatchPointer(pageElement(), "pointermove", at(delta), 95, 0.5, true);
+    });
+    await waitForPreviewFrame();
+    expect(graphic.querySelector<HTMLElement>(".graphic-visual-shell")?.style.transform).toContain(`rotate(${expected}deg)`);
+    await act(async () => dispatchPointer(pageElement(), "pointerup", at(delta + 10), 95, 0.5));
+    expect(debugArtObject(objectId).object.rotation).toBe(expected);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect(debugArtObject(objectId).object.rotation).toBe(100);
+  });
+
+  it.each([false, true])("snaps a multi-object rotation (grouped: %s) and commits its live preview", async (grouped) => {
+    await renderMainWindow("tool.art.pencil");
+    const first = await drawPencilStroke(101);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.art.pencil"); });
+    const second = await drawPencilStroke(102, [
+      { x: 380, y: 180, pressure: 0.2 },
+      { x: 414, y: 196, pressure: 0.9 },
+      { x: 452, y: 178, pressure: 0.45 }
+    ]);
+    await act(async () => {
+      await window.__CHEMDRAFT_AGENT__?.command("edit.selectAll");
+      if (grouped) await window.__CHEMDRAFT_AGENT__?.command("layout.group");
+    });
+    const frame = container.querySelector<HTMLElement>(".group-selection-frame");
+    const handle = container.querySelector<HTMLButtonElement>("[data-group-rotate-handle='true']");
+    if (!frame || !handle) throw new Error("Expected group rotation frame.");
+    const coordinate = (value: string) => Number(value.match(/calc\(([-\d.]+)px/)?.[1]);
+    const start = {
+      x: coordinate(frame.style.left) + coordinate(frame.style.width) + 20,
+      y: coordinate(frame.style.top) + coordinate(frame.style.height) / 2
+    };
+    const at = (degrees: number) => ({ x: start.x, y: start.y + degrees });
+    const originals = [debugArtObject(first).object, debugArtObject(second).object];
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", start, 103, 0.5);
+      dispatchPointer(pageElement(), "pointermove", at(14.9), 103, 0.5);
+    });
+    expect(debugArtObject(first).object.rotation).toBe(15);
+    expect(debugArtObject(second).object.rotation).toBe(15);
+    await act(async () => dispatchPointer(pageElement(), "pointermove", at(22), 103, 0.5));
+    expect(debugArtObject(first).object.rotation).toBe(22);
+    await act(async () => dispatchPointer(pageElement(), "pointermove", at(22), 103, 0.5, true));
+    const preview = [debugArtObject(first).object, debugArtObject(second).object];
+    expect(preview.map((object) => object.rotation)).toEqual([15, 15]);
+    await act(async () => dispatchPointer(pageElement(), "pointerup", at(24), 103, 0.5));
+    expect([debugArtObject(first).object, debugArtObject(second).object]).toEqual(preview);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("edit.undo"); });
+    expect([debugArtObject(first).object, debugArtObject(second).object]).toEqual(originals);
+  });
+
   it("previews freehand object rotation without mutating rotation until pointer up", async () => {
     await renderMainWindow("tool.art.pencil");
     const objectId = await drawPencilStroke(81);
@@ -502,5 +702,48 @@ describe("freehand native art interactions", () => {
     const after = debugArtObject(objectId).object;
     expect(after.rotation).not.toBeCloseTo(before.rotation, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
+  });
+
+  it("updates modifier hints on rotation start, Shift down/up and blur while preserving result messages", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(111);
+    const hint = () => container.querySelector("[data-modifier-hint]")?.textContent ?? "";
+    const message = () => container.querySelector("[data-status-message]")?.textContent;
+    expect(hint()).toContain("show rotate handles");
+    await holdShiftForRotationHandles();
+    const handle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    if (!handle) throw new Error("Expected rotate handle.");
+    const object = debugArtObject(objectId).object;
+    const start = { x: object.x + object.width + 20, y: object.y + object.height / 2 };
+    await act(async () => dispatchPointer(handle, "pointerdown", start, 112, 0.5));
+    expect(hint()).toContain("snap to 15° steps");
+    const statusDuringDrag = message();
+    expect(statusDuringDrag).toBe("Rotate selected art object");
+
+    // No pointer movement is needed to reveal what a newly held modifier will do.
+    await holdShiftForRotationHandles();
+    expect(hint()).toContain("Snapping to 15°");
+    expect(hint()).toContain("release");
+    expect(message()).toBe(statusDuringDrag);
+    await releaseShiftForRotationHandles();
+    expect(hint()).toContain("snap to 15° steps");
+    expect(message()).toBe(statusDuringDrag);
+
+    await holdShiftForRotationHandles();
+    await act(async () => window.dispatchEvent(new FocusEvent("blur")));
+    expect(hint()).toContain("snap to 15° steps");
+    expect(hint()).not.toContain("Snapping");
+    expect(message()).toBe(statusDuringDrag);
+    const end = { ...start, y: start.y + 22 };
+    await act(async () => dispatchPointer(pageElement(), "pointermove", end, 112, 0.5));
+    await waitForPreviewFrame();
+    await act(async () => dispatchPointer(pageElement(), "pointerup", end, 112, 0.5));
+    expect(message()).toBe("Rotated selected art object");
+    expect(hint()).toContain("show rotate handles");
+    expect(hint()).not.toContain("15°");
+    await holdShiftForRotationHandles();
+    expect(message()).toBe("Rotated selected art object");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.bond"); });
+    expect(hint()).not.toContain("rotate handles");
   });
 });

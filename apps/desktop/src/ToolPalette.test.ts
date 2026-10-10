@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandSpec } from "./commands";
-import { ToolPalette } from "./ToolPalette";
+import { TOOLBAR_FLYOUT_HOLD_MS, ToolPalette } from "./ToolPalette";
 import type { ToolbarPaletteItemModel } from "./toolsets";
 
 const bondCommand: CommandSpec = {
@@ -131,18 +131,19 @@ describe("ToolPalette schema-backed items", () => {
     document.body.innerHTML = "";
   });
 
-  it("invokes the primary command on a short press", async () => {
+  it("invokes the primary command exactly once before the flyout hold threshold", async () => {
     vi.useFakeTimers();
     const onInvoke = vi.fn();
     const { button, root } = await renderSchemaPalette(schemaBondItem, onInvoke);
 
     await act(async () => {
       dispatchPointerButton(button, "pointerdown");
-      vi.advanceTimersByTime(120);
+      vi.advanceTimersByTime(TOOLBAR_FLYOUT_HOLD_MS - 1);
       dispatchPointerButton(button, "pointerup");
     });
 
     expect(onInvoke).toHaveBeenCalledWith("tool.bond");
+    expect(onInvoke).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });
 
@@ -153,7 +154,7 @@ describe("ToolPalette schema-backed items", () => {
 
     await act(async () => {
       dispatchPointerButton(button, "pointerdown");
-      vi.advanceTimersByTime(421);
+      vi.advanceTimersByTime(TOOLBAR_FLYOUT_HOLD_MS);
       dispatchPointerButton(button, "pointerup");
     });
 
