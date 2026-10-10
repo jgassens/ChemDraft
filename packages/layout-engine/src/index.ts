@@ -153,6 +153,29 @@ export interface FreeformBondExtensionPlanningInput {
   customLengthBreakawayDistance?: number;
   forceCustomLength?: boolean;
   snapHitRadius?: number;
+  /** Placement may supply an absolute aim and keep new bonds at the standard length. */
+  directionDegrees?: number;
+  standardLength?: boolean;
+}
+
+/** Absolute pointer aim in the page coordinate system, shared by placement tools. */
+export function placementAimDegrees(start: LayoutPoint, end: LayoutPoint): number {
+  return Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI;
+}
+
+/** Turn a vertex plan about its first vertex so its first bond has the requested absolute aim. */
+export function aimPlacementVertices(
+  points: readonly LayoutPoint[],
+  degrees: number,
+  bounds?: LayoutBounds
+): LayoutPoint[] {
+  if (points.length < 2) return [...points];
+  const origin = points[0];
+  const angle = (degrees - placementAimDegrees(origin, points[1])) * Math.PI / 180;
+  const aimed = points.map((point) => rotatePoint(point, origin, angle));
+  const outside = aimed.findIndex((point) => bounds &&
+    (point.x < bounds.x || point.y < bounds.y || point.x > bounds.x + bounds.width || point.y > bounds.y + bounds.height));
+  return outside < 0 ? aimed : aimed.slice(0, outside);
 }
 
 export interface AtomHitPlanningInput {
@@ -277,8 +300,8 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
   }
 
   const breakawayDistance = input.customLengthBreakawayDistance ?? input.bondLength * 1.4;
-  const lengthMode = input.forceCustomLength || pointerDistance >= breakawayDistance ? "custom" : "default";
-  const snapTarget = lengthMode === "custom"
+  const lengthMode = input.forceCustomLength || (!input.standardLength && pointerDistance >= breakawayDistance) ? "custom" : "default";
+  const snapTarget = lengthMode === "custom" || input.standardLength || input.directionDegrees !== undefined
     ? nearestFreeformSnapTarget({
         atoms: input.atoms,
         bonds: input.bonds,
@@ -307,17 +330,26 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     };
   }
 
-  const pointerDirection = normalize({
-    x: input.endPoint.x - source.x,
-    y: input.endPoint.y - source.y
-  });
-  const plannedEndPoint = lengthMode === "custom"
+  const pointerDirection = input.directionDegrees !== undefined
+    ? directionFromAngle(input.directionDegrees * Math.PI / 180)
+    : normalize({
+        x: input.endPoint.x - source.x,
+        y: input.endPoint.y - source.y
+      });
+  const plannedLength = lengthMode === "custom" ? pointerDistance : input.bondLength;
+  const plannedEndPoint = lengthMode === "custom" && input.directionDegrees === undefined
     ? input.endPoint
     : {
-        x: source.x + pointerDirection.x * input.bondLength,
-        y: source.y + pointerDirection.y * input.bondLength
+        x: source.x + pointerDirection.x * plannedLength,
+        y: source.y + pointerDirection.y * plannedLength
       };
-  const newAtomPoint = clampPointToBounds(plannedEndPoint, input.pageBounds);
+  // Shorten aimed placement along its ray at the page edge, preserving the supplied angle.
+  const newAtomPoint = input.directionDegrees !== undefined
+    ? clampAimedEndpointToBounds(source, plannedEndPoint, input.pageBounds, minimumBondLength)
+    : clampPointToBounds(plannedEndPoint, input.pageBounds);
+  if (!newAtomPoint) {
+    return undefined;
+  }
   const direction = normalize({
     x: newAtomPoint.x - source.x,
     y: newAtomPoint.y - source.y
@@ -739,6 +771,26 @@ function clampPointToBounds(point: LayoutPoint, bounds: LayoutBounds): LayoutPoi
     x: clamp(point.x, bounds.x, bounds.x + bounds.width),
     y: clamp(point.y, bounds.y, bounds.y + bounds.height)
   };
+}
+
+function clampAimedEndpointToBounds(
+  start: LayoutPoint,
+  end: LayoutPoint,
+  bounds: LayoutBounds,
+  minimumBondLength: number
+): LayoutPoint | undefined {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let fraction = 1;
+  if (dx > 0) fraction = Math.min(fraction, (bounds.x + bounds.width - start.x) / dx);
+  if (dx < 0) fraction = Math.min(fraction, (bounds.x - start.x) / dx);
+  if (dy > 0) fraction = Math.min(fraction, (bounds.y + bounds.height - start.y) / dy);
+  if (dy < 0) fraction = Math.min(fraction, (bounds.y - start.y) / dy);
+  const clampedEnd = clampPointToBounds({
+    x: start.x + dx * Math.max(0, fraction),
+    y: start.y + dy * Math.max(0, fraction)
+  }, bounds);
+  return distance(start, clampedEnd) < minimumBondLength ? undefined : clampedEnd;
 }
 
 export function distance(left: LayoutPoint, right: LayoutPoint): number {
@@ -1527,16 +1579,18 @@ function planNativeMoleculeGraphSvg(
 
     return [{ bond, drawingStyle: bondDrawingStyle, segments }];
   });
+  const labeledAtomIds = new Set(labelPlanByAtomId.keys());
+  joinCenteredDoubleBondSegments(bondSegmentGroups, labeledAtomIds);
   const primitive = moleculeDrawingPrimitive(object) === "single-bond"
     ? "single-bond"
     : "connected-carbon-chain";
   const carbonJunctionPlans = nativeCarbonJunctionPlans(
     object,
-    new Set(atomLabels.map((plan) => plan.atom.id)),
+    labeledAtomIds,
     drawingStyle
   );
   const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
-    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey)
+    ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey, resolution)
     : undefined;
   const effects = visualEffectPlansForStyle({
     objectId: object.id,
@@ -2451,17 +2505,63 @@ function moleculeBondEffectSourceFragments(
 function moleculeEffectSketchBasePathD(
   object: MoleculeObject,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
-  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>
+  gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
+  resolution: NativeBondOrderResolution
 ): string | undefined {
-  const bondPathParts = bondSegmentGroups.flatMap(({ bond, segments }) =>
+  const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
-      splitSegmentByCrossingGaps(
+      moleculeBondSketchPathParts(
+        object,
         segment,
-        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? []
-      ).map((visibleSegment) => linePathD(visibleSegment))
+        drawingStyle,
+        gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
+        resolution
+      )
     )
   );
   return bondPathParts.join(" ") || undefined;
+}
+
+/**
+ * Sketch path pieces for one bond segment, tracing what the normal renderer draws: each hash of a
+ * hashed bond, each dash of a dashed bond, the outline of a wedge. Every other style is its centre
+ * line. The geometry comes from the same helpers `nativeBondSegmentFragments` uses.
+ */
+function moleculeBondSketchPathParts(
+  object: MoleculeObject,
+  segment: PageMoleculeBondSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[],
+  resolution: NativeBondOrderResolution
+): string[] {
+  const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wedge" && segment.segment === "primary") {
+    const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+    return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment) =>
+      polygonPathD(nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution))
+    );
+  }
+
+  if (bondStyle === "hashed" && segment.segment === "primary") {
+    const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
+    return [
+      ...hashedWedge.hashes.flatMap((hash) =>
+        splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash) => linePathD(visibleHash))
+      ),
+      ...(hashedWedge.terminalJoin ? [polygonPathD(hashedWedge.terminalJoin.points)] : [])
+    ];
+  }
+
+  return splitSegmentByCrossingGaps(segment, crossingGaps).flatMap((visibleSegment) =>
+    bondStyle === "dashed"
+      ? nativeDashedBondDashes(visibleSegment, drawingStyle).map((dash) => linePathD(dash))
+      : [linePathD(visibleSegment)]
+  );
+}
+
+/** Closed path for an SVG `points` list ("x,y x,y ..."). */
+function polygonPathD(points: string): string {
+  return `M ${points.trim().split(/\s+/).map((point) => point.replace(",", " ")).join(" L ")} Z`;
 }
 
 function linePathD(segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">): string {
@@ -4661,50 +4761,27 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
+    if (doubleBondRendersSymmetric(fromAtom, toAtom, object, bond, ringInteriorSide)) {
+      return [gap / 2, -gap / 2].map((offset, index) => ({
+        x1: x1 + normal.x * offset,
+        y1: y1 + normal.y * offset,
+        x2: x2 + normal.x * offset,
+        y2: y2 + normal.y * offset,
+        segment: index === 0 ? "primary" : "secondary",
+        doubleBondSide: "center"
+      }));
+    }
     const terminalHeteroatomSide = terminalHeteroatomDoubleBondInnerSide(
       fromAtom,
       toAtom,
       object,
       bond
     );
-    // A terminal heteroatom double bond with no derivable inner side (a ketone's two backbone
-    // neighbors, formaldehyde's none) has no publication convention to lean on: keep the legacy
-    // symmetric ±gap/2 straddle so a symmetric molecule never picks an arbitrary side. The user's
-    // explicit side still wins below.
-    if (
-      bond.display?.doubleBondSide === undefined &&
-      ringInteriorSide === undefined &&
-      terminalHeteroatomSide === undefined &&
-      isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
-    ) {
-      const halfGap = gap / 2;
-      return [
-        {
-          x1: x1 + normal.x * halfGap,
-          y1: y1 + normal.y * halfGap,
-          x2: x2 + normal.x * halfGap,
-          y2: y2 + normal.y * halfGap,
-          segment: "primary",
-          doubleBondSide: "left"
-        },
-        {
-          x1: x1 - normal.x * halfGap,
-          y1: y1 - normal.y * halfGap,
-          x2: x2 - normal.x * halfGap,
-          y2: y2 - normal.y * halfGap,
-          segment: "secondary",
-          doubleBondSide: "left"
-        }
-      ];
-    }
-
     // Default a ring double bond's inner line to the ring interior; the user's explicit side
-    // (bond.display.doubleBondSide) always wins. A terminal heteroatom double bond (such as an
-    // aldehyde C=O) follows the same publication convention as a ring: the primary line stays on
-    // the bond centerline and meets the backbone junction, while the short secondary line sits on
-    // the side facing the adjacent backbone bond.
+    // (bond.display.doubleBondSide) always wins. Automatic acyclic C=X and terminal heteroatom
+    // doubles returned centered above; other chain doubles retain their one-sided default.
     const doubleBondSide =
-      bond.display?.doubleBondSide ??
+      (bond.display?.doubleBondSide === "automatic" ? undefined : bond.display?.doubleBondSide) ??
       ringInteriorSide ??
       terminalHeteroatomSide ??
       "left";
@@ -4742,6 +4819,153 @@ function bondLineSegments(
   }
 
   return [{ x1, y1, x2, y2, segment: "primary" }];
+}
+
+/**
+ * Miter each centered line to the nearest incident stroke's centreline. Prefer an
+ * intersection on the neighbour's visible segment over its extension (a branched junction can
+ * then join each side to a different neighbour). At a bend the outer intersection lies behind
+ * the atom: extend that neighbouring stroke only as far as the intersection so BOTH centered
+ * lines meet actual ink, with no protruding tail. Labels and terminal ends retain their original
+ * clearance/atom plane, as do ends with wedge, hashed or dashed neighbours. Parallel strokes
+ * remain untouched; very acute joins use a short bevel back to the neighbouring stroke's endpoint
+ * rather than an unbounded miter. Work from a snapshot so bond traversal order
+ * cannot change the joins.
+ */
+function joinCenteredDoubleBondSegments(
+  groups: readonly PageMoleculeBondSegmentGroup[],
+  labeledAtoms: ReadonlySet<string>
+): void {
+  const centeredGroups = groups.filter(({ segments }) =>
+    segments.some((segment) => segment.doubleBondSide === "center")
+  );
+  if (centeredGroups.length === 0) {
+    return;
+  }
+  const incident = new Map<string, PageMoleculeBondSegmentGroup[]>();
+  const original = new Map<PageMoleculeBondSegment, PageBondLineSegment>();
+  const bevels: { group: PageMoleculeBondSegmentGroup; segment: PageMoleculeBondSegment }[] = [];
+  for (const group of groups) {
+    for (const id of [group.bond.fromAtomId, group.bond.toAtomId]) {
+      const connections = incident.get(id) ?? [];
+      connections.push(group);
+      incident.set(id, connections);
+    }
+    for (const segment of group.segments) {
+      original.set(segment, { ...segment });
+    }
+  }
+  for (const group of centeredGroups) {
+    for (const atFrom of [true, false]) {
+      const atomId = atFrom ? group.bond.fromAtomId : group.bond.toAtomId;
+      const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
+      if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
+        const style = nativeBondDisplayStyle(bond);
+        return style === "wedge" || style === "hashed" || style === "dashed";
+      })) {
+        continue;
+      }
+      for (const segment of group.segments) {
+        const source = original.get(segment)!;
+        const start = { x: source.x1, y: source.y1 };
+        const end = { x: source.x2, y: source.y2 };
+        const endpoint = atFrom ? start : end;
+        const sourceGeometry = nativeSegmentVectorGeometry(source);
+        if (!sourceGeometry) {
+          continue;
+        }
+        const inward = atFrom ? sourceGeometry.unit
+          : { x: -sourceGeometry.unit.x, y: -sourceGeometry.unit.y };
+        // Compare unit vectors so the parallel tolerance is independent of bond length.
+        const isNonparallel = (line: PageBondLineSegment): boolean => {
+          const geometry = nativeSegmentVectorGeometry(line);
+          return geometry !== undefined && Math.abs(cross(sourceGeometry.unit, geometry.unit)) > 1e-8;
+        };
+        const candidates = neighbors.flatMap((neighbor) => {
+          const neighborAtFrom = neighbor.bond.fromAtomId === atomId;
+          return neighbor.segments.flatMap((neighborSegment) => {
+            const line = original.get(neighborSegment)!;
+            if (!isNonparallel(line)) {
+              return [];
+            }
+            const near = neighborAtFrom
+              ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+            const far = neighborAtFrom
+              ? { x: line.x2, y: line.y2 } : { x: line.x1, y: line.y1 };
+            const point = infiniteLineIntersection(start, end, near, far);
+            const geometry = nativeSegmentVectorGeometry(line);
+            if (!point || !geometry) {
+              return [];
+            }
+            const outward = neighborAtFrom ? geometry.unit
+              : { x: -geometry.unit.x, y: -geometry.unit.y };
+            const along = (point.x - near.x) * outward.x + (point.y - near.y) * outward.y;
+            // Do not join beyond the far end (which may already be label-trimmed), or invert
+            // this centered segment at a very acute/degenerate junction.
+            const centeredAlong = (point.x - endpoint.x) * inward.x + (point.y - endpoint.y) * inward.y;
+            if (along > geometry.length || along < -geometry.length / 2 ||
+              Math.abs(centeredAlong) >= sourceGeometry.length / 2) {
+              return [];
+            }
+            return [{ point, along, neighborSegment, neighborAtFrom, near, outward,
+              score: distance(endpoint, point) }];
+          });
+        });
+        candidates.sort((left, right) =>
+          Number(left.along < 0) - Number(right.along < 0) ||
+          left.score - right.score || left.neighborSegment.key.localeCompare(right.neighborSegment.key)
+        );
+        const join = candidates[0];
+        if (!join) {
+          const neighbor = neighbors.filter((candidate) => {
+            const line = candidate.segments[0];
+            return line !== undefined && isNonparallel(original.get(line)!);
+          }).sort((left, right) => left.bond.id.localeCompare(right.bond.id))[0];
+          const neighborSegment = neighbor?.segments[0];
+          if (neighbor && neighborSegment) {
+            const line = original.get(neighborSegment)!;
+            const near = neighbor.bond.fromAtomId === atomId
+              ? { x: line.x1, y: line.y1 } : { x: line.x2, y: line.y2 };
+            if (distance(near, endpoint) <= 1e-8) {
+              continue;
+            }
+            bevels.push({ group: neighbor, segment: {
+              x1: near.x, y1: near.y, x2: endpoint.x, y2: endpoint.y,
+              segment: "outer", bond: neighbor.bond,
+              key: `${neighbor.bond.id}-center-join-${segment.key}-${atomId}`
+            } });
+          }
+          continue;
+        }
+        if (atFrom) {
+          segment.x1 = join.point.x;
+          segment.y1 = join.point.y;
+        } else {
+          segment.x2 = join.point.x;
+          segment.y2 = join.point.y;
+        }
+        if (join.along < 0) {
+          const current = join.neighborAtFrom
+            ? { x: join.neighborSegment.x1, y: join.neighborSegment.y1 }
+            : { x: join.neighborSegment.x2, y: join.neighborSegment.y2 };
+          const currentAlong = (current.x - join.near.x) * join.outward.x
+            + (current.y - join.near.y) * join.outward.y;
+          if (join.along < currentAlong) {
+            if (join.neighborAtFrom) {
+              join.neighborSegment.x1 = join.point.x;
+              join.neighborSegment.y1 = join.point.y;
+            } else {
+              join.neighborSegment.x2 = join.point.x;
+              join.neighborSegment.y2 = join.point.y;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (const bevel of bevels) {
+    bevel.group.segments.push(bevel.segment);
+  }
 }
 
 export function labelEndpointClearance(
@@ -5474,10 +5698,42 @@ export function depthCuedBondStrokeWidth(baseWidthPx: number, depthWeight: numbe
   return baseWidthPx * (0.6 + clamp(depthWeight, 0, 1) * 0.8);
 }
 
+function nativeDashedBondPattern(drawingStyle: NativeDrawingStyle): { dash: number; gap: number } {
+  return {
+    dash: Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2),
+    gap: Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8)
+  };
+}
+
 function nativeDashedBondDashArray(drawingStyle: NativeDrawingStyle): string {
-  const dash = Math.max(3, drawingStyle.bondStrokeWidthPx * 2.2);
-  const gap = Math.max(3, drawingStyle.bondStrokeWidthPx * 1.8);
+  const { dash, gap } = nativeDashedBondPattern(drawingStyle);
   return `${formatNumber(dash)} ${formatNumber(gap)}`;
+}
+
+/** The dashes SVG draws for `stroke-dasharray` on one line: pattern restarts at the line's start. */
+function nativeDashedBondDashes(
+  segment: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">,
+  drawingStyle: NativeDrawingStyle
+): Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[] {
+  const length = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
+  if (length === 0) {
+    return [];
+  }
+  // Use the rounded values the dasharray attribute carries, so these match the rendered dashes.
+  const [dash, gap] = nativeDashedBondDashArray(drawingStyle).split(" ").map(Number) as [number, number];
+  const ux = (segment.x2 - segment.x1) / length;
+  const uy = (segment.y2 - segment.y1) / length;
+  const dashes: Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">[] = [];
+  for (let start = 0; start < length; start += dash + gap) {
+    const end = Math.min(length, start + dash);
+    dashes.push({
+      x1: segment.x1 + ux * start,
+      y1: segment.y1 + uy * start,
+      x2: segment.x1 + ux * end,
+      y2: segment.y1 + uy * end
+    });
+  }
+  return dashes;
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
@@ -6119,30 +6375,56 @@ function nativeSegmentVectorGeometry(
   };
 }
 
-/**
- * Whether a double bond renders as the symmetric ±gap/2 straddle rather than a primary line with an
- * offset secondary. This is the exact condition `bondLineSegments` applies, exported so the Spin-3D
- * overlay can ask instead of approximating it — the overlay used `isTerminalHeteroatomDoubleBond`
- * alone, which is only the LAST of four clauses, so every aldehyde, amide, and exocyclic C=O with a
- * derivable inner side drew one-sided on canvas and symmetric in the live overlay (§5.26/§5.27).
- *
- * `ringInteriorSide` comes from {@link ringInteriorDoubleBondSides}, which is computed once per
- * molecule; pass the entry for this bond.
+/** True for double bonds that default to Center: acyclic C=X or terminal heteroatom doubles.
+ * Test connectivity without this edge so exocyclic bonds and degenerate ring geometry are
+ * classified by topology. Callers converting a single bond pass a copy with order double.
+ */
+export function isDefaultCenteredDoubleBond(
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): boolean {
+  if (bond.order !== "double") return false;
+  const from = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const to = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!from || !to) return false;
+  const a = nativeElementFromAtomLabel(from.element);
+  const b = nativeElementFromAtomLabel(to.element);
+  const carbonHeteroatom = (a === "C" && b !== "C" && b !== "H") || (b === "C" && a !== "C" && a !== "H");
+  if (!carbonHeteroatom && !isTerminalHeteroatomDoubleBond(from, to, object, bond)) {
+    return false;
+  }
+  const adjacency = new Map<string, string[]>();
+  for (const edge of object.bonds) {
+    if (edge.id === bond.id) continue;
+    adjacency.set(edge.fromAtomId, [...(adjacency.get(edge.fromAtomId) ?? []), edge.toAtomId]);
+    adjacency.set(edge.toAtomId, [...(adjacency.get(edge.toAtomId) ?? []), edge.fromAtomId]);
+  }
+  const visited = new Set([bond.fromAtomId]);
+  const pending = [bond.fromAtomId];
+  for (let index = 0; index < pending.length; index++) {
+    for (const id of adjacency.get(pending[index]!) ?? []) {
+      if (id === bond.toAtomId) return false;
+      if (!visited.has(id)) { visited.add(id); pending.push(id); }
+    }
+  }
+  return true;
+}
+
+/** The same symmetric rule used by the canvas, exports, joins and Spin 3D. Automatic is
+ * stored as an unset side for new bonds (the explicit automatic spelling is also accepted).
+ * Explicit display choices always win.
  */
 export function doubleBondRendersSymmetric(
-  fromAtom: MoleculeAtom,
-  toAtom: MoleculeAtom,
+  _fromAtom: MoleculeAtom,
+  _toAtom: MoleculeAtom,
   object: MoleculeObject,
   bond: CoreMoleculeBond,
-  ringInteriorSide: DoubleBondSide | undefined
+  _ringInteriorSide: DoubleBondSide | undefined
 ): boolean {
-  return (
-    bond.order === "double" &&
-    bond.display?.doubleBondSide === undefined &&
-    ringInteriorSide === undefined &&
-    terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
-    isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
-  );
+  return bond.order === "double" && (bond.display?.doubleBondSide === "center" || (
+    (bond.display?.doubleBondSide === undefined || bond.display.doubleBondSide === "automatic") &&
+    isDefaultCenteredDoubleBond(object, bond)
+  ));
 }
 
 export function isTerminalHeteroatomDoubleBond(
@@ -6255,7 +6537,15 @@ function terminalMethyleneCarbons(
 }
 
 function isTerminalHeteroatom(atom: MoleculeAtom, object: MoleculeObject): boolean {
-  return atom.element !== "C" && atom.element !== "H" && atomBondCount(object, atom.id) === 1;
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (element === "C" || element === "H") return false;
+  const atoms = new Map(object.atoms.map((candidate) => [candidate.id, candidate]));
+  const heavyBonds = object.bonds.filter((bond) => {
+    const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId
+      : bond.toAtomId === atom.id ? bond.fromAtomId : undefined;
+    return neighborId !== undefined && nativeElementFromAtomLabel(atoms.get(neighborId)?.element ?? "") !== "H";
+  });
+  return heavyBonds.length === 1;
 }
 
 function atomBondCount(object: MoleculeObject, atomId: string): number {
