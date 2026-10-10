@@ -2663,6 +2663,16 @@ textarea:focus-visible,
   line-height: 1;
 }
 
+.symbol-tool-glyph {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  color: var(--cd-text-primary);
+  font-size: 16px;
+  line-height: 1;
+}
+
 .icon-button {
   display: grid;
   place-items: center;
@@ -2972,7 +2982,7 @@ textarea:focus-visible,
   height: 18px;
 }
 
-.toolbar-command-flyout-menu[data-toolbar-command-grid-columns] button span {
+.toolbar-command-flyout-menu[data-toolbar-command-grid-columns] button .toolbar-command-label {
   position: absolute;
   width: 1px;
   height: 1px;

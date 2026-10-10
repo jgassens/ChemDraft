@@ -3490,7 +3490,21 @@ function ToolbarPaletteItem({
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const primaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
+  const defaultPrimaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
+  const [selectedSymbolCommandId, setSelectedSymbolCommandId] = useState<string>();
+  const activeSymbolCommand = defaultPrimaryCommand?.id === "tool.symbol"
+    ? item.submenu?.items.find((command) => command.id === activeTool && symbolToolGlyph(command.id))
+    : undefined;
+  useEffect(() => {
+    if (activeSymbolCommand) {
+      setSelectedSymbolCommandId(activeSymbolCommand.id);
+    }
+  }, [activeSymbolCommand?.id]);
+  const primaryCommand = defaultPrimaryCommand?.id === "tool.symbol"
+    ? activeSymbolCommand
+      ?? item.submenu?.items.find((command) => command.id === selectedSymbolCommandId)
+      ?? defaultPrimaryCommand
+    : defaultPrimaryCommand;
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
   useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
@@ -3883,7 +3897,7 @@ function ToolbarPaletteItem({
                 }}
               >
                 <ToolbarCommandIcon command={command} />
-                <span>{command.title}</span>
+                <span className="toolbar-command-label">{command.title}</span>
               </button>
             );
           })}
@@ -3937,14 +3951,16 @@ export function ToolbarItemIcon({
   if (item.iconDataUri) {
     return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
   }
+  // Command-specific icons must win over the palette item's cached asset. Customize previews build
+  // an item model from both sources, and the stale shared asset can otherwise hide the real glyph.
+  if (command) {
+    return <ToolbarCommandIcon command={command} />;
+  }
   // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
   // only render the image when it resolves, otherwise fall through to a real icon.
   const assetSrc = item.assetName ? toolbarAsset(item.assetName) : undefined;
   if (assetSrc) {
     return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
-  }
-  if (command) {
-    return <ToolbarCommandIcon command={command} />;
   }
   if (item.icon && item.icon !== "palette") {
     return <Icon name={item.icon} />;
@@ -3955,6 +3971,10 @@ export function ToolbarItemIcon({
 }
 
 function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
+  const symbolGlyph = symbolToolGlyph(command.id);
+  if (symbolGlyph) {
+    return <span className="symbol-tool-glyph" aria-hidden="true">{symbolGlyph}</span>;
+  }
   const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
   if (assetSrc) {
     return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
@@ -3966,6 +3986,18 @@ function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
     return <TitleGlyphIcon title={command.title || command.id} />;
   }
   return <Icon name={command.icon} />;
+}
+
+export function symbolToolGlyph(commandId: string): string | undefined {
+  return ({
+    "tool.symbol": "°",
+    "tool.symbol.degree": "°",
+    "tool.symbol.plusMinus": "±",
+    "tool.symbol.angstrom": "Å",
+    "tool.symbol.delta": "Δ",
+    "tool.symbol.centerDot": "·",
+    "tool.symbol.prime": "′"
+  } as Record<string, string>)[commandId];
 }
 
 const TITLE_GLYPH_STOPWORDS = new Set([

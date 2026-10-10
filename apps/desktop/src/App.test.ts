@@ -2596,6 +2596,10 @@ describe("ChemDraft desktop shell", () => {
     // The charge symbols live behind one dropdown button; the individual tools surface as
     // submenu-backed commands rather than top-level palette cells.
     expect(paletteGroups.flat().find((command) => command.id === "tool.charge")).toMatchObject({ enabled: true });
+    expect(paletteGroups.flat().find((command) => command.id === "tool.symbol")).toMatchObject({
+      enabled: true,
+      icon: "text"
+    });
     const paletteCommandIds = new Set(allPaletteCommands().map((command) => command.id));
     ["tool.plus", "tool.minus", "tool.plusPlain", "tool.minusPlain", "tool.radicalCation",
       "tool.radicalAnion", "tool.radical", "tool.lonePair"].forEach((commandId) => {

@@ -309,7 +309,7 @@ export const coreDrawingToolDefinitions = [
     title: "Symbol Tool Group",
     kind: "text",
     category: "annotation",
-    icon: "charge",
+    icon: "text",
     usageHint: usageHint("click canvas to stamp °", "long-press button for other symbols", "Esc exits")
   },
   {

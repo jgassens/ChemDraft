@@ -829,8 +829,7 @@
             {
               "commandId": "tool.symbol",
               "title": "Symbol Tool Group",
-              "icon": "charge",
-              "assetName": "Custom_Symbol",
+              "icon": "text",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -847,38 +846,32 @@
                   {
                     "commandId": "tool.symbol.degree",
                     "label": "Degree Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.plusMinus",
                     "label": "Plus-Minus Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.angstrom",
                     "label": "Angstrom Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.delta",
                     "label": "Delta Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.centerDot",
                     "label": "Center Dot Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.prime",
                     "label": "Prime Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   }
                 ],
                 "id": "symbol-tools"
@@ -2697,8 +2690,7 @@
             {
               "commandId": "tool.symbol",
               "title": "Symbol Tool Group",
-              "icon": "charge",
-              "assetName": "Custom_Symbol",
+              "icon": "text",
               "category": "annotation",
               "id": "tool.symbol",
               "kind": "button",
@@ -2715,38 +2707,32 @@
                   {
                     "commandId": "tool.symbol.degree",
                     "label": "Degree Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.plusMinus",
                     "label": "Plus-Minus Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.angstrom",
                     "label": "Angstrom Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.delta",
                     "label": "Delta Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.centerDot",
                     "label": "Center Dot Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   },
                   {
                     "commandId": "tool.symbol.prime",
                     "label": "Prime Symbol",
-                    "icon": "text",
-                    "assetName": "Custom_Symbol"
+                    "icon": "text"
                   }
                 ],
                 "id": "symbol-tools"
