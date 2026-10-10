@@ -273,7 +273,7 @@ describe("a bonded Ar is aryl, not argon", () => {
     expect(molfile).not.toMatch(/ Ar /);
     expect(molfile.split("\n")[4]!.slice(31, 34).trim()).toBe("*");
     expect(warnings).toEqual([
-      "Atom label \"Ar\" stands for a group here (a bonded \"Ar\" is aryl, not argon); written as a dummy atom (*) — the label's group is not represented in the molfile."
+      "Atom label \"Ar\" stands for a group here (a bonded \"Ar\" is aryl, not the element Ar); written as a dummy atom (*) — the label's group is not represented in the molfile."
     ]);
     const exportWarnings: ExportWarning[] = [];
     const smiles = await moleculeSmiles(molecule(arylAlcohol.atoms, arylAlcohol.bonds), 0, exportWarnings, computeStructureIdentifiers);
@@ -286,6 +286,51 @@ describe("a bonded Ar is aryl, not argon", () => {
     const lone = [atom("ar", "Ar", 0, 0)];
     expect(nativeSingleBondGraphMetadata(lone, []).formula).toBe("Ar");
     expect(nativeSingleBondGraphSmiles(lone, [])).toBe("[Ar]");
+  });
+
+  it("never exports a stale stored [Ar]O for it when no engine is available", async () => {
+    const stale = { ...molecule(arylAlcohol.atoms, arylAlcohol.bonds), structure: "[Ar]O" };
+    const warnings: ExportWarning[] = [];
+    const smiles = await moleculeSmiles(stale, 0, warnings, undefined);
+    expect(smiles).toBe("[*]O");
+    expect(warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_atom_label" }));
+  });
+});
+
+describe("bonded Ac, Pr and Ts are groups", () => {
+  it("counts and writes a bonded Ts as tosyl when its bond fits", () => {
+    const sulfone = methylWith("Ts");
+    expect(stateOf(sulfone, "g1").valid).toBe(true);
+    // Methyl p-tolyl sulfone.
+    expect(nativeSingleBondGraphMetadata(sulfone.atoms, sulfone.bonds).formula).toBe("C8H10O2S");
+    expect(canonical(nativeSingleBondGraphSmiles(sulfone.atoms, sulfone.bonds))).toBe(canonical("CS(=O)(=O)c1ccc(C)cc1"));
+    expect(nativeMoleculeUnspellableLabels(molecule(sulfone.atoms, sulfone.bonds))).toEqual([]);
+  });
+
+  it("badges a Ts with two bonds and counts it as nothing, never tennessine", () => {
+    const graph = {
+      atoms: [atom("c1", "C", 0, 0), atom("t1", "Ts", bondLength, 0), atom("c2", "C", 2 * bondLength, 0)],
+      bonds: [bond("b1", "c1", "t1"), bond("b2", "t1", "c2")]
+    };
+    const state = stateOf(graph, "t1");
+    expect(state.valid).toBe(false);
+    expect(state.invalidReason).toContain("\"Ts\" attaches by 1 bond; atom t1 has 2.");
+    const metadata = nativeSingleBondGraphMetadata(graph.atoms, graph.bonds);
+    expect(metadata.formula).toBe("C2H6");
+    expect(nativeSingleBondGraphSmiles(graph.atoms, graph.bonds)).toBe("C[*]C");
+    expect(nativeMoleculeUnspellableLabels(molecule(graph.atoms, graph.bonds))).toEqual(["Ts"]);
+  });
+
+  it("reads acetyl and propyl the same way, and leaves the unbonded symbols as elements", () => {
+    const acetone = methylWith("Ac");
+    expect(nativeSingleBondGraphMetadata(acetone.atoms, acetone.bonds).formula).toBe("C3H6O");
+    const butane = methylWith("Pr");
+    expect(nativeSingleBondGraphMetadata(butane.atoms, butane.bonds).formula).toBe("C4H10");
+    for (const element of ["Ac", "Pr", "Ts"]) {
+      const lone = [atom("x", element, 0, 0)];
+      expect(nativeSingleBondGraphMetadata(lone, []).formula).toBe(element);
+      expect(stateOf({ atoms: lone, bonds: [] }, "x").valid).toBe(true);
+    }
   });
 });
 

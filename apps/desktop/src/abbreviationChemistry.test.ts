@@ -3,15 +3,20 @@
 // packages/template-library and packages/document-workflow-core; this file covers the app wiring.
 
 import { beforeAll, describe, expect, it } from "vitest";
-import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject, ViewMatrix } from "@chemdraft/chem-core";
 import { moleculeSmiles, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 
 import {
+  analysisFacingStructure,
+  applyAnalysisToSelectedMolecule,
   applyNativeAtomElementTarget,
+  flattenSpunMolecule,
+  validationFacingStructure,
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
   copyAsMolfile,
@@ -180,6 +185,65 @@ describe("round trips keep the label", () => {
     expect((await computeStructureIdentifiers(copyAsMolfile(scoped, "v2000")!))?.smiles).toBe("COc1ccccc1");
     // Copy As SMILES is covered in documentWorkflow.test.ts; it loads the desktop's browser RDKit
     // loader, which would replace the Node one these tests read RDKit through.
+  });
+});
+
+describe("Validate after a 3D flatten", () => {
+  const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+  it("keeps the expanded formula: the engine reads the live graph, not the flatten's '*' molfile", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Flatten Validate"), { x: 300, y: 300 });
+    const labeled = relabel(ethane, "atom_002", "OMe");
+    const before = selectedMolecule(labeled);
+    expect(before.chemistry?.formula).toBe("C2H6O");
+
+    const coords3d = new Float64Array(before.atoms.flatMap((candidate) => [candidate.x, candidate.y, 0]));
+    const outcome = flattenSpunMolecule(labeled, before.id, coords3d, IDENTITY);
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+    const flattened = outcome.document.pages[0]!.objects.find((object): object is MoleculeObject => object.id === before.id)!;
+    // The flatten stores a standard molfile with a dummy atom for the label...
+    expect(flattened.structure).toMatch(/ \* {2}/);
+
+    // ...but Validate reads the live graph, expanded: dimethyl ether, not C–*.
+    const facing = validationFacingStructure(flattened);
+    expect(facing.format).toBe("molfile-v3000");
+    const analysis = await createRdkitAdapter().analyzeStructure(facing);
+    expect(analysis.validation.valid).toBe(true);
+    expect(analysis.properties.formula).toBe("C2H6O");
+    const validated = applyAnalysisToSelectedMolecule(
+      { ...outcome.document, selection: { ...outcome.document.selection, objectIds: [before.id] } },
+      analysis
+    );
+    const after = validated.pages[0]!.objects.find((object): object is MoleculeObject => object.id === before.id)!;
+    expect(after.chemistry?.formula).toBe("C2H6O");
+  });
+});
+
+describe("the analysis molfile keeps every drawn atom at its index", () => {
+  it("writes Ph–OMe's drawn atoms first, then the groups' atoms", () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Index Map"), { x: 300, y: 300 });
+    const drawn = selectedMolecule(relabel(relabel(ethane, "atom_001", "Ph"), "atom_002", "OMe"));
+    const atomLines = analysisFacingStructure(drawn).structure.split("\n")
+      .filter((line) => /^M {2}V30 \d+ \S+ /.test(line) && !line.includes("COUNTS"))
+      .slice(0, 8);
+    const symbols = atomLines.map((line) => line.split(" ")[4]);
+    // Index 1 is the drawn Ph atom (now its attachment carbon), index 2 the drawn OMe atom (its O);
+    // the phenyl's five carbons and the methyl carbon follow. A per-atom result for index 1 or 2
+    // therefore still belongs to the drawn atom with that index.
+    expect(symbols).toEqual(["C", "O", "C", "C", "C", "C", "C", "C"]);
+    expect(drawn.atoms.map((candidate) => candidate.id)).toEqual(["atom_001", "atom_002"]);
+  });
+});
+
+describe("the bond tool and a bonded element spelling", () => {
+  it("lets a lone Ac take its first bond as actinium, then holds it to acetyl's one", () => {
+    const lone = relabel(loneAtom(), "atom_001", "Ac");
+    const objectId = selectedMolecule(lone).id;
+    const bonded = growFrom(lone, "atom_001");
+    expect(bondsAt(bonded, objectId, "atom_001")).toHaveLength(1);
+    // Now it is acetyl on a methyl: acetone, C3H6O.
+    expect(selectedMolecule(bonded).chemistry?.formula).toBe("C3H6O");
+    expect(bondsAt(growFrom(bonded, "atom_001"), objectId, "atom_001")).toHaveLength(1);
   });
 });
 
