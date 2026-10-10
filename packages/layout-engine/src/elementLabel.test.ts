@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import { nativeElementFromAtomLabel, nativeElementSymbols, normalizeNativeAtomElementLabel } from "./valence";
 
-const twoLetterSymbols = nativeElementSymbols.filter((symbol) => symbol.length === 2);
 const oneLetterSymbols = nativeElementSymbols.filter((symbol) => symbol.length === 1);
 
-/** Whether a label in capitals splits into two exact element symbols: "NH" → N + H. */
-function capitalsSplit(symbol: string): boolean {
-  const upper = symbol.toUpperCase();
-  return (nativeElementSymbols as readonly string[]).includes(upper[0]!) &&
-    (nativeElementSymbols as readonly string[]).includes(upper[1]!);
-}
+/**
+ * Every two-letter symbol whose capitals split into two one-letter symbols, and how each reads when
+ * typed in capitals or lower case: the two atoms (a group label chemists type) or the element.
+ */
+const splittingSymbols: Record<string, "formula" | "element"> = {
+  Bh: "formula", Cf: "formula", Cn: "formula", Co: "formula", Cs: "formula", Hf: "formula",
+  Ho: "formula", Hs: "formula", Nh: "formula", No: "formula", Po: "formula",
+  Bi: "element", Bk: "element", Cu: "element", In: "element", Nb: "element", Ni: "element",
+  Np: "element", Os: "element", Pb: "element", Pu: "element", Sb: "element", Sc: "element",
+  Si: "element", Sn: "element", Yb: "element"
+};
 
 describe("element label case folding", () => {
   it.each(nativeElementSymbols.map((symbol) => [symbol]))("reads the exact symbol %s as its element", (symbol) => {
@@ -23,37 +27,31 @@ describe("element label case folding", () => {
     expect(nativeElementFromAtomLabel(symbol.toLowerCase())).toBe(symbol);
   });
 
-  it.each(twoLetterSymbols.map((symbol) => [symbol]))(
-    "folds %s in capitals or lower case only when it cannot be two elements",
-    (symbol) => {
-      for (const variant of [symbol.toUpperCase(), symbol.toLowerCase()]) {
-        if (capitalsSplit(symbol)) {
-          // "NH", "nh", "CO", "co": a formula (N + H, C + O), never nihonium or cobalt.
-          expect(normalizeNativeAtomElementLabel(variant), variant).toBe(variant);
-          expect(nativeElementFromAtomLabel(variant), variant).toBeUndefined();
-        } else {
-          // "CL", "cl", "BR", "br": nothing else fits, so the element.
-          expect(nativeElementFromAtomLabel(variant), variant).toBe(symbol);
-        }
-      }
-    }
-  );
+  it("lists exactly the two-letter symbols whose capitals split into two one-letter symbols", () => {
+    const oneLetter = new Set<string>(oneLetterSymbols);
+    const splitting = nativeElementSymbols.filter((symbol) =>
+      symbol.length === 2 && oneLetter.has(symbol[0]!) && oneLetter.has(symbol[1]!.toUpperCase())
+    );
+    expect([...splitting].sort()).toEqual(Object.keys(splittingSymbols).sort());
+  });
 
-  it("reads the labels that used to turn into elements by accident as formulas", () => {
-    for (const label of ["NH", "nh", "CO", "CN", "NO", "HS", "PO", "SN", "HO", "CS", "NI", "SI", "CU", "PB", "IN", "HF"]) {
-      expect(nativeElementFromAtomLabel(label), label).toBeUndefined();
-      expect(normalizeNativeAtomElementLabel(label), label).toBe(label);
+  it.each(Object.entries(splittingSymbols))("reads %s in capitals and lower case as its %s", (symbol, reading) => {
+    for (const variant of [symbol.toUpperCase(), symbol.toLowerCase()]) {
+      if (reading === "formula") {
+        // "NH", "nh", "CO", "co": the two atoms, never nihonium or cobalt.
+        expect(normalizeNativeAtomElementLabel(variant), variant).toBe(variant);
+        expect(nativeElementFromAtomLabel(variant), variant).toBeUndefined();
+      } else {
+        // "SI", "si", "CU", "PB": nothing a chemist writes as two atoms, so the element.
+        expect(nativeElementFromAtomLabel(variant), variant).toBe(symbol);
+      }
     }
   });
 
-  it("keeps the convenience where nothing else fits", () => {
-    const folded: Record<string, string> = {
-      cl: "Cl", CL: "Cl", br: "Br", BR: "Br", na: "Na", NA: "Na", mg: "Mg", MG: "Mg",
-      fe: "Fe", FE: "Fe", zn: "Zn", ZN: "Zn", ca: "Ca", CA: "Ca", li: "Li", LI: "Li",
-      al: "Al", AL: "Al", ar: "Ar", AR: "Ar", pt: "Pt", PT: "Pt", n: "N", c: "C", o: "O"
-    };
-    for (const [label, element] of Object.entries(folded)) {
-      expect(nativeElementFromAtomLabel(label), label).toBe(element);
+  it("folds every other two-letter symbol in capitals and lower case", () => {
+    for (const symbol of nativeElementSymbols.filter((candidate) => candidate.length === 2 && !(candidate in splittingSymbols))) {
+      expect(nativeElementFromAtomLabel(symbol.toUpperCase()), symbol).toBe(symbol);
+      expect(nativeElementFromAtomLabel(symbol.toLowerCase()), symbol).toBe(symbol);
     }
   });
 

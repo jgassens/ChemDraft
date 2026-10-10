@@ -27,15 +27,34 @@ export type NativeElementSymbol = typeof nativeElementSymbols[number];
 const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
 
 /**
+ * Two-letter labels that, in any case but the element's own, are the two atoms they spell and not
+ * the element they would fold to: each is a group label chemists actually type. "NH" is a ring N–H,
+ * not nihonium; "CO" a carbonyl, not cobalt. Twenty-six two-letter symbols split into two
+ * one-letter ones in capitals; the other fifteen ("SI", "CU", "NI", "PB", "SN", …) spell nothing a
+ * chemist writes, so they keep folding to their element. Kept as a list, reviewed by hand, rather
+ * than derived, because the line is chemical judgement (coordinator ruling, 2026-10-10).
+ */
+const nativeFormulaTwoLetterLabels: ReadonlySet<string> = new Set([
+  "BH", // boron with its hydrogen, a borane ring vertex — not bohrium
+  "CF", // a fluorinated carbon vertex — not californium
+  "CN", // cyano — not copernicium
+  "CO", // carbonyl — not cobalt
+  "CS", // thiocarbonyl — not caesium
+  "HF", // hydrogen fluoride — not hafnium
+  "HO", // hydroxyl written right to left — not holmium
+  "HS", // thiol written right to left — not hassium
+  "NH", // a ring N–H — not nihonium
+  "NO", // nitroso — not nobelium
+  "PO" // phosphoryl — not polonium
+]);
+
+/**
  * The element a typed or stored atom label names, or the label itself (trimmed) when it names none.
  *
- * An exact symbol is that element: "Co" is cobalt, "Nh" is nihonium. A label in any other case is
- * folded to an element only when it cannot be read as anything else. Folding used to be blind
- * ("NH" → Nh, "CO" → Co, "CN" → Cn), so a ring N–H typed as "NH" became nihonium. Now a label that,
- * as typed or in capitals, splits into two or more exact element symbols is that formula, not an
- * element: "NH", "nh", "CO", "CN", "NO", "HS", "PO" and "SN" stay as typed and read as N + H, C + O
- * and so on. The convenience survives where nothing else fits: "cl" and "CL" are chlorine ("L" is no
- * element), "br" is bromine, "n" is nitrogen.
+ * An exact symbol is that element: "Co" is cobalt, "Nh" is nihonium. Any other case folds to the
+ * element ("cl", "CL" → Cl; "si", "SI" → Si) except the group labels in
+ * `nativeFormulaTwoLetterLabels`, which stay as typed: "NH" and "nh" read as N + H, "CO" as C + O.
+ * Folding used to be blind, so a ring N–H typed as "NH" became nihonium.
  *
  * Stored labels were folded on entry, so a saved document holds exact symbols and opens unchanged.
  */
@@ -52,18 +71,7 @@ export function normalizeNativeAtomElementLabel(value: string): string {
   if (!nativeElementSymbolSet.has(elementCandidate)) {
     return trimmed;
   }
-  return splitsIntoElementSymbols(trimmed) || splitsIntoElementSymbols(trimmed.toUpperCase())
-    ? trimmed
-    : elementCandidate;
-}
-
-/** Whether `label` is two or more exact element symbols run together ("NH", "CO"), counts allowed. */
-function splitsIntoElementSymbols(label: string): boolean {
-  if (!/^(?:[A-Z][a-z]?\d*)+$/.test(label)) {
-    return false;
-  }
-  const symbols = [...label.matchAll(/([A-Z][a-z]?)\d*/g)].map((match) => match[1]!);
-  return symbols.length >= 2 && symbols.every((symbol) => nativeElementSymbolSet.has(symbol));
+  return nativeFormulaTwoLetterLabels.has(trimmed.toUpperCase()) ? trimmed : elementCandidate;
 }
 
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
