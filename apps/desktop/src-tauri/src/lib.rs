@@ -425,7 +425,7 @@ pub fn run() {
         if let Err(error) = ensure_main_window_visible(app) {
             eprintln!("Could not show ChemDraft main window for a second launch: {error}");
         }
-        if let Err(error) = focus_main_document_window_impl(app) {
+        if let Err(error) = focus_main_document_window_impl(app, MainWindowFocusMode::Force) {
             eprintln!("Could not focus ChemDraft document window for a second launch: {error}");
         }
     }));
@@ -653,7 +653,7 @@ pub fn run() {
                 eprintln!("Could not show ChemDraft main window: {error}");
             }
 
-            if let Err(error) = focus_main_document_window_impl(app) {
+            if let Err(error) = focus_main_document_window_impl(app, MainWindowFocusMode::Force) {
                 eprintln!("Could not focus ChemDraft document window: {error}");
             }
 
@@ -694,6 +694,7 @@ pub fn run() {
             save_document_session,
             set_toolbars_menu,
             focus_main_document_window,
+            focus_main_document_window_if_app_active,
             set_menu_checked,
             set_keybinding_scheme,
             plugin_storage_read,
@@ -834,9 +835,58 @@ fn configure_document_webview<R: Runtime>(_window: &tauri::WebviewWindow<R>) -> 
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum MainWindowFocusMode {
+    Force,
+    OnlyIfAppActive,
+}
+
+fn should_raise_main_window(mode: MainWindowFocusMode, foreground_is_ours: bool) -> bool {
+    matches!(mode, MainWindowFocusMode::Force) || foreground_is_ours
+}
+
+#[cfg(windows)]
+fn foreground_belongs_to_app() -> bool {
+    use windows_sys::Win32::{
+        System::Threading::GetCurrentProcessId,
+        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
+    };
+
+    // HWND is a pointer in windows-sys 0.61. No foreground window (or an API failure) refuses
+    // activation, rather than treating it as permission to take focus from another process.
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground.is_null() {
+            return false;
+        }
+        let mut process_id = 0;
+        GetWindowThreadProcessId(foreground, &mut process_id);
+        process_id == GetCurrentProcessId()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn foreground_belongs_to_app() -> bool {
+    MainThreadMarker::new()
+        .is_some_and(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn foreground_belongs_to_app() -> bool {
+    false
+}
+
 fn focus_main_document_window_impl<R: Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Result<tauri::WebviewWindow<R>, String> {
+    mode: MainWindowFocusMode,
+) -> Result<bool, String> {
+    // Force paths retain their existing behavior, even when a different app is in front.
+    if !should_raise_main_window(
+        mode,
+        matches!(mode, MainWindowFocusMode::OnlyIfAppActive) && foreground_belongs_to_app(),
+    ) {
+        return Ok(false);
+    }
     let window = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
@@ -848,7 +898,7 @@ fn focus_main_document_window_impl<R: Runtime>(
     window.show().map_err(|error| error.to_string())?;
     focus_native_document_window(&window)?;
     window.set_focus().map_err(|error| error.to_string())?;
-    Ok(window)
+    Ok(true)
 }
 
 #[cfg(target_os = "macos")]
@@ -1194,7 +1244,24 @@ fn set_toolbars_menu(
 
 #[tauri::command]
 fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
-    focus_main_document_window_impl(&app).map(|_| ())
+    focus_main_document_window_impl(&app, MainWindowFocusMode::Force).map(|_| ())
+}
+
+#[tauri::command]
+fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Check NSApplication and raise on the same AppKit thread, even if this command's caller
+        // is later moved to a worker. A missing main-thread marker must never authorize a raise.
+        let window = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| "Main document window is not available.".to_string())?;
+        run_on_main_thread_blocking(&window, move || {
+            focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
+        })?
+    }
+    #[cfg(not(target_os = "macos"))]
+    focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
 }
 
 /// JS owns menu check state now: after the main window changes toolset visibility it
@@ -2351,7 +2418,7 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
     }
 
     emit_command_to_main(&app, command_id)?;
-    if let Err(error) = focus_main_document_window_impl(&app) {
+    if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
         );
@@ -5417,6 +5484,20 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn main_window_focus_mode_preserves_force_and_guards_inline_editors() {
+        for foreground_is_ours in [false, true] {
+            assert!(should_raise_main_window(
+                MainWindowFocusMode::Force,
+                foreground_is_ours
+            ));
+            assert_eq!(
+                should_raise_main_window(MainWindowFocusMode::OnlyIfAppActive, foreground_is_ours),
+                foreground_is_ours
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[test]
