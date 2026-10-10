@@ -11,8 +11,10 @@ export {
   type AbbreviationAtom,
   type AbbreviationBond,
   type AbbreviationDefinition,
+  abbreviationBondedSpellings,
   abbreviationDefinitions,
   abbreviationElementCounts,
+  abbreviationForBondedElementLabel,
   abbreviationForLabel,
   abbreviationSpellings,
   abbreviationSpellingSuggestion

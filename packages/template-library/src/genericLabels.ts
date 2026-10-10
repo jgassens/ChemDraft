@@ -4,9 +4,12 @@
  * export as placeholders, but they are not mistakes either: the unrecognised-label badge must
  * never fire on them. Matching is case-sensitive, like the abbreviation table.
  *
- * A label that is an element symbol is the element, whatever this says ("Y" is yttrium, "Ar" is
- * argon); the label parser checks elements first. "Z" is left out on purpose: it is also the old
- * peptide abbreviation for Cbz, so it is flagged as unrecognized rather than silently accepted.
+ * A label that is an element symbol is the element, whatever this says ("Y" is yttrium); the label
+ * parser checks elements first. Its one exception, a bonded "Ar" read as aryl, lives in the parser
+ * (document-workflow-core's `nativeAtomLabelReading`), not here.
+ *
+ * "Z" is left out on purpose: it is also the old peptide abbreviation for Cbz, so it is flagged as
+ * unrecognized rather than silently accepted.
  */
 const genericAtomLabels: ReadonlySet<string> = new Set([
   // Halogen, and the molfile query letters: any atom, heteroatom, metal.
@@ -17,8 +20,8 @@ const genericAtomLabels: ReadonlySet<string> = new Set([
   "?", "*"
 ]);
 
-/** R, R', R'', and numbered R-groups R1–R99. */
-const rGroupLabel = /^R(?:\d{1,2}|'{1,2})?$/;
+/** R, R', R'', and numbered R-groups R1–R99 (no R0, and no leading zero: R01 is not R1). */
+const rGroupLabel = /^R(?:[1-9]\d?|'{1,2})?$/;
 
 export function isGenericAtomLabel(label: string): boolean {
   const trimmed = label.trim();

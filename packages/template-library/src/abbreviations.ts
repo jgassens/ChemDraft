@@ -41,6 +41,13 @@ export interface AbbreviationDefinition {
    * ("MeO"), which is how chemists write a group on the left of a structure.
    */
   aliases: readonly string[];
+  /**
+   * Spellings that are also element symbols, and mean this group only on an atom with bonds:
+   * "Ac" (acetyl), "Pr" (n-propyl), "Ts" (tosyl). Unbonded, they stay actinium, praseodymium and
+   * tennessine — elements win everywhere else. Inside a composite label ("NHAc", "OTs") the group
+   * is bonded to the head by definition. Optional; most groups have none.
+   */
+  bondedSpellings?: readonly string[];
   /** The group's name, for messages and documentation. */
   name: string;
   /** The group as SMILES; "*" is the atom it attaches to. Its definition, cross-checked by tests. */
@@ -69,6 +76,16 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
       { element: "C", hydrogens: 3, x: 0.5, y: -0.866 }
     ],
     bonds: [[0, 1, 1]]
+  },
+  {
+    // "Pr" is also praseodymium, so it names n-propyl only on an atom with bonds.
+    label: "nPr", aliases: [], bondedSpellings: ["Pr"], name: "n-propyl", smiles: "*CCC", formula: "C3H7", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 2, x: 0, y: 0 },
+      { element: "C", hydrogens: 2, x: 0.5, y: -0.866 },
+      { element: "C", hydrogens: 3, x: 1.5, y: -0.866 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 1]]
   },
   {
     label: "iPr", aliases: [], name: "isopropyl", smiles: "*C(C)C", formula: "C3H7", attachmentCount: 1,
@@ -139,9 +156,9 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
     bonds: [[0, 1, 2], [0, 2, 1], [2, 3, 2], [3, 4, 1], [4, 5, 2], [5, 6, 1], [6, 7, 2], [7, 2, 1]]
   },
   {
-    // Acetyl's own abbreviation, "Ac", is the element actinium to the label parser, so the group is
-    // reachable only under spellings that are not element symbols.
-    label: "COMe", aliases: ["MeCO"], name: "acetyl", smiles: "*C(C)=O", formula: "C2H3O", attachmentCount: 1,
+    // Acetyl's own abbreviation, "Ac", is also the element actinium, so it names this group only on
+    // an atom with bonds (`bondedSpellings`); "COMe"/"MeCO" name it anywhere.
+    label: "COMe", aliases: ["MeCO"], bondedSpellings: ["Ac"], name: "acetyl", smiles: "*C(C)=O", formula: "C2H3O", attachmentCount: 1,
     atoms: [
       { element: "C", hydrogens: 0, x: 0, y: 0 },
       { element: "C", hydrogens: 3, x: 0.5, y: -0.866 },
@@ -352,6 +369,23 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
     bonds: [[0, 1, 2], [0, 2, 2], [0, 3, 1]]
   },
   {
+    // "Ts" is also tennessine, so it names tosyl only on an atom with bonds; "Tos" names it anywhere.
+    label: "Tos", aliases: [], bondedSpellings: ["Ts"], name: "p-toluenesulfonyl (tosyl)", smiles: "*S(=O)(=O)C1=CC=C(C)C=C1", formula: "C7H7O2S", attachmentCount: 1,
+    atoms: [
+      { element: "S", hydrogens: 0, x: 0, y: 0 },
+      { element: "O", hydrogens: 0, x: 0, y: -1 },
+      { element: "O", hydrogens: 0, x: 0, y: 1 },
+      { element: "C", hydrogens: 0, x: 1, y: 0 },
+      { element: "C", hydrogens: 1, x: 1.5, y: 0.866 },
+      { element: "C", hydrogens: 1, x: 2.5, y: 0.866 },
+      { element: "C", hydrogens: 0, x: 3, y: 0 },
+      { element: "C", hydrogens: 3, x: 4, y: 0 },
+      { element: "C", hydrogens: 1, x: 2.5, y: -0.866 },
+      { element: "C", hydrogens: 1, x: 1.5, y: -0.866 }
+    ],
+    bonds: [[0, 1, 2], [0, 2, 2], [0, 3, 1], [3, 4, 1], [4, 5, 2], [5, 6, 1], [6, 7, 1], [6, 8, 2], [8, 9, 1], [9, 3, 2]]
+  },
+  {
     label: "Tf", aliases: ["SO2CF3", "CF3SO2", "F3CSO2"], name: "trifluoromethanesulfonyl", smiles: "*S(=O)(=O)C(F)(F)F", formula: "CF3O2S", attachmentCount: 1,
     atoms: [
       { element: "S", hydrogens: 0, x: 0, y: 0 },
@@ -379,6 +413,24 @@ export const abbreviationSpellings: readonly string[] = [...abbreviationBySpelli
 /** The group a label spells, matched exactly and case-sensitively ("OMe" yes, "Ome" no). */
 export function abbreviationForLabel(label: string): AbbreviationDefinition | undefined {
   return abbreviationBySpelling.get(label.trim());
+}
+
+const abbreviationByBondedSpelling: ReadonlyMap<string, AbbreviationDefinition> = new Map(
+  abbreviationDefinitions.flatMap((definition) =>
+    (definition.bondedSpellings ?? []).map((spelling) => [spelling, definition] as const)
+  )
+);
+
+/** Every bonded-only spelling ("Ac", "Pr", "Ts"), longest first — for tokenizing composites. */
+export const abbreviationBondedSpellings: readonly string[] = [...abbreviationByBondedSpelling.keys()]
+  .sort((left, right) => right.length - left.length || left.localeCompare(right));
+
+/**
+ * The group an element-symbol label names when its atom has bonds ("Ac" → acetyl), matched exactly.
+ * The caller decides whether the atom is bonded; unbonded, these labels are their elements.
+ */
+export function abbreviationForBondedElementLabel(label: string): AbbreviationDefinition | undefined {
+  return abbreviationByBondedSpelling.get(label.trim());
 }
 
 /**

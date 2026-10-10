@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  abbreviationBondedSpellings,
   abbreviationDefinitions,
   abbreviationElementCounts,
+  abbreviationForBondedElementLabel,
   abbreviationForLabel,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
@@ -25,6 +27,22 @@ describe("abbreviation table", () => {
     const spellings = abbreviationDefinitions.flatMap((definition) => [definition.label, ...definition.aliases]);
     expect(new Set(spellings).size).toBe(spellings.length);
     expect([...abbreviationSpellings].sort()).toEqual([...spellings].sort());
+  });
+
+  it("keeps bonded-only spellings apart from every label and alias", () => {
+    const spellings = new Set(abbreviationDefinitions.flatMap((definition) => [definition.label, ...definition.aliases]));
+    const bonded = abbreviationDefinitions.flatMap((definition) => definition.bondedSpellings ?? []);
+    expect([...bonded].sort()).toEqual(["Ac", "Pr", "Ts"]);
+    expect(new Set(bonded).size).toBe(bonded.length);
+    for (const spelling of bonded) {
+      expect(spellings.has(spelling)).toBe(false);
+      expect(abbreviationForLabel(spelling)).toBeUndefined();
+    }
+    expect([...abbreviationBondedSpellings].sort()).toEqual(["Ac", "Pr", "Ts"]);
+    expect(abbreviationForBondedElementLabel("Ac")?.name).toBe("acetyl");
+    expect(abbreviationForBondedElementLabel("Pr")?.name).toBe("n-propyl");
+    expect(abbreviationForBondedElementLabel("Ts")?.label).toBe("Tos");
+    expect(abbreviationForBondedElementLabel("ts")).toBeUndefined();
   });
 
   it("lists spellings longest first, so a tokenizer finds CO2Me before Me", () => {
@@ -106,7 +124,7 @@ describe("abbreviation lookup", () => {
       expect(isGenericAtomLabel(label), label).toBe(true);
     }
     // Z is Cbz's old name, so it is not waved through; case and spelling variants are not placeholders.
-    for (const label of ["Z", "r", "nu", "R123", "R'''", "Rx", "Ome", ""]) {
+    for (const label of ["Z", "r", "nu", "R0", "R00", "R01", "R100", "R123", "R'''", "Rx", "Ome", ""]) {
       expect(isGenericAtomLabel(label), label).toBe(false);
     }
   });

@@ -1,5 +1,6 @@
-// Element tables, valence and charge rules, and atom validation for native molecules.
-// Moved verbatim from apps/desktop/src/documentWorkflow.ts; see this package's README.
+// Element tables, valence and charge rules, atom validation, and atom-label reading for native
+// molecules. The validation and tables began as a move from apps/desktop/src/documentWorkflow.ts; see
+// this package's README.
 
 import {
   type ChemicalMetadata,
@@ -18,6 +19,8 @@ import {
   type NativeElementSymbol
 } from "@chemdraft/layout-engine";
 import {
+  abbreviationBondedSpellings,
+  abbreviationForBondedElementLabel,
   abbreviationForLabel,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
@@ -518,16 +521,26 @@ export interface NativeAtomLabelContext {
  * Abbreviation matching is case-sensitive (owner decision, 2026-10-10): "OMe" is methoxy, "Ome"
  * is unrecognized text — the suggestion names "OMe" so the message can say so.
  *
- * One exception to "elements first": a bonded "Ar" is how chemists write aryl, so it reads as a
- * generic placeholder; argon has no bonds to make. An unbonded "Ar" is argon. Exact case only.
+ * The exceptions to "elements first" are labels chemists write on bonds that are also element
+ * symbols. On an atom with bonds, "Ar" is aryl (a generic placeholder), and "Ac", "Pr" and "Ts" are
+ * acetyl, n-propyl and tosyl (the table's `bondedSpellings`). An unbonded one is the element:
+ * argon, actinium, praseodymium, tennessine. Exact case only.
  */
 export function nativeAtomLabelReading(label: string, context: NativeAtomLabelContext = {}): NativeAtomLabelReading {
   const trimmed = label.trim();
   if (trimmed === "D" || trimmed === "T") {
     return { kind: "heavy-hydrogen", element: trimmed };
   }
-  if (trimmed === "Ar" && context.bonded === true) {
-    return { kind: "generic" };
+  if (context.bonded === true) {
+    if (trimmed === "Ar") {
+      return { kind: "generic" };
+    }
+    // "Ac", "Pr", "Ts" on a bond are acetyl, n-propyl and tosyl, never actinium, praseodymium or
+    // tennessine; unbonded, they fall through to their elements below.
+    const bondedGroup = abbreviationForBondedElementLabel(trimmed);
+    if (bondedGroup) {
+      return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition: bondedGroup } };
+    }
   }
   const element = nativeElementFromAtomLabel(trimmed);
   if (element) {
@@ -557,6 +570,10 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   return { kind: "unrecognized", ...(suggestion ? { suggestion } : {}) };
 }
 
+/** Every spelling a composite's substituent can take, longest first: "CO2Me" before "Me". */
+const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ...abbreviationBondedSpellings]
+  .sort((left, right) => right.length - left.length || left.localeCompare(right));
+
 /**
  * An element carrying abbreviations, read the way chemists write one: "NMe2", "NHBoc", "OTBS",
  * "CH2Ph", "SiMe3", and right-to-left for a bond on the label's right ("Me2N", "BocHN", "PhCH2").
@@ -568,6 +585,9 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
  * head written directly before "O" ("COEt", "SOMe") — there the O is conventionally an oxo group,
  * C(=O)Et, which this grammar does not model; reading it as C–OEt would invent a different
  * structure, so the label stays unrecognized instead.
+ *
+ * A substituent in a composite is bonded to the head by definition, so the bonded-only spellings
+ * count as groups here: "NHAc" is an acetamide N, "OTs" a tosylate O, "NPr2" a dipropylamino N.
  */
 function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined {
   let head: NativeElementSymbol | undefined;
@@ -583,18 +603,26 @@ function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined 
     return count >= 1 && count <= 4 ? count : undefined;
   };
   while (index < label.length) {
-    const spelling = abbreviationSpellings.find((candidate) => label.startsWith(candidate, index));
+    const spelling = compositeTokenSpellings.find((candidate) => label.startsWith(candidate, index));
     if (spelling) {
       if (index === headEnd && spelling.startsWith("O")) return undefined;
       index += spelling.length;
-      const definition = abbreviationForLabel(spelling)!;
+      const definition = (abbreviationForLabel(spelling) ?? abbreviationForBondedElementLabel(spelling))!;
       const count = readCount();
       if (count === undefined || definition.attachmentCount !== 1) return undefined;
       for (let copy = 0; copy < count; copy += 1) substituents.push(definition);
       continue;
     }
     // An element symbol in its own case; the second letter must be lower case, so "NMe" is N + Me.
-    const symbol = /^[A-Z][a-z]?/.exec(label.slice(index))?.[0];
+    // A lower-case letter that starts an abbreviation belongs to it, not to the symbol: "NiPr2" is
+    // N + iPr + iPr, not nickel, and "OtBu" is O + tBu.
+    let symbol = /^[A-Z][a-z]?/.exec(label.slice(index))?.[0];
+    if (
+      symbol?.length === 2 &&
+      compositeTokenSpellings.some((candidate) => /^[a-z]/.test(candidate) && label.startsWith(candidate, index + 1))
+    ) {
+      symbol = symbol.slice(0, 1);
+    }
     const symbolElement = symbol ? nativeElementFromAtomLabel(symbol) : undefined;
     if (!symbol || symbolElement !== symbol) return undefined;
     if (index === headEnd && symbol === "O") return undefined;

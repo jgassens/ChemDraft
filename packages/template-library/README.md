@@ -15,9 +15,12 @@ group's own chemistry, and no other program's nickname list was copied (AGENTS.m
   `abbreviationSpellingSuggestion` offers the intended spelling for a message, never as a match.
 - **Right-to-left spellings are aliases** of the same group ("MeO", "EtO2C"), since that is how a group
   on the left of a structure is written.
-- **Elements win.** A label that is an element symbol (case ignored) is the element, so no entry may
-  spell one: acetyl appears as "COMe"/"MeCO" because "Ac" is actinium, and there is no cyano entry
-  because "CN" is copernicium. document-workflow-core's tests enforce this against the element table.
+- **Elements win, except on a bond.** A label that is an element symbol is the element, so no label
+  or alias may spell one (document-workflow-core's tests enforce this against the element table).
+  The exceptions are the `bondedSpellings` chemists write on bonds: on an atom with bonds, "Ac" is
+  acetyl, "Pr" n-propyl and "Ts" tosyl; unbonded, they are actinium, praseodymium and tennessine.
+  The parser applies the same rule to "Ar" (aryl, a placeholder). There is no cyano entry while
+  "CN" folds to copernicium.
 - **Layouts** were computed from each SMILES with RDKit and normalized: the attachment atom at (0, 0),
   the atom the group bonds to at (−1, 0), bond length 1, y up. No group carries stereochemistry.
 
