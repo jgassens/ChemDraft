@@ -174,7 +174,11 @@ journal figures, annotations, arrows and brackets. The workflow is
   Me labels on top. Deliver the coloured figure as the answer, not as an
   optional variant; black and white with ring letters, or pale pastels,
   is not the style. `scripts/ring-style.mjs` applies it to any molecule
-  and checks the result against PubChem (recipe 11).
+  and checks the result against PubChem (recipe 11). Its figure checks
+  fail a drawing with sliver rings, stretched bonds or wedges, shrunk
+  letters, hidden rings or dropped fusion H: such a figure is not
+  finished. Say what failed and offer the plain drawing, or the coloured
+  one with the failures named.
 - A label such as Me set as an atom's element replaces that carbon with
   a placeholder atom. Keep the editable file with real carbons and use
   the Me-labelled copy only as the picture (art.md, pattern 2).
@@ -242,4 +246,4 @@ allowed. See the relevant reference for combined versus per-job files.
 - [Plugins](references/plugins.md): official catalog, headless reach, permissions and plugin authoring.
 - [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
 - [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.
-- `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity check (recipe 11).
+- `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity and figure checks (recipe 11; `--help` lists commands and options).

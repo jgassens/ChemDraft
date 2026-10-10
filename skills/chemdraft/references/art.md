@@ -356,7 +356,9 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   picture, methyls relabelled Me). It fills and letters the core ring
   system (rings sharing atoms with another ring, not pendant phenyls),
   letters by a literature convention (`taxane`, `steroid`, `morphinan`),
-  an explicit `letters` map of chemistry selectors, or a ring walk, and
+  an explicit `letters` map of chemistry selectors, or a ring walk that
+  reads chemistry and topology, never position (it starts at a terminal
+  ring: one sharing atoms with exactly one other lettered ring), and
   stops when a rule matches no ring or several. Letters go at the most
   open point in each ring, in white or near-black by fill luminance;
   touching rings never share a colour; each fusion CH stereocentre gets
@@ -369,15 +371,26 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   the checkout's `render-document` as the same molecule and stereo
   counts, or it is undone and reported `UNDONE`; what cannot be cleared
   is named, and a label left on a fill gets white or near-black text by
-  that fill's luminance (no box or halo).
+  that fill's luminance (no box or halo). `"layout"` in the options
+  forces `"build"`, `"canonical"` or `"pubchem"`. Last, it runs the
+  figure checks and exits 1 with a `FAILED` list when a lettered ring is
+  a sliver, a bond or wedge is stretched, a letter shrank below 14 px, a
+  ring lies mostly under another's fill, or a fusion H was dropped
+  (limits in recipe 11, rule 14). A figure that fails is not delivered as
+  finished.
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
   SMILES, to try that layout by hand.
 - `identity-jobs` and `check` compare every rendered InChIKey and the
-  stereocentre counts with PubChem's, and list labels that nearly touch;
-  the options' `rotate` turns a substituent about its attachment atom
-  when one still does, checked like every other move.
+  stereocentre counts with PubChem's, run the figure checks again on the
+  rendered documents, and list labels that nearly touch a label, letter
+  or bond (or say there are none); the options' `rotate` turns a
+  substituent about its attachment atom when one still does, checked like
+  every other move. `--help` prints every command and option.
 
-Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
+Verified on paclitaxel, cholesterol and brevetoxin B, which pass the
+figure checks, and on morphine and strychnine, which fail them (recipe 11:
+caged and bridged ring systems depend on ChemDraft's 2D layout, which the
+style step cannot repair).
 
 ## Style keys worth knowing
 
@@ -418,7 +431,10 @@ Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
   Where a bridged ring's outline takes in part of another ring, the
   larger fill can cover the smaller one. `scripts/ring-style.mjs` then
   paints the larger ring as a closed `path` graphic under the molecule;
-  that path does not follow the atoms if they are moved in the app.
+  that path does not follow the atoms if they are moved in the app. In a
+  `.chemdraft` file the path is exact only in the embedded native
+  payload: its CDXML part keeps just the path's bounding box, so a reader
+  of the CDXML alone sees a rectangle, not the ring outline.
 - **CH3 labels are wider than Me.** The carbon copy of a Me-labelled
   figure can crowd neighbouring labels that cleared in the picture; check
   both renders.

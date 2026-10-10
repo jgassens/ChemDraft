@@ -1,0 +1,523 @@
+{
+  "schema": "chemdraft.document.v1",
+  "id": "doc_001",
+  "title": "strychnine",
+  "createdAt": "2026-10-10T17:09:28.985Z",
+  "updatedAt": "2026-05-29T00:00:00.000Z",
+  "pages": [
+    {
+      "id": "page_001",
+      "width": 816,
+      "height": 1056,
+      "margin": {
+        "top": 72,
+        "right": 72,
+        "bottom": 72,
+        "left": 72
+      },
+      "layout": {
+        "presetId": "letter",
+        "orientation": "portrait",
+        "widthPx": 816,
+        "heightPx": 1056,
+        "marginTopPx": 72,
+        "marginRightPx": 72,
+        "marginBottomPx": 72,
+        "marginLeftPx": 72,
+        "sourceUnit": "inch",
+        "sourceWidth": 8.5,
+        "sourceHeight": 11
+      },
+      "objects": [
+        {
+          "id": "mol_clipboard_001",
+          "x": 324.86538447626896,
+          "y": 428.36484714772905,
+          "width": 166.26923104746209,
+          "height": 199.2703057045419,
+          "rotation": 0,
+          "style": {
+            "chainAngleDegrees": 120,
+            "bondLengthPx": 28,
+            "bondStrokeWidthPx": 2,
+            "bondBoldWidthPx": 4.8,
+            "bondColor": "#000000",
+            "bondLineCap": "butt",
+            "bondSpacingMode": "absolute",
+            "bondSpacingPercent": 18,
+            "multipleBondGapPx": 4.8,
+            "doubleBondInsetPx": 4.5,
+            "bondMarginWidthPx": 6,
+            "bondHashSpacingPx": 9,
+            "bondOverlapClearancePx": 6,
+            "atomIndicatorShowQuery": true,
+            "atomIndicatorShowStereochemistry": false,
+            "atomIndicatorShowEnhancedStereochemistry": true,
+            "atomIndicatorShowAtomNumbers": false,
+            "bondIndicatorShowQuery": true,
+            "bondIndicatorShowStereochemistry": false,
+            "bondIndicatorShowReaction": true,
+            "atomLabelFontFamily": "Arial, Helvetica, sans-serif",
+            "atomLabelFontSizePx": 15,
+            "atomLabelFontWeight": 400,
+            "atomLabelFontStyle": "normal",
+            "atomLabelColor": "#000000",
+            "atomLabelBackgroundColor": "#ffffff",
+            "atomLabelPaddingPx": 2,
+            "atomLabelBondClearancePx": 7,
+            "atomLabelAlignment": "automatic",
+            "atomLabelPlacement": "automatic",
+            "atomLabelShowTerminalCarbons": false,
+            "atomLabelHideImplicitHydrogens": false,
+            "stylePresetId": "chemdraft.synthetic",
+            "source": "clipboard-smiles"
+          },
+          "compatibility": {
+            "sourceFormat": "smiles",
+            "warnings": [
+              {
+                "code": "clipboard.smiles_imported",
+                "message": "Generated an editable 2D structure from pasted SMILES."
+              }
+            ],
+            "unknown": {
+              "smiles": "C1CN2CC3=CCO[C@H]4CC(=O)N5[C@H]6[C@H]4[C@H]3C[C@H]2[C@@]61C7=CC=CC=C75"
+            }
+          },
+          "type": "molecule",
+          "structureFormat": "molfile-v2000",
+          "structure": "\n  ChemDraft\n\n 25 31  0  0  1  0  0  0  0  0999 V2000\n  468.3931 -541.4385    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  483.1346 -562.6761    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  467.4917 -583.2604    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n  448.0225 -600.2701    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  423.5567 -591.9143    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  406.8401 -611.6352    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  380.9972 -610.8613    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  365.4904 -590.1753    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  371.9951 -565.1545    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  351.0798 -549.9580    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  353.7824 -524.2461    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  332.8654 -509.0496    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  377.4001 -513.7307    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n  398.3154 -528.9273    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  395.6129 -554.6392    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  418.5602 -566.5471    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  438.0294 -549.5375    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  462.4951 -557.8949    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  419.2306 -513.7307    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  411.2420 -489.1426    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  424.1686 -466.7537    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  411.2420 -444.3648    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  385.3888 -444.3648    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  372.4622 -466.7537    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  385.3888 -489.1426    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0\n  2  3  1  0  0  0  0\n  3  4  1  0  0  0  0\n  4  5  1  0  0  0  0\n  5  6  2  0  0  0  0\n  6  7  1  0  0  0  0\n  7  8  1  0  0  0  0\n  8  9  1  0  0  0  0\n  9 10  1  1  0  0  0\n 10 11  1  0  0  0  0\n 11 12  2  0  0  0  0\n 11 13  1  0  0  0  0\n 14 13  1  6  0  0  0\n 14 15  1  0  0  0  0\n 15 16  1  0  0  0  0\n 16 17  1  1  0  0  0\n 18 17  1  6  0  0  0\n 18 19  1  0  0  0  0\n 19 20  1  0  0  0  0\n 20 21  2  0  0  0  0\n 21 22  1  0  0  0  0\n 22 23  2  0  0  0  0\n 23 24  1  0  0  0  0\n 24 25  2  0  0  0  0\n 19  1  1  1  0  0  0\n 18  3  1  0  0  0  0\n 16  5  1  0  0  0  0\n 15  9  1  1  0  0  0\n 25 13  1  0  0  0  0\n 19 14  1  0  0  0  0\n 25 20  1  0  0  0  0\nM  END\n",
+          "chemistry": {
+            "formula": "C21H22N2O2",
+            "averageMass": 334.419,
+            "exactMass": 334.16813,
+            "atomCount": 25,
+            "bondCount": 31,
+            "totalCharge": 0,
+            "radicalCount": 0,
+            "isotopeLabels": [],
+            "stereochemistry": [],
+            "warnings": []
+          },
+          "atoms": [
+            {
+              "id": "a0",
+              "element": "C",
+              "x": 468.393111920527,
+              "y": 541.438501530946,
+              "formalCharge": 0
+            },
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 483.13461552373104,
+              "y": 562.6760564705788,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "N",
+              "x": 467.4916964657772,
+              "y": 583.2603868263681,
+              "formalCharge": 0
+            },
+            {
+              "id": "a3",
+              "element": "C",
+              "x": 448.0225014813516,
+              "y": 600.2700792220211,
+              "formalCharge": 0
+            },
+            {
+              "id": "a4",
+              "element": "C",
+              "x": 423.55674167222253,
+              "y": 591.9143199015098,
+              "formalCharge": 0
+            },
+            {
+              "id": "a5",
+              "element": "C",
+              "x": 406.8400523880561,
+              "y": 611.635152852271,
+              "formalCharge": 0
+            },
+            {
+              "id": "a6",
+              "element": "C",
+              "x": 380.9971779549401,
+              "y": 610.8612799284034,
+              "formalCharge": 0
+            },
+            {
+              "id": "a7",
+              "element": "O",
+              "x": 365.49041916644177,
+              "y": 590.1752602574512,
+              "formalCharge": 0
+            },
+            {
+              "id": "a8",
+              "element": "C",
+              "x": 371.9950882414438,
+              "y": 565.1545180842123,
+              "formalCharge": 0
+            },
+            {
+              "id": "a9",
+              "element": "C",
+              "x": 351.0798367244462,
+              "y": 549.9579978843468,
+              "formalCharge": 0
+            },
+            {
+              "id": "a10",
+              "element": "C",
+              "x": 353.7823595409812,
+              "y": 524.2461130775425,
+              "formalCharge": 0
+            },
+            {
+              "id": "a11",
+              "element": "O",
+              "x": 332.86538447626896,
+              "y": 509.04959287767707,
+              "formalCharge": 0
+            },
+            {
+              "id": "a12",
+              "element": "N",
+              "x": 377.40013387451376,
+              "y": 513.7307484706038,
+              "formalCharge": 0
+            },
+            {
+              "id": "a13",
+              "element": "C",
+              "x": 398.31538539151137,
+              "y": 528.9272686704693,
+              "formalCharge": 0
+            },
+            {
+              "id": "a14",
+              "element": "C",
+              "x": 395.61286257497636,
+              "y": 554.6391534772736,
+              "formalCharge": 0
+            },
+            {
+              "id": "a15",
+              "element": "C",
+              "x": 418.5601768475191,
+              "y": 566.5471446376308,
+              "formalCharge": 0
+            },
+            {
+              "id": "a16",
+              "element": "C",
+              "x": 438.02937183194473,
+              "y": 549.5374522419778,
+              "formalCharge": 0
+            },
+            {
+              "id": "a17",
+              "element": "C",
+              "x": 462.4951316410738,
+              "y": 557.8949351102037,
+              "formalCharge": 0
+            },
+            {
+              "id": "a18",
+              "element": "C",
+              "x": 419.230636908509,
+              "y": 513.7307484706038,
+              "formalCharge": 0
+            },
+            {
+              "id": "a19",
+              "element": "C",
+              "x": 411.2419932512132,
+              "y": 489.1426167737363,
+              "formalCharge": 0
+            },
+            {
+              "id": "a20",
+              "element": "C",
+              "x": 424.16860111091506,
+              "y": 466.75373196073264,
+              "formalCharge": 0
+            },
+            {
+              "id": "a21",
+              "element": "C",
+              "x": 411.2419932512132,
+              "y": 444.36484714772905,
+              "formalCharge": 0
+            },
+            {
+              "id": "a22",
+              "element": "C",
+              "x": 385.3887775318095,
+              "y": 444.36484714772905,
+              "formalCharge": 0
+            },
+            {
+              "id": "a23",
+              "element": "C",
+              "x": 372.4621696721077,
+              "y": 466.75373196073264,
+              "formalCharge": 0
+            },
+            {
+              "id": "a24",
+              "element": "C",
+              "x": 385.3887775318095,
+              "y": 489.1426167737363,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b0",
+              "fromAtomId": "a0",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "single"
+            },
+            {
+              "id": "b2",
+              "fromAtomId": "a2",
+              "toAtomId": "a3",
+              "order": "single"
+            },
+            {
+              "id": "b3",
+              "fromAtomId": "a3",
+              "toAtomId": "a4",
+              "order": "single"
+            },
+            {
+              "id": "b4",
+              "fromAtomId": "a4",
+              "toAtomId": "a5",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b5",
+              "fromAtomId": "a5",
+              "toAtomId": "a6",
+              "order": "single"
+            },
+            {
+              "id": "b6",
+              "fromAtomId": "a6",
+              "toAtomId": "a7",
+              "order": "single"
+            },
+            {
+              "id": "b7",
+              "fromAtomId": "a7",
+              "toAtomId": "a8",
+              "order": "single"
+            },
+            {
+              "id": "b8",
+              "fromAtomId": "a8",
+              "toAtomId": "a9",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b9",
+              "fromAtomId": "a9",
+              "toAtomId": "a10",
+              "order": "single"
+            },
+            {
+              "id": "b10",
+              "fromAtomId": "a10",
+              "toAtomId": "a11",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b11",
+              "fromAtomId": "a10",
+              "toAtomId": "a12",
+              "order": "single"
+            },
+            {
+              "id": "b12",
+              "fromAtomId": "a13",
+              "toAtomId": "a12",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b13",
+              "fromAtomId": "a13",
+              "toAtomId": "a14",
+              "order": "single"
+            },
+            {
+              "id": "b14",
+              "fromAtomId": "a14",
+              "toAtomId": "a15",
+              "order": "single"
+            },
+            {
+              "id": "b15",
+              "fromAtomId": "a15",
+              "toAtomId": "a16",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b16",
+              "fromAtomId": "a17",
+              "toAtomId": "a16",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b17",
+              "fromAtomId": "a17",
+              "toAtomId": "a18",
+              "order": "single"
+            },
+            {
+              "id": "b18",
+              "fromAtomId": "a18",
+              "toAtomId": "a19",
+              "order": "single"
+            },
+            {
+              "id": "b19",
+              "fromAtomId": "a19",
+              "toAtomId": "a20",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b20",
+              "fromAtomId": "a20",
+              "toAtomId": "a21",
+              "order": "single"
+            },
+            {
+              "id": "b21",
+              "fromAtomId": "a21",
+              "toAtomId": "a22",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b22",
+              "fromAtomId": "a22",
+              "toAtomId": "a23",
+              "order": "single"
+            },
+            {
+              "id": "b23",
+              "fromAtomId": "a23",
+              "toAtomId": "a24",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b24",
+              "fromAtomId": "a18",
+              "toAtomId": "a0",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b25",
+              "fromAtomId": "a17",
+              "toAtomId": "a2",
+              "order": "single"
+            },
+            {
+              "id": "b26",
+              "fromAtomId": "a15",
+              "toAtomId": "a4",
+              "order": "single"
+            },
+            {
+              "id": "b27",
+              "fromAtomId": "a14",
+              "toAtomId": "a8",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b28",
+              "fromAtomId": "a24",
+              "toAtomId": "a12",
+              "order": "single"
+            },
+            {
+              "id": "b29",
+              "fromAtomId": "a18",
+              "toAtomId": "a13",
+              "order": "single"
+            },
+            {
+              "id": "b30",
+              "fromAtomId": "a24",
+              "toAtomId": "a19",
+              "order": "single"
+            }
+          ],
+          "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "rotationDegrees": 0
+          },
+          "superatoms": [],
+          "rGroups": []
+        }
+      ],
+      "crossings": []
+    }
+  ],
+  "selection": {
+    "pageId": "page_001",
+    "objectIds": [
+      "mol_clipboard_001"
+    ]
+  },
+  "styles": {},
+  "plugins": {},
+  "compatibility": {
+    "warnings": []
+  }
+}

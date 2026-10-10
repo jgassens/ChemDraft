@@ -240,7 +240,7 @@ makes.
    | `taxane` | A the cyclohexene (one ring C=C), B the eight-membered ring, C the saturated cyclohexane fused to B, D the oxetane (optional) |
    | `steroid` | D the cyclopentane, C the six-membered ring fused to D, B the one fused to C, A the one fused to B |
    | `morphinan` | A the aromatic ring, B the carbocycle fused to A, C the other carbocycle, D the piperidine, E the tetrahydrofuran (optional) |
-   | `walk` (default) | breadth-first from a terminal ring across rings that share atoms; ties go left to right, then top to bottom |
+   | `walk` (default) | breadth-first from a terminal ring across rings that share atoms, by chemistry and topology only |
 
    Ladder polyethers are lettered along the ladder from the ring the
    literature calls A: a walk with a `start` selector (brevetoxins start
@@ -256,6 +256,21 @@ makes.
    ring or several stops the script with every candidate listed, and so
    does a core ring left without a letter; never guess past either. With
    no convention, the walk is the rule: say so in the caption or report.
+
+   The walk never reads coordinates, so the same molecule turned or
+   mirrored on the page gets the same letters. A **terminal ring** is a
+   lettered ring that shares atoms with exactly one other lettered ring
+   (an end of the ring system, by topology, not by where it is drawn).
+   Rings are ranked by chemistry: aromatic first, then the larger ring,
+   then more heteroatoms, then a canonical atom rank computed from the
+   molecular graph (element, charge, degree and H count, refined over
+   neighbours), lowest first. The walk starts at the first-ranked terminal
+   ring (the first-ranked ring when there is none, as in a cage), unless
+   `start` names one; from each ring it goes on to rings sharing a bond
+   before rings sharing only atoms, each set in rank order. Only atoms the
+   graph cannot tell apart (symmetry-equivalent ones) fall back to SMILES
+   atom order, and those choices letter the molecule the same way up to
+   its symmetry.
 3. **Where the letter goes.** At the most open point inside its ring,
    clear of atoms, bonds and labels (such as a gem-dimethyl pointing into
    the ring), in bold italic serif at 20 px, shrinking only to fit.
@@ -290,10 +305,17 @@ makes.
    SMILES (another atom order) and PubChem's own 2D record, fetched by
    CID. PubChem's atoms are matched to the document's and every wedge is
    re-drawn so each stereocentre keeps its handedness. Each layout is
-   scored on bond crossings, bonds, atoms and labels lying on a fill that
-   is not their own, fill over fill, clashing atoms and stretched bonds;
-   the build stays unless another is clearly cleaner. The choice is
-   general: nothing in the script knows any molecule.
+   scored (lower is cleaner): 40 per bond crossing, 12 per bond, atom or
+   label on a fill not its own, 10 per bond-length square of fill over
+   fill, 20 per clashing atom pair, 6 per bond more than 25% off standard
+   length (12 for a wedge or hash), and 30 per ring the figure checks
+   (rule 14) would call a sliver or buried under another fill. The build
+   stays unless another layout scores **more than 6** lower (one stretched
+   bond's worth). `"layout"` in the options forces one: `"build"`,
+   `"canonical"` or `"pubchem"`; a forced layout is still checked by
+   `render-document`, and one that is unavailable or refused stops
+   `style` with the reason. The choice is general: nothing in the script
+   knows any molecule.
 9. **No substituent on a filled ring.** No substituent atom, bond or
    label may sit inside a filled ring. A substituent is everything past an
    acyclic bond from a lettered-ring atom. Each one found on a fill is
@@ -314,12 +336,39 @@ makes.
    and for rules 9 and 10 the next placement is tried; a substituent that
    cannot be cleared is reported by name (`STILL ON A FILL`). The script
    never moves a ring atom and never changes a bond.
-12. **Collisions.** `check` measures every atom label and ring letter in
-   the rendered SVGs and lists the pairs that nearly touch, naming each
-   atom and the atom it hangs from.
+12. **Collisions.** `check` measures every atom label, ring letter and
+   bond stroke (hash ticks and wedge outlines included) in the rendered
+   SVGs and lists what nearly touches: two labels or a label and a letter
+   within 1.5 px, a letter on a bond, another atom's bond within 1 px of a
+   label, or a label's own bond running into it (a hash tick touching an
+   N). It names each atom and the atom it hangs from, or prints
+   `No near-touching labels` when there are none.
 13. **Identity.** `check` requires every rendered InChIKey to equal
-   PubChem's own InChIKey, and the specified and unspecified stereocentre
-   counts to equal PubChem's.
+   PubChem's own InChIKey: for the picture, with each Me read back as C,
+   since Me is a placeholder atom. The specified and unspecified
+   stereocentre counts must equal PubChem's, and they come from the
+   carbon document's renders (the PNG/SVG and the `.chemdraft`). The
+   picture's own counts are not compared: with Me as a placeholder, its
+   render reads 0 specified and every stereocentre unspecified, so its
+   proof is the InChIKey alone.
+14. **Figure checks.** `style` checks the finished drawing, and `check`
+   checks every rendered document again, against these limits
+   (calibrated so paclitaxel and cholesterol pass and the real faults of
+   ChemDraft's strychnine and morphine drawings fail):
+
+   | Check | Fails when |
+   |---|---|
+   | Sliver or degenerate ring | a lettered ring's area is under 0.75 of a regular polygon's with the same ring size and mean side, its smallest interior angle is under 0.6 of the regular angle (72 degrees for a six-membered ring), or its outline crosses itself |
+   | Stretched bond | a plain bond is longer than 1.3 times the median bond length |
+   | Oversized wedge or hash | a wedge or hash is longer than 1.3 times the median bond length |
+   | Shrunk letter | a ring letter had to shrink below 14 px (set at 20 px), or found no room at all |
+   | Hidden ring | more than 40% of a lettered ring's area lies under another lettered ring's fill |
+   | Dropped fusion H | a fusion CH stereocentre (rule 6) is left without its H, for want of room, a touch or an `UNDONE` |
+
+   Either command then prints `Figure checks FAILED` with one line per
+   fault, naming the ring, bond or atom and the measured value, and exits
+   1 (`style` still writes its files). Both thresholds and measures are
+   kept in `<name>-style.json` (`quality`) and `<name>-check.json`.
 
 ### Run it
 
@@ -333,48 +382,106 @@ that SMILES, compare InChIKeys as in [art](art.md) "Check the chemistry",
 and say the check only shows the drawing kept the SMILES you started
 from.
 
-POSIX shell, paclitaxel (CID 36314), taxane letters:
+Set `name` (a safe file name), `cid` (the PubChem CID) and `out` (the
+folder the user gets) first. Every intermediate goes to `$scratch` (see
+"Prepare an external workspace"); only the deliverables are copied to
+`$out`: `$name-nicolaou.png` and `$name-nicolaou.svg` (the picture) and
+`$name.chemdraft` (the editable file, real CH3). Write the options file
+only when there is something in it: paclitaxel takes
+`{"convention":"taxane"}`, cholesterol `{"convention":"steroid"}`,
+morphine `{"convention":"morphinan"}`; a molecule whose class has no
+convention (strychnine) needs none, so leave the options argument out of
+the `style` line (or pass `{}`) and the walk letters it.
+
+POSIX shell, here paclitaxel (CID 36314):
 
 ```sh
+name=paclitaxel; cid=36314; out="<output folder>"
 skill="$checkout/skills/chemdraft"
-node "$skill/scripts/ring-style.mjs" pubchem "$scratch" paclitaxel 36314
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" > "$scratch/paclitaxel-build.jsonl"
-printf '%s' '{"convention":"taxane"}' > "$scratch/paclitaxel-options.json"
-node "$skill/scripts/ring-style.mjs" style "$scratch" paclitaxel "$scratch/paclitaxel-options.json" --checkout "$checkout"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 > "$scratch/paclitaxel-render.jsonl"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" >> "$scratch/paclitaxel-render.jsonl"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 >> "$scratch/paclitaxel-render.jsonl"
-node "$skill/scripts/ring-style.mjs" identity-jobs "$scratch" paclitaxel
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/paclitaxel-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' > "$scratch/paclitaxel-identity.jsonl"
-node "$skill/scripts/ring-style.mjs" check "$scratch" paclitaxel
+node "$skill/scripts/ring-style.mjs" pubchem "$scratch" "$name" "$cid"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/$name-job.json" --methods 'rdkit.composition'
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft stereo --batch "$scratch/$name-job.json"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/$name-job.json" --out-dir "$scratch" > "$scratch/$name-build.jsonl"
+printf '%s' '{"convention":"taxane"}' > "$scratch/$name-options.json"
+node "$skill/scripts/ring-style.mjs" style "$scratch" "$name" "$scratch/$name-options.json" --checkout "$checkout"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-carbon.json" --out "$scratch/$name-carbon" --format both --width 2000 > "$scratch/$name-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-carbon.json" --out "$scratch/$name.chemdraft" >> "$scratch/$name-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-nicolaou.json" --out "$scratch/$name-nicolaou" --format both --width 2000 >> "$scratch/$name-render.jsonl"
+node "$skill/scripts/ring-style.mjs" identity-jobs "$scratch" "$name"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/$name-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' > "$scratch/$name-identity.jsonl"
+node "$skill/scripts/ring-style.mjs" check "$scratch" "$name" && mkdir -p "$out" && cp "$scratch/$name-nicolaou.png" "$scratch/$name-nicolaou.svg" "$scratch/$name.chemdraft" "$out/"
 ```
 
 PowerShell (the script also reads UTF-16 files, but write UTF-8):
 
 ```powershell
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+$name = 'paclitaxel'; $cid = '36314'; $out = '<output folder>'
 $ringStyle = Join-Path $checkout 'skills/chemdraft/scripts/ring-style.mjs'
-node $ringStyle pubchem $scratch paclitaxel 36314
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/paclitaxel-build.jsonl"
-Set-Content -Encoding utf8 "$scratch/paclitaxel-options.json" '{"convention":"taxane"}'
-node $ringStyle style $scratch paclitaxel "$scratch/paclitaxel-options.json" --checkout $checkout
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 | Set-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
-node $ringStyle identity-jobs $scratch paclitaxel
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/paclitaxel-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' | Set-Content -Encoding utf8 "$scratch/paclitaxel-identity.jsonl"
-node $ringStyle check $scratch paclitaxel
+node $ringStyle pubchem $scratch $name $cid
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/$name-job.json" --methods 'rdkit.composition'
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft stereo --batch "$scratch/$name-job.json"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/$name-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/$name-build.jsonl"
+Set-Content -Encoding utf8 "$scratch/$name-options.json" '{"convention":"taxane"}'
+node $ringStyle style $scratch $name "$scratch/$name-options.json" --checkout $checkout
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-carbon.json" --out "$scratch/$name-carbon" --format both --width 2000 | Set-Content -Encoding utf8 "$scratch/$name-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-carbon.json" --out "$scratch/$name.chemdraft" | Add-Content -Encoding utf8 "$scratch/$name-render.jsonl"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/$name-nicolaou.json" --out "$scratch/$name-nicolaou" --format both --width 2000 | Add-Content -Encoding utf8 "$scratch/$name-render.jsonl"
+node $ringStyle identity-jobs $scratch $name
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch "$scratch/$name-identity-jobs.json" --methods 'rdkit.inchikey,rdkit.composition' | Set-Content -Encoding utf8 "$scratch/$name-identity.jsonl"
+node $ringStyle check $scratch $name
+if ($LASTEXITCODE -eq 0) { New-Item -ItemType Directory -Force $out | Out-Null; Copy-Item "$scratch/$name-nicolaou.png", "$scratch/$name-nicolaou.svg", "$scratch/$name.chemdraft" $out }
 ```
+
+For a molecule with no convention, drop the options line and run
+`style` as `node "$skill/scripts/ring-style.mjs" style "$scratch" "$name" --checkout "$checkout"`.
+`node "$skill/scripts/ring-style.mjs" --help` prints every command and
+option. The last line copies the deliverables only when `check` passed;
+when it fails, follow "A figure that fails the checks is not finished"
+below.
+
+The `analyze` and `stereo` lines are the pre-check of the SKILL.md core
+workflow: before drawing, the formula must equal the one `pubchem`
+printed, and `stereo` must agree with PubChem's stereo counts. `stereo`
+counts stereocentres and stereo double bonds together, so compare
+`specifiedCount` with `definedAtomStereo + definedBondStereo` and
+`unspecifiedCount` with `undefinedAtomStereo + undefinedBondStereo`
+(brevetoxin B: 23 + 1 = 24 specified, its Z alkene included), and the
+length of `stereoCenters` with `definedAtomStereo + undefinedAtomStereo`.
+Stop if any differs.
 
 `style` prints the layout it chose with every candidate's score, each
 substituent it moved, undid or could not clear, what remains (crossings,
-items on a fill not their own, fill overlap, stretched bonds), then each
-ring's letter, colour and chemistry, the fusion H and Me it added, and any
-warning; `<name>-style.json` keeps the same under `layout`.
-`check` prints PubChem's InChIKey and stereo counts beside each render's,
-then the near-touching labels, and exits 1 if an InChIKey or count
-differs. A failed check means the figure is not the molecule: do not
-deliver it.
+items on a fill not their own, fill overlap, clashing atoms, stretched
+bonds), then each ring's letter, colour and chemistry, the fusion H and Me
+it added, any warning, and the figure checks (rule 14), passed or
+`FAILED` with a list; `<name>-style.json` keeps the same under `layout`
+and `quality`. `check` prints PubChem's InChIKey and stereo counts beside
+each render's, the near-touching labels (or `No near-touching labels`),
+and the figure checks again on the rendered documents. It exits 1 if an
+InChIKey or count differs (the figure is not the molecule: do not deliver
+it) or a figure check fails.
+
+### A figure that fails the checks is not finished
+
+When `style` or `check` prints `Figure checks FAILED`, do not deliver the
+coloured figure as finished, and do not describe it as clean. Tell the
+user exactly what failed, in the script's words (which ring is a sliver,
+which bond or wedge is stretched and by how much, which letter shrank,
+which ring is hidden, which fusion H is missing). Then offer either the
+plain drawing (no fills: the same document without `ringStyles` and
+letters, or ChemDraft's ordinary render of the SMILES), or the coloured
+figure with those failures named beside it. First try the forced layouts
+(`"layout": "canonical"`, then `"pubchem"`, then `"build"`): one of them
+may pass. Never hide a failure by moving ring atoms by hand.
+
+**Caged and bridged polycycles.** The style step colours and letters the
+2D skeleton it is given; it never moves a ring atom, so it cannot repair
+a poor skeleton. Caged and bridged ring systems (morphine, strychnine)
+depend on ChemDraft's 2D layout, which today draws some of their rings as
+slivers or stacks one ring over another, with stretched bridge bonds and
+fusion H that find no room. The figure checks flag these; report them
+rather than deliver the figure as finished.
 
 ### Look, fix, look again
 
@@ -404,8 +511,13 @@ furan): look for it, and see [art](art.md), Known limits.
 - **A crossing or overlap remains.** `style` names it. Some ring systems
   cannot be drawn flat without one (an atom shared by four rings, a
   bridge across a ring); the search keeps the cleanest of the layouts it
-  compared. `"layout": "build"` keeps ChemDraft's own layout instead, and
-  `relayout` rewrites the job with ChemDraft's canonical SMILES by hand.
+  compared. `"layout": "build"`, `"canonical"` or `"pubchem"` in the
+  options forces one of the three instead (still checked by
+  `render-document`); `relayout` rewrites the job with ChemDraft's
+  canonical SMILES, to rebuild from it by hand.
+- **A figure check fails.** Read the `FAILED` list. Try the forced
+  layouts; if none passes, follow "A figure that fails the checks is not
+  finished" above.
   When one lettered ring's outline takes in part of a smaller one, the
   script paints the larger ring's fill as a path object under the
   molecule so the smaller ring shows on top (it says so).
@@ -414,19 +526,25 @@ furan): look for it, and see [art](art.md), Known limits.
 
 Hand over `<name>.chemdraft` (saved from the carbon document) as the
 editable file and the `-nicolaou` PNG or SVG as the picture, and say that
-the editable file shows CH3 where the picture shows Me.
+the editable file shows CH3 where the picture shows Me. Everything else
+in `$scratch` (jobs, build output, options, the carbon PNG and SVG, the
+JSON documents and reports) is working material; keep it there unless the
+user asks for it.
 
 ### Verified examples
 
-Run from empty folders with the commands above, with no `rotate` entries.
-Atom ids belong to these builds; read your own.
+Run from empty folders with the commands above, with no `rotate` entries
+(2026-10-10). Atom ids belong to these builds; read your own. All five
+match PubChem's InChIKey and stereocentre counts; three pass the figure
+checks and two fail them.
 
 | Molecule (PubChem CID) | Options | What `style` did | Checked |
 |---|---|---|---|
-| paclitaxel (36314) | `{"convention": "taxane"}` | build layout; turned the C4 acetate and the C7 OH to clear labels; the C15 gem-dimethyl stays in ring B (enclosed, see below) | A–D, phenyls plain; 2 fusion H, 4 Me; InChIKey `RCINICONZNJXQF-MZXODVADSA-N`; 11 specified, 0 unspecified |
-| cholesterol (5997) | `{"convention": "steroid"}` | build layout; turned the C19 methyl 20 degrees clear of the C9 H | A–D; 3 fusion H, 2 Me; `HVYWMOMLDIMFJA-DPAQBDIFSA-N`; 8 and 0 |
-| morphine (5288826) | `{"convention": "morphinan"}` | chose PubChem's 2D layout (score 134 against 194 and 173), wedges re-drawn | A–E; 2 fusion H (C14 keeps its ring hash), N–Me; `BQJCRHHNABKAKU-KBQPJGBKSA-N`; 5 and 0 |
-| brevetoxin B (10865865) | `{"start": {"carbonyl": true}}` | build layout; turned three methyls 5–10 degrees to clear labels | A–K along the ladder from the lactone; 15 fusion H, 7 Me; `LYTCVQQGCSNFJU-FGRVLNGBSA-N`; 23 and 0 |
+| paclitaxel (36314) | `{"convention": "taxane"}` | build layout; turned the C4 acetate and the C7 OH to clear labels; the C15 gem-dimethyl stays in ring B (enclosed, see below) | A–D, phenyls plain; 2 fusion H, 4 Me; InChIKey `RCINICONZNJXQF-MZXODVADSA-N`; 11 specified, 0 unspecified; figure checks **pass**, no near-touching labels |
+| cholesterol (5997) | `{"convention": "steroid"}` | build layout; turned the C19 methyl 20 degrees clear of the C9 H | A–D; 3 fusion H, 2 Me; `HVYWMOMLDIMFJA-DPAQBDIFSA-N`; 8 and 0; **pass** (the carbon copy's wider CH3 at C19 touches a ring bond; the Me picture is clear) |
+| brevetoxin B (10865865) | `{"start": {"carbonyl": true}}` | build layout; turned three methyls 5–10 degrees to clear labels | A–K along the ladder from the lactone; 15 fusion H, 7 Me; `LYTCVQQGCSNFJU-FGRVLNGBSA-N`; 23 and 0 (`stereo`: 24 specified, the Z alkene included); **pass** |
+| morphine (5288826) | `{"convention": "morphinan"}` | chose PubChem's 2D layout (score 224 against 254 and 233) | A–E; 2 fusion H, N–Me; `BQJCRHHNABKAKU-KBQPJGBKSA-N`; 5 and 0; **FAILED**: ring D a sliver (smallest angle 34 degrees) and 53% over ring B, ring B 76% under D, two bridge bonds 1.37x and 1.42x, B's letter 12 px, the C14 H dropped |
+| strychnine (441071) | none (walk letters, A the benzene ring) | chose PubChem's 2D layout (score 48 against 78 and 72) | A–G; 1 fusion H; `QMGVPVSNSZLJIA-FVWCLLPLSA-N`; 6 and 0; **FAILED**: ring G a sliver (area 0.57), three bonds 1.7–2.2x, four fusion H dropped for want of room; a hash tick touches the amide N |
 
 What remains, and why:
 
@@ -437,14 +555,13 @@ What remains, and why:
   six-membered ring. The script leaves them where ChemDraft drew them,
   in ring B, the larger ring, reports them as `STILL ON A FILL`, and
   places the B letter clear of them.
-- **Morphine.** C13 belongs to four rings, and the ethanamine bridge
-  (C15–C16) has to pass a ring to reach the nitrogen. In the chosen
-  layout the C15–C16 bond crosses the C9–C10 bond once, the piperidine
-  (D) covers the lower part of ring B, whose letter shrinks to 12 px in
-  the strip left above it, and the bridge bonds are drawn 1.4 times
-  standard length. ChemDraft's own two layouts scored worse: one crushed
-  the piperidine across ring B with several crossings, the other drew it
-  wholly inside ring B.
+- **Morphine and strychnine** are caged and bridged: every one of the
+  three layouts (forced in turn with `"layout"`) fails the figure checks.
+  Morphine's C13 belongs to four rings, and the ethanamine bridge has to
+  pass a ring to reach the nitrogen; ChemDraft's own layout draws the
+  piperidine wholly inside ring B, with no room for its letter.
+  Strychnine's build draws ring E as a sliver with a 2.4x bond and a 2.2x
+  wedge. Report these failures and offer the plain drawing, as above.
 
 ## 12. A hand-sketched structure: penicillin G
 

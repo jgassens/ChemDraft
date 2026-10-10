@@ -13,7 +13,7 @@ const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ring
 const read = (path: string) => readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
 
 /** Real CLI output: `document` for cholesterol (PubChem CID 5997), paclitaxel (CID 36314), morphine
- * and a phenyl-decalin. */
+ * (CID 5288826), strychnine (CID 441071) and a phenyl-decalin. */
 type Json = any; // the fixtures are untyped document JSON
 interface Identity { canonicalSmiles: string; stereoCenters: number; unspecifiedStereoCenters: number }
 interface RingStyle {
@@ -25,7 +25,8 @@ interface RingStyle {
   chemdraftCli(checkout: string): { identity(doc: Json): Identity[]; inchiKey(smiles: string): string; cleanup(): void };
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
-  collisions(svg: string): { kind: string; a: { text: string }; b: { text: string }; gapPx: number }[];
+  collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
+  LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
 }
@@ -208,8 +209,31 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     const walked = ringStyle.style(structuredClone(doc), build).report;
     expect(walked.letters).toHaveLength(4);
     expect(walked.notes.join(" ")).toMatch(/breadth-first walk/);
-    // The leftmost terminal ring of this depiction is the cyclopentane.
-    expect(walked.letters[0].ring).toMatch(/^5-ring/);
+    // Terminal rings are the cyclohexanol and the cyclopentane; the larger ranks first, so the walk
+    // runs A to D as the steroid convention does.
+    expect(walked.letters[0].ring).toMatch(/^6-ring/);
+    const steroid = ringStyle.style(structuredClone(doc), build, { convention: "steroid" }).report;
+    expect(walked.letters.map((l: Json) => l.ringKey)).toEqual(steroid.letters.map((l: Json) => l.ringKey));
+  });
+
+  it("letters the same rings however the drawing is turned or mirrored on the page", () => {
+    // The walk reads chemistry and topology only, never coordinates.
+    for (const name of ["cholesterol", "strychnine", "paclitaxel", "morphine"]) {
+      const { build, doc } = fixture(name);
+      const lettersOf = (d: Json) => Object.fromEntries(ringStyle.style(d, build, { fusionH: false, declutter: false }).report.letters
+        .map((l: Json) => [l.letter, l.ringKey]));
+      const base = lettersOf(structuredClone(doc));
+      expect(Object.keys(base).length, name).toBeGreaterThan(1);
+      // Quarter and half turns, a mirror, and a mirror with a 53-degree turn.
+      for (const [cos, sin, flip] of [[0, 1, 1], [-1, 0, 1], [1, 0, -1], [0.6, 0.8, -1]] as const) {
+        const d = structuredClone(doc);
+        for (const a of molecule(d).atoms) {
+          const x = flip * a.x, y = a.y;
+          a.x = 600 + cos * x - sin * y; a.y = 600 + sin * x + cos * y;
+        }
+        expect(lettersOf(d), `${name} turned (${cos}, ${sin}), mirror ${flip}`).toEqual(base);
+      }
+    }
   });
 
   it("letters paclitaxel by the taxane convention and keeps labels left on a fill legible", () => {
@@ -296,6 +320,125 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe("figure checks: a failing figure is flagged, not delivered as finished", () => {
+    const at = (mol: Json, id: string) => mol.atoms.find((a: Json) => a.id === id);
+    const failures = (report: Json) => report.quality.failures as string[];
+    /** Move atom `id` along its bond from `from` to `ratio` times the bond's length. */
+    const stretch = (mol: Json, from: string, id: string, ratio: number) => {
+      const p = at(mol, from), q = at(mol, id);
+      Object.assign(q, { x: p.x + (q.x - p.x) * ratio, y: p.y + (q.y - p.y) * ratio });
+    };
+
+    it("passes clean drawings: cholesterol and paclitaxel", () => {
+      const chol = fixture("cholesterol"), pac = fixture("paclitaxel");
+      expect(failures(ringStyle.style(structuredClone(chol.doc), chol.build, { convention: "steroid" }).report)).toEqual([]);
+      expect(failures(ringStyle.style(structuredClone(pac.doc), pac.build, { convention: "taxane" }).report)).toEqual([]);
+      expect(ringStyle.LIMITS).toMatchObject({ ringArea: 0.75, ringAngle: 0.6, bondStretch: 1.3, wedgeStretch: 1.3, letterPx: 14, hiddenRing: 0.4 });
+    });
+
+    it("fails a sliver ring", () => {
+      // Cholesterol with C16 pulled into the middle of ring D.
+      const { build, doc } = fixture("cholesterol");
+      const d = structuredClone(doc), mol = molecule(d);
+      const ringD = build.rings.find((r: Json) => r.atomIds.length === 5);
+      const own = ringD.atomIds.filter((id: string) => build.rings.filter((r: Json) => r.atomIds.includes(id)).length === 1);
+      const bonded = (u: string, v: string) => mol.bonds.some((b: Json) => [b.fromAtomId, b.toAtomId].sort().join() === [u, v].sort().join());
+      const c16 = own.find((id: string) => own.filter((o: string) => o !== id && bonded(o, id)).length === 2);
+      const ring = ringD.atomIds.map((id: string) => at(mol, id));
+      Object.assign(at(mol, c16), { x: ring.reduce((s: number, a: Json) => s + a.x, 0) / 5, y: ring.reduce((s: number, a: Json) => s + a.y, 0) / 5 });
+      const { report } = ringStyle.style(d, build, { convention: "steroid" });
+      expect(failures(report).join("\n")).toMatch(/^ring D is a sliver: area 0\.\d+ of a regular 5-ring/m);
+      expect(report.quality.measures.rings.find((r: Json) => r.letter === "D").areaRatio).toBeLessThan(0.75);
+    });
+
+    it("fails a stretched bond", () => {
+      const { build, doc } = fixture("cholesterol");
+      const d = structuredClone(doc), mol = molecule(d);
+      // A side-chain methyl on a plain bond, away from the rings.
+      const ringAtoms = new Set(build.rings.flatMap((r: Json) => r.atomIds));
+      const bondsOf = (id: string) => mol.bonds.filter((b: Json) => b.fromAtomId === id || b.toAtomId === id);
+      const bond = mol.bonds.find((b: Json) => !b.display?.bondStyle && [b.fromAtomId, b.toAtomId].some((id) => bondsOf(id).length === 1) &&
+        ![b.fromAtomId, b.toAtomId].some((id) => ringAtoms.has(id)));
+      const tip = bondsOf(bond.fromAtomId).length === 1 ? bond.fromAtomId : bond.toAtomId;
+      stretch(mol, tip === bond.fromAtomId ? bond.toAtomId : bond.fromAtomId, tip, 1.6);
+      const { report } = ringStyle.style(d, build, { convention: "steroid" });
+      expect(failures(report)).toContainEqual(expect.stringMatching(new RegExp(`^bond ${bond.id} \\(.*\\) is stretched to 1\\.60x the median bond length`)));
+    });
+
+    it("fails an oversized wedge", () => {
+      // C10's wedge sits on its own methyl bond (a20-a26); draw it 1.7 times as long.
+      const { build, doc } = fixture("cholesterol");
+      const d = structuredClone(doc), mol = molecule(d);
+      const wedge = mol.bonds.find((b: Json) => b.fromAtomId === "a20" && b.toAtomId === "a26");
+      expect(wedge.display.bondStyle).toMatch(/^(wedge|hashed)$/);
+      stretch(mol, "a20", "a26", 1.7);
+      const { report } = ringStyle.style(d, build, { convention: "steroid" });
+      expect(failures(report)).toContainEqual(expect.stringMatching(new RegExp(`^(wedge|hash) ${wedge.id} \\(a20-a26\\) is drawn 1\\.70x the median`)));
+    });
+
+    it("fails a dropped fusion H, unless fusion H were not asked for", () => {
+      const { build, doc } = fixture("cholesterol");
+      const all = ringStyle.style(structuredClone(doc), build, { convention: "steroid" }).report.fusionHydrogens;
+      const bad = all[0];
+      const verify = (mol: Json) => mol.atoms.some((a: Json) => a.id === bad.h) ? "reads C, not CC" : null;
+      const { report } = ringStyle.style(structuredClone(doc), build, { convention: "steroid" }, { verify });
+      expect(failures(report)).toEqual([`fusion H dropped at ${bad.atom} (SMILES atom ${bad.smilesAtom}): render-document reads C, not CC; its stereo stays on a ring bond`]);
+      const off = ringStyle.style(structuredClone(doc), build, { convention: "steroid", fusionH: false }).report;
+      expect(failures(off)).toEqual([]);
+    });
+
+    it("flags strychnine's and morphine's real faults", () => {
+      const s = fixture("strychnine");
+      const strychnine = failures(ringStyle.style(structuredClone(s.doc), s.build).report);
+      expect(strychnine).toContainEqual(expect.stringMatching(/^ring E is a sliver: area 0\.3\d/));
+      expect(strychnine).toContainEqual(expect.stringMatching(/^bond b17 \(a17-a18\) is stretched to 2\.\d+x/));
+      expect(strychnine).toContainEqual(expect.stringMatching(/^wedge b24 \(a18-a0\) is drawn 2\.\d+x the median/));
+      expect(strychnine).toContainEqual(expect.stringMatching(/^ring E's letter is shrunk to 1[01] px/));
+      expect(strychnine.filter((f) => /^fusion H dropped at a1[3457] .*no room for an H/.test(f))).toHaveLength(4);
+
+      const m = fixture("morphine");
+      const sdf = ringStyle.parseMolfile(read(join(fixtures, "morphine-pubchem.sdf")));
+      const morphine = failures(ringStyle.style(structuredClone(m.doc), m.build, { convention: "morphinan" },
+        { sources: [{ name: "PubChem 2D", yUp: true, ...sdf }] }).report);
+      expect(morphine).toContainEqual(expect.stringMatching(/^ring D is a sliver/));
+      expect(morphine).toContainEqual(expect.stringMatching(/^ring [BD]'s fill covers \d+% of ring [BD]/));
+      expect(morphine.filter((f) => /^bond .* is stretched to 1\.[34]\dx/.test(f))).toHaveLength(2);
+      expect(morphine).toContainEqual(expect.stringMatching(/^ring B's letter is shrunk to 1[0-3] px/));
+      expect(morphine).toContainEqual(expect.stringMatching(/^fusion H dropped at /));
+    });
+
+    it("forces a layout by name, and names why one is not available", () => {
+      const m = fixture("morphine");
+      const sdf = ringStyle.parseMolfile(read(join(fixtures, "morphine-pubchem.sdf")));
+      const sources = [{ name: "PubChem 2D", yUp: true, ...sdf }];
+      // ChemDraft's own morphine layout draws ring D inside ring B: no room for its letter, which is a
+      // figure failure, not a crash.
+      const build = ringStyle.style(structuredClone(m.doc), m.build, { convention: "morphinan", layout: "build" }, { sources }).report;
+      expect(build.layout.chosen).toBe("build");
+      expect(build.layout.candidates.map((c: Json) => c.name)).toEqual(["build"]);
+      expect(failures(build)).toContainEqual("ring D has no room for its letter, even at 10 px");
+      const pubchem = ringStyle.style(structuredClone(m.doc), m.build, { convention: "morphinan", layout: "pubchem" }, { sources }).report;
+      expect(pubchem.layout.chosen).toBe("PubChem 2D");
+      expect(() => ringStyle.style(structuredClone(m.doc), m.build, { convention: "morphinan", layout: "pubchem" })).toThrow(/layout "pubchem" is not available: no PubChem 2D record/);
+      expect(() => ringStyle.style(structuredClone(m.doc), m.build, { layout: "sideways" })).toThrow(/layout must be "search", "build", "canonical", "pubchem"/);
+    });
+
+    it("finds a bond running into a label: a hash tick on strychnine's N", () => {
+      const svg = read(join(fixtures, "strychnine-pubchem-layout-nicolaou.svg"));
+      const mol = molecule(JSON.parse(read(join(fixtures, "strychnine-pubchem-layout-nicolaou.json"))));
+      const incident = (label: Json, bondId: string) => {
+        const a = mol.atoms.find((x: Json) => Math.hypot(x.x - label.x, x.y - label.y) < 1);
+        const b = mol.bonds.find((x: Json) => x.id === bondId);
+        return !!a && !!b && (b.fromAtomId === a.id || b.toAtomId === a.id);
+      };
+      const found = ringStyle.collisions(svg, 1.5, incident).filter((c) => c.kind === "bond-label");
+      expect(found.map((c) => `${c.a.text} ${c.b.text}`)).toEqual(["N bond b12"]);
+      expect(mol.bonds.find((b: Json) => b.id === "b12").display.bondStyle).toBe("hashed");
+      // Without knowing which bonds belong to which atom, bonds are not checked against labels.
+      expect(ringStyle.collisions(svg).filter((c) => c.kind === "bond-label")).toEqual([]);
+    });
   });
 
   describe("no substituent on a filled ring", () => {
@@ -580,6 +723,55 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
         }
       `, fake);
       expect(result).toMatch(/render-document could not read a candidate drawing \(.*check-1\.json\): "no output" \(exit status 3; stderr: Cannot find module zod\)/);
+    }, 120_000);
+
+    it("prints its commands, options and figure-check limits with --help", async () => {
+      const result = await run("--help");
+      expect(result.status).toBe(0);
+      for (const text of ["ring-style.mjs pubchem", "ring-style.mjs check", "Figure checks", "layout", "terminal ring"]) expect(result.stdout).toContain(text);
+    }, 120_000);
+
+    /** A finished run's files for `check`, written from the styled fixture: one carbon and one
+     * picture render line, identity results that match PubChem, no SVGs. */
+    const checkRun = (name: string, options: Json) => {
+      const run = join(dir, `check-${name}`);
+      mkdirSync(run, { recursive: true });
+      const { build, doc } = fixture(name);
+      copyFileSync(join(fixtures, `${name}-build.jsonl`), join(run, `${name}-build.jsonl`));
+      const { carbon, picture, report } = ringStyle.style(structuredClone(doc), build, options);
+      writeFileSync(join(run, `${name}-carbon.json`), JSON.stringify(carbon));
+      writeFileSync(join(run, `${name}-nicolaou.json`), JSON.stringify(picture));
+      writeFileSync(join(run, `${name}-style.json`), JSON.stringify(report));
+      writeFileSync(join(run, `${name}-pubchem.json`), JSON.stringify({ CID: 1, Title: name, InChIKey: "KEY", DefinedAtomStereoCount: 2, UndefinedAtomStereoCount: 0 }));
+      const line = (file: string) => JSON.stringify({ name, ok: true, document: join(run, file), files: [],
+        molecules: [{ canonicalSmiles: "C", stereoCenters: 2, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] });
+      writeFileSync(join(run, `${name}-render.jsonl`), `${line(`${name}-carbon.json`)}\n${line(`${name}-nicolaou.json`)}\n`);
+      const key = (job: string) => JSON.stringify({ name: job, ok: true, summary: { inchiKey: { value: "KEY" }, formula: { value: "C" } } });
+      writeFileSync(join(run, `${name}-identity.jsonl`), `${key(`1-${name}`)}\n${key(`2-${name}`)}\n`);
+      return run;
+    };
+
+    it("check passes a clean figure and says when no labels touch", async () => {
+      const result = await run("check", checkRun("cholesterol", { convention: "steroid" }), "cholesterol");
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toMatch(/^No near-touching labels/m);
+      expect(result.stdout).toMatch(/^Figure checks passed/m);
+      expect(result.stdout).toMatch(/picture: Me read as C; its stereo counts are the carbon document's/);
+      expect(result.status).toBe(0);
+    }, 120_000);
+
+    it("check fails loudly on a figure that fails the figure checks, even when the identity matches", async () => {
+      const where = checkRun("strychnine", {});
+      const result = await run("check", where, "strychnine");
+      expect(result.status).toBe(1);
+      expect(result.stdout).toMatch(/^Identity check passed\.$/m);
+      expect(result.stdout).toMatch(/^Figure checks FAILED \(\d+\):$/m);
+      expect(result.stdout).toMatch(/^ {2}FAILED ring E is a sliver: .* \(strychnine-carbon\.json, strychnine-nicolaou\.json\)$/m);
+      expect(result.stdout).toMatch(/^ {2}FAILED fusion H dropped at a13 /m);
+      expect(result.stdout).toMatch(/not finished: do not deliver it as finished/);
+      const saved = JSON.parse(read(join(where, "strychnine-check.json")));
+      expect(saved.failures).toEqual([]);
+      expect(saved.figureFailures.length).toBeGreaterThan(4);
     }, 120_000);
 
     it("rejects an unsafe name and a missing directory", async () => {

@@ -12,6 +12,7 @@
 //   node ring-style.mjs relayout <dir> <name>
 //   node ring-style.mjs identity-jobs <dir> <name>
 //   node ring-style.mjs check <dir> <name>
+//   node ring-style.mjs --help
 //
 // Files in <dir>, by step:
 //   pubchem       writes <name>-pubchem.json (CID, title, formula, SMILES, InChIKey,
@@ -43,19 +44,34 @@
 //                 the same molecule in another atom order, which `document` lays out anew.
 //   identity-jobs reads <name>-render.jsonl (every `render-document` stdout line);
 //                 writes <name>-identity-jobs.json (the batch for `analyze`).
+//                 Then it runs the figure checks (below) on the result and exits 1, with a FAILED
+//                 list, when any fails; the files are still written.
 //   check         reads <name>-pubchem.json, <name>-render.jsonl, <name>-identity.jsonl
-//                 (the `analyze` stdout) and the rendered SVGs; prints and writes
-//                 <name>-check.json. Exit 1 when an InChIKey or stereo count differs.
+//                 (the `analyze` stdout), <name>-build.jsonl, <name>-style.json, the rendered
+//                 documents and SVGs; prints and writes <name>-check.json. Lists labels that
+//                 nearly touch (label, ring letter or bond), or says there are none. Exit 1 when an
+//                 InChIKey or stereo count differs, or when a figure check fails.
+//   --help        prints this text.
 //
-// Options (all optional), a JSON object:
+// Figure checks (LIMITS): a figure that fails one is not finished. Each lettered ring against a
+// regular polygon of its size and mean side (area ratio >= 0.75, smallest interior angle >= 0.6 of
+// the regular angle, outline not crossing itself); no plain bond over 1.3x and no wedge or hash over
+// 1.3x the median bond length; no ring letter under 14 px or missing; no lettered ring more than 40%
+// under another lettered ring's fill; no fusion CH stereocentre left without its H.
+//
+// Options (all optional), a JSON object; with none, the options file may be omitted:
 //   convention  "walk" (default), "taxane", "steroid" or "morphinan"
 //   letters     explicit letter map, {"A": selector, "B": selector, ...}, assigned in
 //               the order given; overrides convention
-//   start       selector for the ring a walk starts from (default: leftmost terminal ring)
+//   start       selector for the ring a walk starts from (default: the first terminal ring by
+//               rank; a terminal ring shares atoms with exactly one other lettered ring; rank is
+//               aromatic first, then larger, then more heteroatoms, then canonical atom rank)
 //   rings       "core" (default: rings sharing atoms with another ring) or "all"
 //   extra       "walk" letters core rings a convention leaves out, continuing the alphabet;
 //               without it they are an error
-//   layout      "search" (default) or "build" (keep ChemDraft's build layout)
+//   layout      "search" (default: the build unless another scores more than 6 lower), or force
+//               one: "build", "canonical" (ChemDraft's layout of the canonical SMILES) or
+//               "pubchem" (PubChem's 2D record); a forced layout is still checked by render-document
 //   declutter   true (default); false skips step 3
 //   rotate      [{"atom": "a54", "about": "a11", "degrees": 30}]: turn the substituent
 //               that contains atom about its attachment atom (positive = clockwise on
@@ -235,11 +251,39 @@ export function describeRings(m, buildRings) {
     r.carbonyl = r.atomIds.some((id) => m.atoms.get(id).element === "C" && m.bondsOf.get(id).some((b) =>
       b.order === "double" && m.atoms.get(m.other(b, id)).element === "O" && !ringAtoms.has(m.other(b, id))));
   }
+  const ranks = canonicalRanks(m);
   for (const r of rings) {
     r.touching = rings.filter((s) => s !== r && s.atomIds.some((id) => r.atomIds.includes(id)));
     r.fused = rings.filter((s) => s !== r && s.bondIds.some((id) => r.bondIds.includes(id)));
+    // Walk order, by chemistry and topology only: aromatic first, then the larger ring, then more
+    // heteroatoms, then the ring's canonical atom ranks (lowest first).
+    r.rank = [r.aromatic ? 0 : 1, -r.size, -Object.values(r.hetero).reduce((s, n) => s + n, 0),
+      ...r.atomIds.map((id) => ranks.get(id)).sort((a, b) => a - b)];
   }
   return rings;
+}
+
+/** A canonical rank for every heavy atom from the molecular graph alone: element, charge, heavy
+ * degree and hydrogen count, refined over neighbours until the classes stop splitting (extended
+ * connectivity). Coordinates never enter it, so a rotated or mirrored drawing ranks the same; SMILES
+ * atom order only separates atoms the graph cannot tell apart (symmetry-equivalent ones). */
+export function canonicalRanks(m) {
+  const isH = (id) => m.atoms.get(id).element === "H";
+  const ids = m.mol.atoms.filter((a) => a.element !== "H").map((a) => a.id);
+  const index = new Map(ids.map((id, i) => [id, i]));
+  const nbs = ids.map((id) => m.neighbours(id).filter((n) => !isH(n)));
+  const hs = ids.map((id) => m.implicitH(id) + m.neighbours(id).filter(isH).length);
+  const classes = (keys) => { const u = [...new Set(keys)].sort(); const at = new Map(u.map((k, i) => [k, i])); return keys.map((k) => at.get(k)); };
+  let rank = classes(ids.map((id, i) => { const a = m.atoms.get(id); return `${a.element}|${a.formalCharge ?? 0}|${nbs[i].length}|${hs[i]}`; }));
+  for (;;) {
+    const next = classes(ids.map((id, i) => `${String(rank[i]).padStart(6, "0")}(${nbs[i].map((n) => rank[index.get(n)]).sort((a, b) => a - b).join(",")})`));
+    if (new Set(next).size === new Set(rank).size) break;
+    rank = next;
+  }
+  const smilesAt = (id) => m.input.get(id) ?? Infinity;
+  const order = ids.map((id, i) => ({ id, r: rank[i] }))
+    .sort((a, b) => a.r - b.r || smilesAt(a.id) - smilesAt(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return new Map(order.map((x, i) => [x.id, i]));
 }
 
 const label = (r) => `${r.size}-ring${Object.keys(r.hetero).length ? " (" + Object.entries(r.hetero).map(([e, n]) => e + n).join(" ") + ")" : " (carbocycle)"}` +
@@ -263,32 +307,39 @@ function matches(r, sel, letterOf) {
   return true;
 }
 
-/** Components of rings that share atoms, ordered left to right. */
+/** Rank order of two rings (see describeRings): chemistry and topology, never position. */
+const byRank = (a, b) => { for (let i = 0; i < Math.max(a.rank.length, b.rank.length); i++) { const d = (a.rank[i] ?? -1) - (b.rank[i] ?? -1); if (d) return d; } return 0; };
+
+/** Components of rings that share atoms, the one holding the first-ranked ring first. */
 function systems(rings) {
   const seen = new Set(), out = [];
   for (const r of rings) {
     if (seen.has(r)) continue;
     const group = [r]; seen.add(r);
     for (let i = 0; i < group.length; i++) for (const s of group[i].touching) if (!seen.has(s)) { seen.add(s); group.push(s); }
-    out.push(group);
+    out.push(group.sort(byRank));
   }
-  return out.sort((a, b) => Math.min(...a.map((r) => r.center.x)) - Math.min(...b.map((r) => r.center.x)));
+  return out.sort((a, b) => byRank(a[0], b[0]));
 }
-const byPosition = (a, b) => a.center.x - b.center.x || a.center.y - b.center.y;
 
-/** Breadth-first walk over rings sharing atoms, from a start ring; ties broken left to right, then top to bottom. */
+/** Breadth-first walk over rings sharing atoms. It starts at the given ring, else at a terminal ring
+ * (one sharing atoms with exactly one other ring of the pool), the first by rank; from each ring it
+ * goes on to rings sharing a bond before rings sharing only atoms, each set in rank order. Nothing
+ * in it reads coordinates, so the letters do not depend on how the molecule is turned on the page. */
 function walk(pool, start) {
   const order = [];
   for (const group of systems(pool)) {
     let first = start && group.includes(start) ? start : null;
     if (!first) {
       const terminals = group.filter((r) => r.touching.filter((s) => group.includes(s)).length === 1);
-      first = [...(terminals.length ? terminals : group)].sort(byPosition)[0];
+      first = (terminals.length ? terminals : group)[0];
     }
     const queue = [first], seen = new Set([first]);
     while (queue.length) {
       const r = queue.shift(); order.push(r);
-      for (const s of r.touching.filter((s) => group.includes(s) && !seen.has(s)).sort(byPosition)) { seen.add(s); queue.push(s); }
+      const next = r.touching.filter((s) => group.includes(s) && !seen.has(s))
+        .sort((a, b) => (r.fused.includes(a) ? 0 : 1) - (r.fused.includes(b) ? 0 : 1) || byRank(a, b));
+      for (const s of next) { seen.add(s); queue.push(s); }
     }
   }
   return order;
@@ -336,7 +387,7 @@ export function assignLetters(rings, options = {}) {
     const order = walk(pool, start);
     if (order.length > 26) fail(`${order.length} rings to letter; give an explicit letters map for more than 26`);
     order.forEach((r, i) => letterOf.set(String.fromCharCode(65 + i), r));
-    notes.push(`Letters follow a breadth-first walk over rings sharing atoms, from ${start ? "the start ring" : "the leftmost terminal ring"}; ties go left to right, then top to bottom.`);
+    notes.push(`Letters follow a breadth-first walk over rings sharing atoms, from ${start ? "the start ring" : "a terminal ring chosen by chemistry"}; ties go by chemistry and canonical atom rank, never by position on the page.`);
   }
   return { letters: [...letterOf.entries()].sort((a, b) => a[0].localeCompare(b[0])), notes };
 }
@@ -413,7 +464,8 @@ function placeLetters(m, letters, opts, meIds, carbonLabels) {
       const loose = search(false);
       if (loose && (!best || loose.clear > best.clear)) best = { ...loose, overlapping: true };
     }
-    if (!best) fail(`Ring ${L} is drawn too small or too crowded for a letter inside it; see recipe 11 for a different layout`);
+    // No room even at 10 px: no letter, and the figure check fails it (the ring is a sliver or buried).
+    if (!best) { out.push({ letter: L, ring: r, missing: true }); continue; }
     placed.push({ x0: best.box.x0 - 2, x1: best.box.x1 + 2, y0: best.box.y0 - 2, y1: best.box.y1 + 2 });
     out.push({ letter: L, ring: r, x: best.x, y: best.y, size: best.f, clearancePx: Number(best.clear.toFixed(1)), overlapping: !!best.overlapping });
   }
@@ -1008,7 +1060,124 @@ export function declutter(m, rings, letters, carbonLabels, planH = () => [], che
   return { moved, reverted };
 }
 
+// ---------- figure checks: a figure that fails one is not finished ----------
+/** Limits a finished figure must meet, calibrated on ChemDraft's drawings of paclitaxel (CID 36314)
+ * and cholesterol (CID 5997), which pass, against strychnine (CID 441071) and morphine (CID 5288826),
+ * whose real faults they catch. See recipe 11, "The figure checks". */
+export const LIMITS = {
+  ringArea: 0.75,     // a lettered ring's area over a regular polygon's with the same ring size and mean side
+  ringAngle: 0.6,     // its smallest interior angle over the regular polygon's angle (120 degrees for a 6-ring)
+  bondStretch: 1.3,   // a plain bond's length over the median bond length
+  wedgeStretch: 1.3,  // a wedge's or hash's length over the median bond length
+  letterPx: 14,       // smallest legible ring letter, in px (the letters are set at 20 px)
+  hiddenRing: 0.4     // share of a lettered ring's area lying under another lettered ring's fill
+};
+
+function signedArea(poly) {
+  return poly.reduce((s, a, i) => { const b = poly[(i + 1) % poly.length]; return s + a.x * b.y - b.x * a.y; }, 0) / 2;
+}
+/** Interior angles of a simple polygon, in degrees (reflex angles above 180). */
+function interiorAngles(poly) {
+  const s = Math.sign(signedArea(poly));
+  return poly.map((p, i) => {
+    const a = poly[(i + poly.length - 1) % poly.length], b = poly[(i + 1) % poly.length];
+    const u = { x: a.x - p.x, y: a.y - p.y }, v = { x: b.x - p.x, y: b.y - p.y };
+    const cos = (u.x * v.x + u.y * v.y) / (Math.hypot(u.x, u.y) * Math.hypot(v.x, v.y) || 1);
+    const t = Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
+    return Math.sign(u.x * v.y - u.y * v.x) === s ? 360 - t : t;
+  });
+}
+function selfCrossing(poly) {
+  const n = poly.length;
+  for (let i = 0; i < n; i++) for (let j = i + 2; j < n; j++) {
+    if (i === 0 && j === n - 1) continue;
+    if (segmentsCross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return true;
+  }
+  return false;
+}
+const median = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : 0; };
+
+/** Shape of each lettered ring against a regular polygon of the same size, and how much of each
+ * lies under another lettered ring's fill. */
+export function ringShapes(m, letters) {
+  const L = m.mol.style?.bondLengthPx ?? 28;
+  const fills = fillsOf(m, letters);
+  return fills.map((f) => {
+    const n = f.poly.length;
+    const side = f.poly.reduce((s, p, i) => s + dist(p, f.poly[(i + 1) % n]), 0) / n;
+    const regular = n * side * side / (4 * Math.tan(Math.PI / n));
+    const crossed = selfCrossing(f.poly);
+    const angles = interiorAngles(f.poly);
+    const shape = { letter: f.L, size: n, areaRatio: Number((area(f.poly) / regular).toFixed(2)),
+      smallestAngle: Number(Math.min(...angles).toFixed(0)), regularAngle: Number(((n - 2) * 180 / n).toFixed(0)), crossed, under: [] };
+    // Sample the ring's inside: the share under each other fill.
+    const xs = f.poly.map((p) => p.x), ys = f.poly.map((p) => p.y), step = L / 10;
+    let total = 0;
+    const under = new Map();
+    for (let x = Math.min(...xs); x <= Math.max(...xs); x += step) for (let y = Math.min(...ys); y <= Math.max(...ys); y += step) {
+      if (depth({ x, y }, f.poly) <= TOL) continue;
+      total++;
+      for (const g of fills) if (g !== f && depth({ x, y }, g.poly) > TOL) under.set(g.L, (under.get(g.L) ?? 0) + 1);
+    }
+    shape.under = [...under].map(([by, k]) => ({ by, share: Number((k / Math.max(total, 1)).toFixed(2)) })).sort((a, b) => b.share - a.share);
+    return shape;
+  });
+}
+
+/** Fusion CH stereocentres (a CH carbon in two lettered rings with a wedge or hash starting there)
+ * drawn without their H: the stereo stays on a ring bond. */
+export function fusionHMissing(m, letters) {
+  const lettered = letters.map(([, r]) => r);
+  return m.mol.atoms.filter((a) => a.element === "C" && lettered.filter((r) => r.atomIds.includes(a.id)).length >= 2 &&
+    m.implicitH(a.id) === 1 && !m.neighbours(a.id).some((id) => m.atoms.get(id).element === "H") &&
+    m.bondsOf.get(a.id).some((b) => b.fromAtomId === a.id && isStereoBond(b))).map((a) => a.id);
+}
+
+/** The figure checks. `placed`: [{letter, size, missing}] ring letters as drawn. Returns
+ * {failures: [text], measures}; a figure with any failure is not delivered as finished. */
+export function figureFaults(m, letters, placed = [], why = new Map(), { fusionH = true } = {}) {
+  const failures = [];
+  const shapes = ringShapes(m, letters);
+  for (const s of shapes) {
+    if (s.crossed) failures.push(`ring ${s.letter} is degenerate: its outline crosses itself`);
+    else if (s.areaRatio < LIMITS.ringArea || s.smallestAngle < LIMITS.ringAngle * s.regularAngle) {
+      failures.push(`ring ${s.letter} is a sliver: area ${s.areaRatio} of a regular ${s.size}-ring with its sides, smallest angle ${s.smallestAngle} degrees (regular ${s.regularAngle}); limits ${LIMITS.ringArea} and ${Math.round(LIMITS.ringAngle * s.regularAngle)} degrees`);
+    }
+    for (const u of s.under) if (u.share > LIMITS.hiddenRing) {
+      failures.push(`ring ${u.by}'s fill covers ${Math.round(u.share * 100)}% of ring ${s.letter} (limit ${Math.round(LIMITS.hiddenRing * 100)}%)`);
+    }
+  }
+  const heavy = m.mol.bonds.filter((b) => [b.fromAtomId, b.toAtomId].every((id) => m.atoms.get(id).element !== "H"));
+  const len = (b) => dist(m.atoms.get(b.fromAtomId), m.atoms.get(b.toAtomId));
+  const mid = median(heavy.map(len));
+  const bonds = [];
+  for (const b of heavy) {
+    const ratio = len(b) / mid, stereo = isStereoBond(b);
+    bonds.push({ bond: b.id, ratio: Number(ratio.toFixed(2)), stereo });
+    const at = `${b.id} (${b.fromAtomId}-${b.toAtomId})`;
+    if (stereo && ratio > LIMITS.wedgeStretch) failures.push(`${b.display.bondStyle === "wedge" ? "wedge" : "hash"} ${at} is drawn ${ratio.toFixed(2)}x the median bond length (limit ${LIMITS.wedgeStretch}x)`);
+    else if (!stereo && ratio > LIMITS.bondStretch) failures.push(`bond ${at} is stretched to ${ratio.toFixed(2)}x the median bond length (limit ${LIMITS.bondStretch}x)`);
+  }
+  for (const p of placed) {
+    if (p.missing) failures.push(`ring ${p.letter} has no room for its letter, even at 10 px`);
+    else if (p.size < LIMITS.letterPx) failures.push(`ring ${p.letter}'s letter is shrunk to ${p.size} px to fit (limit ${LIMITS.letterPx} px)`);
+  }
+  // With fusionH off (options) no H was asked for, so none is missing.
+  const missing = fusionH ? fusionHMissing(m, letters) : [];
+  for (const id of missing) {
+    const smiles = m.input.get(id);
+    failures.push(`fusion H dropped at ${id}${smiles !== undefined ? ` (SMILES atom ${smiles})` : ""}: ${why.get(id) ?? "no H drawn"}; its stereo stays on a ring bond`);
+  }
+  return { failures, measures: { medianBondPx: Number(mid.toFixed(1)), rings: shapes, longestBonds: bonds.sort((a, b) => b.ratio - a.ratio).slice(0, 5),
+    letters: placed.map((p) => ({ letter: p.letter, size: p.missing ? null : p.size })), fusionHMissing: missing } };
+}
+
 // ---------- scoring a layout ----------
+/** The options' `layout` values that force one drawing, and the candidate each names. */
+const LAYOUTS = { build: "build", canonical: "canonical-SMILES rebuild", pubchem: "PubChem 2D" };
+/** Another layout replaces ChemDraft's build only when it scores more than this much lower. */
+export const BUILD_MARGIN = 6;
+
 /** Faults of a styled layout: bond crossings, bonds and atoms or labels on fills that are not
  * their own, fill overlapping fill, clashing atoms, stretched bonds. Lower `score` is cleaner. */
 export function layoutFaults(m, rings, letters, carbonLabels = new Set()) {
@@ -1045,9 +1214,13 @@ export function layoutFaults(m, rings, letters, carbonLabels = new Set()) {
     if (!bonded.has([heavy[i].id, heavy[j].id].sort().join(" ")) && dist(heavy[i], heavy[j]) < 0.5 * L) clashes.push(`${heavy[i].id}/${heavy[j].id}`);
   }
   for (const [b, p, q] of seg) if (Math.abs(dist(p, q) / L - 1) > 0.25) stretched.push(`${b.id}${isStereoBond(b) ? " (" + b.display.bondStyle + ")" : ""} ${(dist(p, q) / L).toFixed(2)}x`);
+  // Rings the figure checks would fail as slivers or buried under another fill.
+  const shapes = ringShapes(m, letters);
+  const slivers = shapes.filter((s) => s.crossed || s.areaRatio < LIMITS.ringArea || s.smallestAngle < LIMITS.ringAngle * s.regularAngle).map((s) => s.letter);
+  const hidden = shapes.flatMap((s) => s.under.filter((u) => u.share > LIMITS.hiddenRing).map((u) => `${s.letter} under ${u.by}`));
   const score = 40 * crossings.length + 12 * onFills.length + 10 * overlap / (L * L) + 20 * clashes.length +
-    stretched.reduce((s, t) => s + (/\((wedge|hashed)\)/.test(t) ? 12 : 6), 0);
-  return { score: Number(score.toFixed(1)), crossings, onFills, overlapBondAreas: Number((overlap / (L * L)).toFixed(2)), clashes, stretched };
+    stretched.reduce((s, t) => s + (/\((wedge|hashed)\)/.test(t) ? 12 : 6), 0) + 30 * slivers.length + 30 * hidden.length;
+  return { score: Number(score.toFixed(1)), crossings, onFills, overlapBondAreas: Number((overlap / (L * L)).toFixed(2)), clashes, stretched, slivers, hidden };
 }
 
 /** Choose the cleanest layout among the sources and clear substituents off the fills.
@@ -1094,13 +1267,23 @@ function arrange(mol, buildMol, opts, tools) {
     const faults = layoutFaults(m, rings, assignLetters(rings, opts).letters, carbonLabels);
     candidates.push({ name, cmol, m, faults, cleared, carbonLabels, transferred: !!coords });
   };
+  const want = opts.layout ?? "search";
+  if (want !== "search" && !LAYOUTS[want]) fail(`layout must be "search", ${Object.keys(LAYOUTS).map((k) => `"${k}"`).join(", ")}, not ${JSON.stringify(want)}`);
   consider("build", null);
-  if (opts.layout !== "build") for (const s of tools.sources ?? []) {
+  if (want !== "build") for (const s of tools.sources ?? []) {
+    if (want !== "search" && s.name !== LAYOUTS[want]) continue;
     const coords = transferCoordinates(ref, s);
     if (coords) consider(s.name, coords); else rejected.push(`${s.name}: its atoms could not be matched to the document's`);
   }
-  // The build layout stays unless another is clearly cleaner.
-  const order = [...candidates].sort((a, b) => (a.faults.score - (a.name === "build" ? 6 : 0)) - (b.faults.score - (b.name === "build" ? 6 : 0)));
+  // The build layout stays unless another scores more than BUILD_MARGIN lower (clearly cleaner);
+  // a forced layout is used whatever its score.
+  const order = want === "search"
+    ? [...candidates].sort((a, b) => (a.faults.score - (a.name === "build" ? BUILD_MARGIN : 0)) - (b.faults.score - (b.name === "build" ? BUILD_MARGIN : 0)))
+    : candidates.filter((c) => c.name === LAYOUTS[want]);
+  if (!order.length) {
+    fail(`layout "${want}" is not available: ${rejected.filter((r) => r.startsWith(LAYOUTS[want])).join("; ") ||
+      (want === "pubchem" ? "no PubChem 2D record (<name>-pubchem.sdf): run the pubchem step first" : "the input SMILES is already ChemDraft's canonical SMILES, so that layout is the build: use \"layout\": \"build\"")}`);
+  }
   const notes = [];
   let chosen = null;
   for (const c of order) {
@@ -1111,6 +1294,8 @@ function arrange(mol, buildMol, opts, tools) {
     }
     chosen = c; break;
   }
+  if (!chosen && want !== "search") fail(`layout "${want}" was refused: ${rejected.at(-1)}`);
+  if (want !== "search") notes.push(`Layout forced by the options ("layout": "${want}").`);
   chosen ??= candidates[0];
   // Every kept move, the user's rotate turns included, is checked by render-document too: all at
   // once, then one by one if that fails.
@@ -1183,7 +1368,7 @@ export function style(doc, buildMol, options = {}, tools = {}) {
     const cpage = copy.pages[doc.pages.indexOf(page)];
     const cmol = cpage.objects.find((o) => o.id === mol.id);
     const placed = placeLetters(model(cmol, buildMol), letters.map(([L, r]) => [L, r]), opts, meIds, carbon);
-    for (const p of placed) {
+    for (const p of placed.filter((x) => !x.missing)) {
       const fill = colours.get(p.ring), w = 1.4 * p.size;
       cpage.objects.push({ id: `ring-letter-${p.letter}`, type: "text", text: p.letter, spans: [], rotation: 0,
         x: p.x - w / 2, y: p.y - 0.64 * p.size, width: w, height: 1.25 * p.size,
@@ -1196,19 +1381,27 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   const carbon = variant(new Set(), carbonLabels);
   const picture = variant(new Set(methyls.map((a) => a.id)), new Set());
   for (const p of [...carbon.placed, ...picture.placed]) {
-    if (p.size < 14) warnings.push(`Ring ${p.letter}: letter shrunk to ${p.size}px to fit; check it reads.`);
+    if (p.missing) continue;
     if (p.clearancePx < 0) warnings.push(`Ring ${p.letter}: the letter touches a bond or label even at ${p.size}px; look at it.`);
     if (p.overlapping) warnings.push(`Ring ${p.letter}: the ring is drawn under another ring, so its letter sits where the two overlap; check it reads as ${p.letter}'s.`);
   }
+  // The figure checks, on the final drawing; the smaller of each letter's two sizes counts.
+  const smallest = letters.map(([L]) => [...carbon.placed, ...picture.placed].filter((p) => p.letter === L)
+    .sort((a, b) => (a.missing ? -1 : a.size) - (b.missing ? -1 : b.size))[0]).filter(Boolean);
+  const quality = figureFaults(m, letters, smallest, fusionReasons(warnings), { fusionH: !!opts.fusionH });
   const report = {
-    letters: letters.map(([L, r]) => ({ letter: L, ringKey: r.ringKey, ring: label(r), fill: colours.get(r), letterColour: letterColour(colours.get(r), opts.fillOpacity),
-      letterAt: picture.placed.find((p) => p.letter === L) && (({ x, y, size, clearancePx }) => ({ x, y, size, clearancePx }))(picture.placed.find((p) => p.letter === L)) })),
+    letters: letters.map(([L, r]) => {
+      const at = picture.placed.find((p) => p.letter === L && !p.missing);
+      return { letter: L, ringKey: r.ringKey, ring: label(r), fill: colours.get(r), letterColour: letterColour(colours.get(r), opts.fillOpacity),
+        letterAt: at ? { x: at.x, y: at.y, size: at.size, clearancePx: at.clearancePx } : null };
+    }),
     unlettered: rings.filter((r) => !letters.some(([, s]) => s === r)).map(label),
     fusionHydrogens: hydrogens,
     fusionHydrogensUndone: hydrogensUndone,
     labelsOnFills: { carbon: carbon.labels, picture: picture.labels },
     methyls: methyls.map((a) => ({ atom: a.id, smilesAtom: m.input.get(a.id) })),
     layout,
+    quality: { limits: LIMITS, fusionH: !!opts.fusionH, ...quality },
     notes, warnings: [...new Set(warnings)]
   };
   return { carbon: carbon.copy, picture: picture.copy, report };
@@ -1259,6 +1452,14 @@ export function svgGeometry(svg) {
     if (!id) continue;
     strokes.push({ bond: id, a: { x: Number(attr(tag, "x1")), y: Number(attr(tag, "y1")) }, b: { x: Number(attr(tag, "x2")), y: Number(attr(tag, "y2")) }, w: Number(attr(tag, "stroke-width") ?? 2) });
   }
+  // A hashed bond is a group of tick lines that carries the bond id.
+  for (const g of svg.matchAll(/<g\s((?:[^>"]|"[^"]*")*data-bond-id="[^"]*"(?:[^>"]|"[^"]*")*)>([\s\S]*?)<\/g>/g)) {
+    const id = attr(" " + g[1], "data-bond-id");
+    for (const l of g[2].matchAll(/<line\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
+      const tag = " " + l[1];
+      strokes.push({ bond: id, a: { x: Number(attr(tag, "x1")), y: Number(attr(tag, "y1")) }, b: { x: Number(attr(tag, "x2")), y: Number(attr(tag, "y2")) }, w: Number(attr(tag, "stroke-width") ?? 2) });
+    }
+  }
   for (const p of svg.matchAll(/<polygon\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
     const tag = " " + p[1], id = attr(tag, "data-bond-id");
     const pts = (attr(tag, "points") ?? "").trim().split(/\s+/).map((xy) => xy.split(",").map(Number)).map(([x, y]) => ({ x, y }));
@@ -1267,8 +1468,11 @@ export function svgGeometry(svg) {
   return { labels, texts, strokes };
 }
 
-/** Label pairs that nearly touch, and text objects that sit on a label or a bond. */
-export function collisions(svg, nearPx = 1.5) {
+/** Label pairs that nearly touch, text objects that sit on a label or a bond, and, given
+ * `incident(label, bondId)` (true when the bond belongs to the label's atom), bonds that touch a
+ * label: another atom's bond within 1 px, or the label's own bond running into it (a hash tick or
+ * wedge drawn into the letters). */
+export function collisions(svg, nearPx = 1.5, incident = null) {
   const { labels, texts, strokes } = svgGeometry(svg);
   const out = [];
   for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
@@ -1280,6 +1484,14 @@ export function collisions(svg, nearPx = 1.5) {
     let worst = null;
     for (const s of strokes) { const g = boxSegment(t.box, s.a, s.b) - s.w / 2; if (g < 1 && (!worst || g < worst.g)) worst = { s, g }; }
     if (worst) out.push({ kind: "text-bond", a: t, b: { text: `bond ${worst.s.bond}` }, gapPx: Number(Math.max(0, worst.g).toFixed(1)) });
+  }
+  if (incident) for (const l of labels) {
+    let worst = null;
+    for (const s of strokes) {
+      const g = boxSegment(l.box, s.a, s.b) - s.w / 2;
+      if (g < (incident(l, s.bond) ? 0 : 1) && (!worst || g < worst.g)) worst = { s, g };
+    }
+    if (worst) out.push({ kind: "bond-label", a: l, b: { text: `bond ${worst.s.bond}` }, gapPx: Number(Math.max(0, worst.g).toFixed(1)) });
   }
   return out;
 }
@@ -1381,7 +1593,8 @@ async function pubchem(dir, name, query) {
   if (sdf.ok) fs.writeFileSync(path.join(dir, `${name}-pubchem.sdf`), await sdf.text());
   else console.log(`PubChem has no 2D SDF for CID ${p.CID} (HTTP ${sdf.status}); style will compare ChemDraft's layouts only.`);
   console.log(JSON.stringify({ cid: p.CID, title: p.Title, formula: p.MolecularFormula, inchiKey: p.InChIKey,
-    definedAtomStereo: p.DefinedAtomStereoCount, undefinedAtomStereo: p.UndefinedAtomStereoCount, smiles: p.SMILES }));
+    definedAtomStereo: p.DefinedAtomStereoCount, undefinedAtomStereo: p.UndefinedAtomStereoCount,
+    definedBondStereo: p.DefinedBondStereoCount, undefinedBondStereo: p.UndefinedBondStereoCount, smiles: p.SMILES }));
 }
 
 function runStyle(dir, name, optionsFile, checkout) {
@@ -1418,9 +1631,10 @@ function runStyle(dir, name, optionsFile, checkout) {
     for (const mv of lay.moved) console.log(`Moved ${mv.group}: ${mv.move}${mv.left.length ? `; still ${mv.left.join(", ")}` : ""}`);
     for (const mv of lay.reverted) console.log(`UNDONE: ${mv.group}, ${mv.move}: ${mv.reason}`);
     for (const st of lay.stuck) console.log(`STILL ON A FILL: ${st.group}: ${st.on.join(", ")} (${st.reason})`);
-    const f = lay.faults;
-    console.log(`Remaining: ${f.crossings.length} bond crossing(s)${f.crossings.length ? ` [${f.crossings.join("; ")}]` : ""}, ${f.onFills.length} item(s) on a fill not their own${f.onFills.length ? ` [${f.onFills.join("; ")}]` : ""}, fill overlap ${f.overlapBondAreas} bond-length squares, ${f.stretched.length} stretched bond(s)${f.stretched.length ? ` [${f.stretched.join("; ")}]` : ""}`);
-    for (const l of report.letters) console.log(`${l.letter}  ${l.fill} (${l.letterColour === WHITE ? "white" : "dark"} letter, ${l.letterAt.size}px)  ${l.ring}`);
+    const f = lay.faults, list = (xs) => xs.length ? ` [${xs.join("; ")}]` : "";
+    console.log(`Remaining: ${f.crossings.length} bond crossing(s)${list(f.crossings)}, ${f.onFills.length} item(s) on a fill not their own${list(f.onFills)}, ` +
+      `fill overlap ${f.overlapBondAreas} bond-length squares, ${f.clashes.length} atom clash(es)${list(f.clashes)}, ${f.stretched.length} stretched bond(s)${list(f.stretched)}`);
+    for (const l of report.letters) console.log(`${l.letter}  ${l.fill} (${l.letterColour === WHITE ? "white" : "dark"} letter, ${l.letterAt ? `${l.letterAt.size}px` : "no room"})  ${l.ring}`);
     if (report.unlettered.length) console.log(`Not lettered or filled: ${report.unlettered.length} ring(s) outside the core`);
     console.log(`Fusion H added: ${report.fusionHydrogens.length}; ring methyls (Me in the picture, CH3 in -carbon): ${report.methyls.length}`);
     for (const [copy, list] of Object.entries(report.labelsOnFills)) for (const l of list) {
@@ -1428,10 +1642,24 @@ function runStyle(dir, name, optionsFile, checkout) {
     }
     for (const n of [...report.notes, ...report.warnings]) console.log(n);
     console.log(`Wrote ${name}-carbon.json, ${name}-nicolaou.json and ${name}-style.json`);
+    printFigureVerdict(report.quality.failures);
+    if (report.quality.failures.length) process.exitCode = 1;
   } finally {
     cli.cleanup();
   }
 }
+
+/** The figure checks' verdict, the same in style and check. */
+function printFigureVerdict(failures) {
+  if (!failures.length) { console.log(`Figure checks passed: ${figureChecksText()}.`); return; }
+  console.log(`Figure checks FAILED (${failures.length}):`);
+  for (const f of failures) console.log(`  FAILED ${f}`);
+  console.log("This figure is not finished: do not deliver it as finished. Say exactly what failed, and offer the plain (unfilled) drawing, " +
+    "or the coloured one with these failures named. A forced layout (options \"layout\": \"build\", \"canonical\" or \"pubchem\") may clear them; check again.");
+}
+const figureChecksText = () => `no sliver ring (area >= ${LIMITS.ringArea} of regular, smallest angle >= ${LIMITS.ringAngle} of regular), ` +
+  `no bond over ${LIMITS.bondStretch}x or wedge over ${LIMITS.wedgeStretch}x the median, letters >= ${LIMITS.letterPx} px, ` +
+  `no ring more than ${Math.round(LIMITS.hiddenRing * 100)}% under another fill, every fusion H drawn`;
 
 function relayout(dir, name) {
   const lines = readLines(path.join(dir, `${name}-build.jsonl`));
@@ -1459,6 +1687,46 @@ function identityJobs(dir, name) {
   console.log(`Wrote ${name}-identity-jobs.json with ${jobs.length} job(s)`);
 }
 
+const buildLineOf = (dir, name) => {
+  const lines = readLines(path.join(dir, `${name}-build.jsonl`));
+  return lines.find((l) => l.name === name) ?? lines[0] ?? fail(`No build output in ${name}-build.jsonl`);
+};
+/** Why each fusion H was not drawn, from the style warnings: atom id -> reason. */
+function fusionReasons(warnings) {
+  const why = new Map();
+  for (const w of warnings) {
+    const hit = /^(?:UNDONE: fusion H at|Fusion CH) (\S+?):? (.*?)(?:, so n|; its ring)/.exec(w);
+    if (hit) why.set(hit[1], hit[2]);
+  }
+  return why;
+}
+
+/** The figure checks on each rendered document: failure text -> the documents it holds in. */
+function documentFaults(dir, name, renders) {
+  const out = new Map();
+  const add = (text, where) => { if (!out.has(text)) out.set(text, []); if (!out.get(text).includes(where)) out.get(text).push(where); };
+  const styleFile = path.join(dir, `${name}-style.json`);
+  if (!fs.existsSync(path.join(dir, `${name}-build.jsonl`)) || !fs.existsSync(styleFile)) {
+    add(`the figure checks need ${name}-build.jsonl and ${name}-style.json in ${dir}`, "check");
+    return out;
+  }
+  const buildMol = buildLineOf(dir, name).molecules[0], report = readJson(styleFile);
+  const why = fusionReasons(report.warnings ?? []);
+  for (const file of [...new Set(renders.map((l) => l.document).filter(Boolean))]) {
+    if (!fs.existsSync(file)) { add(`${path.basename(file)} is missing`, path.basename(file)); continue; }
+    const objects = readJson(file).pages.flatMap((p) => p.objects);
+    const mol = objects.find((o) => o.id === buildMol.objectId) ?? objects.find((o) => o.type === "molecule");
+    const m = model(mol, buildMol), rings = describeRings(m, buildMol.rings);
+    const letters = report.letters.map((l) => [l.letter, rings.find((r) => r.ringKey === l.ringKey)]).filter(([, r]) => r);
+    const placed = report.letters.map((l) => {
+      const t = objects.find((o) => o.id === `ring-letter-${l.letter}`);
+      return t ? { letter: l.letter, size: t.style?.fontSizePx ?? 16 } : { letter: l.letter, missing: true };
+    });
+    for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));
+  }
+  return out;
+}
+
 function check(dir, name) {
   const ref = readJson(path.join(dir, `${name}-pubchem.json`));
   const renders = renderLines(dir, name);
@@ -1483,8 +1751,12 @@ function check(dir, name) {
     const mol = doc?.pages.flatMap((p) => p.objects).find((o) => o.type === "molecule");
     const atomAt = (x, y) => mol?.atoms.find((a) => Math.hypot(a.x - x, a.y - y) < 1);
     const bondedTo = (id) => mol.bonds.flatMap((b) => b.fromAtomId === id ? [b.toAtomId] : b.toAtomId === id ? [b.fromAtomId] : []);
+    const incident = mol ? (label, bondId) => {
+      const a = atomAt(label.x, label.y), b = mol.bonds.find((x) => x.id === bondId);
+      return !!a && !!b && (b.fromAtomId === a.id || b.toAtomId === a.id);
+    } : null;
     for (const file of (l.files ?? []).filter((f) => f.toLowerCase().endsWith(".svg"))) {
-      for (const c of collisions(readText(file))) {
+      for (const c of collisions(readText(file), 1.5, incident)) {
         const where = (x) => {
           if (x.x === undefined) return x.id ?? x.text;
           const a = atomAt(x.x, x.y);
@@ -1494,16 +1766,20 @@ function check(dir, name) {
       }
     }
   }
-  writeJson(path.join(dir, `${name}-check.json`), { ...result, failures });
+  const figure = [...documentFaults(dir, name, renders)].map(([text, files]) => `${text} (${files.join(", ")})`);
+  writeJson(path.join(dir, `${name}-check.json`), { ...result, failures, figureFailures: figure, limits: LIMITS });
   console.log(`PubChem CID ${ref.CID} ${ref.Title}: InChIKey ${ref.InChIKey}, stereocentres ${ref.DefinedAtomStereoCount} defined / ${ref.UndefinedAtomStereoCount} undefined`);
   for (const r of result.renders) {
-    console.log(`${r.inchiKeyMatches ? "same" : "DIFFERENT"} InChIKey  ${r.files.join(", ")}${r.picture ? " (picture; Me read as C)" : `  stereo ${r.stereoCenters} specified / ${r.unspecifiedStereoCenters} unspecified, ${r.unspecifiedDoubleBonds} unspecified double bonds`}`);
+    console.log(`${r.inchiKeyMatches ? "same" : "DIFFERENT"} InChIKey  ${r.files.join(", ")}${r.picture ? " (picture: Me read as C; its stereo counts are the carbon document's)" : `  stereo ${r.stereoCenters} specified / ${r.unspecifiedStereoCenters} unspecified, ${r.unspecifiedDoubleBonds} unspecified double bonds`}`);
   }
   for (const c of result.collisions) console.log(`near-touch ${c.kind} in ${c.svg}: ${c.a} vs ${c.b}, gap ${c.gapPx}px`);
   if (result.collisions.length) console.log("Fix a label pair by turning one substituent about its attachment atom (options.rotate), restyle, render and check again; move a ring letter with letterSizePx or by fixing the label it meets.");
+  else console.log("No near-touching labels: no label within 1.5 px of another label or a ring letter, and no bond touching a label.");
   for (const f of failures) console.log(`FAIL ${f}`);
-  console.log(failures.length ? "Identity check FAILED: do not deliver." : "Identity check passed. Now look at the PNGs at full size.");
-  if (failures.length) process.exitCode = 1;
+  console.log(failures.length ? "Identity check FAILED: do not deliver." : "Identity check passed.");
+  printFigureVerdict(figure);
+  if (!failures.length && !figure.length) console.log("Now look at the PNGs at full size.");
+  if (failures.length || figure.length) process.exitCode = 1;
 }
 
 // Compare real paths: the skill is usually reached through a symlink or junction, and
@@ -1516,11 +1792,18 @@ const realPath = (file) => {
 const isMain = process.argv[1] && realPath(path.resolve(process.argv[1])) === realPath(fileURLToPath(import.meta.url));
 if (isMain) {
   const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) {
+    // The header comment above is the help text.
+    const source = readText(fileURLToPath(import.meta.url)).split(/\r?\n/);
+    const text = source.slice(1, source.findIndex((l) => !l.startsWith("//") && l.trim() !== "" && !l.startsWith("#!")));
+    console.log(text.map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    process.exit(0);
+  }
   const at = args.indexOf("--checkout");
   const checkout = at >= 0 ? args.splice(at, 2)[1] : undefined;
   const [command, dir, name, extra] = args;
   try {
-    if (!command || !dir || !name) fail("Usage: node ring-style.mjs <pubchem|style|relayout|identity-jobs|check> <dir> <name> [cid-or-name | options.json] [--checkout <ChemDraft checkout>]");
+    if (!command || !dir || !name) fail("Usage: node ring-style.mjs <pubchem|style|relayout|identity-jobs|check> <dir> <name> [cid-or-name | options.json] [--checkout <ChemDraft checkout>]; --help for more");
     if (!NAME.test(name)) fail(`Name "${name}" must match ${NAME}`);
     if (!fs.existsSync(dir)) fail(`No directory ${dir}`);
     if (command === "pubchem") await pubchem(dir, name, extra ?? fail("pubchem needs a CID or a compound name"));
