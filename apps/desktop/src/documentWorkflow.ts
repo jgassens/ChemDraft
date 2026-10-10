@@ -8468,11 +8468,10 @@ export function applyNativeDoubleBondSideTarget(
       ? { ...candidate, display: { ...(candidate.display ?? {}), doubleBondSide } }
       : candidate
   );
-  const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
 
   return applyPatch(
     document,
-    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { op: "updateObject", objectId: molecule.id, changes: { bonds } },
     { now: phase4Timestamp }
   );
 }

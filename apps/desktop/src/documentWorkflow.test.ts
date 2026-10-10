@@ -6836,6 +6836,96 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(changed).chemistry).toEqual(selectedMolecule(doubleBond).chemistry);
   });
 
+  it.each([
+    ["left", { x: 120, y: 140 }],
+    ["right", { x: 120, y: 100 }],
+    ["center", { x: 120, y: 120 }]
+  ] as const)("keeps an imported stereochemical graph byte-for-byte intact when dragging the second line %s", (side, point) => {
+    const base = createPhase4Document("Imported stereo double bond side");
+    const imported: MoleculeObject = {
+      id: "imported_stereo",
+      type: "molecule",
+      x: 100,
+      y: 100,
+      width: 80,
+      height: 40,
+      rotation: 0,
+      style: {},
+      // This imported molfile retains wedge/hash stereo that native SMILES serialization cannot
+      // represent. Moving a parallel double-bond line must never replace it with a SMILES graph.
+      structureFormat: "molfile-v2000",
+      structure: [
+        "Imported stereochemical molfile",
+        "  ChemDraft",
+        "",
+        "  4  3  0  0  0  0            999 V2000",
+        "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "    1.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "   -0.5000    0.8660    0.0000 F   0  0  0  0  0  0  0  0  0  0  0  0",
+        "    1.5000    0.8660    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+        "  1  2  2  0  0  0  0",
+        "  1  3  1  1  0  0  0",
+        "  2  4  1  6  0  0  0",
+        "M  END"
+      ].join("\n"),
+      chemistry: {
+        formula: "C2H3F",
+        atomCount: 4,
+        bondCount: 3,
+        isotopeLabels: [],
+        stereochemistry: ["a1: wedge/hash stereo retained only by the imported molfile"],
+        warnings: []
+      },
+      atoms: [
+        { id: "a1", element: "C", x: 100, y: 120, formalCharge: 0, labelOffset: { x: 1, y: -2 } },
+        { id: "a2", element: "C", x: 140, y: 120, formalCharge: 0, hydrogenCount: 1 },
+        { id: "a3", element: "F", x: 90, y: 100, formalCharge: 0 },
+        { id: "a4", element: "C", x: 150, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "double", fromAtomId: "a1", toAtomId: "a2", order: "double" },
+        { id: "wedge", fromAtomId: "a1", toAtomId: "a3", order: "single", display: { bondStyle: "wedge" } },
+        { id: "hashed", fromAtomId: "a2", toAtomId: "a4", order: "single", display: { bondStyle: "hashed" } }
+      ],
+      superatoms: [],
+      rGroups: []
+    };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: imported },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [imported.id] }
+    ]);
+    const before = selectedMolecule(document);
+    const changed = applyNativeDoubleBondSideTarget(document, {
+      objectId: imported.id,
+      kind: "bond",
+      bondId: "double",
+      fromAtomId: "a1",
+      toAtomId: "a2",
+      distanceToPointer: 0
+    }, point);
+    const result = selectedMolecule(changed);
+
+    expect(result.bonds.find((bond) => bond.id === "double")?.display?.doubleBondSide).toBe(side);
+    expect(result.structure).toBe(before.structure);
+    expect(result.structureFormat).toBe(before.structureFormat);
+    expect(result.chemistry).toEqual(before.chemistry);
+    expect(JSON.stringify(result.atoms)).toBe(JSON.stringify(before.atoms));
+    for (const beforeBond of before.bonds) {
+      const after = result.bonds.find((bond) => bond.id === beforeBond.id);
+      const { display: _beforeDisplay, ...beforeNonDisplay } = beforeBond;
+      const { display: _afterDisplay, ...afterNonDisplay } = after ?? {};
+      expect(JSON.stringify(afterNonDisplay)).toBe(JSON.stringify(beforeNonDisplay));
+    }
+    expect(result.bonds.find((bond) => bond.id === "wedge")).toEqual(before.bonds[1]);
+    expect(result.bonds.find((bond) => bond.id === "hashed")).toEqual(before.bonds[2]);
+
+    // The drag commit records this one complete display patch as its one undo entry.
+    const history = { past: [document], present: changed, future: [] };
+    expect(history.past).toHaveLength(1);
+    expect(undo(history).present).toBe(document);
+    expect(redo(undo(history)).present).toBe(changed);
+  });
+
   it.each([0.5, 1, 2])("shares preview and commit Center zones at zoom %s", (scale) => {
     const document = setNativeBondOrder(insertNativeSingleBondMolecule(createPhase4Document("Zoom position"), { x: 200, y: 220 }), "bond_001", "double");
     const molecule = selectedMolecule(document);
