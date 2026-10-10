@@ -39,8 +39,12 @@ the superseding entry says so — read the newest entry that touches a subsystem
 Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, built
 to behave the same on macOS and Windows; Windows hands-on verification is pending (see Open items).
 
-- **Drawing interaction fixes.** Whole-object and group rotation magnetically snaps to 15° steps,
-  while holding Shift during a drag uses exact 15° steps. A normal click selects and places a ring;
+- **Drawing interaction fixes.** Whole-object rotation magnetically snaps to absolute 15° multiples,
+  while holding Shift during a drag constrains it to those absolute multiples; group rotation uses
+  15° drag increments. A subtle status-line segment describes the available modifier functions for
+  the current tool, hover, or drag, updates on key presses/releases, clears held keys on blur, and
+  hides during inline editing while preserving result messages. Key labels follow macOS and Windows
+  conventions. A normal click selects and places a ring;
   a long toolbar press opens its flyout; a ring that cannot attach is placed separately with an
   accurate status message. Typing OMe, CF3, NO2, and other labels over a hovered atom continues the
   label rather than activating a canvas shortcut, including during IME composition, and a text-box
@@ -50,7 +54,8 @@ to behave the same on macOS and Windows; Windows hands-on verification is pendin
   text-to-label conversion is only for freshly placed text on the atom itself; the explicit Convert
   Text to Atom Label command reaches one bond length. Centred double-bond position is available from
   the inspector and canvas drag, imports and exports as CDXML `Center`, and is preserved through
-  clipboard, save/reopen, Spin 3D, flatten, and export. Position commands target every double bond
+  clipboard, save/reopen, Spin 3D, flatten, and export. Acyclic C=X double bonds default to centred
+  placement. Position commands target every double bond
   of wholly selected molecules, while part selections target their selected bonds. Every spin uses
   one planner path with stereo and bold display suppressed during the spin. The pre-existing ring
   status bug, which also existed on `main`, is fixed.

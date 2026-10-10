@@ -289,6 +289,23 @@ describe("atom label editor focus", () => {
   }
 
   describe.each(["macos", "windows"] as const)("inline activation guard (%s)", (platform) => {
+    it.each(["atom", "text"] as const)("hides canvas modifier hints while the %s editor owns focus", async (kind) => {
+      setShortcutPlatform(platform);
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const editor = await startInlineEdit(kind);
+      expect(document.activeElement).toBe(editor);
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift", shiftKey: true }));
+      });
+      expect(container.querySelector("[data-modifier-hint]")).toBeNull();
+      expect(document.activeElement).toBe(editor);
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Shift", shiftKey: false }));
+      });
+      expect(container.querySelector("[data-modifier-hint]")).toBeNull();
+      expect(document.activeElement).toBe(editor);
+    });
+
     it.each(["atom", "text"] as const)("window focus restores only the %s editor's DOM focus", async (kind) => {
       setShortcutPlatform(platform);
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

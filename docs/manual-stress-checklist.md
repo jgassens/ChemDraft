@@ -84,7 +84,8 @@ This list is repo-wide and cumulative. Add to it when a slice ships a new intera
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
 User-feedback surfaces added since: rotation snap on molecule, group, and art-object rotation —
-magnetic 15° steps and exact steps when Shift is held mid-drag; a one-click ring placement, a short
+magnetic absolute 15° multiples for whole objects, exact absolute multiples when Shift is held
+mid-drag, and 15° increments for groups; a one-click ring placement, a short
 toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
 placing separately with an accurate status message; OMe, CF3, and NO2 typed over a hovered atom
 building the label without activating the Eraser, including with an IME active; a text-box editor
@@ -92,5 +93,10 @@ surviving focus moving to a palette flyout or popover and back; an orbital lobe 
 putting its tip on the atom and rotating about that tip; a Text-tool click on an atom opening its
 label editor and Convert Text to Atom Label working on a selected text box; centred double-bond
 position from the inspector for a whole molecule and Shift-clicked bonds, by dragging the second line
-onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; and sketch-style
+onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; centred defaults
+for acyclic C=X double bonds; status-line modifier hints on interaction start/end, tool changes,
+and modifier presses/releases, including Shift toggled mid-rotation, Alt selection/eyedropper,
+arrowhead sizing, stretching, measurement angles, and wheel zoom, with result messages retained,
+held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
+and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.

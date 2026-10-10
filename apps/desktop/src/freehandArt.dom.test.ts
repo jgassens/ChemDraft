@@ -703,4 +703,47 @@ describe("freehand art and rotation interactions", () => {
     expect(after.rotation).not.toBeCloseTo(before.rotation, 3);
     expect(graphic.getAttribute("data-art-transform-preview")).toBeNull();
   });
+
+  it("updates modifier hints on rotation start, Shift down/up and blur while preserving result messages", async () => {
+    await renderMainWindow("tool.art.pencil");
+    const objectId = await drawPencilStroke(111);
+    const hint = () => container.querySelector("[data-modifier-hint]")?.textContent ?? "";
+    const message = () => container.querySelector("[data-status-message]")?.textContent;
+    expect(hint()).toContain("show rotate handles");
+    await holdShiftForRotationHandles();
+    const handle = container.querySelector<HTMLButtonElement>(".object-rotate-handle");
+    if (!handle) throw new Error("Expected rotate handle.");
+    const object = debugArtObject(objectId).object;
+    const start = { x: object.x + object.width + 20, y: object.y + object.height / 2 };
+    await act(async () => dispatchPointer(handle, "pointerdown", start, 112, 0.5));
+    expect(hint()).toContain("snap to 15° steps");
+    const statusDuringDrag = message();
+    expect(statusDuringDrag).toBe("Rotate selected art object");
+
+    // No pointer movement is needed to reveal what a newly held modifier will do.
+    await holdShiftForRotationHandles();
+    expect(hint()).toContain("Snapping to 15°");
+    expect(hint()).toContain("release");
+    expect(message()).toBe(statusDuringDrag);
+    await releaseShiftForRotationHandles();
+    expect(hint()).toContain("snap to 15° steps");
+    expect(message()).toBe(statusDuringDrag);
+
+    await holdShiftForRotationHandles();
+    await act(async () => window.dispatchEvent(new FocusEvent("blur")));
+    expect(hint()).toContain("snap to 15° steps");
+    expect(hint()).not.toContain("Snapping");
+    expect(message()).toBe(statusDuringDrag);
+    const end = { ...start, y: start.y + 22 };
+    await act(async () => dispatchPointer(pageElement(), "pointermove", end, 112, 0.5));
+    await waitForPreviewFrame();
+    await act(async () => dispatchPointer(pageElement(), "pointerup", end, 112, 0.5));
+    expect(message()).toBe("Rotated selected art object");
+    expect(hint()).toContain("show rotate handles");
+    expect(hint()).not.toContain("15°");
+    await holdShiftForRotationHandles();
+    expect(message()).toBe("Rotated selected art object");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__?.command("tool.bond"); });
+    expect(hint()).not.toContain("rotate handles");
+  });
 });

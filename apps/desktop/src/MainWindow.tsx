@@ -1,4 +1,5 @@
 import { snapRotationDegrees } from "./rotationSnap";
+import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
   memo,
@@ -1478,7 +1479,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.8.35-codex";
+const CURRENT_BUILD_STAMP = "10.10.10.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2224,6 +2225,10 @@ export function MainWindow({
   // disk writes complete out of order and leave the file disagreeing with the in-memory state.
   const layoutSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const shiftKeyPressedRef = useRef(false);
+  const heldHintModifiersRef = useRef<HeldModifiers>({});
+  const hintHoverTargetRef = useRef<ModifierHintContext["hoverTarget"]>(undefined);
+  const [statusModifierHint, setStatusModifierHint] = useState("");
+  const refreshModifierHintRef = useRef<() => void>(() => undefined);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
@@ -10471,6 +10476,71 @@ export function MainWindow({
     };
   }, []);
 
+  // Observe in capture phase so inline editors and handles can keep their own propagation rules.
+  // Read drag refs after event dispatch: pointer-down/up handlers create/clear them synchronously.
+  // No observer cancels an event or moves focus, and unchanged hints do not cause extra renders.
+  useEffect(() => {
+    let mounted = true;
+    const refreshAfterEvent = () => queueMicrotask(() => {
+      if (mounted) refreshModifierHintRef.current();
+    });
+    const recordModifiers = (event: globalThis.KeyboardEvent | globalThis.PointerEvent) => {
+      heldHintModifiersRef.current = {
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey
+      };
+    };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      recordModifiers(event);
+      const modifier = { Shift: "shiftKey", Alt: "altKey", Meta: "metaKey", Control: "ctrlKey" } as const;
+      const key = modifier[event.key as keyof typeof modifier];
+      if (key) heldHintModifiersRef.current[key] = event.type === "keydown";
+      refreshAfterEvent();
+    };
+    const onPointer = (event: globalThis.PointerEvent) => {
+      recordModifiers(event);
+      const target = event.target instanceof Element ? event.target : undefined;
+      const objectId = target?.closest<HTMLElement>("[data-object-id]")?.dataset.objectId;
+      const object = objectId ? findDocumentObject(documentRef.current, objectId) : undefined;
+      hintHoverTargetRef.current = !target?.closest(".canvas-region") ? undefined
+        : object?.type === "molecule" ? "molecule"
+        : object && isNativeArrowGraphic(object) ? "arrow"
+        : object ? "object" : "empty";
+      refreshAfterEvent();
+    };
+    const clearModifiers = () => {
+      heldHintModifiersRef.current = {};
+      hintHoverTargetRef.current = undefined;
+      refreshModifierHintRef.current();
+    };
+    const onVisibility = () => {
+      if (window.document.visibilityState !== "visible") clearModifiers();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKey, true);
+    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+      window.addEventListener(type, onPointer, true);
+    }
+    window.addEventListener("focusin", refreshAfterEvent, true);
+    window.addEventListener("focusout", refreshAfterEvent, true);
+    window.addEventListener("blur", clearModifiers);
+    window.document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      mounted = false;
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKey, true);
+      for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+        window.removeEventListener(type, onPointer, true);
+      }
+      window.removeEventListener("focusin", refreshAfterEvent, true);
+      window.removeEventListener("focusout", refreshAfterEvent, true);
+      window.removeEventListener("blur", clearModifiers);
+      window.document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   // Ghost-pixel scrub (WKWebView): unmounting or relocating object chrome — transform
   // frames, rotate/tilt buttons, path-edit dots — can leave stale pixels on the canvas
   // because WebKit under-invalidates the chrome's overhang in several compositing
@@ -17060,6 +17130,63 @@ export function MainWindow({
     onAtomLabelFinish: finishAtomLabelEdit
   });
 
+  refreshModifierHintRef.current = () => {
+    let interaction: ModifierHintInteraction = "idle";
+    if (objectRotateDragRef.current || groupTransformDragRef.current?.mode === "rotate") interaction = "rotate-drag";
+    else if (objectResizeDragRef.current || groupTransformDragRef.current?.mode === "resize") interaction = "resize-drag";
+    else if (tapeMeasureDragRef.current) interaction = "measure-drag";
+    else if (graphicMarkerDragRef.current) interaction = "arrowhead-drag";
+    else if (selectionLassoRef.current) interaction = "lasso";
+    else if (selectionMarqueeRef.current) interaction = "marquee";
+    else if (objectDragRef.current || nativePartDragRef.current) interaction = "move-drag";
+    else if (nativeBondDragRef.current || nativeBondEditDragRef.current) interaction = "bond-drag";
+    else if (
+      groupTransformDragRef.current || projectedPlaneTiltDragRef.current || nativePlacementDragRef.current ||
+      graphicPathEditDragRef.current || graphicGradientDragRef.current || graphicCornerRadiusDragRef.current ||
+      freehandArtDragRef.current || mechanismArrowDragRef.current || mechanismHandleDragRef.current ||
+      bezierArtNodeDragRef.current || pathArtDrawRef.current || textResizeRef.current || spin3dStateRef.current
+    ) interaction = "other-drag";
+    const selectedIds = resolveGroupedDocumentObjectIds(document.pages[0].objects, document.selection.objectIds);
+    const selectedIdSet = new Set(selectedIds);
+    const groupSelected = selectedIds.length > 1 && !selectedNativeMoleculePart;
+    const canRevealRotation = Boolean(selectedNativeMoleculePart && nativeTransformableSelectionPart(selectedNativeMoleculePart)) ||
+      document.pages[0].objects.some((object) => {
+        if (!selectedIdSet.has(object.id)) return false;
+        if (object.type === "text") return true;
+        if (object.type === "molecule") return isNativeMoleculeGraph(object);
+        if (!documentObjectSupportsArtTransform(object)) return false;
+        if (object.type === "graphic" && (activeToolState.activeCommandId === "tool.art.directEdit" || activeGraphicTransformObjectId !== object.id)) {
+          // Direct path/gradient controls occupy the frame until the object enters transform mode.
+          return !nativeGraphicPathEditPoints(object) && !nativeGraphicPathNodeEditPoints(object) &&
+            !nativeGraphicLinearGradientHandlePoints(object, effectiveArtPaintTarget) &&
+            !nativeGraphicRadialGradientHandlePoints(object, effectiveArtPaintTarget);
+        }
+        return true;
+      });
+    const selectionHandles = groupSelected
+      ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, selectedIds).length > 1 ? "tilt" : "none"
+      : canRevealRotation ? "rotate" : "none";
+    const markerObject = graphicMarkerDragRef.current
+      ? findDocumentObject(graphicMarkerDragRef.current.startDocument, graphicMarkerDragRef.current.objectId)
+      : undefined;
+    const data = markerObject?.type === "graphic" ? markerObject.data : undefined;
+    const focusTarget = window.document.activeElement;
+    setStatusModifierHint(modifierHint({
+      activeTool: activeToolState.activeCommandId,
+      interaction,
+      hoverTarget: shiftHoveredArrowId ? "arrow" : hintHoverTargetRef.current,
+      hasSelection: selectedIds.length > 0 || selectedNativeMoleculePart !== undefined,
+      selectionHandles,
+      inlineEditing: Boolean(activeAtomLabelEdit || activeTextEditObjectId || activeEditorObjectId || rotationInput || objectResizeInput) ||
+        shouldIgnoreShortcutTarget(focusTarget, "Shift") || isBlockedByModalDialog(focusTarget),
+      dualShaftArrow: data?.dualShaft === true,
+      twoArrowheads: Boolean(data?.markerStart && data.markerStart.kind !== "none" && data.markerEnd && data.markerEnd.kind !== "none"),
+      lassoSubtracting: selectionLassoRef.current?.subtracting
+    }, heldHintModifiersRef.current));
+  };
+  // Also refresh after command-driven tool/selection changes and interaction cancellation.
+  useEffect(() => { refreshModifierHintRef.current(); });
+
   return (
     <main
       className={[
@@ -17715,30 +17842,34 @@ export function MainWindow({
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
         <div
-          aria-live="polite"
-          role="status"
           style={{
             position: "absolute",
             bottom: 8,
             left: 8,
-            maxWidth: "min(560px, calc(100% - 280px))",
-            overflow: "hidden",
+            maxWidth: "calc(100% - 240px)",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "baseline",
+            gap: "2px 10px",
             color: "var(--cd-text-secondary)",
             fontSize: 11,
             pointerEvents: "none",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
             zIndex: 1000
           }}
         >
-          {interactive3dWorkspace
-            ? [
-                interactive3dWorkspace.status,
-                interactive3dWorkspace.energyLabel,
-                ...new Set(interactive3dWorkspace.session?.warnings ?? []),
-                "Esc to close"
-              ].filter(Boolean).join(" · ")
-            : hoveredNativeWarning ?? status}
+          <span data-status-message role="status" aria-live="polite" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {interactive3dWorkspace
+              ? [
+                  interactive3dWorkspace.status,
+                  interactive3dWorkspace.energyLabel,
+                  ...new Set(interactive3dWorkspace.session?.warnings ?? []),
+                  "Esc to close"
+                ].filter(Boolean).join(" · ")
+              : hoveredNativeWarning ?? status}
+          </span>
+          {statusModifierHint ? (
+            <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
+          ) : null}
         </div>
       </section>
       {objectContextMenu ? (
