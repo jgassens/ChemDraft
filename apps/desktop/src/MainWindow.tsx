@@ -383,6 +383,7 @@ import {
   applyAnalysisToSelectedMolecule,
   analysisFacingStructure,
   analysisSubjectKey,
+  validationFacingStructure,
   nativeMoleculeUnspellableLabels,
   applyFreeformSingleBondToolAtPoint,
   applyNativeTemplateToolAtTarget,
@@ -8185,12 +8186,10 @@ export function MainWindow({
           const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
           registerRdkitWasmLoader();
 
-          // The real engine reads molfiles too, so the format is passed through rather than
-          // collapsed to "unknown" as it was under the SMILES-only placeholder.
-          const analysis = await chemistryAdapter.analyzeStructure({
-            format: molecule.structureFormat,
-            value: molecule.structure
-          });
+          // The live graph, expanded the way the Molecular Inspector reads it — never the stored
+          // structure, which after a 3D flatten spells every label as a dummy "*" and would put the
+          // placeholder graph's formula over the drawing's (validationFacingStructure).
+          const analysis = await chemistryAdapter.analyzeStructure(validationFacingStructure(molecule));
           setLastAnalysis(analysis);
           publishAnalysisWindow(
             VALIDATION_RESULT_WINDOW_ID,

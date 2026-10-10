@@ -100,7 +100,7 @@ export function expandNativeLabelGroupsInGraph(
     return id;
   };
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
-  const bondLength = typicalBondLength(atoms, bonds);
+  const bondLength = labelGroupBondLength(atoms, bonds);
   const expandedAtoms = [...atoms];
   const addedAtoms: MoleculeAtom[] = [];
   const addedBonds: MoleculeBond[] = [];
@@ -155,7 +155,7 @@ export function expandNativeLabelGroupsInGraph(
       // bond ("OMe" carrying −1, methoxide) keeps the table's own orientation.
       place(group.definition, atom.id, atom, neighborAngles[0] ?? Math.PI);
     } else {
-      substituentDirections(neighborAngles, group.substituents.length).forEach((direction, substituentIndex) => {
+      labelGroupOpenDirections(neighborAngles, group.substituents.length).forEach((direction, substituentIndex) => {
         const definition = group.substituents[substituentIndex]!;
         groupIndex += 1;
         const substituentId = fresh(usedAtomIds, `${atom.id}_g${groupIndex}`);
@@ -204,7 +204,7 @@ function groupAttachmentAtom(atom: MoleculeAtom, attachment: NativeLabelGroupAtt
 }
 
 /** The median drawn bond length, or the default style's when nothing is drawn. */
-function typicalBondLength(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): number {
+export function labelGroupBondLength(atoms: readonly MoleculeAtom[], bonds: readonly MoleculeBond[]): number {
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
   const lengths = bonds
     .map((bond) => {
@@ -222,7 +222,7 @@ function typicalBondLength(atoms: readonly MoleculeAtom[], bonds: readonly Molec
  * bond: the substituents share the rest of the circle evenly (NMe2 at 120°). Otherwise each goes
  * into the middle of the widest gap left, so a ring "NMe" points out of the ring.
  */
-function substituentDirections(taken: readonly number[], count: number): number[] {
+export function labelGroupOpenDirections(taken: readonly number[], count: number): number[] {
   if (taken.length === 0) {
     return Array.from({ length: count }, (_, index) => (2 * Math.PI * index) / count);
   }

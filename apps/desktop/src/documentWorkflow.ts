@@ -7249,9 +7249,10 @@ export function applyNativeRingAttachAtAtomTarget(
   if (!sourceAtom) {
     return document;
   }
-  // A group label (Ph, OMe, CO2Me) takes at most its free valence — one bond — and a ring attached
-  // here would give it two, chemistry nobody drew; any other non-element label takes no bonds at
-  // all. Refuse, so "relabel it to an element first" stays the whole story for rings.
+  // Rings never attach at a non-element label. A table group (Ph, OMe, CO2Me) takes one bond and a
+  // ring would give it two; a composite such as "NMe" or "CMe2" may take two, but a ring template
+  // laid over its head is chemistry nobody drew; any other label takes no bonds at all. Refuse
+  // them all, so "relabel it to an element first" stays the whole story for rings.
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
     return document;
   }
@@ -17129,11 +17130,14 @@ export function copyAsMergedMolecule(
  * system. Label handling is the same as the plugins' V2000 form: a condensed label the label grammar
  * spells as one element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with
  * that many hydrogens, so ethanol drawn as C–C–OH keeps its formula and mass. Aromatic bonds are
- * written at their Kekulé orders, so pyrrole's "NH" is spelled too. Labels that grammar cannot spell
- * ("Ph", "OMe"), and spelled labels on an atom whose aromatic bonds have no resolved Kekulé order
- * (where the stated hydrogens have no exact valence), stay R-group placeholders —
- * `nativeMoleculeUnspellableLabels` names the first kind. What V3000 adds is room: it has no
- * 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure` string, silently.
+ * written at their Kekulé orders, so pyrrole's "NH" is spelled too. A group label whose bonds fit
+ * it ("Ph", "OMe", "NMe2", a bonded "Ts") is written out as its atoms, appended after the drawn ones
+ * so every drawn atom keeps its index (`expandNativeMoleculeLabelGroups`). What is left — a
+ * placeholder, unrecognized text, a flagged group, a bonded "Ar", and spelled labels on an atom whose
+ * aromatic bonds have no resolved Kekulé order (where the stated hydrogens have no exact valence) —
+ * stays an R-group placeholder; `nativeMoleculeUnspellableLabels` names those labels. What V3000 adds
+ * is room: it has no 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure`
+ * string, silently.
  */
 export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
@@ -17172,6 +17176,25 @@ export function analysisFacingStructure(molecule: MoleculeObject): { structureFo
 }
 
 /**
+ * What Validate hands the engine for `molecule`. A drawn graph is read from its live atoms through
+ * `analysisFacingStructure`, so a valid group is analysed as the atoms it stands for. The stored
+ * `structure` is never trusted for a graph: after a 3D flatten it is a molfile with a dummy "*" for
+ * every label, and an engine result for that placeholder graph would overwrite the correct formula
+ * (once a valid group no longer counts as a placeholder, nothing else would stop it). A molecule with
+ * no graph keeps its stored structure, as before.
+ */
+export function validationFacingStructure(
+  molecule: MoleculeObject
+): { format: MoleculeObject["structureFormat"]; value: string } {
+  if (molecule.atoms.length === 0) {
+    return { format: molecule.structureFormat, value: molecule.structure };
+  }
+  const { structureFormat, structure } = analysisFacingStructure(molecule);
+  // analysisFacingStructure writes a drawn graph as "molfile-v3000", one of the stored formats.
+  return { format: structureFormat as MoleculeObject["structureFormat"], value: structure };
+}
+
+/**
  * A coordinate-free identity for what an analysis of `molecule` describes: its atoms and bonds with
  * positions left out, so moving or rotating the molecule never reads as a stale report, while any
  * change to its chemistry (an element, a charge, a bond order, a label) does.
@@ -17206,9 +17229,11 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
 }
 
 /**
- * The copy scope as one merged molfile. `warningsOut` receives the writer's lossy-emission notes
- * (V2000 flattens dative bonds to single; non-element labels write as dummy atoms) — V3000 keeps
- * dative bonds as coordination type 9 and stays silent about them.
+ * The copy scope as one merged molfile. A group label whose bonds fit it is written out as its atoms
+ * inside a superatom (`SUP`) S-group carrying the label. `warningsOut` receives the writer's
+ * lossy-emission notes (V2000 flattens dative bonds to single; any other label — a placeholder,
+ * unrecognized text, a flagged group, a bonded "Ar" — writes as a dummy atom) — V3000 keeps dative
+ * bonds as coordination type 9 and stays silent about them.
  */
 export function copyAsMolfile(
   document: ChemDraftDocument,
@@ -18536,13 +18561,14 @@ function reorderMoleculeBonds(
 }
 
 function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
-  if (nativeElementFromAtomLabel(atom.element) !== undefined) {
-    return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
-  }
   // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
   // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
-  // unrecognized text) has none to fill and takes no bonds from the drawing tools.
-  const reading = nativeAtomLabelReading(atom.element);
+  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A bonded "Ac",
+  // "Pr" or "Ts" is such a group too; unbonded it is an element and takes its first bond like one.
+  const reading = nativeAtomLabelReading(atom.element, { bonded: valenceUsed > 0 });
+  if (reading.kind === "element") {
+    return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
+  }
   if (reading.kind !== "group") {
     return 0;
   }

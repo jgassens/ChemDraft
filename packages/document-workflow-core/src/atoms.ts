@@ -24,12 +24,16 @@ import {
   abbreviationForLabel,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
+  bondedElementLabelMeaning,
+  isBondedGenericAtomLabel,
   isGenericAtomLabel,
   type AbbreviationDefinition
 } from "@chemdraft/template-library";
 
 import {
   expandNativeLabelGroupsInGraph,
+  labelGroupBondLength,
+  labelGroupOpenDirections,
   nativeLabelGroupAttachment,
   type NativeLabelGroup,
   type NativeLabelGroupExpansionResult
@@ -361,6 +365,15 @@ export function nativeAtomValidationState(
     };
   }
 
+  // An element symbol chemists write on bonds ("Ac", "Pr", "Ts") is that group on a bonded atom, so
+  // it is checked as one: a "Ts" with two bonds is a tosyl with one too many, not tennessine.
+  if (element && (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0) {
+    const bondedReading = nativeAtomLabelReading(atom.element, { bonded: true });
+    if (bondedReading.kind === "group") {
+      return nativeLabelGroupValidationState(atom, atom.element.trim(), bondedReading.group, valenceUsed, effectiveFormalCharge);
+    }
+  }
+
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
     const reading = nativeAtomLabelReading(atom.element);
@@ -532,7 +545,7 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
     return { kind: "heavy-hydrogen", element: trimmed };
   }
   if (context.bonded === true) {
-    if (trimmed === "Ar") {
+    if (isBondedGenericAtomLabel(trimmed)) {
       return { kind: "generic" };
     }
     // "Ac", "Pr", "Ts" on a bond are acetyl, n-propyl and tosyl, never actinium, praseodymium or
@@ -763,7 +776,9 @@ export function nativeExpandableLabelGroups(
 ): Map<string, NativeLabelGroup> {
   const groups = new Map<string, NativeLabelGroup>();
   for (const atom of atoms) {
-    const reading = nativeAtomLabelReading(atom.element);
+    // Bonded, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`).
+    const bonded = (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0;
+    const reading = nativeAtomLabelReading(atom.element, { bonded });
     if (reading.kind !== "group" || resolution.unresolvedAtomIds.has(atom.id)) continue;
     const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
     if (nativeLabelGroupVerdict(reading.group, valenceUsed, atom.formalCharge).valid) {
@@ -782,7 +797,72 @@ export function expandNativeLabelGroups(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): NativeLabelGroupExpansionResult {
-  return expandNativeLabelGroupsInGraph(atoms, bonds, nativeExpandableLabelGroups(atoms, bonds));
+  return expandNativeLabelGroupsWithStatedHydrogens(atoms, bonds, nativeExpandableLabelGroups(atoms, bonds));
+}
+
+/**
+ * `expandNativeLabelGroupsInGraph`, with each group's stated hydrogens made explicit wherever the
+ * valence model would not supply them. A group's attachment atom states its hydrogens ("SHMe" is an
+ * S carrying one H); written out as an ordinary atom it gets the model's implicit count instead.
+ * The two agree except where the group sits in a hypervalent state the octet count does not reach:
+ * "SHMe" on two bonds is an S(IV) with an H, to which the model gives no implicit hydrogen while a
+ * molfile reader gives one. There the stated hydrogens are written as explicit H atoms, so the
+ * formula, the SMILES and every engine count exactly the hydrogens the label states.
+ */
+function expandNativeLabelGroupsWithStatedHydrogens(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  groups: ReadonlyMap<string, NativeLabelGroup>
+): NativeLabelGroupExpansionResult {
+  const expanded = expandNativeLabelGroupsInGraph(atoms, bonds, groups);
+  if (expanded.expansions.length === 0) {
+    return expanded;
+  }
+  const resolution = nativeBondOrderResolution(expanded.atoms, expanded.bonds);
+  const atomById = new Map(expanded.atoms.map((atom) => [atom.id, atom]));
+  const usedAtomIds = new Set(expanded.atoms.map((atom) => atom.id));
+  const usedBondIds = new Set(expanded.bonds.map((bond) => bond.id));
+  const fresh = (used: Set<string>, base: string): string => {
+    let id = base;
+    for (let suffix = 2; used.has(id); suffix += 1) id = `${base}_${suffix}`;
+    used.add(id);
+    return id;
+  };
+  const addedAtoms: MoleculeAtom[] = [];
+  const addedBonds: MoleculeBond[] = [];
+  const expansions = expanded.expansions.map((expansion) => {
+    const group = groups.get(expansion.atomId);
+    const atom = atomById.get(expansion.atomId);
+    const element = atom ? nativeElementFromAtomLabel(atom.element) : undefined;
+    if (!group || !atom || !element) return expansion;
+    const stated = group.kind === "composite" ? group.hydrogens : group.definition.atoms[0]!.hydrogens;
+    const implicit = nativeImplicitHydrogenCount(
+      element, resolution.bondOrderUsage.get(atom.id) ?? 0, atom.formalCharge, atom.markRadicals ?? 0
+    );
+    const missing = stated - implicit;
+    if (missing <= 0) return expansion;
+    const neighborAngles = (resolution.bondsByAtom.get(atom.id) ?? [])
+      .map((bond) => atomById.get(bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId))
+      .filter((neighbor): neighbor is MoleculeAtom => neighbor !== undefined)
+      .map((neighbor) => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+    const length = 0.6 * labelGroupBondLength(expanded.atoms, expanded.bonds);
+    const hydrogenIds = labelGroupOpenDirections(neighborAngles, missing).map((direction, index) => {
+      const id = fresh(usedAtomIds, `${atom.id}_h${index + 1}`);
+      addedAtoms.push({
+        id, element: "H", formalCharge: 0,
+        x: atom.x + length * Math.cos(direction),
+        y: atom.y + length * Math.sin(direction)
+      });
+      addedBonds.push({ id: fresh(usedBondIds, `${atom.id}_hb${index + 1}`), fromAtomId: atom.id, toAtomId: id, order: "single" });
+      return id;
+    });
+    return { ...expansion, atomIds: [...expansion.atomIds, ...hydrogenIds] };
+  });
+  return {
+    atoms: [...expanded.atoms, ...addedAtoms],
+    bonds: [...expanded.bonds, ...addedBonds],
+    expansions
+  };
 }
 
 /**
@@ -804,23 +884,30 @@ export function expandNativeMoleculeLabelGroups(molecule: MoleculeObject): {
 }
 
 /**
- * Atoms whose label is an element symbol but which stand for a group in this drawing, with the
- * reason: today only a bonded "Ar", which is how chemists write aryl (`nativeAtomLabelReading`).
- * Argon makes no bonds, so counting or exporting a bonded "Ar" as argon would invent chemistry;
- * these count nothing and export as warned placeholders, like any other placeholder label.
+ * Atoms whose label is an element symbol but which stand for something else on a bond and cannot be
+ * written out as atoms, with the reason. A bonded "Ar" is aryl, a placeholder with no structure; a
+ * bonded "Ac", "Pr" or "Ts" whose bonds don't fit its group is a flagged group. Counting or exporting
+ * either as argon, actinium, praseodymium or tennessine would invent chemistry, so these count
+ * nothing and export as warned placeholders, like any other placeholder label. A bonded "Ts" whose
+ * bonds do fit is not listed: it is expanded into tosyl like any group.
  */
 export function nativeElementLabelPlaceholders(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): Map<string, string> {
   const bonded = new Set(bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
-  return new Map(atoms
-    .filter((atom) =>
-      bonded.has(atom.id) &&
-      nativeElementFromAtomLabel(atom.element) !== undefined &&
-      nativeAtomLabelReading(atom.element, { bonded: true }).kind === "generic"
-    )
-    .map((atom) => [atom.id, `a bonded "${atom.element.trim()}" is aryl, not argon`]));
+  let expandable: ReadonlyMap<string, NativeLabelGroup> | undefined;
+  const placeholders = new Map<string, string>();
+  for (const atom of atoms) {
+    const label = atom.element.trim();
+    const meaning = bondedElementLabelMeaning(label);
+    if (!bonded.has(atom.id) || meaning === undefined || nativeElementFromAtomLabel(label) === undefined) continue;
+    expandable ??= nativeExpandableLabelGroups(atoms, bonds);
+    if (!expandable.has(atom.id)) {
+      placeholders.set(atom.id, `a bonded "${label}" is ${meaning}, not the element ${label}`);
+    }
+  }
+  return placeholders;
 }
 
 /**
@@ -873,7 +960,7 @@ export function nativeSingleBondGraphMetadata(
   // nothing, like every other placeholder, until it is fixed.
   const expandableGroups = nativeExpandableLabelGroups(atoms, bonds, drawnResolution);
   const expanded = expandableGroups.size > 0
-    ? expandNativeLabelGroupsInGraph(atoms, bonds, expandableGroups)
+    ? expandNativeLabelGroupsWithStatedHydrogens(atoms, bonds, expandableGroups)
     : undefined;
   const countedAtoms = expanded?.atoms ?? atoms;
   const countedBonds = expanded?.bonds ?? bonds;

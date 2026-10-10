@@ -89,8 +89,15 @@ export async function moleculeSmiles(
     });
   }
   warnings.push(...bondOrders.warnings.aromatic.map(bondOrderWarning));
-  // A stored string from before abbreviations expanded would still say [*]; write the graph instead.
-  if (expanded.expansions.length === 0 && molecule.structureFormat === "smiles" && molecule.structure) {
+  // The stored string is trusted only when no label changes what the graph means: one from before
+  // abbreviations expanded would still say [*], and one stored for a bonded "Ar" says argon ([Ar]O)
+  // while the warning above promises [*]. Either way, write the current graph instead.
+  if (
+    expanded.expansions.length === 0 &&
+    expanded.placeholderAtoms.size === 0 &&
+    molecule.structureFormat === "smiles" &&
+    molecule.structure
+  ) {
     return molecule.structure;
   }
   return nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
