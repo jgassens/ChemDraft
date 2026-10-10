@@ -1,0 +1,1052 @@
+{
+  "schema": "chemdraft.document.v1",
+  "id": "doc_001",
+  "title": "paclitaxel",
+  "createdAt": "2026-10-10T16:28:48.079Z",
+  "updatedAt": "2026-05-29T00:00:00.000Z",
+  "pages": [
+    {
+      "id": "page_001",
+      "width": 816,
+      "height": 1056,
+      "margin": {
+        "top": 72,
+        "right": 72,
+        "bottom": 72,
+        "left": 72
+      },
+      "layout": {
+        "presetId": "letter",
+        "orientation": "portrait",
+        "widthPx": 816,
+        "heightPx": 1056,
+        "marginTopPx": 72,
+        "marginRightPx": 72,
+        "marginBottomPx": 72,
+        "marginLeftPx": 72,
+        "sourceUnit": "inch",
+        "sourceWidth": 8.5,
+        "sourceHeight": 11
+      },
+      "objects": [
+        {
+          "id": "mol_clipboard_001",
+          "x": 246.3111041782132,
+          "y": 365.4483768080582,
+          "width": 323.3777916435736,
+          "height": 325.1032463838836,
+          "rotation": 0,
+          "style": {
+            "chainAngleDegrees": 120,
+            "bondLengthPx": 28,
+            "bondStrokeWidthPx": 2,
+            "bondBoldWidthPx": 4.8,
+            "bondColor": "#000000",
+            "bondLineCap": "butt",
+            "bondSpacingMode": "absolute",
+            "bondSpacingPercent": 18,
+            "multipleBondGapPx": 4.8,
+            "doubleBondInsetPx": 4.5,
+            "bondMarginWidthPx": 6,
+            "bondHashSpacingPx": 9,
+            "bondOverlapClearancePx": 6,
+            "atomIndicatorShowQuery": true,
+            "atomIndicatorShowStereochemistry": false,
+            "atomIndicatorShowEnhancedStereochemistry": true,
+            "atomIndicatorShowAtomNumbers": false,
+            "bondIndicatorShowQuery": true,
+            "bondIndicatorShowStereochemistry": false,
+            "bondIndicatorShowReaction": true,
+            "atomLabelFontFamily": "Arial, Helvetica, sans-serif",
+            "atomLabelFontSizePx": 15,
+            "atomLabelFontWeight": 400,
+            "atomLabelFontStyle": "normal",
+            "atomLabelColor": "#000000",
+            "atomLabelBackgroundColor": "#ffffff",
+            "atomLabelPaddingPx": 2,
+            "atomLabelBondClearancePx": 7,
+            "atomLabelAlignment": "automatic",
+            "atomLabelPlacement": "automatic",
+            "atomLabelShowTerminalCarbons": false,
+            "atomLabelHideImplicitHydrogens": false,
+            "stylePresetId": "chemdraft.synthetic",
+            "source": "clipboard-smiles"
+          },
+          "compatibility": {
+            "sourceFormat": "smiles",
+            "warnings": [
+              {
+                "code": "clipboard.smiles_imported",
+                "message": "Generated an editable 2D structure from pasted SMILES."
+              }
+            ],
+            "unknown": {
+              "smiles": "CC1=C2[C@H](C(=O)[C@@]3([C@H](C[C@@H]4[C@]([C@H]3[C@@H]([C@@](C2(C)C)(C[C@@H]1OC(=O)[C@@H]([C@H](C5=CC=CC=C5)NC(=O)C6=CC=CC=C6)O)O)OC(=O)C7=CC=CC=C7)(CO4)OC(=O)C)O)C)OC(=O)C"
+            }
+          },
+          "type": "molecule",
+          "structureFormat": "molfile-v2000",
+          "structure": "\n  ChemDraft\n\n 62 68  0  0  1  0  0  0  0  0999 V2000\n  380.7356 -609.7736    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  403.7525 -594.4871    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  429.5130 -605.8494    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  436.7768 -629.6534    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  465.6126 -636.8778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  470.9761 -664.4993    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  492.2502 -617.4984    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  514.6149 -633.7913    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  540.6228 -622.1873    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  544.2660 -593.4751    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  522.0193 -575.7374    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  496.2700 -585.7335    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  475.8280 -563.6330    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  451.1750 -568.7659    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  446.2163 -590.7878    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  457.5674 -616.5258    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  474.2144 -588.0554    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  428.5404 -551.9165    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  402.8698 -565.4883    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  377.9863 -551.1462    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  377.4298 -522.5634    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  401.5093 -508.1033    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  352.4338 -508.5587    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  352.0066 -480.0546    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  376.0580 -465.8194    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  376.0130 -437.7032    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  400.2949 -423.5692    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  424.6668 -437.6077    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  424.7848 -465.7239    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  400.4636 -479.7904    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  327.4660 -466.0780    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n  327.4154 -437.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  351.7536 -423.7154    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  302.9930 -423.6142    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  278.6661 -437.6808    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  254.3111 -423.6198    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  254.3223 -395.5205    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  278.6492 -381.4484    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  303.0098 -395.5093    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  328.2475 -522.9345    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  457.2469 -541.3188    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  487.0835 -538.3053    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  473.8096 -515.4402    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  445.7553 -515.0073    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  488.6520 -491.7205    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  474.9790 -467.2868    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  489.2986 -443.1736    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  517.4035 -443.5446    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  531.1833 -467.9390    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  516.7738 -492.0129    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  539.6502 -553.7999    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  561.6889 -571.5376    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  505.6589 -554.4071    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  515.9024 -529.5686    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  543.7600 -525.4757    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  498.7493 -508.6487    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  511.6633 -661.7163    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  492.2502 -645.6034    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  419.0671 -651.9507    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  391.6312 -650.6576    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  376.9463 -674.5516    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  378.7341 -626.5163    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0\n  2  3  2  0  0  0  0\n  3  4  1  0  0  0  0\n  4  5  1  0  0  0  0\n  5  6  2  0  0  0  0\n  5  7  1  0  0  0  0\n  7  8  1  0  0  0  0\n  8  9  1  0  0  0  0\n 10  9  1  6  0  0  0\n 10 11  1  0  0  0  0\n 11 12  1  0  0  0  0\n 12 13  1  6  0  0  0\n 13 14  1  0  0  0  0\n 14 15  1  0  0  0  0\n 15 16  1  0  0  0  0\n 15 17  1  0  0  0  0\n 14 18  1  0  0  0  0\n 18 19  1  0  0  0  0\n 19 20  1  1  0  0  0\n 20 21  1  0  0  0  0\n 21 22  2  0  0  0  0\n 21 23  1  0  0  0  0\n 23 24  1  0  0  0  0\n 24 25  1  0  0  0  0\n 25 26  2  0  0  0  0\n 26 27  1  0  0  0  0\n 27 28  2  0  0  0  0\n 28 29  1  0  0  0  0\n 29 30  2  0  0  0  0\n 24 31  1  1  0  0  0\n 31 32  1  0  0  0  0\n 32 33  2  0  0  0  0\n 32 34  1  0  0  0  0\n 34 35  2  0  0  0  0\n 35 36  1  0  0  0  0\n 36 37  2  0  0  0  0\n 37 38  1  0  0  0  0\n 38 39  2  0  0  0  0\n 23 40  1  6  0  0  0\n 14 41  1  6  0  0  0\n 13 42  1  1  0  0  0\n 42 43  1  0  0  0  0\n 43 44  2  0  0  0  0\n 43 45  1  0  0  0  0\n 45 46  2  0  0  0  0\n 46 47  1  0  0  0  0\n 47 48  2  0  0  0  0\n 48 49  1  0  0  0  0\n 49 50  2  0  0  0  0\n 11 51  1  0  0  0  0\n 51 52  1  0  0  0  0\n 11 53  1  1  0  0  0\n 53 54  1  0  0  0  0\n 54 55  2  0  0  0  0\n 54 56  1  0  0  0  0\n  8 57  1  6  0  0  0\n  7 58  1  6  0  0  0\n  4 59  1  6  0  0  0\n 59 60  1  0  0  0  0\n 60 61  2  0  0  0  0\n 60 62  1  0  0  0  0\n 19  2  1  0  0  0  0\n 15  3  1  0  0  0  0\n 12  7  1  0  0  0  0\n 52 10  1  0  0  0  0\n 30 25  1  0  0  0  0\n 39 34  1  0  0  0  0\n 50 45  1  0  0  0  0\nM  END\n",
+          "chemistry": {
+            "formula": "C47H51NO14",
+            "averageMass": 853.918,
+            "exactMass": 853.33096,
+            "atomCount": 62,
+            "bondCount": 68,
+            "totalCharge": 0,
+            "radicalCount": 0,
+            "isotopeLabels": [],
+            "stereochemistry": [],
+            "warnings": []
+          },
+          "atoms": [
+            {
+              "id": "a0",
+              "element": "C",
+              "x": 380.73556233286064,
+              "y": 609.7736356054319,
+              "formalCharge": 0
+            },
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 403.7524935235542,
+              "y": 594.4871099807383,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "C",
+              "x": 429.51301592603545,
+              "y": 605.8494006344735,
+              "formalCharge": 0
+            },
+            {
+              "id": "a3",
+              "element": "C",
+              "x": 436.7767861015059,
+              "y": 629.6534276646142,
+              "formalCharge": 0
+            },
+            {
+              "id": "a4",
+              "element": "C",
+              "x": 465.6126043909703,
+              "y": 636.8778430481124,
+              "formalCharge": 0
+            },
+            {
+              "id": "a5",
+              "element": "O",
+              "x": 470.97610032548954,
+              "y": 664.4992848995724,
+              "formalCharge": 0
+            },
+            {
+              "id": "a6",
+              "element": "C",
+              "x": 492.25017644312135,
+              "y": 617.4984190582929,
+              "formalCharge": 0
+            },
+            {
+              "id": "a7",
+              "element": "C",
+              "x": 514.6149425097015,
+              "y": 633.7913029348513,
+              "formalCharge": 0
+            },
+            {
+              "id": "a8",
+              "element": "C",
+              "x": 540.6228378902946,
+              "y": 622.1872614161431,
+              "formalCharge": 0
+            },
+            {
+              "id": "a9",
+              "element": "C",
+              "x": 544.2659672043077,
+              "y": 593.4751296157347,
+              "formalCharge": 0
+            },
+            {
+              "id": "a10",
+              "element": "C",
+              "x": 522.0192655136447,
+              "y": 575.7373626624767,
+              "formalCharge": 0
+            },
+            {
+              "id": "a11",
+              "element": "C",
+              "x": 496.26998733744125,
+              "y": 585.733479823457,
+              "formalCharge": 0
+            },
+            {
+              "id": "a12",
+              "element": "C",
+              "x": 475.82798396436806,
+              "y": 563.6329530744055,
+              "formalCharge": 0
+            },
+            {
+              "id": "a13",
+              "element": "C",
+              "x": 451.17501785025195,
+              "y": 568.7659423702295,
+              "formalCharge": 0
+            },
+            {
+              "id": "a14",
+              "element": "C",
+              "x": 446.2163140617342,
+              "y": 590.7877595353361,
+              "formalCharge": 0
+            },
+            {
+              "id": "a15",
+              "element": "C",
+              "x": 457.5673604891915,
+              "y": 616.5257934852617,
+              "formalCharge": 0
+            },
+            {
+              "id": "a16",
+              "element": "C",
+              "x": 474.2144374935011,
+              "y": 588.0554125498263,
+              "formalCharge": 0
+            },
+            {
+              "id": "a17",
+              "element": "C",
+              "x": 428.54039035300417,
+              "y": 551.916469292919,
+              "formalCharge": 0
+            },
+            {
+              "id": "a18",
+              "element": "C",
+              "x": 402.86982176074554,
+              "y": 565.4882504102454,
+              "formalCharge": 0
+            },
+            {
+              "id": "a19",
+              "element": "O",
+              "x": 377.98634900793417,
+              "y": 551.1462397928885,
+              "formalCharge": 0
+            },
+            {
+              "id": "a20",
+              "element": "C",
+              "x": 377.42975980718217,
+              "y": 522.563416594675,
+              "formalCharge": 0
+            },
+            {
+              "id": "a21",
+              "element": "O",
+              "x": 401.5092703811295,
+              "y": 508.1033416014009,
+              "formalCharge": 0
+            },
+            {
+              "id": "a22",
+              "element": "C",
+              "x": 352.43384479159255,
+              "y": 508.55873276565256,
+              "formalCharge": 0
+            },
+            {
+              "id": "a23",
+              "element": "C",
+              "x": 352.0065641930355,
+              "y": 480.05461915138375,
+              "formalCharge": 0
+            },
+            {
+              "id": "a24",
+              "element": "C",
+              "x": 376.05796420128837,
+              "y": 465.8194286836661,
+              "formalCharge": 0
+            },
+            {
+              "id": "a25",
+              "element": "C",
+              "x": 376.0129872961771,
+              "y": 437.703240875982,
+              "formalCharge": 0
+            },
+            {
+              "id": "a26",
+              "element": "C",
+              "x": 400.2948939431252,
+              "y": 423.5692484447647,
+              "formalCharge": 0
+            },
+            {
+              "id": "a27",
+              "element": "C",
+              "x": 424.6667544002958,
+              "y": 437.60766495262055,
+              "formalCharge": 0
+            },
+            {
+              "id": "a28",
+              "element": "C",
+              "x": 424.78481877621294,
+              "y": 465.7238527603046,
+              "formalCharge": 0
+            },
+            {
+              "id": "a29",
+              "element": "C",
+              "x": 400.46355733729246,
+              "y": 479.790379833855,
+              "formalCharge": 0
+            },
+            {
+              "id": "a30",
+              "element": "N",
+              "x": 327.4660403416976,
+              "y": 466.0780458880559,
+              "formalCharge": 0
+            },
+            {
+              "id": "a31",
+              "element": "C",
+              "x": 327.4154413234474,
+              "y": 437.7763283467878,
+              "formalCharge": 0
+            },
+            {
+              "id": "a32",
+              "element": "O",
+              "x": 351.7535691017846,
+              "y": 423.71542338637636,
+              "formalCharge": 0
+            },
+            {
+              "id": "a33",
+              "element": "C",
+              "x": 302.99298184802655,
+              "y": 423.614225349876,
+              "formalCharge": 0
+            },
+            {
+              "id": "a34",
+              "element": "C",
+              "x": 278.6660982959671,
+              "y": 437.6807524234264,
+              "formalCharge": 0
+            },
+            {
+              "id": "a35",
+              "element": "C",
+              "x": 254.3111041782132,
+              "y": 423.6198474630149,
+              "formalCharge": 0
+            },
+            {
+              "id": "a36",
+              "element": "C",
+              "x": 254.32234840449104,
+              "y": 395.5205259947475,
+              "formalCharge": 0
+            },
+            {
+              "id": "a37",
+              "element": "C",
+              "x": 278.6492319565504,
+              "y": 381.4483768080582,
+              "formalCharge": 0
+            },
+            {
+              "id": "a38",
+              "element": "C",
+              "x": 303.00984818744325,
+              "y": 395.50928176846975,
+              "formalCharge": 0
+            },
+            {
+              "id": "a39",
+              "element": "O",
+              "x": 328.2475140680059,
+              "y": 522.934476061843,
+              "formalCharge": 0
+            },
+            {
+              "id": "a40",
+              "element": "O",
+              "x": 457.24690004027366,
+              "y": 541.3187860260756,
+              "formalCharge": 0
+            },
+            {
+              "id": "a41",
+              "element": "O",
+              "x": 487.0834544684639,
+              "y": 538.3053333836203,
+              "formalCharge": 0
+            },
+            {
+              "id": "a42",
+              "element": "C",
+              "x": 473.8096453474997,
+              "y": 515.4401992476772,
+              "formalCharge": 0
+            },
+            {
+              "id": "a43",
+              "element": "O",
+              "x": 445.7553007843436,
+              "y": 515.0072965359813,
+              "formalCharge": 0
+            },
+            {
+              "id": "a44",
+              "element": "C",
+              "x": 488.65202403421955,
+              "y": 491.72050391462,
+              "formalCharge": 0
+            },
+            {
+              "id": "a45",
+              "element": "C",
+              "x": 474.9790448803928,
+              "y": 467.2868002129213,
+              "formalCharge": 0
+            },
+            {
+              "id": "a46",
+              "element": "C",
+              "x": 489.2985670451941,
+              "y": 443.1735569601405,
+              "formalCharge": 0
+            },
+            {
+              "id": "a47",
+              "element": "C",
+              "x": 517.4035106266003,
+              "y": 443.5446164273085,
+              "formalCharge": 0
+            },
+            {
+              "id": "a48",
+              "element": "C",
+              "x": 531.1833099300663,
+              "y": 467.9389653370348,
+              "formalCharge": 0
+            },
+            {
+              "id": "a49",
+              "element": "C",
+              "x": 516.7738339550425,
+              "y": 492.01285379784326,
+              "formalCharge": 0
+            },
+            {
+              "id": "a50",
+              "element": "C",
+              "x": 539.6502123172634,
+              "y": 553.7998771944536,
+              "formalCharge": 0
+            },
+            {
+              "id": "a51",
+              "element": "O",
+              "x": 561.6888958217868,
+              "y": 571.5376441477116,
+              "formalCharge": 0
+            },
+            {
+              "id": "a52",
+              "element": "O",
+              "x": 505.6589162794194,
+              "y": 554.4070654134558,
+              "formalCharge": 0
+            },
+            {
+              "id": "a53",
+              "element": "C",
+              "x": 515.9024064185116,
+              "y": 529.5685695657556,
+              "formalCharge": 0
+            },
+            {
+              "id": "a54",
+              "element": "O",
+              "x": 543.7599770218059,
+              "y": 525.4756712006299,
+              "formalCharge": 0
+            },
+            {
+              "id": "a55",
+              "element": "C",
+              "x": 498.74933923170016,
+              "y": 508.6486865758751,
+              "formalCharge": 0
+            },
+            {
+              "id": "a56",
+              "element": "O",
+              "x": 511.6633331117742,
+              "y": 661.7163388958126,
+              "formalCharge": 0
+            },
+            {
+              "id": "a57",
+              "element": "C",
+              "x": 492.25017644312135,
+              "y": 645.6033626396992,
+              "formalCharge": 0
+            },
+            {
+              "id": "a58",
+              "element": "O",
+              "x": 419.06712971394245,
+              "y": 651.9507283735275,
+              "formalCharge": 0
+            },
+            {
+              "id": "a59",
+              "element": "C",
+              "x": 391.63121759606634,
+              "y": 650.6576423515784,
+              "formalCharge": 0
+            },
+            {
+              "id": "a60",
+              "element": "O",
+              "x": 376.94625807723594,
+              "y": 674.5516231919418,
+              "formalCharge": 0
+            },
+            {
+              "id": "a61",
+              "element": "C",
+              "x": 378.734090055409,
+              "y": 626.5162885331031,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b0",
+              "fromAtomId": "a0",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b2",
+              "fromAtomId": "a2",
+              "toAtomId": "a3",
+              "order": "single"
+            },
+            {
+              "id": "b3",
+              "fromAtomId": "a3",
+              "toAtomId": "a4",
+              "order": "single"
+            },
+            {
+              "id": "b4",
+              "fromAtomId": "a4",
+              "toAtomId": "a5",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b5",
+              "fromAtomId": "a4",
+              "toAtomId": "a6",
+              "order": "single"
+            },
+            {
+              "id": "b6",
+              "fromAtomId": "a6",
+              "toAtomId": "a7",
+              "order": "single"
+            },
+            {
+              "id": "b7",
+              "fromAtomId": "a7",
+              "toAtomId": "a8",
+              "order": "single"
+            },
+            {
+              "id": "b8",
+              "fromAtomId": "a9",
+              "toAtomId": "a8",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b9",
+              "fromAtomId": "a9",
+              "toAtomId": "a10",
+              "order": "single"
+            },
+            {
+              "id": "b10",
+              "fromAtomId": "a10",
+              "toAtomId": "a11",
+              "order": "single"
+            },
+            {
+              "id": "b11",
+              "fromAtomId": "a11",
+              "toAtomId": "a12",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b12",
+              "fromAtomId": "a12",
+              "toAtomId": "a13",
+              "order": "single"
+            },
+            {
+              "id": "b13",
+              "fromAtomId": "a13",
+              "toAtomId": "a14",
+              "order": "single"
+            },
+            {
+              "id": "b14",
+              "fromAtomId": "a14",
+              "toAtomId": "a15",
+              "order": "single"
+            },
+            {
+              "id": "b15",
+              "fromAtomId": "a14",
+              "toAtomId": "a16",
+              "order": "single"
+            },
+            {
+              "id": "b16",
+              "fromAtomId": "a13",
+              "toAtomId": "a17",
+              "order": "single"
+            },
+            {
+              "id": "b17",
+              "fromAtomId": "a17",
+              "toAtomId": "a18",
+              "order": "single"
+            },
+            {
+              "id": "b18",
+              "fromAtomId": "a18",
+              "toAtomId": "a19",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b19",
+              "fromAtomId": "a19",
+              "toAtomId": "a20",
+              "order": "single"
+            },
+            {
+              "id": "b20",
+              "fromAtomId": "a20",
+              "toAtomId": "a21",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b21",
+              "fromAtomId": "a20",
+              "toAtomId": "a22",
+              "order": "single"
+            },
+            {
+              "id": "b22",
+              "fromAtomId": "a22",
+              "toAtomId": "a23",
+              "order": "single"
+            },
+            {
+              "id": "b23",
+              "fromAtomId": "a23",
+              "toAtomId": "a24",
+              "order": "single"
+            },
+            {
+              "id": "b24",
+              "fromAtomId": "a24",
+              "toAtomId": "a25",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b25",
+              "fromAtomId": "a25",
+              "toAtomId": "a26",
+              "order": "single"
+            },
+            {
+              "id": "b26",
+              "fromAtomId": "a26",
+              "toAtomId": "a27",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b27",
+              "fromAtomId": "a27",
+              "toAtomId": "a28",
+              "order": "single"
+            },
+            {
+              "id": "b28",
+              "fromAtomId": "a28",
+              "toAtomId": "a29",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b29",
+              "fromAtomId": "a23",
+              "toAtomId": "a30",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b30",
+              "fromAtomId": "a30",
+              "toAtomId": "a31",
+              "order": "single"
+            },
+            {
+              "id": "b31",
+              "fromAtomId": "a31",
+              "toAtomId": "a32",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b32",
+              "fromAtomId": "a31",
+              "toAtomId": "a33",
+              "order": "single"
+            },
+            {
+              "id": "b33",
+              "fromAtomId": "a33",
+              "toAtomId": "a34",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b34",
+              "fromAtomId": "a34",
+              "toAtomId": "a35",
+              "order": "single"
+            },
+            {
+              "id": "b35",
+              "fromAtomId": "a35",
+              "toAtomId": "a36",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b36",
+              "fromAtomId": "a36",
+              "toAtomId": "a37",
+              "order": "single"
+            },
+            {
+              "id": "b37",
+              "fromAtomId": "a37",
+              "toAtomId": "a38",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b38",
+              "fromAtomId": "a22",
+              "toAtomId": "a39",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b39",
+              "fromAtomId": "a13",
+              "toAtomId": "a40",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b40",
+              "fromAtomId": "a12",
+              "toAtomId": "a41",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b41",
+              "fromAtomId": "a41",
+              "toAtomId": "a42",
+              "order": "single"
+            },
+            {
+              "id": "b42",
+              "fromAtomId": "a42",
+              "toAtomId": "a43",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b43",
+              "fromAtomId": "a42",
+              "toAtomId": "a44",
+              "order": "single"
+            },
+            {
+              "id": "b44",
+              "fromAtomId": "a44",
+              "toAtomId": "a45",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b45",
+              "fromAtomId": "a45",
+              "toAtomId": "a46",
+              "order": "single"
+            },
+            {
+              "id": "b46",
+              "fromAtomId": "a46",
+              "toAtomId": "a47",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b47",
+              "fromAtomId": "a47",
+              "toAtomId": "a48",
+              "order": "single"
+            },
+            {
+              "id": "b48",
+              "fromAtomId": "a48",
+              "toAtomId": "a49",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b49",
+              "fromAtomId": "a10",
+              "toAtomId": "a50",
+              "order": "single"
+            },
+            {
+              "id": "b50",
+              "fromAtomId": "a50",
+              "toAtomId": "a51",
+              "order": "single"
+            },
+            {
+              "id": "b51",
+              "fromAtomId": "a10",
+              "toAtomId": "a52",
+              "order": "single",
+              "display": {
+                "bondStyle": "wedge"
+              }
+            },
+            {
+              "id": "b52",
+              "fromAtomId": "a52",
+              "toAtomId": "a53",
+              "order": "single"
+            },
+            {
+              "id": "b53",
+              "fromAtomId": "a53",
+              "toAtomId": "a54",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b54",
+              "fromAtomId": "a53",
+              "toAtomId": "a55",
+              "order": "single"
+            },
+            {
+              "id": "b55",
+              "fromAtomId": "a7",
+              "toAtomId": "a56",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b56",
+              "fromAtomId": "a6",
+              "toAtomId": "a57",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b57",
+              "fromAtomId": "a3",
+              "toAtomId": "a58",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b58",
+              "fromAtomId": "a58",
+              "toAtomId": "a59",
+              "order": "single"
+            },
+            {
+              "id": "b59",
+              "fromAtomId": "a59",
+              "toAtomId": "a60",
+              "order": "double",
+              "display": {
+                "doubleBondSide": "right"
+              }
+            },
+            {
+              "id": "b60",
+              "fromAtomId": "a59",
+              "toAtomId": "a61",
+              "order": "single"
+            },
+            {
+              "id": "b61",
+              "fromAtomId": "a18",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b62",
+              "fromAtomId": "a14",
+              "toAtomId": "a2",
+              "order": "single"
+            },
+            {
+              "id": "b63",
+              "fromAtomId": "a11",
+              "toAtomId": "a6",
+              "order": "single"
+            },
+            {
+              "id": "b64",
+              "fromAtomId": "a51",
+              "toAtomId": "a9",
+              "order": "single"
+            },
+            {
+              "id": "b65",
+              "fromAtomId": "a29",
+              "toAtomId": "a24",
+              "order": "single"
+            },
+            {
+              "id": "b66",
+              "fromAtomId": "a38",
+              "toAtomId": "a33",
+              "order": "single"
+            },
+            {
+              "id": "b67",
+              "fromAtomId": "a49",
+              "toAtomId": "a44",
+              "order": "single"
+            }
+          ],
+          "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "rotationDegrees": 0
+          },
+          "superatoms": [],
+          "rGroups": []
+        }
+      ],
+      "crossings": []
+    }
+  ],
+  "selection": {
+    "pageId": "page_001",
+    "objectIds": [
+      "mol_clipboard_001"
+    ]
+  },
+  "styles": {},
+  "plugins": {},
+  "compatibility": {
+    "warnings": []
+  }
+}
