@@ -13,7 +13,10 @@ selection after tab switching/closing.
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
 bracket kinds placed and resized, dagger and submenu symbol stamps, atom labels through `tool.atom`,
-chains dragged off an existing atom and off empty canvas including against a page edge, a long chain
+chains dragged off an existing atom (a ring atom and a chain's end atom, with the chain growing
+along the whole drag, not stopping at the one carbon placed on press) and off empty canvas
+including against a page edge, reaction and art arrows drawn starting on top of a molecule
+(the arrow stretches with the drag rather than landing at its default length), a long chain
 (about 200 carbons) dragged on empty canvas and off an aromatic ring that stays responsive for the
 whole drag and has its SMILES after release, through undo/redo and save/reopen, formula text
 applied to a typed formula, one undo entry per gesture, and SVG export parity with the canvas for
