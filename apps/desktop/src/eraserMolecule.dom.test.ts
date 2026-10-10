@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { applyNativeChainTool, createPhase4Document } from "./documentWorkflow";
+import { applyNativeChainTool, createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -203,5 +203,118 @@ describe("eraser marquee over a molecule", () => {
       await bridge().command("edit.undo");
     });
     expect(moleculeSummary(chain.id)).toMatchObject({ atomCount: chain.atoms.length, bondCount: chain.bonds.length });
+  });
+
+  // The live highlight during the drag must be exactly what the release erases.
+  type IdSets = { atoms: string[]; bonds: string[]; objects: string[] };
+
+  function previewIds(): IdSets {
+    const read = (attribute: string) => Array.from(container.querySelectorAll(`[${attribute}]`))
+      .map((element) => element.getAttribute(attribute)!)
+      .sort();
+    return {
+      atoms: read("data-eraser-preview-atom"),
+      bonds: read("data-eraser-preview-bond"),
+      objects: read("data-eraser-preview-object")
+    };
+  }
+
+  function renderedIds(): { objects: string[]; atoms: Map<string, string[]>; bonds: Map<string, string[]> } {
+    const objects = Array.from(container.querySelectorAll<HTMLElement>(".page [data-object-id]"))
+      .filter((element) => element.classList.contains("document-object"))
+      .map((element) => element.dataset.objectId!);
+    const atoms = new Map<string, string[]>();
+    const bonds = new Map<string, string[]>();
+    for (const objectId of objects) {
+      const host = container.querySelector<HTMLElement>(`.document-object[data-object-id="${objectId}"]`)!;
+      atoms.set(objectId, [...new Set(Array.from(host.querySelectorAll("[data-atom-id]")).map((element) => element.getAttribute("data-atom-id")!))]);
+      bonds.set(objectId, (host.dataset.bondOrders ?? "").split(",").filter(Boolean).map((entry) => entry.split(":")[0]!));
+    }
+    return { objects, atoms, bonds };
+  }
+
+  function erasedBetween(before: ReturnType<typeof renderedIds>, after: ReturnType<typeof renderedIds>): IdSets {
+    const atoms: string[] = [];
+    const bonds: string[] = [];
+    const objects: string[] = [];
+    for (const objectId of before.objects) {
+      const gone = !after.objects.includes(objectId);
+      const beforeAtoms = before.atoms.get(objectId) ?? [];
+      const beforeBonds = before.bonds.get(objectId) ?? [];
+      if (beforeAtoms.length === 0 && beforeBonds.length === 0) {
+        if (gone) objects.push(objectId);
+        continue;
+      }
+      const afterAtoms = new Set(after.atoms.get(objectId) ?? []);
+      const afterBonds = new Set(after.bonds.get(objectId) ?? []);
+      atoms.push(...beforeAtoms.filter((id) => !afterAtoms.has(id)));
+      bonds.push(...beforeBonds.filter((id) => !afterBonds.has(id)));
+    }
+    return { atoms: atoms.sort(), bonds: bonds.sort(), objects: objects.sort() };
+  }
+
+  async function sweepAndCompare(from: { x: number; y: number }, to: { x: number; y: number }, pointerId: number) {
+    const before = renderedIds();
+    await act(async () => {
+      dispatchPointer("pointerdown", from, pointerId);
+      dispatchPointer("pointermove", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 }, pointerId);
+      dispatchPointer("pointermove", to, pointerId);
+    });
+    const preview = previewIds();
+    const selectionChromeDuringDrag = container.querySelector(".native-whole-selection, .native-molecule-selected") !== null;
+    await act(async () => {
+      dispatchPointer("pointerup", to, pointerId);
+    });
+    return { preview, erased: erasedBetween(before, renderedIds()), selectionChromeDuringDrag, previewAfterRelease: previewIds() };
+  }
+
+  function midpointOfMiddleBond(chain: MoleculeObject) {
+    const bond = chain.bonds[Math.floor(chain.bonds.length / 2)]!;
+    const from = chain.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = chain.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    return { bond, x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  }
+
+  it("previews exactly the bond a partial sweep will erase, without the leftover selection", async () => {
+    const { document, chain } = chainDocument();
+    await renderWithEraser(document);
+    const mid = midpointOfMiddleBond(chain);
+    // The chain tool leaves its chain selected; the Eraser is a selection-kind tool, so that
+    // highlight covers the whole molecule until the sweep starts.
+    expect(container.querySelector(".native-whole-selection, .native-molecule-selected")).not.toBeNull();
+
+    const result = await sweepAndCompare({ x: mid.x - 1, y: mid.y - 40 }, { x: mid.x + 1, y: mid.y + 40 }, 81);
+    expect(result.preview).toEqual({ atoms: [], bonds: [mid.bond.id], objects: [] });
+    expect(result.erased).toEqual(result.preview);
+    expect(result.selectionChromeDuringDrag).toBe(false);
+    expect(result.previewAfterRelease).toEqual({ atoms: [], bonds: [], objects: [] });
+  });
+
+  it("previews every atom and bond of a molecule a sweep encloses", async () => {
+    const { document, chain } = chainDocument();
+    await renderWithEraser(document);
+    const xs = chain.atoms.map((atom) => atom.x);
+    const ys = chain.atoms.map((atom) => atom.y);
+
+    const result = await sweepAndCompare(
+      { x: Math.min(...xs) - 10, y: Math.min(...ys) - 30 },
+      { x: Math.max(...xs) + 10, y: Math.max(...ys) + 30 },
+      82
+    );
+    expect(result.preview.atoms).toEqual(chain.atoms.map((atom) => atom.id).sort());
+    expect(result.preview.bonds).toEqual(chain.bonds.map((bond) => bond.id).sort());
+    expect(result.erased).toEqual(result.preview);
+  });
+
+  it("previews a text box whole and only the bond a sweep crosses", async () => {
+    const { document: chainOnly, chain } = chainDocument();
+    const mid = midpointOfMiddleBond(chain);
+    const document = insertNativeTextObject(chainOnly, { x: mid.x - 6, y: mid.y + 14 }, "note");
+    const text = document.pages[0]!.objects.find((object) => object.type === "text")!;
+    await renderWithEraser(document);
+
+    const result = await sweepAndCompare({ x: mid.x - 1, y: mid.y - 40 }, { x: mid.x + 1, y: text.y + text.height / 2 }, 83);
+    expect(result.preview).toEqual({ atoms: [], bonds: [mid.bond.id], objects: [text.id] });
+    expect(result.erased).toEqual(result.preview);
   });
 });

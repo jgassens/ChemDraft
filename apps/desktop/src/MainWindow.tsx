@@ -1468,7 +1468,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.12.25-opus";
+const CURRENT_BUILD_STAMP = "10.10.13.20-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2064,6 +2064,9 @@ export function MainWindow({
     []
   );
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | undefined>();
+  // What an Eraser marquee will remove on release, recomputed on every move by the same function
+  // the release applies, so the live highlight and the result cannot disagree.
+  const [eraserSweepPreview, setEraserSweepPreview] = useState<EraserSweep | undefined>();
   const [selectionLasso, setSelectionLasso] = useState<SelectionLassoState | undefined>();
   const [tapeMeasure, setTapeMeasure] = useState<TapeMeasureOverlayState | undefined>();
   const [mechanismArrowPreview, setMechanismArrowPreview] = useState<{
@@ -13465,6 +13468,9 @@ export function MainWindow({
       marqueeMachineRef.current = interactionReducer(marqueeMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       marquee.dragging = marqueeMachineRef.current.phase === "dragging";
       setSelectionMarquee(marquee.dragging ? { ...marquee } : undefined);
+      setEraserSweepPreview(marquee.dragging && activeToolCommandIdRef.current === "tool.eraser"
+        ? eraserSweepInSelectionRect(document.pages[0].objects, marquee.startPoint, point)
+        : undefined);
       return;
     }
 
@@ -13831,6 +13837,7 @@ export function MainWindow({
         clearTransientInteractionChrome();
       }
       setSelectionMarquee(undefined);
+      setEraserSweepPreview(undefined);
       selectionMarqueeRef.current = null;
       marqueeMachineRef.current = initialInteractionState();
       setStatus(nextDocument === document ? "Nothing erased" : eraserSweepStatus(sweep));
@@ -13862,6 +13869,7 @@ export function MainWindow({
       toolbarStyleTargetRef.current = undefined;
     }
     setSelectionMarquee(undefined);
+    setEraserSweepPreview(undefined);
     selectionMarqueeRef.current = null;
     setStatus(mode === "subtract"
       ? selectionSubtractStatusLabel(region)
@@ -14061,6 +14069,7 @@ export function MainWindow({
       marqueeMachineRef.current = initialInteractionState();
       selectionMarqueeRef.current = null;
       setSelectionMarquee(undefined);
+      setEraserSweepPreview(undefined);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -17272,6 +17281,14 @@ export function MainWindow({
                     latestPoint={selectionMarquee.latestPoint}
                   />
                 ) : null}
+                {selectionMarquee && eraserSweepPreview ? (
+                  <EraserSweepPreviewOverlay
+                    sweep={eraserSweepPreview}
+                    objects={document.pages[0].objects}
+                    pageWidth={activePage.width}
+                    pageHeight={activePage.height}
+                  />
+                ) : null}
                 {selectionLasso ? (
                   <SelectionLassoOverlay
                     points={selectionLasso.points}
@@ -17318,7 +17335,9 @@ export function MainWindow({
                   return (
                   <>
                 {document.pages[0].objects.map((object, layerIndex) => {
-                  const selectionChromeActive = activeToolState.activeKind === "selection";
+                  // An Eraser sweep shows its own preview; leftover selection chrome (a whole chain
+                  // highlighted by the chain tool) would read as "all of this will be erased".
+                  const selectionChromeActive = activeToolState.activeKind === "selection" && eraserSweepPreview === undefined;
                   // Phase 7: each selected molecule renders its own part highlight, so shift/marquee
                   // selections that span several molecules all light up (not just the primary).
                   const selectedPart = selectionChromeActive
@@ -20829,6 +20848,99 @@ export function SelectionMarqueeOverlay({
         height: `calc(${rect.height}px * var(--page-scale))`
       }}
     />
+  );
+}
+
+/**
+ * The Eraser marquee's live preview: exactly what release will erase, drawn from the same
+ * `EraserSweep` the pointer-up hands to `applyEraserSweep`. Whole objects get an outline; a
+ * molecule shows only its touched atoms and bonds (and the bonds of any atom it erases).
+ */
+export function EraserSweepPreviewOverlay({
+  sweep,
+  objects,
+  pageWidth,
+  pageHeight
+}: {
+  sweep: EraserSweep;
+  objects: readonly DocumentObject[];
+  pageWidth: number;
+  pageHeight: number;
+}) {
+  const byId = new Map(objects.map((object) => [object.id, object]));
+  return (
+    <svg
+      className="selection-lasso-surface eraser-sweep-preview"
+      aria-hidden="true"
+      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+      style={{
+        width: `calc(${pageWidth}px * var(--page-scale))`,
+        height: `calc(${pageHeight}px * var(--page-scale))`
+      }}
+    >
+      {sweep.objectIds.map((objectId) => {
+        const object = byId.get(objectId);
+        if (!object) {
+          return null;
+        }
+        const bounds = documentObjectVisualBounds(object);
+        return (
+          <rect
+            className="eraser-sweep-object"
+            data-eraser-preview-object={objectId}
+            key={`object-${objectId}`}
+            x={bounds.x}
+            y={bounds.y}
+            width={bounds.width}
+            height={bounds.height}
+          />
+        );
+      })}
+      {sweep.moleculeParts.map((part) => {
+        const molecule = byId.get(part.objectId);
+        if (molecule?.type !== "molecule") {
+          return null;
+        }
+        const atomsById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+        const erasedAtomIds = new Set(part.atomIds);
+        const bondIds = new Set(part.bondIds);
+        const bonds = molecule.bonds.filter((bond) =>
+          bondIds.has(bond.id) || erasedAtomIds.has(bond.fromAtomId) || erasedAtomIds.has(bond.toAtomId)
+        );
+        return (
+          <g data-eraser-preview-molecule={part.objectId} key={`molecule-${part.objectId}`}>
+            {bonds.map((bond) => {
+              const from = atomsById.get(bond.fromAtomId);
+              const to = atomsById.get(bond.toAtomId);
+              return from && to ? (
+                <line
+                  className="native-bond-delete-hover"
+                  data-eraser-preview-bond={bond.id}
+                  key={bond.id}
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                />
+              ) : null;
+            })}
+            {part.atomIds.map((atomId) => {
+              const atom = atomsById.get(atomId);
+              return atom ? (
+                <circle
+                  className="native-atom-delete-hover"
+                  data-eraser-preview-atom={atomId}
+                  key={atomId}
+                  cx={atom.x}
+                  cy={atom.y}
+                  r={8}
+                />
+              ) : null;
+            })}
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 
