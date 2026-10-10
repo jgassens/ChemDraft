@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
-import { aromaticFixtures, type AromaticFixture, testMoleculeFromSmiles, unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
+import {
+  aromaticFixtures,
+  type AromaticFixture,
+  kekuleSearchWorkForTesting,
+  testMoleculeFromSmiles,
+  unresolvableAromaticRing
+} from "@chemdraft/layout-engine/testing";
+import { longestNativePathWorkForTesting } from "@chemdraft/document-workflow-core/testing";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import * as workflowCore from "@chemdraft/document-workflow-core";
 import { nativeSingleBondGraphMetadata } from "@chemdraft/document-workflow-core";
@@ -1814,6 +1821,81 @@ describe("Phase 4 document workflow", () => {
     // And the commit derives it, so nothing lands in the document under-derived.
     expect(finished.structure).not.toBe(molecule.structure);
     expect(finished.structureFormat).toBe("smiles");
+  });
+
+  it("skips the SMILES walk on free-chain drag frames, and the commit derives it", () => {
+    // A free chain (dragged on empty canvas) ignored the preview flag, so every pointermove wrote
+    // the whole chain's SMILES. The writer's longest-path search was super-cubic: 1.6 s per move
+    // at 200 carbons.
+    const blank = createPhase4Document("Free Chain Preview Fixture");
+    const start = { x: 120, y: 400 };
+    const drag = { x: 620, y: 400 };
+
+    const before = longestNativePathWorkForTesting();
+    const preview = applyNativeChainTool(blank, start, drag, undefined, { preview: true });
+    expect(longestNativePathWorkForTesting() - before).toBe(0);
+    const committed = applyNativeChainTool(blank, start, drag);
+    expect(longestNativePathWorkForTesting() - before).toBeGreaterThan(0);
+
+    const previewed = preview.pages[0].objects[0];
+    const finished = committed.pages[0].objects[0];
+    if (previewed?.type !== "molecule" || finished?.type !== "molecule") {
+      throw new Error("Expected molecules");
+    }
+    expect(previewed.atoms.length).toBeGreaterThan(10);
+    // The frame draws exactly what lands: same atoms, bonds and formula.
+    expect(previewed.atoms).toEqual(finished.atoms);
+    expect(previewed.bonds).toEqual(finished.bonds);
+    expect(previewed.chemistry).toEqual(finished.chemistry);
+    // A new chain has no earlier SMILES to keep, so a frame says "unavailable"; the commit derives it.
+    expect(previewed.structure).toBe("");
+    expect(finished.structureFormat).toBe("smiles");
+    expect(finished.structure).toBe("C".repeat(finished.atoms.length));
+  });
+
+  it("resolves an aromatic anchor's bond orders once per drag frame, not once per added carbon", () => {
+    // The anchored drag re-checked valence against the whole grown molecule for every carbon it
+    // added, re-kekulizing each aromatic ring per vertex: O(chain × molecule) per pointermove.
+    // A fresh copy of the ring for every measurement: the bond-order resolution is cached per bonds
+    // array, so reusing one document would let a later frame read the cache and cost nothing.
+    const freshRing = (): MoleculeObject => {
+      const ring = benzeneRingMolecule();
+      return { ...ring, bonds: ring.bonds.map((bond) => ({ ...bond, order: "aromatic" as const })) };
+    };
+
+    // What resolving the ring once costs: the counter does see it.
+    const unresolved = kekuleSearchWorkForTesting();
+    const measured = freshRing();
+    layoutEngine.nativeBondOrderResolution(measured.atoms, measured.bonds);
+    const oneResolution = kekuleSearchWorkForTesting() - unresolved;
+    expect(oneResolution).toBeGreaterThan(0);
+
+    const frame = (reach: number): { work: number; added: number } => {
+      const ring = freshRing();
+      const base = createPhase4Document("Aromatic Anchor Fixture");
+      const seeded = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: ring }]);
+      const anchorAtom = ring.atoms[1];
+      const before = kekuleSearchWorkForTesting();
+      const next = applyNativeChainTool(
+        seeded,
+        anchorAtom,
+        { x: anchorAtom.x + reach, y: anchorAtom.y },
+        { objectId: ring.id, atomId: anchorAtom.id },
+        { preview: true }
+      );
+      return {
+        work: kekuleSearchWorkForTesting() - before,
+        added: moleculeById(next, ring.id).atoms.length - ring.atoms.length
+      };
+    };
+    const short = frame(60);
+    const long = frame(420);
+    expect(short.added).toBeGreaterThan(0);
+    expect(long.added).toBeGreaterThan(short.added * 4);
+    // One resolution of the source molecule per frame, however long the chain: the frame used to
+    // re-resolve once per added carbon (3 carbons cost 15 here, 22 carbons 110).
+    expect(short.work).toBe(oneResolution);
+    expect(long.work).toBe(oneResolution);
   });
 
   it("classifies a long digit run in linear time", () => {
