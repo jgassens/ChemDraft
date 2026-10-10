@@ -4,9 +4,9 @@ import { modifierHint, type ModifierHintContext } from "./modifierHints";
 const idle: ModifierHintContext = { activeTool: "tool.select", interaction: "idle", hasSelection: false };
 
 describe.each(["macos", "windows"] as const)("modifier hints on %s", (platform) => {
-  const shift = platform === "macos" ? "⇧ Shift" : "Shift";
-  const alt = platform === "macos" ? "⌥ Option" : "Alt";
-  const primary = platform === "macos" ? "⌘ Command" : "Ctrl";
+  const shift = platform === "macos" ? "⇧" : "Shift";
+  const alt = platform === "macos" ? "⌥" : "Alt";
+  const primary = platform === "macos" ? "⌘" : "Ctrl";
   const hint = (context: Partial<ModifierHintContext>, held = {}) => modifierHint({ ...idle, ...context }, held, platform);
 
   it("shows selection handles and their held state, without inventing group rotate reveal", () => {

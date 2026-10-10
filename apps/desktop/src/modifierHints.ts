@@ -33,9 +33,9 @@ export function modifierHint(
   platform: ShortcutPlatform = detectDesktopShortcutPlatform()
 ): string {
   if (context.inlineEditing) return "";
-  const shift = platform === "macos" ? "⇧ Shift" : "Shift";
-  const alt = platform === "macos" ? "⌥ Option" : "Alt";
-  const primary = platform === "macos" ? "⌘ Command" : "Ctrl";
+  const shift = platform === "macos" ? "⇧" : "Shift";
+  const alt = platform === "macos" ? "⌥" : "Alt";
+  const primary = platform === "macos" ? "⌘" : "Ctrl";
   const selectionTool = ["tool.select", "tool.lasso", "tool.art.directEdit"].includes(context.activeTool);
   const shiftHint = (available: string, active: string, released: string) => held.shiftKey
     ? `${active} — release ${shift} ${released}`
