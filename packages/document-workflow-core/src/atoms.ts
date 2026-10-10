@@ -583,6 +583,9 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   return { kind: "unrecognized", ...(suggestion ? { suggestion } : {}) };
 }
 
+/** One-letter halogens, never split off a two-letter symbol to head a composite. */
+const splitHeadHalogens: ReadonlySet<string> = new Set(["F", "I"]);
+
 /** Every spelling a composite's substituent can take, longest first: "CO2Me" before "Me". */
 const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ...abbreviationBondedSpellings]
   .sort((left, right) => right.length - left.length || left.localeCompare(right));
@@ -627,11 +630,17 @@ function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined 
       continue;
     }
     // An element symbol in its own case; the second letter must be lower case, so "NMe" is N + Me.
-    // A lower-case letter that starts an abbreviation belongs to it, not to the symbol: "NiPr2" is
-    // N + iPr + iPr, not nickel, and "OtBu" is O + tBu.
+    // A lower-case letter that starts an abbreviation belongs to it, not to the symbol, when the
+    // two letters could not be a head anyway: "NiPr2" is N + iPr + iPr (nickel has no covalent
+    // valence to carry them), "PtBu2" is P + tBu + tBu, and "OtBu" is O + tBu ("Ot" is no element).
+    // A symbol that can be a head keeps both letters: "SnMe3" is tin and "SiPr3" silicon, never
+    // S + nMe or S + iPr. Nor is a halogen ever the split head: "InBu3" would otherwise become
+    // iodine carrying three butyls, which reads as a valid λ3-iodane instead of indium.
     let symbol = /^[A-Z][a-z]?/.exec(label.slice(index))?.[0];
     if (
       symbol?.length === 2 &&
+      nativeAtomValence[symbol as NativeElementSymbol] === undefined &&
+      !splitHeadHalogens.has(symbol.slice(0, 1)) &&
       compositeTokenSpellings.some((candidate) => /^[a-z]/.test(candidate) && label.startsWith(candidate, index + 1))
     ) {
       symbol = symbol.slice(0, 1);
