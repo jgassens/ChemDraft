@@ -16688,7 +16688,8 @@ describe("aromatic bond orders: one count for the formula, the label and the val
     const states = nativeMoleculeInvalidAtomStates(molecule);
     expect(states.map((state) => state.atomId).sort()).toEqual(molecule.atoms.map((atom) => atom.id).sort());
     expect(states.every((state) => state.unresolvedAromatic === true)).toBe(true);
-    expect(states[0]!.invalidReason).toContain("could not be resolved into alternating single and double bonds");
+    expect(states[0]!.invalidReason).toContain("don't resolve into single and double bonds");
+    expect(states[0]!.invalidDetail).toContain("could not be resolved into alternating single and double bonds");
     // Counted single, as the SMILES writer writes it, so the stored formula and SMILES agree.
     expect(molecule.chemistry?.formula).toBe("C5H10");
     expect(molecule.chemistry?.warnings.filter((warning) => warning.code === "chemistry.unresolved_aromatic")).toHaveLength(5);
@@ -16784,7 +16785,8 @@ describe("aromatic bond orders: one count for the formula, the label and the val
     const states = nativeMoleculeInvalidAtomStates(silent);
     expect(states.map((state) => state.atomId).sort()).toEqual(nitrogens(silent).map((atom) => atom.id).sort());
     expect(states.every((state) => state.tautomerGuessed === true)).toBe(true);
-    expect(states[0]!.invalidReason).toContain("hydrogen count was guessed");
+    expect(states[0]!.invalidReason).toContain("hydrogen count guessed");
+    expect(states[0]!.invalidDetail).toContain("hydrogen count was guessed");
   });
 
   it.each(["methyl", "dative"] as const)("clears a CDXML pyrrole NumHydrogens hint when adding a %s bond", (kind) => {

@@ -179,6 +179,8 @@ import {
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
   nativeLabelBondSide,
+  withNativeDocumentLabelBondSides,
+  withNativeLabelBondSides,
   nativeMoleculeUnspellableLabels,
   nativeReactionArrowMinExtentPx,
   nativeSingleBondGraphMetadata,
@@ -17277,8 +17279,27 @@ export function exportPhase4Cdxml(
   return exportDocumentToCdxmlText(document, options);
 }
 
+/**
+ * Opening a file is when its labels are written as far as this app knows: a label with no recorded
+ * bond side (an imported CDXML, a file from before the record existed) gets the side its drawing
+ * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
+ */
 export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  return openChemDraftPayload(contents);
+  const result = openChemDraftPayload(contents);
+  const { conflict } = result;
+  return {
+    ...result,
+    ...(result.document ? { document: withNativeDocumentLabelBondSides(result.document) } : {}),
+    ...(conflict
+      ? {
+        conflict: {
+          ...conflict,
+          embeddedDocument: withNativeDocumentLabelBondSides(conflict.embeddedDocument),
+          ...(conflict.visibleDocument ? { visibleDocument: withNativeDocumentLabelBondSides(conflict.visibleDocument) } : {})
+        }
+      }
+      : {})
+  };
 }
 
 const importedPageFitPaddingPx = 24;
@@ -18223,6 +18244,14 @@ function mergeNativeMoleculeObjects(
     atomIdMap.set(atom.id, id);
     atoms.push({ ...atom, id });
   });
+  // Re-minted ids are not a new bond: a label's recorded side follows its neighbour's new id, so
+  // merging never re-reads a side from the drawing (`withNativeLabelBondSides`).
+  for (let index = host.atoms.length; index < atoms.length; index += 1) {
+    const record = atoms[index]!.labelBondSide;
+    if (record) {
+      atoms[index] = { ...atoms[index]!, labelBondSide: { ...record, atomId: atomIdMap.get(record.atomId) ?? record.atomId } };
+    }
+  }
 
   const bondIdMap = new Map<string, string>();
   const usedBondIds = host.bonds.map((bond) => bond.id);
@@ -18394,7 +18423,14 @@ function nativeAtomWithElement(
   labelVisible: boolean,
   labelLiteral = false
 ): MoleculeAtom {
-  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, warningSuppressed, ...baseAtom } = atom;
+  // A new label is written afresh, so its recorded bond side goes too and is recorded again for it.
+  const {
+    labelVisible: _labelVisible,
+    labelLiteral: _labelLiteral,
+    labelBondSide: _labelBondSide,
+    warningSuppressed,
+    ...baseAtom
+  } = atom;
   // A dismissed valence warning was dismissed for THIS element under THIS label rule. Relabelling
   // makes a different atom with its own validity, so the dismissal does not travel: a suppressed
   // three-bond F retyped as O must show the invalid-oxygen badge again (it used to stay silent
@@ -18665,6 +18701,9 @@ function refreshNativeSingleBondGraph(
 ): MoleculeObject {
   // Clear import hints before deriving labels, formula, validation and the stored structure.
   atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
+  // Every label and bond edit passes here, and no layout change does: record the side each
+  // side-dependent label ("SCN") was written with, so later moves, rotations and flips keep it.
+  atoms = withNativeLabelBondSides({ atoms: [...atoms], bonds: [...bonds] }).atoms;
   const storedSmiles = tryNativeSingleBondGraphSmiles(atoms, bonds);
   return normalizeNativeMoleculeGeometry({
     ...molecule,

@@ -240,6 +240,13 @@ describe("computeObjectFingerprint", () => {
       atom.y -= 50;
     });
     expect(buildPluginSelectionSnapshot(moved).molecules[0]!.sourceFingerprint).toBe(before);
+
+    // A label's recorded bond side decides what a cyano label means, so a plugin result computed
+    // for the other side is stale.
+    const sideRecorded = documentWithUnknownOrderBond(["m1"]);
+    const sideAtoms = (sideRecorded.pages[0]!.objects[0] as { atoms: Array<{ id: string; labelBondSide?: unknown }> }).atoms;
+    sideAtoms[1]!.labelBondSide = { side: "right", atomId: sideAtoms[0]!.id };
+    expect(computeObjectFingerprint(sideRecorded, "m1")).not.toBe(before);
   });
 
   it("keeps the existing non-empty structure fingerprint unchanged", () => {

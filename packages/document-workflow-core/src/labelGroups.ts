@@ -200,6 +200,7 @@ function groupAttachmentAtom(atom: MoleculeAtom, attachment: NativeLabelGroupAtt
     labelVisible: _labelVisible,
     hydrogenCount: _hydrogenCount,
     warningSuppressed: _warningSuppressed,
+    labelBondSide: _labelBondSide,
     ...rest
   } = atom;
   return { ...rest, element: attachment.element, formalCharge: atom.formalCharge + attachment.charge };

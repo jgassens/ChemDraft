@@ -3,6 +3,7 @@
 // this package's README.
 
 import {
+  type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
   type MoleculeAtom,
@@ -67,8 +68,8 @@ export interface NativeAtomValidationState {
   invalidReason?: string;
   /**
    * The long form of `invalidReason`, naming the atom id and what the label counts as until it is
-   * fixed: for logs, export warnings and agents, never the status line (AGENTS.md §13). Set by the
-   * label checks; the older valence reasons carry their atom id in `invalidReason` itself.
+   * fixed: for logs, export warnings and agents, never the status line (AGENTS.md §13). Every
+   * invalid state sets both, so no status-line text carries an internal atom id.
    */
   invalidDetail?: string;
   /**
@@ -340,7 +341,8 @@ export function nativeAtomValidationState(
         formalCharge: effectiveFormalCharge,
         valid: false,
         ...(resolution.unresolvedAtomIds.has(atom.id) ? { unresolvedAromatic: true as const } : {}),
-        invalidReason: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
+        invalidReason: `${element} states ${hint} H, but its bonds and charge give ${resolvedHydrogens}.`,
+        invalidDetail: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
       };
     }
   }
@@ -353,7 +355,8 @@ export function nativeAtomValidationState(
       formalCharge: effectiveFormalCharge,
       valid: false,
       unresolvedAromatic: true,
-      invalidReason: `${symbol} atom ${atom.id} is on aromatic bonds that could not be resolved into alternating single and double bonds; its hydrogen count assumes single bonds.`
+      invalidReason: `${symbol}: its aromatic bonds don't resolve into single and double bonds.`,
+      invalidDetail: `${symbol} atom ${atom.id} is on aromatic bonds that could not be resolved into alternating single and double bonds; its hydrogen count assumes single bonds.`
     };
   }
 
@@ -368,13 +371,17 @@ export function nativeAtomValidationState(
       formalCharge: effectiveFormalCharge,
       valid: false,
       tautomerGuessed: true,
-      invalidReason: `${symbol} atom ${atom.id}: the aromatic bonds do not state its hydrogen count, so its hydrogen count was guessed using a closed-shell reading. Draw the H explicitly to settle it.`
+      invalidReason: `${symbol}: hydrogen count guessed from the aromatic bonds. Draw the H to settle it.`,
+      invalidDetail: `${symbol} atom ${atom.id}: the aromatic bonds do not state its hydrogen count, so its hydrogen count was guessed using a closed-shell reading. Draw the H explicitly to settle it.`
     };
   }
 
   // An element symbol chemists write on bonds ("Ac", "Pr", "Ts"), typed as a label, is that group on
   // a bonded atom, so it is checked as one: a "Ts" with two bonds is a tosyl with one too many, not
   // tennessine. An element from a structure file (no `labelLiteral`) stays the element.
+  // Read without a bond side, safely: no side-dependent spelling ("CN") is an element symbol —
+  // case folding keeps "CN" as typed (layout-engine's `nativeFormulaTwoLetterLabels`, valence.ts)
+  // — so an element label never reaches the cyano reading this side would decide.
   if (element && atom.labelLiteral === true && (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0) {
     const bondedReading = nativeAtomLabelReading(atom.element, { bonded: true, typed: true });
     if (bondedReading.kind === "group") {
@@ -425,7 +432,8 @@ export function nativeAtomValidationState(
           valenceUsed,
           formalCharge: effectiveFormalCharge,
           valid: false,
-          invalidReason: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
+          invalidReason: `${symbol} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`,
+          invalidDetail: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
         };
       }
     }
@@ -453,7 +461,8 @@ export function nativeAtomValidationState(
         valenceUsed,
         formalCharge: effectiveFormalCharge,
         valid: false,
-        invalidReason: `${element} atom ${atom.id} has ${coordinationUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
+        invalidReason: `${element} has ${coordinationUsed} bonds; it is not known beyond ${metalCeiling}-coordinate.`,
+        invalidDetail: `${element} atom ${atom.id} has ${coordinationUsed} bonds; ${element} is not known beyond ${metalCeiling}-coordinate.`
       };
     }
     return {
@@ -472,7 +481,8 @@ export function nativeAtomValidationState(
       valenceUsed,
       formalCharge: effectiveFormalCharge,
       valid: false,
-      invalidReason: `${element} atom ${atom.id} has unsupported valence ${valenceUsed}.`
+      invalidReason: `${element} has unsupported valence ${valenceUsed}.`,
+      invalidDetail: `${element} atom ${atom.id} has unsupported valence ${valenceUsed}.`
     };
   }
 
@@ -486,6 +496,9 @@ export function nativeAtomValidationState(
       ...(expectedFormalCharge === undefined ? {} : { expectedFormalCharge }),
       valid: false,
       invalidReason: expectedFormalCharge === undefined
+        ? `${element} has charge ${effectiveFormalCharge}, unsupported for valence ${valenceUsed}.`
+        : `${element} has charge ${effectiveFormalCharge}, expected ${expectedFormalCharge} for valence ${valenceUsed}.`,
+      invalidDetail: expectedFormalCharge === undefined
         ? `${element} atom ${atom.id} has charge ${effectiveFormalCharge}, unsupported for valence ${valenceUsed}.`
         : `${element} atom ${atom.id} has charge ${effectiveFormalCharge}, expected ${expectedFormalCharge} for valence ${valenceUsed}.`
     };
@@ -503,7 +516,8 @@ export function nativeAtomValidationState(
       valenceUsed,
       formalCharge: effectiveFormalCharge,
       valid: false,
-      invalidReason: `${element} atom ${atom.id} has ${valenceUsed} of ${nativeAtomValenceForCharge(element, effectiveFormalCharge)} bonds.`
+      invalidReason: `${element} has ${valenceUsed} of ${nativeAtomValenceForCharge(element, effectiveFormalCharge)} bonds.`,
+      invalidDetail: `${element} atom ${atom.id} has ${valenceUsed} of ${nativeAtomValenceForCharge(element, effectiveFormalCharge)} bonds.`
     };
   }
 
@@ -557,13 +571,30 @@ export interface NativeAtomLabelContext {
   bondSide?: "left" | "right";
 }
 
+/** The atom's one bonded neighbour, or undefined when it has none or several. */
+function nativeLabelSingleNeighbourId(atom: MoleculeAtom, atomBonds: readonly MoleculeBond[]): string | undefined {
+  const neighbourIds = new Set(atomBonds.map((bond) => (bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId)));
+  return neighbourIds.size === 1 ? [...neighbourIds][0] : undefined;
+}
+
 /**
- * The side of an atom's label its bonds reach, for `NativeAtomLabelContext.bondSide`: "right" when
- * every bonded neighbour lies to the atom's right — the same test, and tolerance, that draws a
- * hydroxyl as "HO" in layout-engine's `atomDisplayLabel` — and "left" otherwise (a vertical bond
- * included). Undefined for an atom with no bonds. `atomBonds` are the bonds touching the atom.
+ * Whether a label's meaning depends on the side its bond comes from: cyano ("CN") and the
+ * composites ending in it ("SCN", "OCN", "CH2CN") read as their cyano group with the bond on the
+ * left and as a bare formula with it on the right (`sideDependentSpellings`).
  */
-export function nativeLabelBondSide(
+export function nativeLabelReadingDependsOnBondSide(label: string): boolean {
+  return nativeAtomLabelReading(label, { bondSide: "left" }).kind === "group" &&
+    nativeAtomLabelReading(label, { bondSide: "right" }).kind !== "group";
+}
+
+/**
+ * The side the drawing shows an atom's label its bonds on, now: "right" when every bonded neighbour
+ * lies to the atom's right — the same test, and tolerance, that draws a hydroxyl as "HO" in
+ * layout-engine's `atomDisplayLabel` — and "left" otherwise (a vertical bond included); undefined
+ * with no bonds. For recording a side when a label is written (`withNativeLabelBondSides`); reading
+ * uses the record (`nativeLabelBondSide`), so a later move, rotation or flip changes nothing.
+ */
+export function nativeLabelBondSideFromGeometry(
   atom: MoleculeAtom,
   atomBonds: readonly MoleculeBond[],
   atoms: readonly MoleculeAtom[]
@@ -574,6 +605,78 @@ export function nativeLabelBondSide(
     .filter((neighbour): neighbour is MoleculeAtom => neighbour !== undefined);
   if (neighbours.length === 0) return undefined;
   return neighbours.every((neighbour) => neighbour.x > atom.x + 0.001) ? "right" : "left";
+}
+
+/**
+ * The bond side a stored atom's label is read with (`NativeAtomLabelContext.bondSide`): the side
+ * recorded when the label or its bond was written (`labelBondSide`), while its one bonded atom is
+ * still the one recorded. Layout never changes it. A label with no bond or several has no side (a
+ * cyano label with two bonds is badged for its bond count either way). A label never recorded — its
+ * bond changed outside the edit paths that record it — falls back to the side the drawing shows.
+ */
+export function nativeLabelBondSide(
+  atom: MoleculeAtom,
+  atomBonds: readonly MoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): "left" | "right" | undefined {
+  const neighbourId = nativeLabelSingleNeighbourId(atom, atomBonds);
+  if (neighbourId === undefined) return undefined;
+  if (atom.labelBondSide?.atomId === neighbourId) return atom.labelBondSide.side;
+  return nativeLabelBondSideFromGeometry(atom, atomBonds, atoms);
+}
+
+/**
+ * The molecule with every label's bond side recorded as written (`labelBondSide`). A label whose
+ * reading depends on its side, with one bond, keeps its record while that bond's atom is unchanged
+ * and otherwise records the side the drawing shows now; every other atom carries none. Called where
+ * a label or its bonds are committed — after each label and bond edit, and on opening or importing
+ * a document — and never by a layout change, so moving, rotating or flipping a drawing cannot change
+ * what its labels mean (AGENTS.md §7). Returns the same molecule when nothing changed.
+ */
+export function withNativeLabelBondSides<T extends { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }>(molecule: T): T {
+  const bondsByAtom = new Map<string, MoleculeBond[]>();
+  for (const bond of molecule.bonds) {
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      bondsByAtom.set(atomId, [...(bondsByAtom.get(atomId) ?? []), bond]);
+    }
+  }
+  let changed = false;
+  const atoms = molecule.atoms.map((atom) => {
+    const atomBonds = bondsByAtom.get(atom.id) ?? [];
+    const neighbourId = nativeLabelSingleNeighbourId(atom, atomBonds);
+    const recordable = neighbourId !== undefined &&
+      !nativeElementFromAtomLabel(atom.element) &&
+      nativeLabelReadingDependsOnBondSide(atom.element);
+    if (!recordable) {
+      if (atom.labelBondSide === undefined) return atom;
+      changed = true;
+      const { labelBondSide: _dropped, ...rest } = atom;
+      return rest;
+    }
+    if (atom.labelBondSide?.atomId === neighbourId) return atom;
+    const side = nativeLabelBondSideFromGeometry(atom, atomBonds, molecule.atoms)!;
+    changed = true;
+    return { ...atom, labelBondSide: { side, atomId: neighbourId } };
+  });
+  return changed ? { ...molecule, atoms } : molecule;
+}
+
+/** `withNativeLabelBondSides` for every molecule of a document: what opening or importing records. */
+export function withNativeDocumentLabelBondSides(document: ChemDraftDocument): ChemDraftDocument {
+  let changed = false;
+  const pages = document.pages.map((page) => {
+    let pageChanged = false;
+    const objects = page.objects.map((object) => {
+      if (object.type !== "molecule") return object;
+      const recorded = withNativeLabelBondSides(object);
+      if (recorded !== object) pageChanged = true;
+      return recorded;
+    });
+    if (!pageChanged) return page;
+    changed = true;
+    return { ...page, objects };
+  });
+  return changed ? { ...document, pages } : document;
 }
 
 /**

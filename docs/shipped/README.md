@@ -51,17 +51,22 @@ PRs make the label mean its group.
   formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
   ("COEt") is left unrecognized instead of read as C–OEt, and "CN" counts in a composite only last,
   after its head ("CNO" stays a bare formula). Cyano reads as cyano unless its bond comes from the
-  label's right (`nativeLabelBondSide`, the test that draws OH as HO): "CN", "SCN" or "OCN" with the
-  bond on the right means the N-bonded isomer, so it stays a bare formula. Typed as a label on a bonded atom, "Ar" is
+  label's right: "CN", "SCN" or "OCN" with the bond on the right means the N-bonded isomer, so it
+  stays a bare formula. The side is recorded on the atom (`labelBondSide`, with the neighbour it was
+  read against) when the label or its bond is written: every label and bond edit, opening a file and
+  importing CDXML (the test that draws OH as HO). It is read from there, never from the coordinates,
+  so moving, rotating, flipping, cleanup and Spin flatten never change what a label means; the
+  analysis key and the plugin fingerprint include it. Typed as a label on a bonded atom, "Ar" is
   aryl (a placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl. Unbonded, or read from
   a structure file (molfile, SMILES, a numeric CDXML Element), they are their elements: a real Ac–Cl
   is actinium chloride. `nativeAtomLabelFreeValence` gives the bonds each label takes.
 - **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
   hotkey. The reason names the expected bond count, and the state carries the charge that would fix
   it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.
-  The status line gets a short reason with no atom id ("OMe attaches by 1 bond; this atom has 2.",
-  "Ome isn't a known group. Did you mean OMe?"). The long form, with the atom id, is
-  `invalidDetail`: the chemistry warnings carry it, and the app writes it to the console.
+  Every badge's status-line reason is short and names no atom id ("OMe attaches by 1 bond; this
+  atom has 2.", "Ome isn't a known group. Did you mean OMe?", "C has unsupported valence 5."). The
+  long form, with the atom id, is `invalidDetail`: the chemistry warnings carry it, and the app
+  writes it to the console.
 - **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
   atoms appended after the drawn ones, so drawn indices never move, and the native formula is
   counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
@@ -81,7 +86,9 @@ structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a 
 element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
 from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). The table
 has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on the right counts
-as a bare formula and exports as a placeholder rather than as its real group. The bond tool judges a typed bonded "Ac" by
+as a bare formula and exports as a placeholder rather than as its real group. CDXML has no field
+for a label's recorded side: ChemDraft's own CDXML keeps it in the embedded payload, but a visible-
+layer-only reimport records the side the drawing shows. The bond tool judges a typed bonded "Ac" by
 its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
 one. CDXML's element table, pre-existing, numbers only H–Ca, Br, I, Pr, Ac and Ts; other numeric
 elements import as carbon until its own fix lands.

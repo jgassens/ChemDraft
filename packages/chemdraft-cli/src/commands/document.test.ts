@@ -214,6 +214,34 @@ describe("native document agent commands", () => {
     expect(unknown.result.exportWarnings.filter((warning: { code: string }) => warning.code === "export.molfile_loss")).toHaveLength(1);
   });
 
+  it("reads a cyano label by its recorded bond side, or the drawing's when none is recorded", async () => {
+    const built = structuredClone(await buildSmilesDocument("CC"));
+    const molecule = built.document.pages[0]!.objects[0] as MoleculeObject;
+    const [label, carbon] = molecule.atoms as [MoleculeObject["atoms"][number], MoleculeObject["atoms"][number]];
+    label.element = "SCN";
+    const smilesOf = async (name: string) => {
+      const input = join(directory, `${name}.json`);
+      await writeFile(input, JSON.stringify(built.document));
+      const result = await run(["render-document", "--document", input, "--out", join(directory, `${name}.svg`)]);
+      expect(result.code).toBe(0);
+      return result.result.molecules[0].canonicalSmiles as string;
+    };
+    // Written with the bond on its left: methyl thiocyanate, wherever the atoms now sit.
+    label.labelBondSide = { side: "left", atomId: carbon.id };
+    expect(await smilesOf("scn-left")).toBe("CSC#N");
+    // Written with the bond on its right: an isothiocyanate the table lacks, so a placeholder, never cyano.
+    label.labelBondSide = { side: "right", atomId: carbon.id };
+    const right = await smilesOf("scn-right");
+    expect(right).toContain("*");
+    expect(right).not.toContain("#");
+    // No record (a file from before it existed): the side the drawing shows when the CLI opens it.
+    delete label.labelBondSide;
+    label.x = carbon.x + 30;
+    expect(await smilesOf("scn-drawn-left")).toBe("CSC#N");
+    label.x = carbon.x - 30;
+    expect(await smilesOf("scn-drawn-right")).not.toContain("#");
+  });
+
   it("warns that SVG uses only the first page but preserves all pages in ChemDraft", async () => {
     const built = structuredClone(await buildSmilesDocument("CCO"));
     const firstPage = built.document.pages[0]!;

@@ -4,7 +4,7 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject, ViewMatrix } from "@chemdraft/chem-core";
-import { moleculeSmiles, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { moleculeSmiles, nativeLabelBondSideFromGeometry, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
@@ -22,11 +22,14 @@ import {
   copyAsMolfile,
   createNativeSavePayload,
   createPhase4Document,
+  flipDocumentObjectsAroundPoint,
   getSelectedMolecule,
   insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule,
+  moveDocumentObject,
   nativeMoleculeInvalidAtomStates,
-  openNativeDocument
+  openNativeDocument,
+  rotateDocumentObjectsAroundPoint
 } from "./documentWorkflow";
 
 beforeAll(() => {
@@ -259,6 +262,87 @@ describe("cyano labels and the side their bond comes from", () => {
     expect(await canonical(reversed)).not.toContain("#");
     // A bare formula has no free valence for the bond tool to fill.
     expect(bondsAt(growFrom(reversedDocument, left!.id), reversed.id, left!.id)).toHaveLength(1);
+  });
+});
+
+describe("a cyano label keeps its meaning through layout", () => {
+  const objectOf = (document: ChemDraftDocument, objectId: string): MoleculeObject =>
+    document.pages[0]!.objects.find((object): object is MoleculeObject => object.id === objectId)!;
+  const centreOf = (molecule: MoleculeObject) => ({
+    x: molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length,
+    y: molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length
+  });
+  const layouts: Record<string, { apply: (document: ChemDraftDocument, objectId: string) => ChemDraftDocument; turnsRound: boolean }> = {
+    "a move": { apply: (document, objectId) => moveDocumentObject(document, objectId, { x: 120, y: 80 }), turnsRound: false },
+    "a 180° rotation": {
+      apply: (document, objectId) => rotateDocumentObjectsAroundPoint(document, [objectId], centreOf(objectOf(document, objectId)), 180),
+      turnsRound: true
+    },
+    "a horizontal flip": {
+      apply: (document, objectId) => flipDocumentObjectsAroundPoint(document, [objectId], centreOf(objectOf(document, objectId)), "horizontal"),
+      turnsRound: true
+    }
+  };
+  const cases = ["SCN", "NCS", "CN"].flatMap((label) =>
+    (["left end", "right end"] as const).flatMap((end) => Object.keys(layouts).map((layout) => [label, end, layout] as const))
+  );
+
+  it.each(cases)("%s on the %s of a bond reads the same after %s", async (label, end, layout) => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano Layout"), { x: 300, y: 300 });
+    const sorted = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x);
+    const labelAtomId = (end === "left end" ? sorted[0] : sorted[1])!.id;
+    const written = relabel(ethane, labelAtomId, label, { literal: true });
+    const objectId = selectedMolecule(written).id;
+    const before = objectOf(written, objectId);
+    const after = objectOf(layouts[layout]!.apply(written, objectId), objectId);
+
+    // The layout really did turn the bond round (or, for a move, did not)...
+    const sideNow = (molecule: MoleculeObject) => {
+      const labelAtom = molecule.atoms.find((atom) => atom.id === labelAtomId)!;
+      return nativeLabelBondSideFromGeometry(labelAtom, molecule.bonds, molecule.atoms);
+    };
+    expect(sideNow(after) !== sideNow(before)).toBe(layouts[layout]!.turnsRound);
+    // ...and the label means what it was written as: same record, badge, formula and SMILES.
+    const labelAtomOf = (molecule: MoleculeObject) => molecule.atoms.find((atom) => atom.id === labelAtomId)!;
+    expect(labelAtomOf(after).labelBondSide).toEqual(labelAtomOf(before).labelBondSide);
+    expect(nativeMoleculeInvalidAtomStates(after)).toEqual(nativeMoleculeInvalidAtomStates(before));
+    expect(after.chemistry?.formula).toBe(before.chemistry?.formula);
+    expect(await canonical(after)).toBe(await canonical(before));
+  });
+
+  it("records the drawn side when opening a file that has none, then keeps it", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano Open"), { x: 300, y: 300 });
+    const right = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x)[1]!;
+    const written = relabel(ethane, right.id, "SCN", { literal: true });
+    const objectId = selectedMolecule(written).id;
+    // As a file from before the record existed: same label, no record.
+    const unrecorded: ChemDraftDocument = {
+      ...written,
+      pages: written.pages.map((page) => ({
+        ...page,
+        objects: page.objects.map((object) => object.id !== objectId || object.type !== "molecule" ? object : {
+          ...object,
+          atoms: object.atoms.map(({ labelBondSide: _labelBondSide, ...atom }) => atom)
+        })
+      }))
+    };
+    const saved = createNativeSavePayload(unrecorded).contents;
+    expect(saved).not.toContain("labelBondSide");
+    const opened = openNativeDocument(saved).document!;
+    const labelAtom = objectOf(opened, objectId).atoms.find((atom) => atom.id === right.id)!;
+    expect(labelAtom.labelBondSide).toMatchObject({ side: "left" });
+    const turned = objectOf(rotateDocumentObjectsAroundPoint(opened, [objectId], centreOf(objectOf(opened, objectId)), 180), objectId);
+    expect(await canonical(turned)).toBe("CSC#N");
+  });
+
+  it("writes SCN on the right end as methyl thiocyanate and keeps it so once turned round", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano Turned"), { x: 300, y: 300 });
+    const right = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x)[1]!;
+    const written = relabel(ethane, right.id, "SCN", { literal: true });
+    const objectId = selectedMolecule(written).id;
+    const turned = objectOf(rotateDocumentObjectsAroundPoint(written, [objectId], centreOf(objectOf(written, objectId)), 180), objectId);
+    expect(await canonical(turned)).toBe("CSC#N");
+    expect(turned.chemistry?.formula).toBe("C2H3NS");
   });
 });
 

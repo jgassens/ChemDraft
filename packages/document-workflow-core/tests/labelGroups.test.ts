@@ -20,9 +20,12 @@ import {
   nativeAtomLabelReading,
   nativeAtomValidationState,
   nativeLabelBondSide,
+  nativeLabelBondSideFromGeometry,
+  nativeLabelReadingDependsOnBondSide,
   nativeMoleculeUnspellableLabels,
   nativeSingleBondGraphMetadata,
-  nativeSingleBondGraphSmiles
+  nativeSingleBondGraphSmiles,
+  withNativeLabelBondSides
 } from "../src/index";
 
 const bondLength = 30;
@@ -376,6 +379,74 @@ describe("cyano labels and the side their bond comes from", () => {
       expect(nativeMoleculeUnspellableLabels(molecule(graph.atoms, graph.bonds))).toEqual([label]);
     }
   );
+});
+
+describe("a cyano label's recorded bond side", () => {
+  const recorded = (side: "left" | "right", atomId = "c1") => ({ labelBondSide: { side, atomId } });
+
+  it("reads the recorded side, not the coordinates: a thiocyanate stays one when its bond comes to lie on the right", () => {
+    // Written with its bond on the left, then turned round: the neighbour now lies to its right.
+    const turned = {
+      atoms: [atom("g1", "SCN", 0, 0, recorded("left")), atom("c1", "C", bondLength, 0)],
+      bonds: [bond("b1", "g1", "c1")]
+    };
+    expect(nativeLabelBondSide(turned.atoms[0]!, turned.bonds, turned.atoms)).toBe("left");
+    expect(nativeLabelBondSideFromGeometry(turned.atoms[0]!, turned.bonds, turned.atoms)).toBe("right");
+    expect(stateOf(turned, "g1").valid).toBe(true);
+    expect(nativeSingleBondGraphMetadata(turned.atoms, turned.bonds).formula).toBe("C2H3NS");
+    expect(canonical(nativeSingleBondGraphSmiles(turned.atoms, turned.bonds))).toBe(canonical("CSC#N"));
+    // ...and the other way round: written on the right, it stays a bare formula wherever it moves.
+    const isothiocyanate = methylWith("SCN", recorded("right"));
+    expect(expandNativeLabelGroups(isothiocyanate.atoms, isothiocyanate.bonds).expansions).toEqual([]);
+    expect(nativeSingleBondGraphSmiles(isothiocyanate.atoms, isothiocyanate.bonds)).not.toContain("#");
+  });
+
+  it("ignores a record for another neighbour, and has no side with no bond or two", () => {
+    const stale = methylWith("SCN", recorded("right", "elsewhere"));
+    expect(nativeLabelBondSide(stale.atoms[1]!, stale.bonds, stale.atoms)).toBe("left");
+    const lone = { atoms: [atom("g1", "SCN", 0, 0, recorded("left"))], bonds: [] };
+    expect(nativeLabelBondSide(lone.atoms[0]!, lone.bonds, lone.atoms)).toBeUndefined();
+    const twoBonds = {
+      atoms: [atom("c1", "C", -bondLength, 0), atom("g1", "SCN", 0, 0), atom("c2", "C", bondLength, 0)],
+      bonds: [bond("b1", "c1", "g1"), bond("b2", "g1", "c2")]
+    };
+    expect(nativeLabelBondSide(twoBonds.atoms[1]!, twoBonds.bonds, twoBonds.atoms)).toBeUndefined();
+    // Two bonds on a one-bond group: badged for the count, whichever side.
+    expect(stateOf(twoBonds, "g1").valid).toBe(false);
+  });
+
+  it("records the side a label is written with, keeps it through a move, and drops what no longer applies", () => {
+    const written = withNativeLabelBondSides(methylWith("SCN"));
+    expect(written.atoms[1]!.labelBondSide).toEqual({ side: "left", atomId: "c1" });
+    expect(nativeLabelReadingDependsOnBondSide("SCN")).toBe(true);
+    // A move that puts the neighbour on the right keeps the record: layout never rewrites it.
+    const moved = { ...written, atoms: written.atoms.map((candidate) => (candidate.id === "g1" ? { ...candidate, x: -bondLength } : candidate)) };
+    expect(withNativeLabelBondSides(moved)).toBe(moved);
+    // A label whose meaning does not depend on its side, or with no single bond, carries none.
+    expect(nativeLabelReadingDependsOnBondSide("OMe")).toBe(false);
+    expect(withNativeLabelBondSides(methylWith("OMe", recorded("left"))).atoms[1]).not.toHaveProperty("labelBondSide");
+    expect(withNativeLabelBondSides({ atoms: [atom("g1", "SCN", 0, 0, recorded("left"))], bonds: [] }).atoms[0])
+      .not.toHaveProperty("labelBondSide");
+    const plain = methylWith("OMe");
+    expect(withNativeLabelBondSides(plain)).toBe(plain);
+  });
+});
+
+describe("short status-line reasons for every badge", () => {
+  it("keeps the atom id out of the valence reasons, in the long form only", () => {
+    const pentavalent = {
+      atoms: [atom("a1", "C", 0, 0), ...[0, 1, 2, 3, 4].map((index) => atom(`n${index}`, "C", 30 * Math.cos(index), 30 * Math.sin(index)))],
+      bonds: [0, 1, 2, 3, 4].map((index) => bond(`b${index}`, "a1", `n${index}`))
+    };
+    const state = stateOf(pentavalent, "a1");
+    expect(state.invalidReason).toBe("C has unsupported valence 5.");
+    expect(state.invalidDetail).toBe("C atom a1 has unsupported valence 5.");
+    // A lone typed N: the literal valence check.
+    const lone = stateOf({ atoms: [atom("a1", "N", 0, 0, { labelLiteral: true })], bonds: [] }, "a1");
+    expect(lone.invalidReason).toBe("N has 0 of 3 bonds.");
+    expect(lone.invalidReason).not.toContain("a1");
+    expect(lone.invalidDetail).toContain("atom a1");
+  });
 });
 
 describe("typed, bonded Ac, Pr and Ts are groups", () => {
