@@ -179,9 +179,7 @@ function buildPageSetupSubmenu(): AppMenuSubmenu {
   const paperSizeItems: AppMenuItem[] = [
     ...PAPER_SIZE_ITEMS.slice(0, 2).map((entry) => command(`page.setSize.${entry.presetId}`, entry.label)),
     separator(),
-    ...PAPER_SIZE_ITEMS.slice(2).map((entry) => command(`page.setSize.${entry.presetId}`, entry.label)),
-    separator(),
-    command("page.setSizeCustom", "Custom Size…")
+    ...PAPER_SIZE_ITEMS.slice(2).map((entry) => command(`page.setSize.${entry.presetId}`, entry.label))
   ];
 
   return {
@@ -231,6 +229,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
         separator(),
         buildPageSetupSubmenu(),
+        command("page.setSizeCustom", "Canvas Size…"),
         separator(),
         command("export.open", "Export…", { accelerator: chemDrawScheme ? "Ctrl+Cmd+E" : "Shift+Cmd+E" })
       ]
@@ -272,6 +271,9 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       id: "view",
       label: "View",
       items: [
+        command("view.zoomIn", "Zoom In"),
+        command("view.zoomOut", "Zoom Out"),
+        separator(),
         command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," }),
         separator(),
         command("view.toggleRulers", "Show Rulers", {

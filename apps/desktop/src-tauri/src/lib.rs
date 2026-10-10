@@ -183,6 +183,8 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "page.setOrientation.portrait",
     "page.setOrientation.landscape",
     "view.toggleRulers",
+    "view.zoomIn",
+    "view.zoomOut",
     "view.toggleCrosshairs",
     "view.customizeToolbars",
     "view.customizeMainToolbar",
@@ -4088,6 +4090,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
+                    &MenuItem::with_id(
+                        app,
+                        "page.setSizeCustom",
+                        "Canvas Size…",
+                        true,
+                        None::<&str>,
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(
                         app,
@@ -4387,14 +4396,6 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "page.setSize.a1", "A1", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
             &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(
-                app,
-                "page.setSizeCustom",
-                "Custom Size…",
-                true,
-                None::<&str>,
-            )?,
         ],
     )?;
     let orientation_menu = Submenu::with_items(
@@ -4495,6 +4496,9 @@ fn create_view_menu<R: Runtime>(
         "View",
         true,
         &[
+            &MenuItem::with_id(app, "view.zoomIn", "Zoom In", true, None::<&str>)?,
+            &MenuItem::with_id(app, "view.zoomOut", "Zoom Out", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
             &preferences,
             &preferences_separator,
             &show_rulers,

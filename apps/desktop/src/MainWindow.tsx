@@ -1467,7 +1467,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.03.06-codex";
+const CURRENT_BUILD_STAMP = "10.10.03.08-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -3118,12 +3118,14 @@ export function MainWindow({
     });
   }, []);
 
-  const zoomCanvasFromWheelEvent = useCallback((event: Pick<globalThis.WheelEvent, "clientX" | "clientY" | "ctrlKey" | "deltaY" | "metaKey">) => {
+  const zoomCanvasFromWheelEvent = useCallback((event: Pick<globalThis.WheelEvent, "clientX" | "clientY" | "ctrlKey" | "deltaY" | "deltaMode" | "metaKey">) => {
     if (!shouldUseViewportWheelZoom(event)) {
       return false;
     }
 
-    zoomCanvasAtClientPoint(viewportRef.current.scale * wheelDeltaToZoomFactor(event.deltaY), {
+    // Wheel devices report pixels, lines, or pages; normalize before applying smooth zoom.
+    const deltaPixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (canvasRegionRef.current?.clientHeight || 800) : 1);
+    zoomCanvasAtClientPoint(viewportRef.current.scale * wheelDeltaToZoomFactor(deltaPixels), {
       x: event.clientX,
       y: event.clientY
     });
@@ -20261,7 +20263,7 @@ function clientPointFromGesture(
 }
 
 export function shouldUseViewportWheelZoom(event: Pick<globalThis.WheelEvent, "ctrlKey" | "deltaY" | "metaKey">): boolean {
-  return Number.isFinite(event.deltaY) && event.deltaY !== 0 && (event.ctrlKey || event.metaKey);
+  return Number.isFinite(event.deltaY) && event.deltaY !== 0;
 }
 
 export function pagePointFromRenderedPageRect(

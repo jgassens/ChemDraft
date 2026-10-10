@@ -53,6 +53,21 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("exposes canvas zoom in View and custom canvas dimensions directly in File", () => {
+    const model = buildAppMenuModel(EMPTY_CONTEXT);
+    const view = model.find((section) => section.id === "view");
+    expect(view?.items.slice(0, 2)).toEqual([
+      expect.objectContaining({ commandId: "view.zoomIn", label: "Zoom In", enabled: true }),
+      expect.objectContaining({ commandId: "view.zoomOut", label: "Zoom Out", enabled: true })
+    ]);
+    const file = model.find((section) => section.id === "file");
+    expect(file?.items).toContainEqual(
+      expect.objectContaining({ commandId: "page.setSizeCustom", label: "Canvas Size…", enabled: true })
+    );
+    expect(flattenAppMenuCommands(model).filter((item) => item.commandId === "page.setSizeCustom"))
+      .toHaveLength(1);
+  });
+
   it("stays in sync with the native menu's routed command ids (lib.rs MENU_COMMAND_IDS)", () => {
     const nativeIds = parseNativeMenuCommandIds();
     const webIds = nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT));

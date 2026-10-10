@@ -584,10 +584,13 @@ describe("ChemDraft desktop shell", () => {
     }
   });
 
-  it("keeps viewport zoom reserved for trackpad pinch and command-style wheel gestures", () => {
+  it("supports ordinary wheel scrolling, trackpad pinch, and command-style wheel zoom", () => {
     expect(shouldUseViewportWheelZoom({ ctrlKey: true, metaKey: false, deltaY: -42 } as globalThis.WheelEvent)).toBe(true);
     expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: true, deltaY: 42 } as globalThis.WheelEvent)).toBe(true);
-    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: 42 } as globalThis.WheelEvent)).toBe(false);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: 42 } as globalThis.WheelEvent)).toBe(true);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: -42 } as globalThis.WheelEvent)).toBe(true);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: 0 } as globalThis.WheelEvent)).toBe(false);
+    expect(shouldUseViewportWheelZoom({ ctrlKey: false, metaKey: false, deltaY: Number.NaN } as globalThis.WheelEvent)).toBe(false);
     expect(shouldUseViewportWheelZoom({ ctrlKey: true, metaKey: false, deltaY: 0 } as globalThis.WheelEvent)).toBe(false);
   });
 
