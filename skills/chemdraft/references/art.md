@@ -199,11 +199,13 @@ Verified on `C[C@@]12CCCC[C@H]1CCCC2`: hashed H below the fusion, bold
 fusion bond, CH3 label; identical InChIKey. Always confirm: if the
 InChIKey changes, swap the H's wedge and hash.
 
-A `Me` label (`atom.element = "Me"`) draws "Me", but the identity check
-writes it as a dummy atom `*` with a warning, and the stereo counts then
-read every centre as unspecified. Verify the figure with carbons first;
-relabel to `Me` as the last, display-only step; then replace each `*` in
-the reported SMILES with `C` and confirm the InChIKey still matches.
+A `Me` label (`atom.element = "Me"`) draws "Me", and the identity check
+reads it as the methyl it stands for, so the canonical SMILES, InChIKey
+and stereo counts are those of the whole structure. The same holds for
+every abbreviation in ChemDraft's table (OMe, Ph, Boc, CO2Me, ...).
+Labels are case-sensitive: `ME` or `Ome` is not a group, and is written
+as a dummy atom `*` with a warning. So is a group whose bonds don't fit
+it (a `Me` with two bonds). Check that the reported SMILES has no `*`.
 
 ### 3. Highlight a substructure
 

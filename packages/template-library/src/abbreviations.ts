@@ -9,11 +9,12 @@
  * length 1, y up. Orientation is arbitrary up to that frame; no group here has stereochemistry.
  *
  * Matching is CASE-SENSITIVE (owner decision, 2026-10-10): "OMe" is methoxy; "Ome" is not a
- * group. A label that is also an element symbol is the element — "Ac", "Pr" and "Ts" are
- * actinium, praseodymium and tennessine to the label parser — so no entry or alias may spell one;
- * the tests in document-workflow-core enforce that against the element table. "CN" is free: case
- * folding leaves it as typed (layout-engine's `nativeFormulaTwoLetterLabels`), so it is cyano here,
- * while "Cn" is still copernicium.
+ * group. A label that is also an element symbol is the element, so no label or alias may spell one;
+ * the tests in document-workflow-core enforce that against the element table. The exception is
+ * `bondedSpellings`: "Ac", "Pr" and "Ts" typed as a label on a bonded atom are acetyl, n-propyl and
+ * tosyl. Unbonded, or read from a structure file rather than typed, they stay actinium,
+ * praseodymium and tennessine. "CN" is free: case folding leaves it as typed (layout-engine's
+ * `nativeFormulaTwoLetterLabels`), so it is cyano here, while "Cn" is still copernicium.
  *
  * Chemistry for these groups (valence, formula, expansion on export) lives in
  * `@chemdraft/document-workflow-core`; this package owns only the data.
@@ -44,10 +45,11 @@ export interface AbbreviationDefinition {
    */
   aliases: readonly string[];
   /**
-   * Spellings that are also element symbols, and mean this group only on an atom with bonds:
-   * "Ac" (acetyl), "Pr" (n-propyl), "Ts" (tosyl). Unbonded, they stay actinium, praseodymium and
-   * tennessine — elements win everywhere else. Inside a composite label ("NHAc", "OTs") the group
-   * is bonded to the head by definition. Optional; most groups have none.
+   * Spellings that are also element symbols, and mean this group only when typed as a label on an
+   * atom with bonds: "Ac" (acetyl), "Pr" (n-propyl), "Ts" (tosyl). Unbonded, or read from a
+   * structure file rather than typed, they stay actinium, praseodymium and tennessine — elements win
+   * everywhere else. Inside a composite label ("NHAc", "OTs") the group is bonded to the head by
+   * definition. Optional; most groups have none.
    */
   bondedSpellings?: readonly string[];
   /** The group's name, for messages and documentation. */
@@ -249,9 +251,9 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
   },
   {
     // No "NC" alias: written that way on a bond's right it reads as isocyano (-N≡C), not cyano.
-    // For the same reason the label parser reads "CN" (and "SCN", "OCN") only with its bond on
-    // the left; with the bond on the right, where a chemist means isocyano, an isothiocyanate or
-    // an isocyanate, the label stays a bare formula (document-workflow-core's `bondSide`).
+    // For the same reason the label parser reads "CN" (and "SCN", "OCN") as cyano unless its bond
+    // comes from the label's right, where a chemist means isocyano, an isothiocyanate or an
+    // isocyanate: there the label stays a bare formula (document-workflow-core's `bondSide`).
     label: "CN", aliases: [], name: "cyano", smiles: "*C#N", formula: "CN", attachmentCount: 1,
     atoms: [
       { element: "C", hydrogens: 0, x: 0, y: 0 },

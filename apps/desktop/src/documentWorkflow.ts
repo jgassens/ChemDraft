@@ -148,6 +148,7 @@ import {
   defaultDoubleBondSide,
   defaultNativeMoleculeTransform,
   distance,
+  expandNativeMoleculeLabelGroups,
   findSingleCycleAtomIds,
   firstPage,
   insertNativeReactionArrow,
@@ -168,6 +169,9 @@ import {
   nativeComponents,
   type NativeDoubleBondSide,
   nativeElementFromAtomLabel,
+  nativeLabelGroupVerdict,
+  nativeAtomLabelReading,
+  nativeLabelBondSide,
   nativeMoleculeUnspellableLabels,
   nativeReactionArrowMinExtentPx,
   nativeSingleBondGraphMetadata,
@@ -7144,7 +7148,7 @@ export function applyNativeAtomSproutTarget(
     // methyl when the second cannot be planned would read as success. So an atom without two free
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
+    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0, molecule) < 2) {
       return document;
     }
     if (!growthPlan || growthPlan.targetAtomId) {
@@ -7246,10 +7250,10 @@ export function applyNativeRingAttachAtAtomTarget(
   if (!sourceAtom) {
     return document;
   }
-  // A nickname or condensed label (Ph, OMe, CO2Me) is a superatom with no known free valence:
-  // the bond tool and the sprout hotkeys already refuse it, and a ring fused onto "Ph" would be
-  // chemistry nobody drew. Refuse here too, so the shipped doc's "relabel it to an element
-  // first" is the whole story.
+  // Rings never attach at a non-element label. A table group (Ph, OMe, CO2Me) takes one bond and a
+  // ring would give it two; a composite such as "NMe" or "CMe2" may take two, but a ring template
+  // laid over its head is chemistry nobody drew; any other label takes no bonds at all. Refuse
+  // them all, so "relabel it to an element first" stays the whole story for rings.
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
     return document;
   }
@@ -7729,7 +7733,7 @@ export function findNativeMoleculeAtomHit(
   }
 
   const valenceUsed = atomBondOrderUsageMap(molecule.atoms, molecule.bonds).get(hit.atomId) ?? 0;
-  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed);
+  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed, molecule);
   if (availableBonds <= 0) {
     return undefined;
   }
@@ -17127,11 +17131,14 @@ export function copyAsMergedMolecule(
  * system. Label handling is the same as the plugins' V2000 form: a condensed label the label grammar
  * spells as one element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with
  * that many hydrogens, so ethanol drawn as C–C–OH keeps its formula and mass. Aromatic bonds are
- * written at their Kekulé orders, so pyrrole's "NH" is spelled too. Labels that grammar cannot spell
- * ("Ph", "OMe"), and spelled labels on an atom whose aromatic bonds have no resolved Kekulé order
- * (where the stated hydrogens have no exact valence), stay R-group placeholders —
- * `nativeMoleculeUnspellableLabels` names the first kind. What V3000 adds is room: it has no
- * 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure` string, silently.
+ * written at their Kekulé orders, so pyrrole's "NH" is spelled too. A group label whose bonds fit
+ * it ("Ph", "OMe", "NMe2", a bonded "Ts") is written out as its atoms, appended after the drawn ones
+ * so every drawn atom keeps its index (`expandNativeMoleculeLabelGroups`). What is left — a
+ * placeholder, unrecognized text, a flagged group, a bonded "Ar", and spelled labels on an atom whose
+ * aromatic bonds have no resolved Kekulé order (where the stated hydrogens have no exact valence) —
+ * stays an R-group placeholder; `nativeMoleculeUnspellableLabels` names those labels. What V3000 adds
+ * is room: it has no 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure`
+ * string, silently.
  */
 export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
@@ -17153,16 +17160,39 @@ export function analysisFacingStructure(molecule: MoleculeObject): { structureFo
     }
     return { structureFormat: molecule.structureFormat, structure: molecule.structure };
   }
+  // A valid group label ("OMe", "Ph") is analysed as the atoms it stands for, appended after the
+  // drawn atoms so every drawn atom keeps its index in the engine's input.
+  const { molecule: expanded, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
   return {
     structureFormat: "molfile-v3000",
-    structure: moleculeToMolfileV3000(molecule, {
+    structure: moleculeToMolfileV3000(expanded, {
       unknownBondOrders: "refuse",
       fromDocFrame: true,
       abbreviations: "rgroup",
-      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,
-      spellLabel: nativeSingleHeavyElementLabelValence
+      kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
+      spellLabel: nativeSingleHeavyElementLabelValence,
+      placeholderAtoms
     }).contents
   };
+}
+
+/**
+ * What Validate hands the engine for `molecule`. A drawn graph is read from its live atoms through
+ * `analysisFacingStructure`, so a valid group is analysed as the atoms it stands for. The stored
+ * `structure` is never trusted for a graph: after a 3D flatten it is a molfile with a dummy "*" for
+ * every label, and an engine result for that placeholder graph would overwrite the correct formula
+ * (once a valid group no longer counts as a placeholder, nothing else would stop it). A molecule with
+ * no graph keeps its stored structure, as before.
+ */
+export function validationFacingStructure(
+  molecule: MoleculeObject
+): { format: MoleculeObject["structureFormat"]; value: string } {
+  if (molecule.atoms.length === 0) {
+    return { format: molecule.structureFormat, value: molecule.structure };
+  }
+  const { structureFormat, structure } = analysisFacingStructure(molecule);
+  // analysisFacingStructure writes a drawn graph as "molfile-v3000", one of the stored formats.
+  return { format: structureFormat as MoleculeObject["structureFormat"], value: structure };
 }
 
 /**
@@ -17200,23 +17230,30 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
 }
 
 /**
- * The copy scope as one merged molfile. `warningsOut` receives the writer's lossy-emission notes
- * (V2000 flattens dative bonds to single; non-element labels write as dummy atoms) — V3000 keeps
- * dative bonds as coordination type 9 and stays silent about them.
+ * The copy scope as one merged molfile. A group label whose bonds fit it is written out as its atoms
+ * inside a superatom (`SUP`) S-group carrying the label. `warningsOut` receives the writer's
+ * lossy-emission notes (V2000 flattens dative bonds to single; any other label — a placeholder,
+ * unrecognized text, a flagged group, a bonded "Ar" — writes as a dummy atom) — V3000 keeps dative
+ * bonds as coordination type 9 and stays silent about them.
  */
 export function copyAsMolfile(
   document: ChemDraftDocument,
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
-  const merged = copyAsMergedMolecule(copyAsScopeMolecules(document));
-  if (!merged) {
+  const scoped = copyAsMergedMolecule(copyAsScopeMolecules(document));
+  if (!scoped) {
     return undefined;
   }
+  // Valid group labels are written as their atoms, each wrapped in a superatom S-group carrying
+  // the label, so a reader that contracts abbreviations still shows "OMe".
+  const { molecule: merged, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(scoped);
   const options = {
     fromDocFrame: true,
     warnings: warningsOut,
-    kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders
+    kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
+    superatomGroups: expansions,
+    placeholderAtoms
   };
   return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
 }
@@ -18068,7 +18105,7 @@ function canSetNativeBondOrder(
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0) > 0;
+  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0;
 }
 
 function canConnectNativeAtoms(
@@ -18099,8 +18136,8 @@ function canConnectNativeAtoms(
   return (
     sourceAtom !== undefined &&
     targetAtom !== undefined &&
-    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0) > 0 &&
-    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0) > 0
+    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0, molecule) > 0 &&
+    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0, molecule) > 0
   );
 }
 
@@ -18524,10 +18561,36 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
-  return nativeElementFromAtomLabel(atom.element) === undefined
-    ? 0
-    : Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
+function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
+  // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
+  // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
+  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
+  // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
+  // and takes bonds like one. A cyano label ("SCN") with its bond on the right is a bare formula,
+  // read with the same bond side as the badge and the formula.
+  const bondSide = nativeElementFromAtomLabel(atom.element)
+    ? undefined
+    : nativeLabelBondSide(
+      atom,
+      molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
+      molecule.atoms
+    );
+  const reading = nativeAtomLabelReading(atom.element, {
+    bonded: valenceUsed > 0,
+    typed: atom.labelLiteral === true,
+    ...(bondSide ? { bondSide } : {})
+  });
+  if (reading.kind === "element") {
+    return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
+  }
+  if (reading.kind !== "group") {
+    return 0;
+  }
+  const used = valenceUsed + (atom.markRadicals ?? 0);
+  const verdict = nativeLabelGroupVerdict(reading.group, used, atom.formalCharge);
+  return !verdict.valid && verdict.expectedBondCount !== undefined
+    ? Math.max(0, verdict.expectedBondCount - used)
+    : 0;
 }
 
 function atomChargeLabelSuffix(charge: number): string {

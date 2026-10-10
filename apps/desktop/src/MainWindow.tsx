@@ -383,6 +383,7 @@ import {
   applyAnalysisToSelectedMolecule,
   analysisFacingStructure,
   analysisSubjectKey,
+  validationFacingStructure,
   nativeMoleculeUnspellableLabels,
   applyFreeformSingleBondToolAtPoint,
   applyNativeTemplateToolAtTarget,
@@ -1469,7 +1470,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.17.00-opus";
+const CURRENT_BUILD_STAMP = "10.10.17.10-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2025,13 +2026,19 @@ export function MainWindow({
     hoveredNativeAtomStateRef.current = hoveredNativeAtom;
   }, [hoveredNativeAtom]);
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
-  const hoveredNativeWarning = useMemo(() => {
+  const hoveredNativeInvalidState = useMemo(() => {
     if (hoveredNativeDeleteTarget?.kind !== "atom") return undefined;
     const molecule = findDocumentObject(document, hoveredNativeDeleteTarget.objectId);
     return molecule?.type === "molecule"
-      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)?.invalidReason
+      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)
       : undefined;
   }, [document, hoveredNativeDeleteTarget]);
+  // The status line gets the short reason; the long form, with the atom id, goes to the log.
+  const hoveredNativeWarning = hoveredNativeInvalidState?.invalidReason;
+  const hoveredNativeWarningDetail = hoveredNativeInvalidState?.invalidDetail;
+  useEffect(() => {
+    if (hoveredNativeWarningDetail) console.info(hoveredNativeWarningDetail);
+  }, [hoveredNativeWarningDetail]);
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();
@@ -8189,12 +8196,10 @@ export function MainWindow({
           const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
           registerRdkitWasmLoader();
 
-          // The real engine reads molfiles too, so the format is passed through rather than
-          // collapsed to "unknown" as it was under the SMILES-only placeholder.
-          const analysis = await chemistryAdapter.analyzeStructure({
-            format: molecule.structureFormat,
-            value: molecule.structure
-          });
+          // The live graph, expanded the way the Molecular Inspector reads it — never the stored
+          // structure, which after a 3D flatten spells every label as a dummy "*" and would put the
+          // placeholder graph's formula over the drawing's (validationFacingStructure).
+          const analysis = await chemistryAdapter.analyzeStructure(validationFacingStructure(molecule));
           setLastAnalysis(analysis);
           publishAnalysisWindow(
             VALIDATION_RESULT_WINDOW_ID,

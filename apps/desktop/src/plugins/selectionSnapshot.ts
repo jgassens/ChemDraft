@@ -1,5 +1,5 @@
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
+import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   createStructureSourceFingerprint,
@@ -28,21 +28,26 @@ export function pluginFacingStructure(
 ): { structureFormat: PluginStructureFormat; structure: string } {
   if (molecule.atoms && molecule.atoms.length > 0) {
     try {
+      // A valid group label ("OMe", "Ph") is handed over as the atoms it stands for, appended after
+      // the drawn atoms, so the plugin predicts for the molecule the drawing means.
+      const { molecule: expanded, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
       return {
         structureFormat: "molfile-v2000",
         // Native atoms live in the document (y-down) frame; molfiles are y-up. A condensed label
         // naming one heavy atom ("OH", "NH2") is spelled as that atom with exactly its hydrogens,
-        // through the valence field, which OpenChemLib honours. An abbreviated label ("Ph", "OMe")
-        // is handed over as an R-group pseudo-atom, not the export dummy "*": the plugin's
-        // OpenChemLib reads "*" as a carbon and would predict for a molecule the user did not draw,
-        // with nothing to tell it otherwise. An R-group is honestly "a group this file does not
-        // spell" (AGENTS.md §12 UI: no fake chemistry).
-        structure: moleculeToMolfileV2000(molecule, {
+        // through the valence field, which OpenChemLib honours. Any label still left — a
+        // placeholder, unrecognized text, a flagged group — is handed over as an R-group
+        // pseudo-atom, not the export dummy "*": the plugin's OpenChemLib reads "*" as a carbon
+        // and would predict for a molecule the user did not draw, with nothing to tell it
+        // otherwise. An R-group is honestly "a group this file does not spell" (AGENTS.md §12 UI:
+        // no fake chemistry).
+        structure: moleculeToMolfileV2000(expanded, {
           fromDocFrame: true,
           warnings,
           abbreviations: "rgroup",
-          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,
-          spellLabel: nativeSingleHeavyElementLabelValence
+          kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
+          spellLabel: nativeSingleHeavyElementLabelValence,
+          placeholderAtoms
         }).contents
       };
     } catch (error) {

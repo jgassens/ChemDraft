@@ -873,3 +873,107 @@ describe("non-element atom labels", () => {
     expect(moleculeToMolfileV2000(plain, { kekuleBondOrders: new Map() }).contents).not.toContain("RGP");
   });
 });
+
+describe("superatom S-groups", () => {
+  // Ethyl methyl ether written out: C1 bonded to the expanded "OMe" group (O2, C3), plus C4.
+  const ether = molecule(
+    [
+      { id: "c1", element: "C", x: 0, y: 0 },
+      { id: "o2", element: "O", x: 1.5, y: 0 },
+      { id: "c3", element: "C", x: 2.25, y: 1.3 },
+      { id: "c4", element: "C", x: -0.75, y: 1.3 }
+    ],
+    [
+      { id: "b1", from: "c1", to: "o2" },
+      { id: "b2", from: "o2", to: "c3" },
+      { id: "b3", from: "c1", to: "c4" }
+    ]
+  );
+  const superatomGroups = [{ label: "OMe", atomIds: ["o2", "c3"] }];
+
+  it("writes V2000 STY, SAL, SBL and SMT lines with the crossing bond", () => {
+    const lines = moleculeToMolfileV2000(ether, { kekuleBondOrders: new Map(), superatomGroups }).contents.split("\n");
+    const end = lines.indexOf("M  END");
+    expect(lines.slice(end - 4, end)).toEqual([
+      "M  STY  1   1 SUP",
+      "M  SAL   1  2   2   3",
+      "M  SBL   1  1   1",
+      "M  SMT   1 OMe"
+    ]);
+  });
+
+  it("writes a V3000 SGROUP block and counts it", () => {
+    const contents = moleculeToMolfileV3000(ether, { kekuleBondOrders: new Map(), superatomGroups }).contents;
+    expect(contents).toContain("M  V30 COUNTS 4 3 1 0 0");
+    expect(contents).toContain([
+      "M  V30 BEGIN SGROUP",
+      "M  V30 1 SUP 0 ATOMS=(2 2 3) XBONDS=(1 1) LABEL=OMe",
+      "M  V30 END SGROUP"
+    ].join("\n"));
+  });
+
+  it("continues a long V3000 S-group line within 80 columns, joining back to the same text", () => {
+    const chain = molecule(
+      Array.from({ length: 30 }, (_, index) => ({ id: `a${index}`, element: "C", x: index * 1.5, y: 0 })),
+      Array.from({ length: 29 }, (_, index) => ({ id: `b${index}`, from: `a${index}`, to: `a${index + 1}` }))
+    );
+    const atomIds = chain.atoms.slice(1).map((atom) => atom.id);
+    const contents = moleculeToMolfileV3000(chain, { kekuleBondOrders: new Map(), superatomGroups: [{ label: "Long", atomIds }] }).contents;
+    const lines = contents.split("\n");
+    const start = lines.indexOf("M  V30 BEGIN SGROUP") + 1;
+    const end = lines.indexOf("M  V30 END SGROUP");
+    const sgroupLines = lines.slice(start, end);
+    expect(sgroupLines.length).toBeGreaterThan(1);
+    expect(sgroupLines.every((line) => line.length <= 80 && line.startsWith("M  V30 "))).toBe(true);
+    expect(sgroupLines.slice(0, -1).every((line) => line.endsWith(" -"))).toBe(true);
+    // A reader drops each continued line's final "-" and appends the next line after its prefix.
+    const joined = sgroupLines
+      .map((line, index) => line.slice("M  V30 ".length, index < sgroupLines.length - 1 ? -1 : undefined))
+      .join("");
+    expect(joined).toBe(`1 SUP 0 ATOMS=(29 ${atomIds.map((_, index) => index + 2).join(" ")}) XBONDS=(1 1) LABEL=Long`);
+  });
+
+  it("writes nothing for a group with no atoms in the molecule", () => {
+    const contents = moleculeToMolfileV2000(ether, { kekuleBondOrders: new Map(), superatomGroups: [{ label: "X", atomIds: ["nope"] }] }).contents;
+    expect(contents).not.toContain("STY");
+  });
+
+  it("is read back by RDKit as the same molecule", async () => {
+    installRealRdkitModuleLoader();
+    try {
+      const rdkit = await ensureRdkit();
+      for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+        const parsed = rdkit.get_mol(write(ether, { kekuleBondOrders: new Map(), superatomGroups }).contents);
+        try {
+          expect(parsed?.get_smiles?.()).toBe("CCOC");
+        } finally {
+          parsed?.delete();
+        }
+      }
+    } finally {
+      resetRdkitForTesting();
+    }
+  });
+});
+
+describe("placeholder atoms", () => {
+  it("writes a listed atom as a placeholder with its reason, and never with a valence", () => {
+    const aryl = molecule(
+      [{ id: "a0", element: "Ar", x: 0, y: 0, labelLiteral: true }, { id: "a1", element: "O", x: 1.5, y: 0 }],
+      [{ id: "b1", from: "a0", to: "a1" }]
+    );
+    const placeholderAtoms = new Map([["a0", "a bonded \"Ar\" is aryl, not argon"]]);
+    const warnings: string[] = [];
+    const dummy = moleculeToMolfileV2000(aryl, { kekuleBondOrders: new Map(), placeholderAtoms, warnings }).contents;
+    const firstAtom = dummy.split("\n")[4]!;
+    expect(firstAtom.slice(31, 34)).toBe("*  ");
+    expect(firstAtom.slice(48, 51)).toBe("  0");
+    expect(warnings).toEqual([
+      "Atom label \"Ar\" stands for a group here (a bonded \"Ar\" is aryl, not argon); written as a dummy atom (*) — the label's group is not represented in the molfile."
+    ]);
+    const rgroup = moleculeToMolfileV3000(aryl, { kekuleBondOrders: new Map(), placeholderAtoms, abbreviations: "rgroup" }).contents;
+    expect(rgroup).toContain("M  V30 1 R# 0 0 0 0 RGROUPS=(1 1)");
+    // Without the map, "Ar" is the element.
+    expect(moleculeToMolfileV2000(aryl, { kekuleBondOrders: new Map() }).contents.split("\n")[4]!.slice(31, 34)).toBe("Ar ");
+  });
+});

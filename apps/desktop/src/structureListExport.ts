@@ -4,6 +4,7 @@ import {
   type MoleculeObject,
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
+import { expandNativeMoleculeLabelGroups } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
@@ -76,11 +77,16 @@ export async function exportStructureListSdf(
   for (const [index, molecule] of molecules.entries()) {
     const name = moleculeName(molecule);
     const writerWarnings: string[] = [];
-    const molfile = moleculeToMolfileV2000(molecule, {
+    // Valid group labels ("OMe") go into the record as their atoms, each in a superatom S-group
+    // carrying the label; the same molfile feeds the record's SMILES below.
+    const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
+    const molfile = moleculeToMolfileV2000(expanded, {
       ...options,
       fromDocFrame: true,
       warnings: writerWarnings,
-      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+      kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
+      superatomGroups: expansions,
+      placeholderAtoms
     }).contents;
     warnings.push(...writerWarnings.map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",

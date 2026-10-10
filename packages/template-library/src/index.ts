@@ -19,4 +19,4 @@ export {
   abbreviationSpellings,
   abbreviationSpellingSuggestion
 } from "./abbreviations";
-export { isGenericAtomLabel } from "./genericLabels";
+export { bondedElementLabelMeaning, isBondedGenericAtomLabel, isGenericAtomLabel } from "./genericLabels";

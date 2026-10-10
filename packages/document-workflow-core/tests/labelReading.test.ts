@@ -48,7 +48,7 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeLabelGroupVerdict(groupOf("CN"), 0, -1)).toEqual({ valid: true });
   });
 
-  it("reads cyano labels only with the bond on their left: on the right, the N faces the bond", () => {
+  it("reads cyano labels as cyano unless the bond comes from their right, where the N faces it", () => {
     const cyanoLabels = { CN: 1, SCN: 1, OCN: 1, CH2CN: 1 } as const;
     for (const [label, bonds] of Object.entries(cyanoLabels)) {
       // Written for a bond on the left (or with no side given): cyano, thiocyanato, cyanato, cyanomethyl.
@@ -79,6 +79,10 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeAtomLabelFreeValence("Ar", 0, { bonded: true })).toBeUndefined();
     // No other element changes with bonding.
     expect(nativeAtomLabelReading("Y", { bonded: true })).toEqual({ kind: "element", element: "Y" });
+    // Only a typed label: an Ar (or Ac, Pr, Ts) that came from a structure file is the element.
+    for (const label of ["Ar", "Ac", "Pr", "Ts"]) {
+      expect(nativeAtomLabelReading(label, { bonded: true, typed: false })).toEqual({ kind: "element", element: label });
+    }
   });
 
   it("reads a bonded Ac, Pr or Ts as acetyl, n-propyl or tosyl, and an unbonded one as the element", () => {

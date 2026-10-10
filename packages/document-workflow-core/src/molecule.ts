@@ -220,9 +220,11 @@ export function createSmilesMolecule(
       : bond
   );
 
-  // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
-  // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
-  // never reads this field — it spells its own molfile (stereoPerceptionMolfile, R-groups).
+  // Stored-structure spelling: molecule.structure is a standard molfile of the graph as built (a
+  // pasted structure has element atoms only). It is a record of the depiction, not what the app
+  // analyses or exports: Copy As, SMILES export, Validate and the Molecular Inspector all write the
+  // live graph afresh, with group labels expanded (expandNativeMoleculeLabelGroups). CIP perception
+  // never reads this field either — it spells its own molfile (stereoPerceptionMolfile, R-groups).
   const structureWarnings: string[] = [];
   const structure = moleculeToMolfileV2000({ ...sideMolecule, bonds }, {
     fromDocFrame: true,

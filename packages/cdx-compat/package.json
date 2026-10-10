@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/template-library": "workspace:*",
     "fast-xml-parser": "^5.8.0"
   },
   "devDependencies": {

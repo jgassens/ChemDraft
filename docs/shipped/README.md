@@ -34,6 +34,58 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Abbreviation labels as chemistry (2026-10-10, branches `claude/abbreviation-label-reading` and `claude/awesome-ellis-421ab1`)
+
+Atom labels such as "OMe" were superatoms that nothing checked: "OMe" on a ring carbon (an O with
+three bonds and no charge) drew no badge, and the formula and every export skipped the group. Two
+PRs make the label mean its group.
+
+- **Table** (`packages/template-library`): 31 original, case-sensitive abbreviations, each defined
+  by SMILES, with right-to-left aliases ("MeO"), stated hydrogens, charges, free valence and an
+  RDKit-computed layout. Also the deliberate placeholders (R, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?,
+  `*`). No entry spells an element: "Ac" stays actinium, so acetyl is "COMe". "CN" is cyano, since
+  element case folding (jgassens/ChemDraft#85) leaves it as typed; there is no "NC" alias.
+- **Reading** (`nativeAtomLabelReading`): element (an exact symbol, or another case folded except for
+  eleven two-letter group labels such as "NH" and "CN"), abbreviation (case-sensitive), spelled
+  one-heavy-atom label ("NH2", "NH"), composite ("NMe2", "BocHN", "CH2Ph", "SCN"), placeholder, bare
+  formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
+  ("COEt") is left unrecognized instead of read as C–OEt, and "CN" counts in a composite only last,
+  after its head ("CNO" stays a bare formula). Cyano reads as cyano unless its bond comes from the
+  label's right (`nativeLabelBondSide`, the test that draws OH as HO): "CN", "SCN" or "OCN" with the
+  bond on the right means the N-bonded isomer, so it stays a bare formula. Typed as a label on a bonded atom, "Ar" is
+  aryl (a placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl. Unbonded, or read from
+  a structure file (molfile, SMILES, a numeric CDXML Element), they are their elements: a real Ac–Cl
+  is actinium chloride. `nativeAtomLabelFreeValence` gives the bonds each label takes.
+- **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
+  hotkey. The reason names the expected bond count, and the state carries the charge that would fix
+  it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.
+  The status line gets a short reason with no atom id ("OMe attaches by 1 bond; this atom has 2.",
+  "Ome isn't a known group. Did you mean OMe?"). The long form, with the atom id, is
+  `invalidDetail`: the chemistry warnings carry it, and the app writes it to the console.
+- **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
+  atoms appended after the drawn ones, so drawn indices never move, and the native formula is
+  counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
+  label. A group's stated hydrogens are written as explicit H atoms where the valence model would
+  not supply them (a hypervalent head such as "SHMe" on two bonds). Flagged groups, placeholders and
+  a bonded "Ar" stay warned placeholders. Validate reads the same expanded graph, never the stored
+  structure (a flatten stores "*" for every label). Tests hold the native formula and canonical
+  SMILES equal to RDKit's for every table entry, composite, bonded spelling and charged form.
+- **Bond tool**: a group may take the bonds it is missing (a lone "OMe" takes one), never more.
+
+Known limitations: Spin 3D, its sidecar, cleanup re-layout, flatten and the CIP guard
+(`stereoPerceptionMolfile`) still see one placeholder atom per label, since their atom-count and
+index contracts need one molfile atom per drawn atom. The user sees no wrong chemistry there: the guard
+only compares a perception with itself, and a placeholder can add a centre to it but never hide one.
+CDXML still writes a group label as `Element="OMe"` (it round-trips, but external readers see no
+structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a warning, never as the
+element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
+from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). The table
+has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on the right counts
+as a bare formula and exports as a placeholder rather than as its real group. The bond tool judges a typed bonded "Ac" by
+its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
+one. CDXML's element table, pre-existing, numbers only H–Ca, Br, I, Pr, Ac and Ts; other numeric
+elements import as carbon until its own fix lands.
+
 ## Aromatic bonds counted on a Kekulé structure (2026-09-27, branch `claude/aromatic-bond-order`)
 
 Aromatic bonds (MOL type 4, CDXML `Order="1.5"`, Ketcher V3000) used to be counted two different
