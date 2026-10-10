@@ -799,7 +799,9 @@ export async function showCurrentToolsetPopoverWindow(): Promise<void> {
   }
 }
 
-export async function focusCurrentWindowAndWebview(): Promise<void> {
+export async function focusCurrentWindowAndWebview(
+  options: { onlyIfAppActive?: boolean } = {}
+): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
@@ -810,7 +812,15 @@ export async function focusCurrentWindowAndWebview(): Promise<void> {
     import("@tauri-apps/api/webview")
   ]);
 
-  await invoke("focus_main_document_window").catch(() => undefined);
+  if (options.onlyIfAppActive) {
+    const raised = await invoke<boolean>("focus_main_document_window_if_app_active").catch(() => false);
+    // JS setFocus also raises native windows; it must not bypass a refused native activation.
+    if (raised !== true) {
+      return;
+    }
+  } else {
+    await invoke("focus_main_document_window").catch(() => undefined);
+  }
   await Promise.allSettled([
     getCurrentWindow().setFocus(),
     getCurrentWebview().setFocus()

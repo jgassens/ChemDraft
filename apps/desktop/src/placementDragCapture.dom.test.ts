@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -138,9 +139,11 @@ describe("placement drags that start on an object follow pointer capture", () =>
     target: EventTarget,
     type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
     point: { x: number; y: number },
-    pointerId: number
+    pointerId: number,
+    altKey = false
   ) {
     const event = new MouseEvent(type, {
+      altKey,
       bubbles: true,
       button: 0,
       buttons: type === "pointerup" || type === "pointercancel" ? 0 : 1,
@@ -163,19 +166,20 @@ describe("placement drags that start on an object follow pointer capture", () =>
     from: { x: number; y: number },
     path: readonly { x: number; y: number }[],
     pointerId: number,
-    duringDrag?: () => void
+    duringDrag?: () => void,
+    modifiers: { moveAltKey?: boolean; releaseAltKey?: boolean } = {}
   ) {
     await act(async () => {
       dispatchPointer(pressTarget, "pointerdown", from, pointerId);
     });
     for (const point of path) {
       await act(async () => {
-        dispatchPointer(captured ?? pageElement(), "pointermove", point, pointerId);
+        dispatchPointer(captured ?? pageElement(), "pointermove", point, pointerId, modifiers.moveAltKey);
       });
     }
     duringDrag?.();
     await act(async () => {
-      dispatchPointer(captured ?? pageElement(), "pointerup", path[path.length - 1] ?? from, pointerId);
+      dispatchPointer(captured ?? pageElement(), "pointerup", path[path.length - 1] ?? from, pointerId, modifiers.releaseAltKey);
     });
   }
 
@@ -243,6 +247,29 @@ describe("placement drags that start on an object follow pointer capture", () =>
     const grown = moleculeNow(chain.id);
     expect(grown.atoms.length).toBeGreaterThan(chain.atoms.length + 2);
     expect(grown.structure).toBe("C".repeat(grown.atoms.length));
+  });
+
+  // Alt (Option) frees the aim of a chain's first bond from the 15° grid. The modifier is read on
+  // every move, so it must reach a drag whose moves arrive at the object, not only the page.
+  it.each([false, true])("aims a chain dragged off an atom with Alt held: %s", async (alt) => {
+    const seeded = applyNativeChainTool(createPhase4Document("Chain Aim Anchor"), { x: 150, y: 300 }, { x: 230, y: 300 });
+    const chain = seededMolecule(seeded);
+    const end = chain.atoms[chain.atoms.length - 1];
+    const radians = (23 * Math.PI) / 180;
+    const target = { x: end.x + Math.cos(radians) * nativeBondLengthPx * 3, y: end.y + Math.sin(radians) * nativeBondLengthPx * 3 };
+    await renderMainWindow(seeded, "tool.chain");
+
+    // The release carries the opposite modifier: the last preview is what commits.
+    await dragFrom(objectElement(chain.id), end, straightPath(end, target.x - end.x, target.y - end.y, 6), 77, undefined, { moveAltKey: alt, releaseAltKey: !alt });
+
+    const added = moleculeNow(chain.id).atoms.slice(chain.atoms.length);
+    const oracle = applyNativeChainTool(seeded, end, target, { objectId: chain.id, atomId: end.id }, { placementAltKey: alt });
+    const expected = (oracle.pages[0].objects.find((object) => object.id === chain.id) as MoleculeObject).atoms.slice(chain.atoms.length);
+    expect(added.length).toBeGreaterThan(1);
+    expect(added.map(({ x, y }) => ({ x, y }))).toEqual(expected.map(({ x, y }) => ({ x, y })));
+    const firstBondDegrees = (Math.atan2(added[0].y - end.y, added[0].x - end.x) * 180) / Math.PI;
+    const offGrid = Math.abs(firstBondDegrees / 15 - Math.round(firstBondDegrees / 15)) > 1e-6;
+    expect(offGrid).toBe(alt);
   });
 
   it("grows a flexible chain dragged off a ring atom", async () => {

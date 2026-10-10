@@ -93,6 +93,8 @@ import {
   moleculeStructureBondSpacingPercentCommandId,
   moleculeStructureMultipleBondGapCommandId,
   moleculeStructureDoubleBondInsetCommandId,
+  moleculeDoubleBondPositionCommandId,
+  type DoubleBondPosition,
   moleculeStructureBondMarginWidthCommandId,
   moleculeStructureBondHashSpacingCommandId,
   moleculeStructureOverlapClearanceCommandId,
@@ -165,8 +167,8 @@ export type ToolbarFlyoutRequest = {
 };
 
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
-const DISTRIBUTE_MENU_HOLD_MS = 150;
-const COMMAND_FLYOUT_HOLD_MS = 150;
+/** A deliberate hold opens a toolbar flyout; a normal click always selects its primary tool. */
+export const TOOLBAR_FLYOUT_HOLD_MS = 400;
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
@@ -1257,6 +1259,26 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
       {numericControl("Margin width", structure?.values.bondMarginWidthPx.value, structure?.values.bondMarginWidthPx.mixed, moleculeStructureNumberRanges.bondMarginWidthPx, moleculeStructureBondMarginWidthCommandId, structureDisabled)}
       {numericControl("Hash spacing", structure?.values.bondHashSpacingPx.value, structure?.values.bondHashSpacingPx.mixed, moleculeStructureNumberRanges.bondHashSpacingPx, moleculeStructureBondHashSpacingCommandId, structureDisabled)}
       {numericControl("Double-bond inset", structure?.values.doubleBondInsetPx.value, structure?.values.doubleBondInsetPx.mixed, moleculeStructureNumberRanges.doubleBondInsetPx, moleculeStructureDoubleBondInsetCommandId, structureDisabled)}
+      <label className="molecule-inspector-field molecule-inspector-select-field">
+        <span>Double-bond position</span>
+        <select
+          aria-label="Double-bond position"
+          title={structure?.doubleBondDisabledReason ?? (structure ? undefined : "Select a double bond")}
+          disabled={!structure?.doubleBondTargetCount}
+          value={structure?.doubleBondPosition.mixed ? "mixed" : structure?.doubleBondPosition.value ?? "automatic"}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            if (event.currentTarget.value !== "mixed") invokeOrCommit(moleculeDoubleBondPositionCommandId(event.currentTarget.value as DoubleBondPosition));
+          }}
+        >
+          {structure?.doubleBondPosition.mixed ? <option value="mixed">Mixed</option> : null}
+          <option value="automatic">Automatic</option>
+          <option value="left">Left</option>
+          <option value="center">Center</option>
+          <option value="right">Right</option>
+        </select>
+      </label>
       {numericControl("Overlap clearance", structure?.values.bondOverlapClearancePx.value, structure?.values.bondOverlapClearancePx.mixed, moleculeStructureNumberRanges.bondOverlapClearancePx, moleculeStructureOverlapClearanceCommandId, structureDisabled)}
       <label className="molecule-inspector-field molecule-inspector-select-field">
         <span>Line cap</span>
@@ -3775,7 +3797,7 @@ function ToolbarPaletteItem({
           if (hasSubmenu) {
             event.currentTarget.setPointerCapture?.(event.pointerId);
             clearHoldTimer();
-            holdTimerRef.current = setTimeout(openMenu, COMMAND_FLYOUT_HOLD_MS);
+            holdTimerRef.current = setTimeout(openMenu, TOOLBAR_FLYOUT_HOLD_MS);
           }
         }}
         onPointerUp={(event) => {
@@ -4343,7 +4365,7 @@ function DistributeCommandIconButton({
           holdOpenedRef.current = false;
           event.currentTarget.setPointerCapture?.(event.pointerId);
           clearHoldTimer();
-          holdTimerRef.current = setTimeout(openMenu, DISTRIBUTE_MENU_HOLD_MS);
+          holdTimerRef.current = setTimeout(openMenu, TOOLBAR_FLYOUT_HOLD_MS);
         }}
         onPointerUp={(event) => {
           event.stopPropagation();
