@@ -183,7 +183,10 @@ describe("seeded sketch hash/dash ink", () => {
       const path = moleculeSketchTickPath({
         source: { x1: 50, y1: 0, x2: 50, y2: 0 },
         axis: { x1: 0, y1: 0, x2: 100, y2: 0 },
-        cellStart: 0, cellEnd: 100, lengthVariation: 4, identity: `zero:${hashed}`, hashed
+        // A narrow hash cell drives its tilt-fit bisection to zero, exercising the degenerate
+        // source direction used by the hashed axial-coordinate calculation.
+        cellStart: hashed ? 49.5 : 0, cellEnd: hashed ? 50.5 : 100,
+        lengthVariation: 4, identity: `zero:${hashed}`, hashed
       }, { seed: 7, roughness: 1.25, bowing: 1, color: "#111111", strokeWidth: 1.5 });
       expect(path.d).not.toMatch(/NaN|Infinity/);
     }
