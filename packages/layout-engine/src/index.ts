@@ -63,6 +63,7 @@ import {
   type NativeBondOrderResolution,
   type NativeElementSymbol
 } from "./valence";
+import { formatNumber } from "./formatNumber";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
@@ -7182,8 +7183,4 @@ function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry
   ].filter(Boolean);
 
   return parts.join(" | ");
-}
-
-function formatNumber(value: number): string {
-  return Number(value.toFixed(3)).toString();
 }

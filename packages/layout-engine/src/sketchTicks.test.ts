@@ -178,6 +178,42 @@ describe("seeded sketch hash/dash ink", () => {
     expect(half.weights[0]! - 1.5).toBeCloseTo((long.weights[0]! - 1.5) / 2, 2);
   });
 
+  it("keeps zero-length hash and dash sources finite", () => {
+    for (const hashed of [true, false]) {
+      const path = moleculeSketchTickPath({
+        source: { x1: 50, y1: 0, x2: 50, y2: 0 },
+        axis: { x1: 0, y1: 0, x2: 100, y2: 0 },
+        cellStart: 0, cellEnd: 100, lengthVariation: 4, identity: `zero:${hashed}`, hashed
+      }, { seed: 7, roughness: 1.25, bowing: 1, color: "#111111", strokeWidth: 1.5 });
+      expect(path.d).not.toMatch(/NaN|Infinity/);
+    }
+  });
+
+  it("saturates tick jitter at roughness 2.5 and caps tilt at 28 degrees", () => {
+    const tick = (hashed: boolean) => ({
+      source: hashed
+        ? { x1: 50, y1: -10, x2: 50, y2: 10 }
+        : { x1: 40, y1: 0, x2: 60, y2: 0 },
+      axis: { x1: 0, y1: 0, x2: 100, y2: 0 },
+      cellStart: 0, cellEnd: 100, lengthVariation: 20, identity: `saturation:${hashed}`, hashed
+    });
+    const parameters = (seed: number, roughness: number) =>
+      ({ seed, roughness, bowing: 1, color: "#111111", strokeWidth: 1.5 });
+
+    for (const hashed of [true, false]) {
+      expect(moleculeSketchTickPath(tick(hashed), parameters(7, 2.5)))
+        .toEqual(moleculeSketchTickPath(tick(hashed), parameters(7, 10)));
+    }
+
+    const tilts = Array.from({ length: 512 }, (_, seed) => {
+      const { start, end } = tickCenterline(points(moleculeSketchTickPath(
+        tick(false), parameters(seed, 2.5)
+      ).d));
+      return Math.abs(Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI);
+    });
+    expect(Math.max(...tilts)).toBeLessThanOrEqual(28.1);
+  });
+
   it("realises wild tilt and length variation on a penicillin-sized hash without flattening or touching", () => {
     const object = tickMolecule("hashed", 7, 1.25, 28);
     object.style.bondLengthPx = 28;

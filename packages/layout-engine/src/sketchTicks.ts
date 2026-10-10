@@ -1,4 +1,5 @@
 import type { NativeArtSketchEffectPlan, NativeArtSketchPathPlan } from "@chemdraft/art-engine";
+import { formatNumber } from "./formatNumber";
 
 export interface MoleculeSketchTick {
   source: { x1: number; y1: number; x2: number; y2: number };
@@ -17,7 +18,7 @@ export function moleculeSketchTickPath(
   parameters: Pick<NativeArtSketchEffectPlan, "seed" | "roughness" | "bowing" | "color" | "strokeWidth">
 ): NativeArtSketchPathPlan {
   const random = tickRandom(`${parameters.seed}:${tick.identity}`);
-  // Safety bounds saturate at twice the approved strength; zero is handled by the caller.
+  // Strength scales linearly from roughness 1.25 and saturates at 2x beyond roughness 2.5.
   const strength = Math.min(2, parameters.roughness / 1.25);
   const signed = () => random() * 2 - 1;
   const axisLength = Math.hypot(tick.axis.x2 - tick.axis.x1, tick.axis.y2 - tick.axis.y1);
@@ -26,7 +27,9 @@ export function moleculeSketchTickPath(
   const nx = -uy;
   const ny = ux;
   const sourceLength = Math.hypot(tick.source.x2 - tick.source.x1, tick.source.y2 - tick.source.y1);
+  // Tilt is +/-14 degrees at roughness 1.25, scaling with strength to +/-28 degrees when saturated.
   let angle = signed() * (14 * Math.PI / 180) * strength;
+  // Length variation scales with strength, up to the caller's per-tick limit.
   const lengthChange = signed() * Math.min(sourceLength * 0.25 * strength, tick.lengthVariation);
   // Ordered targets retain the full length range instead of limiting every tick to half its
   // neighbour's increment. Sorting stays within each original length's +/-25% interval because
@@ -41,8 +44,10 @@ export function moleculeSketchTickPath(
   const shift = signed() * Math.min(1.3 * strength, cellWidth * 0.2 * strength);
   const center = ((tick.source.x1 + tick.source.x2) / 2 - tick.axis.x1) * ux +
     ((tick.source.y1 + tick.source.y2) / 2 - tick.axis.y1) * uy;
-  const sx = sourceLength > 0 ? (tick.source.x2 - tick.source.x1) / sourceLength : ux;
-  const sy = sourceLength > 0 ? (tick.source.y2 - tick.source.y1) / sourceLength : uy;
+  // A degenerate hash must retain its cross-bond direction: using the axis instead would let
+  // acrossDirection reach zero below and create an infinite axial coordinate.
+  const sx = sourceLength > 0 ? (tick.source.x2 - tick.source.x1) / sourceLength : tick.hashed ? nx : ux;
+  const sy = sourceLength > 0 ? (tick.source.y2 - tick.source.y1) / sourceLength : tick.hashed ? ny : uy;
   const acrossCenter = ((tick.source.x1 + tick.source.x2) / 2 - tick.axis.x1) * nx +
     ((tick.source.y1 + tick.source.y2) / 2 - tick.axis.y1) * ny;
   const bow = signed() * 0.8 * strength * Math.min(2, parameters.bowing);
@@ -101,7 +106,7 @@ export function moleculeSketchTickPath(
   const fittedCenter = Math.max(tick.cellStart - extent.min,
     Math.min(tick.cellEnd - extent.max, center + shift));
   const coordinates = ink.map(({ axial, across }) =>
-    `${number(tick.axis.x1 + ux * (fittedCenter + axial) + nx * across)} ${number(tick.axis.y1 + uy * (fittedCenter + axial) + ny * across)}`
+    `${formatNumber(tick.axis.x1 + ux * (fittedCenter + axial) + nx * across)} ${formatNumber(tick.axis.y1 + uy * (fittedCenter + axial) + ny * across)}`
   );
   const left = coordinates.slice(0, 4);
   const right = coordinates.slice(4);
@@ -109,10 +114,6 @@ export function moleculeSketchTickPath(
     d: `M ${left[0]} C ${left[1]} ${left[2]} ${left[3]} L ${right[3]} C ${right[2]} ${right[1]} ${right[0]} Z`,
     stroke: "none", strokeWidth: 0, fill: parameters.color
   };
-}
-
-function number(value: number): string {
-  return Number(value.toFixed(3)).toString();
 }
 
 /** FNV-1a identity hash followed by Mulberry32; independent of document/bond traversal order. */
