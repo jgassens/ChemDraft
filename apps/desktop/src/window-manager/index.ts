@@ -576,7 +576,7 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
 
 /** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the
  *  document window, or File ▸ Exit). The listener flushes the pending session autosave and then
- *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
+ *  calls `confirmQuitAfterFlush`; Rust waits for Save / Discard / Cancel. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 
 export async function listenForQuitFlushRequest(handler: () => Promise<void>): Promise<Unlisten> {
@@ -595,6 +595,12 @@ export async function confirmQuitAfterFlush(): Promise<void> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("quit_after_flush").catch(() => undefined);
+}
+
+export async function cancelQuit(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("cancel_quit");
 }
 
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */

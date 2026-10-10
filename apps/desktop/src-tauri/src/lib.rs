@@ -109,39 +109,31 @@ static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 /// File ▸ Exit off macOS (macOS quits from the application menu).
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 const APP_QUIT_COMMAND_ID: &str = "app.quit";
-/// Sent to the document window when the app is about to quit; it flushes its pending session
-/// autosave and answers with `quit_after_flush`. Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
+/// Sent to the document window when the app is about to quit; it resolves unsaved changes
+/// and answers with `quit_after_flush`. Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
 /// apps/desktop/src/window-manager/index.ts.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 const QUIT_FLUSH_REQUEST_EVENT: &str = "chemdraft://flush-before-quit";
-/// How long a quit waits for the document window's flush before quitting anyway.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-const QUIT_FLUSH_GRACE: Duration = Duration::from_secs(3);
 /// Set once a quit has been requested, so repeated close clicks don't re-request it.
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Quit off macOS without losing the last edits. The session autosave is an 800 ms debounce in the
-/// webview and the app never prompts to save, so exiting straight away dropped anything edited in
-/// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
-/// and a grace timer quits regardless if the webview can't answer.
+/// Ask the document window to resolve unsaved changes before quitting off macOS.
+/// Only an explicit confirmation exits; cancellation allows another close request.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let asked = app.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-        && app
-            .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
-            .is_ok();
-    if !asked {
+    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
         quit_now(app);
         return;
     }
-    let app = app.clone();
-    thread::spawn(move || {
-        thread::sleep(QUIT_FLUSH_GRACE);
-        quit_now(&app);
-    });
+    if let Err(error) = app.emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ()) {
+        QUIT_REQUESTED.store(false, Ordering::SeqCst);
+        eprintln!("Could not request ChemDraft save confirmation: {error}");
+    }
+    // Wait for Save / Discard / Cancel; a timeout could discard the user's drawing
+    // while the prompt or native save picker is still open.
 }
 
 fn quit_now<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -154,6 +146,11 @@ fn quit_now<R: Runtime>(app: &tauri::AppHandle<R>) {
 #[tauri::command]
 fn quit_after_flush(app: tauri::AppHandle) {
     quit_now(&app);
+}
+
+#[tauri::command]
+fn cancel_quit() {
+    QUIT_REQUESTED.store(false, Ordering::SeqCst);
 }
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -526,7 +523,7 @@ pub fn run() {
                     }
                     // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
                     // prewarmed popovers would keep a windowless process alive: closing the
-                    // document window quits — after the document flushes its pending autosave.
+                    // document window quits after resolving unsaved changes.
                     #[cfg(not(target_os = "macos"))]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
@@ -706,6 +703,7 @@ pub fn run() {
             hide_toolset_tooltip_window,
             set_current_window_global_position,
             quit_after_flush,
+            cancel_quit,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,

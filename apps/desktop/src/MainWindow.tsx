@@ -103,8 +103,6 @@ import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
   documentIsBlank,
-  parseDocumentSessionEnvelope,
-  shouldRestoreDocumentSession,
   strictSessionFlushRefusal
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
@@ -637,10 +635,10 @@ import {
   listenForToolsetTextStyleRequests,
   loadToolsetLayoutState,
   saveToolsetLayoutState,
-  loadDocumentSession,
   saveDocumentSession,
   listenForQuitFlushRequest,
   confirmQuitAfterFlush,
+  cancelQuit,
   sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -1468,7 +1466,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.9.19.39-codex";
+const CURRENT_BUILD_STAMP = "10.9.20.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2126,7 +2124,8 @@ export function MainWindow({
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
   // so the blank startup document can never replace a session we merely failed to decode.
   /** A shell open that failed before the session restore ran; the restore's status repeats it. */
-  const shellOpenFailureRef = useRef<string | undefined>(undefined);
+  const [quitPromptOpen, setQuitPromptOpen] = useState(false);
+  const [quitSaveBusy, setQuitSaveBusy] = useState(false);
   const documentSessionSaveEnabledRef = useRef(false);
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
@@ -7561,12 +7560,7 @@ export function MainWindow({
       } catch (error) {
         const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
         setStatus(failure);
-        // At a cold start the session restore lands next and replaces the status line, which made a
-        // double-clicked .cdx look like it did nothing. The restore still runs (skipping it would let
-        // autosave overwrite the previous session with a blank page) and repeats this message.
-        if (!documentSessionHydratedRef.current) {
-          shellOpenFailureRef.current = failure;
-        }
+
       }
     };
 
@@ -7599,68 +7593,11 @@ export function MainWindow({
     };
   }, [openDocumentContents]);
 
-  // Restore the last edited document at startup (see documentSession.ts). Anything that landed
-  // first wins: an OS "open with" or an early edit leaves the canvas non-pristine, and the restore
-  // backs off. A corrupt/future envelope restores nothing — the blank document stands.
+  // Start fresh on launch; explicit OS file opens still use the listener above.
   useEffect(() => {
-    if (documentSessionHydratedRef.current) {
-      return undefined;
-    }
-    if (!isDesktopRuntime()) {
-      documentSessionHydratedRef.current = true;
-      return undefined;
-    }
-
-    let active = true;
-    void loadDocumentSession()
-      .then((raw) => {
-        if (!active) {
-          return;
-        }
-        // The promise RESOLVING is the clean read — including a resolve of "no session yet", which
-        // is exactly what a first run sees. Un-gate here, before any of the early returns below:
-        // gating after them left a brand-new user (no session file), a don't-restore envelope, or a
-        // launch where "Open With" beat the restore with autosave permanently, silently disabled.
-        // Only a REJECTION (a read or parse we could not decode) must keep it closed, so that a
-        // session we failed to decode is never overwritten with the blank startup document.
-        documentSessionSaveEnabledRef.current = true;
-        const envelope = parseDocumentSessionEnvelope(raw);
-        if (!envelope || !shouldRestoreDocumentSession(envelope)) {
-          return;
-        }
-        const pristine = !fileStateRef.current.path
-          && !fileStateRef.current.dirty
-          && documentIsBlank(documentRef.current);
-        if (!pristine) {
-          return;
-        }
-        const shellOpenFailure = shellOpenFailureRef.current;
-        shellOpenFailureRef.current = undefined;
-        try {
-          openDocumentContents(envelope.contents, envelope.displayName, envelope.path, {
-            dirty: envelope.dirty,
-            statusOverride: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
-          });
-        } catch {
-          // Never block startup on a bad autosave; the next edit overwrites it.
-        }
-      })
-      .catch(() => {
-        // Read or parse failed: the file may hold a real session we simply could not decode, so
-        // autosave stays disabled for this run rather than overwriting it with the blank startup
-        // document. Editing is unaffected; only the session file is left alone.
-        setStatus("Could not read the last session; this session will not be autosaved");
-      })
-      .finally(() => {
-        if (active) {
-          documentSessionHydratedRef.current = true;
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [openDocumentContents]);
+    documentSessionHydratedRef.current = true;
+    documentSessionSaveEnabledRef.current = true;
+  }, []);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -7703,8 +7640,7 @@ export function MainWindow({
     }
   }, []);
 
-  // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
-  // explicit save.
+  // Keep a debounced session snapshot for the updater; startup does not restore it.
   useEffect(() => {
     if (!isDesktopRuntime()) {
       return undefined;
@@ -7714,30 +7650,6 @@ export function MainWindow({
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [document, fileState, writeDocumentSessionNow]);
-
-  // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
-  // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
-  useEffect(() => {
-    if (!isDesktopRuntime()) {
-      return undefined;
-    }
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void listenForQuitFlushRequest(async () => {
-      await writeDocumentSessionNow();
-      await confirmQuitAfterFlush();
-    }).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-      } else {
-        unlisten = cleanup;
-      }
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [writeDocumentSessionNow]);
 
   // Windows app updates (appUpdates.ts). One flow at a time: a menu click during the launch check, or
   // a double click, must not raise a second prompt or start a second download.
@@ -7853,7 +7765,7 @@ export function MainWindow({
         return nextFileState;
       });
       setStatus(formatSaveStatus(payload.filename, payload.warnings));
-      return;
+      return true;
     }
 
     let path = forceSaveAs ? undefined : fileStateRef.current.path;
@@ -7862,7 +7774,7 @@ export function MainWindow({
     }
     if (!path) {
       setStatus("Save canceled");
-      return;
+      return false;
     }
 
     const finalPath = ensureChemDraftFileExtension(path);
@@ -7875,10 +7787,47 @@ export function MainWindow({
       fileStateRef.current = nextFileState;
       setFileState(nextFileState);
       setStatus(formatSaveStatus(nativePathBasename(finalPath), payload.warnings));
+      return true;
     } catch (error) {
       setStatus(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }, []);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return undefined;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForQuitFlushRequest(async () => {
+      if (fileStateRef.current.dirty) {
+        setQuitPromptOpen(true);
+        return;
+      }
+      await confirmQuitAfterFlush();
+    }).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  const cancelQuitPrompt = useCallback(() => {
+    setQuitPromptOpen(false);
+    void cancelQuit();
+  }, []);
+
+  const saveAndQuit = useCallback(async () => {
+    setQuitSaveBusy(true);
+    try {
+      if (await saveCurrentDocument(false)) await confirmQuitAfterFlush();
+      else cancelQuitPrompt();
+    } catch (error) {
+      setStatus("Save failed: " + (error instanceof Error ? error.message : String(error)));
+      cancelQuitPrompt();
+    } finally {
+      setQuitSaveBusy(false);
+    }
+  }, [saveCurrentDocument, cancelQuitPrompt]);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -16946,6 +16895,20 @@ export function MainWindow({
       data-can-undo={canUndo ? "true" : "false"}
       data-can-redo={canRedo ? "true" : "false"}
     >
+      {quitPromptOpen ? (
+        <dialog
+          className="plugin-prompt-dialog"
+          aria-labelledby="quit-prompt-title"
+          ref={(node) => { if (node && !node.open) node.showModal(); }}
+          onCancel={(event) => { event.preventDefault(); if (!quitSaveBusy) cancelQuitPrompt(); }}
+        >
+          <h2 id="quit-prompt-title">Save changes before closing?</h2>
+          <p>Your document has unsaved changes.</p>
+          <button type="button" disabled={quitSaveBusy} onClick={() => { void saveAndQuit(); }}>Save</button>
+          <button type="button" disabled={quitSaveBusy} onClick={() => { void confirmQuitAfterFlush(); }}>Discard</button>
+          <button type="button" disabled={quitSaveBusy} onClick={cancelQuitPrompt}>Cancel</button>
+        </dialog>
+      ) : null}
       <input
         ref={fileInputRef}
         type="file"
