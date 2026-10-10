@@ -26,14 +26,52 @@ export type NativeElementSymbol = typeof nativeElementSymbols[number];
 
 const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
 
+/**
+ * Two-letter labels that, in any case but the element's own, are the two atoms they spell and not
+ * the element they would fold to: each is a group label chemists actually type. "NH" is a ring N–H,
+ * not nihonium; "CO" a carbonyl, not cobalt. Twenty-six two-letter symbols split into two
+ * one-letter ones in capitals; the other fifteen ("SI", "CU", "NI", "PB", "SN", …) spell nothing a
+ * chemist writes, so they keep folding to their element. Kept as a list, reviewed by hand, rather
+ * than derived, because the line is chemical judgement (coordinator ruling, 2026-10-10).
+ */
+const nativeFormulaTwoLetterLabels: ReadonlySet<string> = new Set([
+  "BH", // boron with its hydrogen, a borane ring vertex — not bohrium
+  "CF", // a fluorinated carbon vertex — not californium
+  "CN", // cyano — not copernicium
+  "CO", // carbonyl — not cobalt
+  "CS", // thiocarbonyl — not caesium
+  "HF", // hydrogen fluoride — not hafnium
+  "HO", // hydroxyl written right to left — not holmium
+  "HS", // thiol written right to left — not hassium
+  "NH", // a ring N–H — not nihonium
+  "NO", // nitroso — not nobelium
+  "PO" // phosphoryl — not polonium
+]);
+
+/**
+ * The element a typed or stored atom label names, or the label itself (trimmed) when it names none.
+ *
+ * An exact symbol is that element: "Co" is cobalt, "Nh" is nihonium. Any other case folds to the
+ * element ("cl", "CL" → Cl; "si", "SI" → Si) except the group labels in
+ * `nativeFormulaTwoLetterLabels`, which stay as typed: "NH" and "nh" read as N + H, "CO" as C + O.
+ * Folding used to be blind, so a ring N–H typed as "NH" became nihonium.
+ *
+ * Stored labels were folded on entry, so a saved document holds exact symbols and opens unchanged.
+ */
 export function normalizeNativeAtomElementLabel(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return "";
   }
+  if (nativeElementSymbolSet.has(trimmed)) {
+    return trimmed;
+  }
 
   const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
-  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate : trimmed;
+  if (!nativeElementSymbolSet.has(elementCandidate)) {
+    return trimmed;
+  }
+  return nativeFormulaTwoLetterLabels.has(trimmed.toUpperCase()) ? trimmed : elementCandidate;
 }
 
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
