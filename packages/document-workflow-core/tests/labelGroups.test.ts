@@ -19,6 +19,7 @@ import {
   moleculeSmiles,
   nativeAtomLabelReading,
   nativeAtomValidationState,
+  nativeLabelBondSide,
   nativeMoleculeUnspellableLabels,
   nativeSingleBondGraphMetadata,
   nativeSingleBondGraphSmiles
@@ -332,6 +333,49 @@ describe("a bonded Ar is aryl, not argon", () => {
     expect(await moleculeSmiles(stale, 0, warnings, undefined)).toBe("C[*]");
     expect(warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_atom_label" }));
   });
+});
+
+describe("cyano labels and the side their bond comes from", () => {
+  /** The label on the left end of a bond to a methyl, so its bond comes from its right. */
+  const methylOnRight = (label: string) => ({
+    atoms: [atom("g1", label, 0, 0), atom("c1", "C", bondLength, 0)],
+    bonds: [bond("b1", "g1", "c1")]
+  });
+
+  it("finds the side with the HO test: right only when every neighbour is to the right", () => {
+    const sideOf = (graph: { atoms: MoleculeAtom[]; bonds: MoleculeBond[] }) =>
+      nativeLabelBondSide(graph.atoms.find((candidate) => candidate.id === "g1")!, graph.bonds, graph.atoms);
+    expect(sideOf(methylOnRight("SCN"))).toBe("right");
+    expect(sideOf(methylWith("SCN"))).toBe("left");
+    // A vertical bond reads left to right, as a vertical OH does.
+    expect(sideOf({ atoms: [atom("g1", "SCN", 0, 0), atom("c1", "C", 0, bondLength)], bonds: [bond("b1", "g1", "c1")] }))
+      .toBe("left");
+    expect(sideOf({ atoms: [atom("g1", "SCN", 0, 0)], bonds: [] })).toBeUndefined();
+  });
+
+  it("writes SCN with its bond on the left as a thiocyanate", () => {
+    const graph = methylWith("SCN");
+    expect(stateOf(graph, "g1").valid).toBe(true);
+    expect(expandNativeLabelGroups(graph.atoms, graph.bonds).expansions).toHaveLength(1);
+    expect(nativeSingleBondGraphMetadata(graph.atoms, graph.bonds).formula).toBe("C2H3NS");
+    expect(canonical(nativeSingleBondGraphSmiles(graph.atoms, graph.bonds))).toBe(canonical("CSC#N"));
+  });
+
+  it.each([["SCN", "C2H3NS"], ["OCN", "C2H3NO"], ["CN", "C2H3N"]])(
+    "never writes %s with its bond on the right as the cyano isomer",
+    (label, formula) => {
+      // Written that way the N faces the bond (an isothiocyanate, isocyanate or isocyano), which the
+      // table lacks: the label is a bare formula — counted, not badged, exported as a placeholder.
+      const graph = methylOnRight(label);
+      expect(stateOf(graph, "g1").valid).toBe(true);
+      expect(expandNativeLabelGroups(graph.atoms, graph.bonds).expansions).toEqual([]);
+      expect(nativeSingleBondGraphMetadata(graph.atoms, graph.bonds).formula).toBe(formula);
+      const smiles = nativeSingleBondGraphSmiles(graph.atoms, graph.bonds);
+      expect(smiles).toContain("[*]");
+      expect(smiles).not.toContain("#");
+      expect(nativeMoleculeUnspellableLabels(molecule(graph.atoms, graph.bonds))).toEqual([label]);
+    }
+  );
 });
 
 describe("typed, bonded Ac, Pr and Ts are groups", () => {

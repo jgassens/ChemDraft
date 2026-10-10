@@ -384,7 +384,9 @@ export function nativeAtomValidationState(
 
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
-    const reading = nativeAtomLabelReading(atom.element);
+    // A cyano label with its bond on the right is the other isomer, so it reads as a bare formula.
+    const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], atoms);
+    const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
     // An abbreviation ("OMe", "Ph") or a composite of one ("NMe2") spells its whole group,
     // hydrogens included, so the label's bonds must fill exactly the group's free valence —
     // whether the label was typed or placed by a hotkey. "OMe" on a ring carbon is an O with
@@ -553,6 +555,25 @@ export interface NativeAtomLabelContext {
    * Callers reading a stored atom pass `nativeLabelBondSide`.
    */
   bondSide?: "left" | "right";
+}
+
+/**
+ * The side of an atom's label its bonds reach, for `NativeAtomLabelContext.bondSide`: "right" when
+ * every bonded neighbour lies to the atom's right — the same test, and tolerance, that draws a
+ * hydroxyl as "HO" in layout-engine's `atomDisplayLabel` — and "left" otherwise (a vertical bond
+ * included). Undefined for an atom with no bonds. `atomBonds` are the bonds touching the atom.
+ */
+export function nativeLabelBondSide(
+  atom: MoleculeAtom,
+  atomBonds: readonly MoleculeBond[],
+  atoms: readonly MoleculeAtom[]
+): "left" | "right" | undefined {
+  const neighbours = atomBonds
+    .map((bond) => (bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId))
+    .map((id) => atoms.find((candidate) => candidate.id === id))
+    .filter((neighbour): neighbour is MoleculeAtom => neighbour !== undefined);
+  if (neighbours.length === 0) return undefined;
+  return neighbours.every((neighbour) => neighbour.x > atom.x + 0.001) ? "right" : "left";
 }
 
 /**
@@ -841,9 +862,15 @@ export function nativeExpandableLabelGroups(
 ): Map<string, NativeLabelGroup> {
   const groups = new Map<string, NativeLabelGroup>();
   for (const atom of atoms) {
-    // Bonded and typed, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`).
-    const bonded = (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0;
-    const reading = nativeAtomLabelReading(atom.element, { bonded, typed: atom.labelLiteral === true });
+    // Bonded and typed, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`); a cyano label
+    // with its bond on the right is not one, so it is never written out as the wrong isomer.
+    const atomBonds = resolution.bondsByAtom.get(atom.id) ?? [];
+    const bondSide = nativeElementFromAtomLabel(atom.element) ? undefined : nativeLabelBondSide(atom, atomBonds, atoms);
+    const reading = nativeAtomLabelReading(atom.element, {
+      bonded: atomBonds.length > 0,
+      typed: atom.labelLiteral === true,
+      ...(bondSide ? { bondSide } : {})
+    });
     if (reading.kind !== "group" || resolution.unresolvedAtomIds.has(atom.id)) continue;
     const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
     if (nativeLabelGroupVerdict(reading.group, valenceUsed, atom.formalCharge).valid) {
@@ -1054,8 +1081,10 @@ export function nativeSingleBondGraphMetadata(
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
       // A condensed label is its own recipe — count exactly what it spells, no implicit H.
-      // Placeholders, unrecognized text and flagged groups count nothing.
-      const reading = nativeAtomLabelReading(atom.element);
+      // Placeholders, unrecognized text and flagged groups count nothing. Read with the same bond
+      // side as the expansion, so a cyano label it declined is counted here as the formula it is.
+      const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], countedAtoms);
+      const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
       const counts = reading.kind === "formula"
         ? reading.counts
         : reading.kind === "spelled" ? parseCondensedLabelFormula(atom.element) : undefined;

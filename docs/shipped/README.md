@@ -50,7 +50,9 @@ PRs make the label mean its group.
   one-heavy-atom label ("NH2", "NH"), composite ("NMe2", "BocHN", "CH2Ph", "SCN"), placeholder, bare
   formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
   ("COEt") is left unrecognized instead of read as C–OEt, and "CN" counts in a composite only last,
-  after its head ("CNO" stays a bare formula). Typed as a label on a bonded atom, "Ar" is
+  after its head ("CNO" stays a bare formula). Cyano reads as cyano unless its bond comes from the
+  label's right (`nativeLabelBondSide`, the test that draws OH as HO): "CN", "SCN" or "OCN" with the
+  bond on the right means the N-bonded isomer, so it stays a bare formula. Typed as a label on a bonded atom, "Ar" is
   aryl (a placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl. Unbonded, or read from
   a structure file (molfile, SMILES, a numeric CDXML Element), they are their elements: a real Ac–Cl
   is actinium chloride. `nativeAtomLabelFreeValence` gives the bonds each label takes.
@@ -77,9 +79,9 @@ only compares a perception with itself, and a placeholder can add a centre to it
 CDXML still writes a group label as `Element="OMe"` (it round-trips, but external readers see no
 structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a warning, never as the
 element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
-from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). A label's
-side is unknown to the reader, so "OCN" and "SCN" written for a bond on their right (isocyanate,
-isothiocyanate) still read as cyanato and thiocyanato. The bond tool judges a typed bonded "Ac" by
+from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). The table
+has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on the right counts
+as a bare formula and exports as a placeholder rather than as its real group. The bond tool judges a typed bonded "Ac" by
 its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
 one. CDXML's element table, pre-existing, numbers only H–Ca, Br, I, Pr, Ac and Ts; other numeric
 elements import as carbon until its own fix lands.

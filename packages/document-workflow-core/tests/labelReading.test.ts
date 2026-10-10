@@ -48,7 +48,7 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeLabelGroupVerdict(groupOf("CN"), 0, -1)).toEqual({ valid: true });
   });
 
-  it("reads cyano labels only with the bond on their left: on the right, the N faces the bond", () => {
+  it("reads cyano labels as cyano unless the bond comes from their right, where the N faces it", () => {
     const cyanoLabels = { CN: 1, SCN: 1, OCN: 1, CH2CN: 1 } as const;
     for (const [label, bonds] of Object.entries(cyanoLabels)) {
       // Written for a bond on the left (or with no side given): cyano, thiocyanato, cyanato, cyanomethyl.

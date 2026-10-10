@@ -171,6 +171,7 @@ import {
   nativeElementFromAtomLabel,
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
+  nativeLabelBondSide,
   nativeMoleculeUnspellableLabels,
   nativeReactionArrowMinExtentPx,
   nativeSingleBondGraphMetadata,
@@ -7147,7 +7148,7 @@ export function applyNativeAtomSproutTarget(
     // methyl when the second cannot be planned would read as success. So an atom without two free
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
+    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0, molecule) < 2) {
       return document;
     }
     if (!growthPlan || growthPlan.targetAtomId) {
@@ -7732,7 +7733,7 @@ export function findNativeMoleculeAtomHit(
   }
 
   const valenceUsed = atomBondOrderUsageMap(molecule.atoms, molecule.bonds).get(hit.atomId) ?? 0;
-  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed);
+  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed, molecule);
   if (availableBonds <= 0) {
     return undefined;
   }
@@ -18104,7 +18105,7 @@ function canSetNativeBondOrder(
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0) > 0;
+  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0;
 }
 
 function canConnectNativeAtoms(
@@ -18135,8 +18136,8 @@ function canConnectNativeAtoms(
   return (
     sourceAtom !== undefined &&
     targetAtom !== undefined &&
-    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0) > 0 &&
-    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0) > 0
+    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0, molecule) > 0 &&
+    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0, molecule) > 0
   );
 }
 
@@ -18560,13 +18561,25 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
+function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
   // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
   // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
   // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
   // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
-  // and takes bonds like one.
-  const reading = nativeAtomLabelReading(atom.element, { bonded: valenceUsed > 0, typed: atom.labelLiteral === true });
+  // and takes bonds like one. A cyano label ("SCN") with its bond on the right is a bare formula,
+  // read with the same bond side as the badge and the formula.
+  const bondSide = nativeElementFromAtomLabel(atom.element)
+    ? undefined
+    : nativeLabelBondSide(
+      atom,
+      molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
+      molecule.atoms
+    );
+  const reading = nativeAtomLabelReading(atom.element, {
+    bonded: valenceUsed > 0,
+    typed: atom.labelLiteral === true,
+    ...(bondSide ? { bondSide } : {})
+  });
   if (reading.kind === "element") {
     return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
   }

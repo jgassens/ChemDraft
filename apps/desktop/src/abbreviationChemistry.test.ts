@@ -240,6 +240,28 @@ describe("the analysis molfile keeps every drawn atom at its index", () => {
   });
 });
 
+describe("cyano labels and the side their bond comes from", () => {
+  it("reads SCN as a thiocyanate with its bond on the left, and never as one with it on the right", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano Side"), { x: 300, y: 300 });
+    const [left, right] = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x);
+    // On the right end the bond reaches SCN's S: methyl thiocyanate.
+    const thiocyanate = selectedMolecule(relabel(ethane, right!.id, "SCN", { literal: true }));
+    expect(nativeMoleculeInvalidAtomStates(thiocyanate)).toEqual([]);
+    expect(thiocyanate.chemistry?.formula).toBe("C2H3NS");
+    expect(await canonical(thiocyanate)).toBe("CSC#N");
+
+    // On the left end the bond reaches its N: an isothiocyanate, which the table lacks. It stays a
+    // bare formula: the same atoms counted, no badge, and a placeholder rather than a cyano SMILES.
+    const reversedDocument = relabel(ethane, left!.id, "SCN", { literal: true });
+    const reversed = selectedMolecule(reversedDocument);
+    expect(nativeMoleculeInvalidAtomStates(reversed)).toEqual([]);
+    expect(reversed.chemistry?.formula).toBe("C2H3NS");
+    expect(await canonical(reversed)).not.toContain("#");
+    // A bare formula has no free valence for the bond tool to fill.
+    expect(bondsAt(growFrom(reversedDocument, left!.id), reversed.id, left!.id)).toHaveLength(1);
+  });
+});
+
 describe("the bond tool and a bonded element spelling", () => {
   it("lets a lone typed Ac take its first bond as actinium, then holds it to acetyl's one", () => {
     const lone = relabel(loneAtom(), "atom_001", "Ac", { literal: true });

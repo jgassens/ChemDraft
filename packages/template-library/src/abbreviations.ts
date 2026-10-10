@@ -251,9 +251,9 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
   },
   {
     // No "NC" alias: written that way on a bond's right it reads as isocyano (-N≡C), not cyano.
-    // For the same reason the label parser reads "CN" (and "SCN", "OCN") only with its bond on
-    // the left; with the bond on the right, where a chemist means isocyano, an isothiocyanate or
-    // an isocyanate, the label stays a bare formula (document-workflow-core's `bondSide`).
+    // For the same reason the label parser reads "CN" (and "SCN", "OCN") as cyano unless its bond
+    // comes from the label's right, where a chemist means isocyano, an isothiocyanate or an
+    // isocyanate: there the label stays a bare formula (document-workflow-core's `bondSide`).
     label: "CN", aliases: [], name: "cyano", smiles: "*C#N", formula: "CN", attachmentCount: 1,
     atoms: [
       { element: "C", hydrogens: 0, x: 0, y: 0 },
