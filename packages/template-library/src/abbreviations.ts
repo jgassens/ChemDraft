@@ -11,7 +11,9 @@
  * Matching is CASE-SENSITIVE (owner decision, 2026-10-10): "OMe" is methoxy; "Ome" is not a
  * group. A label that is also an element symbol is the element — "Ac", "Pr" and "Ts" are
  * actinium, praseodymium and tennessine to the label parser — so no entry or alias may spell one;
- * the tests in document-workflow-core enforce that against the element table.
+ * the tests in document-workflow-core enforce that against the element table. "CN" is free: case
+ * folding leaves it as typed (layout-engine's `nativeFormulaTwoLetterLabels`), so it is cyano here,
+ * while "Cn" is still copernicium.
  *
  * Chemistry for these groups (valence, formula, expansion on export) lives in
  * `@chemdraft/document-workflow-core`; this package owns only the data.
@@ -244,6 +246,15 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
       { element: "O", hydrogens: 0, x: 0.5, y: -0.866 }
     ],
     bonds: [[0, 1, 2]]
+  },
+  {
+    // No "NC" alias: written that way on a bond's right it reads as isocyano (-N≡C), not cyano.
+    label: "CN", aliases: [], name: "cyano", smiles: "*C#N", formula: "CN", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 0, x: 0, y: 0 },
+      { element: "N", hydrogens: 0, x: 1, y: 0 }
+    ],
+    bonds: [[0, 1, 3]]
   },
   {
     label: "CF3", aliases: ["F3C"], name: "trifluoromethyl", smiles: "*C(F)(F)F", formula: "CF3", attachmentCount: 1,
