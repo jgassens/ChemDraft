@@ -404,6 +404,26 @@ describe("layout-engine molecule growth planning", () => {
     expect(Math.hypot(plan.newAtomPoint.x - 240, plan.newAtomPoint.y - 220)).toBeLessThan(80);
   });
 
+  it("declines aimed placement that clamping would shorten below the minimum bond length", () => {
+    const aimedExtension = (sourceX: number) => planFreeformBondExtension({
+      atoms: [
+        { id: "atom_001", x: sourceX - 80, y: 220 },
+        { id: "atom_002", x: sourceX, y: 220 }
+      ],
+      bonds: [{ fromAtomId: "atom_001", toAtomId: "atom_002" }],
+      sourceAtomId: "atom_002",
+      endPoint: { x: 900, y: 220 },
+      bondLength: 80,
+      pageBounds: baseInput.pageBounds,
+      directionDegrees: 0,
+      standardLength: true
+    });
+
+    expect(aimedExtension(816)).toBeUndefined();
+    expect(aimedExtension(800)?.newAtomPoint).toEqual({ x: 816, y: 220 });
+    expect(aimedExtension(805)).toBeUndefined();
+  });
+
   it("aims a vertex plan while preserving lengths and stopping at the page edge", () => {
     const points = [{ x: 40, y: 40 }, { x: 120, y: 40 }, { x: 160, y: 80 }];
     const aimed = aimPlacementVertices(points, 30);

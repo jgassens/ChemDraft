@@ -345,8 +345,11 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
       };
   // Shorten aimed placement along its ray at the page edge, preserving the supplied angle.
   const newAtomPoint = input.directionDegrees !== undefined
-    ? clampAimedEndpointToBounds(source, plannedEndPoint, input.pageBounds)
+    ? clampAimedEndpointToBounds(source, plannedEndPoint, input.pageBounds, minimumBondLength)
     : clampPointToBounds(plannedEndPoint, input.pageBounds);
+  if (!newAtomPoint) {
+    return undefined;
+  }
   const direction = normalize({
     x: newAtomPoint.x - source.x,
     y: newAtomPoint.y - source.y
@@ -770,7 +773,12 @@ function clampPointToBounds(point: LayoutPoint, bounds: LayoutBounds): LayoutPoi
   };
 }
 
-function clampAimedEndpointToBounds(start: LayoutPoint, end: LayoutPoint, bounds: LayoutBounds): LayoutPoint {
+function clampAimedEndpointToBounds(
+  start: LayoutPoint,
+  end: LayoutPoint,
+  bounds: LayoutBounds,
+  minimumBondLength: number
+): LayoutPoint | undefined {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   let fraction = 1;
@@ -778,7 +786,11 @@ function clampAimedEndpointToBounds(start: LayoutPoint, end: LayoutPoint, bounds
   if (dx < 0) fraction = Math.min(fraction, (bounds.x - start.x) / dx);
   if (dy > 0) fraction = Math.min(fraction, (bounds.y + bounds.height - start.y) / dy);
   if (dy < 0) fraction = Math.min(fraction, (bounds.y - start.y) / dy);
-  return clampPointToBounds({ x: start.x + dx * Math.max(0, fraction), y: start.y + dy * Math.max(0, fraction) }, bounds);
+  const clampedEnd = clampPointToBounds({
+    x: start.x + dx * Math.max(0, fraction),
+    y: start.y + dy * Math.max(0, fraction)
+  }, bounds);
+  return distance(start, clampedEnd) < minimumBondLength ? undefined : clampedEnd;
 }
 
 export function distance(left: LayoutPoint, right: LayoutPoint): number {
