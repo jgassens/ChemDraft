@@ -123,8 +123,10 @@ describe("eraser marquee over a molecule", () => {
     return bridge().snapshot().objects.find((object) => object.id === objectId);
   }
 
+  // The status line is the main window's polite live region (MainWindow's role="status" element).
   function statusText(): string {
-    return container.querySelector(".status-bar, [data-status-bar], .statusbar")?.textContent ?? container.textContent ?? "";
+    const regions = Array.from(container.querySelectorAll('[role="status"][aria-live="polite"]'));
+    return regions.map((region) => region.textContent ?? "").find((text) => text.trim().length > 0) ?? "";
   }
 
   function dispatchPointer(type: "pointerdown" | "pointermove" | "pointerup", point: { x: number; y: number }, pointerId: number) {
@@ -170,7 +172,7 @@ describe("eraser marquee over a molecule", () => {
     await eraserDrag({ x: midX - 1, y: midY - 40 }, { x: midX + 1, y: midY + 40 }, 71);
 
     expect(moleculeSummary(chain.id)).toMatchObject({ atomCount: chain.atoms.length, bondCount: chain.bonds.length - 1 });
-    expect(statusText()).toContain("Erased 1 bond");
+    expect(statusText()).toBe("Erased 1 bond");
 
     await act(async () => {
       await bridge().command("edit.undo");
@@ -195,6 +197,7 @@ describe("eraser marquee over a molecule", () => {
       72
     );
     expect(moleculeSummary(chain.id)).toBeUndefined();
+    expect(statusText()).toBe(`Erased ${chain.atoms.length} atoms, ${chain.bonds.length} bonds`);
 
     await act(async () => {
       await bridge().command("edit.undo");

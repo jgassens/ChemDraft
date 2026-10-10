@@ -74,6 +74,7 @@ import {
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+  applyMoleculeRingFillColor,
   applyNativeChainTool,
   applyNativeRingFuseAtBondTarget,
   createNativeArtGraphicObject,
@@ -1101,6 +1102,68 @@ describe("ChemDraft desktop shell", () => {
     expect(kept?.atoms).toHaveLength(chain.atoms.length);
     expect(kept?.atoms.find((atom) => atom.id === end.id)?.element).toBe("O");
     expect(kept?.bonds).toHaveLength(chain.bonds.length - 1);
+  });
+
+  it("erases an atom inside the sweep together with its bonds", () => {
+    const drawn = applyNativeChainTool(createPhase4Document("Eraser Atom Inside"), { x: 100, y: 300 }, { x: 500, y: 300 });
+    const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!chain) {
+      throw new Error("Expected a chain fixture.");
+    }
+    const middle = chain.atoms[Math.floor(chain.atoms.length / 2)]!;
+    const incident = chain.bonds.filter((bond) => bond.fromAtomId === middle.id || bond.toAtomId === middle.id).map((bond) => bond.id);
+    expect(incident).toHaveLength(2);
+
+    const sweep = eraserSweepInSelectionRect(drawn.pages[0].objects, { x: middle.x - 3, y: middle.y - 3 }, { x: middle.x + 3, y: middle.y + 3 });
+    expect(sweep.moleculeParts).toHaveLength(1);
+    expect(sweep.moleculeParts[0]!.atomIds).toEqual([middle.id]);
+    expect([...sweep.moleculeParts[0]!.bondIds].sort()).toEqual([...incident].sort());
+    expect(eraserSweepStatus(sweep)).toBe("Erased 1 atom, 2 bonds");
+
+    const after = applyEraserSweep(drawn, sweep).pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(after?.atoms).toHaveLength(chain.atoms.length - 1);
+    expect(after?.bonds).toHaveLength(chain.bonds.length - 2);
+    expect(after?.atoms.some((atom) => atom.id === middle.id)).toBe(false);
+  });
+
+  it("keeps a wedge, a charge and a ring style on the parts a sweep leaves", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Eraser Keeps Styles"), { x: 300, y: 300 }, "cyclohexane");
+    const ring = seed.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!ring) {
+      throw new Error("Expected a cyclohexane fixture.");
+    }
+    const ringKey = ring.bonds.map((bond) => bond.id).sort().join("|");
+    // A chain grown off the rightmost ring atom, so the sweep can hit its far end only.
+    const anchor = [...ring.atoms].sort((left, right) => right.x - left.x)[0]!;
+    const grown = applyNativeChainTool(seed, { x: anchor.x, y: anchor.y }, { x: anchor.x + 200, y: anchor.y }, { objectId: ring.id, atomId: anchor.id });
+    const withChain = grown.pages[0].objects.find((object): object is MoleculeObject => object.id === ring.id)!;
+    expect(withChain.atoms.length).toBeGreaterThan(ring.atoms.length + 3);
+    const firstChainBond = withChain.bonds.find((bond) => !ring.bonds.some((ringBond) => ringBond.id === bond.id) && (bond.fromAtomId === anchor.id || bond.toAtomId === anchor.id))!;
+    const chargedAtom = ring.atoms.find((atom) => atom.id !== anchor.id)!;
+    const decorated = applyMoleculeRingFillColor(applyPatch(grown, {
+      op: "updateObject",
+      objectId: ring.id,
+      changes: {
+        atoms: withChain.atoms.map((atom) => atom.id === chargedAtom.id ? { ...atom, formalCharge: 1 } : atom),
+        bonds: withChain.bonds.map((bond) => bond.id === firstChainBond.id ? { ...bond, display: { ...bond.display, bondStyle: "wedge" as const } } : bond)
+      }
+    }), { objectId: ring.id, kind: "ring", ringKey }, "#1f5fbf");
+    const before = decorated.pages[0].objects.find((object): object is MoleculeObject => object.id === ring.id)!;
+    expect((before.style.ringStyles as Record<string, Record<string, unknown>>)[ringKey]?.fillColor).toBe("#1f5fbf");
+
+    // Sweep across the chain's last bond, far from the ring, the wedge and the charge.
+    const degree = (atomId: string) => before.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+    const tip = before.atoms.filter((atom) => degree(atom.id) === 1).sort((left, right) => right.x - left.x)[0]!;
+    const tipBond = before.bonds.find((bond) => bond.fromAtomId === tip.id || bond.toAtomId === tip.id)!;
+    const other = before.atoms.find((atom) => atom.id === (tipBond.fromAtomId === tip.id ? tipBond.toAtomId : tipBond.fromAtomId))!;
+    const mid = { x: (tip.x + other.x) / 2, y: (tip.y + other.y) / 2 };
+    const sweep = eraserSweepInSelectionRect(decorated.pages[0].objects, { x: mid.x - 1, y: mid.y - 1 }, { x: mid.x + 1, y: mid.y + 1 });
+    const after = applyEraserSweep(decorated, sweep).pages[0].objects.find((object): object is MoleculeObject => object.id === ring.id)!;
+
+    expect(after.bonds).toHaveLength(before.bonds.length - 1);
+    expect(after.bonds.find((bond) => bond.id === firstChainBond.id)?.display?.bondStyle).toBe("wedge");
+    expect(after.atoms.find((atom) => atom.id === chargedAtom.id)?.formalCharge).toBe(1);
+    expect((after.style.ringStyles as Record<string, Record<string, unknown>>)[ringKey]?.fillColor).toBe("#1f5fbf");
   });
 
   it("still removes a molecule the eraser marquee encloses completely", () => {
