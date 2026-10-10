@@ -21,8 +21,9 @@ desktop importers did not change.
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata; re-exports layout-engine's element table and bond-order counting |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
-| `graph.ts` | Graph walks over native atoms and bonds |
+| `graph.ts` | Graph walks over native atoms and bonds, including the longest path the SMILES writer and 2D cleanup lay a component along |
 | `shared.ts` | Ids, page access, numeric helpers |
+| `testing.ts` | Test-only hooks, served as `@chemdraft/document-workflow-core/testing` and kept out of the barrel: the longest-path work counter |
 
 ## What belongs here
 
