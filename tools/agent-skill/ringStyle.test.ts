@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +30,49 @@ interface RingStyle {
   readText(file: string): string;
 }
 let ringStyle: RingStyle;
+interface ProcessResult { status: number | null; stdout: string; stderr: string }
+/** Run process work outside Vitest's worker event loop. */
+function runNode(args: string[], cwd?: string): Promise<ProcessResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+const runScript = (...args: string[]) => runNode([script, ...args]);
+/**
+ * chemdraftCli deliberately uses spawnSync. Keep that contract in ring-style.mjs, but invoke it
+ * only in this dedicated Node process so Vitest can continue servicing worker RPC updates.
+ */
+async function runRingStyleChild<T>(body: string, checkout: string): Promise<T> {
+  const source = `
+    import * as ringStyle from ${JSON.stringify(pathToFileURL(script).href)};
+    import { readFileSync } from "node:fs";
+    import { join } from "node:path";
+    const fixtures = ${JSON.stringify(fixtures)};
+    const read = (file) => readFileSync(file, "utf8").replace(/\\r\\n?/g, "\\n");
+    const fixture = (name) => {
+      const build = JSON.parse(read(join(fixtures, \`${"${name}"}-build.jsonl\`)).trim());
+      return { build: build.molecules[0], doc: JSON.parse(read(join(fixtures, \`${"${name}"}.json\`))) };
+    };
+    const molecule = (doc) => doc.pages[0].objects.find((object) => object.type === "molecule");
+    const cli = ringStyle.chemdraftCli(${JSON.stringify(checkout)});
+    try {
+      const result = await (async () => { ${body} })();
+      process.stdout.write(JSON.stringify(result));
+    } finally {
+      cli.cleanup();
+    }
+  `;
+  const result = await runNode(["--input-type=module", "--eval", source]);
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout) as T;
+}
 const fixture = (name: string) => {
   const build = JSON.parse(read(join(fixtures, `${name}-build.jsonl`)).trim());
   return { build: build.molecules[0], doc: JSON.parse(read(join(fixtures, `${name}.json`))) };
@@ -402,59 +445,68 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     });
 
     describe.skipIf(!cliReady)("with the real CLI", () => {
-      let cli: ReturnType<RingStyle["chemdraftCli"]>;
-      beforeAll(() => { cli = ringStyle.chemdraftCli(cliCheckout!); });
-      afterAll(() => cli?.cleanup());
-
-      it("render-document reads the moved drawing as the same molecule", () => {
-        const { build } = fixture("cholesterol");
-        const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-b.json")));
-        const { reference, verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId);
-        expect(reference).toMatchObject({ stereoCenters: 8, unspecifiedStereoCenters: 0 });
-        const { carbon, report } = ringStyle.style(structuredClone(doc), build, { ...steroid, fusionH: false }, { verify });
-        expect(report.layout.moved.map((m: Json) => m.group)).toContain("a26 on a20");
-        expect(verify(molecule(carbon))).toBeNull();
+      it("render-document reads the moved drawing as the same molecule", async () => {
+        const result = await runRingStyleChild<{ reference: Identity; moved: string[]; verified: string | null }>(`
+          const { build } = fixture("cholesterol");
+          const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-b.json")));
+          const { reference, verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId);
+          const { carbon, report } = ringStyle.style(structuredClone(doc), build, { convention: "steroid", fusionH: false }, { verify });
+          return { reference, moved: report.layout.moved.map((move) => move.group), verified: verify(molecule(carbon)) };
+        `, cliCheckout!);
+        expect(result.reference).toMatchObject({ stereoCenters: 8, unspecifiedStereoCenters: 0 });
+        expect(result.moved).toContain("a26 on a20");
+        expect(result.verified).toBeNull();
       }, 120_000);
 
-      it("render-document confirms the undone move would have inverted C10", () => {
-        const { build, doc: plain } = fixture("cholesterol");
-        const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
-        const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId);
-        // Put C19 back where the plain drawing has it, keeping the hash on the fused bond.
-        const moved = structuredClone(molecule(doc));
-        Object.assign(moved.atoms.find((a: Json) => a.id === "a26"), (({ x, y }) => ({ x, y }))(molecule(plain).atoms.find((a: Json) => a.id === "a26")));
-        expect(verify(moved)).toMatch(/^reads /);
-        const { report } = ringStyle.style(structuredClone(doc), build, steroid, { verify });
-        expect(report.layout.stuck.map((x: Json) => x.group)).toEqual(["a26 on a20"]);
+      it("render-document confirms the undone move would have inverted C10", async () => {
+        const result = await runRingStyleChild<{ moved: string | null; stuck: string[] }>(`
+          const { build, doc: plain } = fixture("cholesterol");
+          const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
+          const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId);
+          const moved = structuredClone(molecule(doc));
+          Object.assign(moved.atoms.find((atom) => atom.id === "a26"), (({ x, y }) => ({ x, y }))(molecule(plain).atoms.find((atom) => atom.id === "a26")));
+          const { report } = ringStyle.style(structuredClone(doc), build, { convention: "steroid" }, { verify });
+          return { moved: verify(moved), stuck: report.layout.stuck.map((entry) => entry.group) };
+        `, cliCheckout!);
+        expect(result.moved).toMatch(/^reads /);
+        expect(result.stuck).toEqual(["a26 on a20"]);
       }, 120_000);
 
-      it("a rotate that inverts C10 is undone, and render-document reads the result as cholesterol", () => {
-        const { build } = fixture("cholesterol");
-        const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
-        const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
-        // The turn alone, checked by render-document: another stereoisomer.
-        const turned = structuredClone(molecule(doc));
-        const a = turned.atoms.find((x: Json) => x.id === "a26"), c = turned.atoms.find((x: Json) => x.id === "a20");
-        const t = 100 * Math.PI / 180, dx = a.x - c.x, dy = a.y - c.y;
-        Object.assign(a, { x: c.x + dx * Math.cos(t) - dy * Math.sin(t), y: c.y + dx * Math.sin(t) + dy * Math.cos(t) });
-        expect(verify(turned)).toMatch(/^reads /);
-        const rotate = [{ atom: "a26", about: "a20", degrees: 100 }];
-        const { carbon, report } = ringStyle.style(structuredClone(doc), build, { ...steroid, rotate }, { verify });
-        expect(report.layout.reverted.map((r: Json) => r.move)).toContain("turned 100 degrees (rotate option)");
-        // Fusion H included: the delivered drawing is still the same molecule.
-        expect(report.fusionHydrogens).toHaveLength(3);
-        expect(verify(molecule(carbon))).toBeNull();
+      it("a rotate that inverts C10 is undone, and render-document reads the result as cholesterol", async () => {
+        const result = await runRingStyleChild<{ turned: string | null; reverted: string[]; fusionHydrogens: number; verified: string | null }>(`
+          const { build } = fixture("cholesterol");
+          const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
+          const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
+          const turned = structuredClone(molecule(doc));
+          const a = turned.atoms.find((atom) => atom.id === "a26"), c = turned.atoms.find((atom) => atom.id === "a20");
+          const t = 100 * Math.PI / 180, dx = a.x - c.x, dy = a.y - c.y;
+          Object.assign(a, { x: c.x + dx * Math.cos(t) - dy * Math.sin(t), y: c.y + dx * Math.sin(t) + dy * Math.cos(t) });
+          const rotate = [{ atom: "a26", about: "a20", degrees: 100 }];
+          const { carbon, report } = ringStyle.style(structuredClone(doc), build, { convention: "steroid", rotate }, { verify });
+          return { turned: verify(turned), reverted: report.layout.reverted.map((entry) => entry.move), fusionHydrogens: report.fusionHydrogens.length, verified: verify(molecule(carbon)) };
+        `, cliCheckout!);
+        expect(result.turned).toMatch(/^reads /);
+        expect(result.reverted).toContain("turned 100 degrees (rotate option)");
+        expect(result.fusionHydrogens).toBe(3);
+        expect(result.verified).toBeNull();
       }, 180_000);
 
-      it("render-document reads the fusion H drawing as the same molecule (InChIKey for explicit H)", () => {
-        const { build, doc } = fixture("cholesterol");
-        const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
-        const { carbon, report } = ringStyle.style(structuredClone(doc), build, steroid, { verify });
-        expect(report.fusionHydrogens).toHaveLength(3);
-        expect(report.fusionHydrogensUndone).toEqual([]);
-        expect(verify(molecule(carbon))).toBeNull();
-        // Without the InChIKey the explicit [H] atoms alone would read as a different SMILES string.
-        expect(ringStyle.identityVerifier(cli.identity, doc, build.objectId).verify(molecule(carbon))).toMatch(/^reads .*\[H\]/);
+      it("render-document reads the fusion H drawing as the same molecule (InChIKey for explicit H)", async () => {
+        const result = await runRingStyleChild<{ fusionHydrogens: number; undone: Json[]; verified: string | null; withoutKey: string | null }>(`
+          const { build, doc } = fixture("cholesterol");
+          const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
+          const { carbon, report } = ringStyle.style(structuredClone(doc), build, { convention: "steroid" }, { verify });
+          return {
+            fusionHydrogens: report.fusionHydrogens.length,
+            undone: report.fusionHydrogensUndone,
+            verified: verify(molecule(carbon)),
+            withoutKey: ringStyle.identityVerifier(cli.identity, doc, build.objectId).verify(molecule(carbon))
+          };
+        `, cliCheckout!);
+        expect(result.fusionHydrogens).toBe(3);
+        expect(result.undone).toEqual([]);
+        expect(result.verified).toBeNull();
+        expect(result.withoutKey).toMatch(/^reads .*\[H\]/);
       }, 180_000);
     });
   });
@@ -466,16 +518,16 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       for (const file of ["phenyldecalin.json", "phenyldecalin-build.jsonl"]) copyFileSync(join(fixtures, file), join(dir, file));
     });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
-    const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+    const run = (...args: string[]) => runScript(...args);
 
-    it("refuses to style without a checkout to verify moves with", () => {
-      const result = run("style", dir, "phenyldecalin");
+    it("refuses to style without a checkout to verify moves with", async () => {
+      const result = await run("style", dir, "phenyldecalin");
       expect(result.status).toBe(2);
       expect(result.stderr).toMatch(/style needs --checkout/);
-    });
+    }, 120_000);
 
-    it.skipIf(!cliReady)("writes the carbon and picture documents from the build output", () => {
-      const result = run("style", dir, "phenyldecalin", "--checkout", cliCheckout!);
+    it.skipIf(!cliReady)("writes the carbon and picture documents from the build output", async () => {
+      const result = await run("style", dir, "phenyldecalin", "--checkout", cliCheckout!);
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/^Layout: /m);
@@ -485,51 +537,54 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       expect(result.stdout).toMatch(/^A {2}#e53935/m);
     }, 120_000);
 
-    it("builds identity jobs that put the carbon back under each Me", () => {
+    it("builds identity jobs that put the carbon back under each Me", async () => {
       const line = (document: string, smiles: string) => JSON.stringify({ name: "x", ok: true, document: join(dir, document), files: [],
         molecules: [{ canonicalSmiles: smiles, stereoCenters: 2, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] });
       writeFileSync(join(dir, "phenyldecalin-render.jsonl"),
         `${line("phenyldecalin-carbon.json", "CC1CCCC1")}\n${line("phenyldecalin-nicolaou.json", "*C1CCCC1")}\n`);
-      expect(run("identity-jobs", dir, "phenyldecalin").status).toBe(0);
+      expect((await run("identity-jobs", dir, "phenyldecalin")).status).toBe(0);
       const jobs = JSON.parse(read(join(dir, "phenyldecalin-identity-jobs.json")));
       expect(jobs.map((j: Json) => j.smiles)).toEqual(["CC1CCCC1", "CC1CCCC1"]);
       expect(new Set(jobs.map((j: Json) => j.name)).size).toBe(2);
-    });
+    }, 120_000);
 
     // Installed skills are symlinks (junctions on Windows, where symlinks need privileges).
-    it.skipIf(process.platform === "win32")("runs when reached through a symlinked skill directory", () => {
+    it.skipIf(process.platform === "win32")("runs when reached through a symlinked skill directory", async () => {
       const link = join(dir, "linked-skill");
       symlinkSync(skillRoot, link, "dir");
-      const result = spawnSync(process.execPath, [join(link, "scripts", "ring-style.mjs"), "relayout", dir, "phenyldecalin"], { encoding: "utf8" });
+      const result = await runNode([join(link, "scripts", "ring-style.mjs"), "relayout", dir, "phenyldecalin"]);
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Wrote phenyldecalin-job\.json/);
-    });
+    }, 120_000);
 
-    it("names the file and line of invalid JSON", () => {
+    it("names the file and line of invalid JSON", async () => {
       writeFileSync(join(dir, "broken-build.jsonl"), '{"name":"broken","ok":true}\n{"name": broken}\n');
-      const result = run("relayout", dir, "broken");
+      const result = await run("relayout", dir, "broken");
       expect(result.status).toBe(2);
       expect(result.stderr).toContain(`${join(dir, "broken-build.jsonl")} line 2 is not valid JSON`);
-    });
+    }, 120_000);
 
-    it("gives the CLI's exit status and stderr when render-document fails", () => {
+    it("gives the CLI's exit status and stderr when render-document fails", async () => {
       // A stand-in checkout whose CLI fails the way a broken install does.
       const fake = join(dir, "fake-checkout");
       mkdirSync(join(fake, "node_modules", "tsx", "dist"), { recursive: true });
       mkdirSync(join(fake, "packages", "chemdraft-cli", "src"), { recursive: true });
       writeFileSync(join(fake, "node_modules", "tsx", "dist", "cli.mjs"), 'process.stderr.write("Cannot find module zod\\n"); process.exit(3);\n');
       writeFileSync(join(fake, "packages", "chemdraft-cli", "src", "cli.ts"), "");
-      const cli = ringStyle.chemdraftCli(fake);
-      try {
-        expect(() => cli.identity(fixture("phenyldecalin").doc)).toThrow(/render-document could not read a candidate drawing \(.*check-1\.json\): "no output" \(exit status 3; stderr: Cannot find module zod\)/);
-      } finally {
-        cli.cleanup();
-      }
-    });
+      const result = await runRingStyleChild<string>(`
+        try {
+          cli.identity(fixture("phenyldecalin").doc);
+          return "";
+        } catch (error) {
+          return error.message;
+        }
+      `, fake);
+      expect(result).toMatch(/render-document could not read a candidate drawing \(.*check-1\.json\): "no output" \(exit status 3; stderr: Cannot find module zod\)/);
+    }, 120_000);
 
-    it("rejects an unsafe name and a missing directory", () => {
-      expect(run("style", dir, "../escape").status).toBe(2);
-      expect(run("style", join(dir, "missing"), "phenyldecalin").status).toBe(2);
-    });
+    it("rejects an unsafe name and a missing directory", async () => {
+      expect((await run("style", dir, "../escape")).status).toBe(2);
+      expect((await run("style", join(dir, "missing"), "phenyldecalin")).status).toBe(2);
+    }, 120_000);
   });
 });
