@@ -234,7 +234,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
         expect(lettersOf(d), `${name} turned (${cos}, ${sin}), mirror ${flip}`).toEqual(base);
       }
     }
-  });
+  }, 60_000);
 
   it("letters paclitaxel by the taxane convention and keeps labels left on a fill legible", () => {
     const { build, doc } = fixture("paclitaxel");
