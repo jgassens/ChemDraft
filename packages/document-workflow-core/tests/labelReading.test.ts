@@ -18,13 +18,34 @@ function groupOf(label: string) {
 }
 
 describe("nativeAtomLabelReading", () => {
-  it("reads elements first, ignoring case, so Ac, Pr and Y stay elements", () => {
+  it("reads elements first, folding case, so Ac, Pr and Y stay elements", () => {
     expect(nativeAtomLabelReading("N")).toEqual({ kind: "element", element: "N" });
     expect(nativeAtomLabelReading("cl")).toEqual({ kind: "element", element: "Cl" });
     expect(nativeAtomLabelReading("Ac")).toEqual({ kind: "element", element: "Ac" });
     expect(nativeAtomLabelReading("Y")).toEqual({ kind: "element", element: "Y" });
-    // "CN" is copernicium to the element reader — why the table has no cyano entry.
-    expect(nativeAtomLabelReading("CN")).toEqual({ kind: "element", element: "Cn" });
+  });
+
+  it("reads CN as cyano: folding leaves it as typed, and only the exact Cn is copernicium", () => {
+    expect(nativeAtomLabelReading("CN")).toMatchObject({
+      kind: "group", group: { kind: "abbreviation", label: "CN", definition: { name: "cyano" } }
+    });
+    expect(nativeAtomLabelFreeValence("CN")).toBe(1);
+    expect(nativeAtomLabelReading("Cn")).toEqual({ kind: "element", element: "Cn" });
+    // Case-sensitive like every group: lower case is text, with the intended spelling offered.
+    expect(nativeAtomLabelReading("cn")).toEqual({ kind: "unrecognized", suggestion: "CN" });
+    // Cyano is read in a composite only last, after its head (SCN, CH2CN). Written first, its N
+    // faces the head, so CNO, CNS and CNCH2 stay bare formulas: no group, no valence claim.
+    for (const [label, counts] of [
+      ["CNO", { C: 1, N: 1, O: 1 }], ["CNS", { C: 1, N: 1, S: 1 }], ["CNCH2", { C: 2, N: 1, H: 2 }]
+    ] as const) {
+      const reading = nativeAtomLabelReading(label);
+      expect(reading.kind, label).toBe("formula");
+      expect(reading.kind === "formula" && Object.fromEntries(reading.counts), label).toEqual(counts);
+      expect(nativeAtomLabelFreeValence(label), label).toBeUndefined();
+    }
+    // A lone CN is an open fragment until a −1 charge makes it cyanide.
+    expect(nativeLabelGroupVerdict(groupOf("CN"), 0, 0)).toMatchObject({ valid: false, expectedBondCount: 1 });
+    expect(nativeLabelGroupVerdict(groupOf("CN"), 0, -1)).toEqual({ valid: true });
   });
 
   it("reads a bonded Ar as an aryl placeholder and an unbonded Ar as argon", () => {
@@ -178,7 +199,9 @@ describe("free valence", () => {
 
   it("follows a composite's head", () => {
     const expected: Record<string, number> = {
-      NMe: 2, NMe2: 1, NHMe: 1, NBoc: 2, CMe2: 2, SiMe2: 2, SiMe3: 1, CH2Ph: 1, CHPh2: 1, OTBS: 1, NTf2: 1, PPh2: 1
+      NMe: 2, NMe2: 1, NHMe: 1, NBoc: 2, CMe2: 2, SiMe2: 2, SiMe3: 1, CH2Ph: 1, CHPh2: 1, OTBS: 1, NTf2: 1, PPh2: 1,
+      // Cyano as a substituent: cyanomethyl and thiocyanato.
+      CH2CN: 1, SCN: 1
     };
     for (const [label, bonds] of Object.entries(expected)) {
       expect(nativeAtomLabelFreeValence(label), label).toBe(bonds);
@@ -198,9 +221,11 @@ describe("free valence", () => {
     expect(nativeAtomLabelFreeValence("NH2")).toBe(1);
     expect(nativeAtomLabelFreeValence("HN")).toBe(2);
     expect(nativeAtomLabelFreeValence("CH2")).toBe(2);
-    // Known collision, unchanged here: element reading ignores case, so "NH" is nihonium (Nh),
-    // just as "CN" is copernicium. Recorded so a fix to element matching shows up as a change.
-    expect(nativeAtomLabelReading("NH")).toEqual({ kind: "element", element: "Nh" });
+    // A ring N–H, not nihonium: case folding leaves "NH" as typed, and only the exact "Nh" is
+    // the element.
+    expect(nativeAtomLabelReading("NH")).toEqual({ kind: "spelled", element: "N", hydrogens: 1 });
+    expect(nativeAtomLabelFreeValence("NH")).toBe(2);
+    expect(nativeAtomLabelReading("Nh")).toEqual({ kind: "element", element: "Nh" });
   });
 
   it("has none for an element or for a label that is not structure", () => {

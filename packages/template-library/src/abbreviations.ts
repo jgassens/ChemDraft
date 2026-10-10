@@ -13,7 +13,8 @@
  * the tests in document-workflow-core enforce that against the element table. The exception is
  * `bondedSpellings`: "Ac", "Pr" and "Ts" typed as a label on a bonded atom are acetyl, n-propyl and
  * tosyl. Unbonded, or read from a structure file rather than typed, they stay actinium,
- * praseodymium and tennessine.
+ * praseodymium and tennessine. "CN" is free: case folding leaves it as typed (layout-engine's
+ * `nativeFormulaTwoLetterLabels`), so it is cyano here, while "Cn" is still copernicium.
  *
  * Chemistry for these groups (valence, formula, expansion on export) lives in
  * `@chemdraft/document-workflow-core`; this package owns only the data.
@@ -247,6 +248,18 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
       { element: "O", hydrogens: 0, x: 0.5, y: -0.866 }
     ],
     bonds: [[0, 1, 2]]
+  },
+  {
+    // No "NC" alias: written that way on a bond's right it reads as isocyano (-N≡C), not cyano.
+    // The label's side is unknown to the reader, so "OCN" and "SCN" read as cyanato and
+    // thiocyanato wherever they sit; written for a bond on their right, a chemist means isocyanate
+    // and isothiocyanate (O=C=N–, S=C=N–). A known limitation.
+    label: "CN", aliases: [], name: "cyano", smiles: "*C#N", formula: "CN", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 0, x: 0, y: 0 },
+      { element: "N", hydrogens: 0, x: 1, y: 0 }
+    ],
+    bonds: [[0, 1, 3]]
   },
   {
     label: "CF3", aliases: ["F3C"], name: "trifluoromethyl", smiles: "*C(F)(F)F", formula: "CF3", attachmentCount: 1,

@@ -57,7 +57,8 @@ function hill(counts: ReadonlyMap<string, number>): string {
 describe("the abbreviation table against the element table", () => {
   it.each(abbreviationSpellings.map((spelling) => [spelling]))("%s reads as a group and as nothing else", (spelling) => {
     // Elements win over the table, so a spelling that is also an element could never be reached.
-    // nativeElementFromAtomLabel ignores case: "CN" would be copernicium, which is why cyano is absent.
+    // nativeElementFromAtomLabel folds case except for a few two-letter group labels, which is why
+    // cyano can be "CN" (copernicium is the exact "Cn").
     expect(nativeElementFromAtomLabel(spelling)).toBeUndefined();
     expect(nativeSingleHeavyElementLabelValence(spelling)).toBeUndefined();
     expect(isGenericAtomLabel(spelling)).toBe(false);
