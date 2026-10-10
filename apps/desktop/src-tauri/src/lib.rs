@@ -280,6 +280,32 @@ struct NativeOpenDocumentPayload {
 #[derive(Default)]
 struct PendingOpenDocument {
     payload: Mutex<Option<NativeOpenDocumentPayload>>,
+    // Window existence is not a readiness signal: macOS may close every window after setup.
+    setup_completed: AtomicBool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OpenDocumentDelivery {
+    PendingOnly,
+    CreateWindowAndEmit,
+    ShowWindowAndEmit,
+}
+
+impl PendingOpenDocument {
+    fn record(
+        &self,
+        payload: NativeOpenDocumentPayload,
+        main_window_exists: bool,
+    ) -> Result<OpenDocumentDelivery, String> {
+        *self.payload.lock().map_err(|error| error.to_string())? = Some(payload);
+        Ok(if !self.setup_completed.load(Ordering::SeqCst) {
+            OpenDocumentDelivery::PendingOnly
+        } else if main_window_exists {
+            OpenDocumentDelivery::ShowWindowAndEmit
+        } else {
+            OpenDocumentDelivery::CreateWindowAndEmit
+        })
+    }
 }
 
 #[derive(Default)]
@@ -421,6 +447,13 @@ pub fn run() {
         let cwd = PathBuf::from(cwd);
         if let Err(error) = handle_opened_document_args(app, argv.into_iter().skip(1), &cwd) {
             eprintln!("Could not open ChemDraft document from a second launch: {error}");
+        }
+        if !app
+            .state::<PendingOpenDocument>()
+            .setup_completed
+            .load(Ordering::SeqCst)
+        {
+            return;
         }
         if let Err(error) = ensure_main_window_visible(app) {
             eprintln!("Could not show ChemDraft main window for a second launch: {error}");
@@ -657,18 +690,6 @@ pub fn run() {
                 eprintln!("Could not focus ChemDraft document window: {error}");
             }
 
-            // Off macOS a document opened from the shell arrives as a launch argument. Queued as
-            // the pending document, which the window drains once it mounts.
-            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-            if let Ok(cwd) = std::env::current_dir() {
-                let args = std::env::args_os()
-                    .skip(1)
-                    .map(|arg| arg.to_string_lossy().into_owned());
-                if let Err(error) = handle_opened_document_args(app, args, &cwd) {
-                    eprintln!("Could not open ChemDraft document from launch arguments: {error}");
-                }
-            }
-
             // Palettes never become key, so hover must be fed to their webviews (see
             // start_palette_pointer_feed's doc for why the OS won't deliver it).
             start_palette_pointer_feed(app.clone());
@@ -679,6 +700,22 @@ pub fn run() {
             // The tooltip window is NOT built here: a palette prewarms it once it has painted
             // (prewarm_toolset_tooltip). Building it in setup put a hidden webview ahead of every
             // palette in the queue for window creation.
+
+            app.state::<PendingOpenDocument>()
+                .setup_completed
+                .store(true, Ordering::SeqCst);
+
+            // Off macOS a document opened from the shell arrives as a launch argument. Keep the
+            // existing queue-and-emit behavior, now that setup and the config window are ready.
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            if let Ok(cwd) = std::env::current_dir() {
+                let args = std::env::args_os()
+                    .skip(1)
+                    .map(|arg| arg.to_string_lossy().into_owned());
+                if let Err(error) = handle_opened_document_args(app, args, &cwd) {
+                    eprintln!("Could not open ChemDraft document from launch arguments: {error}");
+                }
+            }
 
             Ok(())
         })
@@ -756,7 +793,12 @@ pub fn run() {
             }
             // Dock-icon click with no visible windows; a macOS-only event.
             #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
+            RunEvent::Reopen { .. }
+                if app
+                    .state::<PendingOpenDocument>()
+                    .setup_completed
+                    .load(Ordering::SeqCst) =>
+            {
                 if let Err(error) = ensure_main_window_visible(app) {
                     eprintln!("Could not reopen ChemDraft main window: {error}");
                 }
@@ -3693,8 +3735,8 @@ fn is_openable_document_path(path: &Path) -> bool {
     extension_ok && path.is_file()
 }
 
-/// Queue an opened document for the window to drain on mount (cold start), bring the window up,
-/// and deliver it to an already-listening window.
+/// Queue an opened document for the window to drain on mount (cold start). Only after setup,
+/// bring the window up and deliver it to an already-listening window.
 fn deliver_opened_document<R: Runtime>(
     app: &tauri::AppHandle<R>,
     payload: NativeOpenDocumentPayload,
@@ -3707,9 +3749,15 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
-    {
-        let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
-        *pending = Some(payload.clone());
+    let delivery = state.record(
+        payload.clone(),
+        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
+    )?;
+    if delivery == OpenDocumentDelivery::PendingOnly {
+        // macOS can send Opened before Tauri creates its config windows. Building `main` here
+        // would collide with Tauri's window creation and abort inside the AppKit callback.
+        // Setup will show the config window; its mount drains the pending document.
+        return Ok(());
     }
 
     if let Err(error) = ensure_main_window_visible(app) {
@@ -5497,6 +5545,70 @@ mod tests {
                 foreground_is_ours
             );
         }
+    }
+
+    fn opened_document_test_payload() -> NativeOpenDocumentPayload {
+        NativeOpenDocumentPayload {
+            path: "cold-open.chemdraft".into(),
+            display_name: "cold-open.chemdraft".into(),
+            contents: "<CDXML/>".into(),
+        }
+    }
+
+    #[test]
+    fn open_before_setup_only_stores_the_document_for_mount() {
+        // Even if a config window already exists, delivery waits until setup is complete.
+        for main_window_exists in [false, true] {
+            let state = PendingOpenDocument::default();
+            assert_eq!(
+                state
+                    .record(opened_document_test_payload(), main_window_exists)
+                    .expect("record document"),
+                OpenDocumentDelivery::PendingOnly
+            );
+            state.setup_completed.store(true, Ordering::SeqCst);
+            let payload = state.payload.lock().expect("pending lock").take();
+            let payload = payload.expect("document survives setup for the mount drain");
+            assert_eq!(payload.path, "cold-open.chemdraft");
+            assert_eq!(payload.contents, "<CDXML/>");
+            assert!(state.payload.lock().expect("pending lock").is_none());
+        }
+    }
+
+    #[test]
+    fn open_after_setup_without_a_window_requests_creation_and_delivery() {
+        let state = PendingOpenDocument::default();
+        state.setup_completed.store(true, Ordering::SeqCst);
+        // Closing every window on macOS must not reset setup readiness.
+        assert_eq!(
+            state
+                .record(opened_document_test_payload(), false)
+                .expect("record document"),
+            OpenDocumentDelivery::CreateWindowAndEmit
+        );
+        assert_eq!(
+            state
+                .payload
+                .lock()
+                .expect("pending lock")
+                .as_ref()
+                .expect("pending document for the new window")
+                .contents,
+            "<CDXML/>"
+        );
+    }
+
+    #[test]
+    fn open_after_setup_with_a_window_requests_delivery_without_creation() {
+        let state = PendingOpenDocument::default();
+        state.setup_completed.store(true, Ordering::SeqCst);
+        assert_eq!(
+            state
+                .record(opened_document_test_payload(), true)
+                .expect("record document"),
+            OpenDocumentDelivery::ShowWindowAndEmit
+        );
+        assert!(state.payload.lock().expect("pending lock").is_some());
     }
 
     #[cfg(windows)]
