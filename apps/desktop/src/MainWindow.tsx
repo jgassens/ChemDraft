@@ -1468,7 +1468,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.9.19.38-codex";
+const CURRENT_BUILD_STAMP = "10.9.19.39-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -14402,16 +14402,10 @@ export function MainWindow({
     }
 
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
+      event.preventDefault();
       event.stopPropagation();
-      replacePresentDocument((current) => selectDocumentObject(current, objectId));
       restoreToolAfterTextPlacement();
-      setActiveEditorObjectId(undefined);
-      setActiveTextEditObjectId(objectId);
-      setActiveAtomLabelEdit(undefined);
-      setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
-      assignHoveredNativeDeleteTarget(undefined);
-      setFreeformNativeBond(undefined);
+      startTextObjectEdit(objectId);
       return;
     }
 
@@ -14572,6 +14566,24 @@ export function MainWindow({
         assignHoveredNativeDeleteTarget(undefined);
         setSelectedNativeMoleculePart(undefined);
         setStatus("Selected grouped object");
+        return;
+      }
+    }
+
+    if (activeToolState.activeKind === "selection" && object?.type === "text" && !selectionShiftActive && !event.altKey) {
+      // Page pointer capture can retarget click/dblclick away from the text overlay in WebView2.
+      // Detect the second press before starting another object drag instead.
+      const press = { time: Date.now(), x: event.clientX, y: event.clientY, objectId };
+      const previousPress = lastSelectionPressRef.current;
+      const doublePress = event.detail >= 2 || (
+        previousPress?.objectId === objectId && isSelectionDoublePress(previousPress, press)
+      );
+      lastSelectionPressRef.current = press;
+      if (doublePress) {
+        event.preventDefault();
+        event.stopPropagation();
+        lastSelectionPressRef.current = undefined;
+        startTextObjectEdit(objectId);
         return;
       }
     }
@@ -24251,6 +24263,7 @@ function DocumentObjectViewContent({
         data-text-align={textStyle.textAlign}
         data-text-script={objectTextScript}
         data-text-sizing-mode={String(object.style.textBoxSizingMode ?? "auto")}
+        onDoubleClick={handleTextDoubleClick}
         onPointerDown={handleObjectPointerDown}
         onPointerMove={handleObjectPointerMove}
         onPointerUp={handleObjectPointerUp}
@@ -24326,7 +24339,12 @@ function DocumentObjectViewContent({
               }}
               // Click-away commits like Escape does (element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
-              onBlur={() => onTextEditFinish(object.id)}
+              onBlur={(event) => {
+                if (!event.currentTarget.ownerDocument.hasFocus()) {
+                  return;
+                }
+                onTextEditFinish(object.id);
+              }}
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
