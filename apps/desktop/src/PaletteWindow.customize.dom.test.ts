@@ -10,9 +10,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createPaletteRegistryFromLayoutState, PaletteWindow } from "./PaletteWindow";
+import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
+import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
+import { desktopToolsetRegistry } from "./toolsets";
 import {
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
+  broadcastToolsetLayoutState,
   TOOLSET_LAYOUT_EDIT_EVENT,
   type ToolsetLayoutEditPayload
 } from "./window-manager";
@@ -56,6 +60,33 @@ describe("PaletteWindow customize mode bridge", () => {
       await Promise.resolve();
     });
   }
+
+  it("routes orientation changes and keeps every command and style control reachable", async () => {
+    await renderMainPalette();
+    const commandIds = () => Array.from(container.querySelectorAll<HTMLElement>("[data-command-id]"))
+      .map((element) => element.dataset.commandId).sort();
+    const originalCommands = commandIds();
+    expect(originalCommands.length).toBeGreaterThan(0);
+    const orientationButton = container.querySelector<HTMLButtonElement>('[aria-label="Switch to vertical toolbar"]');
+    expect(orientationButton).not.toBeNull();
+    await act(async () => {
+      orientationButton?.click();
+    });
+    expect(edits).toEqual([{ toolsetId: "core.main", edit: { kind: "setOrientation", orientation: "vertical" } }]);
+    const state = applyToolsetLayoutEdit(emptyLayoutState(), edits[0], {
+      presentItemIds: new Set(),
+      commandTitle: () => undefined,
+      gridLayout: desktopToolsetRegistry.require("core.main").gridLayout
+    });
+    await act(async () => {
+      await broadcastToolsetLayoutState(state);
+    });
+    expect(container.querySelector('.palette-scroll-viewport[data-orientation="vertical"]')).not.toBeNull();
+    expect(container.querySelector('[data-toolbar-style-controls="main"]')).not.toBeNull();
+    expect(commandIds()).toEqual(originalCommands);
+    expect(container.querySelector('[aria-label="Resize toolbar"]')).not.toBeNull();
+    expect(container.querySelector(".tool-palette.customizing")).toBeNull();
+  });
 
   it("shows the Done/Restore bar when customize mode turns on and hides it when off", async () => {
     await renderMainPalette();

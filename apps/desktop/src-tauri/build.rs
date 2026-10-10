@@ -14,6 +14,7 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "open_toolset_window",
+            "suspend_toolset_windows",
             "close_toolset_window",
             "focus_toolset_window",
             "toggle_toolset_window",

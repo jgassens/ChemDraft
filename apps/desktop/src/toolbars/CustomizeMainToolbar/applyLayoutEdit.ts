@@ -1,4 +1,4 @@
-import type { ToolsetItemDefinition, ToolsetLayoutState } from "@chemdraft/toolset-registry";
+import type { ToolsetGridLayout, ToolsetItemDefinition, ToolsetLayoutState } from "@chemdraft/toolset-registry";
 import type { ToolsetLayoutEditPayload } from "../../window-manager";
 import {
   addToolsetItemAddition,
@@ -7,6 +7,7 @@ import {
   removeToolsetItem,
   reorderItems,
   resetToolsetLayout,
+  setToolsetOrientation,
   setItemHidden
 } from "../CustomizeToolbars/layoutStateEdits";
 
@@ -44,6 +45,7 @@ function placeItemAtIndex<I extends string, A extends string>(
 }
 
 export interface ApplyToolsetLayoutEditContext {
+  gridLayout?: ToolsetGridLayout;
   /** Customization ids currently present in the toolset — used to no-op a duplicate add. */
   presentItemIds: ReadonlySet<string>;
   /** Authoritative visible item order for each group before this edit. Used to persist an add/re-add
@@ -76,6 +78,10 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
 ): ToolsetLayoutState<I, A> {
   const { toolsetId, edit } = payload;
   switch (edit.kind) {
+    case "setOrientation":
+      return edit.orientation === "horizontal" || edit.orientation === "vertical"
+        ? setToolsetOrientation(state, toolsetId, edit.orientation, context.gridLayout)
+        : state;
     case "reorderItems":
       return reorderItems(state, toolsetId, edit.groupId, edit.orderedItemIds);
     case "addCommand": {

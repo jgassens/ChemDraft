@@ -292,6 +292,75 @@ struct ToolsetWindowDirectory {
     // '-'), so it can't be reversed by parsing — we record the mapping when the window is created.
     // This lets label->id resolution and window enumeration stop scanning the manifest.
     labels: Mutex<HashMap<String, String>>,
+    suspension: Mutex<ToolsetWindowSuspension>,
+}
+
+#[derive(Default)]
+struct ToolsetWindowSuspension {
+    active: bool,
+    restore_labels: Vec<String>,
+}
+
+fn toolset_window_suspended<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    app.state::<ToolsetWindowDirectory>()
+        .suspension
+        .lock()
+        .map(|state| state.active && state.restore_labels.iter().any(|entry| entry == label))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn suspend_toolset_windows(app: tauri::AppHandle, suspended: bool) -> Result<(), String> {
+    let _creation = lock_window_creation();
+    let directory = app.state::<ToolsetWindowDirectory>();
+    let labels: Vec<String> = directory
+        .labels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .keys()
+        .cloned()
+        .collect();
+    if suspended {
+        let hide: Vec<String> = labels
+            .into_iter()
+            .filter(|label| {
+                app.get_webview_window(label)
+                    .is_some_and(|window| window.is_visible().unwrap_or(false))
+            })
+            .collect();
+        {
+            let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+            if state.active {
+                return Ok(());
+            }
+            state.active = true;
+            state.restore_labels = hide.clone();
+        }
+        for label in hide {
+            if let Some(window) = app.get_webview_window(&label) {
+                window.hide().map_err(|error| error.to_string())?;
+            }
+        }
+        // Transient flyouts and tooltips are dismissed, rather than restored.
+        for (label, window) in app.webview_windows() {
+            if label.starts_with("toolset-popover-") || label == "toolset-tooltip" {
+                window.hide().map_err(|error| error.to_string())?;
+            }
+        }
+    } else {
+        let restore = {
+            let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+            state.active = false;
+            std::mem::take(&mut state.restore_labels)
+        };
+        for label in restore {
+            if let Some(window) = app.get_webview_window(&label) {
+                window.show().map_err(|error| error.to_string())?;
+                configure_toolset_utility_window(&window, true)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 struct Engine3dManagedSession {
@@ -682,6 +751,7 @@ pub fn run() {
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
+            suspend_toolset_windows,
             close_toolset_window,
             list_toolset_window_states,
             load_toolset_customization_state,
@@ -998,6 +1068,11 @@ fn close_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    if let Ok(mut state) = app.state::<ToolsetWindowDirectory>().suspension.lock() {
+        state
+            .restore_labels
+            .retain(|label| label != &toolset_window_label(&toolset_id));
+    }
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
         if let Some(position) = current_toolset_window_position(window) {
@@ -4478,6 +4553,9 @@ fn ensure_toolset_window<R: Runtime>(
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
         recover_offscreen_toolset_window(app, &window);
+        if defer_toolset_window_for_dialog(app, &label)? {
+            return Ok(());
+        }
         window.show().map_err(|error| error.to_string())?;
         configure_toolset_utility_window(&window, true)?;
         return Ok(());
@@ -4519,6 +4597,8 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
+    let suspended = defer_toolset_window_for_dialog(app, &label)?;
+
     let window = match utility_window_builder(
         WebviewWindowBuilder::new(
             app,
@@ -4529,10 +4609,8 @@ fn ensure_toolset_window<R: Runtime>(
     )
     .title(title)
     .inner_size(width, height)
-    // The window is sized to its actual palette content by the JS side (PaletteWindow
-    // applySize). The manifest's min sizes were tuned for the old docked/web layout and are far too
-    // large for a content-fit floating window (e.g. Art's 760), which left a big blank area beside
-    // the tools — so keep only a tiny hard floor here.
+    .visible(!suspended)
+    // Users can shrink the toolbar freely; its tools remain reachable by scrolling.
     .min_inner_size(96.0, 56.0)
     .accept_first_mouse(true)
     .focusable(toolset_window_focusable())
@@ -4555,8 +4633,23 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
-    configure_toolset_utility_window(&window, true)?;
+    configure_toolset_utility_window(&window, !suspended)?;
     Ok(())
+}
+
+fn defer_toolset_window_for_dialog<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Result<bool, String> {
+    let directory = app.state::<ToolsetWindowDirectory>();
+    let mut state = directory.suspension.lock().map_err(|error| error.to_string())?;
+    if !state.active {
+        return Ok(false);
+    }
+    if !state.restore_labels.iter().any(|entry| entry == label) {
+        state.restore_labels.push(label.to_string());
+    }
+    Ok(true)
 }
 
 /// Run `task` on the main thread and wait for its result. AppKit is main-thread-only, and the
@@ -4844,7 +4937,7 @@ fn toolset_state<R: Runtime>(
             let visible = window.is_visible().unwrap_or(false);
             Ok(ToolsetWindowState {
                 toolset_id: toolset_id.to_string(),
-                open: visible,
+                open: visible || toolset_window_suspended(app, window.label()),
                 focused: visible && window.is_focused().unwrap_or(false),
                 position: current_toolset_window_position(&window)
                     .or_else(|| persisted_toolset_position(app, toolset_id)),

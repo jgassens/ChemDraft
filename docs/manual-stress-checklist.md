@@ -29,6 +29,12 @@ handle must not move the shaft); "Set as Default Arrow Style" captured from a da
 tooltips on a palette dragged to a second monitor; and toolbars restored after being left off-screen
 or on a since-detached display.
 
+Toolbar sizing: drag by the title, resize with the bottom-right grip, switch between horizontal
+and vertical, and shrink until scrolling is required. Every tool and style control must remain
+reachable and invoke once. Reopen the app to check saved size and orientation. Open and cancel
+Export and Page Setup: native toolbars must disappear while the dialog is open and return at the
+same position and size; toolbars already hidden must stay hidden. Check both monitor scales.
+
 Keybinding and molecule-editing surfaces added since: the Chain tools flyout (Chain / Flexible
 Chain) opened cold and warm, with a flexible-chain drag that turns corners both free and
 atom-anchored while a straight drag still reproduces the straight planner exactly; the numeric

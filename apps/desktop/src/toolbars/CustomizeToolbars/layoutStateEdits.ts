@@ -2,6 +2,7 @@ import { toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
 import type {
   ToolsetDefinition,
   ToolsetGroupDefinition,
+  ToolsetGridLayout,
   ToolsetItemDefinition,
   ToolsetLayoutState,
   UserToolsetDefinition,
@@ -23,6 +24,22 @@ import type {
  */
 
 export const USER_TOOLSET_ID_PREFIX = "user.";
+
+export function setToolsetOrientation<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  orientation: "horizontal" | "vertical",
+  gridLayout?: ToolsetGridLayout
+): ToolsetLayoutState<I, A> {
+  return withOverride(state, toolsetId, (draft) => {
+    draft.gridLayout = {
+      ...gridLayout,
+      orientation,
+      rows: orientation === "horizontal" ? 2 : undefined,
+      columns: orientation === "vertical" ? 2 : undefined
+    };
+  });
+}
 
 export function emptyLayoutState<I extends string = string, A extends string = string>(): ToolsetLayoutState<I, A> {
   return { version: 1, toolsetOverrides: [], userToolsets: [] };

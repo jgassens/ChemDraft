@@ -71,6 +71,7 @@ import {
   setCurrentWindowLogicalSize,
   setToolsetWindowFocusable,
   startPaletteWindowDrag,
+  startPaletteWindowResize,
   toolsetCommandSpecsSignature,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
@@ -132,10 +133,8 @@ export function PaletteWindow({
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
-  const lastLoggedSizeRef = useRef<string>("");
   const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
   const animationFrameRef = useRef<number | undefined>(undefined);
-  const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
   const [commandSpecs, setCommandSpecs] = useState<CommandSpec[]>(() =>
     allShellCommands(createPhase4Document(), undefined, {
@@ -167,7 +166,6 @@ export function PaletteWindow({
   const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   commandSpecsRef.current = commandSpecs;
   const [activeTool, setActiveTool] = useState("tool.select");
-  const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
@@ -243,9 +241,6 @@ export function PaletteWindow({
       document.body.classList.remove("palette-window-body");
       if (animationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(animationFrameRef.current);
-      }
-      if (sizeAnimationFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
       }
     };
   }, []);
@@ -429,61 +424,45 @@ export function PaletteWindow({
     };
   }, [customizeThisPalette, toolset.id]);
 
+  // Size once after the definition arrives. Subsequent native resizes belong to the
+  // user; a ResizeObserver must never snap the window back to its content size.
+  const sizedToolsetRef = useRef<string | undefined>(undefined);
+  const orientation = toolset.gridLayout?.orientation ?? "vertical";
   useEffect(() => {
-    const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
-    if (!preferredSize) {
-      return;
-    }
-
-    const shell = shellRef.current;
-    const applySize = () => {
-      // Fit the window to the palette's own content in BOTH dimensions. The shell is
-      // width/height:max-content (see CSS), so its measured box is the natural content size:
-      // the window shrinks when the manifest size is too big (blank gaps) and grows when
-      // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
-      const rect = shell?.getBoundingClientRect();
-      const contentWidth = rect ? Math.ceil(rect.width) : 0;
-      const contentHeight = rect ? Math.ceil(rect.height) : 0;
-      const width = contentWidth > 0 ? contentWidth : preferredSize.width;
-      const height = Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height);
-      // Dev-only size probe: open the palette window's devtools console to read exact
-      // content-vs-window numbers for any palette that still looks wrong.
-      if (import.meta.env.DEV) {
-        const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
-        if (lastLoggedSizeRef.current !== key) {
-          lastLoggedSizeRef.current = key;
-          console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
-        }
+    if (!knownToolset || sizedToolsetRef.current === toolset.id) return;
+    sizedToolsetRef.current = toolset.id;
+    const preferred = toolset.preferredWindowSize ?? gridWindowSize ?? { width: 240, height: 400 };
+    let size = preferred;
+    try {
+      const saved = JSON.parse(localStorage.getItem(`chemdraft.palette.size.${toolset.id}`) ?? "null");
+      if (saved && Number.isFinite(saved.width) && Number.isFinite(saved.height) && saved.width >= 96 && saved.height >= 56) {
+        size = saved;
       }
-      void setCurrentWindowLogicalSize({ width, height }).catch(() => undefined);
+    } catch { /* Retain the default when storage is unavailable or malformed. */ }
+    void setCurrentWindowLogicalSize({
+      width: Math.max(96, Math.min(size.width, window.screen.availWidth * 0.85 || size.width)),
+      height: Math.max(56, Math.min(size.height, window.screen.availHeight * 0.85 || size.height))
+    }).catch(() => undefined);
+  }, [knownToolset, gridWindowSize, toolset.id, toolset.preferredWindowSize]);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const saveSize = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        try {
+          localStorage.setItem(`chemdraft.palette.size.${toolset.id}`, JSON.stringify({
+            width: window.innerWidth, height: window.innerHeight
+          }));
+        } catch { /* Resizing still works when persistence is unavailable. */ }
+      }, 200);
     };
-
-    applySize();
-
-    if (!shell || typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      if (sizeAnimationFrameRef.current !== undefined) {
-        return;
-      }
-
-      sizeAnimationFrameRef.current = window.requestAnimationFrame(() => {
-        sizeAnimationFrameRef.current = undefined;
-        applySize();
-      });
-    });
-    observer.observe(shell);
-
+    window.addEventListener("resize", saveSize);
     return () => {
-      observer.disconnect();
-      if (sizeAnimationFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
-        sizeAnimationFrameRef.current = undefined;
-      }
+      window.removeEventListener("resize", saveSize);
+      window.clearTimeout(timer);
     };
-  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
+  }, [toolset.id]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1016,7 +995,8 @@ export function PaletteWindow({
         gridLayout={toolset.gridLayout}
         activeTool={activeTool}
         mode="floating"
-        orientation={toolset.gridLayout?.orientation ?? "vertical"}
+        responsive
+        orientation={orientation}
         title={toolset.title}
         onRequestFlyout={openFlyoutPopover}
         onInvoke={invokeCommand}
@@ -1032,7 +1012,6 @@ export function PaletteWindow({
           molecularInspectorStale,
           currentTextStyle,
           currentTextScript,
-          onColorPickerOpenChange: setColorPickerOpen,
           onRequestColorPopover: openArtColorPopover,
           onArtStylePreview: previewCommand,
           onArtStyleCommit: commitPreviewCommand,
@@ -1086,7 +1065,9 @@ export function PaletteWindow({
         >
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
+
       </div>
+      <div className="palette-scroll-viewport" data-orientation={orientation} data-palette-control="true">
       {customizeThisPalette ? (
         <ToolbarCustomizeController
           toolsetId={toolset.id}
@@ -1111,6 +1092,21 @@ export function PaletteWindow({
       ) : (
         renderPalette(paletteGroups)
       )}
+      </div>
+      <button
+        type="button"
+        className="palette-resize-handle"
+        aria-label="Resize toolbar"
+        title="Drag to resize toolbar"
+        data-palette-control="true"
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void startPaletteWindowResize().catch(() => undefined);
+        }}
+      >◢</button>
     </main>
   );
 }

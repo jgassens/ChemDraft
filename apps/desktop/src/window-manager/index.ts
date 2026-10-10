@@ -745,6 +745,18 @@ export async function startPaletteWindowDrag(): Promise<void> {
   await getCurrentWindow().startDragging();
 }
 
+export async function startPaletteWindowResize(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().startResizeDragging("SouthEast");
+}
+
+export async function suspendToolsetWindows(suspended: boolean): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("suspend_toolset_windows", { suspended });
+}
+
 export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
@@ -1111,6 +1123,7 @@ export async function listenForToolsetDefinitionsRequests(handler: () => void): 
 /** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
  *  is handled by the caller (mode state), not the layout applier. */
 export type ToolsetLayoutEdit =
+  | { kind: "setOrientation"; orientation: "horizontal" | "vertical" }
   | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }
