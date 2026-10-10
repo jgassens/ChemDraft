@@ -90,8 +90,7 @@ as a bare formula and exports as a placeholder rather than as its real group. CD
 for a label's recorded side: ChemDraft's own CDXML keeps it in the embedded payload, but a visible-
 layer-only reimport records the side the drawing shows. The bond tool judges a typed bonded "Ac" by
 its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
-one. CDXML's element table, pre-existing, numbers only H–Ca, Br, I, Pr, Ac and Ts; other numeric
-elements import as carbon until its own fix lands.
+one.
 
 ## User feedback fixes (2026-10-09)
 
