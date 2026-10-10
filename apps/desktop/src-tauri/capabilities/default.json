@@ -26,6 +26,7 @@
     "allow-save-document-session",
     "allow-set-toolbars-menu",
     "allow-focus-main-document-window",
+    "allow-focus-main-document-window-if-app-active",
     "allow-set-menu-checked",
     "allow-set-keybinding-scheme",
     "allow-open-problem-report-email",

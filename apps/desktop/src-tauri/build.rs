@@ -18,6 +18,7 @@ fn main() {
             "focus_toolset_window",
             "toggle_toolset_window",
             "list_toolset_window_states",
+            "focus_main_document_window_if_app_active",
             "set_menu_checked",
             "set_keybinding_scheme",
             "plugin_storage_read",

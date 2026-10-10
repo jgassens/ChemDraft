@@ -14,7 +14,24 @@ import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { convertTextToAtomLabelCommandId } from "./commands";
 import { saveKeybindingSettings } from "./keybindingSettings";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { DOM_COMMAND_EVENT, focusCurrentWindowAndWebview } from "./window-manager";
+
+const nativeFocus = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  windowSetFocus: vi.fn(),
+  webviewSetFocus: vi.fn()
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeFocus.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ label: "main", setFocus: nativeFocus.windowSetFocus })
+}));
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ setFocus: nativeFocus.webviewSetFocus })
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn().mockResolvedValue(undefined),
+  listen: vi.fn().mockResolvedValue(() => {})
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -42,6 +59,9 @@ describe("atom label editor focus", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
+    nativeFocus.invoke.mockReset().mockResolvedValue(undefined);
+    nativeFocus.windowSetFocus.mockReset().mockResolvedValue(undefined);
+    nativeFocus.webviewSetFocus.mockReset().mockResolvedValue(undefined);
     saveKeybindingSettings({ scheme: "chemdraft" });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
@@ -66,6 +86,7 @@ describe("atom label editor focus", () => {
     window.history.replaceState(null, "", "/");
     Reflect.deleteProperty(navigator, "platform");
     delete window.__CHEMDRAFT_AGENT__;
+    Reflect.deleteProperty(globalThis, "__TAURI__");
     if (originalResizeObserver) {
       globalThis.ResizeObserver = originalResizeObserver;
     } else {
@@ -240,6 +261,113 @@ describe("atom label editor focus", () => {
     });
     await settle();
   }
+
+  function enableMockDesktop(raised: boolean) {
+    Object.defineProperty(globalThis, "__TAURI__", { configurable: true, value: {} });
+    nativeFocus.invoke.mockImplementation(async (command: string) =>
+      command === "focus_main_document_window_if_app_active" ? raised : undefined
+    );
+  }
+
+  function expectNoWindowRaise() {
+    expect(nativeFocus.invoke.mock.calls.filter(([command]) =>
+      command === "focus_main_document_window" || command === "focus_main_document_window_if_app_active"
+    )).toEqual([]);
+    expect(nativeFocus.windowSetFocus).not.toHaveBeenCalled();
+    expect(nativeFocus.webviewSetFocus).not.toHaveBeenCalled();
+  }
+
+  async function startInlineEdit(kind: "atom" | "text") {
+    if (kind === "atom") {
+      await startLabelEdit();
+      return labelEditor()!;
+    }
+    await pointerPress(container.querySelector(".page")!, { x: 100, y: 100 });
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+    expect(editor).not.toBeNull();
+    return editor!;
+  }
+
+  describe.each(["macos", "windows"] as const)("inline activation guard (%s)", (platform) => {
+    it.each(["atom", "text"] as const)("window focus restores only the %s editor's DOM focus", async (kind) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      enableMockDesktop(true);
+      const editor = await startInlineEdit(kind);
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      hasFocus.mockReturnValue(false);
+      await act(async () => { editor.blur(); });
+      expect(document.activeElement).not.toBe(editor);
+      nativeFocus.invoke.mockClear();
+      nativeFocus.windowSetFocus.mockClear();
+      nativeFocus.webviewSetFocus.mockClear();
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      // Even if hasFocus has not caught up to the event, this path must restore only DOM focus.
+      await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
+      expectNoWindowRaise();
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+
+    it.each(["atom", "text"] as const)("focused document schedules %s DOM retries without raising", async (kind) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument(), kind === "atom" ? "tool.atom" : "tool.text");
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      enableMockDesktop(true);
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      const editor = await startInlineEdit(kind);
+      expect(document.activeElement).toBe(editor);
+      // Keep the edit open through blur, then model an already focused document for the retries.
+      hasFocus.mockReturnValue(false);
+      await act(async () => { editor.blur(); });
+      hasFocus.mockReturnValue(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
+      expectNoWindowRaise();
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("unfocused document follows the native activation decision (%s)", async (raised) => {
+      setShortcutPlatform(platform);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(ringDocument());
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      enableMockDesktop(raised);
+      const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+      const editor = await startInlineEdit("atom");
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      const focusCommands = nativeFocus.invoke.mock.calls.filter(([command]) =>
+        command.startsWith("focus_main_document_window")
+      );
+      expect(focusCommands).toHaveLength(4);
+      expect(focusCommands.every(([command]) => command === "focus_main_document_window_if_app_active")).toBe(true);
+      expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
+      expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
+      expect(document.activeElement).toBe(editor);
+      expect(browserFocus).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses JS activation if the guarded native command fails", async () => {
+    enableMockDesktop(false);
+    nativeFocus.invoke.mockRejectedValue(new Error("Native focus unavailable"));
+    await focusCurrentWindowAndWebview({ onlyIfAppActive: true });
+    expect(nativeFocus.windowSetFocus).not.toHaveBeenCalled();
+    expect(nativeFocus.webviewSetFocus).not.toHaveBeenCalled();
+  });
+
+  it("preserves unguarded activation and its fallback for other callers", async () => {
+    enableMockDesktop(false);
+    nativeFocus.invoke.mockRejectedValue(new Error("Native focus unavailable"));
+    await focusCurrentWindowAndWebview();
+    expect(nativeFocus.invoke).toHaveBeenCalledWith("focus_main_document_window");
+    expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(1);
+    expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(1);
+  });
 
   function chainDocument() {
     return insertNativeSingleBondMolecule(createPhase4Document("Text label conversion"), { x: 300, y: 300 });

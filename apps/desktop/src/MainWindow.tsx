@@ -5549,15 +5549,18 @@ export function MainWindow({
 
   /**
    * Put keyboard focus in an inline canvas editor and keep it there while the native window
-   * settles: raise this window and its webview, then retry, because a palette or popover window
-   * can still hold key status for a frame or two after the editor mounts. Shared by the text-object
-   * and atom-label editors; only one inline editor is active at a time, so they share the timers.
+   * settles: if the app is active, return focus from its palette or popover to the document.
+   * Retry DOM focus as the editor mounts, without taking the foreground from another app.
+   * Shared by the text-object and atom-label editors; only one inline editor is active at a time,
+   * so they share the timers.
    */
   const scheduleInlineEditorFocus = useCallback((focusEditor: () => void) => {
     clearScheduledTextEditorFocus();
 
     const focusNativeSurfaceAndEditor = () => {
-      void focusCurrentWindowAndWebview().finally(focusEditor);
+      if (!window.document.hasFocus()) {
+        void focusCurrentWindowAndWebview({ onlyIfAppActive: true }).finally(focusEditor);
+      }
       focusEditor();
     };
 
@@ -5567,39 +5570,41 @@ export function MainWindow({
     );
   }, [clearScheduledTextEditorFocus]);
 
-  const focusTextObjectEditor = useCallback((objectId: string) => {
-    scheduleInlineEditorFocus(() => {
-      const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-        `[data-object-id="${objectId}"] .text-object-editor`
-      );
-      if (!editor) {
-        return;
-      }
+  const focusTextObjectEditorDom = useCallback((objectId: string) => {
+    const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
+      `[data-object-id="${objectId}"] .text-object-editor`
+    );
+    if (!editor) {
+      return;
+    }
 
-      window.focus();
-      editor.focus({ preventScroll: true });
-      if (editor.value === "Text") {
-        editor.select();
-      }
-    });
-  }, [scheduleInlineEditorFocus]);
+    editor.focus({ preventScroll: true });
+    if (editor.value === "Text") {
+      editor.select();
+    }
+  }, []);
+
+  const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
+    const editor = pageRef.current?.querySelector<HTMLInputElement>(
+      `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+    );
+    // Already focused: leave it, so a retry never moves the caret the user is typing at.
+    if (!editor || editor.ownerDocument.activeElement === editor) {
+      return;
+    }
+
+    editor.focus({ preventScroll: true });
+    const end = editor.value.length;
+    editor.setSelectionRange(end, end);
+  }, []);
+
+  const focusTextObjectEditor = useCallback((objectId: string) => {
+    scheduleInlineEditorFocus(() => focusTextObjectEditorDom(objectId));
+  }, [focusTextObjectEditorDom, scheduleInlineEditorFocus]);
 
   const focusAtomLabelEditor = useCallback((objectId: string, atomId: string) => {
-    scheduleInlineEditorFocus(() => {
-      const editor = pageRef.current?.querySelector<HTMLInputElement>(
-        `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
-      );
-      // Already focused: leave it, so a retry never moves the caret the user is typing at.
-      if (!editor || editor.ownerDocument.activeElement === editor) {
-        return;
-      }
-
-      window.focus();
-      editor.focus({ preventScroll: true });
-      const end = editor.value.length;
-      editor.setSelectionRange(end, end);
-    });
-  }, [scheduleInlineEditorFocus]);
+    scheduleInlineEditorFocus(() => focusAtomLabelEditorDom(objectId, atomId));
+  }, [focusAtomLabelEditorDom, scheduleInlineEditorFocus]);
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
@@ -9557,19 +9562,20 @@ export function MainWindow({
   }, [atomLabelEditAtomId, atomLabelEditObjectId, clearScheduledTextEditorFocus, focusAtomLabelEditor]);
 
   // Startup retries are finite. Resume a surviving edit even if another app window held focus
-  // longer than those retries, for both kinds of inline editor.
+  // longer than those retries, for both kinds of inline editor. The window is already focused:
+  // restore only DOM focus, never schedule another native raise in response to a focus event.
   useEffect(() => {
     const resumeInlineEditor = () => {
       const atomEdit = activeAtomLabelEditRef.current;
       if (atomEdit) {
-        focusAtomLabelEditor(atomEdit.objectId, atomEdit.atomId);
+        focusAtomLabelEditorDom(atomEdit.objectId, atomEdit.atomId);
       } else if (activeTextEditObjectIdRef.current) {
-        focusTextObjectEditor(activeTextEditObjectIdRef.current);
+        focusTextObjectEditorDom(activeTextEditObjectIdRef.current);
       }
     };
     window.addEventListener("focus", resumeInlineEditor);
     return () => window.removeEventListener("focus", resumeInlineEditor);
-  }, [focusAtomLabelEditor, focusTextObjectEditor]);
+  }, [focusAtomLabelEditorDom, focusTextObjectEditorDom]);
 
   // The one place an atom-label edit's close is handled. Dozens of paths end an edit by clearing
   // `activeAtomLabelEdit` directly — a tool picked in the palette, a palette command, a click on the
