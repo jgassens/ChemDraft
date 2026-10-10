@@ -125,7 +125,9 @@ describe("abbreviation valence", () => {
       const graph = ringWith("OMe", labelLiteral ? { labelLiteral: true } : {});
       const state = stateOf(graph, "r1");
       expect(state.valid).toBe(false);
-      expect(state.invalidReason).toContain("\"OMe\" attaches by 1 bond; atom r1 has 2.");
+      // Short for the status line; the long form, with the atom id, is for logs and warnings.
+      expect(state.invalidReason).toBe("OMe attaches by 1 bond; this atom has 2.");
+      expect(state.invalidDetail).toContain("\"OMe\" attaches by 1 bond; atom r1 has 2.");
       // An oxonium is the charge that would make the drawing valid.
       expect(state.expectedFormalCharge).toBe(1);
     }
@@ -154,7 +156,8 @@ describe("abbreviation valence", () => {
     const lone = { atoms: [atom("a1", "OMe", 0, 0)], bonds: [] };
     const state = stateOf(lone, "a1");
     expect(state.valid).toBe(false);
-    expect(state.invalidReason).toContain("\"OMe\" attaches by 1 bond; atom a1 has 0.");
+    expect(state.invalidReason).toBe("OMe attaches by 1 bond; this atom has 0.");
+    expect(state.invalidDetail).toContain("\"OMe\" attaches by 1 bond; atom a1 has 0.");
     expect(state.expectedFormalCharge).toBe(-1);
     // Methoxide: valid, and counted as the real CH3O⁻.
     const methoxide = { atoms: [atom("a1", "OMe", 0, 0, { formalCharge: -1 })], bonds: [] };
@@ -175,7 +178,8 @@ describe("abbreviation valence", () => {
     };
     const state = stateOf(twoBonds, "m1");
     expect(state.valid).toBe(false);
-    expect(state.invalidReason).toContain("\"MgBr\" attaches by 1 bond; atom m1 has 2.");
+    expect(state.invalidReason).toBe("MgBr attaches by 1 bond; this atom has 2.");
+    expect(state.invalidDetail).toContain("\"MgBr\" attaches by 1 bond; atom m1 has 2.");
   });
 
   it("reads composite labels: an element carrying abbreviations", () => {
@@ -186,10 +190,12 @@ describe("abbreviation valence", () => {
     // A ring "NMe" (N-methyl) takes its two ring bonds.
     expect(stateOf(ringWith("NMe"), "r1").valid).toBe(true);
     // A terminal "NMe" is short a bond, and says by how many.
-    expect(stateOf(methylWith("NMe"), "g1").invalidReason).toContain("\"NMe\" attaches by 2 bonds; atom g1 has 1.");
+    expect(stateOf(methylWith("NMe"), "g1").invalidReason).toBe("NMe attaches by 2 bonds; this atom has 1.");
+    expect(stateOf(methylWith("NMe"), "g1").invalidDetail).toContain("\"NMe\" attaches by 2 bonds; atom g1 has 1.");
     // A trimethylammonium needs its + charge.
     const neutral = stateOf(methylWith("NMe3"), "g1");
-    expect(neutral.invalidReason).toContain("\"NMe3\" is complete by itself and takes no bonds; atom g1 has 1.");
+    expect(neutral.invalidReason).toBe("NMe3 takes no bonds; this atom has 1.");
+    expect(neutral.invalidDetail).toContain("\"NMe3\" is complete by itself and takes no bonds; atom g1 has 1.");
     expect(neutral.expectedFormalCharge).toBe(1);
     expect(stateOf(methylWith("NMe3", { formalCharge: 1 }), "g1").valid).toBe(true);
   });
@@ -207,13 +213,25 @@ describe("unrecognized labels", () => {
     const state = stateOf(graph, "g1");
     expect(state.valid).toBe(false);
     expect(state.unrecognizedLabel).toBe(true);
-    expect(state.invalidReason).toContain(`Label "${label}" on atom g1 is not an element, a condensed formula or a known abbreviation`);
-    expect(state.invalidReason).toContain("did you mean \"OMe\"?");
+    // The owner's wording: short, the hint first, no atom id on screen.
+    expect(state.invalidReason).toBe(`${label} isn't a known group. Did you mean OMe?`);
+    expect(state.invalidDetail).toContain(`Label "${label}" on atom g1 is not an element, a condensed formula or a known abbreviation`);
+    expect(state.invalidDetail).toContain("did you mean \"OMe\"?");
     const metadata = nativeSingleBondGraphMetadata(graph.atoms, graph.bonds);
     // The carbon keeps its three hydrogens; the text counts nothing.
     expect(metadata.formula).toBe("CH3");
-    expect(metadata.warnings).toEqual([expect.objectContaining({ code: "chemistry.unrecognized_label", objectId: "g1" })]);
+    // Warnings are the log: they carry the long form, atom id included.
+    expect(metadata.warnings).toEqual([expect.objectContaining({
+      code: "chemistry.unrecognized_label", objectId: "g1", message: state.invalidDetail
+    })]);
     expect(nativeMoleculeUnspellableLabels(molecule(graph.atoms, graph.bonds))).toEqual([label]);
+  });
+
+  it("keeps the status-line reason short without a hint, and for a charge no bond count fixes", () => {
+    expect(stateOf(methylWith("Foo"), "g1").invalidReason).toBe("Foo isn't an element or a known group.");
+    const neutral = stateOf(methylWith("NBu4"), "g1");
+    expect(neutral.invalidReason).toBe("NBu4 can't be neutral with any number of bonds.");
+    expect(neutral.invalidDetail).toContain("\"NBu4\" on atom g1 cannot be neutral: no number of bonds completes it.");
   });
 
   it("leaves placeholders, condensed formulas and heavy hydrogen unflagged", () => {
@@ -335,7 +353,8 @@ describe("typed, bonded Ac, Pr and Ts are groups", () => {
     };
     const state = stateOf(graph, "t1");
     expect(state.valid).toBe(false);
-    expect(state.invalidReason).toContain("\"Ts\" attaches by 1 bond; atom t1 has 2.");
+    expect(state.invalidReason).toBe("Ts attaches by 1 bond; this atom has 2.");
+    expect(state.invalidDetail).toContain("\"Ts\" attaches by 1 bond; atom t1 has 2.");
     const metadata = nativeSingleBondGraphMetadata(graph.atoms, graph.bonds);
     expect(metadata.formula).toBe("C2H6");
     expect(nativeSingleBondGraphSmiles(graph.atoms, graph.bonds)).toBe("C[*]C");

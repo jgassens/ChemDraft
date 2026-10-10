@@ -87,7 +87,10 @@ describe("the owner's report: OMe on a ring carbon", () => {
       const states = nativeMoleculeInvalidAtomStates(selectedMolecule(labeled));
       expect(states).toHaveLength(1);
       expect(states[0]).toMatchObject({ atomId: ringAtomId, expectedFormalCharge: 1 });
-      expect(states[0]!.invalidReason).toContain(`"OMe" attaches by 1 bond; atom ${ringAtomId} has 2.`);
+      // The status line shows the short reason, with no internal atom id (owner's check on #83).
+      expect(states[0]!.invalidReason).toBe("OMe attaches by 1 bond; this atom has 2.");
+      expect(states[0]!.invalidReason).not.toContain(ringAtomId);
+      expect(states[0]!.invalidDetail).toContain(`"OMe" attaches by 1 bond; atom ${ringAtomId} has 2.`);
     }
   });
 
@@ -103,7 +106,9 @@ describe("the owner's report: OMe on a ring carbon", () => {
     for (const label of ["Ome", "OME", "ome"]) {
       const molecule = selectedMolecule(relabel(ethane, "atom_002", label, { literal: true }));
       expect(molecule.atoms[1]!.element).toBe(label);
-      expect(nativeMoleculeInvalidAtomStates(molecule)).toMatchObject([{ atomId: "atom_002", unrecognizedLabel: true }]);
+      expect(nativeMoleculeInvalidAtomStates(molecule)).toMatchObject([{
+        atomId: "atom_002", unrecognizedLabel: true, invalidReason: `${label} isn't a known group. Did you mean OMe?`
+      }]);
       expect(molecule.chemistry?.formula).toBe("CH3");
     }
     // ...while OMe on the chain end is valid methyl ether.

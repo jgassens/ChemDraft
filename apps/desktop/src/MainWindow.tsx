@@ -2025,13 +2025,19 @@ export function MainWindow({
     hoveredNativeAtomStateRef.current = hoveredNativeAtom;
   }, [hoveredNativeAtom]);
   const [hoveredNativeDeleteTarget, setHoveredNativeDeleteTarget] = useState<NativeMoleculeDeleteTarget | undefined>();
-  const hoveredNativeWarning = useMemo(() => {
+  const hoveredNativeInvalidState = useMemo(() => {
     if (hoveredNativeDeleteTarget?.kind !== "atom") return undefined;
     const molecule = findDocumentObject(document, hoveredNativeDeleteTarget.objectId);
     return molecule?.type === "molecule"
-      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)?.invalidReason
+      ? nativeMoleculeInvalidAtomStates(molecule).find((state) => state.atomId === hoveredNativeDeleteTarget.atomId)
       : undefined;
   }, [document, hoveredNativeDeleteTarget]);
+  // The status line gets the short reason; the long form, with the atom id, goes to the log.
+  const hoveredNativeWarning = hoveredNativeInvalidState?.invalidReason;
+  const hoveredNativeWarningDetail = hoveredNativeInvalidState?.invalidDetail;
+  useEffect(() => {
+    if (hoveredNativeWarningDetail) console.info(hoveredNativeWarningDetail);
+  }, [hoveredNativeWarningDetail]);
   // The ghost of the ring a template click would place (fuse / spiro / standalone / closure),
   // rendered from the same plan the click commits so preview and result can never diverge.
   const [templatePreview, setTemplatePreview] = useState<NativeTemplatePlacementPlan | undefined>();

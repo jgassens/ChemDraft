@@ -63,7 +63,14 @@ export interface NativeAtomValidationState {
   formalCharge: number;
   expectedFormalCharge?: number;
   valid: boolean;
+  /** Why the badge shows, short enough for the status line ("OMe attaches by 1 bond; this atom has 2."). */
   invalidReason?: string;
+  /**
+   * The long form of `invalidReason`, naming the atom id and what the label counts as until it is
+   * fixed: for logs, export warnings and agents, never the status line (AGENTS.md §13). Set by the
+   * label checks; the older valence reasons carry their atom id in `invalidReason` itself.
+   */
+  invalidDetail?: string;
   /**
    * Set when the atom sits on aromatic bonds that could not be resolved into a Kekulé pattern: its
    * valence was counted with those bonds as single, which is a guess the badge has to show.
@@ -395,7 +402,10 @@ export function nativeAtomValidationState(
         formalCharge: effectiveFormalCharge,
         valid: false,
         unrecognizedLabel: true,
-        invalidReason: `Label "${symbol}" on atom ${atom.id} is not an element, a condensed formula or a known abbreviation, so it is text, not structure: it counts nothing in the formula and exports as a placeholder.${
+        invalidReason: reading.suggestion
+          ? `${symbol} isn't a known group. Did you mean ${reading.suggestion}?`
+          : `${symbol} isn't an element or a known group.`,
+        invalidDetail: `Label "${symbol}" on atom ${atom.id} is not an element, a condensed formula or a known abbreviation, so it is text, not structure: it counts nothing in the formula and exports as a placeholder.${
           reading.suggestion ? ` Abbreviations are case-sensitive; did you mean "${reading.suggestion}"?` : ""
         }`
       };
@@ -764,11 +774,21 @@ function nativeLabelGroupValidationState(
     return { atomId: atom.id, element: symbol, valenceUsed, formalCharge: effectiveFormalCharge, valid: true };
   }
   const expected = verdict.expectedBondCount;
+  const charge = effectiveFormalCharge === 0
+    ? "be neutral"
+    : `carry charge ${effectiveFormalCharge > 0 ? "+" : ""}${effectiveFormalCharge}`;
+  const bonds = `${expected} bond${expected === 1 ? "" : "s"}`;
+  // Short for the status line, which shows the hovered atom ("this atom"); the detail names it.
+  const reason = expected === undefined
+    ? `${symbol} can't ${charge} with any number of bonds.`
+    : expected === 0
+      ? `${symbol} takes no bonds; this atom has ${valenceUsed}.`
+      : `${symbol} attaches by ${bonds}; this atom has ${valenceUsed}.`;
   const problem = expected === undefined
-    ? `"${symbol}" on atom ${atom.id} cannot carry charge ${effectiveFormalCharge}: no number of bonds completes it.`
+    ? `"${symbol}" on atom ${atom.id} cannot ${charge}: no number of bonds completes it.`
     : expected === 0
       ? `"${symbol}" is complete by itself and takes no bonds; atom ${atom.id} has ${valenceUsed}.`
-      : `"${symbol}" attaches by ${expected} bond${expected === 1 ? "" : "s"}; atom ${atom.id} has ${valenceUsed}.`;
+      : `"${symbol}" attaches by ${bonds}; atom ${atom.id} has ${valenceUsed}.`;
   return {
     atomId: atom.id,
     element: symbol,
@@ -778,7 +798,8 @@ function nativeLabelGroupValidationState(
       ? { expectedFormalCharge: verdict.expectedFormalCharge }
       : {}),
     valid: false,
-    invalidReason: `${problem} Until it does, the group counts nothing in the formula and exports as a placeholder.`
+    invalidReason: reason,
+    invalidDetail: `${problem} Until it does, the group counts nothing in the formula and exports as a placeholder.`
   };
 }
 
@@ -1251,7 +1272,7 @@ function nativeInvalidAtomWarnings(
         : state.tautomerGuessed
           ? "chemistry.aromatic_tautomer_guessed"
           : state.unrecognizedLabel ? "chemistry.unrecognized_label" : "chemistry.invalid_valence",
-      message: state.invalidReason ?? `${state.element} atom ${state.atomId} has invalid valence.`,
+      message: state.invalidDetail ?? state.invalidReason ?? `${state.element} atom ${state.atomId} has invalid valence.`,
       objectId: state.atomId
     }));
 }
