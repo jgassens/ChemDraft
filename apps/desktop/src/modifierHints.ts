@@ -3,6 +3,7 @@ import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 
 export type ModifierHintInteraction =
   | "idle" | "rotate-drag" | "resize-drag" | "move-drag" | "bond-drag"
+  | "placement-drag"
   | "marquee" | "lasso" | "measure-drag" | "arrowhead-drag" | "other-drag";
 
 export interface ModifierHintContext {
@@ -55,6 +56,10 @@ export function modifierHint(
   };
 
   switch (context.interaction) {
+    case "placement-drag":
+      return held.altKey
+        ? `Free angle — release ${alt} to snap to 15°`
+        : `Snaps to 15° · ${alt}: free angle`;
     case "rotate-drag":
       return shiftHint("snap to 15° steps", "Snapping to 15°", "for free rotation");
     case "resize-drag":

@@ -22,6 +22,12 @@ describe.each(["macos", "windows"] as const)("modifier hints on %s", (platform) 
     expect(hint({ interaction: "rotate-drag" }, { shiftKey: true })).toBe(`Snapping to 15° — release ${shift} for free rotation`);
   });
 
+  it("describes default placement snapping and Alt/Option free placement", () => {
+    expect(hint({ interaction: "placement-drag" })).toBe(`Snaps to 15° · ${alt}: free angle`);
+    expect(hint({ interaction: "placement-drag" }, { altKey: true })).toBe(`Free angle — release ${alt} to snap to 15°`);
+    expect(hint({ interaction: "placement-drag" }, { shiftKey: true, altKey: true })).toContain("Free angle");
+  });
+
   it("describes independent stretching and proportional resizing", () => {
     expect(hint({ interaction: "resize-drag" })).toBe(`${shift}: stretch width and height independently`);
     expect(hint({ interaction: "resize-drag" }, { shiftKey: true })).toContain(`release ${shift} for proportional resizing`);

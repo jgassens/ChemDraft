@@ -153,6 +153,29 @@ export interface FreeformBondExtensionPlanningInput {
   customLengthBreakawayDistance?: number;
   forceCustomLength?: boolean;
   snapHitRadius?: number;
+  /** Placement may supply an absolute aim and keep new bonds at the standard length. */
+  directionDegrees?: number;
+  standardLength?: boolean;
+}
+
+/** Absolute pointer aim in the page coordinate system, shared by placement tools. */
+export function placementAimDegrees(start: LayoutPoint, end: LayoutPoint): number {
+  return Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI;
+}
+
+/** Turn a vertex plan about its first vertex so its first bond has the requested absolute aim. */
+export function aimPlacementVertices(
+  points: readonly LayoutPoint[],
+  degrees: number,
+  bounds?: LayoutBounds
+): LayoutPoint[] {
+  if (points.length < 2) return [...points];
+  const origin = points[0];
+  const angle = (degrees - placementAimDegrees(origin, points[1])) * Math.PI / 180;
+  const aimed = points.map((point) => rotatePoint(point, origin, angle));
+  const outside = aimed.findIndex((point) => bounds &&
+    (point.x < bounds.x || point.y < bounds.y || point.x > bounds.x + bounds.width || point.y > bounds.y + bounds.height));
+  return outside < 0 ? aimed : aimed.slice(0, outside);
 }
 
 export interface AtomHitPlanningInput {
@@ -277,8 +300,8 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
   }
 
   const breakawayDistance = input.customLengthBreakawayDistance ?? input.bondLength * 1.4;
-  const lengthMode = input.forceCustomLength || pointerDistance >= breakawayDistance ? "custom" : "default";
-  const snapTarget = lengthMode === "custom"
+  const lengthMode = input.forceCustomLength || (!input.standardLength && pointerDistance >= breakawayDistance) ? "custom" : "default";
+  const snapTarget = lengthMode === "custom" || input.standardLength
     ? nearestFreeformSnapTarget({
         atoms: input.atoms,
         bonds: input.bonds,
@@ -307,16 +330,23 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     };
   }
 
-  const pointerDirection = normalize({
-    x: input.endPoint.x - source.x,
-    y: input.endPoint.y - source.y
-  });
-  const plannedEndPoint = lengthMode === "custom"
+  const pointerDirection = input.directionDegrees !== undefined
+    ? directionFromAngle(input.directionDegrees * Math.PI / 180)
+    : normalize({
+        x: input.endPoint.x - source.x,
+        y: input.endPoint.y - source.y
+      });
+  const plannedLength = lengthMode === "custom" ? pointerDistance : input.bondLength;
+  const plannedEndPoint = lengthMode === "custom" && input.directionDegrees === undefined
     ? input.endPoint
     : {
-        x: source.x + pointerDirection.x * input.bondLength,
-        y: source.y + pointerDirection.y * input.bondLength
+        x: source.x + pointerDirection.x * plannedLength,
+        y: source.y + pointerDirection.y * plannedLength
       };
+  // A placement at the edge must decline rather than shorten a standard bond or skew its aim.
+  if (input.standardLength && lengthMode === "default" && !pointInsideExpandedBounds(plannedEndPoint, input.pageBounds, 0)) {
+    return undefined;
+  }
   const newAtomPoint = clampPointToBounds(plannedEndPoint, input.pageBounds);
   const direction = normalize({
     x: newAtomPoint.x - source.x,

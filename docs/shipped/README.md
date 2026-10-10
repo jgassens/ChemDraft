@@ -41,10 +41,15 @@ to behave the same on macOS and Windows; Windows hands-on verification is pendin
 
 - **Drawing interaction fixes.** Whole-object rotation magnetically snaps to absolute 15° multiples,
   while holding Shift during a drag constrains it to those absolute multiples; group rotation uses
-  15° drag increments. A subtle status-line segment describes the available modifier functions for
+  15° drag increments. Held-mouse bond, ring, and template placement aiming snaps to absolute 15°
+  multiples by default, with Alt/Option for a free angle. Straight and flexible chains snap their first bond;
+  new bonds retain the standard length, clicks retain the fixed geometry, and release commits the
+  displayed preview in one undo entry. Existing-atom connections retain their endpoint targeting.
+  A subtle status-line modifier segment describes the available functions for
   the current tool, hover, or drag, updates on key presses/releases, clears held keys on blur, and
   hides during inline editing while preserving result messages. Key labels follow macOS and Windows
-  conventions. A normal click selects and places a ring;
+  conventions, with symbol-only modifier labels on macOS (⇧, ⌥, ⌘) and word labels on Windows.
+  A normal click selects and places a ring;
   a long toolbar press opens its flyout; a ring that cannot attach is placed separately with an
   accurate status message. Typing OMe, CF3, NO2, and other labels over a hovered atom continues the
   label rather than activating a canvas shortcut, including during IME composition, and a text-box

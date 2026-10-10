@@ -1,4 +1,5 @@
 import { snapRotationDegrees } from "./rotationSnap";
+import { snapPlacementDegrees } from "./placementSnap";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
@@ -165,6 +166,7 @@ import {
   planMoleculeAtomLabels,
   planPageSvgRender,
   planNativeArtVisual,
+  placementAimDegrees,
   sameBondRef,
   styleColorMapValue,
   textObjectSpansForRendering,
@@ -346,6 +348,7 @@ import {
 } from "./clipboard";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+  aimNativeSingleBondPlacement,
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
@@ -863,7 +866,8 @@ type NativeBondDragState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
-  freeformUnlocked: boolean;
+  connectsForeignAtom: boolean;
+  altKey: boolean;
 };
 type NativePlacementDragState = {
   pointerId: number;
@@ -883,6 +887,7 @@ type NativePlacementDragState = {
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
   dragging: boolean;
+  altKey: boolean;
 };
 type NativeBondEditDragState = {
   pointerId: number;
@@ -1479,7 +1484,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.13.20-codex";
+const CURRENT_BUILD_STAMP = "10.10.15.40-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11130,6 +11135,7 @@ export function MainWindow({
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
+      altKey: event.altKey,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
@@ -11230,12 +11236,14 @@ export function MainWindow({
     atomId: string,
     point: ClientPoint,
     forceCustomLength: boolean,
-    bondStyle?: NativeBondDisplayStyle
+    bondStyle?: NativeBondDisplayStyle,
+    placementAltKey = false
   ) => {
     const previousMolecule = findDocumentObject(sourceDocument, objectId);
     const nextDocument = applyFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
       forceCustomLength,
-      bondStyle
+      bondStyle,
+      placementAltKey
     });
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
@@ -11435,11 +11443,9 @@ export function MainWindow({
       foreignTarget?.atomPoint ?? point,
       page.width,
       page.height,
-      { forceCustomLength: drag.freeformUnlocked || foreignTarget !== undefined }
+      { forceCustomLength: foreignTarget !== undefined, placementAltKey: drag.altKey }
     );
-    if (preview?.customLength) {
-      drag.freeformUnlocked = true;
-    }
+    drag.connectsForeignAtom = foreignTarget !== undefined;
     setFreeformNativeBond(preview ? {
       objectId: molecule.id,
       atomId: preview.atomId,
@@ -11497,6 +11503,9 @@ export function MainWindow({
       // pointer sets the head, so length and angle follow the drag (identical to ChemDraw's arrow).
       return applyNativeArtLineToolAtPoint(drag.startDocument, drag.startPoint, point, drag.artLineCommandId);
     }
+    if (drag.kind === "single-bond") {
+      return aimNativeSingleBondPlacement(drag.placementDocument, drag.objectId, drag.startPoint, point, drag.altKey);
+    }
     if (drag.kind === "chain") {
       // Chains regenerate from the start document each move: the drag vector sets axis and
       // segment count, so the whole zig-zag is recomputed rather than transformed.
@@ -11515,18 +11524,20 @@ export function MainWindow({
         }
         return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
           preview: options.preview,
+          placementAltKey: drag.altKey,
           pathPoints: [...drag.chainPath, point]
         });
       }
       return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
-        preview: options.preview
+        preview: options.preview,
+        placementAltKey: drag.altKey
       });
     }
     return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
       drag.objectId,
       drag.startPoint,
-      nativePlacementRotationDegrees(drag.startPoint, point)
+      snapPlacementDegrees(nativePlacementRotationDegrees(drag.startPoint, point), drag.altKey)
     );
   }, []);
 
@@ -11535,7 +11546,8 @@ export function MainWindow({
     replacePresentDocument(nativePlacementDocumentFromDrag(drag, point));
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
-  const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint): boolean => {
+  const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
+    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -13586,6 +13598,7 @@ export function MainWindow({
       }
 
       nativePlacementDrag.latestPoint = point;
+      nativePlacementDrag.altKey = event.altKey;
       placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = placementMachineRef.current.phase === "dragging";
       if (!nativePlacementDrag.dragging && nowDragging) {
@@ -13931,8 +13944,7 @@ export function MainWindow({
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
-      const changed = commitNativePlacementDrag(nativePlacementDrag, point);
+      const changed = commitNativePlacementDrag(nativePlacementDrag, pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
       const draggedVerb = nativePlacementDrag.kind === "arrow" || nativePlacementDrag.kind === "art-line"
         ? "Inserted angled"
@@ -15127,7 +15139,8 @@ export function MainWindow({
         startPoint: point,
         latestPoint: point,
         dragging: false,
-        freeformUnlocked: false
+        connectsForeignAtom: false,
+        altKey: event.altKey
       };
       captureElement.setPointerCapture(event.pointerId);
       setHoveredNativeAtom({
@@ -16518,6 +16531,7 @@ export function MainWindow({
       }
 
       if (drag.dragging) {
+        drag.altKey = event.altKey;
         updateFreeformBondPreview(document, drag, point);
       } else {
         updateBondGrowthPreview(document, point);
@@ -16715,7 +16729,7 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
     const selectedDocument = selectDocumentObject(document, objectId);
     if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, point, drag.freeformUnlocked, drag.bondStyle);
+      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
     } else {
       applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle);
     }
@@ -17139,7 +17153,9 @@ export function MainWindow({
     else if (selectionLassoRef.current) interaction = "lasso";
     else if (selectionMarqueeRef.current) interaction = "marquee";
     else if (objectDragRef.current || nativePartDragRef.current) interaction = "move-drag";
-    else if (nativeBondDragRef.current || nativeBondEditDragRef.current) interaction = "bond-drag";
+    else if (nativeBondDragRef.current ||
+      (nativePlacementDragRef.current && ["single-bond", "template", "chain"].includes(nativePlacementDragRef.current.kind))) interaction = "placement-drag";
+    else if (nativeBondEditDragRef.current) interaction = "bond-drag";
     else if (
       groupTransformDragRef.current || projectedPlaneTiltDragRef.current || nativePlacementDragRef.current ||
       graphicPathEditDragRef.current || graphicGradientDragRef.current || graphicCornerRadiusDragRef.current ||
@@ -19701,7 +19717,7 @@ export function nativePlacementRotationDegrees(start: ClientPoint, latest: Clien
     return 0;
   }
 
-  return Number((Math.atan2(dy, dx) * 180 / Math.PI).toFixed(3));
+  return placementAimDegrees(start, latest);
 }
 
 export function projectedPlaneTiltRadiansFromDrag(start: ClientPoint, latest: ClientPoint): number {

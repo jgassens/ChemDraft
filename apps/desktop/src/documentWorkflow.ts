@@ -1,4 +1,5 @@
 import { snapRotationDegrees } from "./rotationSnap";
+import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
   editGraphicMarkerSize,
@@ -117,6 +118,8 @@ import {
   type TextExportResult
 } from "@chemdraft/export-engine";
 import {
+  aimPlacementVertices,
+  placementAimDegrees,
   findNearestAtomAtPoint,
   findNearestBondHit,
   moleculeFillCycleKey,
@@ -680,6 +683,8 @@ export interface NativeBondToolOptions {
 
 export interface NativeFreeformBondGrowthOptions extends NativeBondToolOptions {
   forceCustomLength?: boolean;
+  /** Present only for new-bond placement; legacy freeform editing retains its length behavior. */
+  placementAltKey?: boolean;
 }
 
 /**
@@ -981,12 +986,43 @@ export function insertNativeSingleBondMolecule(
   );
 }
 
+/** Drag placement fixes the first atom at the press and aims one standard-length bond. */
+export function aimNativeSingleBondPlacement(
+  document: ChemDraftDocument,
+  objectId: string,
+  start: PagePoint,
+  end: PagePoint,
+  altKey: boolean
+): ChemDraftDocument {
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === objectId && object.type === "molecule"
+  );
+  if (!molecule || molecule.atoms.length !== 2) return document;
+  const source = { ...molecule.atoms[0], x: start.x, y: start.y };
+  const page = firstPage(document);
+  const plan = planFreeformBondExtension({
+    atoms: [source], bonds: [], sourceAtomId: source.id, endPoint: end,
+    bondLength: nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx,
+    minimumBondLength: 0, standardLength: true,
+    directionDegrees: snapPlacementDegrees(placementAimDegrees(start, end), altKey),
+    pageBounds: { x: 0, y: 0, width: page.width, height: page.height }
+  });
+  if (!plan) return document;
+  const atoms = [source, { ...molecule.atoms[1], ...plan.newAtomPoint }];
+  return applyPatches(document, [{
+    op: "updateObject", objectId,
+    changes: normalizeNativeMoleculeGeometry({ ...molecule, ...moleculeGeometryFromAtoms(atoms), atoms })
+  }], { now: phase4Timestamp });
+}
+
 export interface NativeChainAnchor {
   objectId: string;
   atomId: string;
 }
 
 export interface NativeChainToolOptions {
+  /** Placement snaps the first bond; Alt/Option leaves the planned chain free. */
+  placementAltKey?: boolean;
   /**
    * Skip the chemistry derivation for a frame the user is still dragging.
    *
@@ -1180,16 +1216,24 @@ function planChainVerticesForOptions(
   },
   options: NativeChainToolOptions
 ): PagePoint[] {
+  const aim = (vertices: PagePoint[]) => {
+    if (options.placementAltKey === undefined || options.placementAltKey || vertices.length < 2) return vertices;
+    return aimPlacementVertices(
+      vertices,
+      snapPlacementDegrees(placementAimDegrees(vertices[0], vertices[1])),
+      input.pageBounds ? { x: 0, y: 0, ...input.pageBounds } : undefined
+    );
+  };
   if (options.pathPoints && options.pathPoints.length >= 2) {
-    return planNativeFlexibleChainVertices({
+    return aim(planNativeFlexibleChainVertices({
       start: input.start,
       path: options.pathPoints,
       bondLengthPx: input.bondLengthPx,
       chainAngleDegrees: input.chainAngleDegrees,
       pageBounds: input.pageBounds
-    });
+    }));
   }
-  return planNativeChainVertices(input);
+  return aim(planNativeChainVertices(input));
 }
 
 /** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
@@ -8810,6 +8854,10 @@ export function previewNativeMoleculeFreeformBondGrowth(
     minimumBondLength: freeformMinimumBondLength,
     customLengthBreakawayDistance: freeformCustomLengthBreakawayDistance,
     forceCustomLength: options.forceCustomLength,
+    standardLength: options.placementAltKey !== undefined,
+    directionDegrees: options.placementAltKey === undefined || options.forceCustomLength
+      ? undefined
+      : snapPlacementDegrees(placementAimDegrees(sourceAtom, point), options.placementAltKey),
     snapHitRadius: atomHitRadius
   });
   if (!extension) {

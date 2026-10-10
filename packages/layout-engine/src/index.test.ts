@@ -31,6 +31,8 @@ import {
   planPageSvgRender,
   planMoleculeAtomLabels,
   planFreeformBondExtension,
+  aimPlacementVertices,
+  placementAimDegrees,
   planReactionArrowGeometry,
   bracketGlyphPathD,
   ringInteriorDoubleBondSides,
@@ -370,6 +372,37 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.newAtomPoint.y).toBeCloseTo(248.436, 3);
     expect(plan?.direction.x).toBeCloseTo(0.935, 3);
     expect(plan?.direction.y).toBeCloseTo(0.355, 3);
+  });
+
+  it("uses the supplied placement aim and standard length even past the old breakaway", () => {
+    const atoms = structuredClone(baseInput.atoms);
+    const bonds = structuredClone(baseInput.bonds);
+    const plan = planFreeformBondExtension({
+      ...baseInput, sourceAtomId: "atom_002", endPoint: { x: 500, y: 320 },
+      directionDegrees: 30, standardLength: true
+    })!;
+    expect(plan.lengthMode).toBe("default");
+    expect(placementAimDegrees(atoms[1], plan.newAtomPoint)).toBeCloseTo(30, 10);
+    expect(Math.hypot(plan.newAtomPoint.x - atoms[1].x, plan.newAtomPoint.y - atoms[1].y)).toBeCloseTo(80, 10);
+    expect(baseInput.atoms).toEqual(atoms);
+    expect(baseInput.bonds).toEqual(bonds);
+  });
+
+  it("declines standard-length placement outside the page instead of clipping the bond", () => {
+    expect(planFreeformBondExtension({
+      ...baseInput, sourceAtomId: "atom_002", endPoint: { x: 500, y: 320 },
+      directionDegrees: 0, standardLength: true,
+      pageBounds: { x: 0, y: 0, width: 280, height: 300 }
+    })).toBeUndefined();
+  });
+
+  it("aims a vertex plan while preserving lengths and stopping at the page edge", () => {
+    const points = [{ x: 40, y: 40 }, { x: 120, y: 40 }, { x: 160, y: 80 }];
+    const aimed = aimPlacementVertices(points, 30);
+    expect(placementAimDegrees(aimed[0], aimed[1])).toBeCloseTo(30, 10);
+    for (let i = 1; i < points.length; i++) expect(Math.hypot(aimed[i].x - aimed[i - 1].x, aimed[i].y - aimed[i - 1].y))
+      .toBeCloseTo(Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y), 10);
+    expect(aimPlacementVertices(points, 30, { x: 0, y: 0, width: 200, height: 90 })).toEqual(aimed.slice(0, 2));
   });
 
   it("breaks freeform growth into custom length only after a larger drag", () => {

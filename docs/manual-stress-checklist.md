@@ -85,8 +85,14 @@ replace it with a slice-scoped list, or the standing checklist is lost when that
 
 User-feedback surfaces added since: rotation snap on molecule, group, and art-object rotation —
 magnetic absolute 15° multiples for whole objects, exact absolute multiples when Shift is held
-mid-drag, and 15° increments for groups; a one-click ring placement, a short
-toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
+mid-drag, and 15° increments for groups; held-mouse placement of bonds (including wedge, hashed,
+dashed, and bold), rings, and templates snapping to absolute 15° multiples, with Alt/Option for
+free aiming on both macOS and Windows. Drag a bond from an atom and empty space toward 23°:
+the preview and released bond should both aim at 30°, or exactly 23° with Alt/Option held, at
+standard length. Toggle Alt/Option mid-drag, check the status hint (⌥ on macOS, Alt on Windows),
+and verify release matches the preview, click geometry stays unchanged, and one Undo removes
+the placement. Check straight and flexible chains' first bond snapping too; a one-click ring placement,
+a short toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
 placing separately with an accurate status message; OMe, CF3, and NO2 typed over a hovered atom
 building the label without activating the Eraser, including with an IME active; a text-box editor
 surviving focus moving to a palette flyout or popover and back; an orbital lobe placed on an atom
