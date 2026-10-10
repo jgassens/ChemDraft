@@ -11,10 +11,19 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 
+import { applyPatch } from "@chemdraft/chem-core";
 import {
   analysisFacingStructure,
   applyAnalysisToSelectedMolecule,
+  applyClipboardPastePayload,
+  applyEditorSaveResultToSelectedMolecule,
+  applyFreeformSingleBondToolAtPoint,
   applyNativeAtomElementTarget,
+  createSelectionClipboardPayload,
+  finishNativeAtomLabelEdit,
+  normalizeCommittedDocument,
+  pasteSelectionClipboardPayload,
+  selectDocumentObject,
   flattenSpunMolecule,
   validationFacingStructure,
   applyNativeMoleculeDeleteTarget,
@@ -343,6 +352,266 @@ describe("a cyano label keeps its meaning through layout", () => {
     const turned = objectOf(rotateDocumentObjectsAroundPoint(written, [objectId], centreOf(objectOf(written, objectId)), 180), objectId);
     expect(await canonical(turned)).toBe("CSC#N");
     expect(turned.chemistry?.formula).toBe("C2H3NS");
+  });
+});
+
+describe("every way a cyano label enters the document keeps its meaning when turned round", () => {
+  // Each path ends in MainWindow's commit funnel (normalizeCommittedDocument), as every in-app
+  // change does; each test then turns the molecule round (rotate 180°, itself committed through the
+  // funnel) and checks the reading did not follow the drawing.
+  const objectOf = (document: ChemDraftDocument, objectId: string): MoleculeObject =>
+    document.pages[0]!.objects.find((object): object is MoleculeObject => object.id === objectId)!;
+  const moleculesOf = (document: ChemDraftDocument): MoleculeObject[] =>
+    document.pages[0]!.objects.filter((object): object is MoleculeObject => object.type === "molecule");
+  const turnRound = (document: ChemDraftDocument, objectId: string): ChemDraftDocument => {
+    const molecule = objectOf(document, objectId);
+    const centre = {
+      x: molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length,
+      y: molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length
+    };
+    return normalizeCommittedDocument(rotateDocumentObjectsAroundPoint(document, [objectId], centre, 180));
+  };
+  /** Methyl thiocyanate typed on the right end of a bond (its bond on the left), then turned round. */
+  const writtenThenTurned = (): { document: ChemDraftDocument; objectId: string; labelAtomId: string } => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano Ingress"), { x: 300, y: 300 });
+    const right = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x)[1]!;
+    const written = normalizeCommittedDocument(relabel(ethane, right.id, "SCN", { literal: true }));
+    const objectId = selectedMolecule(written).id;
+    return { document: turnRound(written, objectId), objectId, labelAtomId: right.id };
+  };
+
+  it("through the commit funnel: a molecule added unrecorded (a plugin's patch, an agent command)", async () => {
+    // As a plugin or agent adds it: a chem-core addObject with a typed SCN and no recorded side.
+    const molecule = {
+      ...selectedMolecule(insertNativeSingleBondMolecule(createPhase4Document("Plugin"), { x: 300, y: 300 })),
+      id: "plugin_molecule"
+    };
+    const sorted = [...molecule.atoms].sort((first, second) => first.x - second.x);
+    const unrecorded: MoleculeObject = {
+      ...molecule,
+      atoms: molecule.atoms.map((atom) => (atom.id === sorted[1]!.id ? { ...atom, element: "SCN", labelLiteral: true } : atom))
+    };
+    const added = normalizeCommittedDocument(applyPatch(
+      createPhase4Document("Plugin Patch"),
+      { op: "addObject", pageId: createPhase4Document("Plugin Patch").pages[0]!.id, object: unrecorded }
+    ));
+    expect(objectOf(added, "plugin_molecule").atoms.find((atom) => atom.element === "SCN")!.labelBondSide)
+      .toMatchObject({ side: "left" });
+    expect(await canonical(objectOf(turnRound(added, "plugin_molecule"), "plugin_molecule"))).toBe("CSC#N");
+  });
+
+  it("through a MOL paste", async () => {
+    const molfile = [
+      "", "  ChemDraft", "",
+      "  0  0  0     0  0            999 V3000",
+      "M  V30 BEGIN CTAB",
+      "M  V30 COUNTS 2 1 0 0 0",
+      "M  V30 BEGIN ATOM",
+      "M  V30 1 C 0 0 0 0",
+      "M  V30 2 SCN 1 0 0 0",
+      "M  V30 END ATOM",
+      "M  V30 BEGIN BOND",
+      "M  V30 1 1 1 2",
+      "M  V30 END BOND",
+      "M  V30 END CTAB",
+      "M  END"
+    ].join("\n");
+    const pasted = applyClipboardPastePayload(createPhase4Document("MOL Paste"), {
+      kind: "molfile", format: "molfile-v3000", text: molfile, warnings: []
+    }, { x: 300, y: 300 });
+    const committed = normalizeCommittedDocument(pasted.document);
+    const objectId = moleculesOf(committed)[0]!.id;
+    expect(await canonical(objectOf(committed, objectId))).toBe("CSC#N");
+    expect(await canonical(objectOf(turnRound(committed, objectId), objectId))).toBe("CSC#N");
+  });
+
+  it("through a V2000 MOL paste, whose 3-character atom field takes a literal SCN", async () => {
+    const atomLine = (x: string, symbol: string) =>
+      `${x.padStart(10)}${"0.0000".padStart(10)}${"0.0000".padStart(10)} ${symbol.padEnd(3)} 0  0  0  0  0  0  0  0  0  0  0  0`;
+    const molfile = [
+      "", "  ChemDraft", "",
+      "  2  1  0  0  0  0  0  0  0  0999 V2000",
+      atomLine("0.0000", "C"),
+      atomLine("1.0000", "SCN"),
+      "  1  2  1  0",
+      "M  END"
+    ].join("\n");
+    const pasted = applyClipboardPastePayload(createPhase4Document("V2000 Paste"), {
+      kind: "molfile", format: "molfile-v2000", text: molfile, warnings: []
+    }, { x: 300, y: 300 });
+    const committed = normalizeCommittedDocument(pasted.document);
+    const objectId = moleculesOf(committed)[0]!.id;
+    expect(objectOf(committed, objectId).atoms.map((atom) => atom.element).sort()).toEqual(["C", "SCN"]);
+    expect(await canonical(objectOf(committed, objectId))).toBe("CSC#N");
+    expect(await canonical(objectOf(turnRound(committed, objectId), objectId))).toBe("CSC#N");
+  });
+
+  /** The molecule as the structure editor saves it: a V3000 of its atoms in order, y up. */
+  const editorV3000 = (molecule: MoleculeObject): string => [
+    "-INDIGO-", "", "  0  0  0  0  0  0  0  0  0  0  0 V3000",
+    "M  V30 BEGIN CTAB",
+    `M  V30 COUNTS ${molecule.atoms.length} ${molecule.bonds.length} 0 0 0`,
+    "M  V30 BEGIN ATOM",
+    ...molecule.atoms.map((atom, index) => `M  V30 ${index + 1} ${atom.element} ${(atom.x / 30).toFixed(4)} ${(-atom.y / 30).toFixed(4)} 0.0 0`),
+    "M  V30 END ATOM",
+    "M  V30 BEGIN BOND",
+    ...molecule.bonds.map((bond, index) => {
+      const from = molecule.atoms.findIndex((atom) => atom.id === bond.fromAtomId) + 1;
+      const to = molecule.atoms.findIndex((atom) => atom.id === bond.toAtomId) + 1;
+      return `M  V30 ${index + 1} 1 ${from} ${to}`;
+    }),
+    "M  V30 END BOND", "M  V30 END CTAB", "M  END"
+  ].join("\n");
+
+  it("through a structure-editor save that writes a new SCN label", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Editor Save"), { x: 300, y: 300 });
+    const selected = selectedMolecule(ethane);
+    const right = [...selected.atoms].sort((first, second) => first.x - second.x)[1]!;
+    // The editor hands back the molecule with its right-hand carbon now labelled SCN.
+    const edited = { ...selected, atoms: selected.atoms.map((atom) => (atom.id === right.id ? { ...atom, element: "SCN" } : atom)) };
+    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(ethane, {
+      object: { ...selected, structureFormat: "molfile-v3000", structure: editorV3000(edited) },
+      warnings: []
+    }));
+    expect(await canonical(objectOf(saved, selected.id))).toBe("CSC#N");
+    expect(await canonical(objectOf(turnRound(saved, selected.id), selected.id))).toBe("CSC#N");
+  });
+
+  it("through an unchanged structure-editor round trip of a turned-round molecule", async () => {
+    const { document, objectId } = writtenThenTurned();
+    const turned = objectOf(document, objectId);
+    // Opened in the editor and saved without changes: every atom comes back from the V3000, the
+    // SCN now drawn with its bond on the right. Its record is carried, so it stays a thiocyanate.
+    const selected = selectDocumentObject(document, objectId);
+    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(selected, {
+      object: { ...turned, structureFormat: "molfile-v3000", structure: editorV3000(turned) },
+      warnings: []
+    }));
+    expect(await canonical(objectOf(saved, objectId))).toBe("CSC#N");
+  });
+
+  it("through a native copy and paste", async () => {
+    const { document, objectId } = writtenThenTurned();
+    const selected = selectDocumentObject(document, objectId);
+    const payload = createSelectionClipboardPayload(selected)!;
+    const pasted = normalizeCommittedDocument(pasteSelectionClipboardPayload(selected, payload, { x: 500, y: 500 }));
+    const copy = moleculesOf(pasted).find((molecule) => molecule.id !== objectId)!;
+    expect(await canonical(copy)).toBe("CSC#N");
+    expect(await canonical(objectOf(turnRound(pasted, copy.id), copy.id))).toBe("CSC#N");
+  });
+
+  it("through opening a CDXML file with no embedded document", async () => {
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Cyano CDXML"), { x: 300, y: 300 });
+    const right = [...selectedMolecule(ethane).atoms].sort((first, second) => first.x - second.x)[1]!;
+    const contents = createNativeSavePayload(relabel(ethane, right.id, "SCN", { literal: true })).contents
+      .replace(/<objecttag[^>]*Name="org\.chemdraft\/native-document"[^>]*\/>/g, "");
+    const opened = openNativeDocument(contents);
+    expect(opened.source).toBe("external-cdxml");
+    const committed = normalizeCommittedDocument(opened.document!);
+    const objectId = moleculesOf(committed)[0]!.id;
+    expect(await canonical(objectOf(turnRound(committed, objectId), objectId))).toBe("CSC#N");
+  });
+
+  it("through a bond that merges the molecule into another (its ids are re-minted)", async () => {
+    const { document, objectId } = writtenThenTurned();
+    const withEthane = insertNativeSingleBondMolecule(document, { x: 120, y: 120 });
+    const ethaneId = moleculesOf(withEthane).find((molecule) => molecule.id !== objectId)!.id;
+    const ethaneAtom = objectOf(withEthane, ethaneId).atoms[0]!;
+    // The methyl carbon of the turned thiocyanate: the label's own neighbour keeps its one bond.
+    const methyl = objectOf(withEthane, objectId).atoms.find((atom) => atom.element === "C")!;
+    const merged = normalizeCommittedDocument(applyFreeformSingleBondToolAtPoint(withEthane, ethaneId, ethaneAtom.id, { x: methyl.x, y: methyl.y }));
+    expect(moleculesOf(merged)).toHaveLength(1);
+    const smiles = await canonical(moleculesOf(merged)[0]!);
+    expect(smiles).toContain("SC#N");
+    expect(smiles).not.toContain("*");
+  });
+
+  it("through Copy As MOL of two molecules at once (ids namespaced in the merged copy)", async () => {
+    const { document } = writtenThenTurned();
+    const withEthane = insertNativeSingleBondMolecule(document, { x: 120, y: 120 });
+    const scoped = { ...withEthane, selection: { ...withEthane.selection, objectIds: [] } };
+    const smiles = (await computeStructureIdentifiers(copyAsMolfile(scoped, "v3000")!))?.smiles;
+    expect(smiles?.split(".").sort()).toEqual(["CC", "CSC#N"]);
+  });
+
+  it("through a cancelled label edit", async () => {
+    const { document, objectId, labelAtomId } = writtenThenTurned();
+    const initial = objectOf(document, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
+    expect(initial.labelBondSide).toMatchObject({ side: "left" });
+    // A keystroke replaces the label (dropping its record); Escape puts it back as MainWindow does.
+    const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
+    const typed = normalizeCommittedDocument(applyNativeAtomElementTarget(document, target, "O", { literal: true }));
+    const cancelled = normalizeCommittedDocument(applyNativeAtomElementTarget(typed, target, "SCN", {
+      literal: true, labelBondSide: initial.labelBondSide
+    }));
+    expect(objectOf(cancelled, objectId).atoms.find((atom) => atom.id === labelAtomId)!.labelBondSide).toEqual(initial.labelBondSide);
+    expect(await canonical(objectOf(cancelled, objectId))).toBe("CSC#N");
+  });
+
+  it("through undo and redo: a committed document passes the funnel unchanged", () => {
+    const { document } = writtenThenTurned();
+    expect(normalizeCommittedDocument(document)).toBe(document);
+  });
+
+  it("through one edit session that ends on its starting text (SCN → O → SCN, Enter): unchanged", async () => {
+    const { document, objectId, labelAtomId } = writtenThenTurned();
+    const initialAtom = objectOf(document, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
+    const initial = { element: initialAtom.element, literal: true, labelBondSide: initialAtom.labelBondSide };
+    const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
+    // Each keystroke is committed through the funnel, as MainWindow's label editor does.
+    const typedO = normalizeCommittedDocument(applyNativeAtomElementTarget(document, target, "O", { literal: true }));
+    const typedBack = normalizeCommittedDocument(applyNativeAtomElementTarget(typedO, target, "SCN", { literal: true }));
+    // Without the finish, the retyped label would be read from the turned-round drawing.
+    expect(await canonical(objectOf(typedBack, objectId))).not.toContain("#");
+    const finished = normalizeCommittedDocument(finishNativeAtomLabelEdit(typedBack, target, initial));
+    expect(objectOf(finished, objectId).atoms.find((atom) => atom.id === labelAtomId)!.labelBondSide).toEqual(initial.labelBondSide);
+    expect(await canonical(objectOf(finished, objectId))).toBe("CSC#N");
+  });
+
+  it("through two committed edits (SCN → O, Enter; O → SCN, Enter): a newly written label, read from the drawing", async () => {
+    const { document, objectId, labelAtomId } = writtenThenTurned();
+    const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
+    const startOf = (source: ChemDraftDocument) => {
+      const atom = objectOf(source, objectId).atoms.find((candidate) => candidate.id === labelAtomId)!;
+      return { element: atom.element, literal: atom.labelLiteral === true, labelBondSide: atom.labelBondSide };
+    };
+    // First session: SCN → O, committed. It ended on other text, so the finish changes nothing.
+    const firstStart = startOf(document);
+    const toO = normalizeCommittedDocument(applyNativeAtomElementTarget(document, target, "O", { literal: true }));
+    const firstDone = normalizeCommittedDocument(finishNativeAtomLabelEdit(toO, target, firstStart));
+    expect(firstDone).toBe(toO);
+    // Second session: O → SCN, committed. A new label on a drawing whose bond is now on its right:
+    // recorded from the drawing, so it is the N-bonded isomer, a bare formula.
+    const secondStart = startOf(firstDone);
+    const toScn = normalizeCommittedDocument(applyNativeAtomElementTarget(firstDone, target, "SCN", { literal: true }));
+    const secondDone = normalizeCommittedDocument(finishNativeAtomLabelEdit(toScn, target, secondStart));
+    expect(objectOf(secondDone, objectId).atoms.find((atom) => atom.id === labelAtomId)!.labelBondSide).toMatchObject({ side: "right" });
+    expect(await canonical(objectOf(secondDone, objectId))).not.toContain("#");
+  });
+});
+
+describe("the commit funnel when nothing changes", () => {
+  const objectOf = (document: ChemDraftDocument, objectId: string): MoleculeObject =>
+    document.pages[0]!.objects.find((object): object is MoleculeObject => object.id === objectId)!;
+  const moleculesOf = (document: ChemDraftDocument): MoleculeObject[] =>
+    document.pages[0]!.objects.filter((object): object is MoleculeObject => object.type === "molecule");
+
+  it("returns the very same document, molecules and atoms, so nothing re-renders or recomputes", () => {
+    const first = insertNativeSingleBondMolecule(createPhase4Document("Funnel Identity"), { x: 200, y: 200 });
+    const firstId = selectedMolecule(first).id;
+    const right = [...selectedMolecule(first).atoms].sort((a, b) => a.x - b.x)[1]!;
+    const labelled = normalizeCommittedDocument(relabel(first, right.id, "SCN", { literal: true }));
+    const both = normalizeCommittedDocument(insertNativeSingleBondMolecule(labelled, { x: 500, y: 500 }));
+    // A committed document passes again untouched.
+    expect(normalizeCommittedDocument(both)).toBe(both);
+    // An edit to one molecule: the funnel keeps the other molecule, and the edited molecule's
+    // atoms, as the very objects the edit produced.
+    const otherId = moleculesOf(both).find((molecule) => molecule.id !== firstId)!.id;
+    const edited = rotateDocumentObjectsAroundPoint(both, [otherId], { x: 500, y: 500 }, 90);
+    const committed = normalizeCommittedDocument(edited);
+    expect(committed).toBe(edited);
+    expect(objectOf(committed, firstId)).toBe(objectOf(both, firstId));
+    objectOf(committed, otherId).atoms.forEach((atom, index) => expect(atom).toBe(objectOf(edited, otherId).atoms[index]));
   });
 });
 

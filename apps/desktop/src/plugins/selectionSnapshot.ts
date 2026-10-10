@@ -80,14 +80,20 @@ function moleculeSourceFingerprint(
   pageId: string,
   molecule: MoleculeObject
 ): string {
+  // A label's recorded bond side decides what a cyano label means, and the stored string need not
+  // show it, so it is keyed alongside. Only molecules that have one gain the suffix: every other
+  // payload stays byte-for-byte what it was.
+  const sides = (molecule.atoms ?? []).flatMap((atom) => (atom.labelBondSide ? [[atom.id, atom.labelBondSide]] : []));
+  const sideKey = sides.length > 0 ? `\nlabelBondSide:${JSON.stringify(sides)}` : "";
   return createStructureSourceFingerprint({
     documentId,
     pageId,
     objectId: molecule.id,
     structureFormat: molecule.structureFormat,
     // Retain the existing payload byte-for-byte whenever it is available. Empty stored structures
-    // occur when a graph cannot be written safely as SMILES, so key that graph instead.
-    structure: molecule.structure === "" ? moleculeGraphKey(molecule) : molecule.structure
+    // occur when a graph cannot be written safely as SMILES, so key that graph instead (it already
+    // carries every atom field but the coordinates, the recorded sides included).
+    structure: molecule.structure === "" ? moleculeGraphKey(molecule) : `${molecule.structure}${sideKey}`
   });
 }
 

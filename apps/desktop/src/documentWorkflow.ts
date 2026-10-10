@@ -7763,6 +7763,23 @@ function addChargeMarkAtPoint(
  * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
  * copies pasted without their mark all settle correctly with no history diffing.
  */
+/**
+ * What every committed document passes through: MainWindow's five commit paths (the initial
+ * document, opening a file, each label-editor keystroke, an edit, a history commit) call this and
+ * nothing else, and undo/redo only reinstate documents that passed it. So it is the one place every
+ * in-app change — a paste of any format, a template, a plugin's patch, an agent command, a merge —
+ * goes through, and where each side-dependent label ("SCN") gets its bond side recorded
+ * (`withNativeDocumentLabelBondSides`) before a later rotation could change what it means. Charge
+ * marks are reconciled first. Both passes are idempotent and keep what is already right, so a layout
+ * commit changes nothing.
+ */
+export function normalizeCommittedDocument(document: ChemDraftDocument): ChemDraftDocument {
+  const reconciled = reconcileNativeChargeMarks(document);
+  const recorded = withNativeDocumentLabelBondSides(reconciled);
+  // Re-admitted to the patch engine's sharing, as `reconcileNativeChargeMarks` does.
+  return recorded === reconciled ? reconciled : adoptDerivedDocument(reconciled, recorded);
+}
+
 export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDraftDocument {
   let changed = false;
   const pages = document.pages.map((page) => {
@@ -8667,7 +8684,15 @@ export function applyNativeAtomElementTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
   element: string,
-  options: { literal?: boolean } = {}
+  options: {
+    literal?: boolean;
+    /**
+     * Put this recorded bond side back with the label: cancelling a label edit restores the label
+     * as it was written, not as the drawing reads now. The record is kept while its neighbour is
+     * still the label's one bonded atom (`withNativeLabelBondSides`).
+     */
+    labelBondSide?: MoleculeAtom["labelBondSide"];
+  } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -8692,17 +8717,21 @@ export function applyNativeAtomElementTarget(
     return document;
   }
 
+  const restoredSide = options.labelBondSide;
   if (
     atom.element === normalizedElement &&
     (atom.labelVisible === true) === labelVisible &&
-    (atom.labelLiteral === true) === literal
+    (atom.labelLiteral === true) === literal &&
+    (restoredSide === undefined || JSON.stringify(atom.labelBondSide) === JSON.stringify(restoredSide))
   ) {
     return document;
   }
 
-  const atoms = molecule.atoms.map((candidate) =>
-    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal) : candidate
-  );
+  const atoms = molecule.atoms.map((candidate) => {
+    if (candidate.id !== target.atomId) return candidate;
+    const relabelled = nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal);
+    return restoredSide ? { ...relabelled, labelBondSide: restoredSide } : relabelled;
+  });
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
 
   return applyPatch(
@@ -8710,6 +8739,35 @@ export function applyNativeAtomElementTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Close a label-edit session. Each keystroke wrote the draft and so dropped the label's recorded
+ * bond side; a session that ends on the text and literal flag it started with (SCN → O → SCN, then
+ * Enter or a blur) did not rewrite the label, so its original record is put back, exactly as
+ * cancelling does — re-reading the side from a turned-round drawing would silently change the
+ * chemistry. A session that ended on other text wrote a new label, recorded at its own commit, and
+ * the document is returned unchanged.
+ */
+export function finishNativeAtomLabelEdit(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  initial: { element: string; literal: boolean; labelBondSide?: MoleculeAtom["labelBondSide"] }
+): ChemDraftDocument {
+  if (target.kind !== "atom" || !initial.labelBondSide) {
+    return document;
+  }
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  const atom = molecule?.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || atom.element !== initial.element || (atom.labelLiteral === true) !== initial.literal) {
+    return document;
+  }
+  return applyNativeAtomElementTarget(document, target, initial.element, {
+    literal: initial.literal,
+    labelBondSide: initial.labelBondSide
+  });
 }
 
 export function previewNativeMoleculeBondGrowth(
@@ -17569,7 +17627,13 @@ export function copyAsMergedMolecule(
   const bonds: MoleculeBond[] = [];
   molecules.forEach((molecule, index) => {
     const prefix = `m${index}_`;
-    atoms.push(...molecule.atoms.map((atom) => ({ ...atom, id: `${prefix}${atom.id}` })));
+    // A recorded bond side names its neighbour by id, so it is namespaced with it; left behind, it
+    // would name no atom and the label would be read from the drawing instead.
+    atoms.push(...molecule.atoms.map((atom) => ({
+      ...atom,
+      id: `${prefix}${atom.id}`,
+      ...(atom.labelBondSide ? { labelBondSide: { ...atom.labelBondSide, atomId: `${prefix}${atom.labelBondSide.atomId}` } } : {})
+    })));
     bonds.push(...molecule.bonds.map((bond) => ({
       ...bond,
       id: `${prefix}${bond.id}`,
@@ -18820,15 +18884,24 @@ function parseV3000MoleculeGraph(
   const scale = previewScaleFromV3000Graph(rawAtoms, rawBonds, previous);
   const atomIdBySourceId = new Map<string, string>();
   const atoms = rawAtoms.map((atom, index) => {
-    const id = previous.atoms[index]?.id ?? nextOrdinalId("atom", index);
+    const before = previous.atoms[index];
+    const id = before?.id ?? nextOrdinalId("atom", index);
     atomIdBySourceId.set(atom.sourceId, id);
+    // The editor writes every atom back from its V3000, labels included (an "SCN" in the atom field
+    // lands as that label). One that keeps its place and its label keeps the bond side it was written
+    // with; the recorder drops the record if its neighbour changed (`withNativeLabelBondSides`).
+    // Re-read from the editor's drawing instead, an unchanged round trip could change the chemistry.
+    const carried = before && before.element === atom.element && before.labelBondSide
+      ? { labelBondSide: before.labelBondSide }
+      : {};
 
     return {
       id,
       element: atom.element,
       x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
       y: targetCenter.y - (atom.y - sourceCenter.y) * scale,
-      formalCharge: atom.formalCharge
+      formalCharge: atom.formalCharge,
+      ...carried
     } satisfies MoleculeAtom;
   });
   const bonds = rawBonds.flatMap((bond, index) => {

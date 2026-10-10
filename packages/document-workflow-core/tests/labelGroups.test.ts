@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  MoleculeAtomSchema,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
   type MoleculeAtom,
@@ -429,6 +430,21 @@ describe("a cyano label's recorded bond side", () => {
       .not.toHaveProperty("labelBondSide");
     const plain = methylWith("OMe");
     expect(withNativeLabelBondSides(plain)).toBe(plain);
+  });
+
+  it("never writes a record without a side: a bond to a missing atom (a damaged file) gets none", () => {
+    // An older file whose SCN is bonded to an atom id that is not in the molecule: the drawing gives
+    // no side, so nothing is recorded, and a stale record is dropped rather than left half-written.
+    const damaged = { atoms: [atom("g1", "SCN", 0, 0)], bonds: [bond("b1", "g1", "missing")] };
+    expect(withNativeLabelBondSides(damaged).atoms[0]).not.toHaveProperty("labelBondSide");
+    const staleRecord = { atoms: [atom("g1", "SCN", 0, 0, recorded("left", "elsewhere"))], bonds: [bond("b1", "g1", "missing")] };
+    expect(withNativeLabelBondSides(staleRecord).atoms[0]).not.toHaveProperty("labelBondSide");
+    // Whatever it writes satisfies the schema it is saved under.
+    for (const graph of [damaged, staleRecord, withNativeLabelBondSides(methylWith("SCN"))]) {
+      for (const written of withNativeLabelBondSides(graph).atoms) {
+        expect(() => MoleculeAtomSchema.parse(written)).not.toThrow();
+      }
+    }
   });
 });
 

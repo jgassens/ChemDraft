@@ -354,6 +354,7 @@ import {
   applyNativeArtBooleanOperationToSelection,
   applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
+  finishNativeAtomLabelEdit,
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
   applyMechanismArrowControlPoint,
@@ -362,7 +363,7 @@ import {
   copyAsSmiles,
   createMechanismArrowBetween,
   type MechanismArrowEndpoint,
-  reconcileNativeChargeMarks,
+  normalizeCommittedDocument,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
@@ -1243,6 +1244,12 @@ type AtomLabelEditState = {
   atomId: string;
   initialElement: string;
   initialLiteral: boolean;
+  /**
+   * The label's recorded bond side before the edit. Each keystroke relabels the atom and so drops
+   * it; cancelling puts it back with the label, so a cancelled edit changes nothing, even on a
+   * molecule turned round since the label was written.
+   */
+  initialLabelBondSide?: MoleculeAtom["labelBondSide"];
   draft: string;
   /**
    * The selection in force before the edit selected the atom. A blur-ended edit restores it (minus
@@ -1487,7 +1494,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.18.04-opus";
+const CURRENT_BUILD_STAMP = "10.10.18.45-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1953,7 +1960,7 @@ export function MainWindow({
   // The created document is a fresh schema parse nothing else holds, so the engine takes it as it
   // is; a caller-supplied one may still be held by the caller, so it is admitted as a copy.
   const [documentHistory, setDocumentHistory] = useState(() =>
-    createDocumentHistory(reconcileNativeChargeMarks(
+    createDocumentHistory(normalizeCommittedDocument(
       initialDocument ? toEngineDocument(initialDocument) : admitParsedDocument(createPhase4Document())
     ))
   );
@@ -2711,7 +2718,7 @@ export function MainWindow({
     // The document is being REPLACED, not edited — bump before installing the new history so a plugin
     // write already in flight against the old document key is refused rather than landing here.
     documentIdentityRef.current += 1;
-    installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(admitParsedDocument(nextDocument))));
+    installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
   }, [installDocumentHistory]);
@@ -2728,7 +2735,7 @@ export function MainWindow({
 
     installDocumentHistory({
       ...currentHistory,
-      present: reconcileNativeChargeMarks(nextDocument)
+      present: normalizeCommittedDocument(nextDocument)
     });
     return true;
   }, [installDocumentHistory]);
@@ -2744,7 +2751,7 @@ export function MainWindow({
       return false;
     }
 
-    const present = reconcileNativeChargeMarks(nextDocument);
+    const present = normalizeCommittedDocument(nextDocument);
     if (undoLabel) {
       documentUndoLabelsRef.current.set(present, undoLabel);
     }
@@ -2768,7 +2775,7 @@ export function MainWindow({
     nextDocument: ChemDraftDocument
   ) => {
     const currentHistory = documentHistoryRef.current;
-    const present = reconcileNativeChargeMarks(nextDocument);
+    const present = normalizeCommittedDocument(nextDocument);
     installDocumentHistory({
       past: boundedHistoryPast([...currentHistory.past, startDocument], present),
       present,
@@ -5400,6 +5407,7 @@ export function MainWindow({
       atomId: target.atomId,
       initialElement: atom.element,
       initialLiteral: atom.labelLiteral === true,
+      ...(atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {}),
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
     };
@@ -5451,7 +5459,10 @@ export function MainWindow({
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, state.initialElement, { literal: state.initialLiteral })
+      }, state.initialElement, {
+        literal: state.initialLiteral,
+        ...(state.initialLabelBondSide ? { labelBondSide: state.initialLabelBondSide } : {})
+      })
     );
     atomLabelEditKeepsSelectionRef.current = state;
     setActiveAtomLabelEdit(undefined);
@@ -5469,9 +5480,17 @@ export function MainWindow({
     if (reason === "commit") {
       atomLabelEditKeepsSelectionRef.current = state;
     }
+    // A session that ended on its starting text did not rewrite the label: keep the bond side it
+    // was written with, as cancelling does (finishNativeAtomLabelEdit).
+    replacePresentDocument((current) => finishNativeAtomLabelEdit(current, {
+      objectId: state.objectId,
+      kind: "atom",
+      atomId: state.atomId,
+      distanceToPointer: 0
+    }, { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide }));
     // Any other close restores the pre-edit selection: see the atom-label close effect.
     setActiveAtomLabelEdit(undefined);
-  }, []);
+  }, [replacePresentDocument]);
 
   /**
    * Put the selection back the way it was before `state`'s edit selected its atom. The atom was

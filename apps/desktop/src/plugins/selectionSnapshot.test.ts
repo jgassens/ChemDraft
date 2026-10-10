@@ -249,6 +249,35 @@ describe("computeObjectFingerprint", () => {
     expect(computeObjectFingerprint(sideRecorded, "m1")).not.toBe(before);
   });
 
+  it("keys a recorded label bond side alongside a non-empty stored structure", () => {
+    // The stored SMILES need not show which side a cyano label was written with, so the record is
+    // keyed beside it; a molecule without one keeps its byte-for-byte fingerprint (below).
+    const withAtoms = () => {
+      const document = documentWith(["m1"]);
+      Object.assign(document.pages[0]!.objects[0]!, {
+        atoms: [
+          { id: "a1", element: "SCN", x: 30, y: 20, formalCharge: 0 },
+          { id: "a2", element: "C", x: 10, y: 20, formalCharge: 0 }
+        ],
+        bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
+      });
+      return document;
+    };
+    const before = computeObjectFingerprint(withAtoms(), "m1");
+    // With no record, the stored structure alone is keyed, exactly as before.
+    expect(before).toBe(computeObjectFingerprint(documentWith(["m1"]), "m1"));
+    const recorded = withAtoms();
+    const atoms = (recorded.pages[0]!.objects[0] as { atoms: Array<{ id: string; labelBondSide?: unknown }> }).atoms;
+    atoms[0]!.labelBondSide = { side: "left", atomId: atoms[1]!.id };
+    const left = computeObjectFingerprint(recorded, "m1");
+    atoms[0]!.labelBondSide = { side: "right", atomId: atoms[1]!.id };
+    const right = computeObjectFingerprint(recorded, "m1");
+    expect((recorded.pages[0]!.objects[0] as { structure: string }).structure).not.toBe("");
+    expect(left).not.toBe(before);
+    expect(right).not.toBe(left);
+    expect(buildPluginSelectionSnapshot(recorded).molecules[0]!.sourceFingerprint).toBe(right);
+  });
+
   it("keeps the existing non-empty structure fingerprint unchanged", () => {
     const document = documentWith(["m1"]);
     const expected = createStructureSourceFingerprint({

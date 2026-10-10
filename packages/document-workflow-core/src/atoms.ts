@@ -647,14 +647,17 @@ export function withNativeLabelBondSides<T extends { atoms: MoleculeAtom[]; bond
     const recordable = neighbourId !== undefined &&
       !nativeElementFromAtomLabel(atom.element) &&
       nativeLabelReadingDependsOnBondSide(atom.element);
-    if (!recordable) {
+    if (recordable && atom.labelBondSide?.atomId === neighbourId) return atom;
+    const side = recordable ? nativeLabelBondSideFromGeometry(atom, atomBonds, molecule.atoms) : undefined;
+    if (side === undefined || neighbourId === undefined) {
+      // Nothing to record: not a side-dependent label with one bond, or a bond to an atom missing
+      // from the molecule (a damaged file), whose side the drawing cannot give. A record is never
+      // written without a side — the document would then fail its own schema.
       if (atom.labelBondSide === undefined) return atom;
       changed = true;
       const { labelBondSide: _dropped, ...rest } = atom;
       return rest;
     }
-    if (atom.labelBondSide?.atomId === neighbourId) return atom;
-    const side = nativeLabelBondSideFromGeometry(atom, atomBonds, molecule.atoms)!;
     changed = true;
     return { ...atom, labelBondSide: { side, atomId: neighbourId } };
   });

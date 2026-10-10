@@ -2518,6 +2518,20 @@ describe("ChemDraft desktop shell", () => {
     expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();
   });
 
+  it("sends every committed document through the one commit funnel, which records label bond sides", () => {
+    // The five commit paths (initial document, open, label-editor keystroke, edit, history commit)
+    // all normalize through normalizeCommittedDocument, so a paste, template, plugin patch, agent
+    // command or merge cannot leave a cyano label unrecorded for a later rotation to re-read. Its
+    // behaviour is tested in abbreviationChemistry.test.ts; this guards the wiring.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(5);
+    expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
+    // A cancelled label edit, or one that ends on its starting text, puts back the record it
+    // started with, not the drawing's side.
+    expect(mainWindowSource).toContain("initialLabelBondSide: atom.labelBondSide");
+    expect(mainWindowSource).toContain("labelBondSide: state.initialLabelBondSide");
+    expect(mainWindowSource).toContain("finishNativeAtomLabelEdit(current,");
+  });
+
   it("keeps the hovered atom live across charge-hotkey commits, so repeated presses stack", () => {
     // Regression: the charge-hotkey commit used to CLEAR the hover target, and hover was only
     // re-derived on the next pointermove — so a second "+" over a stationary, unselected atom
