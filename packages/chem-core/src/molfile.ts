@@ -40,7 +40,7 @@
  */
 
 import { bridgeBondIndices } from "./bondGraph";
-import { isMetalSymbol } from "./elements";
+import { elementSymbols, isMetalSymbol } from "./elements";
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 
 export interface MolfileWriteOptions {
@@ -217,24 +217,10 @@ function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], options
 
 /**
  * Every IUPAC element symbol plus CTfile's D, T and dummy atom "*". The molfile atom column must hold
- * one of these — never a display label. chem-core keeps its own table because the app's element
- * list (`nativeElementSymbols` in documentWorkflow) lives above the package boundary.
+ * one of these — never a display label. Built from the native model's ordered element table; the
+ * app's own list (layout-engine's `nativeElementSymbols`) lives above this package boundary.
  */
-const MOLFILE_ATOM_SYMBOLS = new Set([
-  "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
-  "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
-  "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-  "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
-  "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
-  "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
-  "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
-  "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-  "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
-  "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm",
-  "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
-  "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
-  "D", "T", "*"
-]);
+const MOLFILE_ATOM_SYMBOLS = new Set<string>([...elementSymbols, "D", "T", "*"]);
 
 /**
  * What one bond adds to the explicit valence of each of its atoms, as a reader of `format` counts

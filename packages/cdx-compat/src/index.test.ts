@@ -4,6 +4,7 @@ import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
   createEmptyDocument,
+  elementSymbols,
   parseDocument,
   serializeDocument,
   type ArrowObject,
@@ -183,6 +184,8 @@ describe("CDXML dative bonds", () => {
   it("imports Order=\"dative\" as the native dative bond (single, dashed) without a warning", () => {
     const opened = openChemDraftPayload(dativeCdxml);
     const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+    // Element 29 is copper: the importer once knew only H–Ca, Br and I, and read this acceptor as C.
+    expect(molecule.atoms.map((atom) => atom.element)).toEqual(["N", "Cu"]);
     expect(molecule.bonds[0]).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
     expect(opened.warnings?.some(({ code }) => code === "cdxml.bond_order_import_unsupported")).toBe(false);
   });
@@ -217,6 +220,77 @@ describe("CDXML dative bonds", () => {
     const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported));
     const bond = (reopened.document?.pages[0].objects[0] as MoleculeObject).bonds[0];
     expect(bond).toMatchObject({ order: "single", display: { bondStyle: "dashed" } });
+  });
+});
+
+describe("CDXML element numbers", () => {
+  /** One fragment: a chain of nodes with the given Element attributes (undefined = no attribute). */
+  const chainCdxml = (elements: readonly (string | undefined)[]): string => `<CDXML><page id="1"><fragment id="f">
+    ${elements.map((element, index) => `<n id="a${index}" p="${index * 14} 0"${element === undefined ? "" : ` Element="${element}"`}/>`).join("\n    ")}
+    ${elements.slice(1).map((_, index) => `<b id="b${index}" B="a${index}" E="a${index + 1}"/>`).join("\n    ")}
+  </fragment></page></CDXML>`;
+  const elementsOf = (opened: ReturnType<typeof openChemDraftPayload>): string[] =>
+    (opened.document?.pages[0].objects[0] as MoleculeObject).atoms.map((atom) => atom.element);
+  const unknownElementWarnings = (opened: ReturnType<typeof openChemDraftPayload>) =>
+    (opened.warnings ?? []).filter(({ code }) => code === "cdxml.atom_element_unknown");
+  // Metals and heavier main-group elements a chemist draws every day; every one of them used to
+  // import as carbon, without a word.
+  const everyday = [
+    ["Fe", 26], ["Zn", 30], ["Cu", 29], ["Ni", 28], ["Pd", 46],
+    ["Pt", 78], ["Sn", 50], ["Se", 34], ["Hg", 80], ["Au", 79]
+  ] as const;
+
+  it("imports Fe, Zn, Cu, Ni, Pd, Pt, Sn, Se, Hg and Au by atomic number", () => {
+    const opened = openChemDraftPayload(chainCdxml(everyday.map(([, number]) => String(number))));
+    expect(elementsOf(opened)).toEqual(everyday.map(([symbol]) => symbol));
+    expect(unknownElementWarnings(opened)).toEqual([]);
+  });
+
+  it("reads every atomic number from 1 to 118", () => {
+    const opened = openChemDraftPayload(chainCdxml(elementSymbols.map((_, index) => String(index + 1))));
+    expect(elementsOf(opened)).toEqual([...elementSymbols]);
+    expect(unknownElementWarnings(opened)).toEqual([]);
+  });
+
+  it("keeps a node with no Element attribute as carbon, the CDXML default, without a warning", () => {
+    const opened = openChemDraftPayload(chainCdxml([undefined, "8", undefined]));
+    expect(elementsOf(opened)).toEqual(["C", "O", "C"]);
+    expect(unknownElementWarnings(opened)).toEqual([]);
+  });
+
+  it("accepts a literal element symbol, and D and T, as written", () => {
+    const opened = openChemDraftPayload(chainCdxml(["Fe", "D", "T", "Og"]));
+    expect(elementsOf(opened)).toEqual(["Fe", "D", "T", "Og"]);
+    expect(unknownElementWarnings(opened)).toEqual([]);
+  });
+
+  it.each(["0", "119", "Xx", "26.5", "-6", ""])(
+    "imports Element=\"%s\" as an unknown atom with its bonds, warns naming the node, never carbon",
+    (value) => {
+      const opened = openChemDraftPayload(chainCdxml(["8", value, "7"]));
+      const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+      expect(molecule.atoms.map((atom) => atom.element)).toEqual(["O", "*", "N"]);
+      expect(molecule.bonds).toHaveLength(2);
+      const warnings = unknownElementWarnings(opened);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].message).toContain("CDXML atom a1");
+      expect(warnings[0].message).toContain(`Element="${value}"`);
+      expect(warnings[0].sourceObjectId).toBe(molecule.id);
+    }
+  );
+
+  it("writes atomic numbers on export and reads them back unchanged", () => {
+    const opened = openChemDraftPayload(chainCdxml(everyday.map(([, number]) => String(number))));
+    const exported = exportDocumentToCdxml(opened.document!);
+    for (const [, number] of everyday) {
+      expect(exported.contents).toContain(`Element="${number}"`);
+    }
+    // No element is spelled out as text any more; only a non-element label would be.
+    expect(exported.warnings.map(({ code }) => code)).not.toContain("cdxml.atom_element_symbol_exported");
+    // The visible layer alone, as another program would read it: same elements, no warnings.
+    const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported.contents));
+    expect(elementsOf(reopened)).toEqual(everyday.map(([symbol]) => symbol));
+    expect(unknownElementWarnings(reopened)).toEqual([]);
   });
 });
 
