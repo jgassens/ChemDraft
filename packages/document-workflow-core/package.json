@@ -8,7 +8,8 @@
     "@chemdraft/clipboard-adapter": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
-    "@chemdraft/rdkit-adapter": "workspace:*"
+    "@chemdraft/rdkit-adapter": "workspace:*",
+    "@chemdraft/template-library": "workspace:*"
   },
   "exports": {
     ".": {

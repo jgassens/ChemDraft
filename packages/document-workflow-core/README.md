@@ -18,7 +18,8 @@ desktop importers did not change.
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
-| `atoms.ts` | Valence and charge rules, atom validation, formula metadata; re-exports layout-engine's element table and bond-order counting |
+| `atoms.ts` | Valence and charge rules, atom validation, formula metadata; the atom-label reading (`nativeAtomLabelReading`: element, abbreviation, spelled, composite, placeholder, formula or unrecognized) and each label's free valence; re-exports layout-engine's element table and bond-order counting |
+| `labelGroups.ts` | The shape of a group a label names (a template-library abbreviation, or an element carrying them) and its attachment atom |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
 | `graph.ts` | Graph walks over native atoms and bonds |
@@ -30,7 +31,8 @@ desktop importers did not change.
   built on `chem-core` patches.
 - Chemistry bookkeeping those functions need: element tables, valence, the native SMILES writer.
 - Dependencies limited to `chem-core`, `layout-engine`, `clipboard-adapter` (molfile parsing),
-  and type-only use of `export-engine` and `rdkit-adapter`.
+  `template-library` (the abbreviation table: data only), and type-only use of `export-engine`
+  and `rdkit-adapter`.
 
 ## What does not
 
