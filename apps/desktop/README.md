@@ -2,6 +2,12 @@
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
+linked width and height, DPI and physical width, page/content cropping, background controls,
+numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses
+the existing padded content framing and does not edit the document. PNG embeds density;
+PDF uses the requested physical size. Other raster formats display a DPI-derived size.
+
 `pnpm dev` launches the Tauri desktop app. `pnpm dev:web` remains available as a secondary browser preview for React shell work.
 
 This shell is intentionally compact and document-centered: native app menu, dense quick-action toolbar, page workspace, native floating icon-first palette, hidden-by-default utility panels, and status bar. It now includes a narrow lazy Ketcher host for active selected-molecule editing, but it does not include native file dialogs, native clipboard handling, full RDKit, CDXML/CDX, or MolScribe OCSR inference yet.

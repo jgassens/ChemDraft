@@ -14,6 +14,14 @@ import { exportDocumentToPdf } from "./pdf";
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("uses requested physical dimensions for the media box", async () => {
+    const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser, outputWidth: 960, outputHeight: 480, compress: false
+    }));
+    expect(new TextDecoder().decode(result.bytes)).toMatch(/\/MediaBox \[0 0 720\.?0* 360\.?0*\]/);
+    expect(document.pages[0].width).not.toBe(960);
+  });
   it("uses host-outlined text before passing the SVG to the PDF renderer", async () => {
     const document = createEmptyDocument({ title: "Outlined PDF", now: timestamp });
     let inputSvg = "";

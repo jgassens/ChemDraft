@@ -15,6 +15,8 @@ export interface PdfExportOptions {
   domParser?: DOMParser;
   compress?: boolean;
   includePageGuides?: boolean;
+  outputWidth?: number;
+  outputHeight?: number;
   /** Resolve text to vector paths with the host's fonts before PDF conversion. */
   outlineSvgText?: (svg: string) => Promise<string>;
 }
@@ -23,6 +25,11 @@ export async function exportDocumentToPdf(
   document: ChemDraftDocument,
   options: PdfExportOptions = {}
 ): Promise<BinaryExportResult> {
+  for (const dimension of [options.outputWidth, options.outputHeight]) {
+    if (dimension !== undefined && (!Number.isFinite(dimension) || dimension <= 0)) {
+      throw new Error("Cannot export PDF: output dimensions must be finite positive numbers.");
+    }
+  }
   const pageIndex = options.pageIndex ?? 0;
   const page = document.pages[pageIndex];
 
@@ -39,8 +46,8 @@ export async function exportDocumentToPdf(
     ? await options.outlineSvgText(svgResult.contents)
     : svgResult.contents;
   const svgElement = parseSvgElement(svg, options.domParser);
-  const widthPt = cssPxToPdfPt(page.width);
-  const heightPt = cssPxToPdfPt(page.height);
+  const widthPt = cssPxToPdfPt(options.outputWidth ?? page.width);
+  const heightPt = cssPxToPdfPt(options.outputHeight ?? page.height);
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
     unit: "pt",

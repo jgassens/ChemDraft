@@ -1,5 +1,16 @@
 # Shipped slices
 
+## Export preview and presets (2026-10-10)
+
+The existing File > Export dialog previews generated SVG/PDF files and native raster bytes.
+It includes linked pixel dimensions, DPI and physical width, padded content/page crop,
+background controls, numeric JPEG quality, renderer and clipping warnings, and slide,
+poster, and publication presets. PNG embeds density and PDF uses the requested physical
+dimensions. Export framing does not change the canvas document or chemical identity.
+SVG/PDF renderer tests and TypeScript checks passed on Windows; interactive macOS and
+Windows checks remain pending in the manual stress checklist. PDF preview availability
+depends on the webview's PDF viewer; the preview includes an open-file fallback.
+
 Completed implementation slices, newest first. These moved out of `PLANS.md` on 2026-07-30 so that
 file could go back to describing only the work in flight; the records themselves are unchanged apart
 from heading levels and cross-reference fixes.

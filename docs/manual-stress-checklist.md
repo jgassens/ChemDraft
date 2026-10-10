@@ -86,3 +86,8 @@ CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a paste
 
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
+# Export preview and presets
+
+- On macOS and Windows, export a page with molecules, text, arrows, and an object crossing the page edge. Compare preview with saved SVG, PDF, and PNG; check clipping warnings.
+- Switch slide/poster/publication presets, edit linked pixel and physical dimensions, choose content crop and transparent PNG, and verify JPEG numeric quality changes the preview. Check PNG density and PDF physical dimensions.
+- Close the dialog during rendering and switch formats rapidly; verify stale previews never replace the current format.

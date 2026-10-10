@@ -1300,7 +1300,6 @@ type PdfDialogExportOptions = {
   background: "white";
 };
 type RasterDialogExportOptions = {
-  scale: number;
   background: "white" | "transparent";
   jpegQuality: number;
   maxDimensionPx: number;
@@ -1309,6 +1308,7 @@ type CdxmlDialogExportOptions = {
   creationProgram: string;
 };
 type ExportDialogState = {
+  presentation: { width: number; dpi: number; crop: "page" | "content"; background: "white" | "transparent" };
   format: ExportDialogFormat;
   filename: string;
   destinationPath?: string;
@@ -1467,7 +1467,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.02.02-codex";
+const CURRENT_BUILD_STAMP = "10.10.03.02-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -17521,6 +17521,8 @@ export function MainWindow({
         {exportDialog ? (
           <ExportDialog
             state={exportDialog}
+            document={document}
+            onPresentationChange={(presentation) => setExportDialog((current) => current ? { ...current, presentation: { ...current.presentation, ...presentation } } : current)}
             onCancel={cancelExportDialog}
             onChooseDestination={chooseExportDestination}
             onFilenameChange={(filename) => {
@@ -18175,6 +18177,8 @@ function CustomPageSizeDialog({ state, onChange, onCancel, onApply }: CustomPage
 }
 
 interface ExportDialogProps {
+  document: ChemDraftDocument;
+  onPresentationChange: (options: Partial<ExportDialogState["presentation"]>) => void;
   state: ExportDialogState;
   onCancel: () => void;
   onChooseDestination: () => void | Promise<void>;
@@ -18188,6 +18192,8 @@ interface ExportDialogProps {
 }
 
 function ExportDialog({
+  document,
+  onPresentationChange,
   state,
   onCancel,
   onChooseDestination,
@@ -18199,11 +18205,42 @@ function ExportDialog({
   onCdxmlOptionsChange,
   onSubmit
 }: ExportDialogProps) {
+  const [preview, setPreview] = useState<{ url?: string; warnings: string[]; error?: string }>({ warnings: [] });
+  const visual = state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format) !== undefined;
+  const framed = exportPresentationDocument(document, state);
+  const ratio = framed.pages[0].height / framed.pages[0].width;
+  const width = sanitizedDialogNumber(state.presentation.width, 800, 1, 8192);
+  const height = Math.max(1, Math.round(width * ratio));
+  const dpi = sanitizedDialogNumber(state.presentation.dpi, 300, 36, 1200);
+  useEffect(() => {
+    if (!visual) { setPreview({ warnings: [] }); return; }
+    let active = true;
+    let url: string | undefined;
+    setPreview({ warnings: [] });
+    const timer = window.setTimeout(() => {
+      // Desktop webviews cannot display TIFF in an img element. Preview the same
+      // native raster rendering as PNG, retaining TIFF's opaque white background.
+      const previewState: ExportDialogState = state.format === "tiff"
+        ? { ...state, format: "png", raster: { ...state.raster, background: "white" } }
+        : state;
+      void createDialogExportResult(document, previewState).then((result) => {
+        if (!active) return;
+        const blob = result.kind === "text"
+          ? new Blob([result.contents], { type: result.mimeType })
+          : new Blob([arrayBufferFromBytes(result.bytes)], { type: result.mimeType });
+        url = URL.createObjectURL(blob);
+        const page = framed.pages[0];
+        const clipped = page.objects.some((object) => object.x < 0 || object.y < 0 || object.x + object.width > page.width || object.y + object.height > page.height);
+        setPreview({ url, warnings: [...result.warnings.map((warning) => warning.message), ...(clipped ? ["Objects extend beyond the export frame and may be clipped. Choose Content crop or adjust the page."] : [])] });
+      }).catch((error: unknown) => { if (active) setPreview({ warnings: [], error: error instanceof Error ? error.message : String(error) }); });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); if (url) URL.revokeObjectURL(url); };
+  }, [document, state.format, state.presentation, state.svg, state.pdf, state.raster]);
   const descriptor = getExportFormatDescriptor(state.format);
   const implemented = descriptor.status === "implemented";
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
   const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
-  const exportDisabled = state.busy || state.filename.trim() === "" || !implemented;
+  const exportDisabled = state.busy || state.filename.trim() === "" || !implemented || (visual && (height > 8192 || !Number.isFinite(state.presentation.width) || state.presentation.width < 1 || state.presentation.width > 8192 || !Number.isFinite(state.presentation.dpi) || state.presentation.dpi < 36 || state.presentation.dpi > 1200));
 
   return (
     <div
@@ -18278,6 +18315,32 @@ function ExportDialog({
           </p>
         ) : null}
 
+        {visual ? <fieldset style={exportDialogFieldsetStyle}>
+          <legend style={exportDialogLegendStyle}>Preview and size</legend>
+          <label style={exportDialogLabelStyle}>Preset
+            <select disabled={state.busy} defaultValue="custom" style={exportDialogInputStyle} onChange={(event) => {
+              const presets: Record<string, { width: number; dpi: number }> = { slide: { width: 1920, dpi: 96 }, poster: { width: 7200, dpi: 300 }, publication: { width: 2008, dpi: 600 } };
+              const preset = presets[event.currentTarget.value];
+              if (preset) {
+                onPresentationChange({ ...preset, crop: "content", background: "white" });
+                onRasterOptionsChange({ background: "white", maxDimensionPx: 8192, jpegQuality: 90 });
+              }
+            }}><option value="custom">Custom</option><option value="slide">Slide — 1920 px, 96 DPI</option><option value="poster">Poster — 24 in wide, 300 DPI</option><option value="publication">Publication — 85 mm wide, 600 DPI</option></select>
+          </label>
+          <label style={exportDialogLabelStyle}>Crop
+            <select disabled={state.busy} value={state.presentation.crop} onChange={(event) => onPresentationChange({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
+          </label>
+          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={state.presentation.width} onChange={(event) => onPresentationChange({ width: Number(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Height (px, aspect ratio linked)<input disabled={state.busy} type="number" min={1} max={8192} value={height} onChange={(event) => onPresentationChange({ width: Math.round(Number(event.currentTarget.value) / ratio) })} /></label>
+          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} value={state.presentation.dpi} onChange={(event) => onPresentationChange({ dpi: Number(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="number" min={0.1} step={0.1} value={Number((width / dpi * 25.4).toFixed(2))} onChange={(event) => onPresentationChange({ width: Math.round(Number(event.currentTarget.value) / 25.4 * dpi) })} /></label>
+          <p style={exportDialogHintStyle}>{width} × {height} px · {(width / dpi * 25.4).toFixed(1)} × {(height / dpi * 25.4).toFixed(1)} mm{state.format === "png" ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
+          {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={state.presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
+          <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label="Actual export renderer preview">
+            {preview.url ? state.format === "pdf" ? <object data={preview.url} type="application/pdf" width="100%" height="220"><a href={preview.url} target="_blank" rel="noreferrer">Open PDF preview</a></object> : <img src={preview.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} /> : <p role="status">{preview.error ?? "Rendering preview…"}</p>}
+          </div>
+          {preview.warnings.map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}
+        </fieldset> : null}
         <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-destination">
           Where
         </label>
@@ -18390,22 +18453,6 @@ function ExportDialog({
         {rasterFormat ? (
           <fieldset style={exportDialogFieldsetStyle}>
             <legend style={exportDialogLegendStyle}>{descriptor.menuLabel}</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-scale">
-              Scale
-            </label>
-            <select
-              id="chemdraft-export-raster-scale"
-              disabled={state.busy}
-              value={String(state.raster.scale)}
-              style={exportDialogInputStyle}
-              onChange={(event) => onRasterOptionsChange({ scale: Number(event.currentTarget.value) })}
-            >
-              <option value="1">1x</option>
-              <option value="2">2x</option>
-              <option value="3">3x</option>
-              <option value="4">4x</option>
-            </select>
-
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
               Background
             </label>
@@ -18451,7 +18498,7 @@ function ExportDialog({
                   min={1}
                   max={100}
                   step={1}
-                  type="range"
+                  type="number"
                   value={state.raster.jpegQuality}
                   style={exportDialogInputStyle}
                   onChange={(event) => onRasterOptionsChange({ jpegQuality: Number(event.currentTarget.value) })}
@@ -18497,6 +18544,7 @@ function createDefaultExportDialogState(
   const descriptor = getExportFormatDescriptor("pdf");
   const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
   return {
+    presentation: { width: Math.round(document.pages[0].width), dpi: 96, crop: "page", background: "white" },
     format: descriptor.id,
     filename,
     destinationPath: nativePathJoin(destinationDirectory, filename),
@@ -18512,7 +18560,6 @@ function createDefaultExportDialogState(
       background: "white"
     },
     raster: {
-      scale: 1,
       background: "white",
       jpegQuality: 90,
       maxDimensionPx: 8192
@@ -27910,14 +27957,29 @@ export function formatExportStatus(
     : `Exported ${label}`;
 }
 
+function exportPresentationDocument(document: ChemDraftDocument, state: ExportDialogState): ChemDraftDocument {
+  return state.presentation.crop === "content"
+    ? copyAsScopedDocument({ ...document, selection: { ...document.selection, objectIds: [] } })
+    : document;
+}
+
 async function createDialogExportResult(
   document: ChemDraftDocument,
   state: ExportDialogState
 ): Promise<ExportResult> {
   const descriptor = getExportFormatDescriptor(state.format);
+  if (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format)) {
+    document = exportPresentationDocument(document, state);
+  }
+  const width = sanitizedDialogNumber(state.presentation.width, 800, 1, 8192);
+  const height = Math.max(1, Math.round(width * document.pages[0].height / document.pages[0].width));
+  if (height > 8192 && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) throw new Error("Export height exceeds 8192 pixels. Reduce the width.");
+  const dpi = sanitizedDialogNumber(state.presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
     const result = exportPhase4Svg(document, {
+      outputWidth: width, outputHeight: height,
+      background: state.presentation.background === "transparent" ? "transparent" : "#ffffff",
       includeWarnings: state.svg.includeWarnings,
       includePageGuides: state.svg.includePageGuides
     });
@@ -27933,6 +27995,7 @@ async function createDialogExportResult(
 
   if (state.format === "pdf") {
     return exportPhase4Pdf(document, {
+      outputWidth: width / dpi * 96, outputHeight: height / dpi * 96,
       compress: state.pdf.compress,
       includePageGuides: state.pdf.includePageGuides
     });
@@ -27961,11 +28024,13 @@ async function createDialogExportResult(
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
     // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
     const svgResult = exportPhase4Svg(document, {
+      outputWidth: width, outputHeight: height,
       includeWarnings: true,
       background: transparent ? "transparent" : "#ffffff"
     });
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
-      scale: sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
+      scale: 1,
+      cssPxPerInch: dpi,
       background: transparent ? "transparent" : "#ffffff",
       jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
       maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)
