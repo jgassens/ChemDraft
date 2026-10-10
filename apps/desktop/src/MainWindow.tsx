@@ -701,6 +701,7 @@ import {
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
+import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
 import {
   askToSendCrashReport,
   briefLine,
@@ -1468,7 +1469,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.15.52-opus";
+const CURRENT_BUILD_STAMP = "10.10.15.58-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -24113,7 +24114,7 @@ function DocumentObjectViewContent({
                   style={{
                     left: `calc(${atom.x + anchorOffset.x - object.x}px * var(--page-scale))`,
                     top: `calc(${atom.y + anchorOffset.y - object.y}px * var(--page-scale))`,
-                    width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
+                    width: atomLabelEditorWidth(editingAtomLabel.draft, labelStyle),
                     fontFamily: labelStyle.atomLabelFontFamily,
                     fontSize: `calc(${labelStyle.atomLabelFontSizePx}px * var(--page-scale))`,
                     fontWeight: labelStyle.atomLabelFontWeight,
