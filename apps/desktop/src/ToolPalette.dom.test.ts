@@ -979,6 +979,33 @@ describe("ToolPalette arrange flyouts", () => {
     }
   });
 
+  it("remembers every selected symbol in the group preview and primary action", () => {
+    const onInvoke = vi.fn();
+    const symbols = [
+      ["degree", "\u00b0"], ["plusMinus", "\u00b1"], ["angstrom", "\u00c5"],
+      ["delta", "\u0394"], ["centerDot", "\u00b7"], ["prime", "\u2032"]
+    ];
+    const item = getToolsetItemGroups("core.main").flat().find((entry) => entry.id === "tool.symbol");
+    if (!item) throw new Error("Expected symbol tool group.");
+    const render = (activeTool: string) => act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: [], itemGroups: [[item]], activeTool, orientation: "horizontal", onInvoke
+      }));
+    });
+    render("tool.select");
+    expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe("\u00b0");
+    for (const [name, glyph] of symbols) {
+      render(`tool.symbol.${name}`);
+      expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe(glyph);
+      render("tool.select");
+      expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe(glyph);
+      const button = container.querySelector<HTMLButtonElement>(`[data-command-id="tool.symbol.${name}"]`);
+      if (!button) throw new Error("Expected selected symbol button.");
+      act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onInvoke).toHaveBeenLastCalledWith(`tool.symbol.${name}`);
+    }
+  });
+
   it("keeps the declared group primary action while allowing enabled submenu commands", () => {
     const onInvoke = vi.fn();
     act(() => {
