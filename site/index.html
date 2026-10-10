@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ChemDraft | Ināt Open Apps</title>
-    <meta name="description" content="ChemDraft is a lightweight, open-source chemical drawing app for macOS.">
+    <meta name="description" content="ChemDraft is a lightweight, open-source chemical drawing app for macOS and Windows.">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Ināt Open Apps">
     <meta property="og:title" content="ChemDraft">
-    <meta property="og:description" content="A lightweight, open-source chemical drawing app for macOS.">
+    <meta property="og:description" content="A lightweight, open-source chemical drawing app for macOS and Windows.">
     <link rel="icon" href="assets/chemdraft-icon.png" type="image/png">
     <link rel="preconnect" href="https://use.typekit.net">
     <link rel="preconnect" href="https://p.typekit.net">
@@ -17,6 +17,10 @@
     <script src="app.js" defer></script>
   </head>
   <body>
+    <div class="beta-banner" role="note" aria-label="Beta notice">
+      <p class="beta-title">β test — not an official release.</p>
+      <p>ChemDraft will have bugs, especially the Windows version. You’re welcome to use it. If you find a bug, please be a good citizen and report it from inside the app: <strong>Help ▸ Report a Bug…</strong></p>
+    </div>
     <header class="site-header">
       <a class="brand" href="https://jeremiahsrandom.website/" aria-label="Ināt Open Apps home">
         <span class="brand-mark">I</span>
@@ -40,13 +44,103 @@
             <h1>ChemDraft</h1>
           </div>
         </div>
-        <p class="lead">A lightweight, open-source chemical drawing app for macOS. It is built around local files and a plugin architecture, with drawing, layout, export, and chemistry tools kept in clear boundaries.</p>
-        <a id="download-link" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download latest DMG</a>
-        <p id="release-meta" class="release-meta" hidden aria-live="polite"></p>
+        <p class="lead">A lightweight, open-source chemical drawing app for macOS and Windows. It is built around local files and a plugin architecture, with drawing, layout, export, and chemistry tools kept in clear boundaries.</p>
+        <p class="beta-short"><strong>β test — not an official release.</strong> Expect bugs, especially on Windows. Report them in the app: <strong>Help ▸ Report a Bug…</strong></p>
+        <div class="download-buttons">
+          <div class="download-option">
+            <a id="download-mac" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for macOS</a>
+            <p class="download-sub">Apple Silicon Macs</p>
+            <p id="release-meta-mac" class="release-meta" hidden aria-live="polite"></p>
+          </div>
+          <div class="download-option">
+            <a id="download-windows" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for Windows</a>
+            <p class="download-sub">64-bit Windows</p>
+            <p id="release-meta-windows" class="release-meta" hidden aria-live="polite"></p>
+          </div>
+        </div>
         <div class="action-line">
           <a class="repo-link" href="https://github.com/jgassens/ChemDraft">Source</a>
           <a href="https://github.com/jgassens/ChemDraft/releases">All releases</a>
           <a href="https://github.com/jgassens/ChemDraft/issues">Report an issue</a>
+        </div>
+      </section>
+
+      <section class="features assistants" id="assistants" aria-labelledby="assistants-title">
+        <div class="features-head">
+          <p class="index-number">Assistants</p>
+          <div class="copy-stack">
+            <h2 id="assistants-title">Use ChemDraft from your AI assistant.</h2>
+            <p>ChemDraft ships a free agent skill, in the open Agent Skills format, that teaches AI assistants (Claude Code, Claude Desktop with the MCP server, and Codex) to use ChemDraft’s own tools instead of drawing molecules by hand or quoting chemistry numbers from memory.</p>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-text">
+          <p class="index-number">Examples</p>
+          <div class="copy-stack">
+            <p class="gallery-note">Real prompts and the real outputs they produced. Click to enlarge.</p>
+            <div class="example-gallery">
+              <article class="example-card example-card-tall">
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt to Claude Code</p>
+                  <blockquote class="prompt-line"><p>draw a fujita cage structure with chemdraft</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/fujita-cage.webp">
+                    <img src="assets/fujita-cage.webp" width="2400" height="2799" decoding="async" alt="ChemDraft drawing of the Fujita Pd6L4 cage [{Pd(en)}6(TPT)4]12+: six palladium(II) ethylenediamine corners joined by four tris(4-pyridyl)triazine panels, each panel shaded a different colour.">
+                  </a>
+                  <figcaption>Real output. Claude Code, with the ChemDraft skill, built the cage from its structure, laid it out as a 3D-style view, shaded each ligand panel, and rendered the figure with ChemDraft.</figcaption>
+                </figure>
+              </article>
+
+              <article class="example-card example-card-wide">
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt 1</p>
+                  <blockquote class="prompt-line"><p>Draw brevetoxin in the K. C. Nicolaou style</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/brevetoxin-nicolaou.webp">
+                    <img src="assets/brevetoxin-nicolaou.webp" width="2000" height="824" loading="lazy" decoding="async" alt="Brevetoxin B drawn by ChemDraft: a ladder of eleven fused oxygen-containing rings shaded in pastel colours and lettered A to K, with H and Me marked at the ring fusions.">
+                  </a>
+                  <figcaption>Real output. Brevetoxin B in the requested style: shaded rings lettered A–K, with H and Me at the ring fusions.</figcaption>
+                </figure>
+                <div class="prompt-example">
+                  <p class="prompt-label">Prompt 2 (follow-up)</p>
+                  <blockquote class="prompt-line"><p>Predict its NMR</p></blockquote>
+                </div>
+                <figure class="feature-shot example-shot">
+                  <a class="feature-shot-link" href="assets/brevetoxin-nmr-1h.webp">
+                    <img src="assets/brevetoxin-nmr-1h.webp" width="3200" height="724" loading="lazy" decoding="async" alt="Predicted ¹H NMR spectrum of brevetoxin B beside the structure, with each peak labelled by letter and matched to the atom it belongs to.">
+                  </a>
+                  <figcaption>Real output. Predicted ¹H NMR from the optional NMR plugin: shift estimates with first-order multiplets, each assigned to a drawn atom. Predicted, not measured.</figcaption>
+                </figure>
+              </article>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-row feature-row-text">
+          <p class="index-number">What it can do</p>
+          <ul class="feature-list feature-list-columns">
+            <li><strong>Draw.</strong> Structures and reaction schemes as images for documents, exams, slides and handouts, including multiple-choice structure grids.</li>
+            <li><strong>Name to structure.</strong> Convert chemical names to structures.</li>
+            <li><strong>Stereochemistry.</strong> Answer R/S and E/Z questions.</li>
+            <li><strong>Properties.</strong> Formula, exact and average mass, m/z, isotope patterns, logP, TPSA and estimated pKa.</li>
+            <li><strong>NMR estimates.</strong> Predict ¹H and ¹³C shift estimates with the <a class="text-link" href="https://github.com/jgassens/ChemDraft-NMR-Plugin/releases">NMR plugin</a>, a separate download you install and mark as trusted (see the <a class="text-link" href="https://github.com/jgassens/ChemDraft/blob/main/skills/chemdraft/references/setup.md">setup guide</a>).</li>
+            <li><strong>Export.</strong> CDXML, SDF, MOL, PDF and SMILES.</li>
+            <li><strong>Styled figures.</strong> Coloured or shaded rings, highlighted substructures, colour-coded atoms, hand-sketched looks, arrows and annotations.</li>
+          </ul>
+        </div>
+
+        <div class="feature-row feature-row-text">
+          <p class="index-number">How it connects</p>
+          <div class="copy-stack">
+            <p>A local MCP server (<code>chemdraft-mcp</code>) and a headless command-line tool (<code>chemdraft</code>) with machine-readable output. They call the same document code the desktop app uses, so the drawing an assistant makes and the one on the canvas come from one implementation. Everything runs on your computer.</p>
+            <p><strong>Requirements.</strong> The skill, MCP server and command-line tool run from a copy of the source code, not from the downloaded app. Setup needs Git, Node 24 and pnpm 10.12.1 on macOS or Windows, plus a Java Development Kit (JDK) for name-to-structure conversion.</p>
+            <p>For example, to register the server with Claude Code (<code>&lt;checkout&gt;</code> is the folder you cloned into):</p>
+            <pre class="code-block"><code>claude mcp add --scope user chemdraft -- pnpm -s --dir "&lt;checkout&gt;" chemdraft-mcp</code></pre>
+            <p>These tools are part of the same beta.</p>
+            <p><a class="text-link" href="https://github.com/jgassens/ChemDraft/blob/main/skills/chemdraft/references/setup.md">Setup guide</a> · <a class="text-link" href="https://github.com/jgassens/ChemDraft/tree/main/skills/chemdraft">Skill folder</a></p>
+          </div>
         </div>
       </section>
 
@@ -126,7 +220,7 @@
           <p class="index-number">05 Open</p>
           <ul class="feature-list feature-list-columns">
             <li><strong>Free and open source.</strong> The app is Apache-2.0, and the full source and history are on GitHub.</li>
-            <li><strong>Local files, no account.</strong> Documents are files on your Mac, and there is nothing to sign in to.</li>
+            <li><strong>Local files, no account.</strong> Documents are files on your computer, and there is nothing to sign in to.</li>
             <li><strong>Plugins with permissions.</strong> Each plugin declares what it may touch, bundled analyzers run in their own worker, and packages install from a file through the Plugin Manager.</li>
             <li><strong>Formats in and out.</strong> Opens ChemDraft documents and CDXML; exports SVG, PDF, PNG, JPEG, BMP, GIF, TIFF, CDXML, SDF and SMILES; copies SMILES, InChI, InChIKey, MOL and CDXML.</li>
             <li><strong>Updates in the app.</strong> Signed app updates are offered from inside ChemDraft, and the NMR plugin gets its updates in the app too.</li>
@@ -136,16 +230,18 @@
 
       <section class="spec-grid" aria-label="ChemDraft download details">
         <dl>
-          <div><dt>Platform</dt><dd>Apple Silicon Macs only (arm64).</dd></div>
-          <div><dt>Package</dt><dd>DMG from the latest GitHub release.</dd></div>
-          <div><dt>Trust</dt><dd>Developer ID signed and notarized by Apple, so it opens without Gatekeeper warnings.</dd></div>
-          <div><dt>Updates</dt><dd>Built-in Sparkle updates check the signed appcast; updates are offered in the app.</dd></div>
+          <div><dt>Platform</dt><dd>Apple Silicon Macs (arm64) and 64-bit Windows (x64).</dd></div>
+          <div><dt>Package</dt><dd>DMG for macOS and a setup .exe installer for Windows, both from the latest GitHub release.</dd></div>
+          <div><dt>Trust</dt><dd>macOS builds are Developer ID signed and notarized by Apple, so they open without Gatekeeper warnings. The Windows installer is not code-signed yet, so Windows SmartScreen may show “Windows protected your PC”: choose “More info”, then “Run anyway”.</dd></div>
+          <div><dt>Updates</dt><dd>Updates are offered inside the app. On macOS, built-in Sparkle updates check the signed appcast. On Windows, the built-in updater downloads signed update packages.</dd></div>
           <div><dt>License</dt><dd><a class="text-link" href="https://github.com/jgassens/ChemDraft/blob/main/LICENSE">Apache-2.0</a></dd></div>
         </dl>
         <aside class="download-note" aria-labelledby="download-note-title">
           <p class="index-number">Install</p>
           <h2 id="download-note-title">A small, direct download.</h2>
-          <p>Open the DMG, move ChemDraft to Applications, then open it. The release page remains available if you need an earlier build or release notes.</p>
+          <p><strong>macOS:</strong> open the DMG, move ChemDraft to Applications, then open it.</p>
+          <p><strong>Windows:</strong> run the installer. It installs for the current user, and updates arrive inside the app.</p>
+          <p>The release page remains available if you need an earlier build or release notes.</p>
         </aside>
       </section>
 
@@ -167,7 +263,7 @@
         <p class="index-number">Support</p>
         <div class="copy-stack">
           <h2 id="support-chemdraft">The source is the support record.</h2>
-          <p>If something does not work, open an issue with the app version, your macOS version, Mac model, and the steps that reproduce it. The release page is also the place to find prior builds and notes.</p>
+          <p>If something does not work, use <strong>Help ▸ Report a Bug…</strong> inside the app. If you open an issue on GitHub instead, include the app version, your operating system version (macOS or Windows), and the steps that reproduce it. The release page is also the place to find prior builds and notes.</p>
         </div>
         <ol>
           <li><span><a class="text-link" href="https://github.com/jgassens/ChemDraft/issues">Report an issue on GitHub.</a></span></li>
