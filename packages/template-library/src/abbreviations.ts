@@ -97,7 +97,8 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
     bonds: [[0, 1, 1], [0, 2, 1]]
   },
   {
-    label: "nBu", aliases: [], name: "n-butyl", smiles: "*CCCC", formula: "C4H9", attachmentCount: 1,
+    // Bare "Bu" means n-butyl by convention (SnBu3, Bu3Sn); it is no element symbol.
+    label: "nBu", aliases: ["Bu"], name: "n-butyl", smiles: "*CCCC", formula: "C4H9", attachmentCount: 1,
     atoms: [
       { element: "C", hydrogens: 2, x: 0, y: 0 },
       { element: "C", hydrogens: 2, x: 0.5, y: -0.866 },

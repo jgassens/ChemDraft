@@ -87,11 +87,22 @@ describe("nativeAtomLabelReading", () => {
     expect(groupOf("SnPr3")).toMatchObject({ kind: "composite", head: "Sn" });
     expect(nativeAtomLabelFreeValence("SnMe3")).toBe(1);
     expect(nativeAtomLabelFreeValence("SiPr3")).toBe(1);
-    // "Bu" alone is not a table spelling, so SnBu3 does not read as a group at all — and never as
-    // sulfur carrying three n-butyls.
-    const tributyl = nativeAtomLabelReading("SnBu3");
-    expect(tributyl.kind).not.toBe("group");
-    expect(tributyl.kind).toBe("unrecognized");
+    // Bare "Bu" is n-butyl, so tributylstannyl reads as tin carrying three n-butyls, either way round,
+    // and never as sulfur.
+    for (const label of ["SnBu3", "Bu3Sn"]) {
+      expect(groupOf(label), label).toMatchObject({
+        kind: "composite", head: "Sn",
+        substituents: [{ name: "n-butyl" }, { name: "n-butyl" }, { name: "n-butyl" }]
+      });
+      expect(nativeAtomLabelFreeValence(label), label).toBe(1);
+    }
+    // Tetrabutylammonium needs its + charge: then it is complete with no bond. Neutral, no number of
+    // bonds completes an N with four carbons. Tributylamine takes none; as NBu3⁺ it takes one.
+    expect(groupOf("NBu4")).toMatchObject({ kind: "composite", head: "N" });
+    expect(nativeAtomLabelFreeValence("NBu4", 1)).toBe(0);
+    expect(nativeAtomLabelFreeValence("NBu4")).toBeUndefined();
+    expect(nativeAtomLabelFreeValence("NBu3")).toBe(0);
+    expect(nativeAtomLabelFreeValence("NBu3", 1)).toBe(1);
     // Indium is no covalent head either, but a halogen never takes its place: "InBu3" is not an
     // iodine carrying three butyls.
     for (const label of ["InBu", "InnBu3"]) {
