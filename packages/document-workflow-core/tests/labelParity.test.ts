@@ -145,8 +145,20 @@ describe("native chemistry equals RDKit's", () => {
     expectParity(drawn);
   });
 
-  it.each([["Ac"], ["Pr"], ["Ts"]])("for the bonded element spelling C–%s", (label) => {
-    expectParity(cappedBy(label));
+  it.each([["Ac"], ["Pr"], ["Ts"]])("for the typed, bonded element spelling C–%s", (label) => {
+    expectParity(cappedBy(label, { labelLiteral: true }));
+  });
+
+  it("for heads that state hydrogens: every stated H is counted, never eaten by an implicit slot", () => {
+    // P(V) with three stated H: the model alone gives one implicit H, so all three go explicit.
+    const phosphorane = cappedBy("PH3Me");
+    expect(nativeSingleBondGraphMetadata(phosphorane.atoms, phosphorane.bonds).formula).toBe("C2H9P");
+    expectParity(phosphorane);
+    // Ordinary octet heads: the model's implicit count already equals the stated one.
+    expectParity(cappedBy("SiH2Me"));
+    expectParity(cappedBy("CH2Ph"));
+    expectParity(lone("NH2Me"));
+    expect(nativeSingleBondGraphMetadata(lone("NH2Me").atoms, []).formula).toBe("CH5N");
   });
 
   it("for charged forms", () => {

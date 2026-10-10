@@ -236,14 +236,20 @@ describe("the analysis molfile keeps every drawn atom at its index", () => {
 });
 
 describe("the bond tool and a bonded element spelling", () => {
-  it("lets a lone Ac take its first bond as actinium, then holds it to acetyl's one", () => {
-    const lone = relabel(loneAtom(), "atom_001", "Ac");
+  it("lets a lone typed Ac take its first bond as actinium, then holds it to acetyl's one", () => {
+    const lone = relabel(loneAtom(), "atom_001", "Ac", { literal: true });
     const objectId = selectedMolecule(lone).id;
     const bonded = growFrom(lone, "atom_001");
     expect(bondsAt(bonded, objectId, "atom_001")).toHaveLength(1);
     // Now it is acetyl on a methyl: acetone, C3H6O.
     expect(selectedMolecule(bonded).chemistry?.formula).toBe("C3H6O");
     expect(bondsAt(growFrom(bonded, "atom_001"), objectId, "atom_001")).toHaveLength(1);
+  });
+
+  it("treats an Ac placed by the element path (not typed) as actinium on a bond", () => {
+    const lone = relabel(loneAtom(), "atom_001", "Ac");
+    const bonded = growFrom(lone, "atom_001");
+    expect(selectedMolecule(bonded).chemistry?.formula).toBe("CH3Ac");
   });
 });
 

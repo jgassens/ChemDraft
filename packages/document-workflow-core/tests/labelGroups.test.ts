@@ -252,8 +252,9 @@ describe("formula through expansion", () => {
 });
 
 describe("a bonded Ar is aryl, not argon", () => {
+  // Typed as a label (`labelLiteral`): that is what makes a bonded "Ar" aryl.
   const arylAlcohol = {
-    atoms: [atom("ar", "Ar", 0, 0), atom("o1", "O", bondLength, 0)],
+    atoms: [atom("ar", "Ar", 0, 0, { labelLiteral: true }), atom("o1", "O", bondLength, 0)],
     bonds: [bond("b1", "ar", "o1")]
   };
 
@@ -295,11 +296,31 @@ describe("a bonded Ar is aryl, not argon", () => {
     expect(smiles).toBe("[*]O");
     expect(warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_atom_label" }));
   });
+
+  it("leaves a bonded Ar that came from a structure as argon: only a typed label is aryl", () => {
+    const fromFile = {
+      atoms: [atom("ar", "Ar", 0, 0), atom("o1", "O", bondLength, 0)],
+      bonds: [bond("b1", "ar", "o1")]
+    };
+    expect(nativeSingleBondGraphMetadata(fromFile.atoms, fromFile.bonds).formula).toBe("ArHO");
+    expect(nativeSingleBondGraphSmiles(fromFile.atoms, fromFile.bonds)).toBe("[Ar]O");
+    expect(nativeMoleculeUnspellableLabels(molecule(fromFile.atoms, fromFile.bonds))).toEqual([]);
+  });
+
+  it.each([["R"], ["X"], ["Ome"]])("never exports a stale stored string for a C–%s drawing", async (label) => {
+    const graph = methylWith(label);
+    const stale = { ...molecule(graph.atoms, graph.bonds), structure: "CO" };
+    const warnings: ExportWarning[] = [];
+    expect(await moleculeSmiles(stale, 0, warnings, undefined)).toBe("C[*]");
+    expect(warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_atom_label" }));
+  });
 });
 
-describe("bonded Ac, Pr and Ts are groups", () => {
+describe("typed, bonded Ac, Pr and Ts are groups", () => {
+  const typed = { labelLiteral: true } as const;
+
   it("counts and writes a bonded Ts as tosyl when its bond fits", () => {
-    const sulfone = methylWith("Ts");
+    const sulfone = methylWith("Ts", typed);
     expect(stateOf(sulfone, "g1").valid).toBe(true);
     // Methyl p-tolyl sulfone.
     expect(nativeSingleBondGraphMetadata(sulfone.atoms, sulfone.bonds).formula).toBe("C8H10O2S");
@@ -309,7 +330,7 @@ describe("bonded Ac, Pr and Ts are groups", () => {
 
   it("badges a Ts with two bonds and counts it as nothing, never tennessine", () => {
     const graph = {
-      atoms: [atom("c1", "C", 0, 0), atom("t1", "Ts", bondLength, 0), atom("c2", "C", 2 * bondLength, 0)],
+      atoms: [atom("c1", "C", 0, 0), atom("t1", "Ts", bondLength, 0, typed), atom("c2", "C", 2 * bondLength, 0)],
       bonds: [bond("b1", "c1", "t1"), bond("b2", "t1", "c2")]
     };
     const state = stateOf(graph, "t1");
@@ -322,15 +343,27 @@ describe("bonded Ac, Pr and Ts are groups", () => {
   });
 
   it("reads acetyl and propyl the same way, and leaves the unbonded symbols as elements", () => {
-    const acetone = methylWith("Ac");
+    const acetone = methylWith("Ac", typed);
     expect(nativeSingleBondGraphMetadata(acetone.atoms, acetone.bonds).formula).toBe("C3H6O");
-    const butane = methylWith("Pr");
+    const butane = methylWith("Pr", typed);
     expect(nativeSingleBondGraphMetadata(butane.atoms, butane.bonds).formula).toBe("C4H10");
     for (const element of ["Ac", "Pr", "Ts"]) {
-      const lone = [atom("x", element, 0, 0)];
+      const lone = [atom("x", element, 0, 0, typed)];
       expect(nativeSingleBondGraphMetadata(lone, []).formula).toBe(element);
       expect(stateOf({ atoms: lone, bonds: [] }, "x").valid).toBe(true);
     }
+  });
+
+  it("leaves an element from a structure as the element on a bond: a real Ac–Cl is actinium chloride", () => {
+    // No labelLiteral: this Ac came from a molfile, a SMILES or a numeric CDXML Element.
+    const graph = {
+      atoms: [atom("ac", "Ac", 0, 0), atom("cl", "Cl", bondLength, 0)],
+      bonds: [bond("b1", "ac", "cl")]
+    };
+    expect(nativeSingleBondGraphMetadata(graph.atoms, graph.bonds).formula).toBe("AcCl");
+    expect(stateOf(graph, "ac").valid).toBe(true);
+    expect(expandNativeLabelGroups(graph.atoms, graph.bonds).expansions).toEqual([]);
+    expect(nativeSingleBondGraphSmiles(graph.atoms, graph.bonds)).toBe("[Ac]Cl");
   });
 });
 

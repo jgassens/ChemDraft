@@ -77,7 +77,9 @@ const bondOrderName = { 1: "single", 2: "double", 3: "triple" } as const;
  * appended after every drawn atom, so an index into the drawn atoms means the same atom before and
  * after — the contract engine read-backs rely on. Added atoms are ordinary implicit-hydrogen atoms:
  * a group is only expanded when its bonds fill its free valence exactly (the caller checks), and
- * then the valence model gives every atom exactly the hydrogens the table states.
+ * then the valence model gives every table atom the hydrogens the table states. The one place it can
+ * fall short is a head in a hypervalent state ("SHMe" or "PH3Me" on a bond); `atoms.ts` writes those
+ * stated hydrogens as explicit H atoms after this runs.
  *
  * Layout: an abbreviation is turned to point away from the atom it is bonded to, at the
  * molecule's own bond length; a composite's substituents spread into the open space around its

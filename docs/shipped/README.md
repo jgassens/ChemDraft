@@ -47,9 +47,10 @@ PRs make the label mean its group.
 - **Reading** (`nativeAtomLabelReading`): element (case ignored), abbreviation (case-sensitive),
   spelled one-heavy-atom label ("NH2"), composite ("NMe2", "BocHN", "CH2Ph"), placeholder, bare
   formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
-  ("COEt") is left unrecognized instead of read as C–OEt. On a bonded atom, "Ar" is aryl (a
-  placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl; unbonded, they are their
-  elements. `nativeAtomLabelFreeValence` gives the bonds each label takes.
+  ("COEt") is left unrecognized instead of read as C–OEt. Typed as a label on a bonded atom, "Ar" is
+  aryl (a placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl. Unbonded, or read from
+  a structure file (molfile, SMILES, a numeric CDXML Element), they are their elements: a real Ac–Cl
+  is actinium chloride. `nativeAtomLabelFreeValence` gives the bonds each label takes.
 - **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
   hotkey. The reason names the expected bond count, and the state carries the charge that would fix
   it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.

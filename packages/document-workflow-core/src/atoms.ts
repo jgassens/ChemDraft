@@ -365,10 +365,11 @@ export function nativeAtomValidationState(
     };
   }
 
-  // An element symbol chemists write on bonds ("Ac", "Pr", "Ts") is that group on a bonded atom, so
-  // it is checked as one: a "Ts" with two bonds is a tosyl with one too many, not tennessine.
-  if (element && (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0) {
-    const bondedReading = nativeAtomLabelReading(atom.element, { bonded: true });
+  // An element symbol chemists write on bonds ("Ac", "Pr", "Ts"), typed as a label, is that group on
+  // a bonded atom, so it is checked as one: a "Ts" with two bonds is a tosyl with one too many, not
+  // tennessine. An element from a structure file (no `labelLiteral`) stays the element.
+  if (element && atom.labelLiteral === true && (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0) {
+    const bondedReading = nativeAtomLabelReading(atom.element, { bonded: true, typed: true });
     if (bondedReading.kind === "group") {
       return nativeLabelGroupValidationState(atom, atom.element.trim(), bondedReading.group, valenceUsed, effectiveFormalCharge);
     }
@@ -525,6 +526,14 @@ export type NativeAtomLabelReading =
 export interface NativeAtomLabelContext {
   /** The atom has at least one bond. Decides "Ar": aryl when bonded, argon when not. */
   bonded?: boolean;
+  /**
+   * The label was entered as text — typed in the label editor or text tool, or a file's text label —
+   * rather than stored as an element of a structure. Only a typed "Ar", "Ac", "Pr" or "Ts" means a
+   * group: an element read from a molfile, a SMILES or a numeric CDXML `Element` stays that
+   * element even on a bond, so a real Ac–Cl bond is never acetyl chloride. Callers reading a stored
+   * atom pass its `labelLiteral`; omitted, it counts as typed (a label someone is typing now).
+   */
+  typed?: boolean;
 }
 
 /**
@@ -535,16 +544,17 @@ export interface NativeAtomLabelContext {
  * is unrecognized text — the suggestion names "OMe" so the message can say so.
  *
  * The exceptions to "elements first" are labels chemists write on bonds that are also element
- * symbols. On an atom with bonds, "Ar" is aryl (a generic placeholder), and "Ac", "Pr" and "Ts" are
- * acetyl, n-propyl and tosyl (the table's `bondedSpellings`). An unbonded one is the element:
- * argon, actinium, praseodymium, tennessine. Exact case only.
+ * symbols. Typed on an atom with bonds, "Ar" is aryl (a generic placeholder), and "Ac", "Pr" and
+ * "Ts" are acetyl, n-propyl and tosyl (the table's `bondedSpellings`). An unbonded one, or one that
+ * came from a structure rather than typed text (`context.typed: false`), is the element: argon,
+ * actinium, praseodymium, tennessine. Exact case only.
  */
 export function nativeAtomLabelReading(label: string, context: NativeAtomLabelContext = {}): NativeAtomLabelReading {
   const trimmed = label.trim();
   if (trimmed === "D" || trimmed === "T") {
     return { kind: "heavy-hydrogen", element: trimmed };
   }
-  if (context.bonded === true) {
+  if (context.bonded === true && context.typed !== false) {
     if (isBondedGenericAtomLabel(trimmed)) {
       return { kind: "generic" };
     }
@@ -785,9 +795,9 @@ export function nativeExpandableLabelGroups(
 ): Map<string, NativeLabelGroup> {
   const groups = new Map<string, NativeLabelGroup>();
   for (const atom of atoms) {
-    // Bonded, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`).
+    // Bonded and typed, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`).
     const bonded = (resolution.bondsByAtom.get(atom.id)?.length ?? 0) > 0;
-    const reading = nativeAtomLabelReading(atom.element, { bonded });
+    const reading = nativeAtomLabelReading(atom.element, { bonded, typed: atom.labelLiteral === true });
     if (reading.kind !== "group" || resolution.unresolvedAtomIds.has(atom.id)) continue;
     const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
     if (nativeLabelGroupVerdict(reading.group, valenceUsed, atom.formalCharge).valid) {
@@ -815,8 +825,10 @@ export function expandNativeLabelGroups(
  * S carrying one H); written out as an ordinary atom it gets the model's implicit count instead.
  * The two agree except where the group sits in a hypervalent state the octet count does not reach:
  * "SHMe" on two bonds is an S(IV) with an H, to which the model gives no implicit hydrogen while a
- * molfile reader gives one. There the stated hydrogens are written as explicit H atoms, so the
- * formula, the SMILES and every engine count exactly the hydrogens the label states.
+ * molfile reader gives one; "PH3Me" on a bond is a P(V) the model gives one implicit H instead of
+ * three. There all the stated hydrogens are written as explicit H atoms — which fills the head's
+ * valence, so nothing implicit is added on top — and the formula, the SMILES and every engine count
+ * exactly the hydrogens the label states.
  */
 function expandNativeLabelGroupsWithStatedHydrogens(
   atoms: readonly MoleculeAtom[],
@@ -848,8 +860,12 @@ function expandNativeLabelGroupsWithStatedHydrogens(
     const implicit = nativeImplicitHydrogenCount(
       element, resolution.bondOrderUsage.get(atom.id) ?? 0, atom.formalCharge, atom.markRadicals ?? 0
     );
-    const missing = stated - implicit;
-    if (missing <= 0) return expansion;
+    if (stated <= implicit) return expansion;
+    // Write every stated hydrogen, not just the shortfall: an explicit H uses a valence slot, so
+    // adding only (stated − implicit) would eat the implicit ones it was meant to top up — a neutral
+    // C–PH3Me head has one implicit H, and two more explicit ones would leave it with two, not three.
+    // With all of them explicit the head's valence is full and the model adds none.
+    const missing = stated;
     const neighborAngles = (resolution.bondsByAtom.get(atom.id) ?? [])
       .map((bond) => atomById.get(bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId))
       .filter((neighbor): neighbor is MoleculeAtom => neighbor !== undefined)
@@ -909,7 +925,8 @@ export function nativeElementLabelPlaceholders(
   const placeholders = new Map<string, string>();
   for (const atom of atoms) {
     const label = atom.element.trim();
-    const meaning = bondedElementLabelMeaning(label);
+    // Only a typed label carries the bonded meaning; an element from a structure file stays one.
+    const meaning = atom.labelLiteral === true ? bondedElementLabelMeaning(label) : undefined;
     if (!bonded.has(atom.id) || meaning === undefined || nativeElementFromAtomLabel(label) === undefined) continue;
     expandable ??= nativeExpandableLabelGroups(atoms, bonds);
     if (!expandable.has(atom.id)) {

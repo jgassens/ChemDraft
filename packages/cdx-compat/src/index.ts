@@ -594,10 +594,14 @@ function exportMoleculeObject(
   const bondedAtomIds = new Set(molecule.bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
   const atomLines = molecule.atoms.map((atom) => {
     const nodeId = idFor(atomIds, atom.id, allocator);
-    // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — is not that element
-    // on a bonded atom. Writing its atomic number would hand every CDXML reader argon or tennessine,
-    // so it goes out as its label, the same way any other non-element label does, with a warning.
-    const bondedMeaning = bondedAtomIds.has(atom.id) ? bondedElementLabelMeaning(atom.element) : undefined;
+    // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — typed as a label is
+    // not that element on a bonded atom. Writing its atomic number would hand every CDXML reader
+    // argon or tennessine, so it goes out as its label, the same way any other non-element label
+    // does, with a warning. An element that came from a structure (no `labelLiteral`) stays the
+    // element and keeps its atomic number: a real Ac–Cl bond is actinium.
+    const bondedMeaning = bondedAtomIds.has(atom.id) && atom.labelLiteral === true
+      ? bondedElementLabelMeaning(atom.element)
+      : undefined;
     const elementNumber = bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
     const attributes = [
       `id="${nodeId}"`,
@@ -1854,6 +1858,12 @@ function importFragment(
       };
     }
     const literalLabel = expansion.literalLabelByCdxmlId.get(cdxmlId);
+    // A label written as text in Element ("Ar", "Ts" — how a bonded aryl or tosyl label is exported)
+    // is a typed label, so it keeps the group meaning a bonded one carries. A numeric Element is an
+    // element of the structure and stays one: Element="89" bonded to Cl is actinium, never acetyl.
+    const rawElement = atomElement.attributes.Element?.trim();
+    const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
+      bondedElementLabelMeaning(element) !== undefined;
     return {
       id: atomId,
       element: literalLabel ?? element,
@@ -1862,7 +1872,7 @@ function importFragment(
       formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
       // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
       // no implicit hydrogens are invented for a label like "SO3".
-      ...(literalLabel ? { labelLiteral: true } : {}),
+      ...(literalLabel || textLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
     };
   });
@@ -3773,7 +3783,13 @@ const elementToAtomicNumber: Record<string, number> = {
   K: 19,
   Ca: 20,
   Br: 35,
-  I: 53
+  I: 53,
+  // The elements whose symbols are also bonded labels (Ar above; Pr, Ac, Ts here): an element atom
+  // must go out by atomic number so it can never come back as the typed label "Ac" — acetyl on a
+  // bond — and an imported Element="89" must stay actinium, not fall back to carbon.
+  Pr: 59,
+  Ac: 89,
+  Ts: 117
 };
 
 const atomicNumberToElement = Object.fromEntries(

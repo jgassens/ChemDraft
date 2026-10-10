@@ -37,6 +37,10 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeAtomLabelFreeValence("Ar", 0, { bonded: true })).toBeUndefined();
     // No other element changes with bonding.
     expect(nativeAtomLabelReading("Y", { bonded: true })).toEqual({ kind: "element", element: "Y" });
+    // Only a typed label: an Ar (or Ac, Pr, Ts) that came from a structure file is the element.
+    for (const label of ["Ar", "Ac", "Pr", "Ts"]) {
+      expect(nativeAtomLabelReading(label, { bonded: true, typed: false })).toEqual({ kind: "element", element: label });
+    }
   });
 
   it("reads a bonded Ac, Pr or Ts as acetyl, n-propyl or tosyl, and an unbonded one as the element", () => {

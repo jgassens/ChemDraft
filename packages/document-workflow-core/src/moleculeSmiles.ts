@@ -89,12 +89,14 @@ export async function moleculeSmiles(
     });
   }
   warnings.push(...bondOrders.warnings.aromatic.map(bondOrderWarning));
-  // The stored string is trusted only when no label changes what the graph means: one from before
-  // abbreviations expanded would still say [*], and one stored for a bonded "Ar" says argon ([Ar]O)
-  // while the warning above promises [*]. Either way, write the current graph instead.
+  // The stored string is trusted only when every atom writes as itself: no group expanded, and no
+  // label written as a dummy atom — a placeholder ("R"), unrecognized text ("Ome"), a flagged group,
+  // a bonded "Ar". Otherwise it may say something else entirely (a stored "CO" for a C–R drawing,
+  // "[Ar]O" for aryl alcohol) while the warnings above promise [*]; write the current graph instead.
   if (
     expanded.expansions.length === 0 &&
     expanded.placeholderAtoms.size === 0 &&
+    nativeMoleculeUnspellableLabels(molecule).length === 0 &&
     molecule.structureFormat === "smiles" &&
     molecule.structure
   ) {

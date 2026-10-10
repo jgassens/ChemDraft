@@ -18563,9 +18563,10 @@ function reorderMoleculeBonds(
 function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
   // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
   // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
-  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A bonded "Ac",
-  // "Pr" or "Ts" is such a group too; unbonded it is an element and takes its first bond like one.
-  const reading = nativeAtomLabelReading(atom.element, { bonded: valenceUsed > 0 });
+  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
+  // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
+  // and takes bonds like one.
+  const reading = nativeAtomLabelReading(atom.element, { bonded: valenceUsed > 0, typed: atom.labelLiteral === true });
   if (reading.kind === "element") {
     return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
   }
