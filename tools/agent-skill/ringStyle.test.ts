@@ -680,6 +680,18 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       expect(result.stdout).toMatch(/^A {2}#e53935/m);
     }, 120_000);
 
+    it.skipIf(!cliReady)("style exits 1 and prints FAILED for a fixture with a figure fault", async () => {
+      const failing = join(dir, "style-failing-figure");
+      mkdirSync(failing, { recursive: true });
+      for (const file of ["strychnine.json", "strychnine-build.jsonl"]) copyFileSync(join(fixtures, file), join(failing, file));
+
+      const result = await run("style", failing, "strychnine", "--checkout", cliCheckout!);
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toMatch(/^Figure checks FAILED \(\d+\):$/m);
+      expect(result.stdout).toMatch(/^ {2}FAILED ring E is a sliver:/m);
+    }, 180_000);
+
     it("builds identity jobs that put the carbon back under each Me", async () => {
       const line = (document: string, smiles: string) => JSON.stringify({ name: "x", ok: true, document: join(dir, document), files: [],
         molecules: [{ canonicalSmiles: smiles, stereoCenters: 2, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] });

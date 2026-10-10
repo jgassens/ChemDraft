@@ -380,10 +380,11 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   finished.
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
   SMILES, to try that layout by hand.
-- `identity-jobs` and `check` compare every rendered InChIKey and the
-  stereocentre counts with PubChem's, run the figure checks again on the
-  rendered documents, and list labels that nearly touch a label, letter
-  or bond (or say there are none); the options' `rotate` turns a
+- `identity-jobs` writes the `analyze` batch for the rendered documents.
+  `check` compares every rendered InChIKey and the stereocentre counts
+  with PubChem's, runs the figure checks again on the rendered documents,
+  and lists labels that nearly touch a label, letter or bond (or says
+  there are none); the options' `rotate` turns a
   substituent about its attachment atom when one still does, checked like
   every other move. `--help` prints every command and option.
 

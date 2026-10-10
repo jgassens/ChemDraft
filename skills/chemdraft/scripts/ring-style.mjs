@@ -44,13 +44,11 @@
 //                 the same molecule in another atom order, which `document` lays out anew.
 //   identity-jobs reads <name>-render.jsonl (every `render-document` stdout line);
 //                 writes <name>-identity-jobs.json (the batch for `analyze`).
-//                 Then it runs the figure checks (below) on the result and exits 1, with a FAILED
-//                 list, when any fails; the files are still written.
 //   check         reads <name>-pubchem.json, <name>-render.jsonl, <name>-identity.jsonl
 //                 (the `analyze` stdout), <name>-build.jsonl, <name>-style.json, the rendered
 //                 documents and SVGs; prints and writes <name>-check.json. Lists labels that
 //                 nearly touch (label, ring letter or bond), or says there are none. Exit 1 when an
-//                 InChIKey or stereo count differs, or when a figure check fails.
+//                 InChIKey or stereo count differs, or when a figure check fails with a FAILED list.
 //   --help        prints this text.
 //
 // Figure checks (LIMITS): a figure that fails one is not finished. Each lettered ring against a
