@@ -63,6 +63,7 @@
     "allow-opsin-status",
     "allow-opsin-name-to-structure",
     "allow-rasterize-svg",
+    "allow-outline-svg-text",
     "allow-list-system-fonts",
     "dialog:allow-open",
     "dialog:allow-save",

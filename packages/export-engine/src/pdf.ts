@@ -15,6 +15,8 @@ export interface PdfExportOptions {
   domParser?: DOMParser;
   compress?: boolean;
   includePageGuides?: boolean;
+  /** Resolve text to vector paths with the host's fonts before PDF conversion. */
+  outlineSvgText?: (svg: string) => Promise<string>;
 }
 
 export async function exportDocumentToPdf(
@@ -33,7 +35,10 @@ export async function exportDocumentToPdf(
     pageIndex,
     includePageGuides: options.includePageGuides
   });
-  const svgElement = parseSvgElement(svgResult.contents, options.domParser);
+  const svg = options.outlineSvgText
+    ? await options.outlineSvgText(svgResult.contents)
+    : svgResult.contents;
+  const svgElement = parseSvgElement(svg, options.domParser);
   const widthPt = cssPxToPdfPt(page.width);
   const heightPt = cssPxToPdfPt(page.height);
   const pdf = new jsPDF({

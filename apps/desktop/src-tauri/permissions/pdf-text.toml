@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-outline-svg-text"
+description = "Allows PDF export to convert SVG text to vector paths using installed fonts."
+commands.allow = ["outline_svg_text"]

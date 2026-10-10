@@ -738,6 +738,7 @@ pub fn run() {
             engine3d_sidecar_stop_session,
             take_pending_open_document,
             export::rasterize_svg,
+            export::outline_svg_text,
             fonts::list_system_fonts
         ])
         .build(tauri::generate_context!())

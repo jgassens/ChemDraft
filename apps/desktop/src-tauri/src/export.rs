@@ -9,6 +9,22 @@ const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 
+/// PDF's built-in fonts cannot encode scientific Unicode. Shape text with the
+/// same system font database as raster export, then retain it as vector paths.
+#[tauri::command]
+pub(crate) fn outline_svg_text(svg: String) -> Result<String, String> {
+    let options = usvg::Options {
+        fontdb: shared_fontdb(),
+        ..Default::default()
+    };
+    let tree = usvg::Tree::from_data(svg.as_bytes(), &options)
+        .map_err(|error| format!("Could not parse SVG for PDF export: {error}"))?;
+    Ok(tree.to_string(&usvg::WriteOptions {
+        preserve_text: false,
+        ..Default::default()
+    }))
+}
+
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RasterExportFormat {
@@ -387,6 +403,15 @@ fn warning(code: &'static str, message: String) -> RasterExportWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_text_is_shaped_into_vector_paths() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="80"><text x="10" y="30" font-family="Arial" font-size="20">[Zr₆(μ₃-O)₄(μ₃-OH)₄(BDC)₆]ₙ</text><text x="10" y="60" font-family="Arial" font-weight="bold">BDC²⁻ · Zr₆ cluster node</text></svg>"#;
+        let outlined = outline_svg_text(svg.to_string()).expect("PDF text should be outlined");
+        assert!(!outlined.contains("<text"));
+        assert!(outlined.contains("<path"));
+        assert!(outline_svg_text("invalid SVG".to_string()).is_err());
+    }
 
     const SIMPLE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32" viewBox="0 0 64 32"><rect width="64" height="32" fill="#ffffff"/><circle cx="16" cy="16" r="8" fill="#111111"/></svg>"##;
 

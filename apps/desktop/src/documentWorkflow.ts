@@ -17285,7 +17285,13 @@ export async function exportPhase4Pdf(
   options: Pick<PdfExportOptions, "compress" | "includePageGuides" | "pageIndex"> = {}
 ): Promise<BinaryExportResult> {
   const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
-  return exportDocumentToPdf(document, options);
+  const { isTauri, invoke } = await import("@tauri-apps/api/core");
+  return exportDocumentToPdf(document, {
+    ...options,
+    outlineSvgText: isTauri()
+      ? (svg) => invoke<string>("outline_svg_text", { svg })
+      : undefined
+  });
 }
 
 export function chemistryMetadataFromAnalysis(result: StructureAnalysisResult): ChemicalMetadata {
