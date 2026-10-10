@@ -214,7 +214,12 @@ export {
   type ViewMatrix
 } from "./perspective";
 
-export { isMetalSymbol } from "./elements";
+export {
+  atomicNumberForElementSymbol,
+  elementSymbolForAtomicNumber,
+  elementSymbols,
+  isMetalSymbol
+} from "./elements";
 export { isDativeBond, moleculeToMolfileV2000, moleculeToMolfileV3000, UnknownBondOrderError, type MolfileWriteOptions, type MolfileWriteResult } from "./molfile";
 
 export { bridgeBondIndices } from "./bondGraph";

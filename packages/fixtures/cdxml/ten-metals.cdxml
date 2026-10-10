@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 612 792">
+    <fragment id="f_fe">
+      <n id="fe_c" p="75 75"/>
+      <n id="fe" p="111 75" Element="26"/>
+      <n id="fe_cl" p="147 75" Element="17"/>
+      <b id="fe_b1" B="fe_c" E="fe" Order="1"/>
+      <b id="fe_b2" B="fe" E="fe_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_zn">
+      <n id="zn_c" p="75 115"/>
+      <n id="zn" p="111 115" Element="30"/>
+      <n id="zn_cl" p="147 115" Element="17"/>
+      <b id="zn_b1" B="zn_c" E="zn" Order="1"/>
+      <b id="zn_b2" B="zn" E="zn_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_cu">
+      <n id="cu_c" p="75 155"/>
+      <n id="cu" p="111 155" Element="29"/>
+      <n id="cu_cl" p="147 155" Element="17"/>
+      <b id="cu_b1" B="cu_c" E="cu" Order="1"/>
+      <b id="cu_b2" B="cu" E="cu_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_ni">
+      <n id="ni_c" p="75 195"/>
+      <n id="ni" p="111 195" Element="28"/>
+      <n id="ni_cl" p="147 195" Element="17"/>
+      <b id="ni_b1" B="ni_c" E="ni" Order="1"/>
+      <b id="ni_b2" B="ni" E="ni_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_pd">
+      <n id="pd_c" p="75 235"/>
+      <n id="pd" p="111 235" Element="46"/>
+      <n id="pd_cl" p="147 235" Element="17"/>
+      <b id="pd_b1" B="pd_c" E="pd" Order="1"/>
+      <b id="pd_b2" B="pd" E="pd_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_pt">
+      <n id="pt_c" p="75 275"/>
+      <n id="pt" p="111 275" Element="78"/>
+      <n id="pt_cl" p="147 275" Element="17"/>
+      <b id="pt_b1" B="pt_c" E="pt" Order="1"/>
+      <b id="pt_b2" B="pt" E="pt_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_sn">
+      <n id="sn_c" p="75 315"/>
+      <n id="sn" p="111 315" Element="50"/>
+      <n id="sn_cl" p="147 315" Element="17"/>
+      <b id="sn_b1" B="sn_c" E="sn" Order="1"/>
+      <b id="sn_b2" B="sn" E="sn_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_se">
+      <n id="se_c" p="75 355"/>
+      <n id="se" p="111 355" Element="34"/>
+      <n id="se_cl" p="147 355" Element="17"/>
+      <b id="se_b1" B="se_c" E="se" Order="1"/>
+      <b id="se_b2" B="se" E="se_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_hg">
+      <n id="hg_c" p="75 395"/>
+      <n id="hg" p="111 395" Element="80"/>
+      <n id="hg_cl" p="147 395" Element="17"/>
+      <b id="hg_b1" B="hg_c" E="hg" Order="1"/>
+      <b id="hg_b2" B="hg" E="hg_cl" Order="1"/>
+    </fragment>
+    <fragment id="f_au">
+      <n id="au_c" p="75 435"/>
+      <n id="au" p="111 435" Element="79"/>
+      <n id="au_cl" p="147 435" Element="17"/>
+      <b id="au_b1" B="au_c" E="au" Order="1"/>
+      <b id="au_b2" B="au" E="au_cl" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>
