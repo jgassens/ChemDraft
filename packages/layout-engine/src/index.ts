@@ -301,7 +301,7 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
 
   const breakawayDistance = input.customLengthBreakawayDistance ?? input.bondLength * 1.4;
   const lengthMode = input.forceCustomLength || (!input.standardLength && pointerDistance >= breakawayDistance) ? "custom" : "default";
-  const snapTarget = lengthMode === "custom" || input.standardLength
+  const snapTarget = lengthMode === "custom" || input.standardLength || input.directionDegrees !== undefined
     ? nearestFreeformSnapTarget({
         atoms: input.atoms,
         bonds: input.bonds,
@@ -343,11 +343,10 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
         x: source.x + pointerDirection.x * plannedLength,
         y: source.y + pointerDirection.y * plannedLength
       };
-  // A placement at the edge must decline rather than shorten a standard bond or skew its aim.
-  if (input.standardLength && lengthMode === "default" && !pointInsideExpandedBounds(plannedEndPoint, input.pageBounds, 0)) {
-    return undefined;
-  }
-  const newAtomPoint = clampPointToBounds(plannedEndPoint, input.pageBounds);
+  // Shorten aimed placement along its ray at the page edge, preserving the supplied angle.
+  const newAtomPoint = input.directionDegrees !== undefined
+    ? clampAimedEndpointToBounds(source, plannedEndPoint, input.pageBounds)
+    : clampPointToBounds(plannedEndPoint, input.pageBounds);
   const direction = normalize({
     x: newAtomPoint.x - source.x,
     y: newAtomPoint.y - source.y
@@ -769,6 +768,17 @@ function clampPointToBounds(point: LayoutPoint, bounds: LayoutBounds): LayoutPoi
     x: clamp(point.x, bounds.x, bounds.x + bounds.width),
     y: clamp(point.y, bounds.y, bounds.y + bounds.height)
   };
+}
+
+function clampAimedEndpointToBounds(start: LayoutPoint, end: LayoutPoint, bounds: LayoutBounds): LayoutPoint {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let fraction = 1;
+  if (dx > 0) fraction = Math.min(fraction, (bounds.x + bounds.width - start.x) / dx);
+  if (dx < 0) fraction = Math.min(fraction, (bounds.x - start.x) / dx);
+  if (dy > 0) fraction = Math.min(fraction, (bounds.y + bounds.height - start.y) / dy);
+  if (dy < 0) fraction = Math.min(fraction, (bounds.y - start.y) / dy);
+  return clampPointToBounds({ x: start.x + dx * Math.max(0, fraction), y: start.y + dy * Math.max(0, fraction) }, bounds);
 }
 
 export function distance(left: LayoutPoint, right: LayoutPoint): number {

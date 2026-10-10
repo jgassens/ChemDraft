@@ -42,8 +42,10 @@ to behave the same on macOS and Windows; Windows hands-on verification is pendin
 - **Drawing interaction fixes.** Whole-object rotation magnetically snaps to absolute 15° multiples,
   while holding Shift during a drag constrains it to those absolute multiples; group rotation uses
   15° drag increments. Held-mouse bond, ring, and template placement aiming snaps to absolute 15°
-  multiples by default, with Alt/Option for a free angle. Straight and flexible chains snap their first bond;
-  new bonds retain the standard length, clicks retain the fixed geometry, and release commits the
+  multiples by default, with Alt/Option for a free angle. Straight chains snap their first bond;
+  flexible chains follow the traced path without snapping. Atom bond drags retain standard length
+  until the custom-length breakaway, then keep the dragged length and Å readout with the aimed angle.
+  Off-page endpoints shorten along that angle to the page edge. Clicks retain the fixed geometry, and release commits the
   displayed preview in one undo entry. Existing-atom connections retain their endpoint targeting.
   A subtle status-line modifier segment describes the available functions for
   the current tool, hover, or drag, updates on key presses/releases, clears held keys on blur, and

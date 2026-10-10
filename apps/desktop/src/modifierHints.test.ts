@@ -28,6 +28,11 @@ describe.each(["macos", "windows"] as const)("modifier hints on %s", (platform) 
     expect(hint({ interaction: "placement-drag" }, { shiftKey: true, altKey: true })).toContain("Free angle");
   });
 
+  it("offers no angle snap hint for flexible-chain placement", () => {
+    expect(hint({ activeTool: "tool.chainFlexible", interaction: "placement-drag" })).toBe("");
+    expect(hint({ activeTool: "tool.chainFlexible", interaction: "placement-drag" }, { altKey: true })).toBe("");
+  });
+
   it("describes independent stretching and proportional resizing", () => {
     expect(hint({ interaction: "resize-drag" })).toBe(`${shift}: stretch width and height independently`);
     expect(hint({ interaction: "resize-drag" }, { shiftKey: true })).toContain(`release ${shift} for proportional resizing`);

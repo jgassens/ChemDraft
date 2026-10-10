@@ -1021,7 +1021,7 @@ export interface NativeChainAnchor {
 }
 
 export interface NativeChainToolOptions {
-  /** Placement snaps the first bond; Alt/Option leaves the planned chain free. */
+  /** Aimed-chain placement snaps the first bond; flexible paths stay unsnapped. */
   placementAltKey?: boolean;
   /**
    * Skip the chemistry derivation for a frame the user is still dragging.
@@ -1225,13 +1225,13 @@ function planChainVerticesForOptions(
     );
   };
   if (options.pathPoints && options.pathPoints.length >= 2) {
-    return aim(planNativeFlexibleChainVertices({
+    return planNativeFlexibleChainVertices({
       start: input.start,
       path: options.pathPoints,
       bondLengthPx: input.bondLengthPx,
       chainAngleDegrees: input.chainAngleDegrees,
       pageBounds: input.pageBounds
-    }));
+    });
   }
   return aim(planNativeChainVertices(input));
 }
@@ -8854,8 +8854,7 @@ export function previewNativeMoleculeFreeformBondGrowth(
     minimumBondLength: freeformMinimumBondLength,
     customLengthBreakawayDistance: freeformCustomLengthBreakawayDistance,
     forceCustomLength: options.forceCustomLength,
-    standardLength: options.placementAltKey !== undefined,
-    directionDegrees: options.placementAltKey === undefined || options.forceCustomLength
+    directionDegrees: options.placementAltKey === undefined
       ? undefined
       : snapPlacementDegrees(placementAimDegrees(sourceAtom, point), options.placementAltKey),
     snapHitRadius: atomHitRadius

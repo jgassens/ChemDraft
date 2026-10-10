@@ -79,7 +79,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     const before = molecules(current());
     const source = before[0].atoms[1];
     const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
-    const end = pointAt(source, 23);
+    const end = pointAt(source, 23, nativeBondLengthPx * 1.2);
     await pointer("pointerdown", source, wrapper);
     await pointer("pointermove", end, wrapper, alt);
     const line = container.querySelector<SVGLineElement>(".native-bond-freeform-line")!;
@@ -101,6 +101,45 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(terminal.x - source.x).toBeCloseTo(previewEnd.x - previewStart.x, 8);
     expect(terminal.y - source.y).toBeCloseTo(previewEnd.y - previewStart.y, 8);
     expect(placed.structure).toBe("CCC");
+    await undoOnce(before);
+  });
+
+  it.each([false, true])("keeps long atom drags custom length (Alt: %s), with preview matching commit", async (alt) => {
+    await mount("tool.bond", insertNativeSingleBondMolecule(createPhase4Document("Long drag"), { x: 240, y: 240 }));
+    const before = molecules(current());
+    const source = before[0].atoms[1];
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    await pointer("pointerdown", source, wrapper);
+    await pointer("pointermove", pointAt(source, 23, 240), wrapper, alt);
+    const line = container.querySelector<SVGLineElement>(".native-bond-freeform-line")!;
+    const previewStart = { x: Number(line.getAttribute("x1")), y: Number(line.getAttribute("y1")) };
+    const end = {
+      x: source.x + Number(line.getAttribute("x2")) - previewStart.x,
+      y: source.y + Number(line.getAttribute("y2")) - previewStart.y
+    };
+    expect(angle(source, end)).toBeCloseTo(alt ? 23 : 30, 8);
+    expect(Math.hypot(end.x - source.x, end.y - source.y)).toBeCloseTo(240, 8);
+    expect(wrapper.dataset.freeformPreviewCustomLength).toBe("true");
+    expect(Number(wrapper.dataset.freeformPreviewLengthAngstrom)).toBeCloseTo(240 / nativeBondLengthPx * 1.56, 2);
+    await pointer("pointerup", pointAt(source, 43), wrapper, !alt);
+    expect(molecules(current())[0].atoms.at(-1)).toMatchObject(end);
+    expect(molecules(current())[0].structure).toBe("CCC");
+    await undoOnce(before);
+  });
+
+  it("keeps custom length unlocked when the pointer returns below breakaway", async () => {
+    await mount("tool.bond", insertNativeSingleBondMolecule(createPhase4Document("Return drag"), { x: 240, y: 240 }));
+    const before = molecules(current());
+    const source = before[0].atoms[1];
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    await pointer("pointerdown", source, wrapper);
+    await pointer("pointermove", pointAt(source, 23, 240), wrapper);
+    await pointer("pointermove", pointAt(source, 23, nativeBondLengthPx * 0.8), wrapper);
+    expect(wrapper.dataset.freeformPreviewCustomLength).toBe("true");
+    await pointer("pointerup", pointAt(source, 43), wrapper);
+    const end = molecules(current())[0].atoms.at(-1)!;
+    expect(angle(source, end)).toBeCloseTo(30, 8);
+    expect(Math.hypot(end.x - source.x, end.y - source.y)).toBeCloseTo(nativeBondLengthPx * 0.8, 8);
     await undoOnce(before);
   });
 
@@ -150,8 +189,10 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await pointer("pointerdown", start);
     await pointer("pointermove", pointAt(start, 23), page(), alt);
     const preview = molecules(current())[0];
-    if (alt) expect(angle(preview.atoms[0], preview.atoms[1])).toBeCloseTo(-7, 8);
+    if (alt || tool === "tool.chainFlexible") expect(angle(preview.atoms[0], preview.atoms[1])).toBeCloseTo(-7, 8);
     else expect(angle(preview.atoms[0], preview.atoms[1]) / 15).toBeCloseTo(Math.round(angle(preview.atoms[0], preview.atoms[1]) / 15), 8);
+    if (tool === "tool.chainFlexible") expect(hint()).toBe("");
+    else expect(hint()).toContain(alt ? "Free angle" : "Snaps to 15°");
     for (let i = 1; i < preview.atoms.length; i++) expect(Math.hypot(preview.atoms[i].x - preview.atoms[i - 1].x, preview.atoms[i].y - preview.atoms[i - 1].y)).toBeCloseTo(nativeBondLengthPx, 8);
     await pointer("pointerup", pointAt(start, 43));
     expect(molecules(current())[0].atoms).toEqual(preview.atoms);

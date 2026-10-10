@@ -57,6 +57,7 @@ export function modifierHint(
 
   switch (context.interaction) {
     case "placement-drag":
+      if (context.activeTool === "tool.chainFlexible") return "";
       return held.altKey
         ? `Free angle — release ${alt} to snap to 15°`
         : `Snaps to 15° · ${alt}: free angle`;

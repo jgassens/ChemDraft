@@ -867,6 +867,7 @@ type NativeBondDragState = {
   latestPoint: ClientPoint;
   dragging: boolean;
   connectsForeignAtom: boolean;
+  freeformUnlocked: boolean;
   altKey: boolean;
 };
 type NativePlacementDragState = {
@@ -11443,9 +11444,13 @@ export function MainWindow({
       foreignTarget?.atomPoint ?? point,
       page.width,
       page.height,
-      { forceCustomLength: foreignTarget !== undefined, placementAltKey: drag.altKey }
+      {
+        forceCustomLength: drag.freeformUnlocked || foreignTarget !== undefined,
+        placementAltKey: foreignTarget ? undefined : drag.altKey
+      }
     );
     drag.connectsForeignAtom = foreignTarget !== undefined;
+    if (preview?.customLength) drag.freeformUnlocked = true;
     setFreeformNativeBond(preview ? {
       objectId: molecule.id,
       atomId: preview.atomId,
@@ -15140,6 +15145,7 @@ export function MainWindow({
         latestPoint: point,
         dragging: false,
         connectsForeignAtom: false,
+        freeformUnlocked: false,
         altKey: event.altKey
       };
       captureElement.setPointerCapture(event.pointerId);
@@ -16729,7 +16735,7 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
     const selectedDocument = selectDocumentObject(document, objectId);
     if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
+      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
     } else {
       applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle);
     }
@@ -17154,7 +17160,8 @@ export function MainWindow({
     else if (selectionMarqueeRef.current) interaction = "marquee";
     else if (objectDragRef.current || nativePartDragRef.current) interaction = "move-drag";
     else if (nativeBondDragRef.current ||
-      (nativePlacementDragRef.current && ["single-bond", "template", "chain"].includes(nativePlacementDragRef.current.kind))) interaction = "placement-drag";
+      (nativePlacementDragRef.current && !nativePlacementDragRef.current.chainFlexible &&
+        ["single-bond", "template", "chain"].includes(nativePlacementDragRef.current.kind))) interaction = "placement-drag";
     else if (nativeBondEditDragRef.current) interaction = "bond-drag";
     else if (
       groupTransformDragRef.current || projectedPlaneTiltDragRef.current || nativePlacementDragRef.current ||

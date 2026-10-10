@@ -89,9 +89,14 @@ mid-drag, and 15° increments for groups; held-mouse placement of bonds (includi
 dashed, and bold), rings, and templates snapping to absolute 15° multiples, with Alt/Option for
 free aiming on both macOS and Windows. Drag a bond from an atom and empty space toward 23°:
 the preview and released bond should both aim at 30°, or exactly 23° with Alt/Option held, at
-standard length. Toggle Alt/Option mid-drag, check the status hint (⌥ on macOS, Alt on Windows),
+standard length for short drags. From an atom, drag past about 1.4 bond lengths (including a 240 px
+drag): check that the custom length and Å readout remain, with the angle still snapped unless
+Alt/Option is held. Drag back below breakaway and check custom length stays unlocked. Aim near
+the page edge: the endpoint should shorten to the edge while retaining its angle.
+Toggle Alt/Option mid-drag, check the status hint (⌥ on macOS, Alt on Windows),
 and verify release matches the preview, click geometry stays unchanged, and one Undo removes
-the placement. Check straight and flexible chains' first bond snapping too; a one-click ring placement,
+the placement. Check straight chains' first bond snapping; flexible chains should follow a long curved
+trace without rotating the path or showing a snap hint. Check a one-click ring placement,
 a short toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
 placing separately with an accurate status message; OMe, CF3, and NO2 typed over a hovered atom
 building the label without activating the Eraser, including with an IME active; a text-box editor

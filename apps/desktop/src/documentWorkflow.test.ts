@@ -1727,6 +1727,16 @@ describe("Phase 4 document workflow", () => {
     }).length).toBeLessThanOrEqual(201);
   });
 
+  it.each([false, true])("keeps a curved flexible-chain path unchanged by placement modifiers (Alt: %s)", (placementAltKey) => {
+    const blank = createPhase4Document("Curved chain placement");
+    const start = { x: 200, y: 200 };
+    const pathPoints = [start, { x: 350, y: 260 }, { x: 430, y: 400 }, { x: 320, y: 500 }];
+    const end = pathPoints.at(-1)!;
+    const expected = applyNativeChainTool(blank, start, end, undefined, { pathPoints });
+    const placed = applyNativeChainTool(blank, start, end, undefined, { pathPoints, placementAltKey });
+    expect(placed).toEqual(expected);
+  });
+
   it("draws a flexible chain along the pointer path via applyNativeChainTool options", () => {
     const blank = createPhase4Document("Flexible Chain Fixture");
     const reach = 22 * Math.cos((Math.PI / 180) * 30);
@@ -6131,6 +6141,21 @@ describe("Phase 4 document workflow", () => {
       2
     );
     expect(newAtom).toMatchObject(releasePoint);
+  });
+
+  it.each([false, true])("keeps custom-length placement aim snapped unless Alt is held (Alt: %s)", (placementAltKey) => {
+    const document = insertNativeSingleBondMolecule(createPhase4Document("Snapped custom length"), { x: 200, y: 220 });
+    const molecule = selectedMolecule(document);
+    const source = molecule.atoms[1];
+    const radians = 23 * Math.PI / 180;
+    const point = { x: source.x + 240 * Math.cos(radians), y: source.y + 240 * Math.sin(radians) };
+    const preview = previewNativeMoleculeFreeformBondGrowth(molecule, source.id, point, 816, 1056, { placementAltKey })!;
+    expect(preview.customLength).toBe(true);
+    expect(preview.length).toBeCloseTo(240, 8);
+    expect(Math.atan2(preview.newAtomPoint.y - source.y, preview.newAtomPoint.x - source.x) * 180 / Math.PI).toBeCloseTo(placementAltKey ? 23 : 30, 8);
+    const placed = applyFreeformSingleBondToolAtPoint(document, molecule.id, source.id, point, { placementAltKey });
+    expect(selectedMolecule(placed).atoms.at(-1)).toMatchObject(preview.newAtomPoint);
+    expect(selectedMolecule(placed).chemistry).toMatchObject({ formula: "C3H8", atomCount: 3, bondCount: 2 });
   });
 
   it("keeps unlocked freeform drag custom so it can make shorter bonds", () => {

@@ -388,12 +388,20 @@ describe("layout-engine molecule growth planning", () => {
     expect(baseInput.bonds).toEqual(bonds);
   });
 
-  it("declines standard-length placement outside the page instead of clipping the bond", () => {
-    expect(planFreeformBondExtension({
+  it.each([0, 30, -30, 60, -60, 180])("clamps off-page standard placement along its %s° aim", (degrees) => {
+    const plan = planFreeformBondExtension({
       ...baseInput, sourceAtomId: "atom_002", endPoint: { x: 500, y: 320 },
-      directionDegrees: 0, standardLength: true,
-      pageBounds: { x: 0, y: 0, width: 280, height: 300 }
-    })).toBeUndefined();
+      directionDegrees: degrees, standardLength: true,
+      pageBounds: { x: 220, y: 200, width: 60, height: 40 }
+    })!;
+    expect(plan).toBeDefined();
+    expect(plan.lengthMode).toBe("default");
+    expect(placementAimDegrees(baseInput.atoms[1], plan.newAtomPoint)).toBeCloseTo(degrees, 10);
+    expect(plan.newAtomPoint.x).toBeGreaterThanOrEqual(220);
+    expect(plan.newAtomPoint.x).toBeLessThanOrEqual(280);
+    expect(plan.newAtomPoint.y).toBeGreaterThanOrEqual(200);
+    expect(plan.newAtomPoint.y).toBeLessThanOrEqual(240);
+    expect(Math.hypot(plan.newAtomPoint.x - 240, plan.newAtomPoint.y - 220)).toBeLessThan(80);
   });
 
   it("aims a vertex plan while preserving lengths and stopping at the page edge", () => {
