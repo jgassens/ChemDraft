@@ -126,7 +126,7 @@ import {
   planFreeformBondExtension,
   nativeMultipleBondGapPx,
   nativeMoleculeBondDrawingStyle,
-  isAcyclicCarbonHeteroatomDoubleBond,
+  isDefaultCenteredDoubleBond,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
@@ -147,8 +147,8 @@ import {
   clamp,
   assertMolfileHasKnownBondOrders,
   createNativeReactionArrow,
-  createSmilesMolecule as createSharedSmilesMolecule,
-  insertSmilesMolecule as insertSharedSmilesMolecule,
+  createSmilesMolecule,
+  insertSmilesMolecule,
   defaultDoubleBondSide,
   defaultNativeMoleculeTransform,
   distance,
@@ -199,8 +199,10 @@ export {
   applyMoleculeTargetBondLength,
   createNativeReactionArrow,
   createNativeTextObject,
+  createSmilesMolecule,
   insertNativeReactionArrow,
   insertNativeTextObject,
+  insertSmilesMolecule,
   nativeAtomValidationState,
   nativeBondLengthPx,
   nativeElementFromAtomLabel,
@@ -229,29 +231,6 @@ export type {
   PastedStructureDepiction,
   SmilesMoleculeSource
 } from "@chemdraft/document-workflow-core";
-
-// Apply the desktop creation default only to newly built objects. Existing native paste
-// payloads and user-selected display sides must retain their explicit choices.
-function automaticCarbonHeteroatomSides(molecule: MoleculeObject): MoleculeObject {
-  return { ...molecule, bonds: molecule.bonds.map((bond) => {
-    if (!isAcyclicCarbonHeteroatomDoubleBond(molecule, bond)) return bond;
-    const { doubleBondSide: _side, ...display } = bond.display ?? {};
-    return { ...bond, display: Object.keys(display).length ? display : undefined };
-  }) };
-}
-
-export function createSmilesMolecule(...args: Parameters<typeof createSharedSmilesMolecule>): DocumentObject {
-  const object = createSharedSmilesMolecule(...args);
-  return object.type === "molecule" ? automaticCarbonHeteroatomSides(object) : object;
-}
-
-export function insertSmilesMolecule(...args: Parameters<typeof insertSharedSmilesMolecule>): ChemDraftDocument {
-  const next = insertSharedSmilesMolecule(...args);
-  const existingIds = new Set(args[0].pages.flatMap((page) => page.objects.map((object) => object.id)));
-  return { ...next, pages: next.pages.map((page) => ({ ...page, objects: page.objects.map((object) =>
-    object.type === "molecule" && !existingIds.has(object.id) ? automaticCarbonHeteroatomSides(object) : object
-  ) })) };
-}
 
 export interface NativeSavePayload {
   filename: string;
@@ -14208,17 +14187,15 @@ export function applyNativeMoleculeEngineRelayout(
   const geometry = moleculeGeometryFromAtoms(atoms);
   const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
   const originalSides = new Map(molecule.bonds.map((bond) => [bond.id, bond.display?.doubleBondSide]));
-  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) =>
-    bond.order === "double"
-      ? { ...bond, display: {
-          ...(bond.display ?? {}),
-          // Acyclic C=X remains automatic unless the user chose a position. Ring/alkene
-          // defaults continue to be recomputed from the new geometry as before.
-          doubleBondSide: isAcyclicCarbonHeteroatomDoubleBond(sideMolecule, bond)
-            ? originalSides.get(bond.id) : defaultDoubleBondSide(sideMolecule, bond)
-        } }
-      : bond
-  );
+  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) => {
+    if (bond.order !== "double") return bond;
+    // Center defaults remain automatic unless the user chose a position. Ring/alkene
+    // defaults continue to be recomputed from the new geometry as before.
+    const doubleBondSide = isDefaultCenteredDoubleBond(sideMolecule, bond)
+      ? originalSides.get(bond.id) : defaultDoubleBondSide(sideMolecule, bond);
+    const display = { ...bond.display, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
+    return { ...bond, display: Object.keys(display).length ? display : undefined };
+  });
 
   // Read-back stereo guard, the same one flatten uses. The wedges above carry the parities the
   // engine computed for ITS geometry; the fold, settle and arrange passes then moved atoms
@@ -18361,14 +18338,13 @@ function nativeBondWithOrderAndDisplay(
 ): MoleculeBond {
   const bondStyle = bond.display?.bondStyle;
   if (order === "double") {
+    const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
+    const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,
       order,
-      display: {
-        ...(bond.display ?? {}),
-        ...(bondStyle ? { bondStyle } : {}),
-        doubleBondSide: bond.display?.doubleBondSide ?? (isAcyclicCarbonHeteroatomDoubleBond(molecule, { ...bond, order }) ? undefined : defaultDoubleBondSide(molecule, bond))
-      }
+      display: Object.keys(display).length ? display : undefined
     };
   }
 

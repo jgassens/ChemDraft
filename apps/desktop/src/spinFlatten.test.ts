@@ -7,6 +7,7 @@ import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depicti
 import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
 import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
 import { bondDepthWeights, projectSpin, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
+import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 
 const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
@@ -235,11 +236,11 @@ describe("flattenSpunMolecule — ScreenPlacement parity", () => {
   });
 });
 
-describe("automatic C=X spin and flatten parity", () => {
+describe.each(["C", "S", "P", "N"])("automatic %s=O spin and flatten parity", (element) => {
   it.each([undefined, "automatic", "left", "right", "center"] as const)("retains %s and uses canvas joined geometry", (side) => {
     const mol = molecule("carbonyl", [
       { id: "a", element: "C", x: 30, y: 50, formalCharge: 0 },
-      { id: "b", element: "C", x: 60, y: 20, formalCharge: 0 },
+      { id: "b", element, x: 60, y: 20, formalCharge: 0 },
       { id: "o", element: "O", x: 100, y: 20, formalCharge: 0 }
     ], [
       { id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
@@ -258,6 +259,12 @@ describe("automatic C=X spin and flatten parity", () => {
     const next = moleculeOf(outcome.document, mol.id);
     const centered = side === undefined || side === "automatic" || side === "center";
     expect(next.bonds[1].display?.doubleBondSide).toBe(side === "automatic" ? undefined : side);
+    if (side === undefined || side === "automatic") {
+      expect(projectedDoubleBondSides(mol)[1].display).toBeUndefined();
+      const styled = { ...mol, bonds: mol.bonds.map((bond) => bond.order === "double"
+        ? { ...bond, display: { ...bond.display, bondStyle: "bold" as const } } : bond) };
+      expect(projectedDoubleBondSides(styled)[1].display).toEqual({ bondStyle: "bold" });
+    }
     expect(next.atoms.map((atom) => [atom.id, atom.element, atom.formalCharge]))
       .toEqual(mol.atoms.map((atom) => [atom.id, atom.element, atom.formalCharge]));
     expect(next.bonds.map((bond) => [bond.id, bond.order, bond.fromAtomId, bond.toAtomId]))

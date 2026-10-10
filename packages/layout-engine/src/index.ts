@@ -4726,8 +4726,8 @@ function bondLineSegments(
       bond
     );
     // Default a ring double bond's inner line to the ring interior; the user's explicit side
-    // (bond.display.doubleBondSide) always wins. Non-C=X terminal heteroatom doubles retain
-    // their existing inward-side default; automatic acyclic C=X returned centered above.
+    // (bond.display.doubleBondSide) always wins. Automatic acyclic C=X and terminal heteroatom
+    // doubles returned centered above; other chain doubles retain their one-sided default.
     const doubleBondSide =
       (bond.display?.doubleBondSide === "automatic" ? undefined : bond.display?.doubleBondSide) ??
       ringInteriorSide ??
@@ -6323,11 +6323,11 @@ function nativeSegmentVectorGeometry(
   };
 }
 
-/** True for C=X double bonds outside a cycle, regardless of terminality or substituents.
+/** True for double bonds that default to Center: acyclic C=X or terminal heteroatom doubles.
  * Test connectivity without this edge so exocyclic bonds and degenerate ring geometry are
  * classified by topology. Callers converting a single bond pass a copy with order double.
  */
-export function isAcyclicCarbonHeteroatomDoubleBond(
+export function isDefaultCenteredDoubleBond(
   object: MoleculeObject,
   bond: CoreMoleculeBond
 ): boolean {
@@ -6337,7 +6337,8 @@ export function isAcyclicCarbonHeteroatomDoubleBond(
   if (!from || !to) return false;
   const a = nativeElementFromAtomLabel(from.element);
   const b = nativeElementFromAtomLabel(to.element);
-  if (!((a === "C" && b !== "C" && b !== "H") || (b === "C" && a !== "C" && a !== "H"))) {
+  const carbonHeteroatom = (a === "C" && b !== "C" && b !== "H") || (b === "C" && a !== "C" && a !== "H");
+  if (!carbonHeteroatom && !isTerminalHeteroatomDoubleBond(from, to, object, bond)) {
     return false;
   }
   const adjacency = new Map<string, string[]>();
@@ -6370,7 +6371,7 @@ export function doubleBondRendersSymmetric(
 ): boolean {
   return bond.order === "double" && (bond.display?.doubleBondSide === "center" || (
     (bond.display?.doubleBondSide === undefined || bond.display.doubleBondSide === "automatic") &&
-    isAcyclicCarbonHeteroatomDoubleBond(object, bond)
+    isDefaultCenteredDoubleBond(object, bond)
   ));
 }
 
@@ -6484,7 +6485,15 @@ function terminalMethyleneCarbons(
 }
 
 function isTerminalHeteroatom(atom: MoleculeAtom, object: MoleculeObject): boolean {
-  return atom.element !== "C" && atom.element !== "H" && atomBondCount(object, atom.id) === 1;
+  const element = nativeElementFromAtomLabel(atom.element);
+  if (element === "C" || element === "H") return false;
+  const atoms = new Map(object.atoms.map((candidate) => [candidate.id, candidate]));
+  const heavyBonds = object.bonds.filter((bond) => {
+    const neighborId = bond.fromAtomId === atom.id ? bond.toAtomId
+      : bond.toAtomId === atom.id ? bond.fromAtomId : undefined;
+    return neighborId !== undefined && nativeElementFromAtomLabel(atoms.get(neighborId)?.element ?? "") !== "H";
+  });
+  return heavyBonds.length === 1;
 }
 
 function atomBondCount(object: MoleculeObject, atomId: string): number {

@@ -6736,7 +6736,7 @@ describe("Phase 4 document workflow", () => {
     for (const changed of [cycleNativeBondOrder(document, "bond_001"), setNativeBondOrder(document, "bond_001", "double")]) {
       const next = selectedMolecule(changed);
       expect(next.bonds[0].order).toBe("double");
-      expect(next.bonds[0].display?.doubleBondSide).toBeUndefined();
+      expect(next.bonds[0].display).toBeUndefined();
     }
   });
 
@@ -6761,10 +6761,24 @@ describe("Phase 4 document workflow", () => {
     ]) {
       expect(object.type).toBe("molecule");
       const molecule = object as MoleculeObject;
-      expect(molecule.bonds[3].display?.doubleBondSide).toBeUndefined();
+      expect(molecule.bonds[3].display).toBeUndefined();
       expect(["left", "right"]).toContain(molecule.bonds[1].display?.doubleBondSide);
       expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "C", "C", "C", "O"]);
       expect(molecule.bonds.map((bond) => bond.order)).toEqual(["single", "double", "single", "double"]);
+    }
+  });
+
+  it.each(["S", "P", "N"])("creates terminal %s=O automatically and keeps it automatic through relayout", (element) => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Terminal heteroatom defaults"), { x: 200, y: 220 });
+    const changed = setNativeAtomElement(setNativeAtomElement(seeded, "atom_001", element), "atom_002", "O");
+    for (const document of [cycleNativeBondOrder(changed, "bond_001"), setNativeBondOrder(changed, "bond_001", "double")]) {
+      const original = selectedMolecule(document);
+      expect(original.bonds[0].order).toBe("double");
+      expect(original.bonds[0].display).toBeUndefined();
+      const relaid = applyNativeMoleculeEngineRelayout(document, original.id, relayoutMolfile2D);
+      expect(selectedMolecule(relaid).bonds[0].display).toBeUndefined();
+      expect(selectedMolecule(relaid).atoms.map((atom) => atom.element)).toEqual([element, "O"]);
+      expect(selectedMolecule(relaid).bonds[0].order).toBe("double");
     }
   });
 

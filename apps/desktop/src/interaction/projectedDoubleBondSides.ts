@@ -1,5 +1,5 @@
 import type { MoleculeObject } from "@chemdraft/chem-core";
-import { doubleBondRendersSymmetric, isAcyclicCarbonHeteroatomDoubleBond, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { doubleBondRendersSymmetric, isDefaultCenteredDoubleBond, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { defaultDoubleBondSide } from "@chemdraft/document-workflow-core";
 
 /** Recompute double-bond sides after projection, preserving explicit Center. */
@@ -8,8 +8,8 @@ export function projectedDoubleBondSides(molecule: MoleculeObject): MoleculeObje
   const atoms = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   return molecule.bonds.map((bond) => {
     if (bond.order !== "double" || bond.display?.doubleBondSide === "center") return bond;
-    // A user-selected side on an acyclic C=X is a display choice, not a ring-interior hint.
-    if (isAcyclicCarbonHeteroatomDoubleBond(molecule, bond) &&
+    // A user-selected side on a Center-default bond is a display choice, not a ring-interior hint.
+    if (isDefaultCenteredDoubleBond(molecule, bond) &&
       (bond.display?.doubleBondSide === "left" || bond.display?.doubleBondSide === "right")) return bond;
     const from = atoms.get(bond.fromAtomId);
     const to = atoms.get(bond.toAtomId);
@@ -20,6 +20,6 @@ export function projectedDoubleBondSides(molecule: MoleculeObject): MoleculeObje
     } else {
       display.doubleBondSide = defaultDoubleBondSide(molecule, bond);
     }
-    return { ...bond, display };
+    return { ...bond, display: Object.keys(display).length ? display : undefined };
   });
 }

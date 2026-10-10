@@ -266,15 +266,24 @@ describe("explicit centered double bond geometry", () => {
 });
 
 
-describe("automatic carbon-heteroatom double bonds", () => {
+describe("automatic centered double bonds", () => {
   it.each([
     ["acetone", "CC(=O)C"], ["acetaldehyde", "CC=O"], ["imine", "CC=NC"],
     ["thioketone", "CC(=S)C"], ["ester", "CC(=O)OC"], ["amide", "CC(=O)N"],
-    ["cyclohexanone", "O=C1CCCCC1"], ["2-pyridone exocyclic carbonyl", "O=C1NC=CC=C1"]
+    ["cyclohexanone", "O=C1CCCCC1"], ["2-pyridone exocyclic carbonyl", "O=C1NC=CC=C1"],
+    ["DMSO", "CS(=O)C"], ["dimethyl sulfone", "CS(=O)(=O)C"],
+    ["triphenylphosphine oxide", "O=P(c1ccccc1)(c1ccccc1)c1ccccc1"],
+    ["nitrosomethane", "CN=O"], ["terminal nitrogen with explicit hydrogen", "[H]N=NC"]
   ])("renders %s exactly like explicit joined Center without mutating chemistry", (_name, smiles) => {
     const graph = testMoleculeFromSmiles(smiles);
     const molecule: MoleculeObject = { ...chain(undefined), ...graph,
       atoms: graph.atoms.map((atom, i) => ({ ...atom, x: 100 + 60 * Math.cos(i * 1.1), y: 100 + 60 * Math.sin(i * 1.1) })) };
+    // Keep the phosphine oxide outside the three phenyl rings' crowded test coordinates,
+    // so crossing masks and label overlap cannot erase the strokes being measured.
+    if (_name === "triphenylphosphine oxide") {
+      molecule.atoms = molecule.atoms.map((atom) => atom.element === "O" ? { ...atom, x: 260, y: 100 }
+        : atom.element === "P" ? { ...atom, x: 200, y: 100 } : atom);
+    }
     const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
     const targets = molecule.bonds.filter((bond) => bond.order === "double" &&
       [bond.fromAtomId, bond.toAtomId].some((id) => atomById.get(id)?.element !== "C"));
@@ -287,8 +296,20 @@ describe("automatic carbon-heteroatom double bonds", () => {
       ? { ...bond, display: { doubleBondSide: "automatic" } } : bond) };
     expect(fragments(automatic)).toEqual(fragments(explicit));
     for (const bond of targets) {
-      expect(lines(molecule).filter((line) => line.attrs["data-bond-id"] === bond.id)
-        .every((line) => line.attrs["data-double-bond-side"] === "center")).toBe(true);
+      const rendered = lines(molecule).filter((line) => line.attrs["data-bond-id"] === bond.id);
+      expect(rendered).toHaveLength(2);
+      expect(rendered.every((line) => line.attrs["data-double-bond-side"] === "center")).toBe(true);
+      const from = atomById.get(bond.fromAtomId)!;
+      const to = atomById.get(bond.toAtomId)!;
+      const length = Math.hypot(to.x - from.x, to.y - from.y);
+      const normal = { x: -(to.y - from.y) / length, y: (to.x - from.x) / length };
+      const halfGap = nativeMultipleBondGapPx(nativeDrawingStyleFromObjectStyle(molecule.style)) / 2;
+      for (const [index, line] of rendered.entries()) {
+        for (const point of endpoints(line)) {
+          expect((point.x - from.x) * normal.x + (point.y - from.y) * normal.y)
+            .toBeCloseTo(index === 0 ? halfGap : -halfGap, 8);
+        }
+      }
     }
     expect(JSON.stringify(molecule)).toBe(before);
   });
@@ -317,11 +338,23 @@ describe("automatic carbon-heteroatom double bonds", () => {
     expect(doubleBondRendersSymmetric(molecule.atoms[0], molecule.atoms[1], molecule, ringDouble, undefined)).toBe(false);
   });
 
-  it("does not center hydrogen or heteroatom-heteroatom double bonds", () => {
+  it("does not center hydrogen or non-terminal heteroatom-heteroatom double bonds", () => {
     for (const elements of [["C", "H"], ["N", "O"]]) {
       const molecule = chain(undefined);
       molecule.atoms[1].element = elements[0]; molecule.atoms[2].element = elements[1];
       expect(doubleBondRendersSymmetric(molecule.atoms[1], molecule.atoms[2], molecule, molecule.bonds[1], undefined)).toBe(false);
     }
+  });
+
+  it("keeps acyclic azo N=N output byte-identical to its existing left default", () => {
+    const molecule = chain(undefined);
+    molecule.structure = "CN=NC";
+    molecule.atoms[1].element = "N";
+    molecule.atoms[2].element = "N";
+    const explicit: MoleculeObject = { ...molecule, bonds: molecule.bonds.map((bond) => bond.order === "double"
+      ? { ...bond, display: { doubleBondSide: "left" } } : bond) };
+    expect(JSON.stringify(fragments(molecule))).toBe(JSON.stringify(fragments(explicit)));
+    expect(lines(molecule).filter((line) => line.attrs["data-bond-id"] === "bc")
+      .every((line) => line.attrs["data-double-bond-side"] === "left")).toBe(true);
   });
 });
