@@ -707,6 +707,7 @@ import {
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
+import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
 import {
   askToSendCrashReport,
   briefLine,
@@ -24322,7 +24323,7 @@ function DocumentObjectViewContent({
                   style={{
                     left: `calc(${atom.x + anchorOffset.x - object.x}px * var(--page-scale))`,
                     top: `calc(${atom.y + anchorOffset.y - object.y}px * var(--page-scale))`,
-                    width: `${Math.max(1, editingAtomLabel.draft.length + 0.6)}ch`,
+                    width: atomLabelEditorWidth(editingAtomLabel.draft, labelStyle),
                     fontFamily: labelStyle.atomLabelFontFamily,
                     fontSize: `calc(${labelStyle.atomLabelFontSizePx}px * var(--page-scale))`,
                     fontWeight: labelStyle.atomLabelFontWeight,
