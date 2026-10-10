@@ -1,6 +1,7 @@
 export * from "./atoms";
 export * from "./documentInventory";
 export * from "./graph";
+export * from "./labelGroups";
 export * from "./molecule";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";

@@ -1,0 +1,146 @@
+// How an atom label reads, and how many bonds it takes. Pure label grammar: no molecule, no
+// engine. The badge, formula and exports that use it are tested in labelGroups.test.ts.
+
+import { describe, expect, it } from "vitest";
+import { abbreviationDefinitions } from "@chemdraft/template-library";
+
+import {
+  nativeAtomLabelFreeValence,
+  nativeAtomLabelReading,
+  nativeLabelGroupFreeValence,
+  nativeLabelGroupVerdict
+} from "../src/index";
+
+function groupOf(label: string) {
+  const reading = nativeAtomLabelReading(label);
+  if (reading.kind !== "group") throw new Error(`"${label}" did not read as a group (${reading.kind}).`);
+  return reading.group;
+}
+
+describe("nativeAtomLabelReading", () => {
+  it("reads elements first, ignoring case, so Ac, Pr and Y stay elements", () => {
+    expect(nativeAtomLabelReading("N")).toEqual({ kind: "element", element: "N" });
+    expect(nativeAtomLabelReading("cl")).toEqual({ kind: "element", element: "Cl" });
+    expect(nativeAtomLabelReading("Ac")).toEqual({ kind: "element", element: "Ac" });
+    expect(nativeAtomLabelReading("Y")).toEqual({ kind: "element", element: "Y" });
+    // "CN" is copernicium to the element reader — why the table has no cyano entry.
+    expect(nativeAtomLabelReading("CN")).toEqual({ kind: "element", element: "Cn" });
+  });
+
+  it("reads a bonded Ar as an aryl placeholder and an unbonded Ar as argon", () => {
+    expect(nativeAtomLabelReading("Ar")).toEqual({ kind: "element", element: "Ar" });
+    expect(nativeAtomLabelReading("Ar", { bonded: false })).toEqual({ kind: "element", element: "Ar" });
+    expect(nativeAtomLabelReading("Ar", { bonded: true })).toEqual({ kind: "generic" });
+    expect(nativeAtomLabelReading(" Ar ", { bonded: true })).toEqual({ kind: "generic" });
+    // Exact case only, like every other reading of a group: "AR" and "ar" are still argon.
+    expect(nativeAtomLabelReading("AR", { bonded: true })).toEqual({ kind: "element", element: "Ar" });
+    expect(nativeAtomLabelFreeValence("Ar", 0, { bonded: true })).toBeUndefined();
+    // No other element changes with bonding.
+    expect(nativeAtomLabelReading("Y", { bonded: true })).toEqual({ kind: "element", element: "Y" });
+  });
+
+  it("reads heavy hydrogen", () => {
+    expect(nativeAtomLabelReading("D")).toEqual({ kind: "heavy-hydrogen", element: "D" });
+    expect(nativeAtomLabelReading("T")).toEqual({ kind: "heavy-hydrogen", element: "T" });
+  });
+
+  it("reads the table case-sensitively, label and right-to-left alias alike", () => {
+    expect(groupOf("OMe")).toMatchObject({ kind: "abbreviation", label: "OMe", definition: { name: "methoxy" } });
+    expect(groupOf("MeO")).toMatchObject({ kind: "abbreviation", label: "MeO", definition: { name: "methoxy" } });
+    expect(groupOf(" OMe ")).toMatchObject({ label: "OMe" });
+    for (const variant of ["Ome", "OME", "ome"]) {
+      expect(nativeAtomLabelReading(variant)).toEqual({ kind: "unrecognized", suggestion: "OMe" });
+    }
+  });
+
+  it("reads one heavy element with its hydrogens as spelled", () => {
+    expect(nativeAtomLabelReading("OH")).toEqual({ kind: "spelled", element: "O", hydrogens: 1 });
+    expect(nativeAtomLabelReading("NH2")).toEqual({ kind: "spelled", element: "N", hydrogens: 2 });
+    expect(nativeAtomLabelReading("H2N")).toEqual({ kind: "spelled", element: "N", hydrogens: 2 });
+  });
+
+  it("reads an element carrying abbreviations as a composite group", () => {
+    expect(groupOf("NMe2")).toMatchObject({ kind: "composite", head: "N", hydrogens: 0 });
+    expect(groupOf("NMe2").kind === "composite" && groupOf("NMe2")).toMatchObject({ substituents: [{ label: "Me" }, { label: "Me" }] });
+    expect(groupOf("BocHN")).toMatchObject({ kind: "composite", head: "N", hydrogens: 1 });
+    expect(groupOf("CH2OMe")).toMatchObject({ kind: "composite", head: "C", hydrogens: 2 });
+    // A head written before O is an oxo spelling the grammar does not model; never C–OEt.
+    expect(nativeAtomLabelReading("COEt").kind).toBe("unrecognized");
+    // Two heavy elements, or a count on the head, are not a composite.
+    expect(nativeAtomLabelReading("SO2Ph").kind).toBe("unrecognized");
+    expect(nativeAtomLabelReading("C2H4Ph").kind).toBe("unrecognized");
+  });
+
+  it("reads placeholders, blank labels and bare formulas without flagging them", () => {
+    for (const label of ["R", "R1", "R'", "X", "?", "*", "Nu", "", "   "]) {
+      expect(nativeAtomLabelReading(label), JSON.stringify(label)).toEqual({ kind: "generic" });
+    }
+    const formula = nativeAtomLabelReading("CONH2");
+    expect(formula.kind).toBe("formula");
+    expect(formula.kind === "formula" && Object.fromEntries(formula.counts)).toEqual({ C: 1, O: 1, N: 1, H: 2 });
+  });
+
+  it("treats charge and isotope text inside a label as unrecognized: those belong on the atom", () => {
+    // A charge is the atom's own property (the + and − tools); an isotope is not a label token.
+    for (const label of ["NMe3+", "OMe-", "O-", "13CH3", "CD3", "[13C]"]) {
+      expect(nativeAtomLabelReading(label).kind, label).toBe("unrecognized");
+    }
+  });
+});
+
+describe("free valence", () => {
+  it.each(abbreviationDefinitions.map((definition) => [definition.label, definition] as const))(
+    "%s takes its stated one bond, label and aliases alike",
+    (_label, definition) => {
+      for (const spelling of [definition.label, ...definition.aliases]) {
+        expect(nativeAtomLabelFreeValence(spelling), spelling).toBe(definition.attachmentCount);
+      }
+    }
+  );
+
+  it("follows a composite's head", () => {
+    const expected: Record<string, number> = {
+      NMe: 2, NMe2: 1, NHMe: 1, NBoc: 2, CMe2: 2, SiMe2: 2, SiMe3: 1, CH2Ph: 1, CHPh2: 1, OTBS: 1, NTf2: 1, PPh2: 1
+    };
+    for (const [label, bonds] of Object.entries(expected)) {
+      expect(nativeAtomLabelFreeValence(label), label).toBe(bonds);
+    }
+  });
+
+  it("moves with the label's charge", () => {
+    expect(nativeAtomLabelFreeValence("NMe3")).toBe(0);
+    expect(nativeAtomLabelFreeValence("NMe3", 1)).toBe(1);
+    expect(nativeAtomLabelFreeValence("OMe", -1)).toBe(0);
+    expect(nativeAtomLabelFreeValence("OMe", 1)).toBe(2);
+    expect(nativeAtomLabelFreeValence("PPh3", 1)).toBe(1);
+  });
+
+  it("counts a spelled label's open bonds", () => {
+    expect(nativeAtomLabelFreeValence("OH")).toBe(1);
+    expect(nativeAtomLabelFreeValence("NH2")).toBe(1);
+    expect(nativeAtomLabelFreeValence("HN")).toBe(2);
+    expect(nativeAtomLabelFreeValence("CH2")).toBe(2);
+    // Known collision, unchanged here: element reading ignores case, so "NH" is nihonium (Nh),
+    // just as "CN" is copernicium. Recorded so a fix to element matching shows up as a change.
+    expect(nativeAtomLabelReading("NH")).toEqual({ kind: "element", element: "Nh" });
+  });
+
+  it("has none for an element or for a label that is not structure", () => {
+    for (const label of ["N", "C", "R", "?", "Ome", "CONH2", ""]) {
+      expect(nativeAtomLabelFreeValence(label), JSON.stringify(label)).toBeUndefined();
+    }
+  });
+
+  it("judges a metal attachment by the table's count", () => {
+    expect(nativeLabelGroupFreeValence(groupOf("MgBr"))).toBe(1);
+    expect(nativeLabelGroupVerdict(groupOf("MgBr"), 0, 0)).toEqual({ valid: true });
+    expect(nativeLabelGroupVerdict(groupOf("MgBr"), 2, 0)).toMatchObject({ valid: false, expectedBondCount: 1 });
+  });
+
+  it("names the bonds and the charge that would fix a group", () => {
+    expect(nativeLabelGroupVerdict(groupOf("OMe"), 1, 0)).toEqual({ valid: true });
+    expect(nativeLabelGroupVerdict(groupOf("OMe"), 2, 0)).toEqual({ valid: false, expectedBondCount: 1, expectedFormalCharge: 1 });
+    expect(nativeLabelGroupVerdict(groupOf("OMe"), 0, 0)).toEqual({ valid: false, expectedBondCount: 1, expectedFormalCharge: -1 });
+    expect(nativeLabelGroupVerdict(groupOf("OMe"), 0, -1)).toEqual({ valid: true });
+  });
+});
