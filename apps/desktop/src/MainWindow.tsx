@@ -1469,7 +1469,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.16.57-opus";
+const CURRENT_BUILD_STAMP = "10.10.17.12-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10091,8 +10091,9 @@ export function MainWindow({
       return;
     }
     nativePlacementDragRef.current = null;
-    // The capture lives on the page element, which a key event cannot address. Dropping the ref is
-    // what matters: pointerup then finds no drag and releases the capture without committing.
+    // The capture lives on the page element, or on the object the press began on, and a key event
+    // can address neither. Dropping the ref is what matters: the pointerup then finds no drag and
+    // commits nothing, and the browser releases the capture with it.
     replacePresentDocument(drag.startDocument);
   }, [replacePresentDocument]);
 
@@ -11356,6 +11357,62 @@ export function MainWindow({
     commitDocumentHistoryFrom(drag.startDocument, placed);
     return true;
   }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
+
+  // A placement drag's move and release, shared by the page handlers and the object handlers. A
+  // press that starts on an object (a chain off an atom, an arrow drawn from atop a reagent)
+  // captures the pointer on that object, so the browser delivers every later event to the object's
+  // handlers, never the page's. Handled only on the page, such a drag placed what the press made
+  // (one carbon, a default arrow) and never followed the pointer. Both cancel handlers restore it
+  // inline, in the form `pointerCancelCoverage.test.ts` checks for.
+  const continueNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
+    event.stopPropagation();
+    const point = pagePointFromPointerEvent(event);
+    if (!point) {
+      return;
+    }
+
+    drag.latestPoint = point;
+    placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
+    const nowDragging = placementMachineRef.current.phase === "dragging";
+    if (!drag.dragging && nowDragging) {
+      drag.dragging = true;
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setSelectedNativeMoleculePart(undefined);
+      setHoveredNativeAtom(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+    }
+
+    if (drag.dragging) {
+      previewNativePlacementDrag(drag, point);
+    }
+  }, [assignHoveredNativeDeleteTarget, pagePointFromPointerEvent, previewNativePlacementDrag]);
+
+  const finishNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
+    event.stopPropagation();
+    const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
+    const changed = commitNativePlacementDrag(drag, point);
+    const label = nativePlacementStatusLabel(drag);
+    const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
+      ? "Inserted angled"
+      : drag.kind === "chain"
+        ? "Inserted"
+        : "Inserted rotated";
+    // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
+    // but the just-drawn arrow is put straight into direct-edit so its end/arc/arrowhead handles
+    // show immediately — no tool switch required to reshape it.
+    if (drag.kind === "art-line" && changed) {
+      setArrowEditTargetId(drag.objectId);
+      setActiveGraphicTransformObjectId(undefined);
+    }
+    setStatus(changed
+      ? drag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
+      : `${capitalizeLabel(label)} not placed`);
+    clearNativePlacementDrag(event);
+  }, [clearNativePlacementDrag, commitNativePlacementDrag, pagePointFromPointerEvent]);
 
   const startNativeFreehandArtDrag = useCallback((
     event: ObjectPointerEvent,
@@ -13380,30 +13437,7 @@ export function MainWindow({
 
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
-      event.stopPropagation();
-      const point = pagePointFromPointerEvent(event);
-      if (!point) {
-        return;
-      }
-
-      nativePlacementDrag.latestPoint = point;
-      placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
-      const nowDragging = placementMachineRef.current.phase === "dragging";
-      if (!nativePlacementDrag.dragging && nowDragging) {
-        nativePlacementDrag.dragging = true;
-        setActiveEditorObjectId(undefined);
-        setActiveTextEditObjectId(undefined);
-        setActiveAtomLabelEdit(undefined);
-        setSelectedNativeMoleculePart(undefined);
-        setHoveredNativeAtom(undefined);
-        setFreeformNativeBond(undefined);
-        setNativeDoubleBondSidePreview(undefined);
-        assignHoveredNativeDeleteTarget(undefined);
-      }
-
-      if (nativePlacementDrag.dragging) {
-        previewNativePlacementDrag(nativePlacementDrag, point);
-      }
+      continueNativePlacementDrag(nativePlacementDrag, event);
       return;
     }
 
@@ -13495,7 +13529,7 @@ export function MainWindow({
     updateBezierArtNodeDrag,
     updateNativePathArtPreview,
     previewNativePartDrag,
-    previewNativePlacementDrag,
+    continueNativePlacementDrag,
     previewTextResize,
     replacePresentDocument,
     updateNativeCanvasHover
@@ -13731,26 +13765,7 @@ export function MainWindow({
 
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
-      event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
-      const changed = commitNativePlacementDrag(nativePlacementDrag, point);
-      const label = nativePlacementStatusLabel(nativePlacementDrag);
-      const draggedVerb = nativePlacementDrag.kind === "arrow" || nativePlacementDrag.kind === "art-line"
-        ? "Inserted angled"
-        : nativePlacementDrag.kind === "chain"
-          ? "Inserted"
-          : "Inserted rotated";
-      // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
-      // but the just-drawn arrow is put straight into direct-edit so its end/arc/arrowhead handles
-      // show immediately — no tool switch required to reshape it.
-      if (nativePlacementDrag.kind === "art-line" && changed) {
-        setArrowEditTargetId(nativePlacementDrag.objectId);
-        setActiveGraphicTransformObjectId(undefined);
-      }
-      setStatus(changed
-        ? nativePlacementDrag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
-        : `${capitalizeLabel(label)} not placed`);
-      clearNativePlacementDrag(event);
+      finishNativePlacementDrag(nativePlacementDrag, event);
       return;
     }
 
@@ -13893,7 +13908,7 @@ export function MainWindow({
     clearBezierArtNodeDrag,
     clearProjectedPlaneTiltDrag,
     clearTransientInteractionChrome,
-    clearNativePlacementDrag,
+    finishNativePlacementDrag,
     clearTapeMeasureDrag,
     clearTextResize,
     commitGraphicCornerRadius,
@@ -13901,7 +13916,6 @@ export function MainWindow({
     commitGraphicPathEdit,
     commitGraphicMarkerDrag,
     commitNativeFreehandArtDrag,
-    commitNativePlacementDrag,
     commitNativePartDrag,
     commitDocumentChange,
     commitTextResize,
@@ -16026,6 +16040,14 @@ export function MainWindow({
 
   const handleObjectPointerMove = useCallback((objectId: string, event: ObjectPointerEvent) => {
     event.stopPropagation();
+    // A placement drag pressed on an object (a chain off an atom, an arrow from atop a reagent)
+    // captured the pointer here. Matched by pointer only: the press may have been re-targeted to
+    // another molecule's wrapper, and the drag is not tied to the object under the pointer.
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      continueNativePlacementDrag(nativePlacementDrag, event);
+      return;
+    }
     // Arrow mode doubles as an arrow-editing mode: hovering (no button pressed) over a line-family art
     // arrow opens it for in-place handle editing — its translucent dot handles appear and become
     // grabbable. Hovering a non-arrow clears the target; pointer-leave (below) clears it on exit.
@@ -16326,6 +16348,7 @@ export function MainWindow({
 
     updateNativeCanvasHover(document, pagePointFromPointerEvent(event), event.target);
   }, [
+    continueNativePlacementDrag,
     assignHoveredNativeDeleteTarget,
     document,
     pagePointFromPointerEvent,
@@ -16345,6 +16368,12 @@ export function MainWindow({
   ]);
 
   const handleObjectPointerUp = useCallback((objectId: string, event: ObjectPointerEvent) => {
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      finishNativePlacementDrag(nativePlacementDrag, event);
+      return;
+    }
+
     const bezierArtNodeDrag = bezierArtNodeDragRef.current;
     if (bezierArtNodeDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -16520,6 +16549,7 @@ export function MainWindow({
     }
     clearNativeBondDrag(event);
   }, [
+    finishNativePlacementDrag,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     applyFreeformBondDocumentAtPoint,
@@ -16553,6 +16583,15 @@ export function MainWindow({
   ]);
 
   const handleObjectPointerCancel = useCallback((event: ObjectPointerEvent) => {
+    // A placement drag pressed on an object holds its pointer capture here (see
+    // `continueNativePlacementDrag`), so its cancel arrives here, not at the page.
+    const nativePlacementDrag = nativePlacementDragRef.current;
+    if (nativePlacementDrag?.pointerId === event.pointerId) {
+      placementMachineRef.current = initialInteractionState();
+      replacePresentDocument(nativePlacementDrag.startDocument);
+      clearNativePlacementDrag(event);
+    }
+
     const textResize = textResizeRef.current;
     if (textResize?.pointerId === event.pointerId) {
       replacePresentDocument(textResize.startDocument);
@@ -16632,6 +16671,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
   }, [
+    clearNativePlacementDrag,
     assignHoveredNativeDeleteTarget,
     clearNativeBondDrag,
     clearNativeBondEditDrag,
