@@ -34,6 +34,8 @@ import type {
   NativeArtMarkerPlan,
   NativeArtPaintPlan,
   NativeArtProjectionMatrix,
+  NativeArtSketchLineOverrides,
+  NativeArtSketchPathPlan,
   NativeArtStrokePlan,
   NativeArtStrokeTerminalPlan,
   NativeArtVisualCoordinateSpace,
@@ -61,6 +63,7 @@ import {
   type NativeBondOrderResolution,
   type NativeElementSymbol
 } from "./valence";
+import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
   atomBondOrderUsageMap,
@@ -1589,13 +1592,14 @@ function planNativeMoleculeGraphSvg(
     labeledAtomIds,
     drawingStyle
   );
-  const sketchBasePathD = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
+  const sketchGeometry = visualEffectsForStyle(object.style).some((effect) => effect.kind === "sketch")
     ? moleculeEffectSketchBasePathD(object, bondSegmentGroups, gapsByBondKey, resolution)
     : undefined;
   const effects = visualEffectPlansForStyle({
     objectId: object.id,
     style: object.style,
-    sketchBasePathD,
+    sketchBasePathD: sketchGeometry?.basePathD,
+    sketchLineOverrides: sketchGeometry?.lineOverrides,
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
   const effectFilterId = `molecule-effects-${object.id}`;
@@ -1622,6 +1626,10 @@ function planNativeMoleculeGraphSvg(
         )
       ),
       ...segments.flatMap((segment) =>
+        // Only ink is replaced. Hit targets and hover/selection decorators above are unchanged.
+        sketchGeometry && (nativeBondDisplayStyle(bond) === "dashed" ||
+          (nativeBondDisplayStyle(bond) === "hashed" && segment.segment === "primary"))
+          ? [] :
         nativeBondSegmentFragments(
           object,
           segment,
@@ -2502,12 +2510,19 @@ function moleculeBondEffectSourceFragments(
   );
 }
 
+type SketchBondLine = Pick<PageBondLineSegment, "x1" | "y1" | "x2" | "y2">;
+
+interface MoleculeSketchPathPart {
+  d: string;
+  tick?: MoleculeSketchTick;
+}
+
 function moleculeEffectSketchBasePathD(
   object: MoleculeObject,
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
   resolution: NativeBondOrderResolution
-): string | undefined {
+): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides } | undefined {
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
       moleculeBondSketchPathParts(
@@ -2519,7 +2534,27 @@ function moleculeEffectSketchBasePathD(
       )
     )
   );
-  return bondPathParts.join(" ") || undefined;
+  const basePathD = bondPathParts.map((part) => part.d).join(" ");
+  if (!basePathD) return undefined;
+  return {
+    basePathD,
+    lineOverrides: (parameters) => {
+      const overrides = new Map<number, NativeArtSketchPathPlan | null>();
+      let lineIndex = 0;
+      for (const part of bondPathParts) {
+        const edges = part.d.match(/[LZ]/g)?.length ?? 0;
+        if (part.tick) {
+          overrides.set(lineIndex, parameters.roughness === 0
+            ? { d: part.d, stroke: parameters.color, strokeWidth: parameters.strokeWidth }
+            : moleculeSketchTickPath(part.tick, parameters));
+          // A joined terminal hash was a polygon outline; replace it with ONE ink mark too.
+          for (let edge = 1; edge < edges; edge++) overrides.set(lineIndex + edge, null);
+        }
+        lineIndex += edges;
+      }
+      return overrides;
+    }
+  };
 }
 
 /**
@@ -2533,30 +2568,81 @@ function moleculeBondSketchPathParts(
   drawingStyle: NativeDrawingStyle,
   crossingGaps: readonly BondCrossingGap[],
   resolution: NativeBondOrderResolution
-): string[] {
+): MoleculeSketchPathPart[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment) =>
-      polygonPathD(nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution))
+      ({ d: polygonPathD(nativeWedgePolygonPoints(visibleSegment, drawingStyle, object, segment.bond, segmentLength, resolution)) })
     );
   }
 
   if (bondStyle === "hashed" && segment.segment === "primary") {
     const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
-    return [
-      ...hashedWedge.hashes.flatMap((hash) =>
-        splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash) => linePathD(visibleHash))
-      ),
-      ...(hashedWedge.terminalJoin ? [polygonPathD(hashedWedge.terminalJoin.points)] : [])
-    ];
+    const axisGeometry = nativeSegmentVectorGeometry(segment);
+    if (!axisGeometry) return [];
+    const hashes = [...hashedWedge.hashes];
+    if (hashedWedge.terminalJoin) {
+      const halfWidth = nativeWedgeWidth(drawingStyle, nativeStereoBondProfileLength(axisGeometry.length, object, segment.bond)) / 2;
+      hashes.push({
+        x1: segment.x2 + axisGeometry.normal.x * halfWidth,
+        y1: segment.y2 + axisGeometry.normal.y * halfWidth,
+        x2: segment.x2 - axisGeometry.normal.x * halfWidth,
+        y2: segment.y2 - axisGeometry.normal.y * halfWidth
+      });
+    }
+    return moleculeSketchTickParts(hashes, segment, drawingStyle, segment.key, true).flatMap((part, index) => {
+      if (hashedWedge.terminalJoin && index === hashes.length - 1) {
+        return [{ ...part, d: polygonPathD(hashedWedge.terminalJoin.points) }];
+      }
+      return splitSegmentByCrossingGaps(hashes[index]!, crossingGaps).map((visibleHash, piece) => ({
+        d: linePathD(visibleHash),
+        tick: { ...part.tick!, source: visibleHash, identity: `${part.tick!.identity}:${piece}`,
+          // Do not lengthen a fragment into a deliberately knocked-out crossing.
+          lengthVariation: visibleHash === hashes[index] ? part.tick!.lengthVariation : 0 }
+      }));
+    });
   }
 
-  return splitSegmentByCrossingGaps(segment, crossingGaps).flatMap((visibleSegment) =>
+  return splitSegmentByCrossingGaps(segment, crossingGaps).flatMap((visibleSegment, piece) =>
     bondStyle === "dashed"
-      ? nativeDashedBondDashes(visibleSegment, drawingStyle).map((dash) => linePathD(dash))
-      : [linePathD(visibleSegment)]
+      ? moleculeSketchTickParts(nativeDashedBondDashes(visibleSegment, drawingStyle), visibleSegment, drawingStyle, `${segment.key}:${piece}`, false)
+      : [{ d: linePathD(visibleSegment) }]
   );
+}
+
+function moleculeSketchTickParts(
+  ticks: readonly SketchBondLine[],
+  axis: SketchBondLine,
+  drawingStyle: NativeDrawingStyle,
+  identity: string,
+  hashed: boolean
+): MoleculeSketchPathPart[] {
+  const geometry = nativeSegmentVectorGeometry(axis);
+  if (!geometry) return [];
+  const centers = ticks.map((tick) =>
+    ((tick.x1 + tick.x2) / 2 - axis.x1) * geometry.unit.x +
+    ((tick.y1 + tick.y2) / 2 - axis.y1) * geometry.unit.y
+  );
+  const lengths = ticks.map((tick) => Math.hypot(tick.x2 - tick.x1, tick.y2 - tick.y1));
+  return ticks.map((source, index) => {
+    const center = centers[index]!;
+    const spacing = Math.min(
+      index > 0 ? center - centers[index - 1]! : Infinity,
+      index + 1 < ticks.length ? centers[index + 1]! - center : Infinity,
+      geometry.length
+    );
+    // Separate convex hulls, not merely endpoints: even thick/bowed strokes keep white gaps.
+    const reserve = Math.min(spacing * 0.18, Math.max(0.35, drawingStyle.bondStrokeWidthPx * 0.3));
+    const cellStart = index > 0 ? (centers[index - 1]! + center) / 2 + reserve : 0;
+    const cellEnd = index + 1 < ticks.length ? (centers[index + 1]! + center) / 2 - reserve : geometry.length;
+    const lengthVariation = hashed ? Math.max(0, Math.min(
+      lengths[index]! * 0.15,
+      index > 0 ? (lengths[index]! - lengths[index - 1]!) * 0.45 : Infinity,
+      index + 1 < ticks.length ? (lengths[index + 1]! - lengths[index]!) * 0.45 : Infinity
+    )) : lengths[index]! * 0.15;
+    return { d: linePathD(source), tick: { source, axis, cellStart, cellEnd, lengthVariation, identity: `${identity}:${index}`, hashed } };
+  });
 }
 
 /** Closed path for an SVG `points` list ("x,y x,y ..."). */
@@ -4213,6 +4299,7 @@ function svgSketchEffectFragmentsForEffects(
     stroke: path.stroke,
     "stroke-width": path.strokeWidth,
     "stroke-opacity": sketch.opacity === 1 ? undefined : sketch.opacity,
+    "fill-opacity": path.fill && sketch.opacity !== 1 ? sketch.opacity : undefined,
     "stroke-linecap": "round",
     "stroke-linejoin": "round",
     transform: options.transform,

@@ -172,6 +172,11 @@ export interface NativeArtSketchEffectPlan {
   paths: NativeArtSketchPathPlan[];
 }
 
+/** Overrides for linear SVG edges (L/Z), in source order. Geometry belongs to the caller. */
+export type NativeArtSketchLineOverrides = (
+  parameters: Pick<NativeArtSketchEffectPlan, "seed" | "roughness" | "bowing" | "color" | "strokeWidth">
+) => ReadonlyMap<number, NativeArtSketchPathPlan | null>;
+
 export type NativeArtEffectPlan = NativeArtShadowEffectPlan | NativeArtGlowEffectPlan | NativeArtSketchEffectPlan;
 
 export interface NativeArtVisualPlan {
@@ -529,15 +534,17 @@ export function visualEffectPlansForStyle({
   objectId,
   style,
   sketchBasePathD,
-  sketchStrokeWidthPx = 1.5
+  sketchStrokeWidthPx = 1.5,
+  sketchLineOverrides
 }: {
   objectId: string;
   style: Record<string, unknown>;
   sketchBasePathD?: string;
   sketchStrokeWidthPx?: number;
+  sketchLineOverrides?: NativeArtSketchLineOverrides;
 }): NativeArtEffectPlan[] {
   return visualEffectsForStyle(style)
-    .map((effect) => visualEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx))
+    .map((effect) => visualEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx, sketchLineOverrides))
     .filter((effect): effect is NativeArtEffectPlan => effect !== undefined);
 }
 
@@ -610,7 +617,8 @@ function visualEffectPlan(
   objectId: string,
   effect: VisualEffect,
   sketchBasePathD?: string,
-  sketchStrokeWidthPx = 1.5
+  sketchStrokeWidthPx = 1.5,
+  sketchLineOverrides?: NativeArtSketchLineOverrides
 ): NativeArtEffectPlan | undefined {
   if (effect.kind === "shadow") {
     return {
@@ -633,14 +641,15 @@ function visualEffectPlan(
     };
   }
 
-  return visualSketchEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx);
+  return visualSketchEffectPlan(objectId, effect, sketchBasePathD, sketchStrokeWidthPx, sketchLineOverrides);
 }
 
 function visualSketchEffectPlan(
   objectId: string,
   effect: VisualEffect,
   basePathD: string | undefined,
-  sketchStrokeWidthPx = 1.5
+  sketchStrokeWidthPx = 1.5,
+  sketchLineOverrides?: NativeArtSketchLineOverrides
 ): NativeArtSketchEffectPlan | undefined {
   if (!basePathD) {
     return undefined;
@@ -662,9 +671,26 @@ function visualSketchEffectPlan(
     preserveVertices: true,
     fixedDecimalPlaceDigits: 3
   });
+  const overrides = sketchLineOverrides?.({ seed, roughness, bowing, color, strokeWidth });
+  if (overrides?.size) {
+    // roughjs 4.6.6 emits two move/Bezier pairs per L/Z edge. Generate the ENTIRE legacy
+    // path first, then replace ink: skipping edges before generation changes the PRNG stream
+    // and therefore changes all later ordinary strokes. Never parse rounded SVG coordinates.
+    for (const set of drawable.sets) {
+      if (set.type !== "path") continue;
+      for (const lineIndex of overrides.keys()) {
+        const ops = set.ops.slice(lineIndex * 4, lineIndex * 4 + 4);
+        if (ops.map((op) => op.op).join(",") !== "move,bcurveTo,move,bcurveTo") {
+          throw new Error("Sketch line overrides require linear source paths and roughjs 4.6.6 paired strokes.");
+        }
+      }
+      set.ops = set.ops.filter((_, index) => !overrides.has(Math.floor(index / 4)));
+    }
+  }
   const paths = rough.generator().toPaths(drawable)
     .map((path) => nativeArtSketchPathPlan(path))
     .filter((path): path is NativeArtSketchPathPlan => path !== undefined);
+  if (overrides) paths.push(...[...overrides.values()].filter((path): path is NativeArtSketchPathPlan => path !== null));
 
   return paths.length > 0
     ? {
