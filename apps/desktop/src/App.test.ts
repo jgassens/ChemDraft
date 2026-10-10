@@ -74,6 +74,8 @@ import {
   applyNativeMoleculeDeleteTarget,
   applySingleBondToolAtPoint,
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+  applyNativeChainTool,
+  applyNativeRingFuseAtBondTarget,
   createNativeArtGraphicObject,
   createPhase4Document,
   createSelectionClipboardPayload,
@@ -155,7 +157,9 @@ import {
   rotationInputHomeDraftDegrees,
   rotationInputDraftDegrees,
   rotationReadoutDegrees,
-  eraserObjectIdsInSelectionRect,
+  applyEraserSweep,
+  eraserSweepInSelectionRect,
+  eraserSweepStatus,
   flattenWarningMessages,
   graphicArtTransformPreviewSvgDataUrl,
   groupedDragObjectIdsForPointer,
@@ -957,7 +961,7 @@ describe("ChemDraft desktop shell", () => {
     };
 
     expect(selectionInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd).objectIds).toEqual([]);
-    expect(eraserObjectIdsInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd)).toEqual([rect.id]);
+    expect(eraserSweepInSelectionRect(withRect.pages[0].objects, edgeStart, edgeEnd)).toEqual({ objectIds: [rect.id], moleculeParts: [] });
 
     const withText = insertNativeTextObject(createPhase4Document("Eraser Text Touch"), { x: 260, y: 210 }, "touch");
     const text = withText.pages[0].objects.find((object): object is DocumentObject =>
@@ -967,13 +971,176 @@ describe("ChemDraft desktop shell", () => {
       throw new Error("Expected text fixture.");
     }
 
-    expect(eraserObjectIdsInSelectionRect(withText.pages[0].objects, {
+    expect(eraserSweepInSelectionRect(withText.pages[0].objects, {
       x: text.x + text.width - 1,
       y: text.y + text.height / 2 - 2
     }, {
       x: text.x + text.width + 8,
       y: text.y + text.height / 2 + 2
-    })).toEqual([text.id]);
+    }).objectIds).toEqual([text.id]);
+  });
+
+  it("erases only the touched bonds of a long chain, not the whole molecule", () => {
+    const drawn = applyNativeChainTool(createPhase4Document("Eraser Chain"), { x: 100, y: 300 }, { x: 500, y: 300 });
+    const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!chain || chain.bonds.length < 10) {
+      throw new Error("Expected a long native chain fixture.");
+    }
+    // A small box on the midpoint of a middle bond touches that bond and no atom.
+    const bond = chain.bonds[Math.floor(chain.bonds.length / 2)]!;
+    const from = chain.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = chain.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+
+    const sweep = eraserSweepInSelectionRect(drawn.pages[0].objects, { x: mid.x - 1, y: mid.y - 1 }, { x: mid.x + 1, y: mid.y + 1 });
+    expect(sweep.objectIds).toEqual([]);
+    expect(sweep.moleculeParts).toEqual([{ objectId: chain.id, kind: "parts", atomIds: [], bondIds: [bond.id] }]);
+
+    const erased = applyEraserSweep(drawn, sweep);
+    const after = erased.pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(after?.atoms).toHaveLength(chain.atoms.length);
+    expect(after?.bonds).toHaveLength(chain.bonds.length - 1);
+    expect(after?.bonds.some((candidate) => candidate.id === bond.id)).toBe(false);
+    expect(eraserSweepStatus(sweep)).toBe("Erased 1 bond");
+  });
+
+  it("erases only a ring-fusion bond, leaving both rings' other atoms and bonds", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Eraser Fusion"), { x: 300, y: 300 }, "cyclohexane");
+    const ring = seed.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!ring) {
+      throw new Error("Expected a cyclohexane fixture.");
+    }
+    const shared = ring.bonds[0]!;
+    const fusedDocument = applyNativeRingFuseAtBondTarget(seed, {
+      objectId: ring.id,
+      kind: "bond",
+      bondId: shared.id,
+      fromAtomId: shared.fromAtomId,
+      toAtomId: shared.toAtomId,
+      distanceToPointer: 0
+    }, "cyclohexane");
+    const fused = fusedDocument.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!fused) {
+      throw new Error("Expected a fused bicyclic fixture.");
+    }
+    // The fusion bond is the one whose two atoms each carry three bonds.
+    const degree = (atomId: string) => fused.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+    const fusion = fused.bonds.find((bond) => degree(bond.fromAtomId) === 3 && degree(bond.toAtomId) === 3);
+    if (!fusion) {
+      throw new Error("Expected a fusion bond.");
+    }
+    const from = fused.atoms.find((atom) => atom.id === fusion.fromAtomId)!;
+    const to = fused.atoms.find((atom) => atom.id === fusion.toAtomId)!;
+    const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+
+    const sweep = eraserSweepInSelectionRect(fusedDocument.pages[0].objects, { x: mid.x - 1, y: mid.y - 1 }, { x: mid.x + 1, y: mid.y + 1 });
+    expect(sweep.moleculeParts).toEqual([{ objectId: fused.id, kind: "parts", atomIds: [], bondIds: [fusion.id] }]);
+    const after = applyEraserSweep(fusedDocument, sweep).pages[0].objects.find((object): object is MoleculeObject => object.id === fused.id);
+    expect(after?.atoms).toHaveLength(fused.atoms.length);
+    expect(after?.bonds).toHaveLength(fused.bonds.length - 1);
+    expect(after?.atoms.map((atom) => atom.element)).toEqual(fused.atoms.map((atom) => atom.element));
+  });
+
+  it("erases text lying on a molecule whole, and only the bond under the sweep", () => {
+    const drawn = applyNativeChainTool(createPhase4Document("Eraser Text On Chain"), { x: 100, y: 300 }, { x: 500, y: 300 });
+    const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!chain) {
+      throw new Error("Expected a chain fixture.");
+    }
+    const bond = chain.bonds[Math.floor(chain.bonds.length / 2)]!;
+    const from = chain.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+    const to = chain.atoms.find((atom) => atom.id === bond.toAtomId)!;
+    const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const withText = insertNativeTextObject(drawn, { x: mid.x - 4, y: mid.y - 4 }, "label");
+    const text = withText.pages[0].objects.find((object) => object.type === "text");
+    if (!text) {
+      throw new Error("Expected a text object on the chain.");
+    }
+
+    const sweep = eraserSweepInSelectionRect(withText.pages[0].objects, { x: mid.x - 1, y: mid.y - 1 }, { x: mid.x + 1, y: mid.y + 1 });
+    expect(sweep.objectIds).toEqual([text.id]);
+    expect(sweep.moleculeParts).toEqual([{ objectId: chain.id, kind: "parts", atomIds: [], bondIds: [bond.id] }]);
+    const erased = applyEraserSweep(withText, sweep);
+    expect(erased.pages[0].objects.some((object) => object.id === text.id)).toBe(false);
+    const after = erased.pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(after?.atoms).toHaveLength(chain.atoms.length);
+    expect(after?.bonds).toHaveLength(chain.bonds.length - 1);
+    expect(eraserSweepStatus(sweep)).toBe("Erased 1 bond, 1 object");
+  });
+
+  it("removes a bare end carbon the sweep cuts loose, but keeps a labelled one", () => {
+    const drawn = applyNativeChainTool(createPhase4Document("Eraser Orphans"), { x: 100, y: 300 }, { x: 400, y: 300 });
+    const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!chain) {
+      throw new Error("Expected a chain fixture.");
+    }
+    const degree = (atomId: string) => chain.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+    const end = chain.atoms.find((atom) => degree(atom.id) === 1)!;
+    const endBond = chain.bonds.find((bond) => bond.fromAtomId === end.id || bond.toAtomId === end.id)!;
+    const other = chain.atoms.find((atom) => atom.id === (endBond.fromAtomId === end.id ? endBond.toAtomId : endBond.fromAtomId))!;
+    const mid = { x: (end.x + other.x) / 2, y: (end.y + other.y) / 2 };
+    const sweepEndBond = (document: typeof drawn) =>
+      eraserSweepInSelectionRect(document.pages[0].objects, { x: mid.x - 1, y: mid.y - 1 }, { x: mid.x + 1, y: mid.y + 1 });
+
+    // Bare carbon: the bond and the carbon it leaves stranded both go.
+    const bareSweep = sweepEndBond(drawn);
+    expect(bareSweep.moleculeParts).toEqual([{ objectId: chain.id, kind: "parts", atomIds: [end.id], bondIds: [endBond.id] }]);
+    const bare = applyEraserSweep(drawn, bareSweep).pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(bare?.atoms).toHaveLength(chain.atoms.length - 1);
+    expect(bare?.bonds).toHaveLength(chain.bonds.length - 1);
+
+    // Labelled end atom: only the bond goes; the O stays as a fragment the user can see.
+    const labelled = applyPatch(drawn, {
+      op: "updateObject",
+      objectId: chain.id,
+      changes: { atoms: chain.atoms.map((atom) => atom.id === end.id ? { ...atom, element: "O" } : atom) }
+    });
+    const labelledSweep = sweepEndBond(labelled);
+    expect(labelledSweep.moleculeParts).toEqual([{ objectId: chain.id, kind: "parts", atomIds: [], bondIds: [endBond.id] }]);
+    const kept = applyEraserSweep(labelled, labelledSweep).pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(kept?.atoms).toHaveLength(chain.atoms.length);
+    expect(kept?.atoms.find((atom) => atom.id === end.id)?.element).toBe("O");
+    expect(kept?.bonds).toHaveLength(chain.bonds.length - 1);
+  });
+
+  it("still removes a molecule the eraser marquee encloses completely", () => {
+    const drawn = applyNativeChainTool(createPhase4Document("Eraser Enclosed"), { x: 200, y: 300 }, { x: 320, y: 300 });
+    const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!chain) {
+      throw new Error("Expected a native chain fixture.");
+    }
+    const xs = chain.atoms.map((atom) => atom.x);
+    const ys = chain.atoms.map((atom) => atom.y);
+    const sweep = eraserSweepInSelectionRect(
+      drawn.pages[0].objects,
+      { x: Math.min(...xs) - 5, y: Math.min(...ys) - 5 },
+      { x: Math.max(...xs) + 5, y: Math.max(...ys) + 5 }
+    );
+
+    const erased = applyEraserSweep(drawn, sweep);
+    expect(erased.pages[0].objects.some((object) => object.id === chain.id)).toBe(false);
+  });
+
+  it("erases touched shapes whole and a touched molecule in part within one sweep", () => {
+    const withChain = applyNativeChainTool(createPhase4Document("Eraser Mixed"), { x: 100, y: 300 }, { x: 500, y: 300 });
+    const chain = withChain.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    const withRect = insertNativeArtGraphicObject(withChain, { x: 300, y: 420 }, "tool.art.rect");
+    const rect = withRect.pages[0].objects.find((object) => object.type === "graphic");
+    if (!chain || !rect) {
+      throw new Error("Expected chain and rectangle fixtures.");
+    }
+    // A thin vertical sweep through the chain's middle that also reaches down into the rectangle.
+    const x = rect.x + rect.width / 2;
+    const sweep = eraserSweepInSelectionRect(withRect.pages[0].objects, { x: x - 1, y: 280 }, { x: x + 1, y: rect.y + rect.height / 2 });
+
+    expect(sweep.objectIds).toEqual([rect.id]);
+    expect(sweep.moleculeParts).toHaveLength(1);
+    const erased = applyEraserSweep(withRect, sweep);
+    expect(erased.pages[0].objects.some((object) => object.id === rect.id)).toBe(false);
+    const after = erased.pages[0].objects.find((object): object is MoleculeObject => object.id === chain.id);
+    expect(after).toBeDefined();
+    expect(after!.bonds.length).toBeLessThan(chain.bonds.length);
+    expect(after!.atoms.length).toBeGreaterThanOrEqual(chain.atoms.length - 1);
   });
 
   it("keeps a tight marquee over one native atom as a partial native selection", () => {
