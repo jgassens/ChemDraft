@@ -4887,6 +4887,16 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+/* Eraser marquee preview: an object the sweep will remove whole. Touched atoms and bonds reuse
+   the delete-hover styles, so the preview reads like the Eraser's click hover. */
+.eraser-sweep-object {
+  fill: var(--cd-bg-danger);
+  fill-opacity: 0.4;
+  stroke: var(--cd-danger);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
 .selection-lasso-fill {
   fill: var(--cd-bg-selected);
   stroke: none;
