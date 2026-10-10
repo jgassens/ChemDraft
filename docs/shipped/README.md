@@ -34,6 +34,40 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Abbreviation labels as chemistry (2026-10-10, branches `claude/abbreviation-label-reading` and `claude/awesome-ellis-421ab1`)
+
+Atom labels such as "OMe" were superatoms that nothing checked: "OMe" on a ring carbon (an O with
+three bonds and no charge) drew no badge, and the formula and every export skipped the group. Two
+PRs make the label mean its group.
+
+- **Table** (`packages/template-library`): 28 original, case-sensitive abbreviations, each defined
+  by SMILES, with right-to-left aliases ("MeO"), stated hydrogens, charges, free valence and an
+  RDKit-computed layout. Also the deliberate placeholders (R, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?,
+  `*`). No entry spells an element: "Ac" stays actinium, so acetyl is "COMe".
+- **Reading** (`nativeAtomLabelReading`): element (case ignored), abbreviation (case-sensitive),
+  spelled one-heavy-atom label ("NH2"), composite ("NMe2", "BocHN", "CH2Ph"), placeholder, bare
+  formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
+  ("COEt") is left unrecognized instead of read as C–OEt. A bonded "Ar" is aryl (a placeholder); an
+  unbonded "Ar" is argon. `nativeAtomLabelFreeValence` gives the bonds each label takes.
+- **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
+  hotkey. The reason names the expected bond count, and the state carries the charge that would fix
+  it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.
+- **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
+  atoms appended after the drawn ones, so drawn indices never move, and the native formula is
+  counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
+  label. Flagged groups, placeholders and a bonded "Ar" stay warned placeholders. Tests hold the
+  native formula and canonical SMILES equal to RDKit's for every table entry.
+- **Bond tool**: a group may take the bonds it is missing (a lone "OMe" takes one), never more.
+
+Known limitations: Spin 3D, its sidecar, cleanup re-layout, flatten and the CIP guard
+(`stereoPerceptionMolfile`) still see one placeholder atom per label, since their atom-count and
+index contracts need one molfile atom per drawn atom. The user sees no wrong chemistry there: the guard
+only compares a perception with itself, and a placeholder can add a centre to it but never hide one.
+CDXML still writes the label as `Element="OMe"` (it round-trips, but external readers see no
+structure) and writes a bonded "Ar" as argon. Molfile import does not contract `SUP` S-groups back
+into labels. Element matching ignores case, so "NH" reads as nihonium and "CN" as copernicium; the
+coordinator has that fix as its own PR.
+
 ## Aromatic bonds counted on a Kekulé structure (2026-09-27, branch `claude/aromatic-bond-order`)
 
 Aromatic bonds (MOL type 4, CDXML `Order="1.5"`, Ketcher V3000) used to be counted two different

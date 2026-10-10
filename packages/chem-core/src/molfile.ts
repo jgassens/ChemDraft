@@ -33,6 +33,9 @@
  *     abbreviation like "Ph") writes as a dummy atom ("*") with a warning — the group the label
  *     spells is not represented in the molfile. Consumers inside the app that RANK atoms (CIP
  *     perception, the plugin hand-off) ask for `abbreviations: "rgroup"` instead; see the option.
+ *     Known abbreviations never reach this writer as labels on the export and analysis paths:
+ *     document-workflow-core expands them into real atoms first, and `superatomGroups` writes each
+ *     expansion as a `SUP` S-group carrying its label.
  *   - A literal (text-typed) atom on an unknown-order or unresolved aromatic bond gets no explicit
  *     valence field, with a warning; resolved aromatic bonds count at the caller's Kekulé orders.
  *   - Coordinates ≥1e6 / counts >999 cannot fit V2000's fixed columns; the writer trims
@@ -85,6 +88,20 @@ export interface MolfileWriteOptions {
    * condensed-label grammar is above this package).
    */
   spellLabel?: (label: string) => { element: string; hydrogens: number } | undefined;
+  /**
+   * Superatom S-groups (CTfile `SUP`) to write: each names the atoms an abbreviation was expanded
+   * into, and its label, so a reader that contracts abbreviations shows "OMe" again while the file
+   * still carries every atom. The crossing bonds are found here (bonds with exactly one end in the
+   * group). Callers expand the label first; chem-core knows no abbreviation table. Atom ids not in
+   * the molecule are ignored, and a group left with no atoms is not written.
+   */
+  superatomGroups?: readonly { label: string; atomIds: readonly string[] }[];
+  /**
+   * Atoms to write as placeholders even though their label is a valid symbol, each with the reason
+   * the warning gives — a bonded "Ar" is how chemists write aryl, not argon. They take the same
+   * placeholder as any other unwritable label (`abbreviations` decides which), and never a valence.
+   */
+  placeholderAtoms?: ReadonlyMap<string, string>;
 }
 
 const BOND_ORDER_CODE: Record<MoleculeBond["order"], number> = {
@@ -271,10 +288,14 @@ function literalAtomValences(
   format: "V2000" | "V3000",
   warnings: string[] | undefined,
   kekuleBondOrders: ReadonlyMap<string, number>,
-  spelledHydrogens: ReadonlyMap<string, number> = new Map()
+  spelledHydrogens: ReadonlyMap<string, number> = new Map(),
+  placeholderAtoms: ReadonlyMap<string, string> = new Map()
 ): Map<string, number> {
   const valences = new Map(atoms
-    .filter((atom) => atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element))
+    .filter((atom) =>
+      atom.labelLiteral === true && atom.element !== "*" && MOLFILE_ATOM_SYMBOLS.has(atom.element) &&
+      !placeholderAtoms.has(atom.id)
+    )
     .map((atom) => [atom.id, 0]));
   // A spelled condensed label starts from the hydrogens it names; its bonds are added below.
   for (const [id, hydrogens] of spelledHydrogens) {
@@ -378,13 +399,18 @@ function molfileAtomSymbols(
     return bondValence.get(atomId) ?? { sum: 0, unresolvedAromatic: false, unknownOrder: false };
   };
   const symbols = atoms.map((atom, index) => {
+    const placeholderReason = options.placeholderAtoms?.get(atom.id);
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
     // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
     // this mode exists to prevent. It is a group the file does not spell, like any other label.
-    if (MOLFILE_ATOM_SYMBOLS.has(atom.element) && !(options.abbreviations === "rgroup" && atom.element === "*")) {
+    if (
+      placeholderReason === undefined &&
+      MOLFILE_ATOM_SYMBOLS.has(atom.element) &&
+      !(options.abbreviations === "rgroup" && atom.element === "*")
+    ) {
       return atom.element;
     }
-    const spelled = options.spellLabel?.(atom.element);
+    const spelled = placeholderReason === undefined ? options.spellLabel?.(atom.element) : undefined;
     // Why a label that spells cleanly still cannot be written as its element, if it cannot.
     let unspellable: string | undefined;
     if (
@@ -412,6 +438,9 @@ function molfileAtomSymbols(
       }
     }
     const reason = unspellable ? `; it cannot be written as ${spelled!.element} because ${unspellable}` : "";
+    const what = placeholderReason === undefined
+      ? `Atom label "${atom.element}" is not an element symbol${reason}`
+      : `Atom label "${atom.element}" stands for a group here (${placeholderReason})`;
     if (options.abbreviations === "rgroup") {
       let rgroup = rgroupByLabel.get(atom.element);
       if (rgroup === undefined) {
@@ -420,12 +449,12 @@ function molfileAtomSymbols(
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
       options.warnings?.push(
-        `Atom label "${atom.element}" is not an element symbol${reason}; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
+        `${what}; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
       );
       return "R#";
     }
     options.warnings?.push(
-      `Atom label "${atom.element}" is not an element symbol${reason}; written as a dummy atom (*) — the label's group is not represented in the molfile.`
+      `${what}; written as a dummy atom (*) — the label's group is not represented in the molfile.`
     );
     return "*";
   });
@@ -525,7 +554,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V2000", options);
   const literalValences = literalAtomValences(
-    atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens
+    atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms
   );
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
@@ -571,6 +600,26 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     lines.push(`M  RGP${i3(chunk.length)}${body}`);
   }
 
+  // Superatom S-groups: type (STY, up to 8 per line), atoms (SAL) and crossing bonds (SBL, up to
+  // 15 per line each), and the label (SMT).
+  const sgroups = superatomSgroups(atoms, writableBonds, options);
+  for (let i = 0; i < sgroups.length; i += 8) {
+    const chunk = sgroups.slice(i, i + 8);
+    lines.push(`M  STY${i3(chunk.length)}${chunk.map((_, offset) => ` ${i3(i + offset + 1)} SUP`).join("")}`);
+  }
+  sgroups.forEach((sgroup, index) => {
+    const number = index + 1;
+    for (let i = 0; i < sgroup.atomNumbers.length; i += 15) {
+      const chunk = sgroup.atomNumbers.slice(i, i + 15);
+      lines.push(`M  SAL ${i3(number)}${i3(chunk.length)}${chunk.map((atom) => ` ${i3(atom)}`).join("")}`);
+    }
+    for (let i = 0; i < sgroup.bondNumbers.length; i += 15) {
+      const chunk = sgroup.bondNumbers.slice(i, i + 15);
+      lines.push(`M  SBL ${i3(number)}${i3(chunk.length)}${chunk.map((bond) => ` ${i3(bond)}`).join("")}`);
+    }
+    lines.push(`M  SMT ${i3(number)} ${sgroup.label}`);
+  });
+
   lines.push("M  END");
   warningsOut?.push(...warnings);
   return { contents: lines.join("\n") + "\n", warnings };
@@ -595,6 +644,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
+  const sgroups = superatomSgroups(atoms, writableBonds, options);
 
   const lines: string[] = [
     "",
@@ -602,13 +652,13 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     "",
     "  0  0  0  0  0  0  0  0  0  0999 V3000",
     "M  V30 BEGIN CTAB",
-    `M  V30 COUNTS ${atoms.length} ${writableBonds.length} 0 0 ${hasStereo ? 1 : 0}`,
+    `M  V30 COUNTS ${atoms.length} ${writableBonds.length} ${sgroups.length} 0 ${hasStereo ? 1 : 0}`,
     "M  V30 BEGIN ATOM"
   ];
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V3000", options);
   const literalValences = literalAtomValences(
-    atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders, spelledHydrogens
+    atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms
   );
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
@@ -633,9 +683,76 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
       `M  V30 ${index + 1} ${isDativeBond(bond) ? 9 : resolvedMolfileBondCode(bond, options)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );
   });
-  lines.push("M  V30 END BOND", "M  V30 END CTAB", "M  END");
+  lines.push("M  V30 END BOND");
+  if (sgroups.length > 0) {
+    lines.push("M  V30 BEGIN SGROUP");
+    sgroups.forEach((sgroup, index) => {
+      const crossing = sgroup.bondNumbers.length > 0
+        ? ` XBONDS=(${sgroup.bondNumbers.length} ${sgroup.bondNumbers.join(" ")})`
+        : "";
+      lines.push(...v3000ContinuedLines(
+        `${index + 1} SUP 0 ATOMS=(${sgroup.atomNumbers.length} ${sgroup.atomNumbers.join(" ")})${crossing} LABEL=${v3000Value(sgroup.label)}`
+      ));
+    });
+    lines.push("M  V30 END SGROUP");
+  }
+  lines.push("M  V30 END CTAB", "M  END");
   warningsOut?.push(...warnings);
   return { contents: lines.join("\n") + "\n", warnings };
+}
+
+/** One `superatomGroups` entry resolved to 1-based atom and crossing-bond numbers. */
+interface SuperatomSgroup {
+  label: string;
+  atomNumbers: number[];
+  bondNumbers: number[];
+}
+
+function superatomSgroups(
+  atoms: readonly MoleculeAtom[],
+  writableBonds: readonly MoleculeBond[],
+  options: MolfileWriteOptions
+): SuperatomSgroup[] {
+  if (!options.superatomGroups?.length) return [];
+  const atomNumberById = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const));
+  return options.superatomGroups.flatMap((group) => {
+    const members = new Set(group.atomIds.filter((id) => atomNumberById.has(id)));
+    if (members.size === 0 || group.label.length === 0) return [];
+    const atomNumbers = [...members].map((id) => atomNumberById.get(id)!).sort((left, right) => left - right);
+    const bondNumbers = writableBonds
+      .map((bond, index) => ({ bond, number: index + 1 }))
+      .filter(({ bond }) => members.has(bond.fromAtomId) !== members.has(bond.toAtomId))
+      .map(({ number }) => number);
+    return [{ label: group.label, atomNumbers, bondNumbers }];
+  });
+}
+
+/** A V3000 property value, quoted when it holds a space, a quote or nothing (CTfile rule). */
+function v3000Value(value: string): string {
+  return /^[^\s"]+$/.test(value) ? value : `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+/**
+ * A V3000 line, continued across physical lines when it would pass 80 characters: each line but
+ * the last ends in " -", and a reader joins the parts after their "M  V30 " prefixes. Breaks fall
+ * only between space-separated tokens, so the joined text is exactly `content`.
+ */
+function v3000ContinuedLines(content: string): string[] {
+  const prefix = "M  V30 ";
+  const limit = 80 - prefix.length - 2;
+  const lines: string[] = [];
+  let current = "";
+  for (const token of content.split(" ")) {
+    const next = current.length === 0 ? token : `${current} ${token}`;
+    if (next.length > limit && current.length > 0) {
+      lines.push(`${prefix}${current} -`);
+      current = token;
+    } else {
+      current = next;
+    }
+  }
+  lines.push(`${prefix}${current}`);
+  return lines;
 }
 
 function round4(value: number): string {

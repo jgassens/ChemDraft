@@ -80,5 +80,13 @@ N–H was inferred, and its reason in the status bar on hover; ring picking and 
 over a badge; a CDXML pyrrole with `NumHydrogens` N-methylated leaves no stale badge; Copy As MOL and
 CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a pasted aromatic.
 
+Abbreviation surfaces added since: every table abbreviation (`packages/template-library/README.md`)
+placed by hotkey and by typing on a chain end, where it is valid, and on a ring carbon, where it is
+badged (hover the badge for its reason); Ome, OME and ome badged as unrecognized text with the "did
+you mean OMe?" hint; a lone typed OMe badged, then given its one bond by the bond tool, which refuses a
+second; OMe with a − charge (methoxide) unbadged; R, X, ? and a bonded Ar never badged; Ph–OMe showing
+C7H8O; Copy As SMILES, MOL V2000 and V3000 of Ph–OMe pasted into another program as anisole; save and
+reopen, CDXML export and reopen, and undo/redo of a relabel, all keeping the label "OMe".
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.

@@ -29,6 +29,7 @@ import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifier
 import {
   applyMoleculeTargetBondLength,
   assertMolfileHasKnownBondOrders,
+  expandNativeMoleculeLabelGroups,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   smilesPasteBondLengthPx,
@@ -363,16 +364,20 @@ function markV3000UnspecifiedDoubleBonds(
 }
 
 function identityMolfile(
-  molecule: MoleculeObject,
+  drawn: MoleculeObject,
   semantics: SourceBondSemantics,
   warnings?: string[]
 ): { contents: string; format: "molfile-v2000" | "molfile-v3000" } {
+  // A valid group label ("Me", "OMe") is written as its atoms, appended after the drawn atoms and
+  // bonds, so the identity is the molecule the label means and every drawn bond index still holds.
+  // A bonded "Ar" (aryl) is a warned placeholder, never argon.
+  const { molecule, placeholderAtoms } = expandNativeMoleculeLabelGroups(drawn);
   const unspecified = new Set(semantics.unspecifiedDoubleBondIndices);
   const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
-        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }).contents,
+        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms }).contents,
         unspecified
       ),
       format: "molfile-v3000"
@@ -380,7 +385,7 @@ function identityMolfile(
   }
   return {
     contents: markV2000UnspecifiedDoubleBonds(
-      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders }).contents,
+      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms }).contents,
       unspecified
     ),
     format: "molfile-v2000"

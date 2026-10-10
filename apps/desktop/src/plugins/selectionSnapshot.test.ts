@@ -110,19 +110,27 @@ describe("pluginFacingStructure", () => {
     expect(facing.structure).toContain(" 10 11  0  0");
   });
 
-  it("hands an abbreviated label to the plugin as an R-group, never as a dummy carbon", () => {
-    const anisole = {
+  it("hands an abbreviation over as its atoms, and any other label as an R-group, never a dummy carbon", () => {
+    const withLabel = (label: string) => ({
       id: "m", type: "molecule", structureFormat: "smiles", structure: "",
       atoms: [
         { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
-        { id: "a1", element: "OMe", x: 1, y: 0, formalCharge: 0 }
+        { id: "a1", element: label, x: 1, y: 0, formalCharge: 0 }
       ],
       bonds: [{ id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" }]
-    } as unknown as Parameters<typeof pluginFacingStructure>[0];
-    const facing = pluginFacingStructure(anisole);
-    expect(facing.structure).toContain(" R# ");
-    expect(facing.structure).toContain("M  RGP  1   2   1");
-    expect(facing.structure).not.toContain(" *  ");
+    }) as unknown as Parameters<typeof pluginFacingStructure>[0];
+
+    // Dimethyl ether: the plugin's OpenChemLib reads O and C, appended after the drawn atoms.
+    const methoxy = pluginFacingStructure(withLabel("OMe")).structure.split("\n");
+    expect(methoxy[3]).toContain("  3  2  0");
+    expect(methoxy.slice(4, 7).map((line) => line.slice(31, 34).trim())).toEqual(["C", "O", "C"]);
+    expect(methoxy.join("\n")).not.toContain("R#");
+
+    // Case matters: "Ome" is text, handed over as an honest R-group placeholder.
+    const text = pluginFacingStructure(withLabel("Ome")).structure;
+    expect(text).toContain(" R# ");
+    expect(text).toContain("M  RGP  1   2   1");
+    expect(text).not.toContain(" *  ");
   });
 
   it("spells a condensed label with its hydrogens, so the plugin's OpenChemLib reads the molecule drawn", () => {

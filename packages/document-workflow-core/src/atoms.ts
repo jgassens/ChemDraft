@@ -5,7 +5,8 @@ import {
   type ChemicalMetadata,
   type CompatibilityWarning,
   type MoleculeAtom,
-  type MoleculeBond
+  type MoleculeBond,
+  type MoleculeObject
 } from "@chemdraft/chem-core";
 import {
   dativeDeprotonationCount,
@@ -24,7 +25,12 @@ import {
   type AbbreviationDefinition
 } from "@chemdraft/template-library";
 
-import { nativeLabelGroupAttachment, type NativeLabelGroup } from "./labelGroups";
+import {
+  expandNativeLabelGroupsInGraph,
+  nativeLabelGroupAttachment,
+  type NativeLabelGroup,
+  type NativeLabelGroupExpansionResult
+} from "./labelGroups";
 
 // The element table, label parsing and bond-order counting have ONE implementation, in
 // layout-engine, because the drawn label counts with them too (AGENTS.md §5.26). These are the same
@@ -61,6 +67,8 @@ export interface NativeAtomValidationState {
    * A unique placement still gets a badge when the five-ring default supplied its H count.
    */
   tautomerGuessed?: true;
+  /** Set when the label is not an element, a condensed formula, an abbreviation or a placeholder. */
+  unrecognizedLabel?: true;
 }
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
@@ -352,10 +360,33 @@ export function nativeAtomValidationState(
 
   if (!element) {
     const symbol = atom.element.trim() || "(blank)";
+    const reading = nativeAtomLabelReading(atom.element);
+    // An abbreviation ("OMe", "Ph") or a composite of one ("NMe2") spells its whole group,
+    // hydrogens included, so the label's bonds must fill exactly the group's free valence —
+    // whether the label was typed or placed by a hotkey. "OMe" on a ring carbon is an O with
+    // three bonds and is flagged like one; a lone "OMe" is an open CH3O fragment.
+    if (reading.kind === "group") {
+      return nativeLabelGroupValidationState(atom, symbol, reading.group, valenceUsed, effectiveFormalCharge);
+    }
+    // Not an element, a formula, an abbreviation or a deliberate placeholder: text, not structure.
+    // It counts nothing, so the formula beside it is short by whatever it was meant to be — say so.
+    if (reading.kind === "unrecognized") {
+      return {
+        atomId: atom.id,
+        element: symbol,
+        valenceUsed,
+        formalCharge: effectiveFormalCharge,
+        valid: false,
+        unrecognizedLabel: true,
+        invalidReason: `Label "${symbol}" on atom ${atom.id} is not an element, a condensed formula or a known abbreviation, so it is text, not structure: it counts nothing in the formula and exports as a placeholder.${
+          reading.suggestion ? ` Abbreviations are case-sensitive; did you mean "${reading.suggestion}"?` : ""
+        }`
+      };
+    }
     // A literal condensed label spelling one heavy element plus hydrogens ("NH2", "OH2",
     // "CH3") is checkable: its own hydrogens count toward the valence, so a naked typed
     // "OH2" is complete water while a naked neutral "CH3" is a flagged methyl fragment.
-    // Multi-heavy labels ("CO2H") and abbreviations ("OMe") are superatoms — not checked.
+    // Multi-heavy condensed formulas ("CONH2") and generic placeholders ("R") are not checked.
     if (atom.labelLiteral === true) {
       const spelled = nativeSingleHeavyElementLabelValence(symbol);
       if (spelled && !nativeLiteralAtomValenceComplete(spelled.element, valenceUsed + spelled.hydrogens, effectiveFormalCharge)) {
@@ -661,16 +692,120 @@ export function nativeAtomLabelFreeValence(
 /** The bond ceiling the drawing tools grow any atom to; a group never needs more. */
 const nativeAtomInvalidGrowthLimit = 8;
 
+function nativeLabelGroupValidationState(
+  atom: MoleculeAtom,
+  symbol: string,
+  group: NativeLabelGroup,
+  valenceUsed: number,
+  effectiveFormalCharge: number
+): NativeAtomValidationState {
+  const verdict = nativeLabelGroupVerdict(group, valenceUsed, effectiveFormalCharge);
+  if (verdict.valid) {
+    return { atomId: atom.id, element: symbol, valenceUsed, formalCharge: effectiveFormalCharge, valid: true };
+  }
+  const expected = verdict.expectedBondCount;
+  const problem = expected === undefined
+    ? `"${symbol}" on atom ${atom.id} cannot carry charge ${effectiveFormalCharge}: no number of bonds completes it.`
+    : expected === 0
+      ? `"${symbol}" is complete by itself and takes no bonds; atom ${atom.id} has ${valenceUsed}.`
+      : `"${symbol}" attaches by ${expected} bond${expected === 1 ? "" : "s"}; atom ${atom.id} has ${valenceUsed}.`;
+  return {
+    atomId: atom.id,
+    element: symbol,
+    valenceUsed,
+    formalCharge: effectiveFormalCharge,
+    ...(verdict.expectedFormalCharge !== undefined && verdict.expectedFormalCharge !== effectiveFormalCharge
+      ? { expectedFormalCharge: verdict.expectedFormalCharge }
+      : {}),
+    valid: false,
+    invalidReason: `${problem} Until it does, the group counts nothing in the formula and exports as a placeholder.`
+  };
+}
+
+/**
+ * The labelled atoms whose groups can be written out as real atoms: those whose bonds fill the
+ * group's free valence (`nativeLabelGroupVerdict`). A flagged group stays a placeholder everywhere —
+ * formula, SMILES, molfile — until it is fixed, so no output claims a structure the badge calls
+ * wrong. A dismissed badge does not change that: dismissing silences the warning, not the chemistry.
+ */
+export function nativeExpandableLabelGroups(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[],
+  resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
+): Map<string, NativeLabelGroup> {
+  const groups = new Map<string, NativeLabelGroup>();
+  for (const atom of atoms) {
+    const reading = nativeAtomLabelReading(atom.element);
+    if (reading.kind !== "group" || resolution.unresolvedAtomIds.has(atom.id)) continue;
+    const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
+    if (nativeLabelGroupVerdict(reading.group, valenceUsed, atom.formalCharge).valid) {
+      groups.set(atom.id, reading.group);
+    }
+  }
+  return groups;
+}
+
+/**
+ * The molecule's graph with every valid group label written out as real atoms (see
+ * `expandNativeLabelGroupsInGraph`): the form the formula, SMILES, molfile and analysis read, so all
+ * of them describe the same structure. Drawn atoms keep their ids and indices.
+ */
+export function expandNativeLabelGroups(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): NativeLabelGroupExpansionResult {
+  return expandNativeLabelGroupsInGraph(atoms, bonds, nativeExpandableLabelGroups(atoms, bonds));
+}
+
+/**
+ * `molecule` with its valid group labels written out (`expandNativeLabelGroups`), for a writer or
+ * an engine; the same object when there is nothing to expand. `expansions` doubles as the molfile
+ * writer's `superatomGroups`, so a file can carry each group's label beside its atoms, and
+ * `placeholderAtoms` is its `placeholderAtoms`: element-symbol labels that stand for a group here.
+ */
+export function expandNativeMoleculeLabelGroups(molecule: MoleculeObject): {
+  molecule: MoleculeObject;
+  expansions: NativeLabelGroupExpansionResult["expansions"];
+  placeholderAtoms: Map<string, string>;
+} {
+  const placeholderAtoms = nativeElementLabelPlaceholders(molecule.atoms, molecule.bonds);
+  const expanded = expandNativeLabelGroups(molecule.atoms, molecule.bonds);
+  return expanded.expansions.length === 0
+    ? { molecule, expansions: [], placeholderAtoms }
+    : { molecule: { ...molecule, atoms: expanded.atoms, bonds: expanded.bonds }, expansions: expanded.expansions, placeholderAtoms };
+}
+
+/**
+ * Atoms whose label is an element symbol but which stand for a group in this drawing, with the
+ * reason: today only a bonded "Ar", which is how chemists write aryl (`nativeAtomLabelReading`).
+ * Argon makes no bonds, so counting or exporting a bonded "Ar" as argon would invent chemistry;
+ * these count nothing and export as warned placeholders, like any other placeholder label.
+ */
+export function nativeElementLabelPlaceholders(
+  atoms: readonly MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): Map<string, string> {
+  const bonded = new Set(bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
+  return new Map(atoms
+    .filter((atom) =>
+      bonded.has(atom.id) &&
+      nativeElementFromAtomLabel(atom.element) !== undefined &&
+      nativeAtomLabelReading(atom.element, { bonded: true }).kind === "generic"
+    )
+    .map((atom) => [atom.id, `a bonded "${atom.element.trim()}" is aryl, not argon`]));
+}
+
 /**
  * Parse an arbitrary atom label as a condensed formula of known elements ("CH3" → C1 H3,
  * "CO2H" → C1 O2 H1). Undefined when any token is not a plain element symbol ("OMe", "Ph",
- * "R1") — those abbreviations contribute nothing rather than a wrong count.
+ * "R1"). Groups are read before this ever runs (`nativeAtomLabelReading`), so "OAc" is acetoxy
+ * from the abbreviation table, not O + Ac.
  *
- * Honest limitation: a label that DOES tokenize into element symbols is counted as those
- * elements, so abbreviations that collide with element symbols are miscounted — "OAc" reads as
- * O + Ac (actinium), "Ts" as tennessine, "Pr" as praseodymium, "Am"/"No" likewise. That affects
- * only the formula/mass bookkeeping here; valence never consults this parse
- * (`nativeSingleHeavyElementLabelValence` applies its own stricter check).
+ * Honest limitation: a label that is NOT a known group but DOES tokenize into element symbols
+ * is counted as those elements, so a group the table lacks whose spelling collides with element
+ * symbols is miscounted — "Ts" reads as tennessine, "Pr" as praseodymium, "NHAc" as N + H +
+ * actinium. Valence never consults this parse (`nativeSingleHeavyElementLabelValence` applies
+ * its own stricter check).
  */
 function parseCondensedLabelFormula(label: string): Map<string, number> | undefined {
   const trimmed = label.trim();
@@ -700,13 +835,29 @@ export function nativeSingleBondGraphMetadata(
   const elementCounts = new Map<string, number>();
   // Aromatic bonds count at their Kekulé orders — the same bonds `atomDisplayLabel` counts, so the
   // formula's hydrogens are the ones the drawing shows.
-  const resolution = nativeBondOrderResolution(atoms, bonds);
-  const valenceUsage = resolution.bondOrderUsage;
+  const drawnResolution = nativeBondOrderResolution(atoms, bonds);
   const totalCharge = atoms.reduce((sum, atom) => sum + atom.formalCharge, 0);
   const radicalCount = atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0);
-  const warnings = nativeInvalidAtomWarnings(atoms, bonds, resolution);
+  const warnings = nativeInvalidAtomWarnings(atoms, bonds, drawnResolution);
+  // A valid group label ("OMe", "NMe2") is counted as the real atoms it stands for, through the
+  // same per-atom arithmetic below — never as a formula added up by hand — so the formula is the
+  // one an engine reads from the exported structure. A flagged group is not expanded and counts
+  // nothing, like every other placeholder, until it is fixed.
+  const expandableGroups = nativeExpandableLabelGroups(atoms, bonds, drawnResolution);
+  const expanded = expandableGroups.size > 0
+    ? expandNativeLabelGroupsInGraph(atoms, bonds, expandableGroups)
+    : undefined;
+  const countedAtoms = expanded?.atoms ?? atoms;
+  const countedBonds = expanded?.bonds ?? bonds;
+  const resolution = expanded ? nativeBondOrderResolution(countedAtoms, countedBonds) : drawnResolution;
+  const valenceUsage = resolution.bondOrderUsage;
+  // An element symbol standing for a group (a bonded "Ar", aryl) is a placeholder: it counts nothing.
+  const placeholders = nativeElementLabelPlaceholders(atoms, bonds);
 
-  atoms.forEach((atom) => {
+  countedAtoms.forEach((atom) => {
+    if (placeholders.has(atom.id)) {
+      return;
+    }
     if (atom.element === "D" || atom.element === "T") {
       // Heavy hydrogen keeps its own symbol in the formula (CH3D) and its own mass, matching
       // the [2H]/[3H] the SMILES writer spells for the same atom.
@@ -716,7 +867,12 @@ export function nativeSingleBondGraphMetadata(
     const element = nativeElementFromAtomLabel(atom.element);
     if (!element) {
       // A condensed label is its own recipe — count exactly what it spells, no implicit H.
-      parseCondensedLabelFormula(atom.element)?.forEach((count, labelElement) => {
+      // Placeholders, unrecognized text and flagged groups count nothing.
+      const reading = nativeAtomLabelReading(atom.element);
+      const counts = reading.kind === "formula"
+        ? reading.counts
+        : reading.kind === "spelled" ? parseCondensedLabelFormula(atom.element) : undefined;
+      counts?.forEach((count, labelElement) => {
         elementCounts.set(labelElement, (elementCounts.get(labelElement) ?? 0) + count);
       });
       return;
@@ -733,7 +889,7 @@ export function nativeSingleBondGraphMetadata(
         valenceUsed,
         atom.formalCharge,
         atom.markRadicals ?? 0
-      ) - dativeDeprotonationCount(atom, bonds, atoms, resolution));
+      ) - dativeDeprotonationCount(atom, countedBonds, countedAtoms, resolution));
       elementCounts.set("H", (elementCounts.get("H") ?? 0) + implicitHydrogens);
     }
   });
@@ -951,7 +1107,9 @@ function nativeInvalidAtomWarnings(
     .map((state) => ({
       code: state.unresolvedAromatic
         ? "chemistry.unresolved_aromatic"
-        : state.tautomerGuessed ? "chemistry.aromatic_tautomer_guessed" : "chemistry.invalid_valence",
+        : state.tautomerGuessed
+          ? "chemistry.aromatic_tautomer_guessed"
+          : state.unrecognizedLabel ? "chemistry.unrecognized_label" : "chemistry.invalid_valence",
       message: state.invalidReason ?? `${state.element} atom ${state.atomId} has invalid valence.`,
       objectId: state.atomId
     }));

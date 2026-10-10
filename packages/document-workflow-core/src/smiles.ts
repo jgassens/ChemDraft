@@ -5,7 +5,10 @@ import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   atomBondOrderUsageMap,
+  expandNativeLabelGroups,
   nativeElementFromAtomLabel,
+  nativeElementLabelPlaceholders,
+  nativeExpandableLabelGroups,
   nativeImplicitHydrogenCount,
   nativeSingleHeavyElementLabelValence
 } from "./atoms";
@@ -20,14 +23,22 @@ import {
   subtreeSize
 } from "./graph";
 
-/** Labels whose native atoms have to become dummy `[*]` atoms in SMILES. */
+/**
+ * Labels whose native atoms have to become dummy `[*]` atoms in SMILES: everything that is not an
+ * element, a spelled one-heavy-atom label ("NH2") or a group whose bonds fill its free valence
+ * (those are written out as real atoms). A flagged group ("OMe" on a ring carbon) is listed here.
+ */
 export function nativeMoleculeUnspellableLabels(molecule: MoleculeObject): string[] {
+  const expandable = nativeExpandableLabelGroups(molecule.atoms, molecule.bonds);
+  // An element symbol standing for a group (a bonded "Ar", aryl) is a placeholder too.
+  const placeholders = nativeElementLabelPlaceholders(molecule.atoms, molecule.bonds);
   return [...new Set(molecule.atoms
-    .filter((atom) =>
+    .filter((atom) => placeholders.has(atom.id) || (
       atom.element !== "D" && atom.element !== "T" &&
       nativeElementFromAtomLabel(atom.element) === undefined &&
-      nativeSingleHeavyElementLabelValence(atom.element) === undefined
-    )
+      nativeSingleHeavyElementLabelValence(atom.element) === undefined &&
+      !expandable.has(atom.id)
+    ))
     .map((atom) => atom.element))];
 }
 
@@ -126,14 +137,20 @@ export function tryNativeSingleBondGraphSmiles(
   return refused ? { refused } : { smiles: nativeSingleBondGraphSmiles(atoms, bonds, warningsOut) };
 }
 
+/**
+ * SMILES for a native graph. A group label whose bonds fill its free valence ("OMe", "NMe2") is
+ * written as the atoms it stands for, so the string says what the drawing means; any other label
+ * that is not one atom is a warned dummy `[*]` (see `nativeAtomSmiles`).
+ */
 export function nativeSingleBondGraphSmiles(
-  atoms: readonly MoleculeAtom[],
-  inputBonds: readonly MoleculeBond[],
+  drawnAtoms: readonly MoleculeAtom[],
+  drawnBonds: readonly MoleculeBond[],
   warningsOut?: string[]
 ): string {
-  if (atoms.length === 0) {
+  if (drawnAtoms.length === 0) {
     return "";
   }
+  const { atoms, bonds: inputBonds } = expandNativeLabelGroups(drawnAtoms, drawnBonds);
   const bonds = nativeSmilesWritableBonds(atoms, inputBonds, warningsOut);
   const smilesByAtomId = nativeAtomSmilesById(atoms, bonds);
   const adjacency = nativeAdjacency(atoms, bonds);
@@ -494,7 +511,12 @@ function nativeAtomSmilesById(
   bonds: readonly MoleculeBond[]
 ): Map<string, string> {
   const valenceUsage = atomBondOrderUsageMap(atoms, bonds);
+  const placeholders = nativeElementLabelPlaceholders(atoms, bonds);
   return new Map(atoms.map((atom) => {
+    if (placeholders.has(atom.id)) {
+      // A bonded "Ar" is aryl, not argon: the warned dummy atom any unspellable label gets.
+      return [atom.id, `[*${smilesChargeSuffix(atom.formalCharge)}]`] as const;
+    }
     const element = nativeElementFromAtomLabel(atom.element);
     const needsSpelledHydrogens = element !== undefined &&
       element !== "H" &&

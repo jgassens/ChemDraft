@@ -5866,18 +5866,19 @@ describe("Phase 4 document workflow", () => {
     expect(mixedMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
   });
 
-  it("applies nickname labels verbatim with honest chemistry", () => {
+  it("applies nickname labels verbatim and counts the group each one stands for", () => {
     const ethane = insertNativeSingleBondMolecule(createPhase4Document("Nickname Label"), { x: 300, y: 300 });
 
-    // Opaque abbreviation: the label reads Et, is never valence-flagged, and contributes
-    // nothing to the formula (the remaining skeleton carbon keeps its methyl hydrogens).
+    // The label stays "Et" in the document and on the canvas; the chemistry reads the ethyl group
+    // it names, so CH3–Et is propane, and its one bond fills the group's free valence.
     const ethyl = setNativeAtomElement(ethane, "atom_002", "Et");
     const ethylMolecule = selectedMolecule(ethyl);
     const ethylAtom = ethylMolecule.atoms.find((atom) => atom.id === "atom_002");
     expect(ethylAtom).toMatchObject({ element: "Et" });
     expect(atomDisplayLabel(ethylAtom!, ethylMolecule.bonds, undefined, ethylMolecule.atoms)).toBe("Et");
     expect(nativeMoleculeInvalidAtomStates(ethylMolecule)).toEqual([]);
-    expect(ethylMolecule.chemistry).toMatchObject({ formula: "CH3" });
+    expect(ethylMolecule.chemistry).toMatchObject({ formula: "C3H8" });
+    expect(ethylMolecule.structure).toBe("CCC");
 
     // Condensed nickname that spells real elements: CF3 counts in the formula.
     const trifluoromethyl = setNativeAtomElement(ethane, "atom_002", "CF3");
@@ -6788,7 +6789,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeElementFromAtomLabel("Xx")).toBeUndefined();
   });
 
-  it("updates hovered atom labels to full element symbols and accepts generic labels", () => {
+  it("updates hovered atom labels to full element symbols, accepts generic labels and flags unrecognized text", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Atom Labels"), { x: 300, y: 300 });
     const molecule = selectedMolecule(document);
     const target = {
@@ -6799,17 +6800,24 @@ describe("Phase 4 document workflow", () => {
     } as const;
     const chloride = applyNativeAtomElementTarget(document, target, "cl");
     const labeled = selectedMolecule(chloride);
-    const generic = applyNativeAtomElementTarget(chloride, target, "Xx");
+    const generic = applyNativeAtomElementTarget(chloride, target, "X");
     const genericMolecule = selectedMolecule(generic);
-    const yGeneric = applyNativeAtomElementTarget(generic, target, "Y");
-    const yMolecule = selectedMolecule(yGeneric);
+    const unrecognized = applyNativeAtomElementTarget(generic, target, "Xx");
+    const unrecognizedMolecule = selectedMolecule(unrecognized);
+    const yttrium = applyNativeAtomElementTarget(unrecognized, target, "Y");
+    const yMolecule = selectedMolecule(yttrium);
 
     expect(labeled.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Cl" });
     expect(atomDisplayLabel(labeled.atoms[0], labeled.bonds, undefined, labeled.atoms)).toBe("Cl");
     expect(nativeMoleculeInvalidAtomStates(labeled)).toEqual([]);
-    expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
-    expect(atomDisplayLabel(genericMolecule.atoms[0], genericMolecule.bonds, undefined, genericMolecule.atoms)).toBe("Xx");
+    // A deliberate placeholder is not a mistake.
+    expect(genericMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "X" });
     expect(nativeMoleculeInvalidAtomStates(genericMolecule)).toEqual([]);
+    // Unrecognized text is still applied verbatim, and flagged as text rather than structure.
+    expect(unrecognizedMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Xx" });
+    expect(atomDisplayLabel(unrecognizedMolecule.atoms[0], unrecognizedMolecule.bonds, undefined, unrecognizedMolecule.atoms)).toBe("Xx");
+    expect(nativeMoleculeInvalidAtomStates(unrecognizedMolecule)).toMatchObject([{ atomId: "atom_001", unrecognizedLabel: true }]);
+    // "Y" is yttrium: elements win over every other reading.
     expect(yMolecule.atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ element: "Y" });
     expect(nativeMoleculeInvalidAtomStates(yMolecule)).toEqual([]);
   });
@@ -10804,10 +10812,11 @@ describe("Phase 4 document workflow", () => {
     const aceticAcid = setNativeAtomElement(ethane, "atom_002", "CO2H");
     expect(selectedMolecule(aceticAcid).chemistry).toMatchObject({ formula: "C2H4O2", atomCount: 2 });
 
-    // Abbreviations with non-element tokens stay uncounted (no wrong guesses) — a lone one
-    // falls back to the empty-formula sentinel.
+    // A lone abbreviation is an open fragment (CH3O with its bond missing): flagged, and counted as
+    // nothing until its bond arrives — the empty-formula sentinel here.
     const abbreviation = setNativeAtomElement(naked, "atom_001", "OMe");
     expect(selectedMolecule(abbreviation).chemistry).toMatchObject({ formula: "C0H0", atomCount: 1 });
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(abbreviation))).toMatchObject([{ atomId: "atom_001" }]);
   });
 
   it("deletes a lassoed fragment (atoms plus their incident bonds) and rebuilds the remaining graph", () => {
@@ -12093,25 +12102,35 @@ describe("Phase 4 document workflow", () => {
       expect(plain?.display?.bondStyle).toBeUndefined();
     });
 
-    it("warns when a condensed label must copy as a dummy atom", async () => {
+    it("copies an abbreviation as its atoms with a superatom S-group, and unrecognized text as a warned dummy atom", async () => {
       const seeded = insertNativeSingleBondMolecule(createPhase4Document("Copy Condensed"), { x: 300, y: 300 });
       const molecule = selectedMolecule(seeded);
-      const labeled = applyNativeAtomElementTarget(seeded, {
-        objectId: molecule.id,
-        kind: "atom",
-        atomId: "atom_002",
-        distanceToPointer: 0
-      }, "Ph", { literal: true });
+      const target = { objectId: molecule.id, kind: "atom", atomId: "atom_002", distanceToPointer: 0 } as const;
+      const labeled = applyNativeAtomElementTarget(seeded, target, "Ph", { literal: true });
       const scoped = { ...labeled, selection: { ...labeled.selection, objectIds: [] } };
 
+      // C–Ph is toluene: the native writer spells the phenyl's Kekulé ring (no RDKit in this test).
       const smilesWarnings: string[] = [];
-      expect(await copyAsSmiles(scoped, smilesWarnings)).toBe("C[*]");
-      expect(smilesWarnings).toHaveLength(1);
-      expect(smilesWarnings[0]).toContain("\"Ph\"");
+      expect(await copyAsSmiles(scoped, smilesWarnings)).toBe("C1(C)=CC=CC=C1");
+      expect(smilesWarnings).toEqual(["Abbreviation \"Ph\" was written out as the atoms it stands for."]);
 
       const molfileWarnings: string[] = [];
-      copyAsMolfile(scoped, "v3000", molfileWarnings);
-      expect(molfileWarnings.some((warning) => warning.includes("\"Ph\""))).toBe(true);
+      const v3000 = copyAsMolfile(scoped, "v3000", molfileWarnings)!;
+      expect(molfileWarnings).toEqual([]);
+      expect(v3000).toContain("M  V30 COUNTS 7 7 1 0 0");
+      expect(v3000).toContain("M  V30 1 SUP 0 ATOMS=(6 2 3 4 5 6 7) XBONDS=(1 1) LABEL=Ph");
+      expect(copyAsMolfile(scoped, "v2000")).toContain("M  SMT   1 Ph");
+
+      // "Phe" is no known group: it stays a placeholder with its warning.
+      const unrecognized = applyNativeAtomElementTarget(seeded, target, "Phe", { literal: true });
+      const unrecognizedScoped = { ...unrecognized, selection: { ...unrecognized.selection, objectIds: [] } };
+      const placeholderWarnings: string[] = [];
+      expect(await copyAsSmiles(unrecognizedScoped, placeholderWarnings)).toBe("C[*]");
+      expect(placeholderWarnings).toHaveLength(1);
+      expect(placeholderWarnings[0]).toContain("\"Phe\"");
+      const placeholderMolfileWarnings: string[] = [];
+      copyAsMolfile(unrecognizedScoped, "v3000", placeholderMolfileWarnings);
+      expect(placeholderMolfileWarnings.some((warning) => warning.includes("\"Phe\""))).toBe(true);
     });
   });
 
@@ -13329,7 +13348,8 @@ describe("Phase 4 document workflow", () => {
 
   it("keeps native chemistry when validation analyzed dummy atoms for an unspellable label", () => {
     const ethane = insertNativeSingleBondMolecule(createPhase4Document("Placeholder Analysis"), { x: 300, y: 300 });
-    const labeled = setNativeAtomElement(ethane, "atom_002", "CF3");
+    // A generic placeholder has no structure for an engine to read, so its result must not stick.
+    const labeled = setNativeAtomElement(ethane, "atom_002", "R");
     const chemistryBefore = selectedMolecule(labeled).chemistry;
     const analyzed = applyAnalysisToSelectedMolecule(labeled, {
       input: { format: "smiles", value: "C[*]" },
@@ -13348,22 +13368,48 @@ describe("Phase 4 document workflow", () => {
 
     expect(analyzed).toBe(labeled);
     expect(selectedMolecule(analyzed).chemistry).toEqual(chemistryBefore);
-    expect(selectedMolecule(analyzed).chemistry).toMatchObject({ formula: "C2H3F3" });
+    expect(selectedMolecule(analyzed).chemistry).toMatchObject({ formula: "CH3" });
+
+    // An abbreviation on its one bond is real structure: its stored SMILES spells the group, so
+    // the engine reads the same molecule the drawing means and its result may apply.
+    const trifluoroethane = setNativeAtomElement(ethane, "atom_002", "CF3");
+    expect(selectedMolecule(trifluoroethane).structure).toBe("CC(F)(F)F");
+    expect(selectedMolecule(trifluoroethane).chemistry).toMatchObject({ formula: "C2H3F3" });
+    const engineRead = applyAnalysisToSelectedMolecule(trifluoroethane, {
+      input: { format: "smiles", value: "CC(F)(F)F" },
+      validation: { valid: true, errors: [], warnings: [] },
+      properties: {
+        formula: "C2H3F3",
+        averageMass: 84.041,
+        exactMass: 84.0187,
+        totalCharge: 0,
+        atomCount: 5,
+        bondCount: 4,
+        stereochemistry: []
+      },
+      warnings: []
+    });
+    expect(selectedMolecule(engineRead).chemistry).toMatchObject({ formula: "C2H3F3" });
   });
 
   it("identifies exactly the labels that SMILES has to replace with dummy atoms", () => {
-    const molecule = selectedMolecule(
-      insertNativeSingleBondMolecule(createPhase4Document("Unspellable Labels"), { x: 300, y: 300 })
-    );
-    const withLabel = (label: string): MoleculeObject => ({
-      ...molecule,
-      atoms: [{ ...molecule.atoms[0], element: label }]
-    });
+    const ethane = insertNativeSingleBondMolecule(createPhase4Document("Unspellable Labels"), { x: 300, y: 300 });
+    const withLabel = (label: string): MoleculeObject => selectedMolecule(setNativeAtomElement(ethane, "atom_002", label));
 
-    expect(nativeMoleculeUnspellableLabels(withLabel("CF3"))).toEqual(["CF3"]);
+    // Spelled one-heavy-atom labels and abbreviations on their one bond are written as atoms.
     expect(nativeMoleculeUnspellableLabels(withLabel("CH3"))).toEqual([]);
     expect(nativeMoleculeUnspellableLabels(withLabel("NH2"))).toEqual([]);
-    expect(nativeMoleculeUnspellableLabels(withLabel("Ph"))).toEqual(["Ph"]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("CF3"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("Ph"))).toEqual([]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("NMe2"))).toEqual([]);
+    // Placeholders, bare formulas and unrecognized text are not.
+    expect(nativeMoleculeUnspellableLabels(withLabel("R"))).toEqual(["R"]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("CONH2"))).toEqual(["CONH2"]);
+    expect(nativeMoleculeUnspellableLabels(withLabel("Ome"))).toEqual(["Ome"]);
+    // Nor is an abbreviation its bonds do not fit: a lone "Ph" is an open fragment.
+    const lone: MoleculeObject = { ...withLabel("Ph"), bonds: [] };
+    expect(nativeMoleculeUnspellableLabels({ ...lone, atoms: lone.atoms.filter((atom) => atom.id === "atom_002") }))
+      .toEqual(["Ph"]);
   });
 
   it("applies an editor adapter save result through a selected-object document patch", () => {

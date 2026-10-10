@@ -430,12 +430,11 @@ export function atomElementCommandId(element: NativeHotkeyElement): string {
 
 /**
  * ChemDraw-parity nickname labels placed by hover hotkeys. Each sets the hovered atom's label
- * VERBATIM — a superatom-style text label, not an element and not a structural expansion. The
- * condensed ones that spell real formulas (CF3, NO2, N3, MgBr) count in the molecular formula;
- * opaque abbreviations (Et, Ph, Boc…) contribute nothing and export to SMILES/molfile as a
- * warned dummy atom. "Ac" is deliberately ABSENT: it normalizes to actinium, and silently
- * turning an acetyl into a metal is the abbreviation/element collision the formula path already
- * documents — leave `A` unmapped until that policy exists.
+ * VERBATIM: the document keeps "OMe". The chemistry reads the group the label names from the
+ * template library's abbreviation table (`nativeAtomLabelReading`), so the badge checks its free
+ * valence and the formula and exports count its real atoms. R, X and ? are placeholders; D is
+ * deuterium. "Ac" is deliberately ABSENT: it normalizes to actinium, and elements win over the
+ * abbreviation table, so `A` stays unmapped.
  */
 export const nativeNicknameLabels = [
   "D", "Et", "CO2Me", "CF3", "Cbz", "Me", "MgBr", "NO2", "OMe", "Ph", "Fmoc", "R", "X", "Boc", "N3", "?"
