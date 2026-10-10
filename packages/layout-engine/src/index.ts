@@ -2636,12 +2636,11 @@ function moleculeSketchTickParts(
     const reserve = Math.min(spacing * 0.18, Math.max(0.35, drawingStyle.bondStrokeWidthPx * 0.3));
     const cellStart = index > 0 ? (centers[index - 1]! + center) / 2 + reserve : 0;
     const cellEnd = index + 1 < ticks.length ? (centers[index + 1]! + center) / 2 - reserve : geometry.length;
-    const lengthVariation = hashed ? Math.max(0, Math.min(
-      lengths[index]! * 0.15,
-      index > 0 ? (lengths[index]! - lengths[index - 1]!) * 0.45 : Infinity,
-      index + 1 < ticks.length ? (lengths[index + 1]! - lengths[index]!) * 0.45 : Infinity
-    )) : lengths[index]! * 0.15;
-    return { d: linePathD(source), tick: { source, axis, cellStart, cellEnd, lengthVariation, identity: `${identity}:${index}`, hashed } };
+    const lengthVariation = lengths[index]! * 0.25;
+    return { d: linePathD(source), tick: {
+      source, axis, cellStart, cellEnd, lengthVariation, identity: `${identity}:${index}`, hashed,
+      widening: hashed ? { lengths, index, identity } : undefined
+    } };
   });
 }
 

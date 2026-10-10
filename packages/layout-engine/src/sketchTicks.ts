@@ -8,6 +8,7 @@ export interface MoleculeSketchTick {
   lengthVariation: number;
   identity: string;
   hashed: boolean;
+  widening?: { lengths: readonly number[]; index: number; identity: string };
 }
 
 /** One filled, tapered pen mark. All control points stay inside a disjoint axial ink cell. */
@@ -25,40 +26,85 @@ export function moleculeSketchTickPath(
   const nx = -uy;
   const ny = ux;
   const sourceLength = Math.hypot(tick.source.x2 - tick.source.x1, tick.source.y2 - tick.source.y1);
-  const angle = signed() * (7 * Math.PI / 180) * strength;
-  const lengthChange = signed() * Math.min(sourceLength * 0.15 * strength, tick.lengthVariation);
-  const length = sourceLength + lengthChange;
-  const shift = signed() * Math.min(0.65 * strength, (tick.cellEnd - tick.cellStart) * 0.1);
-  const cx = (tick.source.x1 + tick.source.x2) / 2 + ux * shift;
-  const cy = (tick.source.y1 + tick.source.y2) / 2 + uy * shift;
+  let angle = signed() * (14 * Math.PI / 180) * strength;
+  const lengthChange = signed() * Math.min(sourceLength * 0.25 * strength, tick.lengthVariation);
+  // Ordered targets retain the full length range instead of limiting every tick to half its
+  // neighbour's increment. Sorting stays within each original length's +/-25% interval because
+  // the original lengths (and therefore both interval boundaries) are already ordered.
+  const length = tick.widening && tick.lengthVariation > 0
+    ? tick.widening.lengths.map((source, index) => {
+        const sample = tickRandom(`${parameters.seed}:${tick.widening!.identity}:length:${index}`)() * 2 - 1;
+        return source * (1 + sample * 0.25 * Math.min(1, strength));
+      }).sort((a, b) => a - b)[tick.widening.index]!
+    : sourceLength + lengthChange;
+  const cellWidth = tick.cellEnd - tick.cellStart;
+  const shift = signed() * Math.min(1.3 * strength, cellWidth * 0.2 * strength);
+  const center = ((tick.source.x1 + tick.source.x2) / 2 - tick.axis.x1) * ux +
+    ((tick.source.y1 + tick.source.y2) / 2 - tick.axis.y1) * uy;
   const sx = sourceLength > 0 ? (tick.source.x2 - tick.source.x1) / sourceLength : ux;
   const sy = sourceLength > 0 ? (tick.source.y2 - tick.source.y1) / sourceLength : uy;
-  const tx = sx * Math.cos(angle) - sy * Math.sin(angle);
-  const ty = sx * Math.sin(angle) + sy * Math.cos(angle);
-  // Maintain the widening envelope despite rotation; jitter cannot invert adjacent hash widths.
-  const halfLength = length / 2 / (tick.hashed ? Math.cos(angle) : 1);
   const acrossCenter = ((tick.source.x1 + tick.source.x2) / 2 - tick.axis.x1) * nx +
     ((tick.source.y1 + tick.source.y2) / 2 - tick.axis.y1) * ny;
-  const bow = signed() * 0.4 * strength * Math.min(2, parameters.bowing);
+  const bow = signed() * 0.8 * strength * Math.min(2, parameters.bowing);
   const weights = Array.from({ length: 4 }, () =>
-    parameters.strokeWidth / 2 * (1 + signed() * 0.28 * Math.min(1, strength))
+    parameters.strokeWidth / 2 * (1 + signed() * 0.4 * Math.min(1, strength))
   );
-  const point = (station: number, side: number) => {
-    const t = station / 3;
-    const along = (2 * t - 1) * halfLength;
-    const offset = side * weights[station]! + (station === 1 || station === 2 ? bow : 0);
-    const x = cx + tx * along - ty * offset;
-    const y = cy + ty * along + tx * offset;
-    const axial = Math.max(tick.cellStart, Math.min(tick.cellEnd,
-      (x - tick.axis.x1) * ux + (y - tick.axis.y1) * uy));
-    const across = (x - tick.axis.x1) * nx + (y - tick.axis.y1) * ny;
-    const boundedAcross = tick.hashed
-      ? Math.max(acrossCenter - length / 2, Math.min(acrossCenter + length / 2, across))
-      : across;
-    return `${number(tick.axis.x1 + ux * axial + nx * boundedAcross)} ${number(tick.axis.y1 + uy * axial + ny * boundedAcross)}`;
+  const hull = (tilt: number, lengthScale = 1) => {
+    const tx = sx * Math.cos(tilt) - sy * Math.sin(tilt);
+    const ty = sx * Math.sin(tilt) + sy * Math.cos(tilt);
+    const axialDirection = tx * ux + ty * uy;
+    const acrossDirection = tx * nx + ty * ny;
+    return [1, -1].flatMap((side) => [0, 1, 2, 3].map((station) => {
+      const along = (2 * station / 3 - 1) * length / 2 * lengthScale;
+      const bend = station === 1 || station === 2 ? bow : 0;
+      if (tick.hashed) {
+        // Axial end caps preserve the exact widening envelope without clipping the tilt.
+        // Divide weight by cos(tilt) so its thickness perpendicular to the pen stays unchanged.
+        return {
+          axial: along * axialDirection / Math.abs(acrossDirection) - Math.sign(acrossDirection) *
+            (side * weights[station]! / Math.abs(acrossDirection) + bend),
+          across: acrossCenter + along * Math.sign(acrossDirection)
+        };
+      }
+      const offset = side * weights[station]! + bend;
+      return {
+        axial: along * axialDirection - acrossDirection * offset,
+        across: acrossCenter + along * acrossDirection + axialDirection * offset
+      };
+    }));
   };
-  const left = [0, 1, 2, 3].map((station) => point(station, 1));
-  const right = [0, 1, 2, 3].map((station) => point(station, -1));
+  const bounds = (points: ReturnType<typeof hull>) => {
+    const min = Math.min(...points.map((p) => p.axial));
+    const max = Math.max(...points.map((p) => p.axial));
+    return { min, max, width: max - min };
+  };
+  let ink = hull(angle);
+  if (bounds(ink).width > cellWidth) {
+    // Fit the whole mark, never flatten individual points against cell walls. For a wide hash
+    // in a narrow cell, reduce only that tick's tilt. Dashes instead shorten to retain their angle.
+    let low = 0, high = 1;
+    for (let iteration = 0; iteration < 24; iteration++) {
+      const scale = (low + high) / 2;
+      const candidate = tick.hashed ? hull(angle * scale) : hull(angle, scale);
+      if (bounds(candidate).width <= cellWidth) low = scale;
+      else high = scale;
+    }
+    if (tick.hashed) angle *= low;
+    ink = tick.hashed ? hull(angle) : hull(angle, low);
+  }
+  let extent = bounds(ink);
+  if (extent.width > cellWidth) {
+    // Only exceptionally tiny cells cannot fit even an untilted pen's weight/bow.
+    ink = ink.map((p) => ({ ...p, axial: p.axial * cellWidth / extent.width }));
+    extent = bounds(ink);
+  }
+  const fittedCenter = Math.max(tick.cellStart - extent.min,
+    Math.min(tick.cellEnd - extent.max, center + shift));
+  const coordinates = ink.map(({ axial, across }) =>
+    `${number(tick.axis.x1 + ux * (fittedCenter + axial) + nx * across)} ${number(tick.axis.y1 + uy * (fittedCenter + axial) + ny * across)}`
+  );
+  const left = coordinates.slice(0, 4);
+  const right = coordinates.slice(4);
   return {
     d: `M ${left[0]} C ${left[1]} ${left[2]} ${left[3]} L ${right[3]} C ${right[2]} ${right[1]} ${right[0]} Z`,
     stroke: "none", strokeWidth: 0, fill: parameters.color

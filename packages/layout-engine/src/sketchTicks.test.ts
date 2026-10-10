@@ -16,6 +16,10 @@ const points = (d: unknown) => {
   const numbers = String(d).match(/-?\d+(?:\.\d+)?/g)!.map(Number);
   return Array.from({ length: numbers.length / 2 }, (_, i) => ({ x: numbers[2 * i]!, y: numbers[2 * i + 1]! }));
 };
+const tickCenterline = (hull: ReturnType<typeof points>) => ({
+  start: { x: (hull[0]!.x + hull[7]!.x) / 2, y: (hull[0]!.y + hull[7]!.y) / 2 },
+  end: { x: (hull[3]!.x + hull[4]!.x) / 2, y: (hull[3]!.y + hull[4]!.y) / 2 }
+});
 
 function tickMolecule(style: "hashed" | "dashed", seed = 7, roughness = 1.25, length = 60, label = false) {
   const object = sketchRegressionMolecule(true);
@@ -143,11 +147,10 @@ describe("seeded sketch hash/dash ink", () => {
       const path = moleculeSketchTickPath({
         source: { x1: 50 - length / 2, y1: 0, x2: 50 + length / 2, y2: 0 },
         axis: { x1: 0, y1: 0, x2: 100, y2: 0 }, cellStart: 0, cellEnd: 100,
-        lengthVariation: length * 0.15, identity: "bond:0", hashed: false
+        lengthVariation: length * 0.25, identity: "bond:0", hashed: false
       }, { seed: 7, roughness, bowing: 1, color: "#111111", strokeWidth: 1.5 });
       const p = points(path.d);
-      const start = { x: (p[0]!.x + p[7]!.x) / 2, y: (p[0]!.y + p[7]!.y) / 2 };
-      const end = { x: (p[3]!.x + p[4]!.x) / 2, y: (p[3]!.y + p[4]!.y) / 2 };
+      const { start, end } = tickCenterline(p);
       return {
         angle: Math.atan2(end.y - start.y, end.x - start.x),
         ratio: Math.hypot(end.x - start.x, end.y - start.y) / length,
@@ -161,12 +164,57 @@ describe("seeded sketch hash/dash ink", () => {
     expect(short.shift).toBeCloseTo(long.shift, 3);
     expect(short.weights[0]).toBeCloseTo(long.weights[0]!, 2);
     expect(short.weights[1]).toBeCloseTo(long.weights[1]!, 2);
-    expect(Math.abs(long.angle)).toBeLessThanOrEqual(7.1 * Math.PI / 180);
-    expect(long.ratio).toBeGreaterThanOrEqual(0.85);
-    expect(long.ratio).toBeLessThanOrEqual(1.15);
-    expect(Math.abs(long.shift)).toBeLessThanOrEqual(0.65);
+    expect(Math.abs(long.angle)).toBeLessThanOrEqual(14.1 * Math.PI / 180);
+    expect(long.ratio).toBeGreaterThanOrEqual(0.75);
+    expect(long.ratio).toBeLessThanOrEqual(1.25);
+    expect(Math.abs(long.shift)).toBeLessThanOrEqual(1.3);
+    for (const weight of long.weights) {
+      expect(weight).toBeGreaterThanOrEqual(1.5 * 0.6 - 0.002);
+      expect(weight).toBeLessThanOrEqual(1.5 * 1.4 + 0.002);
+    }
     expect(half.angle).toBeCloseTo(long.angle / 2, 3);
     expect(half.ratio - 1).toBeCloseTo((long.ratio - 1) / 2, 3);
+    expect(half.shift).toBeCloseTo(long.shift / 2, 3);
+    expect(half.weights[0]! - 1.5).toBeCloseTo((long.weights[0]! - 1.5) / 2, 2);
+  });
+
+  it("realises wild tilt and length variation on a penicillin-sized hash without flattening or touching", () => {
+    const object = tickMolecule("hashed", 7, 1.25, 28);
+    object.style.bondLengthPx = 28;
+    object.style.bondBoldWidths = { hash: 12 };
+    object.style.bondHashSpacings = { hash: 8 };
+    const off = structuredClone(object); off.style.visualEffects = [];
+    const clean = fragments(off).filter((f) => f.attrs.class === "native-bond-hash");
+    const ink = marks(object);
+    expect(ink).toHaveLength(5);
+    expect(ink).toHaveLength(clean.length);
+    const angles: number[] = [], lengthRatios: number[] = [];
+    let previousEnd = -Infinity, previousWidth = 0;
+    ink.forEach((mark, index) => {
+      const hull = points(mark.attrs.d);
+      const { start, end } = tickCenterline(hull);
+      angles.push(Math.atan2(end.x - start.x, start.y - end.y) * 180 / Math.PI);
+      const source = clean[index]!.attrs;
+      const originalLength = Math.hypot(Number(source.x2) - Number(source.x1), Number(source.y2) - Number(source.y1));
+      lengthRatios.push(Math.hypot(end.x - start.x, end.y - start.y) / originalLength);
+      const minX = Math.min(...hull.map((p) => p.x)), maxX = Math.max(...hull.map((p) => p.x));
+      const width = Math.max(...hull.map((p) => p.y)) - Math.min(...hull.map((p) => p.y));
+      expect(minX).toBeGreaterThan(previousEnd);
+      expect(minX).toBeGreaterThanOrEqual(40);
+      expect(maxX).toBeLessThanOrEqual(68);
+      expect(width).toBeGreaterThanOrEqual(previousWidth - 0.001);
+      expect(Math.abs(angles[index]!)).toBeLessThanOrEqual(14.1);
+      // End caps fit as a whole: they remain parallel to the bond, never point-clipped.
+      expect(hull[0]!.y).toBe(hull[7]!.y);
+      expect(hull[3]!.y).toBe(hull[4]!.y);
+      previousEnd = maxX; previousWidth = width;
+    });
+    expect(Math.max(...angles) - Math.min(...angles)).toBeGreaterThanOrEqual(10);
+    expect(Math.max(...lengthRatios) - Math.min(...lengthRatios)).toBeGreaterThanOrEqual(0.2);
+    expect(render(object)).toEqual(render(structuredClone(object)));
+    expect(marks(object)).not.toEqual(marks({ ...object, style: {
+      ...object.style, visualEffects: [{ kind: "sketch", seed: 8, roughness: 1.25, bowing: 1 }]
+    } }));
   });
 
   it("matches byte digests captured from the renderer BEFORE this change", () => {
