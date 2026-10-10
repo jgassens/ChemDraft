@@ -1856,31 +1856,46 @@ describe("Phase 4 document workflow", () => {
   it("resolves an aromatic anchor's bond orders once per drag frame, not once per added carbon", () => {
     // The anchored drag re-checked valence against the whole grown molecule for every carbon it
     // added, re-kekulizing each aromatic ring per vertex: O(chain × molecule) per pointermove.
-    const base = createPhase4Document("Aromatic Anchor Fixture");
-    const ring = benzeneRingMolecule();
-    const aromaticRing = { ...ring, bonds: ring.bonds.map((bond) => ({ ...bond, order: "aromatic" as const })) };
-    const seeded = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: aromaticRing }]);
-    const anchorAtom = aromaticRing.atoms[1];
-    const anchor = { objectId: aromaticRing.id, atomId: anchorAtom.id };
+    // A fresh copy of the ring for every measurement: the bond-order resolution is cached per bonds
+    // array, so reusing one document would let a later frame read the cache and cost nothing.
+    const freshRing = (): MoleculeObject => {
+      const ring = benzeneRingMolecule();
+      return { ...ring, bonds: ring.bonds.map((bond) => ({ ...bond, order: "aromatic" as const })) };
+    };
 
-    // The counter does see this ring: resolving it from scratch costs matching work.
+    // What resolving the ring once costs: the counter does see it.
     const unresolved = kekuleSearchWorkForTesting();
-    layoutEngine.nativeBondOrderResolution(aromaticRing.atoms, [...aromaticRing.bonds]);
-    expect(kekuleSearchWorkForTesting() - unresolved).toBeGreaterThan(0);
+    const measured = freshRing();
+    layoutEngine.nativeBondOrderResolution(measured.atoms, measured.bonds);
+    const oneResolution = kekuleSearchWorkForTesting() - unresolved;
+    expect(oneResolution).toBeGreaterThan(0);
 
     const frame = (reach: number): { work: number; added: number } => {
+      const ring = freshRing();
+      const base = createPhase4Document("Aromatic Anchor Fixture");
+      const seeded = applyPatches(base, [{ op: "addObject", pageId: base.pages[0].id, object: ring }]);
+      const anchorAtom = ring.atoms[1];
       const before = kekuleSearchWorkForTesting();
-      const next = applyNativeChainTool(seeded, anchorAtom, { x: anchorAtom.x + reach, y: anchorAtom.y }, anchor, { preview: true });
+      const next = applyNativeChainTool(
+        seeded,
+        anchorAtom,
+        { x: anchorAtom.x + reach, y: anchorAtom.y },
+        { objectId: ring.id, atomId: anchorAtom.id },
+        { preview: true }
+      );
       return {
         work: kekuleSearchWorkForTesting() - before,
-        added: moleculeById(next, aromaticRing.id).atoms.length - aromaticRing.atoms.length
+        added: moleculeById(next, ring.id).atoms.length - ring.atoms.length
       };
     };
     const short = frame(60);
     const long = frame(420);
     expect(short.added).toBeGreaterThan(0);
     expect(long.added).toBeGreaterThan(short.added * 4);
-    expect(long.work).toBeLessThanOrEqual(short.work);
+    // One resolution of the source molecule per frame, however long the chain: the frame used to
+    // re-resolve once per added carbon (3 carbons cost 15 here, 22 carbons 110).
+    expect(short.work).toBe(oneResolution);
+    expect(long.work).toBe(oneResolution);
   });
 
   it("classifies a long digit run in linear time", () => {
