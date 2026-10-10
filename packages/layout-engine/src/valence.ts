@@ -26,14 +26,44 @@ export type NativeElementSymbol = typeof nativeElementSymbols[number];
 
 const nativeElementSymbolSet = new Set<string>(nativeElementSymbols);
 
+/**
+ * The element a typed or stored atom label names, or the label itself (trimmed) when it names none.
+ *
+ * An exact symbol is that element: "Co" is cobalt, "Nh" is nihonium. A label in any other case is
+ * folded to an element only when it cannot be read as anything else. Folding used to be blind
+ * ("NH" → Nh, "CO" → Co, "CN" → Cn), so a ring N–H typed as "NH" became nihonium. Now a label that,
+ * as typed or in capitals, splits into two or more exact element symbols is that formula, not an
+ * element: "NH", "nh", "CO", "CN", "NO", "HS", "PO" and "SN" stay as typed and read as N + H, C + O
+ * and so on. The convenience survives where nothing else fits: "cl" and "CL" are chlorine ("L" is no
+ * element), "br" is bromine, "n" is nitrogen.
+ *
+ * Stored labels were folded on entry, so a saved document holds exact symbols and opens unchanged.
+ */
 export function normalizeNativeAtomElementLabel(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return "";
   }
+  if (nativeElementSymbolSet.has(trimmed)) {
+    return trimmed;
+  }
 
   const elementCandidate = `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1).toLowerCase()}`;
-  return nativeElementSymbolSet.has(elementCandidate) ? elementCandidate : trimmed;
+  if (!nativeElementSymbolSet.has(elementCandidate)) {
+    return trimmed;
+  }
+  return splitsIntoElementSymbols(trimmed) || splitsIntoElementSymbols(trimmed.toUpperCase())
+    ? trimmed
+    : elementCandidate;
+}
+
+/** Whether `label` is two or more exact element symbols run together ("NH", "CO"), counts allowed. */
+function splitsIntoElementSymbols(label: string): boolean {
+  if (!/^(?:[A-Z][a-z]?\d*)+$/.test(label)) {
+    return false;
+  }
+  const symbols = [...label.matchAll(/([A-Z][a-z]?)\d*/g)].map((match) => match[1]!);
+  return symbols.length >= 2 && symbols.every((symbol) => nativeElementSymbolSet.has(symbol));
 }
 
 export function nativeElementFromAtomLabel(value: string): NativeElementSymbol | undefined {
