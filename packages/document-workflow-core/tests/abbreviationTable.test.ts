@@ -6,8 +6,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "@chemdraft/rdkit-adapter";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import {
+  abbreviationBondedSpellings,
   abbreviationDefinitions,
   abbreviationElementCounts,
+  abbreviationForBondedElementLabel,
   abbreviationSpellings,
   isGenericAtomLabel
 } from "@chemdraft/template-library";
@@ -79,6 +81,21 @@ describe("the abbreviation table against the element table", () => {
       if (reading.kind !== "group") throw new Error("not a group");
       expect(nativeLabelGroupVerdict(reading.group, definition.attachmentCount, 0).valid).toBe(true);
       expect(nativeLabelGroupVerdict(reading.group, definition.attachmentCount + 1, 0).valid).toBe(false);
+    }
+  );
+});
+
+describe("bonded-only spellings", () => {
+  it.each(abbreviationBondedSpellings.map((spelling) => [spelling]))(
+    "%s is an element symbol that names its group only on a bonded atom",
+    (spelling) => {
+      // That is the whole reason it is bonded-only: unbonded, the element wins.
+      expect(nativeElementFromAtomLabel(spelling)).toBe(spelling);
+      expect(nativeAtomLabelReading(spelling).kind).toBe("element");
+      const bonded = nativeAtomLabelReading(spelling, { bonded: true });
+      expect(bonded.kind).toBe("group");
+      expect(bonded.kind === "group" && bonded.group.kind === "abbreviation" && bonded.group.definition)
+        .toBe(abbreviationForBondedElementLabel(spelling));
     }
   );
 });

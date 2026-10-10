@@ -39,6 +39,47 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeAtomLabelReading("Y", { bonded: true })).toEqual({ kind: "element", element: "Y" });
   });
 
+  it("reads a bonded Ac, Pr or Ts as acetyl, n-propyl or tosyl, and an unbonded one as the element", () => {
+    const expected = { Ac: "acetyl", Pr: "n-propyl", Ts: "p-toluenesulfonyl (tosyl)" } as const;
+    for (const [label, name] of Object.entries(expected)) {
+      expect(nativeAtomLabelReading(label)).toEqual({ kind: "element", element: label });
+      expect(nativeAtomLabelReading(label, { bonded: false })).toEqual({ kind: "element", element: label });
+      expect(nativeAtomLabelReading(label, { bonded: true })).toMatchObject({
+        kind: "group", group: { kind: "abbreviation", label, definition: { name } }
+      });
+      expect(nativeAtomLabelFreeValence(label, 0, { bonded: true })).toBe(1);
+      expect(nativeAtomLabelFreeValence(label)).toBeUndefined();
+    }
+  });
+
+  it("reads Ac, Pr and Ts inside composites as their groups: NHAc, OTs, NTs, NPr2", () => {
+    const substituentNames = (label: string) => {
+      const group = groupOf(label);
+      return group.kind === "composite" ? [group.head, ...group.substituents.map((substituent) => substituent.name)] : [];
+    };
+    expect(substituentNames("NHAc")).toEqual(["N", "acetyl"]);
+    expect(substituentNames("AcHN")).toEqual(["N", "acetyl"]);
+    expect(substituentNames("OTs")).toEqual(["O", "p-toluenesulfonyl (tosyl)"]);
+    expect(substituentNames("TsO")).toEqual(["O", "p-toluenesulfonyl (tosyl)"]);
+    expect(substituentNames("NTs")).toEqual(["N", "p-toluenesulfonyl (tosyl)"]);
+    expect(substituentNames("NHTs")).toEqual(["N", "p-toluenesulfonyl (tosyl)"]);
+    expect(substituentNames("NPr2")).toEqual(["N", "n-propyl", "n-propyl"]);
+    expect(substituentNames("OPr")).toEqual(["O", "n-propyl"]);
+    // OAc is the table's own acetoxy entry.
+    expect(groupOf("OAc")).toMatchObject({ kind: "abbreviation", definition: { name: "acetoxy" } });
+    // Free valence through the composite: an N-tosyl ring N takes two, a tosylate O one.
+    expect(nativeAtomLabelFreeValence("NTs")).toBe(2);
+    expect(nativeAtomLabelFreeValence("OTs")).toBe(1);
+    expect(nativeAtomLabelFreeValence("NHAc")).toBe(1);
+  });
+
+  it("gives a lower-case-led abbreviation its letter after a one-letter head: NiPr2 is not nickel", () => {
+    expect(groupOf("NiPr2")).toMatchObject({ kind: "composite", head: "N", substituents: [{ label: "iPr" }, { label: "iPr" }] });
+    expect(groupOf("OtBu")).toMatchObject({ kind: "composite", head: "O", substituents: [{ label: "tBu" }] });
+    expect(groupOf("NnBu2")).toMatchObject({ kind: "composite", head: "N" });
+    expect(nativeAtomLabelFreeValence("NiPr2")).toBe(1);
+  });
+
   it("reads heavy hydrogen", () => {
     expect(nativeAtomLabelReading("D")).toEqual({ kind: "heavy-hydrogen", element: "D" });
     expect(nativeAtomLabelReading("T")).toEqual({ kind: "heavy-hydrogen", element: "T" });
