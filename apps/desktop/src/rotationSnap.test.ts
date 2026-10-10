@@ -27,6 +27,20 @@ describe("rotation drag snapping", () => {
     })).toBe(10);
     expect(snapRotationDegrees(22, {
       shiftKey: true, referenceDegrees: 10, stepDegrees: 30, additionalAbsoluteAngles: [20]
-    })).toBe(15);
+    })).toBe(20);
+  });
+
+  it.each([
+    [7, 8, 15], [7, 15, 15], [7, 22, 30], [7, 37, 45],
+    [100, -7, 90], [100, 4, 105], [358, 8, 360], [-7, -22, -30]
+  ])("Shift snaps orientation %s° plus delta %s° to %s°", (referenceDegrees, delta, expected) => {
+    expect(referenceDegrees + snapRotationDegrees(delta, { referenceDegrees, shiftKey: true })).toBe(expected);
+  });
+
+  it.each([
+    [7, 6, 15], [7, 10, 15], [7, 15, 22], [7, 20, 30],
+    [100, 3, 105], [100, 8.1, 108.1], [358, 4, 360], [-7, -6, -15]
+  ])("magnetically snaps orientation %s° plus delta %s° to %s°", (referenceDegrees, delta, expected) => {
+    expect(referenceDegrees + snapRotationDegrees(delta, { referenceDegrees })).toBeCloseTo(expected, 8);
   });
 });

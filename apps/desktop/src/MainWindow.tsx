@@ -11670,7 +11670,10 @@ export function MainWindow({
   const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     if (!drag.target) {
-      return snapRotationDegrees(degrees, { shiftKey: drag.shiftKey });
+      return snapRotationDegrees(degrees, {
+        shiftKey: drag.shiftKey,
+        referenceDegrees: drag.startRotationDegrees
+      });
     }
     const molecule = findDocumentObject(drag.startDocument, drag.objectId);
     return molecule?.type === "molecule"
@@ -12690,6 +12693,7 @@ export function MainWindow({
   }, []);
 
   // Transform the whole selected group about its shared visual selection-box center.
+  // The axis-aligned selection frame has no persistent orientation, so groups snap the delta.
   const groupTransformDocument = useCallback((
     drag: GroupTransformDragState,
     point: ClientPoint,

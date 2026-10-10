@@ -16,6 +16,7 @@ import {
   flattenSpunMolecule, insertNativeArtGraphicObject, insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule, insertNativeTextObject, parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload, planNativeTemplatePlacement, rotateDocumentObjectsAroundPoint,
+  rotateDocumentObject, nativeMoleculeCenter, nativeMoleculeTransformState,
   selectDocumentObjects, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 import { convertTextToAtomLabelCommandId, moleculeDoubleBondPositionCommandId } from "./commands";
@@ -72,6 +73,8 @@ describe("user feedback app stress", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0));
+    vi.stubGlobal("cancelAnimationFrame", (handle: number) => window.clearTimeout(handle));
     captureDescriptors = captureMethods.map(name => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
     for (const name of captureMethods) Object.defineProperty(HTMLElement.prototype, name, {
       configurable: true, value: name === "hasPointerCapture" ? () => false : () => {}
@@ -219,7 +222,8 @@ describe("user feedback app stress", () => {
         await pointer("pointermove", latest, page(), shift, 7, 1);
       }
       const preview = current();
-      const expected = rotateDocumentObjectsAroundPoint(before, ids, center, snapRotationDegrees(rotationDeltaDegrees(center, start, latest), { shiftKey: shift }));
+      // Group/multi-selection frames are axis-aligned and have no persistent orientation.
+      const expected = rotateDocumentObjectsAroundPoint(before, ids, center, snapRotationDegrees(rotationDeltaDegrees(center, start, latest), { shiftKey: shift, referenceDegrees: 0 }));
       expect(preview.pages[0].objects).toEqual(expected.pages[0].objects);
       // A release at another point/with another modifier must retain the last shown preview.
       await pointer("pointerup", { x: start.x + 3, y: start.y + 4 }, page(), !shift);
@@ -233,6 +237,54 @@ describe("user feedback app stress", () => {
     }
     await command("layout.ungroup");
     report(`B ${p}`, started, "drags=50 grouped=25 ungrouped=25 moves=150 undo=50");
+  }, 20000);
+
+  it.each(["macos", "windows"] as const)("B: individual molecules and art snap absolute orientations (%s)", async p => {
+    platform(p);
+    for (const kind of ["molecule", "art"] as const) {
+      let doc = createPhase4Document("Absolute rotation stress");
+      doc = kind === "molecule"
+        ? insertNativeTemplateMolecule(doc, { x: 240, y: 320 }, "benzene")
+        : insertNativeArtGraphicObject(doc, { x: 440, y: 340 }, "tool.art.rect");
+      const id = doc.pages[0].objects[0].id;
+      doc = rotateDocumentObject(doc, id, kind === "molecule" ? 7 : 100);
+      await mount(doc);
+      await key("Shift");
+      for (const [i, delta] of [6, 15, 22, 37, -7, 4].entries()) {
+        for (const shift of [false, true]) {
+          const before = current();
+          const object = before.pages[0].objects[0];
+          const reference = object.type === "molecule" ? nativeMoleculeTransformState(object).rotationDegrees : object.rotation;
+          const center = object.type === "molecule" ? nativeMoleculeCenter(object)
+            : { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+          // Distinct grab locations avoid interpreting consecutive drags as a double click.
+          const start = { x: center.x + 100 + i * 60 + (shift ? 30 : 0), y: center.y };
+          const end = { x: start.x, y: start.y + delta };
+          const absolute = reference + delta;
+          const nearest = Math.round(absolute / 15) * 15;
+          const snapped = shift || Math.abs(nearest - absolute) <= 3 ? nearest : absolute;
+          const expected = rotateDocumentObject(before, id, snapped - reference);
+          const handle = container.querySelector<HTMLElement>(".object-rotate-handle")!;
+          expect(handle).not.toBeNull();
+          await pointer("pointerdown", start, handle, shift);
+          // Cross the drag threshold before inspecting small final movements.
+          await pointer("pointermove", { x: start.x, y: start.y + 20 }, page(), shift, 7, 1);
+          await pointer("pointermove", end, page(), shift, 7, 1);
+          await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+          if (object.type === "molecule") {
+            expect(current().pages[0].objects).toEqual(expected.pages[0].objects);
+            expect(canonical(molecules(current())[0])).toBe(canonical(object));
+          } else {
+            const shell = container.querySelector<HTMLElement>(`[data-object-id="${id}"] .graphic-visual-shell`)!;
+            expect(shell.style.transform).toContain(`rotate(${snapped}deg)`);
+          }
+          await pointer("pointerup", { x: end.x, y: end.y + 10 }, page(), !shift);
+          expect(current().pages[0].objects).toEqual(expected.pages[0].objects);
+          await command("edit.undo");
+          expect(current().pages[0].objects).toEqual(before.pages[0].objects);
+        }
+      }
+    }
   }, 20000);
 
   it("C: refused targets place separate rings with reasons; 20 rapid real clicks preserve the saturated original", async () => {
