@@ -2,8 +2,10 @@ import { XMLParser, XMLValidator } from "fast-xml-parser";
 import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
+  atomicNumberForElementSymbol,
   createEmptyDocument,
   deserializeDocument,
+  elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
   parseDocument,
@@ -1748,7 +1750,8 @@ function expandCdxmlAbbreviationNodes(
       notExpandableReason = "it has no attachment bond connecting its body to the outer drawing.";
     }
     if (notExpandableReason) {
-      const element = elementFromCdxmlAtom(atomElement.attributes.Element);
+      // An Element naming nothing is warned about where the atom is imported, not here.
+      const element = elementFromCdxmlAtom(atomElement.attributes.Element) ?? "*";
       const keptAs = label ? "a label" : element === "C" ? "a carbon atom" : `an atom (${element})`;
       warnings.push({
         code: "cdxml.abbreviation_not_expanded",
@@ -1831,7 +1834,21 @@ function importFragment(
     }
     const point = parseCdxmlPoint(atomElement.attributes.p);
     const labelPoint = cdxmlAtomLabelPoint(atomElement);
-    const element = elementFromCdxmlAtom(atomElement.attributes.Element);
+    const literalLabel = expansion.literalLabelByCdxmlId.get(cdxmlId);
+    let element = elementFromCdxmlAtom(atomElement.attributes.Element);
+    if (element === undefined) {
+      // Kept as an unknown atom with its bonds, never carbon: the file names no element here, and
+      // a guess would change the chemistry without a trace (AGENTS.md §7). A kept abbreviation
+      // label stands in for the element, so only a bare atom is reported.
+      element = "*";
+      if (literalLabel === undefined) {
+        warnings.push({
+          code: "cdxml.atom_element_unknown",
+          message: `CDXML atom ${cdxmlId} has Element="${atomElement.attributes.Element}", which names no element; imported as an unknown atom (*).`,
+          sourceObjectId: objectId
+        });
+      }
+    }
     const stereoAssignment = cdxmlAtomStereoAssignment(atomElement.attributes.AS);
     if (stereoAssignment) {
       const geometry = atomElement.attributes.Geometry?.trim();
@@ -1841,7 +1858,6 @@ function importFragment(
         ...(geometry ? { geometry } : {})
       };
     }
-    const literalLabel = expansion.literalLabelByCdxmlId.get(cdxmlId);
     return {
       id: atomId,
       element: literalLabel ?? element,
@@ -3402,18 +3418,31 @@ function cdxmlAtomStereoAssignment(value: string | undefined): "R" | "S" | undef
 }
 
 function atomicNumberForElement(element: string): number | undefined {
-  return elementToAtomicNumber[element];
+  return atomicNumberForElementSymbol(element);
 }
 
-function elementFromCdxmlAtom(element: string | undefined): string {
-  if (!element) {
+/**
+ * The element or label a CDXML node's `Element` attribute names, or undefined when it names none.
+ *
+ * CDXML writes an atomic number: plain digits only, so "1e1", "0x1A" and "+6" are not 10, 26 and
+ * 6. An absent attribute is carbon, the format's default. Text that is not a number is taken as
+ * written, as it always was: an element symbol, D, T, "*", or a label such as "Ph" or "OMe", which
+ * this package's exporter writes as text for any atom without an atomic number. What names nothing
+ * is a number outside 1–118, anything else number-like (26.5, −6, "+6", "1e1", "0x1A"), or an empty
+ * value: the caller imports an unknown atom and warns, never carbon (AGENTS.md §7).
+ */
+function elementFromCdxmlAtom(element: string | undefined): string | undefined {
+  if (element === undefined) {
     return "C";
   }
-  const numeric = Number(element);
-  if (Number.isInteger(numeric)) {
-    return atomicNumberToElement[numeric] ?? "C";
+  const trimmed = element.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return elementSymbolForAtomicNumber(Number(trimmed));
   }
-  return element;
+  if (trimmed === "" || /^[+-]?\.?\d/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 /** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our
@@ -3738,32 +3767,3 @@ function errorMessage(error: unknown): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-const elementToAtomicNumber: Record<string, number> = {
-  H: 1,
-  He: 2,
-  Li: 3,
-  Be: 4,
-  B: 5,
-  C: 6,
-  N: 7,
-  O: 8,
-  F: 9,
-  Ne: 10,
-  Na: 11,
-  Mg: 12,
-  Al: 13,
-  Si: 14,
-  P: 15,
-  S: 16,
-  Cl: 17,
-  Ar: 18,
-  K: 19,
-  Ca: 20,
-  Br: 35,
-  I: 53
-};
-
-const atomicNumberToElement = Object.fromEntries(
-  Object.entries(elementToAtomicNumber).map(([element, atomicNumber]) => [atomicNumber, element])
-) as Record<number, string>;
