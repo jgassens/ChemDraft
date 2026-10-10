@@ -279,6 +279,22 @@ describe("CDXML element numbers", () => {
     }
   );
 
+  it("opens the ten-metals fixture with every metal named, none as carbon", () => {
+    const opened = openChemDraftPayload(cdxmlFixtures["ten-metals.cdxml"]);
+    const molecules = (opened.document?.pages[0].objects ?? []) as MoleculeObject[];
+    expect(molecules.map((molecule) => molecule.atoms.map((atom) => atom.element).join("-")))
+      .toEqual(everyday.map(([symbol]) => `C-${symbol}-Cl`));
+    expect(unknownElementWarnings(opened)).toEqual([]);
+  });
+
+  it("opens the invalid-element fixture with an unknown atom and a warning naming it", () => {
+    const opened = openChemDraftPayload(cdxmlFixtures["invalid-element.cdxml"]);
+    expect(elementsOf(opened)).toEqual(["O", "*", "N"]);
+    expect(unknownElementWarnings(opened).map(({ message }) => message)).toEqual([
+      "CDXML atom a2 has Element=\"119\", which names no element; imported as an unknown atom (*)."
+    ]);
+  });
+
   it("writes atomic numbers on export and reads them back unchanged", () => {
     const opened = openChemDraftPayload(chainCdxml(everyday.map(([, number]) => String(number))));
     const exported = exportDocumentToCdxml(opened.document!);

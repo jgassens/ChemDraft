@@ -77,6 +77,18 @@ export const cdxmlFixtureDescriptors: FixtureDescriptor[] = [
     format: "cdxml",
     description: "Synthetic unsupported step object for unknown compatibility preservation.",
     path: "packages/fixtures/cdxml/unsupported-step.cdxml"
+  },
+  {
+    id: "cdxml.ten-metals",
+    format: "cdxml",
+    description: "Synthetic C–M–Cl fragments for Fe, Zn, Cu, Ni, Pd, Pt, Sn, Se, Hg and Au, each written by atomic number.",
+    path: "packages/fixtures/cdxml/ten-metals.cdxml"
+  },
+  {
+    id: "cdxml.invalid-element",
+    format: "cdxml",
+    description: "Synthetic O–X–N fragment whose middle atom has Element=\"119\", a number that names no element.",
+    path: "packages/fixtures/cdxml/invalid-element.cdxml"
   }
 ];
 
