@@ -1467,7 +1467,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.03.02-codex";
+const CURRENT_BUILD_STAMP = "10.10.03.04-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -23182,7 +23182,7 @@ export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): bool
   // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
   // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
   // #111111. Export is unaffected: it plans the page directly and never applies this filter.
-  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
+  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow" || object.type === "text") {
     return false;
   }
 
@@ -24429,7 +24429,7 @@ function DocumentObjectViewContent({
               }}
             />
           </>
-        ) : null}
+        ) : <TextObjectContent object={object} />}
       </div>
     );
   }

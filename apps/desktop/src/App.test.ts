@@ -3722,14 +3722,14 @@ describe("ChemDraft desktop shell", () => {
       end: { kind: "point", point: { x: 130, y: 22 } },
       labels: []
     } as DocumentObject)).toBe(false);
-    // Text still comes from the surface.
+    // Text belongs to its object layer too, otherwise filled graphics cover it on the canvas.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "text_001",
       type: "text",
       x: 10, y: 10, width: 40, height: 24, rotation: 0, style: {},
       text: "A",
       spans: []
-    } as DocumentObject)).toBe(true);
+    } as DocumentObject)).toBe(false);
   });
 
   it("lets arrows and art shapes start on top of an existing object", () => {
@@ -4791,6 +4791,29 @@ describe("ChemDraft desktop shell", () => {
       kind: "atom",
       atomId: "atom_001"
     })).toBe(true);
+  });
+
+  it("renders text above a filled graphic in its own document layer", () => {
+    const background = insertNativeArtGraphicObject(
+      createPhase4Document("Text Above Art"),
+      { x: 160, y: 180 },
+      "tool.art.circle"
+    );
+    const document = insertNativeTextObject(background, { x: 160, y: 180 }, "Zr cluster node");
+    const markup = renderToStaticMarkup(
+      createElement(MainWindow, {
+        initialDocument: document,
+        initialPaletteMode: "hidden",
+        nativePalette: true
+      })
+    );
+    const textOverlay = markup.match(/<div class="[^"]*text-object[^\"]*"[^>]*>([\s\S]*?)<\/div>/)?.[0];
+    expect(textOverlay).toContain("text-object-content");
+    expect(textOverlay).toContain("Zr cluster node");
+    expect(textOverlay).toContain("z-index:21");
+    const pageSurface = markup.match(/<svg[^>]*data-page-svg-surface="true"[\s\S]*?<\/svg>/)?.[0];
+    expect(pageSurface).toBeDefined();
+    expect(pageSurface).not.toContain("Zr cluster node");
   });
 
   it("renders selected text objects with resize handles while rotate is Shift-gated", () => {

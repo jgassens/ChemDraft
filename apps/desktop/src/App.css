@@ -5266,6 +5266,7 @@ textarea:focus-visible,
 
 .text-object {
   display: block;
+  pointer-events: auto;
   overflow: visible;
   min-width: 0;
   min-height: 0;
