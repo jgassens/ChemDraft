@@ -8187,6 +8187,39 @@ describe("Phase 4 document workflow", () => {
     expect(movedEndPaint.stops[2]?.offset).toBe(1);
   });
 
+  it("preserves radial sphere shading when changing blue to red", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Recolor Radial Sphere"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0]!;
+    const paint = {
+      kind: "radial-gradient" as const,
+      units: "object" as const,
+      cx: 0.5, cy: 0.5, r: 0.72, fx: 0.32, fy: 0.28,
+      stops: [
+        { offset: 0, color: "#99bbdd", opacity: 0.8 },
+        { offset: 0.5, color: "#336699" },
+        { offset: 1, color: "#224466" }
+      ]
+    };
+    const painted = applyPatches(document, [{
+      op: "updateObject", objectId,
+      changes: { style: { fillPaint: paint, fillColor: "#224466" } }
+    }]);
+    const recolored = applyGraphicObjectColorToSelection(painted, "fill", "#aa2222");
+    expect(graphicById(recolored, objectId).style.fillPaint).toEqual({
+      ...paint,
+      stops: [
+        { offset: 0, color: "#e0afaf", opacity: 0.8 },
+        { offset: 0.5, color: "#b94a4a" },
+        { offset: 1, color: "#aa2222" }
+      ]
+    });
+    expect(graphicById(recolored, objectId).style.fillColor).toBe("#aa2222");
+  });
+
   it("flips native graphic gradient coordinates with the art object", () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Gradient Flip"),

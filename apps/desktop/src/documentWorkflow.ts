@@ -9456,13 +9456,30 @@ function gradientStopsWithPrimaryColor(
   color: string
 ): Extract<GraphicPaint, { kind: "linear-gradient" | "radial-gradient" }>["stops"] {
   const normalizedStopColors = stops.map((stop) => normalizeWorkflowHexColor(stop.color));
-  const hasBaseStop = normalizedStopColors.some((stopColor) => stopColor !== undefined && stopColor !== "#ffffff");
+  const baseColor = [...normalizedStopColors].reverse().find((stopColor) =>
+    stopColor !== undefined && stopColor !== "#ffffff"
+  );
+  const channels = (hex: string): number[] => [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16));
+  const lightness = (rgb: number[]): number => (Math.max(...rgb) + Math.min(...rgb)) / 2;
+  const baseLightness = baseColor ? lightness(channels(baseColor)) : 0;
+  const nextChannels = channels(color);
   return stops.map((stop, index) => {
     const normalizedStopColor = normalizedStopColors[index];
-    const shouldUpdate = hasBaseStop
-      ? normalizedStopColor !== "#ffffff"
-      : index === stops.length - 1;
-    return shouldUpdate ? { ...stop, color } : stop;
+    if (!baseColor) {
+      return index === stops.length - 1 ? { ...stop, color } : stop;
+    }
+    if (!normalizedStopColor || normalizedStopColor === "#ffffff") {
+      return stop;
+    }
+    // Retain the sphere's highlights and shadows instead of making every stop identical.
+    const stopLightness = lightness(channels(normalizedStopColor));
+    const amount = stopLightness > baseLightness
+      ? (stopLightness - baseLightness) / (255 - baseLightness)
+      : baseLightness > 0 ? (stopLightness - baseLightness) / baseLightness : 0;
+    const recolored = nextChannels.map((channel) => Math.round(
+      amount > 0 ? channel + (255 - channel) * amount : channel * (1 + amount)
+    ).toString(16).padStart(2, "0")).join("");
+    return { ...stop, color: `#${recolored}` };
   });
 }
 
