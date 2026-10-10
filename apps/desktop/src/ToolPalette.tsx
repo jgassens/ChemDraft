@@ -3526,18 +3526,20 @@ function ToolbarPaletteItem({
   onInvoke: (commandId: string) => void;
 }) {
   const defaultPrimaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
-  const [selectedSymbolCommandId, setSelectedSymbolCommandId] = useState<string>();
-  const activeSymbolCommand = defaultPrimaryCommand?.id === "tool.symbol"
-    ? item.submenu?.items.find((command) => command.id === activeTool && symbolToolGlyph(command.id))
+  const [selectedFlyoutCommandId, setSelectedFlyoutCommandId] = useState<string>();
+  const followsSelectedTool = defaultPrimaryCommand?.id === "tool.symbol"
+    || defaultPrimaryCommand?.id === "tool.charge";
+  const activeFlyoutCommand = followsSelectedTool
+    ? item.submenu?.items.find((command) => command.id === activeTool)
     : undefined;
   useEffect(() => {
-    if (activeSymbolCommand) {
-      setSelectedSymbolCommandId(activeSymbolCommand.id);
+    if (activeFlyoutCommand) {
+      setSelectedFlyoutCommandId(activeFlyoutCommand.id);
     }
-  }, [activeSymbolCommand?.id]);
-  const primaryCommand = defaultPrimaryCommand?.id === "tool.symbol"
-    ? activeSymbolCommand
-      ?? item.submenu?.items.find((command) => command.id === selectedSymbolCommandId)
+  }, [activeFlyoutCommand?.id]);
+  const primaryCommand = followsSelectedTool
+    ? activeFlyoutCommand
+      ?? item.submenu?.items.find((command) => command.id === selectedFlyoutCommandId)
       ?? defaultPrimaryCommand
     : defaultPrimaryCommand;
   const [menuOpen, setMenuOpen] = useState(false);
