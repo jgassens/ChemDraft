@@ -323,12 +323,12 @@ Check, as verified when this recipe was written:
 
 ## 12. A hand-sketched structure: penicillin G
 
-The sketch visual effect draws rough strokes over the bonds; a
-handwriting label font and a sketched circle finish the look. A rough
-stroke can make a plain bond taper like a wedge and can run through a
-hashed bond so it reads as solid, so this recipe uses settings that were
-checked by eye for this molecule and also writes an unsketched copy. Structure
-from PubChem CID 5904 (Penicillin G, C16H18N2O4S):
+The sketch effect draws rough strokes of uneven weight over the bonds; a
+handwriting label font and a sketched circle finish the look. The one
+real hazard is that the rough stroke runs down the middle of a hashed
+bond, so the hash can read as solid. This recipe widens and spaces the
+stereo bonds and also writes an unsketched copy. Structure from PubChem
+CID 5904 (Penicillin G, C16H18N2O4S):
 
 ```sh
 node -e "fetch('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/5904/property/Title,MolecularFormula,SMILES/JSON').then(r=>r.json()).then(j=>{const p=j.PropertyTable.Properties[0]; console.log(p.CID,p.Title,p.MolecularFormula,p.SMILES); require('node:fs').writeFileSync(require('node:path').join(process.argv[1],'penicillin-g-job.json'),JSON.stringify([{name:'penicillin-g',smiles:p.SMILES}]));})" "$scratch"
@@ -356,8 +356,9 @@ const doc = read("penicillin-g.json");
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");
 const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
-// Low roughness and bowing keep plain bonds even; seed 4 was checked by eye for this molecule.
-mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, seed: 4, color: ink }];
+// Uneven, tapering stroke weight gives the hand-drawn look; the seed
+// fixes the wobble so re-renders match.
+mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: ink }];
 Object.assign(mol.style, { bondColor: ink, atomLabelColor: ink, atomLabelFontFamily: hand, atomLabelFontSizePx: 16 });
 // Wide, well-spaced hashes and wide wedges stay readable under the rough strokes.
 const stereo = mol.bonds.filter((b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed").map((b) => b.id);
@@ -391,13 +392,12 @@ Verified: the reported canonical SMILES equals the source's (InChIKey
 unspecified centre is the bridgehead N, which the plain `render` and
 `stereo` report the same way; do not add stereo to it.
 
-Then look at every wedge and hash in the sketched PNG at full size, and
-at every plain bond next to them. With these settings the gem-dimethyl
-and ring bonds stay even, the C–S and C–N wedges read as wedges, and the
-hashed C–CO2H bond shows its wide ticks, though a thin rough line still
-runs through them ([art](art.md), Known limits). If any plain bond tapers
-like a wedge or a hash reads as solid, try another `seed` and look
-again. Deliver the sketch with `penicillin-g-clean.png` alongside, and
-offer the clean one wherever the stereochemistry must be unambiguous
-(an exam, a key, a paper). Fonts are per machine; if neither
-handwriting font is installed, the generic `cursive` font is used.
+Then look at every wedge and hash in the sketched PNG at full size. The
+C–S and C–N wedges read as wedges, and the hashed C–CO2H bond shows its
+wide ticks with a rough line running through them ([art](art.md), Known
+limits). Uneven or tapering plain bonds are expected and fine; if a hash
+reads as solid, try another `seed` and look again. Deliver the sketch
+with `penicillin-g-clean.png` alongside, and offer the clean one wherever
+the stereochemistry must be unambiguous (an exam, a key, a paper). Fonts
+are per machine; if neither handwriting font is installed, the generic
+`cursive` font is used.

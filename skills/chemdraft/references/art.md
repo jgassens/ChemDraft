@@ -267,7 +267,7 @@ Verified on paracetamol: red bold O and OH, blue bold NH.
 ### 5. Hand-sketched look
 
 ```js
-mol.style.visualEffects = [{ kind: "sketch", roughness: 0.6, bowing: 0.4, seed: 4, color: "#1f2a44" }];
+mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: "#1f2a44" }];
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
 mol.style.atomLabelFontFamily = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
@@ -292,21 +292,15 @@ Bradley Hand is on macOS, Segoe Print on Windows; list both with a generic
 fallback. Verified on penicillin G
 (recipe 12).
 
-**The sketch can mislead about stereochemistry.** A rough stroke that
-bows away from a plain bond makes it taper, so it reads as a wedge, and
-the stroke runs down the middle of a hashed bond, so the hash can read as
-a solid line. In evaluation runs both happened with the old recipe settings
-(roughness 1.25, bowing 1, strokeWidth 1). Keep roughness and bowing low
-(about 0.6 and 0.4 was the evenest on penicillin G;
-roughness 1 and bowing 0.8 still tapered some bonds), widen and space
-the stereo bonds with `bondBoldWidths` (about 12) and `bondHashSpacings`
-(about 8), and treat `seed` as a choice you check by eye: the same
-settings with another seed can taper a different bond. After every
-sketched render, look at each wedge and hash at full size, and at the
-plain bonds beside them; if any plain bond tapers like a wedge or a hash
-reads as solid, change the seed and look again. When the stereochemistry
-must be unambiguous (exams, answer keys, papers), also render the same
-document with `visualEffects` removed and offer that clean version.
+**The sketch can mislead about stereochemistry.** Uneven, tapering stroke
+weight is the intended hand-drawn look, including on plain bonds. The
+real stereo hazard is that the stroke runs down the middle of a hashed
+bond, so a hash can read as a solid line. Widen and space the stereo
+bonds with `bondBoldWidths` (about 12) and `bondHashSpacings` (about 8).
+After every sketched render, look at each wedge and hash at full size; if
+a hash reads as solid, try another seed. When stereochemistry must be
+unambiguous (exams, answer keys, papers), also render the document with
+`visualEffects` removed and offer that clean version.
 
 ### 6. Arrows, brackets and annotations
 
@@ -362,10 +356,9 @@ left out with no warning, so anchor at a `point` on the bond instead.
   characters (`C₆H₁₀O`) in one span avoid the gaps but may fall back to
   another font. Look at the image either way.
 - The molecule sketch traces the centre line of wedge and hashed bonds,
-  so a hashed bond reads as a spine with ticks, and it can make a plain
-  bond taper like a wedge. Use the settings in pattern 5, inspect every
-  wedge and hash at full size, and offer an unsketched version when
-  stereo must be unambiguous.
+  so a hashed bond reads as a spine with ticks. Use the settings in
+  pattern 5, inspect every wedge and hash at full size, and offer an
+  unsketched version when stereo must be unambiguous.
 - **PDF output misplaces atom labels and text.** In three independent
   runs, even for unstyled molecules such as aspirin, labels were drawn off
   their atoms (and sometimes twice), "HO" split into separate letters, and

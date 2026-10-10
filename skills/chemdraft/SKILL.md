@@ -176,8 +176,8 @@ journal figures, annotations, arrows and brackets. The workflow is
 - A label such as Me set as an atom's element replaces that carbon with
   a placeholder atom. Keep the editable file with real carbons and use
   the Me-labelled copy only as the picture (art.md, pattern 2).
-- Sketched looks can make plain bonds read as wedges and hashes as solid
-  lines. Look at every wedge and hash after sketching, and offer an
+- A sketched look can make a hashed bond read as a solid line. Look at
+  every wedge and hash after sketching, and offer an
   unsketched version when stereochemistry must be unambiguous.
 - Never tell a user ChemDraft cannot produce a visual style until you
   have read art.md and tried it. If one detail truly cannot be done,
