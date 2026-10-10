@@ -1,5 +1,15 @@
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { OpenWarningsList } from "./OpenWarningsList";
+import {
+  activeOpenWarnings,
+  NO_OPEN_WARNINGS_REASON,
+  OPEN_WARNINGS_LIST_ID,
+  TOGGLE_OPEN_WARNINGS_COMMAND_ID,
+  warningCountLabel,
+  type OpenWarningSelection,
+  type OpenWarningsReport
+} from "./openWarnings";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
@@ -305,6 +315,7 @@ import {
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
+  createOpenWarningsAction,
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
@@ -1486,7 +1497,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.17.49-opus";
+const CURRENT_BUILD_STAMP = "10.10.18.19-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2129,6 +2140,14 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
+  // What the last file open reported, so the status line can still list it after its own text has
+  // moved on. Replacing the document drops it (resetDocumentHistory); an open sets it again.
+  const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
+  const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
+  const openWarnings = activeOpenWarnings(openWarningsReport);
+  const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
+  const openWarningsRef = useRef(openWarnings);
+  openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
@@ -2617,12 +2636,12 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
-        availability: { canUndo, canRedo },
+        availability: { canUndo, canRedo, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, keybindingScheme, selectedMolecule, toolsetRegistry]
+    [canRedo, canUndo, document, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -2707,6 +2726,8 @@ export function MainWindow({
     installDocumentHistory(createDocumentHistory(reconcileNativeChargeMarks(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
+    setOpenWarningsReport(undefined);
+    setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
@@ -5363,6 +5384,40 @@ export function MainWindow({
       : "All canvas objects already selected");
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
+  // A row of the open-warnings list selects what its warning names: the object, and the atoms or
+  // bonds of it when the warning names some, with the Select tool so the selection is in reach.
+  const showOpenWarningTarget = useCallback((selection: OpenWarningSelection, label: string) => {
+    if (!findDocumentObject(documentRef.current, selection.objectId)) {
+      setStatus(`${label} is no longer in the document`);
+      return;
+    }
+
+    const { objectId, atomIds, bondIds } = selection;
+    replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    setSelectedNativeMoleculePart(
+      atomIds.length === 1 && bondIds.length === 0
+        ? { objectId, kind: "atom", atomId: atomIds[0] }
+        : bondIds.length === 1 && atomIds.length === 0
+          ? { objectId, kind: "bond", bondId: bondIds[0] }
+          : atomIds.length + bondIds.length > 0
+            ? { objectId, kind: "parts", atomIds, bondIds }
+            : undefined
+    );
+    toolBeforeTextPlacementRef.current = undefined;
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
+
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
       return false;
@@ -7471,8 +7526,10 @@ export function MainWindow({
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
+    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+    setOpenWarningsReport({ displayName, sourceLabel, warnings: opened.warnings });
     const openStatus = options?.statusOverride
-      ?? formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
+      ?? formatOpenStatus(displayName, sourceLabel, opened.warnings);
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
@@ -8687,8 +8744,17 @@ export function MainWindow({
       });
     });
 
+    register(createOpenWarningsAction({ hasOpenWarnings: openWarnings !== undefined }), () => {
+      if (!openWarningsRef.current) {
+        setStatus(NO_OPEN_WARNINGS_REASON);
+        return;
+      }
+      setOpenWarningsListOpen((open) => !open);
+    });
+
     return bindings;
   }, [
+    openWarnings,
     activeToolState,
     analysisBusy,
     analysisInterpretation,
@@ -10950,6 +11016,40 @@ export function MainWindow({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [customizeMainToolbarActive, setCustomizeMode]);
+
+  // Esc closes the open-warnings list and does nothing else. It is caught in the capture phase and
+  // marked handled, so the canvas keydown handler (which skips handled events) neither cancels a drag
+  // nor leaves a tool; with the list closed nothing listens here and Esc does what it always did. A
+  // press outside the list closes it and goes on to do whatever it does.
+  useEffect(() => {
+    if (!openWarningsListShown) {
+      return undefined;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || isBlockedByModalDialog(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const focused = window.document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest("[data-open-warnings-list]")) {
+        window.document.querySelector<HTMLElement>("[data-open-warnings-button]")?.focus();
+      }
+      setOpenWarningsListOpen(false);
+    };
+    const onPointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (!target?.closest("[data-open-warnings-list], [data-open-warnings-button]")) {
+        setOpenWarningsListOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [openWarningsListShown]);
 
   // Label the web document by its worktree so browser tabs and accessibility state distinguish
   // nearby checkouts. On macOS, index.html's initial title can overwrite the Rust setup title without
@@ -17948,10 +18048,36 @@ export function MainWindow({
                 ].filter(Boolean).join(" · ")
               : hoveredNativeWarning ?? status}
           </span>
+          {openWarnings ? (
+            <button
+              type="button"
+              className="open-warnings-button"
+              data-open-warnings-button
+              aria-haspopup="dialog"
+              aria-expanded={openWarningsListShown}
+              aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+              title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+              // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+              }}
+            >
+              {warningCountLabel(openWarnings.warnings.length)}
+            </button>
+          ) : null}
           {statusModifierHint ? (
             <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
           ) : null}
         </div>
+        {openWarningsListShown && openWarnings ? (
+          <OpenWarningsList
+            report={openWarnings}
+            document={document}
+            onShow={showOpenWarningTarget}
+            onClose={() => setOpenWarningsListOpen(false)}
+          />
+        ) : null}
       </section>
       {objectContextMenu ? (
         <ObjectLayerContextMenu
@@ -28416,21 +28542,19 @@ function sanitizedDialogNumber(value: number, fallback: number, min: number, max
   return Number.isFinite(value) ? clamp(value, min, max) : fallback;
 }
 
-function formatOpenStatus(
-  filename: string,
-  source: ReturnType<typeof openNativeDocument>["source"],
-  warnings: readonly { code: string; message: string }[],
-  statusSourceLabel?: string
-): string {
-  const sourceLabel = statusSourceLabel ?? (
+function openSourceLabel(source: ReturnType<typeof openNativeDocument>["source"], statusSourceLabel?: string): string {
+  return statusSourceLabel ?? (
     source === "legacy-json"
       ? "legacy ChemDraft JSON"
       : source === "external-cdxml"
         ? "external CDXML subset"
         : "ChemDraft CDXML envelope"
   );
+}
+
+function formatOpenStatus(filename: string, sourceLabel: string, warnings: readonly { code: string; message: string }[]): string {
   return warnings.length > 0
-    ? `Opened ${filename} as ${sourceLabel} with ${warnings.length} warning(s)`
+    ? `Opened ${filename} as ${sourceLabel} with ${warningCountLabel(warnings.length)}`
     : `Opened ${filename} as ${sourceLabel}`;
 }
 

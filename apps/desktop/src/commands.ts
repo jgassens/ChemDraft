@@ -38,6 +38,7 @@ import {
 import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
+import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
 
 export interface CommandAvailability {
   canUndo?: boolean;
@@ -48,6 +49,8 @@ export interface CommandAvailability {
    * be told about it or the Edit menu greys out the very commands that now work on it.
    */
   hasMoleculeFragmentSelection?: boolean;
+  /** The open document was opened with warnings that the status line can list. */
+  hasOpenWarnings?: boolean;
 }
 
 export interface ShellCommandOptions {
@@ -1889,6 +1892,19 @@ export function textStylePatchForCommand(
   return undefined;
 }
 
+/** Opens the list of warnings the open document was opened with; disabled when it had none. */
+export function createOpenWarningsAction(availability: CommandAvailability = {}): CommandSpec {
+  return {
+    id: TOGGLE_OPEN_WARNINGS_COMMAND_ID,
+    title: "Show Open Warnings",
+    icon: "inspector",
+    source: "core",
+    category: "view",
+    description: "Open or close the list of warnings from opening this document",
+    disabledReason: availability.hasOpenWarnings ? undefined : NO_OPEN_WARNINGS_REASON
+  };
+}
+
 export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
@@ -2218,6 +2234,7 @@ export function allShellCommands(
     ...atomElementActions,
     ...atomNicknameLabelActions,
     ...viewActions,
+    createOpenWarningsAction(options.availability),
     ...pageSizeActions,
     pageCustomSizeAction,
     ...pageOrientationActions,

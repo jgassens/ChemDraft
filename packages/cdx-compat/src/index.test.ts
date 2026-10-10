@@ -2531,3 +2531,49 @@ function cdxmlFixture(name: string): string {
   }
   return fixture;
 }
+
+describe("CDXML import warnings name their atoms and bonds", () => {
+  // The app lists open-time warnings and selects what each one is about, so a warning about one
+  // atom or bond carries its native id as well as naming the CDXML node in its message.
+  const opened = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+    <n id="a0" p="0 0"/>
+    <n id="a1" p="14 0" Element="119"/>
+    <n id="a2" p="28 0"/>
+    <n id="a3" p="42 0"/>
+    <n id="a4" p="56 0"/>
+    <b id="b0" B="a0" E="a1" Order="1.5"/>
+    <b id="b1" B="a1" E="a2" Order="7"/>
+    <b id="b2" B="a2" E="a3" Display="NoSuchDisplay"/>
+    <b id="b3" B="a3" E="a4" Display="Dash"/>
+  </fragment></page></CDXML>`);
+  const molecule = opened.document?.pages[0].objects[0] as MoleculeObject;
+  const warning = (code: string) => {
+    const found = opened.warnings.filter((candidate) => candidate.code === code);
+    expect(found).toHaveLength(1);
+    return found[0];
+  };
+
+  it("an unknown Element names the atom it became", () => {
+    expect(warning("cdxml.atom_element_unknown")).toMatchObject({ sourceObjectId: molecule.id, atomIds: [molecule.atoms[1].id] });
+    expect(molecule.atoms[1].element).toBe("*");
+  });
+
+  it("an aromatic or unsupported bond order names its bond", () => {
+    expect(warning("cdxml.aromatic_bond_import_approximation")).toMatchObject({ sourceObjectId: molecule.id, bondIds: [molecule.bonds[0].id] });
+    expect(warning("cdxml.bond_order_import_unsupported")).toMatchObject({ sourceObjectId: molecule.id, bondIds: [molecule.bonds[1].id] });
+  });
+
+  it("an unsupported display and a dashed single bond name their bonds", () => {
+    expect(warning("cdxml.bond_display_unsupported")).toMatchObject({ sourceObjectId: molecule.id, bondIds: [molecule.bonds[2].id] });
+    expect(warning("cdxml.dashed_single_read_as_dative")).toMatchObject({ sourceObjectId: molecule.id, bondIds: [molecule.bonds[3].id] });
+  });
+
+  it("keeps the document's stored warnings to code, message and object", () => {
+    // Atom and bond ids are for the open-time list only; the saved compatibility record is unchanged.
+    const stored = opened.document?.compatibility?.warnings ?? [];
+    expect(stored.map(({ code }) => code)).toEqual(expect.arrayContaining(["cdxml.atom_element_unknown", "cdxml.dashed_single_read_as_dative"]));
+    for (const item of stored) {
+      expect(Object.keys(item).sort()).toEqual(item.objectId === undefined ? ["code", "message"] : ["code", "message", "objectId"]);
+    }
+  });
+});

@@ -32,6 +32,10 @@ export interface CompatibilityConversionWarning {
   code: string;
   message: string;
   sourceObjectId?: string;
+  /** Native atoms of `sourceObjectId` the warning is about, when it is about particular atoms. */
+  atomIds?: string[];
+  /** Native bonds of `sourceObjectId` the warning is about, when it is about particular bonds. */
+  bondIds?: string[];
 }
 
 export interface CdxmlExportOptions {
@@ -1845,7 +1849,8 @@ function importFragment(
         warnings.push({
           code: "cdxml.atom_element_unknown",
           message: `CDXML atom ${cdxmlId} has Element="${atomElement.attributes.Element}", which names no element; imported as an unknown atom (*).`,
-          sourceObjectId: objectId
+          sourceObjectId: objectId,
+          atomIds: [atomId]
         });
       }
     }
@@ -1882,10 +1887,10 @@ function importFragment(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
   const cdxmlIdByBondId = new Map<string, string>();
-  let dashedSingleBondCount = 0;
+  const dashedSingleBondIds: string[] = [];
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
-    const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId);
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
+    const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId);
     const bond: MoleculeBond = {
       id: bondId,
       fromAtomId: atomIdByCdxmlId.get(bondElement.attributes.B ?? "") ?? bondElement.attributes.B ?? "",
@@ -1923,13 +1928,14 @@ function importFragment(
         warnings.push({
           code: "cdxml.bond_display_unsupported",
           message: `CDXML dative bond display "${bondElement.attributes.Display}" was replaced by the dashed style ChemDraft draws dative bonds with.`,
-          sourceObjectId: objectId
+          sourceObjectId: objectId,
+          bondIds: [bondId]
         });
       }
       bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
     } else if (bondDisplay) {
       if (bondDisplay.bondStyle === "dashed" && order === "single") {
-        dashedSingleBondCount += 1;
+        dashedSingleBondIds.push(bondId);
       }
       bond.display = { ...(bond.display ?? {}), bondStyle: bondDisplay.bondStyle };
       if (bondDisplay.narrowAtEnd) {
@@ -1943,11 +1949,13 @@ function importFragment(
       warnings.push({
         code: "cdxml.bond_display_unsupported",
         message: `CDXML bond display "${bondElement.attributes.Display}" is not represented in the current ChemDraft molecule schema.`,
-        sourceObjectId: objectId
+        sourceObjectId: objectId,
+        bondIds: [bondId]
       });
     }
     return bond;
   });
+  const dashedSingleBondCount = dashedSingleBondIds.length;
   if (dashedSingleBondCount > 0) {
     // ChemDraw draws hydrogen and partial (forming/breaking) bonds as dashed singles too; ChemDraft
     // has one dashed single bond, the coordination bond, and every writer treats it as one (V3000
@@ -1955,7 +1963,8 @@ function importFragment(
     warnings.push({
       code: "cdxml.dashed_single_read_as_dative",
       message: `${dashedSingleBondCount} dashed single bond${dashedSingleBondCount === 1 ? " was" : "s were"} read as dative (coordination) bond${dashedSingleBondCount === 1 ? "" : "s"}, the only dashed single bond ChemDraft has; a hydrogen or partial bond drawn this way is exported as dative.`,
-      sourceObjectId: objectId
+      sourceObjectId: objectId,
+      bondIds: dashedSingleBondIds
     });
   }
   // A bond must join two different atoms of this fragment. One naming a missing atom used to keep
@@ -3354,7 +3363,8 @@ function isCdxmlDativeOrder(order: string | undefined): boolean {
 function moleculeBondOrderFromCdxml(
   order: string | undefined,
   warnings: CompatibilityConversionWarning[],
-  sourceObjectId: string
+  sourceObjectId: string,
+  bondId: string
 ): MoleculeBond["order"] {
   if (order === "1" || order === undefined) {
     return "single";
@@ -3374,14 +3384,16 @@ function moleculeBondOrderFromCdxml(
     warnings.push({
       code: "cdxml.aromatic_bond_import_approximation",
       message: "Imported aromatic CDXML bond as native aromatic bond; no Kekule conversion was performed.",
-      sourceObjectId
+      sourceObjectId,
+      bondIds: [bondId]
     });
     return "aromatic";
   }
   warnings.push({
     code: "cdxml.bond_order_import_unsupported",
     message: `Unsupported CDXML bond order "${order}" was imported as unknown.`,
-    sourceObjectId
+    sourceObjectId,
+    bondIds: [bondId]
   });
   return "unknown";
 }
