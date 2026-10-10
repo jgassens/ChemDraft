@@ -1468,7 +1468,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.12.10-opus";
+const CURRENT_BUILD_STAMP = "10.10.12.25-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11354,11 +11354,12 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
-  // A placement drag's move, release, and cancel, shared by the page handlers and the object
-  // handlers. A press that starts on an object (a chain off an atom, an arrow drawn from atop a
-  // reagent) captures the pointer on that object, so the browser delivers every later event to the
-  // object's handlers, never the page's. Handled only on the page, such a drag placed what the press
-  // made (one carbon, a default arrow) and never followed the pointer.
+  // A placement drag's move and release, shared by the page handlers and the object handlers. A
+  // press that starts on an object (a chain off an atom, an arrow drawn from atop a reagent)
+  // captures the pointer on that object, so the browser delivers every later event to the object's
+  // handlers, never the page's. Handled only on the page, such a drag placed what the press made
+  // (one carbon, a default arrow) and never followed the pointer. Both cancel handlers restore it
+  // inline, in the form `pointerCancelCoverage.test.ts` checks for.
   const continueNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
     event.stopPropagation();
     const point = pagePointFromPointerEvent(event);
@@ -11408,12 +11409,6 @@ export function MainWindow({
       : `${capitalizeLabel(label)} not placed`);
     clearNativePlacementDrag(event);
   }, [clearNativePlacementDrag, commitNativePlacementDrag, pagePointFromPointerEvent]);
-
-  const abandonNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
-    placementMachineRef.current = initialInteractionState();
-    replacePresentDocument(drag.startDocument);
-    clearNativePlacementDrag(event);
-  }, [clearNativePlacementDrag, replacePresentDocument]);
 
   const startNativeFreehandArtDrag = useCallback((
     event: ObjectPointerEvent,
@@ -14044,7 +14039,9 @@ export function MainWindow({
 
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
-      abandonNativePlacementDrag(nativePlacementDrag, event);
+      placementMachineRef.current = initialInteractionState();
+      replacePresentDocument(nativePlacementDrag.startDocument);
+      clearNativePlacementDrag(event);
     }
 
     const freehandArtDrag = freehandArtDragRef.current;
@@ -14085,7 +14082,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, abandonNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -16579,9 +16576,13 @@ export function MainWindow({
   ]);
 
   const handleObjectPointerCancel = useCallback((event: ObjectPointerEvent) => {
+    // A placement drag pressed on an object holds its pointer capture here (see
+    // `continueNativePlacementDrag`), so its cancel arrives here, not at the page.
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
-      abandonNativePlacementDrag(nativePlacementDrag, event);
+      placementMachineRef.current = initialInteractionState();
+      replacePresentDocument(nativePlacementDrag.startDocument);
+      clearNativePlacementDrag(event);
     }
 
     const textResize = textResizeRef.current;
@@ -16663,7 +16664,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     assignHoveredNativeDeleteTarget(undefined);
   }, [
-    abandonNativePlacementDrag,
+    clearNativePlacementDrag,
     assignHoveredNativeDeleteTarget,
     clearNativeBondDrag,
     clearNativeBondEditDrag,
