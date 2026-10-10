@@ -350,8 +350,8 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
 - `node <skill>/scripts/ring-style.mjs pubchem <dir> <name> <cid or name>`
   fetches the SMILES, InChIKey and stereo counts from PubChem and writes
   the `document` batch.
-- `style <dir> <name> [options.json]` reads the `document` output and
-  writes `<name>-carbon.json` (true structure, methyls drawn CH3: render
+- `node <skill>/scripts/ring-style.mjs style <dir> <name> [options.json] --checkout <checkout>`
+  reads the `document` output and writes `<name>-carbon.json` (true structure, methyls drawn CH3: render
   it and save the `.chemdraft` from it) and `<name>-nicolaou.json` (the
   picture, methyls relabelled Me). It fills and letters the core ring
   system (rings sharing atoms with another ring, not pendant phenyls),
@@ -360,13 +360,19 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   stops when a rule matches no ring or several. Letters go at the most
   open point in each ring, in white or near-black by fill luminance;
   touching rings never share a colour; each fusion CH stereocentre gets
-  an explicit H carrying its wedge or hash.
+  an explicit H carrying its wedge or hash. First it picks the cleanest
+  of three layouts (ChemDraft's, ChemDraft's from the canonical SMILES,
+  PubChem's 2D record), turns every substituent off the filled rings
+  (no substituent atom, bond or label inside a fill) and turns
+  substituents whose labels touch. Each change must read in the
+  checkout's `render-document` as the same molecule and stereo counts,
+  or it is undone; what cannot be cleared is named.
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
-  SMILES when a bridged ring is laid out crushed.
+  SMILES, to try that layout by hand.
 - `identity-jobs` and `check` compare every rendered InChIKey and the
   stereocentre counts with PubChem's, and list labels that nearly touch;
-  the options' `rotate` turns a substituent about its attachment atom to
-  clear one.
+  the options' `rotate` turns a substituent about its attachment atom
+  when one still does.
 
 Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
 
@@ -406,11 +412,10 @@ Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
   pokes into the O of an oxetane or furan. Look for it at full size; it
   cannot be hidden from the document today.
 - **Ring fills are painted in a fixed order the document cannot change.**
-  Where a bridged ring is drawn around another ring (morphine's B around
-  D), the outer fill can cover the inner one. `scripts/ring-style.mjs`
-  then paints the outer ring as a closed `path` graphic under the
-  molecule; that path does not follow the atoms if they are moved in the
-  app.
+  Where a bridged ring's outline takes in part of another ring, the
+  larger fill can cover the smaller one. `scripts/ring-style.mjs` then
+  paints the larger ring as a closed `path` graphic under the molecule;
+  that path does not follow the atoms if they are moved in the app.
 - **CH3 labels are wider than Me.** The carbon copy of a Me-labelled
   figure can crowd neighbouring labels that cleared in the picture; check
   both renders.

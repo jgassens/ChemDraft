@@ -218,7 +218,10 @@ answer, not an optional variant. All of it is native document art
 `scripts/ring-style.mjs` in this skill applies the style to any molecule.
 It is plain Node with no dependencies and runs on macOS and Windows. It
 edits document JSON only; ChemDraft builds, renders and checks the
-chemistry.
+chemistry. `style` runs the CLI of the ChemDraft checkout it is given
+(`node ring-style.mjs style <dir> <name> <options> --checkout <checkout>`)
+with the same Node and no shell, to check every coordinate change it
+makes.
 
 ### The rules it applies
 
@@ -265,17 +268,44 @@ chemistry.
    the wedge or hash that starts there moves onto a new explicit H with
    the opposite style (a wedged ring bond becomes a hashed H), and the
    ring bond goes plain. The stereochemistry is unchanged, and the check
-   below proves it. The H points outward in the clearest direction; an
-   atom in three rings has no room and keeps its ring wedge (warned).
+   below proves it. The H points outward in the clearest direction, never
+   across a bond or onto a fill; an H that would touch a bond or label is
+   not drawn and its atom keeps the ring wedge (warned).
 7. **Me.** Methyls on lettered rings are drawn CH3 in `<name>-carbon.json`,
    the true structure and the editable file. Its CH3 labels are wider than
    Me and can crowd neighbours. `<name>-nicolaou.json` relabels them Me
    for the picture only: a Me label is a placeholder atom (`*`), not a
    carbon ([art](art.md), pattern 2).
-8. **Collisions.** `check` measures every atom label and ring letter in
+8. **Layout.** Before styling, `style` compares three drawings of the
+   same molecule: ChemDraft's build, ChemDraft's layout of the canonical
+   SMILES (another atom order) and PubChem's own 2D record, fetched by
+   CID. PubChem's atoms are matched to the document's and every wedge is
+   re-drawn so each stereocentre keeps its handedness. Each layout is
+   scored on bond crossings, bonds, atoms and labels lying on a fill that
+   is not their own, fill over fill, clashing atoms and stretched bonds;
+   the build stays unless another is clearly cleaner. The choice is
+   general: nothing in the script knows any molecule.
+9. **No substituent on a filled ring.** No substituent atom, bond or
+   label may sit inside a filled ring. A substituent is everything past an
+   acyclic bond from a lettered-ring atom. Each one found on a fill is
+   turned or mirrored about its attachment atom, bond lengths kept, to the
+   clearest placement off every fill that lands on no atom and crosses no
+   bond. A mirror image swaps the wedges inside the group, so its own
+   stereocentres keep their handedness.
+10. **Labels that touch.** A substituent whose label touches another
+   label, a bond or a fusion H (where the H will go is worked out first)
+   is turned by up to 60 degrees, never onto a fill.
+11. **Every move is checked.** A new layout, and every move in rules 9
+   and 10, must read in `render-document` as the same canonical SMILES
+   with the same specified and unspecified stereocentre counts as the
+   build's own drawing. A move that fails is undone and reported
+   (`UNDONE`), and the next placement is tried; a substituent that cannot
+   be cleared is reported by name (`STILL ON A FILL`). The script never
+   moves a ring atom and never changes a bond.
+12. **Collisions.** `check` measures every atom label and ring letter in
    the rendered SVGs and lists the pairs that nearly touch, naming each
    atom and the atom it hangs from.
-9. **Identity.** `check` requires every rendered InChIKey to equal
+13. **Identity.** `check` requires every rendered InChIKey to equal
    PubChem's own InChIKey, and the specified and unspecified stereocentre
    counts to equal PubChem's.
 
@@ -298,7 +328,7 @@ skill="$checkout/skills/chemdraft"
 node "$skill/scripts/ring-style.mjs" pubchem "$scratch" paclitaxel 36314
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" > "$scratch/paclitaxel-build.jsonl"
 printf '%s' '{"convention":"taxane"}' > "$scratch/paclitaxel-options.json"
-node "$skill/scripts/ring-style.mjs" style "$scratch" paclitaxel "$scratch/paclitaxel-options.json"
+node "$skill/scripts/ring-style.mjs" style "$scratch" paclitaxel "$scratch/paclitaxel-options.json" --checkout "$checkout"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 > "$scratch/paclitaxel-render.jsonl"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" >> "$scratch/paclitaxel-render.jsonl"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 >> "$scratch/paclitaxel-render.jsonl"
@@ -315,7 +345,7 @@ $ringStyle = Join-Path $checkout 'skills/chemdraft/scripts/ring-style.mjs'
 node $ringStyle pubchem $scratch paclitaxel 36314
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --batch "$scratch/paclitaxel-job.json" --out-dir "$scratch" | Set-Content -Encoding utf8 "$scratch/paclitaxel-build.jsonl"
 Set-Content -Encoding utf8 "$scratch/paclitaxel-options.json" '{"convention":"taxane"}'
-node $ringStyle style $scratch paclitaxel "$scratch/paclitaxel-options.json"
+node $ringStyle style $scratch paclitaxel "$scratch/paclitaxel-options.json" --checkout $checkout
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel-carbon" --format both --width 2000 | Set-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-carbon.json" --out "$scratch/paclitaxel.chemdraft" | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/paclitaxel-nicolaou.json" --out "$scratch/paclitaxel-nicolaou" --format both --width 2000 | Add-Content -Encoding utf8 "$scratch/paclitaxel-render.jsonl"
@@ -324,8 +354,11 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft analyze --batch
 node $ringStyle check $scratch paclitaxel
 ```
 
-`style` prints each ring's letter, colour and chemistry, the fusion H
-and Me it added, and any warning; `<name>-style.json` keeps the same.
+`style` prints the layout it chose with every candidate's score, each
+substituent it moved, undid or could not clear, what remains (crossings,
+items on a fill not their own, fill overlap, stretched bonds), then each
+ring's letter, colour and chemistry, the fusion H and Me it added, and any
+warning; `<name>-style.json` keeps the same under `layout`.
 `check` prints PubChem's InChIKey and stereo counts beside each render's,
 then the near-touching labels, and exits 1 if an InChIKey or count
 differs. A failed check means the figure is not the molecule: do not
@@ -341,20 +374,27 @@ ring fill also runs under a ring heteroatom's label to the atom centre,
 so a coloured point pokes into the O (paclitaxel's oxetane, morphine's
 furan): look for it, and see [art](art.md), Known limits.
 
-- **Labels nearly touch.** Turn one substituent about its attachment atom
-  and restyle: add `"rotate": [{"atom": "a52", "about": "a10", "degrees": 25}]`
-  to the options (positive turns clockwise on the page; take the ids
-  from `check`, which prints each label's atom and the atom it hangs
-  from). Then render and run `identity-jobs`, `analyze` and `check`
-  again: turning a group beside a stereocentre can change what its
-  wedge means, and the InChIKey shows it.
-- **A ring is crushed, or a letter will not fit.** Bridged systems can be
-  laid out with one ring squeezed under another. `relayout` rewrites the
-  job with ChemDraft's canonical SMILES (the same molecule in another
-  atom order, which `document` lays out afresh); rebuild and restyle.
-  When one lettered ring is still drawn around another, the script paints
-  the outer ring's fill as a path object under the molecule so the inner
-  ring keeps its own colour (it says so).
+- **`STILL ON A FILL`.** Read the reason. "Enclosed by filled rings"
+  means every direction from the attachment atom lies on a fill: the atom
+  sits inside a bridged ring system (paclitaxel's C15, between rings A
+  and B). No flat drawing can clear it; say so with the figure rather
+  than move ring atoms by hand. "Undone" means every placement off the
+  fill would change the stereochemistry.
+- **Labels still touch.** `check` names each pair. Turn one substituent
+  about its attachment atom and restyle: add
+  `"rotate": [{"atom": "a52", "about": "a10", "degrees": 25}]` to the
+  options (positive turns clockwise on the page; take the ids from
+  `check`, which prints each label's atom and the atom it hangs from).
+  The rotation runs before the fill and label steps, which still check
+  it. This is rarely needed: the label step clears most pairs itself.
+- **A crossing or overlap remains.** `style` names it. Some ring systems
+  cannot be drawn flat without one (an atom shared by four rings, a
+  bridge across a ring); the search keeps the cleanest of the layouts it
+  compared. `"layout": "build"` keeps ChemDraft's own layout instead, and
+  `relayout` rewrites the job with ChemDraft's canonical SMILES by hand.
+  When one lettered ring's outline takes in part of a smaller one, the
+  script paints the larger ring's fill as a path object under the
+  molecule so the smaller ring shows on top (it says so).
 - **A letter rule fails.** Read the candidates it lists and write a
   `letters` map with tighter selectors or `atoms` indices.
 
@@ -364,18 +404,33 @@ the editable file shows CH3 where the picture shows Me.
 
 ### Verified examples
 
-Run from empty folders with the commands above (morphine after
-`relayout`). Atom ids belong to these builds; read your own.
+Run from empty folders with the commands above, with no `rotate` entries.
+Atom ids belong to these builds; read your own.
 
-| Molecule (PubChem CID) | Options | Checked |
-|---|---|---|
-| paclitaxel (36314) | `{"convention": "taxane", "rotate": [{"atom": "a52", "about": "a10", "degrees": 25}, {"atom": "a56", "about": "a7", "degrees": -20}]}` | A–D lettered, phenyls plain; 2 fusion H, 4 Me; InChIKey `RCINICONZNJXQF-MZXODVADSA-N`; 11 specified, 0 unspecified |
-| cholesterol (5997) | `{"convention": "steroid", "rotate": [{"atom": "a26", "about": "a20", "degrees": -30}]}` | A–D; 3 fusion H, 2 Me; `HVYWMOMLDIMFJA-DPAQBDIFSA-N`; 8 and 0 |
-| morphine (5288826) | `{"convention": "morphinan"}` after `relayout` | A–E; 2 fusion H (C14, in three rings, keeps its ring wedge), N–Me; B's fill drawn as a path under D; `BQJCRHHNABKAKU-KBQPJGBKSA-N`; 5 and 0 |
-| brevetoxin B (10865865) | `{"start": {"carbonyl": true}, "rotate": [{"atom": "a62", "about": "a59", "degrees": -15}]}` | A–K along the ladder from the lactone; 15 fusion H, 7 Me; `LYTCVQQGCSNFJU-FGRVLNGBSA-N`; 23 and 0 |
+| Molecule (PubChem CID) | Options | What `style` did | Checked |
+|---|---|---|---|
+| paclitaxel (36314) | `{"convention": "taxane"}` | build layout; turned the C4 acetate and the C7 OH to clear labels; the C15 gem-dimethyl stays in ring B (enclosed, see below) | A–D, phenyls plain; 2 fusion H, 4 Me; InChIKey `RCINICONZNJXQF-MZXODVADSA-N`; 11 specified, 0 unspecified |
+| cholesterol (5997) | `{"convention": "steroid"}` | build layout; turned the C19 methyl 20 degrees clear of the C9 H | A–D; 3 fusion H, 2 Me; `HVYWMOMLDIMFJA-DPAQBDIFSA-N`; 8 and 0 |
+| morphine (5288826) | `{"convention": "morphinan"}` | chose PubChem's 2D layout (score 134 against 194 and 173), wedges re-drawn | A–E; 2 fusion H (C14 keeps its ring hash), N–Me; `BQJCRHHNABKAKU-KBQPJGBKSA-N`; 5 and 0 |
+| brevetoxin B (10865865) | `{"start": {"carbonyl": true}}` | build layout; turned three methyls 5–10 degrees to clear labels | A–K along the ladder from the lactone; 15 fusion H, 7 Me; `LYTCVQQGCSNFJU-FGRVLNGBSA-N`; 23 and 0 |
 
-The rotations cleared the near-touching pairs `check` reported (the
-paclitaxel C3-H beside the C4 acetate among them).
+What remains, and why:
+
+- **Paclitaxel, C15.** C15 is the one-atom bridge of the bicyclic A/B
+  system: its two ring bonds have ring A on one side and ring B on the
+  other, so both methyls lie on a fill whichever way they point. Turning
+  them into ring A would put two Me labels and the A letter in one
+  six-membered ring. The script leaves them where ChemDraft drew them,
+  in ring B, the larger ring, reports them as `STILL ON A FILL`, and
+  places the B letter clear of them.
+- **Morphine.** C13 belongs to four rings, and the ethanamine bridge
+  (C15–C16) has to pass a ring to reach the nitrogen. In the chosen
+  layout the C15–C16 bond crosses the C9–C10 bond once, the piperidine
+  (D) covers the lower part of ring B, whose letter shrinks to 12 px in
+  the strip left above it, and the bridge bonds are drawn 1.4 times
+  standard length. ChemDraft's own two layouts scored worse: one crushed
+  the piperidine across ring B with several crossings, the other drew it
+  wholly inside ring B.
 
 ## 12. A hand-sketched structure: penicillin G
 
