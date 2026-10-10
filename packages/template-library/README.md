@@ -21,10 +21,10 @@ group's own chemistry, and no other program's nickname list was copied (AGENTS.m
   acetyl, "Pr" n-propyl and "Ts" tosyl; unbonded, they are actinium, praseodymium and tennessine.
   The parser applies the same rule to "Ar" (aryl, a placeholder). "CN" is cyano: case folding leaves
   it as typed (layout-engine's `nativeFormulaTwoLetterLabels`), and only the exact "Cn" is copernicium.
-  There is no "NC" alias, and in a composite "CN" is read only last, after its head ("SCN", "CH2CN"),
-  because its meaning depends on which side of the bond it is written. For the same reason "OCN" and
-  "SCN" written for a bond on their right (isocyanate, isothiocyanate) are still read as cyanato and
-  thiocyanato: a known limitation.
+  Its meaning depends on which end faces the bond, so there is no "NC" alias, a composite reads "CN"
+  only last, after its head ("SCN", "CH2CN"), and the label parser reads "CN", "SCN" and "OCN" only
+  with the bond on the label's left. With the bond on the right a chemist means isocyano, an
+  isothiocyanate or an isocyanate, which the table lacks, so the label stays a bare formula.
 - **Layouts** were computed from each SMILES with RDKit and normalized: the attachment atom at (0, 0),
   the atom the group bonds to at (−1, 0), bond length 1, y up. No group carries stereochemistry.
 

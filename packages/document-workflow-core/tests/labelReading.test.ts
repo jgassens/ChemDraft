@@ -48,6 +48,27 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeLabelGroupVerdict(groupOf("CN"), 0, -1)).toEqual({ valid: true });
   });
 
+  it("reads cyano labels only with the bond on their left: on the right, the N faces the bond", () => {
+    const cyanoLabels = { CN: 1, SCN: 1, OCN: 1, CH2CN: 1 } as const;
+    for (const [label, bonds] of Object.entries(cyanoLabels)) {
+      // Written for a bond on the left (or with no side given): cyano, thiocyanato, cyanato, cyanomethyl.
+      for (const context of [{}, { bonded: true, bondSide: "left" as const }]) {
+        expect(nativeAtomLabelReading(label, context).kind, label).toBe("group");
+        expect(nativeAtomLabelFreeValence(label, 0, context), label).toBe(bonds);
+      }
+      // With the bond on the right it would be isocyano, an isothiocyanate or an isocyanate: never
+      // the cyano reading. The table has no such group, so the label is a bare formula with no
+      // valence claim — counted, not checked, and never expanded into the wrong isomer.
+      const right = { bonded: true, bondSide: "right" as const };
+      expect(nativeAtomLabelReading(label, right).kind, label).toBe("formula");
+      expect(nativeAtomLabelFreeValence(label, 0, right), label).toBeUndefined();
+    }
+    // Only the cyano family depends on its side: OMe, NMe2 and Ph read the same either way.
+    for (const label of ["OMe", "NMe2", "Ph", "CO2Me"]) {
+      expect(nativeAtomLabelReading(label, { bonded: true, bondSide: "right" }).kind, label).toBe("group");
+    }
+  });
+
   it("reads a bonded Ar as an aryl placeholder and an unbonded Ar as argon", () => {
     expect(nativeAtomLabelReading("Ar")).toEqual({ kind: "element", element: "Ar" });
     expect(nativeAtomLabelReading("Ar", { bonded: false })).toEqual({ kind: "element", element: "Ar" });

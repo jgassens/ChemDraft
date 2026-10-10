@@ -481,6 +481,14 @@ export type NativeAtomLabelReading =
 export interface NativeAtomLabelContext {
   /** The atom has at least one bond. Decides "Ar": aryl when bonded, argon when not. */
   bonded?: boolean;
+  /**
+   * The side of the label its bonds reach: "right" when every bonded neighbour lies to the label's
+   * right, the same test that draws a hydroxyl as "HO". A cyano label reads from its left end, so
+   * with its bond on the right it means the other isomer — "CN–R" isocyano, "SCN–R" an
+   * isothiocyanate, "OCN–R" an isocyanate — and is declined to a bare formula instead
+   * (`sideDependentSpellings`). Unset reads the label left to right, as written for a bond on its left.
+   */
+  bondSide?: "left" | "right";
 }
 
 /**
@@ -516,14 +524,14 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
     return { kind: "element", element };
   }
   const definition = abbreviationForLabel(trimmed);
-  if (definition) {
+  if (definition && !(context.bondSide === "right" && sideDependentSpellings.has(trimmed))) {
     return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition } };
   }
   const spelled = nativeSingleHeavyElementLabelValence(trimmed);
   if (spelled) {
     return { kind: "spelled", ...spelled };
   }
-  const composite = nativeCompositeLabelGroup(trimmed);
+  const composite = nativeCompositeLabelGroup(trimmed, context.bondSide);
   if (composite) {
     return { kind: "group", group: composite };
   }
@@ -547,11 +555,14 @@ const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ..
   .sort((left, right) => right.length - left.length || left.localeCompare(right));
 
 /**
- * Substituent spellings read only after their head, at the end of the label. Written before the
- * head, "CN" puts its N, not its C, next to it: "CNO", "CNS" and "CNCH2" are not cyanato,
- * thiocyanato and cyanomethyl, so they stay bare formulas rather than become the wrong isomer.
+ * Spellings whose meaning depends on which end faces the bond. Cyano is "CN" with its C toward the
+ * bond, so it is read only where that holds: as the whole label or the last token after its head
+ * ("SCN", "CH2CN"), and only when the bond does not come from the label's right. Written before
+ * its head ("CNO", "CNS", "CNCH2") or with its bond on the right ("CN–R", "SCN–R"), its N faces
+ * the bond — isocyano, isothiocyanate, isocyanate — so the label stays a bare formula rather than
+ * become the wrong isomer.
  */
-const trailingOnlyCompositeSpellings: ReadonlySet<string> = new Set(["CN"]);
+const sideDependentSpellings: ReadonlySet<string> = new Set(["CN"]);
 
 /**
  * An element carrying abbreviations, read the way chemists write one: "NMe2", "NHBoc", "OTBS",
@@ -563,13 +574,14 @@ const trailingOnlyCompositeSpellings: ReadonlySet<string> = new Set(["CN"]);
  * Not read as a group: a second heavy element ("SO2Ph"), a count on the head ("C2H4Ph"), and a
  * head written directly before "O" ("COEt", "SOMe") — there the O is conventionally an oxo group,
  * C(=O)Et, which this grammar does not model; reading it as C–OEt would invent a different
- * structure, so the label stays unrecognized instead. Nor is a trailing-only spelling ("CN") read
- * anywhere but last, after its head (`trailingOnlyCompositeSpellings`).
+ * structure, so the label stays unrecognized instead. Nor is a side-dependent spelling ("CN") read
+ * anywhere but last, after its head, or at all with the bond on the label's right
+ * (`sideDependentSpellings`).
  *
  * A substituent in a composite is bonded to the head by definition, so the bonded-only spellings
  * count as groups here: "NHAc" is an acetamide N, "OTs" a tosylate O, "NPr2" a dipropylamino N.
  */
-function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined {
+function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): NativeLabelGroup | undefined {
   let head: NativeElementSymbol | undefined;
   let headEnd = -1;
   let hydrogens = 0;
@@ -590,7 +602,10 @@ function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined 
       const definition = (abbreviationForLabel(spelling) ?? abbreviationForBondedElementLabel(spelling))!;
       const count = readCount();
       if (count === undefined || definition.attachmentCount !== 1) return undefined;
-      if (trailingOnlyCompositeSpellings.has(spelling) && (head === undefined || index < label.length)) return undefined;
+      if (
+        sideDependentSpellings.has(spelling) &&
+        (head === undefined || index < label.length || bondSide === "right")
+      ) return undefined;
       for (let copy = 0; copy < count; copy += 1) substituents.push(definition);
       continue;
     }
