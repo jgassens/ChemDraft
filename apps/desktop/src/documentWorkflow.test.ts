@@ -45,6 +45,7 @@ import {
   applyChargeToolAtPoint,
   applyClipboardPastePayload,
   createSmilesMolecule,
+  insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
   smilesPasteBondLengthPx,
@@ -6726,6 +6727,47 @@ describe("Phase 4 document workflow", () => {
       .toMatchObject({ atomId: "atom_001", availableBonds: 4 });
   });
 
+  it.each(["O", "N", "S"])("creates automatic C=%s through order cycling and the 2-key path", (element) => {
+    const original = insertNativeSingleBondMolecule(createPhase4Document("C=X defaults"), { x: 200, y: 220 });
+    const mol = selectedMolecule(original);
+    const document = applyNativeAtomElementTarget(original, {
+      objectId: mol.id, kind: "atom", atomId: mol.atoms[1].id, distanceToPointer: 0
+    }, element);
+    for (const changed of [cycleNativeBondOrder(document, "bond_001"), setNativeBondOrder(document, "bond_001", "double")]) {
+      const next = selectedMolecule(changed);
+      expect(next.bonds[0].order).toBe("double");
+      expect(next.bonds[0].display?.doubleBondSide).toBeUndefined();
+    }
+  });
+
+  it("leaves SMILES and name native carbonyls automatic while retaining alkene defaults", () => {
+    const document = createPhase4Document("Imported defaults");
+    const depiction: PastedStructureDepiction = {
+      atoms: [
+        { element: "C", x: 0, y: 0, charge: 0 }, { element: "C", x: 1, y: 1, charge: 0 },
+        { element: "C", x: 2, y: 1, charge: 0 }, { element: "C", x: 3, y: 0, charge: 0 },
+        { element: "O", x: 4, y: 0, charge: 0 }
+      ],
+      bonds: [
+        { from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "double", wedge: null },
+        { from: 2, to: 3, order: "single", wedge: null }, { from: 3, to: 4, order: "double", wedge: null }
+      ]
+    };
+    const nameSource = { objectIdPrefix: "name", styleSource: "name", warningCode: "name.generated", warningMessage: "Generated from name." };
+    for (const object of [
+      createSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O"),
+      createSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O", nameSource),
+      selectedMolecule(insertSmilesMolecule(document, { x: 100, y: 100 }, depiction, "CC=CC=O"))
+    ]) {
+      expect(object.type).toBe("molecule");
+      const molecule = object as MoleculeObject;
+      expect(molecule.bonds[3].display?.doubleBondSide).toBeUndefined();
+      expect(["left", "right"]).toContain(molecule.bonds[1].display?.doubleBondSide);
+      expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "C", "C", "C", "O"]);
+      expect(molecule.bonds.map((bond) => bond.order)).toEqual(["single", "double", "single", "double"]);
+    }
+  });
+
   it("cycles a hovered carbon-carbon bond from single to double to triple and back to single", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Bond Orders"), { x: 200, y: 220 });
     const doubleBond = cycleNativeBondOrder(document, "bond_001");
@@ -6840,6 +6882,29 @@ describe("Phase 4 document workflow", () => {
       const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
       const pasted = pasteSelectionClipboardPayload(createPhase4Document("Pasted"), parsed, { x: 300, y: 300 });
       expect(selectedMolecule(pasted).bonds[0].display?.doubleBondSide).toBe("center");
+    }
+  });
+
+  it.each([undefined, "left", "center"] as const)("preserves carbonyl %s through native save and whole/fragment paste", (side) => {
+    const seeded = insertNativeSingleBondMolecule(createPhase4Document("Carbonyl clipboard"), { x: 200, y: 220 });
+    const changed = setNativeAtomElement(seeded, "atom_002", "O");
+    const automatic = setNativeBondOrder(changed, "bond_001", "double");
+    const original = selectedMolecule(automatic);
+    const document = side ? applyMoleculeDoubleBondPosition(automatic, [{ objectId: original.id, bondId: "bond_001" }], side) : automatic;
+    const relaid = applyNativeMoleculeEngineRelayout(document, original.id, relayoutMolfile2D);
+    expect(selectedMolecule(relaid).bonds[0].display?.doubleBondSide).toBe(side);
+    const opened = deserializeDocument(serializeDocument(document));
+    expect(selectedMolecule(opened).bonds[0].display?.doubleBondSide).toBe(side);
+    for (const payload of [createSelectionClipboardPayload(opened), createSelectionClipboardPayload(
+      selectDocumentObjects(opened, opened.pages[0].id, []),
+      [{ objectId: original.id, atomIds: original.atoms.map((atom) => atom.id), bondIds: ["bond_001"] }]
+    )]) {
+      const parsed = parseSelectionClipboardPayload(serializeSelectionClipboardPayload(payload!))!;
+      const pasted = pasteSelectionClipboardPayload(createPhase4Document("Pasted"), parsed, { x: 300, y: 300 });
+      const molecule = selectedMolecule(pasted);
+      expect(molecule.bonds[0].display?.doubleBondSide).toBe(side);
+      expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "O"]);
+      expect(molecule.bonds[0].order).toBe("double");
     }
   });
 
@@ -6962,6 +7027,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(oxygen).toBeDefined();
     expect(carbonylBond).toMatchObject({ order: "double" });
+    expect(carbonylBond?.display?.doubleBondSide).toBeUndefined();
     expect(oxygen?.y).toBeLessThan(carbon.y);
     expect(carbonylMolecule.structure).toContain("=O");
     expect(carbonylMolecule.chemistry).toMatchObject({ formula: "C2H4O", atomCount: 3, bondCount: 2 });

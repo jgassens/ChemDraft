@@ -30,6 +30,24 @@ describe("CDXML double bond position", () => {
     }
   );
 
+  it.each([undefined, "automatic"] as const)("keeps a missing C=X DoublePosition automatic (native side: %s)", (side) => {
+    const fixture = `<CDXML><page id="p"><fragment id="m">
+      <n id="a" p="0 26"/><n id="b" p="15 0"/><n id="o" Element="8" p="45 0"/>
+      <b id="ab" B="a" E="b"/><b id="bo" B="b" E="o" Order="2" BondCircularOrdering="ab 0 0 0"/>
+    </fragment></page></CDXML>`;
+    const document = openChemDraftPayload(fixture).document!;
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const carbonyl = molecule.bonds.find((bond) => bond.order === "double")!;
+    expect(carbonyl.display?.doubleBondSide).toBeUndefined();
+    if (side) carbonyl.display = { doubleBondSide: side };
+    // The exporter only writes explicit positions today, so automatic positions remain omitted.
+    const visible = canonicalVisibleCdxml(exportDocumentToCdxml(document).contents);
+    expect(visible).not.toContain("DoublePosition=");
+    const restored = openChemDraftPayload(visible).document!.pages[0].objects[0] as MoleculeObject;
+    expect(restored.bonds.find((bond) => bond.order === "double")?.display?.doubleBondSide).toBeUndefined();
+    expect(nativeSingleBondGraphSmiles(restored.atoms, restored.bonds)).toBe(nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds));
+  });
+
   it("preserves an explicit Center in a ring instead of assigning an interior side", () => {
     const fixture = `<CDXML><page id="p"><fragment id="m">
       <n id="a" p="0 0"/><n id="b" p="30 0"/><n id="c" p="30 30"/><n id="d" p="0 30"/>

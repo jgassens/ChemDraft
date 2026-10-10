@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { applyPatches, type ChemDraftDocument, type MoleculeObject, type ViewMatrix } from "@chemdraft/chem-core";
+import { planPageSvgRender } from "@chemdraft/layout-engine";
 import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depiction2D } from "@chemdraft/ocl-adapter";
 
 import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
@@ -230,6 +231,44 @@ describe("flattenSpunMolecule — ScreenPlacement parity", () => {
     for (const atom of next.atoms) {
       expect(Number.isFinite(atom.x)).toBe(true);
       expect(Number.isFinite(atom.y)).toBe(true);
+    }
+  });
+});
+
+describe("automatic C=X spin and flatten parity", () => {
+  it.each([undefined, "automatic", "left", "right", "center"] as const)("retains %s and uses canvas joined geometry", (side) => {
+    const mol = molecule("carbonyl", [
+      { id: "a", element: "C", x: 30, y: 50, formalCharge: 0 },
+      { id: "b", element: "C", x: 60, y: 20, formalCharge: 0 },
+      { id: "o", element: "O", x: 100, y: 20, formalCharge: 0 }
+    ], [
+      { id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+      { id: "bo", fromAtomId: "b", toAtomId: "o", order: "double", ...(side ? { display: { doubleBondSide: side } } : {}) }
+    ]);
+    const coords = [0, 0, 0, 1, 1, 0, 2, 1, 0];
+    const pairs: [number, number][] = [[0, 1], [1, 2]];
+    const quat = quatFromAxisAngle([0, 1, 0], Math.PI / 6);
+    const view = quatToViewMatrix(quat);
+    const placement = { centerX: 300, centerY: 300, scale: 30 };
+    const projection = projectSpin(coords, pairs, quat, placement);
+    const weights = bondDepthWeights(coords, pairs, view);
+    const overlay = spinJoinedBondFragments(mol, projection, weights);
+    const outcome = flattenSpunMolecule(documentWith(mol), mol.id, coords, view, { placement });
+    expect(outcome.status, outcome.refusalReasons.join("; ")).toBe("committed");
+    const next = moleculeOf(outcome.document, mol.id);
+    const centered = side === undefined || side === "automatic" || side === "center";
+    expect(next.bonds[1].display?.doubleBondSide).toBe(side === "automatic" ? undefined : side);
+    expect(next.atoms.map((atom) => [atom.id, atom.element, atom.formalCharge]))
+      .toEqual(mol.atoms.map((atom) => [atom.id, atom.element, atom.formalCharge]));
+    expect(next.bonds.map((bond) => [bond.id, bond.order, bond.fromAtomId, bond.toAtomId]))
+      .toEqual(mol.bonds.map((bond) => [bond.id, bond.order, bond.fromAtomId, bond.toAtomId]));
+    const page = { ...outcome.document.pages[0], objects: [next] };
+    expect(JSON.stringify(planPageSvgRender(page).fragments)).toContain(`"data-double-bond-side":"${centered ? "center" : side}"`);
+    expect(JSON.stringify(overlay)).toContain(`"data-double-bond-side":"${centered ? "center" : side}"`);
+    if (centered) {
+      const explicit = { ...mol, bonds: mol.bonds.map((bond) => bond.order === "double"
+        ? { ...bond, display: { doubleBondSide: "center" as const } } : bond) };
+      expect(overlay).toEqual(spinJoinedBondFragments(explicit, projection, weights));
     }
   });
 });

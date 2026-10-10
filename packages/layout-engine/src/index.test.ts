@@ -2849,7 +2849,7 @@ describe("layout-engine page SVG planner", () => {
     )).toBe(true);
   });
 
-  it("draws an aldehyde with a backbone-connected primary line and a short inward secondary line", () => {
+  it("draws an automatic aldehyde with both centered lines joined to the backbone", () => {
     const molecule = moleculeObject({
       id: "mol_aldehyde_double_bond",
       atoms: [
@@ -2892,28 +2892,22 @@ describe("layout-engine page SVG planner", () => {
       throw new Error("Expected backbone, primary carbonyl, and secondary carbonyl lines.");
     }
 
-    expect({ x: primary.attrs.x1, y: primary.attrs.y1 }).toEqual({ x: 142, y: 140 });
-    expect({ x: backbone.attrs.x2, y: backbone.attrs.y2 }).toEqual({ x: 142, y: 140 });
-    expect(primary.attrs["data-double-bond-side"]).toBe("left");
-    expect(secondary.attrs["data-double-bond-side"]).toBe("left");
-
-    const segmentLength = (fragment: PageSvgElementFragment) => Math.hypot(
-      Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
-      Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
-    );
-    expect(segmentLength(secondary)).toBeLessThan(segmentLength(primary));
-
-    const carbonylUnit = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
-    const carbonylNormal = { x: -carbonylUnit.y, y: carbonylUnit.x };
-    const secondaryOffset = {
-      x: Number(secondary.attrs.x1) - Number(primary.attrs.x1),
-      y: Number(secondary.attrs.y1) - Number(primary.attrs.y1)
-    };
-    const backboneDirection = { x: -22, y: 12 };
-    expect(secondaryOffset.x * carbonylNormal.x + secondaryOffset.y * carbonylNormal.y)
-      .toBeGreaterThan(0);
-    expect(backboneDirection.x * carbonylNormal.x + backboneDirection.y * carbonylNormal.y)
-      .toBeGreaterThan(0);
+    // The former terminal-heteroatom inward-side convention is replaced by the general C=X
+    // default: both full-length strokes use the same joined geometry as explicit Center.
+    const explicit = { ...molecule, bonds: molecule.bonds.map((bond) => bond.order === "double"
+      ? { ...bond, display: { doubleBondSide: "center" as const } } : bond) };
+    expect(fragments).toEqual(planPageSvgRender(pageWithObjects([explicit])).fragments.flatMap(elementFragments));
+    expect(primary.attrs["data-double-bond-side"]).toBe("center");
+    expect(secondary.attrs["data-double-bond-side"]).toBe("center");
+    const a = { x: Number(backbone.attrs.x1), y: Number(backbone.attrs.y1) };
+    const b = { x: Number(backbone.attrs.x2), y: Number(backbone.attrs.y2) };
+    for (const line of [primary, secondary]) {
+      const x = Number(line.attrs.x1), y = Number(line.attrs.y1);
+      const t = ((x - a.x) * (b.x - a.x) + (y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+      expect(t).toBeGreaterThanOrEqual(0);
+      expect(t).toBeLessThanOrEqual(1 + 1e-8);
+      expect(Math.hypot(x - a.x - t * (b.x - a.x), y - a.y - t * (b.y - a.y))).toBeLessThan(1e-8);
+    }
   });
 
   it("ends both lines of a terminal methylene at the same terminal plane", () => {
@@ -3083,8 +3077,8 @@ describe("layout-engine page SVG planner", () => {
       Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
       Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
     );
-    // The junction has two backbone neighbors, so no inner side is derivable: the pair must
-    // straddle the C=O centerline symmetrically with equal lengths, mirroring around x = 142.
+    // This now follows the general automatic C=X rule, rather than the old undecidable
+    // terminal-heteroatom exception. Symmetric joins still mirror around x = 142.
     expect(segmentLength(primary)).toBeCloseTo(segmentLength(secondary), 6);
     expect(Number(primary.attrs.x1) + Number(secondary.attrs.x1)).toBeCloseTo(284, 6);
     expect(Number(primary.attrs.x2) + Number(secondary.attrs.x2)).toBeCloseTo(284, 6);

@@ -4709,7 +4709,7 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
-    if (bond.display?.doubleBondSide === "center") {
+    if (doubleBondRendersSymmetric(fromAtom, toAtom, object, bond, ringInteriorSide)) {
       return [gap / 2, -gap / 2].map((offset, index) => ({
         x1: x1 + normal.x * offset,
         y1: y1 + normal.y * offset,
@@ -4725,44 +4725,11 @@ function bondLineSegments(
       object,
       bond
     );
-    // A terminal heteroatom double bond with no derivable inner side (a ketone's two backbone
-    // neighbors, formaldehyde's none) has no publication convention to lean on: keep the legacy
-    // symmetric ±gap/2 straddle so a symmetric molecule never picks an arbitrary side. The user's
-    // explicit side still wins below.
-    if (
-      bond.display?.doubleBondSide === undefined &&
-      ringInteriorSide === undefined &&
-      terminalHeteroatomSide === undefined &&
-      isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
-    ) {
-      const halfGap = gap / 2;
-      return [
-        {
-          x1: x1 + normal.x * halfGap,
-          y1: y1 + normal.y * halfGap,
-          x2: x2 + normal.x * halfGap,
-          y2: y2 + normal.y * halfGap,
-          segment: "primary",
-          doubleBondSide: "left"
-        },
-        {
-          x1: x1 - normal.x * halfGap,
-          y1: y1 - normal.y * halfGap,
-          x2: x2 - normal.x * halfGap,
-          y2: y2 - normal.y * halfGap,
-          segment: "secondary",
-          doubleBondSide: "left"
-        }
-      ];
-    }
-
     // Default a ring double bond's inner line to the ring interior; the user's explicit side
-    // (bond.display.doubleBondSide) always wins. A terminal heteroatom double bond (such as an
-    // aldehyde C=O) follows the same publication convention as a ring: the primary line stays on
-    // the bond centerline and meets the backbone junction, while the short secondary line sits on
-    // the side facing the adjacent backbone bond.
+    // (bond.display.doubleBondSide) always wins. Non-C=X terminal heteroatom doubles retain
+    // their existing inward-side default; automatic acyclic C=X returned centered above.
     const doubleBondSide =
-      bond.display?.doubleBondSide ??
+      (bond.display?.doubleBondSide === "automatic" ? undefined : bond.display?.doubleBondSide) ??
       ringInteriorSide ??
       terminalHeteroatomSide ??
       "left";
@@ -4803,7 +4770,7 @@ function bondLineSegments(
 }
 
 /**
- * Miter each explicit centered line to the nearest incident stroke's centreline. Prefer an
+ * Miter each centered line to the nearest incident stroke's centreline. Prefer an
  * intersection on the neighbour's visible segment over its extension (a branched junction can
  * then join each side to a different neighbour). At a bend the outer intersection lies behind
  * the atom: extend that neighbouring stroke only as far as the intersection so BOTH centered
@@ -4817,8 +4784,8 @@ function joinCenteredDoubleBondSegments(
   groups: readonly PageMoleculeBondSegmentGroup[],
   labeledAtoms: ReadonlySet<string>
 ): void {
-  const centeredGroups = groups.filter(({ bond }) =>
-    bond.order === "double" && bond.display?.doubleBondSide === "center"
+  const centeredGroups = groups.filter(({ segments }) =>
+    segments.some((segment) => segment.doubleBondSide === "center")
   );
   if (centeredGroups.length === 0) {
     return;
@@ -6356,32 +6323,55 @@ function nativeSegmentVectorGeometry(
   };
 }
 
-/**
- * Whether a double bond renders as the symmetric ±gap/2 straddle rather than a primary line with an
- * offset secondary. This is the exact condition `bondLineSegments` applies, exported so the Spin-3D
- * overlay can ask instead of approximating it — the overlay used `isTerminalHeteroatomDoubleBond`
- * alone, which is only the LAST of four clauses, so every aldehyde, amide, and exocyclic C=O with a
- * derivable inner side drew one-sided on canvas and symmetric in the live overlay (§5.26/§5.27).
- *
- * `ringInteriorSide` comes from {@link ringInteriorDoubleBondSides}, which is computed once per
- * molecule; pass the entry for this bond.
+/** True for C=X double bonds outside a cycle, regardless of terminality or substituents.
+ * Test connectivity without this edge so exocyclic bonds and degenerate ring geometry are
+ * classified by topology. Callers converting a single bond pass a copy with order double.
+ */
+export function isAcyclicCarbonHeteroatomDoubleBond(
+  object: MoleculeObject,
+  bond: CoreMoleculeBond
+): boolean {
+  if (bond.order !== "double") return false;
+  const from = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+  const to = object.atoms.find((atom) => atom.id === bond.toAtomId);
+  if (!from || !to) return false;
+  const a = nativeElementFromAtomLabel(from.element);
+  const b = nativeElementFromAtomLabel(to.element);
+  if (!((a === "C" && b !== "C" && b !== "H") || (b === "C" && a !== "C" && a !== "H"))) {
+    return false;
+  }
+  const adjacency = new Map<string, string[]>();
+  for (const edge of object.bonds) {
+    if (edge.id === bond.id) continue;
+    adjacency.set(edge.fromAtomId, [...(adjacency.get(edge.fromAtomId) ?? []), edge.toAtomId]);
+    adjacency.set(edge.toAtomId, [...(adjacency.get(edge.toAtomId) ?? []), edge.fromAtomId]);
+  }
+  const visited = new Set([bond.fromAtomId]);
+  const pending = [bond.fromAtomId];
+  for (let index = 0; index < pending.length; index++) {
+    for (const id of adjacency.get(pending[index]!) ?? []) {
+      if (id === bond.toAtomId) return false;
+      if (!visited.has(id)) { visited.add(id); pending.push(id); }
+    }
+  }
+  return true;
+}
+
+/** The same symmetric rule used by the canvas, exports, joins and Spin 3D. Automatic is
+ * stored as an unset side for new bonds (the explicit automatic spelling is also accepted).
+ * Explicit display choices always win.
  */
 export function doubleBondRendersSymmetric(
-  fromAtom: MoleculeAtom,
-  toAtom: MoleculeAtom,
+  _fromAtom: MoleculeAtom,
+  _toAtom: MoleculeAtom,
   object: MoleculeObject,
   bond: CoreMoleculeBond,
-  ringInteriorSide: DoubleBondSide | undefined
+  _ringInteriorSide: DoubleBondSide | undefined
 ): boolean {
-  return (
-    bond.order === "double" &&
-    (bond.display?.doubleBondSide === "center" || (
-      bond.display?.doubleBondSide === undefined &&
-      ringInteriorSide === undefined &&
-      terminalHeteroatomDoubleBondInnerSide(fromAtom, toAtom, object, bond) === undefined &&
-      isTerminalHeteroatomDoubleBond(fromAtom, toAtom, object, bond)
-    ))
-  );
+  return bond.order === "double" && (bond.display?.doubleBondSide === "center" || (
+    (bond.display?.doubleBondSide === undefined || bond.display.doubleBondSide === "automatic") &&
+    isAcyclicCarbonHeteroatomDoubleBond(object, bond)
+  ));
 }
 
 export function isTerminalHeteroatomDoubleBond(

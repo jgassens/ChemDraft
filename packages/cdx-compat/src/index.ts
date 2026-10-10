@@ -661,7 +661,7 @@ function exportBond(
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);
   }
-  if (bond.display?.doubleBondSide) {
+  if (bond.display?.doubleBondSide && bond.display.doubleBondSide !== "automatic") {
     attributes.push(`DoublePosition="${cdxmlDoublePositionName(bond.display.doubleBondSide)}"`);
   }
   const crossingPartnerIds = [...(context.crossingPartnerKeysByRefKey.get(nativeRefKey) ?? [])]

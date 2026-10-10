@@ -11,9 +11,9 @@ import {
   planPageSvgRender,
   type PageSvgElementFragment
 } from "./index";
-import { elementFragments } from "./testing";
+import { elementFragments, testMoleculeFromSmiles } from "./testing";
 
-type Side = "left" | "right" | "center" | undefined;
+type Side = "left" | "right" | "center" | "automatic" | undefined;
 const rise = 30 * Math.sqrt(3);
 
 function chain(side: Side, branch = false): MoleculeObject {
@@ -262,5 +262,66 @@ describe("explicit centered double bond geometry", () => {
     ]));
     expect(lines(molecule).find((line) => line.attrs["data-bond-id"] === "ab")!.attrs.x2).toBe(60);
     expect(lines(molecule).find((line) => line.attrs["data-bond-id"] === "cd")!.attrs.x1).toBe(120);
+  });
+});
+
+
+describe("automatic carbon-heteroatom double bonds", () => {
+  it.each([
+    ["acetone", "CC(=O)C"], ["acetaldehyde", "CC=O"], ["imine", "CC=NC"],
+    ["thioketone", "CC(=S)C"], ["ester", "CC(=O)OC"], ["amide", "CC(=O)N"],
+    ["cyclohexanone", "O=C1CCCCC1"], ["2-pyridone exocyclic carbonyl", "O=C1NC=CC=C1"]
+  ])("renders %s exactly like explicit joined Center without mutating chemistry", (_name, smiles) => {
+    const graph = testMoleculeFromSmiles(smiles);
+    const molecule: MoleculeObject = { ...chain(undefined), ...graph,
+      atoms: graph.atoms.map((atom, i) => ({ ...atom, x: 100 + 60 * Math.cos(i * 1.1), y: 100 + 60 * Math.sin(i * 1.1) })) };
+    const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+    const targets = molecule.bonds.filter((bond) => bond.order === "double" &&
+      [bond.fromAtomId, bond.toAtomId].some((id) => atomById.get(id)?.element !== "C"));
+    expect(targets.length).toBeGreaterThan(0);
+    const before = JSON.stringify(molecule);
+    const explicit: MoleculeObject = { ...molecule, bonds: molecule.bonds.map((bond) => targets.includes(bond)
+      ? { ...bond, display: { doubleBondSide: "center" } } : bond) };
+    expect(fragments(molecule)).toEqual(fragments(explicit));
+    const automatic: MoleculeObject = { ...molecule, bonds: molecule.bonds.map((bond) => targets.includes(bond)
+      ? { ...bond, display: { doubleBondSide: "automatic" } } : bond) };
+    expect(fragments(automatic)).toEqual(fragments(explicit));
+    for (const bond of targets) {
+      expect(lines(molecule).filter((line) => line.attrs["data-bond-id"] === bond.id)
+        .every((line) => line.attrs["data-double-bond-side"] === "center")).toBe(true);
+    }
+    expect(JSON.stringify(molecule)).toBe(before);
+  });
+
+  it.each(["left", "right"] as const)("preserves explicit %s on a carbonyl", (side) => {
+    const molecule = chain(side);
+    molecule.atoms[2].element = "O";
+    molecule.atoms = molecule.atoms.slice(0, 3);
+    molecule.bonds = molecule.bonds.slice(0, 2);
+    expect(lines(molecule).filter((line) => line.attrs["data-bond-id"] === "bc")
+      .every((line) => line.attrs["data-double-bond-side"] === side)).toBe(true);
+    expect(doubleBondRendersSymmetric(molecule.atoms[1], molecule.atoms[2], molecule, molecule.bonds[1], undefined)).toBe(false);
+  });
+
+  it.each(["N1=CC=CC=C1", "O=C1N=CC=CC1"])("retains ring C=N defaults in %s", (smiles) => {
+    const graph = testMoleculeFromSmiles(smiles);
+    const molecule: MoleculeObject = { ...chain(undefined), ...graph,
+      atoms: graph.atoms.map((atom, i) => ({ ...atom, x: 100 + 60 * Math.cos(i), y: 100 + 60 * Math.sin(i) })) };
+    const ringDouble = molecule.bonds.find((bond) => bond.order === "double" &&
+      [bond.fromAtomId, bond.toAtomId].some((id) => molecule.atoms.find((atom) => atom.id === id)?.element === "N"))!;
+    const rendered = lines(molecule).filter((line) => line.attrs["data-bond-id"] === ringDouble.id);
+    expect(rendered).toHaveLength(2);
+    expect(rendered.every((line) => line.attrs["data-double-bond-side"] !== "center")).toBe(true);
+    // Even degenerate coordinates cannot turn a topological ring bond into an automatic Center.
+    molecule.atoms = molecule.atoms.map((atom, i) => ({ ...atom, x: i * 40, y: 100 }));
+    expect(doubleBondRendersSymmetric(molecule.atoms[0], molecule.atoms[1], molecule, ringDouble, undefined)).toBe(false);
+  });
+
+  it("does not center hydrogen or heteroatom-heteroatom double bonds", () => {
+    for (const elements of [["C", "H"], ["N", "O"]]) {
+      const molecule = chain(undefined);
+      molecule.atoms[1].element = elements[0]; molecule.atoms[2].element = elements[1];
+      expect(doubleBondRendersSymmetric(molecule.atoms[1], molecule.atoms[2], molecule, molecule.bonds[1], undefined)).toBe(false);
+    }
   });
 });

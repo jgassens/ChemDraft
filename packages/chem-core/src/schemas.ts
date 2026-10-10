@@ -350,7 +350,7 @@ export const MoleculeAtomSchema = z
 
 export const MoleculeBondDisplaySchema = z
   .object({
-    doubleBondSide: z.enum(["left", "right", "center"]).optional(),
+    doubleBondSide: z.enum(["left", "right", "center", "automatic"]).optional(),
     bondStyle: z.enum(["bold", "wedge", "hashed", "dashed"]).optional(),
     /** Perspective depth cue baked by the 3D flatten: 0 = farthest bond, 1 = nearest.
      *  Display-only (stroke weight) — never part of chemical identity. */

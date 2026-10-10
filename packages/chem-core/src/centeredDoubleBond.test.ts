@@ -8,7 +8,7 @@ import {
 } from "./index";
 
 describe("centered double bond display data", () => {
-  it.each(["left", "right", "center", undefined] as const)("round-trips %s without changing chemistry", (side) => {
+  it.each(["left", "right", "center", "automatic", undefined] as const)("round-trips %s without changing chemistry", (side) => {
     const display = side === undefined ? undefined : { doubleBondSide: side };
     if (display) {
       expect(MoleculeBondDisplaySchema.parse(display)).toEqual(display);
