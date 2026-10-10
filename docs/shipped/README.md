@@ -47,26 +47,31 @@ PRs make the label mean its group.
 - **Reading** (`nativeAtomLabelReading`): element (case ignored), abbreviation (case-sensitive),
   spelled one-heavy-atom label ("NH2"), composite ("NMe2", "BocHN", "CH2Ph"), placeholder, bare
   formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
-  ("COEt") is left unrecognized instead of read as C–OEt. A bonded "Ar" is aryl (a placeholder); an
-  unbonded "Ar" is argon. `nativeAtomLabelFreeValence` gives the bonds each label takes.
+  ("COEt") is left unrecognized instead of read as C–OEt. On a bonded atom, "Ar" is aryl (a
+  placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl; unbonded, they are their
+  elements. `nativeAtomLabelFreeValence` gives the bonds each label takes.
 - **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
   hotkey. The reason names the expected bond count, and the state carries the charge that would fix
   it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.
 - **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
   atoms appended after the drawn ones, so drawn indices never move, and the native formula is
   counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
-  label. Flagged groups, placeholders and a bonded "Ar" stay warned placeholders. Tests hold the
-  native formula and canonical SMILES equal to RDKit's for every table entry.
+  label. A group's stated hydrogens are written as explicit H atoms where the valence model would
+  not supply them (a hypervalent head such as "SHMe" on two bonds). Flagged groups, placeholders and
+  a bonded "Ar" stay warned placeholders. Validate reads the same expanded graph, never the stored
+  structure (a flatten stores "*" for every label). Tests hold the native formula and canonical
+  SMILES equal to RDKit's for every table entry, composite, bonded spelling and charged form.
 - **Bond tool**: a group may take the bonds it is missing (a lone "OMe" takes one), never more.
 
 Known limitations: Spin 3D, its sidecar, cleanup re-layout, flatten and the CIP guard
 (`stereoPerceptionMolfile`) still see one placeholder atom per label, since their atom-count and
 index contracts need one molfile atom per drawn atom. The user sees no wrong chemistry there: the guard
 only compares a perception with itself, and a placeholder can add a centre to it but never hide one.
-CDXML still writes the label as `Element="OMe"` (it round-trips, but external readers see no
-structure) and writes a bonded "Ar" as argon. Molfile import does not contract `SUP` S-groups back
-into labels. Element matching ignores case, so "NH" reads as nihonium and "CN" as copernicium; the
-coordinator has that fix as its own PR.
+CDXML still writes a group label as `Element="OMe"` (it round-trips, but external readers see no
+structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a warning, never as the
+element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
+from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). Element
+matching ignored case ("NH" read as nihonium); jgassens/ChemDraft#85 fixes that separately.
 
 ## Aromatic bonds counted on a Kekulé structure (2026-09-27, branch `claude/aromatic-bond-order`)
 
