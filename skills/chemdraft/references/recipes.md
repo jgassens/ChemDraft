@@ -259,18 +259,27 @@ makes.
 3. **Where the letter goes.** At the most open point inside its ring,
    clear of atoms, bonds and labels (such as a gem-dimethyl pointing into
    the ring), in bold italic serif at 20 px, shrinking only to fit.
-4. **Letter colour.** White on a dark fill, near-black on a light one,
-   chosen by the fill's relative luminance as drawn (white below 0.34).
+4. **Letter and label colour.** White on a dark fill, near-black on a
+   light one, chosen by the fill's relative luminance as drawn (white
+   below 0.34). An atom label that stays on a fill not its own (a
+   substituent reported `STILL ON A FILL`, such as paclitaxel's C15 Me
+   labels in ring B) gets the same choice for that fill, so it stays
+   legible. Only the text colour changes: no box, halo or label
+   background is added.
 5. **Fill colours.** Twelve saturated colours in letter order, so each
    ring gets its own; beyond twelve, a greedy colouring over ring
    adjacency keeps rings that share an atom apart.
 6. **Fusion H.** At every CH stereocentre shared by two lettered rings,
    the wedge or hash that starts there moves onto a new explicit H with
    the opposite style (a wedged ring bond becomes a hashed H), and the
-   ring bond goes plain. The stereochemistry is unchanged, and the check
-   below proves it. The H points outward in the clearest direction, never
-   across a bond or onto a fill; an H that would touch a bond or label is
-   not drawn and its atom keeps the ring wedge (warned).
+   ring bond goes plain. The H points outward in the clearest direction,
+   never across a bond or onto a fill; an H that would touch a bond or
+   label is not drawn and its atom keeps the ring wedge (warned). Moving a
+   wedge is a change like any other: `render-document` must read the
+   drawing with its new H as the same molecule (the same standard
+   InChIKey, since explicit H changes the SMILES string) with the same
+   stereocentre counts. An H that fails is taken back out, its ring bond
+   keeps the wedge, and it is reported (`UNDONE: fusion H`).
 7. **Me.** Methyls on lettered rings are drawn CH3 in `<name>-carbon.json`,
    the true structure and the editable file. Its CH3 labels are wider than
    Me and can crowd neighbours. `<name>-nicolaou.json` relabels them Me
@@ -295,13 +304,16 @@ makes.
 10. **Labels that touch.** A substituent whose label touches another
    label, a bond or a fusion H (where the H will go is worked out first)
    is turned by up to 60 degrees, never onto a fill.
-11. **Every move is checked.** A new layout, and every move in rules 9
-   and 10, must read in `render-document` as the same canonical SMILES
-   with the same specified and unspecified stereocentre counts as the
-   build's own drawing. A move that fails is undone and reported
-   (`UNDONE`), and the next placement is tried; a substituent that cannot
-   be cleared is reported by name (`STILL ON A FILL`). The script never
-   moves a ring atom and never changes a bond.
+11. **Every move is checked.** A new layout, every move in rules 9 and
+   10, and every turn the options' `rotate` asks for must keep each
+   stereocentre's drawn handedness (checked at once, in the script) and
+   read in `render-document` as the same canonical SMILES with the same
+   specified and unspecified stereocentre counts as the build's own
+   drawing (checked for all kept moves together, then one by one if that
+   fails). A move or turn that fails is undone and reported (`UNDONE`),
+   and for rules 9 and 10 the next placement is tried; a substituent that
+   cannot be cleared is reported by name (`STILL ON A FILL`). The script
+   never moves a ring atom and never changes a bond.
 12. **Collisions.** `check` measures every atom label and ring letter in
    the rendered SVGs and lists the pairs that nearly touch, naming each
    atom and the atom it hangs from.
@@ -385,8 +397,10 @@ furan): look for it, and see [art](art.md), Known limits.
   `"rotate": [{"atom": "a52", "about": "a10", "degrees": 25}]` to the
   options (positive turns clockwise on the page; take the ids from
   `check`, which prints each label's atom and the atom it hangs from).
-  The rotation runs before the fill and label steps, which still check
-  it. This is rarely needed: the label step clears most pairs itself.
+  The turn runs before the fill and label steps and is checked like
+  every move: if it would change a stereocentre, `style` undoes it and
+  prints `UNDONE` with the reason, so pick another angle. This is rarely
+  needed: the label step clears most pairs itself.
 - **A crossing or overlap remains.** `style` names it. Some ring systems
   cannot be drawn flat without one (an atom shared by four rings, a
   bridge across a ring); the search keeps the cleanest of the layouts it

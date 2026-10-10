@@ -33,10 +33,12 @@
 //                      bond;
 //                   3. turns substituents up to 60 degrees where a label touches another label,
 //                      a bond or a fusion H.
-//                 Every new layout and every move must read, by render-document in the
-//                 --checkout, as the same canonical SMILES with the same specified and
-//                 unspecified stereocentre counts as the build's own drawing; a move that does
-//                 not is undone and reported. What cannot be cleared is reported by name.
+//                 Every new layout, every move (rotate turns included) and every fusion H must
+//                 read, by render-document in the --checkout, as the same molecule (canonical
+//                 SMILES; with explicit H, the standard InChIKey) with the same specified and
+//                 unspecified stereocentre counts as the build's own drawing; a change that does
+//                 not is undone and reported. What cannot be cleared is reported by name, and a
+//                 label left on a fill is drawn white or near-black by that fill's luminance.
 //   relayout      rewrites <name>-job.json with the canonical SMILES in <name>-build.jsonl:
 //                 the same molecule in another atom order, which `document` lays out anew.
 //   identity-jobs reads <name>-render.jsonl (every `render-document` stdout line);
@@ -57,7 +59,8 @@
 //   declutter   true (default); false skips step 3
 //   rotate      [{"atom": "a54", "about": "a11", "degrees": 30}]: turn the substituent
 //               that contains atom about its attachment atom (positive = clockwise on
-//               the page) before steps 2 and 3; rarely needed now
+//               the page) before steps 2 and 3; checked like every move (locally, then by
+//               render-document) and undone and reported if the stereochemistry changes
 //   palette     ["#e53935", ...] fill colours, assigned in letter order
 //   fillOpacity 0.9;  letterSizePx 20;  letterFont "Times New Roman, Times, serif"
 //   fusionH     true;  methyls "ring" (default: Me on methyls bonded to lettered rings) or "none"
@@ -111,8 +114,13 @@ export function readText(file) {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString("utf16le");
   return bytes.toString("utf8").replace(/^\uFEFF/, "");
 }
-const readJson = (file) => JSON.parse(readText(file));
-const readLines = (file) => readText(file).split(/\r?\n/).filter((line) => line.trim().startsWith("{")).map((line) => JSON.parse(line.trim()));
+/** Parse JSON, naming the file (and line) when it is not valid. */
+function parseIn(text, where) {
+  try { return JSON.parse(text); } catch (error) { return fail(`${where} is not valid JSON: ${error.message}`); }
+}
+const readJson = (file) => parseIn(readText(file), file);
+const readLines = (file) => readText(file).split(/\r?\n/).map((line, i) => [line.trim(), i])
+  .filter(([line]) => line.startsWith("{")).map(([line, i]) => parseIn(line, `${file} line ${i + 1}`));
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 1));
 
 // ---------- geometry ----------
@@ -413,7 +421,11 @@ function placeLetters(m, letters, opts, meIds, carbonLabels) {
 }
 
 // ---------- edits ----------
-function rotateGroups(m, rotations = []) {
+/** The user's `rotate` turns, one at a time. Each goes through `check` like an automatic move:
+ * one it rejects is undone and reported; a kept one carries undo/redo snapshots so the
+ * render-document check of the chosen layout covers it too. */
+function rotateGroups(m, rotations = [], check = () => null) {
+  const moved = [], reverted = [];
   for (const { atom, about, degrees } of rotations) {
     if (!m.atoms.has(atom) || !m.atoms.has(about) || !m.neighbours(about).includes(atom)) fail(`rotate: ${about} and ${atom} are not bonded atoms`);
     const group = new Set([atom]), queue = [atom];
@@ -422,12 +434,15 @@ function rotateGroups(m, rotations = []) {
     }
     // A ring through `about` would pull it in via another path.
     if ([...group].some((id) => id !== atom && m.neighbours(id).includes(about))) fail(`rotate: ${atom} is in a ring with ${about}; only a substituent can be turned`);
-    const c = m.atoms.get(about), t = degrees * Math.PI / 180, cos = Math.cos(t), sin = Math.sin(t);
-    for (const id of group) {
-      const a = m.atoms.get(id), dx = a.x - c.x, dy = a.y - c.y;
-      a.x = c.x + dx * cos - dy * sin; a.y = c.y + dx * sin + dy * cos;
-    }
+    const g = { attach: about, root: atom, atoms: group, bonds: m.mol.bonds.filter((b) => group.has(b.fromAtomId) || group.has(b.toAtomId)) };
+    const s = snapshot(m, g);
+    place(m, g, s, "turn", degrees);
+    const move = { group: `${atom} on ${about}${group.size > 1 ? ` (${group.size} atoms)` : ""}`, attach: about, root: atom, move: `turned ${degrees} degrees (rotate option)`, was: [], user: true };
+    const why = check(m);
+    if (why) { restore(m, s); reverted.push({ ...move, reason: why }); continue; }
+    moved.push({ ...move, left: [], undo: s, redo: snapshot(m, g) });
   }
+  return { moved, reverted };
 }
 
 function addFusionH(m, letters, carbonLabels, warnings, plan = false) {
@@ -519,6 +534,59 @@ function addFusionH(m, letters, carbonLabels, warnings, plan = false) {
     added.push({ atom: a.id, smilesAtom: m.input.get(a.id), h: h.id, style, movedFrom: `${moved} ${stereo.id}` });
   }
   return added;
+}
+
+/** Take a fusion H back out: its atom and bond go, and the ring bond gets its wedge or hash back. */
+function takeFusionH(m, h) {
+  const atom = m.atoms.get(h.h), bond = m.mol.bonds.find((b) => b.id === `b_h_${h.atom}`);
+  const [style, stereoId] = h.movedFrom.split(" "), stereo = m.mol.bonds.find((b) => b.id === stereoId);
+  m.mol.atoms.splice(m.mol.atoms.indexOf(atom), 1); m.mol.bonds.splice(m.mol.bonds.indexOf(bond), 1);
+  m.atoms.delete(atom.id); m.bondsOf.delete(atom.id);
+  m.bondsOf.set(h.atom, m.bondsOf.get(h.atom).filter((b) => b !== bond));
+  stereo.display = { ...(stereo.display ?? {}), bondStyle: style };
+  return { atom, bond, stereo };
+}
+function putFusionH(m, h, { atom, bond, stereo }) {
+  m.mol.atoms.push(atom); m.mol.bonds.push(bond);
+  m.atoms.set(atom.id, atom); m.bondsOf.set(atom.id, [bond]); m.bondsOf.get(h.atom).push(bond);
+  delete stereo.display.bondStyle;
+}
+/** Fusion H moves a wedge or hash, so render-document checks them like any move: all at once,
+ * then one by one if that fails. One it rejects is taken out (its ring bond keeps the stereo
+ * bond) and reported. Returns the H that stay. */
+function verifyFusionH(m, added, verify, warnings, undone) {
+  if (!added.length || !verify()) return added;
+  const parts = added.map((h) => takeFusionH(m, h));
+  const kept = [];
+  added.forEach((h, i) => {
+    putFusionH(m, h, parts[i]);
+    const why = verify();
+    if (!why) { kept.push(h); return; }
+    takeFusionH(m, h);
+    undone.push({ ...h, reason: `render-document ${why}` });
+    warnings.push(`UNDONE: fusion H at ${h.atom}: render-document ${why}; its ring ${h.movedFrom.split(" ")[0]} stays.`);
+  });
+  return kept;
+}
+
+/** Labels that stay on a filled ring that is not their own (a substituent the fill rule could not
+ * clear) are drawn white or near-black by that fill's luminance, the rule the ring letters use. No
+ * box, halo or label background is added. Returns {atom, label, on, colour} per label coloured. */
+function colourLabelsOnFills(cm, letters, colours, opacity, meIds, carbonLabels) {
+  const size = cm.mol.style?.atomLabelFontSizePx ?? 15;
+  const fills = fillsOf(cm, letters), out = [];
+  for (const a of cm.mol.atoms) {
+    const box = labelBox(cm, a, meIds, carbonLabels, size);
+    if (!box) continue;
+    const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+    const on = fills.filter((f) => !f.atoms.has(a.id) && (depth(a, f.poly) > TOL || boxInFill(box, f.poly)))
+      .sort((f, g) => depth(centre, g.poly) - depth(centre, f.poly))[0];
+    if (!on) continue;
+    const colour = letterColour(colours.get(on.r), opacity);
+    cm.mol.style.atomLabelColors = { ...(cm.mol.style.atomLabelColors ?? {}), [a.id]: colour };
+    out.push({ atom: a.id, label: meIds.has(a.id) ? "Me" : carbonLabels.has(a.id) ? "CH3" : a.element, on: on.L, colour });
+  }
+  return out;
 }
 
 function ringMethyls(m, letters) {
@@ -1009,11 +1077,13 @@ function arrange(mol, buildMol, opts, tools) {
       const bad = local(m);
       if (bad) { rejected.push(`${name}: ${bad}`); return; }
     }
-    rotateGroups(m, opts.rotate);
+    // The user's turns first, each checked like any other move.
+    const turned = rotateGroups(m, opts.rotate, local);
     let rings = describeRings(m, buildMol.rings);
     const { letters } = assignLetters(rings, opts);
     const carbonLabels = new Set((opts.methyls === "none" ? [] : ringMethyls(m, letters)).map((a) => a.id));
     const cleared = clearFills(m, rings, letters, carbonLabels, local);
+    cleared.moved.unshift(...turned.moved); cleared.reverted.unshift(...turned.reverted);
     // Then labels that touch, counting the fusion H style() will add.
     if (opts.declutter !== false) {
       const planH = () => opts.fusionH ? addFusionH(model(structuredClone(cmol), buildMol), letters, carbonLabels, [], true) : [];
@@ -1042,7 +1112,8 @@ function arrange(mol, buildMol, opts, tools) {
     chosen = c; break;
   }
   chosen ??= candidates[0];
-  // Every kept move is checked by render-document too: all at once, then one by one if that fails.
+  // Every kept move, the user's rotate turns included, is checked by render-document too: all at
+  // once, then one by one if that fails.
   const { m, cleared } = chosen;
   if (cleared.moved.length && verify(chosen.cmol)) {
     const moves = cleared.moved;
@@ -1050,12 +1121,11 @@ function arrange(mol, buildMol, opts, tools) {
     cleared.moved = [];
     const undone = new Set();
     for (const mv of moves) {
-      // A later move of the same substituent starts where the undone one ended: undo it too.
-      const key = `${mv.attach} ${mv.root}`;
-      if (undone.has(key)) { cleared.reverted.push({ ...mv, reason: "an earlier move of this substituent was undone" }); continue; }
+      // A later move of an atom an undone move had moved starts where that one ended: undo it too.
+      if ([...mv.undo.atoms.keys()].some((id) => undone.has(id))) { cleared.reverted.push({ ...mv, reason: "an earlier move of this substituent was undone" }); continue; }
       restore(m, mv.redo);
       const why = verify(chosen.cmol);
-      if (why) { restore(m, mv.undo); undone.add(key); cleared.reverted.push({ ...mv, reason: `render-document ${why}` }); }
+      if (why) { restore(m, mv.undo); for (const id of mv.undo.atoms.keys()) undone.add(id); cleared.reverted.push({ ...mv, reason: `render-document ${why}` }); }
       else cleared.moved.push(mv);
     }
     const rings = describeRings(m, buildMol.rings);
@@ -1087,7 +1157,9 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   const warnings = [];
   const methyls = opts.methyls === "none" ? [] : ringMethyls(m, letters);
   const carbonLabels = new Set(methyls.map((a) => a.id));
-  const hydrogens = opts.fusionH ? addFusionH(m, letters, carbonLabels, warnings) : [];
+  const hydrogensUndone = [];
+  const hydrogens = verifyFusionH(m, opts.fusionH ? addFusionH(m, letters, carbonLabels, warnings) : [],
+    () => tools.verify ? tools.verify(mol) : null, warnings, hydrogensUndone);
   mol.style.atomLabelBackgroundColor = "transparent";
   mol.style.ringStyles = { ...(mol.style.ringStyles ?? {}) };
   for (const [, r] of letters) mol.style.ringStyles[r.ringKey] = { fillColor: colours.get(r), fillOpacity: opts.fillOpacity };
@@ -1117,8 +1189,9 @@ export function style(doc, buildMol, options = {}, tools = {}) {
         x: p.x - w / 2, y: p.y - 0.64 * p.size, width: w, height: 1.25 * p.size,
         style: { fontSizePx: p.size, fontWeight: 700, fontStyle: "italic", textAlign: "center", fontFamily: opts.letterFont, color: letterColour(fill, opts.fillOpacity) } });
     }
+    const labels = colourLabelsOnFills(model(cmol, buildMol), letters, colours, opts.fillOpacity, meIds, carbon);
     for (const a of cmol.atoms) if (meIds.has(a.id)) a.element = "Me";
-    return { copy, placed };
+    return { copy, placed, labels };
   };
   const carbon = variant(new Set(), carbonLabels);
   const picture = variant(new Set(methyls.map((a) => a.id)), new Set());
@@ -1132,6 +1205,8 @@ export function style(doc, buildMol, options = {}, tools = {}) {
       letterAt: picture.placed.find((p) => p.letter === L) && (({ x, y, size, clearancePx }) => ({ x, y, size, clearancePx }))(picture.placed.find((p) => p.letter === L)) })),
     unlettered: rings.filter((r) => !letters.some(([, s]) => s === r)).map(label),
     fusionHydrogens: hydrogens,
+    fusionHydrogensUndone: hydrogensUndone,
+    labelsOnFills: { carbon: carbon.labels, picture: picture.labels },
     methyls: methyls.map((a) => ({ atom: a.id, smilesAtom: m.input.get(a.id) })),
     layout,
     notes, warnings: [...new Set(warnings)]
@@ -1221,31 +1296,50 @@ export function chemdraftCli(checkout) {
   let n = 0;
   const run = (args) => {
     const r = spawnSync(process.execPath, [tsx, entry, ...args], { cwd: checkout, encoding: "utf8", maxBuffer: 1 << 28, windowsHide: true });
-    if (r.error) fail(`Could not run the ChemDraft CLI: ${r.error.message}`);
-    return (r.stdout ?? "").split(/\r?\n/).filter((l) => l.trim().startsWith("{")).map((l) => JSON.parse(l.trim()));
+    if (r.error) fail(`Could not run the ChemDraft CLI (${args[0]}): ${r.error.message}`);
+    const lines = (r.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("{"))
+      .map((l, i) => parseIn(l, `ChemDraft CLI ${args[0]} output line ${i + 1}`));
+    // Exit status and the tail of stderr, for any error message about this run.
+    const status = `exit status ${r.status ?? r.signal}${r.stderr?.trim() ? `; stderr: ${r.stderr.trim().slice(-1500)}` : ""}`;
+    return { lines, status };
   };
   /** Canonical SMILES and stereo counts render-document reads from a document. */
   const identity = (doc) => {
     const file = path.join(tmp, `check-${++n}.json`);
     writeJson(file, doc);
-    const line = run(["render-document", "--document", file, "--out", path.join(tmp, `check-${n}.svg`)])[0];
-    if (!line?.ok) fail(`render-document could not read a candidate drawing: ${JSON.stringify(line?.error ?? line ?? "no output")}`);
+    const { lines, status } = run(["render-document", "--document", file, "--out", path.join(tmp, `check-${n}.svg`)]);
+    const line = lines[0];
+    if (!line?.ok) fail(`render-document could not read a candidate drawing (${file}): ${JSON.stringify(line?.error ?? line ?? "no output")} (${status})`);
     return line.molecules.map((mol) => ({ canonicalSmiles: mol.canonicalSmiles, stereoCenters: mol.stereoCenters, unspecifiedStereoCenters: mol.unspecifiedStereoCenters }));
+  };
+  /** Standard InChIKey of a SMILES, from `analyze`. */
+  const keys = new Map();
+  const inchiKey = (smiles) => {
+    if (keys.has(smiles)) return keys.get(smiles);
+    const job = path.join(tmp, `key-${++n}.json`);
+    writeJson(job, [{ name: `key-${n}`, smiles }]);
+    const { lines, status } = run(["analyze", "--batch", job, "--methods", "rdkit.inchikey"]);
+    const key = lines[0]?.summary?.inchiKey?.value;
+    if (!key) fail(`analyze gave no InChIKey for ${smiles}: ${JSON.stringify(lines[0]?.error ?? lines[0] ?? "no output")} (${status})`);
+    keys.set(smiles, key);
+    return key;
   };
   /** A fresh depiction of a SMILES: the build line and its document. */
   const build = (smiles) => {
     const job = path.join(tmp, `build-${++n}.json`);
     writeJson(job, [{ name: `relayout-${n}`, smiles }]);
-    const line = run(["document", "--batch", job, "--out-dir", tmp])[0];
+    const line = run(["document", "--batch", job, "--out-dir", tmp]).lines[0];
     if (!line?.ok) return null;
     return { line, doc: readJson(line.document) };
   };
-  return { identity, build, cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
+  return { identity, inchiKey, build, cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }) };
 }
 
 /** verify(mol) for style(): null when render-document reads the drawing exactly as it reads the
- * build's own drawing (canonical SMILES, specified and unspecified stereocentres), else why. */
-export function identityVerifier(identity, doc, molId) {
+ * build's own drawing (canonical SMILES, specified and unspecified stereocentres), else why.
+ * Explicit H atoms (the fusion H) change the SMILES string but not the molecule: when the drawing
+ * reads with [H] atoms, the standard InChIKeys (from `inchiKey`, if given) are compared instead. */
+export function identityVerifier(identity, doc, molId, inchiKey) {
   const withMol = (mol) => {
     const copy = structuredClone(doc);
     for (const page of copy.pages) page.objects = page.objects.map((o) => o.id === molId ? mol : o);
@@ -1257,7 +1351,10 @@ export function identityVerifier(identity, doc, molId) {
     const got = identity(withMol(mol));
     const a = reference[0], b = got[0];
     if (!b) return "found no molecule";
-    if (b.canonicalSmiles !== a.canonicalSmiles) return `reads ${b.canonicalSmiles}, not ${a.canonicalSmiles}`;
+    if (b.canonicalSmiles !== a.canonicalSmiles) {
+      const sameKey = inchiKey && b.canonicalSmiles.includes("[H]") && inchiKey(b.canonicalSmiles) === inchiKey(a.canonicalSmiles);
+      if (!sameKey) return `reads ${b.canonicalSmiles}, not ${a.canonicalSmiles}`;
+    }
     if (b.stereoCenters !== a.stereoCenters || b.unspecifiedStereoCenters !== a.unspecifiedStereoCenters) {
       return `counts ${b.stereoCenters} specified / ${b.unspecifiedStereoCenters} unspecified stereocentres, not ${a.stereoCenters} / ${a.unspecifiedStereoCenters}`;
     }
@@ -1297,7 +1394,7 @@ function runStyle(dir, name, optionsFile, checkout) {
   const doc = readJson(docFile), buildMol = build.molecules[0];
   const cli = chemdraftCli(checkout);
   try {
-    const { reference, verify } = identityVerifier(cli.identity, doc, buildMol.objectId);
+    const { reference, verify } = identityVerifier(cli.identity, doc, buildMol.objectId, cli.inchiKey);
     const sources = [];
     const sdf = path.join(dir, `${name}-pubchem.sdf`);
     if (fs.existsSync(sdf)) sources.push({ name: "PubChem 2D", yUp: true, ...parseMolfile(readText(sdf)) });
@@ -1326,6 +1423,9 @@ function runStyle(dir, name, optionsFile, checkout) {
     for (const l of report.letters) console.log(`${l.letter}  ${l.fill} (${l.letterColour === WHITE ? "white" : "dark"} letter, ${l.letterAt.size}px)  ${l.ring}`);
     if (report.unlettered.length) console.log(`Not lettered or filled: ${report.unlettered.length} ring(s) outside the core`);
     console.log(`Fusion H added: ${report.fusionHydrogens.length}; ring methyls (Me in the picture, CH3 in -carbon): ${report.methyls.length}`);
+    for (const [copy, list] of Object.entries(report.labelsOnFills)) for (const l of list) {
+      console.log(`Label ${l.label} ${l.atom} stays on ring ${l.on}'s fill (${copy}): drawn ${l.colour === WHITE ? "white" : "near-black"} for legibility`);
+    }
     for (const n of [...report.notes, ...report.warnings]) console.log(n);
     console.log(`Wrote ${name}-carbon.json, ${name}-nicolaou.json and ${name}-style.json`);
   } finally {

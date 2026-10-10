@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,7 +12,8 @@ const script = join(skillRoot, "scripts", "ring-style.mjs");
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "ring-style");
 const read = (path: string) => readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
 
-/** Real CLI output: `document` for cholesterol (PubChem CID 5997) and a phenyl-decalin. */
+/** Real CLI output: `document` for cholesterol (PubChem CID 5997), paclitaxel (CID 36314), morphine
+ * and a phenyl-decalin. */
 type Json = any; // the fixtures are untyped document JSON
 interface Identity { canonicalSmiles: string; stereoCenters: number; unspecifiedStereoCenters: number }
 interface RingStyle {
@@ -21,8 +22,9 @@ interface RingStyle {
   model(mol: Json, buildMol?: Json): Json;
   stereoParities(m: Json): Map<string, number>;
   parseMolfile(text: string): Json;
-  chemdraftCli(checkout: string): { identity(doc: Json): Identity[]; cleanup(): void };
-  identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string): { reference: Identity; verify(mol: Json): string | null };
+  chemdraftCli(checkout: string): { identity(doc: Json): Identity[]; inchiKey(smiles: string): string; cleanup(): void };
+  identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
+    { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string): { kind: string; a: { text: string }; b: { text: string }; gapPx: number }[];
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -54,10 +56,18 @@ function ringPolygon(mol: Json, ring: Json): { x: number; y: number }[] {
   }
   return order.map((id: string) => mol.atoms.find((a: Json) => a.id === id));
 }
-// The real CLI checks identity where the checkout is installed (CI, a developer checkout); an
-// agent worktree without per-package node_modules skips those tests.
-const cliReady = existsSync(join(root, "node_modules", "tsx", "dist", "cli.mjs")) &&
-  existsSync(join(root, "packages", "chemdraft-cli", "node_modules"));
+// The real CLI checks identity where a checkout is installed: this one (CI, a developer checkout),
+// or the installed checkout CHEMDRAFT_CHECKOUT names (an agent worktree without per-package
+// node_modules). Without either, the real-CLI tests skip, and say so.
+const installed = (dir: string) => existsSync(join(dir, "node_modules", "tsx", "dist", "cli.mjs")) &&
+  existsSync(join(dir, "packages", "chemdraft-cli", "node_modules"));
+const cliCheckout = [root, process.env.CHEMDRAFT_CHECKOUT].find((dir): dir is string => !!dir && installed(dir));
+const cliReady = !!cliCheckout;
+if (!cliReady) {
+  console.warn("ringStyle.test.ts: SKIPPING the real-CLI tests (render-document identity, rotate and fusion-H " +
+    "regressions, the style command): this checkout has no packages/chemdraft-cli/node_modules. Install it, or set " +
+    "CHEMDRAFT_CHECKOUT to an installed ChemDraft checkout.");
+}
 
 beforeAll(async () => {
   // A computed specifier: the script is plain JavaScript and has no type declarations.
@@ -159,6 +169,39 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(walked.letters[0].ring).toMatch(/^5-ring/);
   });
 
+  it("letters paclitaxel by the taxane convention and keeps labels left on a fill legible", () => {
+    const { build, doc } = fixture("paclitaxel");
+    const { carbon, picture, report } = ringStyle.style(structuredClone(doc), build, { convention: "taxane" });
+    const ring = (L: string) => report.letters.find((l: Json) => l.letter === L);
+    expect(report.letters.map((l: Json) => l.letter)).toEqual(["A", "B", "C", "D"]);
+    expect(ring("A").ring).toMatch(/^6-ring \(carbocycle\), 1 ring double bond/);
+    expect(ring("B").ring).toMatch(/^8-ring \(carbocycle\)/);
+    expect(ring("C").ring).toMatch(/^6-ring \(carbocycle\), 0 ring double bond/);
+    expect(ring("D").ring).toMatch(/^4-ring \(O1\)/);
+    // The three phenyls are pendant, not core: plain.
+    expect(report.unlettered).toHaveLength(3);
+    expect(report.unlettered.every((r: string) => /aromatic/.test(r))).toBe(true);
+    // C15's gem-dimethyl cannot leave ring B's fill; its labels take B's letter colour, and no
+    // box, halo or label background is added for them.
+    expect(report.layout.stuck).toHaveLength(2);
+    const fillB = ring("B").fill;
+    for (const [copy, list] of [[carbon, report.labelsOnFills.carbon], [picture, report.labelsOnFills.picture]] as const) {
+      const stuck = report.layout.stuck.map((x: Json) => x.group.split(" ")[0]);
+      expect(list.map((l: Json) => l.atom).sort()).toEqual(stuck.sort());
+      const style = molecule(copy).style;
+      for (const l of list) {
+        expect(l.on).toBe("B");
+        expect(l.colour).toBe(ringStyle.letterColour(fillB, 0.9));
+        expect(style.atomLabelColors[l.atom]).toBe(l.colour);
+      }
+      expect(style.atomLabelBackgroundColor).toBe("transparent");
+      expect(style.atomLabelBackgroundColors).toBeUndefined();
+      // Labels off the fills keep the default colour.
+      expect(Object.keys(style.atomLabelColors)).toHaveLength(list.length);
+    }
+    expect(report.labelsOnFills.picture.map((l: Json) => l.label)).toEqual(["Me", "Me"]);
+  });
+
   it("leaves pendant rings plain unless asked, and turns a substituent with rotate", () => {
     const { build, doc } = fixture("phenyldecalin");
     const core = ringStyle.style(structuredClone(doc), build).report;
@@ -173,7 +216,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     const anchor = base.bonds.find((b: Json) => b.fromAtomId === methyl || b.toAtomId === methyl);
     const about = anchor.fromAtomId === methyl ? anchor.toAtomId : anchor.fromAtomId;
     const turned = ringStyle.style(structuredClone(doc), build, { rotate: [{ atom: methyl, about, degrees: 20 }], declutter: false });
-    expect(turned.report.layout.moved).toEqual([]);
+    expect(turned.report.layout.moved.map((m: Json) => m.move)).toEqual(["turned 20 degrees (rotate option)"]);
     const at = (copy: Json, id: string) => molecule(copy).atoms.find((a: Json) => a.id === id);
     const pivot = at(doc, about), from = at(doc, methyl), to = at(turned.carbon, methyl);
     expect(Math.hypot(to.x - pivot.x, to.y - pivot.y)).toBeCloseTo(Math.hypot(from.x - pivot.x, from.y - pivot.y), 6);
@@ -262,6 +305,78 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       expect(report.layout.faults.onFills.join(" ")).toMatch(/a26 in B/);
     });
 
+    it("undoes a rotate that would invert a stereocentre and reports it, not silently accepted", () => {
+      // C19 inside ring A with C10's hash on the fused bond: turned 100 degrees it crosses the
+      // C1...C9 line and C10 reads inverted (render-document agrees; see the real-CLI test).
+      const { build } = fixture("cholesterol");
+      const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
+      const rotate = [{ atom: "a26", about: "a20", degrees: 100 }];
+      const { carbon, report } = ringStyle.style(structuredClone(doc), build, { ...steroid, rotate });
+      const turn = report.layout.reverted.find((r: Json) => r.move === "turned 100 degrees (rotate option)");
+      expect(turn).toMatchObject({ group: "a26 on a20", reason: expect.stringMatching(/a20 now reads as the other stereoisomer/) });
+      expect(report.layout.moved.filter((m: Json) => m.group === "a26 on a20")).toEqual([]);
+      expect(parities(carbon, build).get("a20")).toBe(parities(doc, build).get("a20"));
+    });
+
+    it("undoes a rotate render-document rejects even when the drawing looks right locally", () => {
+      const { build, doc } = fixture("cholesterol");
+      const rotate = [{ atom: "a26", about: "a20", degrees: 20 }];
+      const was = molecule(doc).atoms.find((a: Json) => a.id === "a26");
+      // Stands in for render-document: any drawing with C19 moved reads as another molecule.
+      const verify = (mol: Json) => { const a = mol.atoms.find((x: Json) => x.id === "a26"); return a.x !== was.x || a.y !== was.y ? "reads C, not CC" : null; };
+      const { carbon, report } = ringStyle.style(structuredClone(doc), build, { ...steroid, rotate, fusionH: false }, { verify });
+      expect(report.layout.reverted.map((r: Json) => `${r.move}: ${r.reason}`)).toContain("turned 20 degrees (rotate option): render-document reads C, not CC");
+      expect(report.layout.moved.filter((m: Json) => m.group === "a26 on a20")).toEqual([]);
+      const after = molecule(carbon).atoms.find((a: Json) => a.id === "a26");
+      expect([after.x, after.y]).toEqual([was.x, was.y]);
+    });
+
+    it("re-verifies a partial set of moves one by one, keeping those render-document accepts", () => {
+      // Two moves: the user's turn of the C18 methyl and the fill rule's move of C19 out of ring B.
+      // render-document (stubbed) rejects the drawing only while C18 is turned.
+      const { build } = fixture("cholesterol");
+      const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-b.json")));
+      const c18 = ringStyle.style(structuredClone(doc), build, steroid).report.methyls.map((m: Json) => m.atom).find((id: string) => id !== "a26");
+      const anchor = molecule(doc).bonds.find((b: Json) => b.fromAtomId === c18 || b.toAtomId === c18);
+      const about = anchor.fromAtomId === c18 ? anchor.toAtomId : anchor.fromAtomId;
+      const was = molecule(doc).atoms.find((a: Json) => a.id === c18);
+      const seen: string[] = [];
+      const verify = (mol: Json) => {
+        const a = mol.atoms.find((x: Json) => x.id === c18), b = mol.atoms.find((x: Json) => x.id === "a26");
+        const orig = molecule(doc).atoms.find((x: Json) => x.id === "a26");
+        seen.push(`${a.x !== was.x ? "C18 turned" : "C18 kept"}, ${b.x !== orig.x ? "C19 moved" : "C19 kept"}`);
+        return a.x !== was.x || a.y !== was.y ? "counts 7 specified / 1 unspecified stereocentres, not 8 / 0" : null;
+      };
+      const { carbon, report } = ringStyle.style(structuredClone(doc), build,
+        { ...steroid, fusionH: false, declutter: false, rotate: [{ atom: c18, about, degrees: 15 }] }, { verify });
+      // All at once (rejected), then each move alone in order: the turn (rejected), then C19's move.
+      expect(seen).toEqual(["C18 turned, C19 moved", "C18 turned, C19 kept", "C18 kept, C19 moved"]);
+      expect(report.layout.reverted.map((r: Json) => r.move)).toEqual(["turned 15 degrees (rotate option)"]);
+      expect(report.layout.reverted[0].reason).toMatch(/^render-document counts 7 specified/);
+      expect(report.layout.moved.map((m: Json) => m.group)).toEqual(["a26 on a20"]);
+      const out = molecule(carbon);
+      expect(out.atoms.find((a: Json) => a.id === c18)).toMatchObject({ x: was.x, y: was.y });
+      expect(report.layout.faults.onFills).toEqual([]);
+    });
+
+    it("takes back a fusion H render-document rejects, giving its ring bond the wedge again", () => {
+      const { build, doc } = fixture("cholesterol");
+      const all = ringStyle.style(structuredClone(doc), build, steroid).report.fusionHydrogens;
+      expect(all).toHaveLength(3);
+      const bad = all[1];
+      const verify = (mol: Json) => mol.atoms.some((a: Json) => a.id === bad.h) ? "reads C, not CC" : null;
+      const { carbon, report } = ringStyle.style(structuredClone(doc), build, steroid, { verify });
+      expect(report.fusionHydrogens.map((h: Json) => h.atom)).toEqual(all.filter((h: Json) => h !== bad).map((h: Json) => h.atom));
+      expect(report.fusionHydrogensUndone.map((h: Json) => h.atom)).toEqual([bad.atom]);
+      expect(report.warnings.join(" ")).toMatch(new RegExp(`UNDONE: fusion H at ${bad.atom}: render-document reads C, not CC`));
+      const mol = molecule(carbon);
+      expect(mol.atoms.some((a: Json) => a.id === bad.h)).toBe(false);
+      expect(mol.bonds.some((b: Json) => b.toAtomId === bad.h || b.fromAtomId === bad.h)).toBe(false);
+      const [style, id] = bad.movedFrom.split(" ");
+      expect(mol.bonds.find((b: Json) => b.id === id).display.bondStyle).toBe(style);
+      expect(parities(carbon, build).get(bad.atom)).toBe(parities(doc, build).get(bad.atom));
+    });
+
     it("chooses the layout with fewest crossings and fills crossed, with wedges re-drawn to keep stereo", () => {
       // Morphine: ChemDraft's own layout draws the piperidine inside another ring; PubChem's 2D
       // record has one unavoidable crossing. Wedges are re-chosen for the new coordinates.
@@ -288,7 +403,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
 
     describe.skipIf(!cliReady)("with the real CLI", () => {
       let cli: ReturnType<RingStyle["chemdraftCli"]>;
-      beforeAll(() => { cli = ringStyle.chemdraftCli(root); });
+      beforeAll(() => { cli = ringStyle.chemdraftCli(cliCheckout!); });
       afterAll(() => cli?.cleanup());
 
       it("render-document reads the moved drawing as the same molecule", () => {
@@ -312,6 +427,35 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
         const { report } = ringStyle.style(structuredClone(doc), build, steroid, { verify });
         expect(report.layout.stuck.map((x: Json) => x.group)).toEqual(["a26 on a20"]);
       }, 120_000);
+
+      it("a rotate that inverts C10 is undone, and render-document reads the result as cholesterol", () => {
+        const { build } = fixture("cholesterol");
+        const doc = JSON.parse(read(join(fixtures, "cholesterol-methyl-in-a.json")));
+        const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
+        // The turn alone, checked by render-document: another stereoisomer.
+        const turned = structuredClone(molecule(doc));
+        const a = turned.atoms.find((x: Json) => x.id === "a26"), c = turned.atoms.find((x: Json) => x.id === "a20");
+        const t = 100 * Math.PI / 180, dx = a.x - c.x, dy = a.y - c.y;
+        Object.assign(a, { x: c.x + dx * Math.cos(t) - dy * Math.sin(t), y: c.y + dx * Math.sin(t) + dy * Math.cos(t) });
+        expect(verify(turned)).toMatch(/^reads /);
+        const rotate = [{ atom: "a26", about: "a20", degrees: 100 }];
+        const { carbon, report } = ringStyle.style(structuredClone(doc), build, { ...steroid, rotate }, { verify });
+        expect(report.layout.reverted.map((r: Json) => r.move)).toContain("turned 100 degrees (rotate option)");
+        // Fusion H included: the delivered drawing is still the same molecule.
+        expect(report.fusionHydrogens).toHaveLength(3);
+        expect(verify(molecule(carbon))).toBeNull();
+      }, 180_000);
+
+      it("render-document reads the fusion H drawing as the same molecule (InChIKey for explicit H)", () => {
+        const { build, doc } = fixture("cholesterol");
+        const { verify } = ringStyle.identityVerifier(cli.identity, doc, build.objectId, cli.inchiKey);
+        const { carbon, report } = ringStyle.style(structuredClone(doc), build, steroid, { verify });
+        expect(report.fusionHydrogens).toHaveLength(3);
+        expect(report.fusionHydrogensUndone).toEqual([]);
+        expect(verify(molecule(carbon))).toBeNull();
+        // Without the InChIKey the explicit [H] atoms alone would read as a different SMILES string.
+        expect(ringStyle.identityVerifier(cli.identity, doc, build.objectId).verify(molecule(carbon))).toMatch(/^reads .*\[H\]/);
+      }, 180_000);
     });
   });
 
@@ -331,7 +475,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     });
 
     it.skipIf(!cliReady)("writes the carbon and picture documents from the build output", () => {
-      const result = run("style", dir, "phenyldecalin", "--checkout", root);
+      const result = run("style", dir, "phenyldecalin", "--checkout", cliCheckout!);
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/^Layout: /m);
@@ -359,6 +503,28 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       const result = spawnSync(process.execPath, [join(link, "scripts", "ring-style.mjs"), "relayout", dir, "phenyldecalin"], { encoding: "utf8" });
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Wrote phenyldecalin-job\.json/);
+    });
+
+    it("names the file and line of invalid JSON", () => {
+      writeFileSync(join(dir, "broken-build.jsonl"), '{"name":"broken","ok":true}\n{"name": broken}\n');
+      const result = run("relayout", dir, "broken");
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`${join(dir, "broken-build.jsonl")} line 2 is not valid JSON`);
+    });
+
+    it("gives the CLI's exit status and stderr when render-document fails", () => {
+      // A stand-in checkout whose CLI fails the way a broken install does.
+      const fake = join(dir, "fake-checkout");
+      mkdirSync(join(fake, "node_modules", "tsx", "dist"), { recursive: true });
+      mkdirSync(join(fake, "packages", "chemdraft-cli", "src"), { recursive: true });
+      writeFileSync(join(fake, "node_modules", "tsx", "dist", "cli.mjs"), 'process.stderr.write("Cannot find module zod\\n"); process.exit(3);\n');
+      writeFileSync(join(fake, "packages", "chemdraft-cli", "src", "cli.ts"), "");
+      const cli = ringStyle.chemdraftCli(fake);
+      try {
+        expect(() => cli.identity(fixture("phenyldecalin").doc)).toThrow(/render-document could not read a candidate drawing \(.*check-1\.json\): "no output" \(exit status 3; stderr: Cannot find module zod\)/);
+      } finally {
+        cli.cleanup();
+      }
     });
 
     it("rejects an unsafe name and a missing directory", () => {

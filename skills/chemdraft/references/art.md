@@ -364,15 +364,18 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   of three layouts (ChemDraft's, ChemDraft's from the canonical SMILES,
   PubChem's 2D record), turns every substituent off the filled rings
   (no substituent atom, bond or label inside a fill) and turns
-  substituents whose labels touch. Each change must read in the
-  checkout's `render-document` as the same molecule and stereo counts,
-  or it is undone; what cannot be cleared is named.
+  substituents whose labels touch. Each change (the layout, every move,
+  each turn the options' `rotate` asks for, each fusion H) must read in
+  the checkout's `render-document` as the same molecule and stereo
+  counts, or it is undone and reported `UNDONE`; what cannot be cleared
+  is named, and a label left on a fill gets white or near-black text by
+  that fill's luminance (no box or halo).
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
   SMILES, to try that layout by hand.
 - `identity-jobs` and `check` compare every rendered InChIKey and the
   stereocentre counts with PubChem's, and list labels that nearly touch;
   the options' `rotate` turns a substituent about its attachment atom
-  when one still does.
+  when one still does, checked like every other move.
 
 Verified on paclitaxel, cholesterol, morphine and brevetoxin B (recipe 11).
 
