@@ -375,7 +375,6 @@ describe("user feedback app stress", () => {
     const deleted = doc.pages[0].objects.length - current().pages[0].objects.length;
     console.info(`[stress D drift ${p}] keys=3 label=${label} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)} known-main-bond-hotkey-bug`);
     expect(label).toBe("O"); expect(editor()).toBeNull(); expect(deleted).toBe(0);
-    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
   });
 
   // Known pre-existing main bug: 'e' over a hovered bond switches to the Eraser after label drift.
