@@ -5973,7 +5973,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-double-bond-side="left"');
   });
 
-  it("renders terminal heteroatom double bonds with a centerline primary and short secondary", () => {
+  it("renders automatic terminal C=O double bonds centered with equal-length strokes", () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Carbonyl Render"), { x: 200, y: 220 });
     const molecule = document.pages[0].objects[0];
     if (molecule.type !== "molecule") {
@@ -6011,10 +6011,10 @@ describe("ChemDraft desktop shell", () => {
     expect(carbonylLineMarkups).toHaveLength(2);
     expect(primaryLineMarkup).not.toBe("");
     expect(secondaryLineMarkup).not.toBe("");
-    expect(svgLineLength(primaryLineMarkup)).toBeGreaterThan(svgLineLength(secondaryLineMarkup));
-    // Orientation-agnostic (the seed bond rises at 30° now): project the segment endpoints onto
-    // the bond axis — the centerline primary must extend past the short secondary at both ends —
-    // and the secondary must sit off-axis while the primary rides it.
+    expect(primaryLineMarkup).toContain('data-double-bond-side="center"');
+    expect(secondaryLineMarkup).toContain('data-double-bond-side="center"');
+    // Orientation-agnostic (the seed bond rises at 30° now): both strokes remain parallel to
+    // the bond axis, equally long, and lie on opposite sides at half their mutual gap.
     const carbonAtom = molecule.atoms.find((atom) => atom.id === "atom_001");
     const oxygenAtom = molecule.atoms.find((atom) => atom.id === "atom_002");
     if (!carbonAtom || !oxygenAtom) {
@@ -6026,15 +6026,19 @@ describe("ChemDraft desktop shell", () => {
       (svgLineNumberAttribute(line, `x${point}`) - carbonAtom.x) * axis.x +
       (svgLineNumberAttribute(line, `y${point}`) - carbonAtom.y) * axis.y;
     const across = (line: string, point: "1" | "2") =>
-      Math.abs(
-        (svgLineNumberAttribute(line, `x${point}`) - carbonAtom.x) * -axis.y +
-        (svgLineNumberAttribute(line, `y${point}`) - carbonAtom.y) * axis.x
-      );
+      (svgLineNumberAttribute(line, `x${point}`) - carbonAtom.x) * -axis.y +
+      (svgLineNumberAttribute(line, `y${point}`) - carbonAtom.y) * axis.x;
     const primarySpan = [along(primaryLineMarkup, "1"), along(primaryLineMarkup, "2")].sort((a, b) => a - b);
     const secondarySpan = [along(secondaryLineMarkup, "1"), along(secondaryLineMarkup, "2")].sort((a, b) => a - b);
-    expect(primarySpan[0]).toBeLessThan(secondarySpan[0]);
-    expect(primarySpan[1]).toBeGreaterThan(secondarySpan[1]);
-    expect(across(secondaryLineMarkup, "1")).toBeGreaterThan(across(primaryLineMarkup, "1"));
+    expect(svgLineLength(primaryLineMarkup)).toBeCloseTo(svgLineLength(secondaryLineMarkup), 6);
+    expect(primarySpan[0]).toBeCloseTo(secondarySpan[0], 6);
+    expect(primarySpan[1]).toBeCloseTo(secondarySpan[1], 6);
+    const primaryOffset = across(primaryLineMarkup, "1");
+    const secondaryOffset = across(secondaryLineMarkup, "1");
+    const doubleBondGap = Math.abs(primaryOffset - secondaryOffset);
+    expect(primaryOffset * secondaryOffset).toBeLessThan(0);
+    expect(Math.abs(primaryOffset)).toBeCloseTo(doubleBondGap / 2, 6);
+    expect(Math.abs(secondaryOffset)).toBeCloseTo(doubleBondGap / 2, 6);
   });
 
   it("renders document object order as explicit visual layers for molecule over-under crossings", () => {

@@ -15,7 +15,7 @@ import {
   stylePresetToObjectStyle
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
   clamp,
@@ -214,11 +214,12 @@ export function createSmilesMolecule(
     rGroups: [],
     ...geometry
   };
-  const bonds: MoleculeBond[] = baseBonds.map((bond) =>
-    bond.order === "double"
-      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
-      : bond
-  );
+  const bonds: MoleculeBond[] = baseBonds.map((bond) => {
+    if (bond.order !== "double") return bond;
+    const doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
+    return doubleBondSide === undefined ? bond
+      : { ...bond, display: { ...bond.display, doubleBondSide } };
+  });
 
   // Stored-structure spelling: molecule.structure is a standard export molfile (an abbreviated
   // label as the dummy "*"), which is what RDKit, Copy As and the loaders read. CIP perception
@@ -522,6 +523,10 @@ function ringInteriorSideForBond(molecule: MoleculeObject, bondId: string): Nati
 }
 
 export function defaultDoubleBondSide(molecule: MoleculeObject, bond: MoleculeBond): NativeDoubleBondSide {
+  // Leave these bonds automatic so the app, CLI and MCP all use the renderer's joined Center
+  // geometry. Explicit user display choices are preserved by callers, not defaulted here.
+  if (isDefaultCenteredDoubleBond(molecule, bond)) return undefined;
+
   // A ring double bond's inner line belongs inside the ring — the authoritative default,
   // matching what layout-engine renders. Only fall back to the substituent heuristic for
   // non-ring (chain) double bonds.

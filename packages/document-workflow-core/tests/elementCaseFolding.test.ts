@@ -51,7 +51,7 @@ describe("two-element labels on a chain end", () => {
     expect(nativeSingleBondGraphMetadata(atoms, bonds).formula).toBe("C2H3O");
   });
 
-  it("reads CN as carbon and nitrogen, not copernicium", () => {
+  it("reads CN as cyano (acetonitrile on a chain end), not copernicium", () => {
     const { atoms, bonds } = chainEnd("CN");
     expect(atoms[1]!.element).toBe("CN");
     expect(nativeSingleBondGraphMetadata(atoms, bonds).formula).toBe("C2H3N");
