@@ -33,6 +33,16 @@ describe("nativeAtomLabelReading", () => {
     expect(nativeAtomLabelReading("Cn")).toEqual({ kind: "element", element: "Cn" });
     // Case-sensitive like every group: lower case is text, with the intended spelling offered.
     expect(nativeAtomLabelReading("cn")).toEqual({ kind: "unrecognized", suggestion: "CN" });
+    // Cyano is read in a composite only last, after its head (SCN, CH2CN). Written first, its N
+    // faces the head, so CNO, CNS and CNCH2 stay bare formulas: no group, no valence claim.
+    for (const [label, counts] of [
+      ["CNO", { C: 1, N: 1, O: 1 }], ["CNS", { C: 1, N: 1, S: 1 }], ["CNCH2", { C: 2, N: 1, H: 2 }]
+    ] as const) {
+      const reading = nativeAtomLabelReading(label);
+      expect(reading.kind, label).toBe("formula");
+      expect(reading.kind === "formula" && Object.fromEntries(reading.counts), label).toEqual(counts);
+      expect(nativeAtomLabelFreeValence(label), label).toBeUndefined();
+    }
     // A lone CN is an open fragment until a −1 charge makes it cyanide.
     expect(nativeLabelGroupVerdict(groupOf("CN"), 0, 0)).toMatchObject({ valid: false, expectedBondCount: 1 });
     expect(nativeLabelGroupVerdict(groupOf("CN"), 0, -1)).toEqual({ valid: true });

@@ -249,6 +249,9 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
   },
   {
     // No "NC" alias: written that way on a bond's right it reads as isocyano (-N≡C), not cyano.
+    // The label's side is unknown to the reader, so "OCN" and "SCN" read as cyanato and
+    // thiocyanato wherever they sit; written for a bond on their right, a chemist means isocyanate
+    // and isothiocyanate (O=C=N–, S=C=N–). A known limitation.
     label: "CN", aliases: [], name: "cyano", smiles: "*C#N", formula: "CN", attachmentCount: 1,
     atoms: [
       { element: "C", hydrogens: 0, x: 0, y: 0 },

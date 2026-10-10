@@ -547,6 +547,13 @@ const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ..
   .sort((left, right) => right.length - left.length || left.localeCompare(right));
 
 /**
+ * Substituent spellings read only after their head, at the end of the label. Written before the
+ * head, "CN" puts its N, not its C, next to it: "CNO", "CNS" and "CNCH2" are not cyanato,
+ * thiocyanato and cyanomethyl, so they stay bare formulas rather than become the wrong isomer.
+ */
+const trailingOnlyCompositeSpellings: ReadonlySet<string> = new Set(["CN"]);
+
+/**
  * An element carrying abbreviations, read the way chemists write one: "NMe2", "NHBoc", "OTBS",
  * "CH2Ph", "SiMe3", and right-to-left for a bond on the label's right ("Me2N", "BocHN", "PhCH2").
  * Exactly one heavy element — the head, which every bond to the label reaches — any hydrogens,
@@ -556,7 +563,8 @@ const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ..
  * Not read as a group: a second heavy element ("SO2Ph"), a count on the head ("C2H4Ph"), and a
  * head written directly before "O" ("COEt", "SOMe") — there the O is conventionally an oxo group,
  * C(=O)Et, which this grammar does not model; reading it as C–OEt would invent a different
- * structure, so the label stays unrecognized instead.
+ * structure, so the label stays unrecognized instead. Nor is a trailing-only spelling ("CN") read
+ * anywhere but last, after its head (`trailingOnlyCompositeSpellings`).
  *
  * A substituent in a composite is bonded to the head by definition, so the bonded-only spellings
  * count as groups here: "NHAc" is an acetamide N, "OTs" a tosylate O, "NPr2" a dipropylamino N.
@@ -582,6 +590,7 @@ function nativeCompositeLabelGroup(label: string): NativeLabelGroup | undefined 
       const definition = (abbreviationForLabel(spelling) ?? abbreviationForBondedElementLabel(spelling))!;
       const count = readCount();
       if (count === undefined || definition.attachmentCount !== 1) return undefined;
+      if (trailingOnlyCompositeSpellings.has(spelling) && (head === undefined || index < label.length)) return undefined;
       for (let copy = 0; copy < count; copy += 1) substituents.push(definition);
       continue;
     }
