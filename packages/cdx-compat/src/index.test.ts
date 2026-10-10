@@ -258,13 +258,40 @@ describe("CDXML element numbers", () => {
     expect(unknownElementWarnings(opened)).toEqual([]);
   });
 
-  it("accepts a literal element symbol, and D and T, as written", () => {
-    const opened = openChemDraftPayload(chainCdxml(["Fe", "D", "T", "Og"]));
-    expect(elementsOf(opened)).toEqual(["Fe", "D", "T", "Og"]);
+  it("takes non-numeric text as written: element symbols, D, T, *, and labels", () => {
+    // Labels are what this package's exporter writes as text for an atom with no atomic number;
+    // they always imported as labels, and still do.
+    const written = ["Fe", "D", "T", "Og", "*", "Ph", "OMe", "Xx"];
+    const opened = openChemDraftPayload(chainCdxml(written));
+    expect(elementsOf(opened)).toEqual(written);
     expect(unknownElementWarnings(opened)).toEqual([]);
   });
 
-  it.each(["0", "119", "Xx", "26.5", "-6", ""])(
+  it("keeps Ph and OMe label atoms through export and a visible-layer re-import", () => {
+    const labelled: MoleculeObject = {
+      ...singleBondMolecule(),
+      atoms: [
+        { id: "atom_001", element: "Ph", x: 100, y: 100, formalCharge: 0 },
+        { id: "atom_002", element: "O", x: 148, y: 100, formalCharge: 0 },
+        { id: "atom_003", element: "OMe", x: 196, y: 100, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" },
+        { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }
+      ]
+    };
+    const exported = exportDocumentToCdxml(documentWithObjects([labelled]));
+    expect(exported.contents).toContain('Element="Ph"');
+    expect(exported.contents).toContain('Element="OMe"');
+    const reopened = openChemDraftPayload(canonicalVisibleCdxml(exported.contents));
+    const molecule = reopened.document?.pages[0].objects[0] as MoleculeObject;
+    expect(molecule.atoms.map((atom) => atom.element)).toEqual(["Ph", "O", "OMe"]);
+    // As before this change: the text comes back as the element, with no literal flag invented.
+    expect(molecule.atoms.some((atom) => atom.labelLiteral)).toBe(false);
+    expect(unknownElementWarnings(reopened)).toEqual([]);
+  });
+
+  it.each(["0", "119", "26.5", "-6", "", "0x1A", "1e1", "+6"])(
     "imports Element=\"%s\" as an unknown atom with its bonds, warns naming the node, never carbon",
     (value) => {
       const opened = openChemDraftPayload(chainCdxml(["8", value, "7"]));

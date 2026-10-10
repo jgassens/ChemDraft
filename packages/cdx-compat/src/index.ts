@@ -3421,29 +3421,28 @@ function atomicNumberForElement(element: string): number | undefined {
   return atomicNumberForElementSymbol(element);
 }
 
-/** Symbols an `Element` attribute may also hold as text: CTfile's D and T, which this exporter writes so. */
-const cdxmlLiteralIsotopeSymbols = new Set(["D", "T"]);
-
 /**
- * The element a CDXML node's `Element` attribute names, or undefined when it names none.
+ * The element or label a CDXML node's `Element` attribute names, or undefined when it names none.
  *
- * CDXML writes an atomic number, and an absent attribute is carbon (the format's default). A literal
- * symbol (a real element, or D or T) is accepted as written: this package's exporter wrote one for
- * every element it once had no number for. Anything else — 0, 119, 26.5, "Xx", an empty value —
- * names no element; the caller imports an unknown atom and warns, never carbon (AGENTS.md §7).
+ * CDXML writes an atomic number: plain digits only, so "1e1", "0x1A" and "+6" are not 10, 26 and
+ * 6. An absent attribute is carbon, the format's default. Text that is not a number is taken as
+ * written, as it always was: an element symbol, D, T, "*", or a label such as "Ph" or "OMe", which
+ * this package's exporter writes as text for any atom without an atomic number. What names nothing
+ * is a number outside 1–118, anything else number-like (26.5, −6, "+6", "1e1", "0x1A"), or an empty
+ * value: the caller imports an unknown atom and warns, never carbon (AGENTS.md §7).
  */
 function elementFromCdxmlAtom(element: string | undefined): string | undefined {
   if (element === undefined) {
     return "C";
   }
   const trimmed = element.trim();
-  const numeric = trimmed === "" ? Number.NaN : Number(trimmed);
-  if (Number.isInteger(numeric)) {
-    return elementSymbolForAtomicNumber(numeric);
+  if (/^\d+$/.test(trimmed)) {
+    return elementSymbolForAtomicNumber(Number(trimmed));
   }
-  return atomicNumberForElementSymbol(trimmed) !== undefined || cdxmlLiteralIsotopeSymbols.has(trimmed)
-    ? trimmed
-    : undefined;
+  if (trimmed === "" || /^[+-]?\.?\d/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 /** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our
