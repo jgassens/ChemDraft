@@ -661,7 +661,7 @@ function exportBond(
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);
   }
-  if (bond.display?.doubleBondSide) {
+  if (bond.display?.doubleBondSide && bond.display.doubleBondSide !== "automatic") {
     attributes.push(`DoublePosition="${cdxmlDoublePositionName(bond.display.doubleBondSide)}"`);
   }
   const crossingPartnerIds = [...(context.crossingPartnerKeysByRefKey.get(nativeRefKey) ?? [])]
@@ -2065,6 +2065,10 @@ function refreshImportedCyclicDoubleBondSides(
     }
 
     const currentSide = bond.display?.doubleBondSide;
+    // An explicit centered position is a display choice, not a ring-interior hint.
+    if (currentSide === "center") {
+      return bond;
+    }
     // Prefer the ring whose centroid already matches the current side; otherwise place the
     // secondary line in the smallest owning ring (the conventional choice for fused systems),
     // with a stable secondary key so the result is deterministic regardless of traversal order.
@@ -2194,6 +2198,9 @@ function cdxmlAtomLabelPoint(atomElement: XmlElementView): Point | undefined {
 
 function doubleBondSideFromCdxmlDoublePosition(value: string | undefined): DoubleBondSide | undefined {
   const normalized = value?.trim().toLowerCase();
+  if (normalized === "center") {
+    return "center";
+  }
   if (normalized === "right" || normalized === "1" || normalized === "257") {
     return "right";
   }
@@ -2327,7 +2334,10 @@ function sideForPointRelativeToBond(fromAtom: MoleculeAtom, toAtom: MoleculeAtom
   return score >= 0 ? "left" : "right";
 }
 
-function cdxmlDoublePositionName(side: DoubleBondSide): "Left" | "Right" {
+function cdxmlDoublePositionName(side: DoubleBondSide): "Left" | "Right" | "Center" {
+  if (side === "center") {
+    return "Center";
+  }
   return side === "left" ? "Left" : "Right";
 }
 

@@ -2,12 +2,21 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  applyNativeTemplatePlacementPlan,
   createPhase4Document,
-  insertNativeTemplateMolecule
+  insertNativeTemplateMolecule,
+  planNativeTemplatePlacement
 } from "./documentWorkflow";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
-import { nativeMoleculeRingSelectionFromPointerTarget } from "./MainWindow";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondLengthPx, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import {
+  nativeMoleculeRingSelectionFromPointerTarget,
+  nativeTemplatePreviewKey,
+  nativeTemplatePreviewTargetKey,
+  shouldReplanNativeTemplatePreview,
+  nativeTemplateStatusForApplication
+} from "./MainWindow";
+import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 
 /**
  * Coverage for the ring-press path the app actually runs.
@@ -98,5 +107,120 @@ describe("ring press (the shipped path)", () => {
     const outside = { x: molecule.x + molecule.width + 200, y: molecule.y + molecule.height + 200 };
 
     expect(nativeMoleculeRingSelectionFromPointerTarget(molecule, null, outside)).toBeUndefined();
+  });
+
+  it("places exactly one separate ring when a full-valence atom cannot accept the template", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Ring fallback"), { x: 320, y: 320 }, "cyclohexane");
+    const original = seed.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
+    if (!original) throw new Error("Expected original molecule.");
+    const atom = original.atoms[0];
+    if (!atom) throw new Error("Expected ring atom.");
+    // Four single bonds make this carbon unable to accept the two new spiro bonds.
+    const saturated: MoleculeObject = {
+      ...original,
+      atoms: [
+        ...original.atoms,
+        { id: "atom_extra_1", element: "C", x: atom.x + 30, y: atom.y, formalCharge: 0 },
+        { id: "atom_extra_2", element: "C", x: atom.x - 30, y: atom.y, formalCharge: 0 }
+      ],
+      bonds: [
+        ...original.bonds,
+        { id: "bond_extra_1", fromAtomId: atom.id, toAtomId: "atom_extra_1", order: "single" },
+        { id: "bond_extra_2", fromAtomId: atom.id, toAtomId: "atom_extra_2", order: "single" }
+      ]
+    };
+    const document = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: saturated }]);
+    const before = document.pages[0].objects.find((object): object is MoleculeObject => object.id === original.id);
+    if (!before) throw new Error("Expected saturated molecule.");
+
+    const plan = planNativeTemplatePlacement(document, {
+      point: { x: atom.x, y: atom.y },
+      target: { objectId: before.id, kind: "atom", atomId: atom.id, distanceToPointer: 0 }
+    }, "benzene");
+    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+    expect(nativeTemplateStatusForApplication("benzene", {
+      objectId: before.id,
+      kind: "atom",
+      atomId: atom.id,
+      distanceToPointer: 0
+    }, true, plan?.fallbackReason)).toBe("Placed benzene separately: that atom has no free valence");
+    const placed = applyNativeTemplatePlacementPlan(document, plan!);
+    const unchanged = placed.pages[0].objects.find((object): object is MoleculeObject => object.id === before.id);
+    const ring = placed.pages[0].objects.find((object): object is MoleculeObject => object.id === plan!.molecule.id);
+
+    expect(tryNativeSingleBondGraphSmiles(unchanged?.atoms ?? [], unchanged?.bonds ?? [])).toEqual(
+      tryNativeSingleBondGraphSmiles(before.atoms, before.bonds)
+    );
+    expect(unchanged?.atoms).toHaveLength(before.atoms.length);
+    expect(unchanged?.bonds).toHaveLength(before.bonds.length);
+    expect(placed.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
+    expect(placed.selection.objectIds).toEqual([plan!.molecule.id]);
+    expect(ring?.atoms.every((ringAtom) => before.atoms.every((existingAtom) =>
+      Math.hypot(ringAtom.x - existingAtom.x, ringAtom.y - existingAtom.y) >= nativeBondLengthPx
+    ))).toBe(true);
+  });
+
+  it("plans once while hovering the same bond across several moves", () => {
+    const document = insertNativeTemplateMolecule(createPhase4Document("Preview cache"), { x: 300, y: 300 }, "benzene");
+    const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const bond = molecule.bonds[0]!;
+    const target = {
+      objectId: molecule.id,
+      kind: "bond" as const,
+      bondId: bond.id,
+      fromAtomId: bond.fromAtomId,
+      toAtomId: bond.toAtomId,
+      distanceToPointer: 0
+    };
+    let cachedTargetKey: string | undefined;
+    let cachedPlan: ReturnType<typeof planNativeTemplatePlacement>;
+    let planCount = 0;
+
+    for (const point of [{ x: 300, y: 300 }, { x: 302, y: 301 }, { x: 305, y: 298 }]) {
+      const targetKey = nativeTemplatePreviewTargetKey("cyclohexane", target, point);
+      if (shouldReplanNativeTemplatePreview(cachedTargetKey, targetKey, cachedPlan)) {
+        cachedPlan = planNativeTemplatePlacement(document, { point, target }, "cyclohexane");
+        cachedTargetKey = targetKey;
+        planCount += 1;
+      }
+    }
+
+    expect(planCount).toBe(1);
+  });
+
+  it("commits a fallback ring at the last preview point", () => {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Fallback preview"), { x: 320, y: 320 }, "cyclohexane");
+    const original = seed.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const atom = original.atoms[0]!;
+    const saturated: MoleculeObject = {
+      ...original,
+      atoms: [
+        ...original.atoms,
+        { id: "atom_preview_extra_1", element: "C", x: atom.x + 30, y: atom.y, formalCharge: 0 },
+        { id: "atom_preview_extra_2", element: "C", x: atom.x - 30, y: atom.y, formalCharge: 0 }
+      ],
+      bonds: [
+        ...original.bonds,
+        { id: "bond_preview_extra_1", fromAtomId: atom.id, toAtomId: "atom_preview_extra_1", order: "single" },
+        { id: "bond_preview_extra_2", fromAtomId: atom.id, toAtomId: "atom_preview_extra_2", order: "single" }
+      ]
+    };
+    const document = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: saturated }]);
+    const target = { objectId: original.id, kind: "atom" as const, atomId: atom.id, distanceToPointer: 0 };
+    const firstPoint = { x: atom.x, y: atom.y };
+    // A sub-four-pixel move used to reuse the old target-only cache key, although the fallback
+    // search starts at the pointer and therefore produces a different ring.
+    const lastPreviewPoint = { x: atom.x + 2, y: atom.y + 1 };
+    const firstPlan = planNativeTemplatePlacement(document, { point: firstPoint, target }, "benzene")!;
+    const lastPreview = planNativeTemplatePlacement(document, { point: lastPreviewPoint, target }, "benzene")!;
+
+    expect(firstPlan.fallbackReason).toBeDefined();
+    expect(nativeTemplatePreviewKey("benzene", target, firstPoint, firstPlan))
+      .not.toBe(nativeTemplatePreviewKey("benzene", target, lastPreviewPoint, lastPreview));
+
+    const committed = applyNativeTemplatePlacementPlan(document, lastPreview);
+    const committedRing = committed.pages[0].objects.find((object): object is MoleculeObject => object.id === lastPreview.molecule.id);
+    expect(committedRing?.atoms).toEqual(lastPreview.molecule.atoms);
+    expect(committedRing?.bonds).toEqual(lastPreview.molecule.bonds);
   });
 });

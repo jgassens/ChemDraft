@@ -1,3 +1,6 @@
+import { snapRotationDegrees } from "./rotationSnap";
+import { snapPlacementDegrees } from "./placementSnap";
+import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
@@ -115,6 +118,8 @@ import {
   type TextExportResult
 } from "@chemdraft/export-engine";
 import {
+  aimPlacementVertices,
+  placementAimDegrees,
   findNearestAtomAtPoint,
   findNearestBondHit,
   moleculeFillCycleKey,
@@ -122,12 +127,13 @@ import {
   nativeMoleculeRings,
   planBondExtension,
   planFreeformBondExtension,
-  doubleBondRendersSymmetric,
+  nativeMultipleBondGapPx,
+  nativeMoleculeBondDrawingStyle,
+  isDefaultCenteredDoubleBond,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
-  resolvePageAnchorPoint,
-  ringInteriorDoubleBondSides
+  resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
 import {
   extractRxnMolfileBlocks,
@@ -145,6 +151,7 @@ import {
   assertMolfileHasKnownBondOrders,
   createNativeReactionArrow,
   createSmilesMolecule,
+  insertSmilesMolecule,
   defaultDoubleBondSide,
   defaultNativeMoleculeTransform,
   distance,
@@ -593,30 +600,34 @@ export const nativeArtToolDefinitions: readonly NativeArtToolDefinition[] = [
     artPathKind: "bezier",
     pathClosed: true,
     // Closed bezier fills need >= 3 nodes (art-engine pathKindSupportsClosedFill): tip plus two
-    // upper bulb nodes.
+    // upper bulb nodes. The tip is on the lower box edge so adjacent lobes meet exactly.
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
-      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
-      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } }
     ]
   }, artOutlineStyle, "tool.lobe"),
   artShapeTool("shadedLobe", "Shaded Orbital Lobe", "path", 40, 60, {
     artPathKind: "bezier",
     pathClosed: true,
     pathNodes: [
-      { point: { x: 20, y: 56 }, inControl: { x: 30, y: 46 }, outControl: { x: 10, y: 46 } },
-      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 30 }, outControl: { x: 10, y: 4 } },
-      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 30 } }
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } }
     ]
   }, artGlossStyle, "tool.shadedLobe"),
-  artShapeTool("pOrbital", "p Orbital", "path", 40, 88, {
+  artShapeTool("pOrbital", "p Orbital", "path", 40, 120, {
     artPathKind: "bezier",
     pathClosed: true,
     pathNodes: [
-      { point: { x: 20, y: 44 }, inControl: { x: 6, y: 54 }, outControl: { x: 6, y: 34 } },
-      { point: { x: 20, y: 4 }, inControl: { x: 2, y: 16 }, outControl: { x: 38, y: 16 } },
-      { point: { x: 20, y: 44 }, inControl: { x: 34, y: 34 }, outControl: { x: 34, y: 54 } },
-      { point: { x: 20, y: 84 }, inControl: { x: 38, y: 72 }, outControl: { x: 2, y: 72 } }
+      // A closed path must visit the self-touching centre twice: its incoming and outgoing handles
+      // belong to different lobes. Both visits use the exact same centre point.
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 70 }, outControl: { x: 10, y: 50 } },
+      { point: { x: 6, y: 16 }, inControl: { x: 2, y: 28 }, outControl: { x: 10, y: 4 } },
+      { point: { x: 34, y: 16 }, inControl: { x: 30, y: 4 }, outControl: { x: 38, y: 28 } },
+      { point: { x: 20, y: 60 }, inControl: { x: 30, y: 50 }, outControl: { x: 10, y: 70 } },
+      { point: { x: 6, y: 104 }, inControl: { x: 2, y: 92 }, outControl: { x: 10, y: 116 } },
+      { point: { x: 34, y: 104 }, inControl: { x: 30, y: 116 }, outControl: { x: 38, y: 92 } }
     ]
   }, artOutlineStyle, "tool.pOrbital"),
   artShapeTool("sOrbital", "s Orbital", "ellipse", 48, 48, {}, artGlossStyle, "tool.sOrbital")
@@ -672,6 +683,8 @@ export interface NativeBondToolOptions {
 
 export interface NativeFreeformBondGrowthOptions extends NativeBondToolOptions {
   forceCustomLength?: boolean;
+  /** Present only for new-bond placement; legacy freeform editing retains its length behavior. */
+  placementAltKey?: boolean;
 }
 
 /**
@@ -973,12 +986,43 @@ export function insertNativeSingleBondMolecule(
   );
 }
 
+/** Drag placement fixes the first atom at the press and aims one standard-length bond. */
+export function aimNativeSingleBondPlacement(
+  document: ChemDraftDocument,
+  objectId: string,
+  start: PagePoint,
+  end: PagePoint,
+  altKey: boolean
+): ChemDraftDocument {
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === objectId && object.type === "molecule"
+  );
+  if (!molecule || molecule.atoms.length !== 2) return document;
+  const source = { ...molecule.atoms[0], x: start.x, y: start.y };
+  const page = firstPage(document);
+  const plan = planFreeformBondExtension({
+    atoms: [source], bonds: [], sourceAtomId: source.id, endPoint: end,
+    bondLength: nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx,
+    minimumBondLength: 0, standardLength: true,
+    directionDegrees: snapPlacementDegrees(placementAimDegrees(start, end), altKey),
+    pageBounds: { x: 0, y: 0, width: page.width, height: page.height }
+  });
+  if (!plan) return document;
+  const atoms = [source, { ...molecule.atoms[1], ...plan.newAtomPoint }];
+  return applyPatches(document, [{
+    op: "updateObject", objectId,
+    changes: normalizeNativeMoleculeGeometry({ ...molecule, ...moleculeGeometryFromAtoms(atoms), atoms })
+  }], { now: phase4Timestamp });
+}
+
 export interface NativeChainAnchor {
   objectId: string;
   atomId: string;
 }
 
 export interface NativeChainToolOptions {
+  /** Aimed-chain placement snaps the first bond; flexible paths stay unsnapped. */
+  placementAltKey?: boolean;
   /**
    * Skip the chemistry derivation for a frame the user is still dragging.
    *
@@ -1176,6 +1220,14 @@ function planChainVerticesForOptions(
   },
   options: NativeChainToolOptions
 ): PagePoint[] {
+  const aim = (vertices: PagePoint[]) => {
+    if (options.placementAltKey === undefined || options.placementAltKey || vertices.length < 2) return vertices;
+    return aimPlacementVertices(
+      vertices,
+      snapPlacementDegrees(placementAimDegrees(vertices[0], vertices[1])),
+      input.pageBounds ? { x: 0, y: 0, ...input.pageBounds } : undefined
+    );
+  };
   if (options.pathPoints && options.pathPoints.length >= 2) {
     return planNativeFlexibleChainVertices({
       start: input.start,
@@ -1185,7 +1237,7 @@ function planChainVerticesForOptions(
       pageBounds: input.pageBounds
     });
   }
-  return planNativeChainVertices(input);
+  return aim(planNativeChainVertices(input));
 }
 
 /** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
@@ -1360,8 +1412,14 @@ export function createNativeArtGraphicObject(
   }
 
   const page = firstPage(document);
-  const x = clamp(point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
-  const y = clamp(point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  const orbitalPlacement = nativeOrbitalPlacementAtPoint(document, point, tool);
+  const clampedX = clamp(orbitalPlacement?.x ?? point.x - tool.width / 2, 0, Math.max(0, page.width - tool.width));
+  const clampedY = clamp(orbitalPlacement?.y ?? point.y - tool.height / 2, 0, Math.max(0, page.height - tool.height));
+  // An orbital snapped to an atom must keep its tip exactly on that atom. Apply the ordinary page
+  // clamp when it is already compatible with that invariant; near an edge, leave the frame
+  // overhanging rather than silently moving the tip away from the atom.
+  const x = orbitalPlacement && clampedX !== orbitalPlacement.x ? orbitalPlacement.x : clampedX;
+  const y = orbitalPlacement && clampedY !== orbitalPlacement.y ? orbitalPlacement.y : clampedY;
   const { data: toolData, style: toolStyle } = nativeArrowStyleDefaultOverlay(tool, tool.data, tool.style);
   const data = nativeArtToolDataForPlacement(toolData, x, y);
   return {
@@ -1371,7 +1429,7 @@ export function createNativeArtGraphicObject(
     y,
     width: tool.width,
     height: tool.height,
-    rotation: 0,
+    rotation: orbitalPlacement?.rotation ?? 0,
     style: {
       ...toolStyle,
       source: "chemdraft-native-art",
@@ -1388,6 +1446,112 @@ export function createNativeArtGraphicObject(
       artToolId: tool.id
     }
   };
+}
+
+type NativeOrbitalPlacement = Pick<GraphicObject, "x" | "y" | "rotation">;
+
+/**
+ * Place orbital art at the atom under the pointer, without creating a persistent anchor.
+ *
+ * A single lobe's local tip is at the bottom centre of its frame, and a p orbital's
+ * coincident lobe nodes are at its frame centre. The angle is chosen from the largest
+ * unoccupied angular gap around the atom, which leaves the lobe pointing away from bonds.
+ */
+function nativeOrbitalPlacementAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  tool: NativeArtToolDefinition
+): NativeOrbitalPlacement | undefined {
+  if (tool.id !== "lobe" && tool.id !== "shadedLobe" && tool.id !== "pOrbital") {
+    return undefined;
+  }
+
+  const target = nativeOrbitalAtomAtPoint(document, point);
+  if (!target) {
+    return undefined;
+  }
+
+  const gapBisector = nativeAtomLargestBondGapBisector(target.molecule, target.atom.id);
+  if (tool.id === "pOrbital") {
+    // The p-orbital's local axis is vertical. Its axis, unlike a single lobe's direction,
+    // is perpendicular to the unoccupied-gap bisector.
+    const rotation = gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
+    return {
+      x: target.atom.x - tool.width / 2,
+      y: target.atom.y - tool.height / 2,
+      rotation: normalizeDegrees(rotation)
+    };
+  }
+
+  // The unrotated lobe points straight up from its bottom-centre tip.
+  const rotationRadians = (gapBisector ?? -Math.PI / 2) + Math.PI / 2;
+  const rotation = normalizeDegrees(radiansToDegrees(rotationRadians));
+  const tipOffset = rotatePointAround(
+    { x: tool.width / 2, y: tool.height },
+    { x: tool.width / 2, y: tool.height / 2 },
+    degreesToRadians(rotation)
+  );
+  return {
+    x: target.atom.x - tipOffset.x,
+    y: target.atom.y - tipOffset.y,
+    rotation
+  };
+}
+
+function nativeOrbitalAtomAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint
+): { molecule: MoleculeObject; atom: MoleculeAtom } | undefined {
+  const target = firstPage(document).objects
+    .map((object, layerIndex) => {
+      if (object.type !== "molecule") {
+        return undefined;
+      }
+      const hit = findNativeMoleculeDeleteHit(object, point);
+      if (hit?.kind !== "atom") {
+        return undefined;
+      }
+      const atom = object.atoms.find((candidate) => candidate.id === hit.atomId);
+      return atom ? { molecule: object, atom, distance: hit.distanceToPointer, layerIndex } : undefined;
+    })
+    .filter((candidate): candidate is {
+      molecule: MoleculeObject;
+      atom: MoleculeAtom;
+      distance: number;
+      layerIndex: number;
+    } => candidate !== undefined)
+    .sort((left, right) => left.distance - right.distance || right.layerIndex - left.layerIndex)[0];
+  return target ? { molecule: target.molecule, atom: target.atom } : undefined;
+}
+
+function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return undefined;
+  }
+  const angles = molecule.bonds.flatMap((bond) => {
+    const neighborId = bond.fromAtomId === atomId
+      ? bond.toAtomId
+      : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
+    const neighbor = neighborId ? molecule.atoms.find((candidate) => candidate.id === neighborId) : undefined;
+    return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
+  }).sort((left, right) => left - right);
+  if (angles.length === 0) {
+    return undefined;
+  }
+
+  let gapStart = angles[0]!;
+  let largestGap = -Infinity;
+  for (let index = 0; index < angles.length; index += 1) {
+    const start = angles[index]!;
+    const end = index === angles.length - 1 ? angles[0]! + Math.PI * 2 : angles[index + 1]!;
+    const gap = end - start;
+    if (gap > largestGap) {
+      gapStart = start;
+      largestGap = gap;
+    }
+  }
+  return gapStart + largestGap / 2;
 }
 
 export function createNativeFreehandGraphicObject(
@@ -2716,7 +2880,15 @@ export type NativeTemplatePlacementPlan = {
   objectId?: string;
   addedAtomIds: readonly string[];
   addedBondIds: readonly string[];
+  /** Why a target click had to become a separate ring instead of changing the target molecule. */
+  fallbackReason?: NativeTemplateFallbackReason;
 };
+
+export type NativeTemplateFallbackReason =
+  | "structure-not-editable"
+  | "target-unavailable"
+  | "atom-no-free-valence"
+  | "bond-cannot-accept";
 
 /** Compute the placement a template click would make, without mutating the document. */
 export function planNativeTemplatePlacement(
@@ -2730,14 +2902,33 @@ export function planNativeTemplatePlacement(
       object.id === target.objectId && object.type === "molecule"
     );
     if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-      return undefined;
+      return standaloneNativeTemplateFallbackPlan(document, point, templateId, "structure-not-editable");
+    }
+
+    if (target.kind === "atom") {
+      const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
+      if (!atom) {
+        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
+      }
+      const valenceUsed = nativeAtomValenceUsage(molecule, atom);
+      // A spiro ring adds two bonds at its shared atom. Refuse rather than creating an
+      // over-valent graph, then place the requested template separately.
+      const element = nativeElementFromAtomLabel(atom.element);
+      if (element && !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
+        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
+      }
     }
 
     const nextMolecule = target.kind === "bond"
       ? fuseNativeTemplateRingToBond(molecule, target.bondId, point, templateId)
       : attachNativeTemplateRingToAtom(molecule, target.atomId, point, templateId);
     if (!nextMolecule) {
-      return undefined;
+      return standaloneNativeTemplateFallbackPlan(
+        document,
+        point,
+        templateId,
+        target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable"
+      );
     }
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
@@ -2769,6 +2960,74 @@ export function planNativeTemplatePlacement(
     addedAtomIds: molecule.atoms.map((atom) => atom.id),
     addedBondIds: molecule.bonds.map((bond) => bond.id)
   };
+}
+
+function standaloneNativeTemplateFallbackPlan(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  templateId: NativeMoleculeTemplateId,
+  fallbackReason: NativeTemplateFallbackReason
+): NativeTemplatePlacementPlan | undefined {
+  const molecule = createStandaloneTemplateAwayFromExistingAtoms(document, point, templateId);
+  if (!molecule) {
+    return undefined;
+  }
+  return {
+    kind: "standalone",
+    templateId,
+    molecule,
+    addedAtomIds: molecule.atoms.map((atom) => atom.id),
+    addedBondIds: molecule.bonds.map((bond) => bond.id),
+    fallbackReason
+  };
+}
+
+/**
+ * A rejected attachment must not leave a visually ambiguous near-overlap. Search positions near
+ * the click first, then the page grid, and accept only a ring whose atoms are at least one bond
+ * length from every existing molecule atom.
+ */
+function createStandaloneTemplateAwayFromExistingAtoms(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  templateId: NativeMoleculeTemplateId
+): MoleculeObject | undefined {
+  const page = firstPage(document);
+  const existingAtoms = page.objects
+    .filter((object): object is MoleculeObject => object.type === "molecule")
+    .flatMap((molecule) => molecule.atoms);
+  const isClear = (molecule: MoleculeObject) => molecule.atoms.every((atom) =>
+    existingAtoms.every((existing) => Math.hypot(atom.x - existing.x, atom.y - existing.y) >= nativeBondLength)
+  );
+  const candidates: PagePoint[] = [];
+  const addCandidate = (candidate: PagePoint) => {
+    if (!candidates.some((current) => current.x === candidate.x && current.y === candidate.y)) {
+      candidates.push(candidate);
+    }
+  };
+
+  // Start three bond lengths away: even a ring vertex facing the clicked atom remains clear.
+  for (let radius = nativeBondLength * 3; radius <= nativeBondLength * 9; radius += nativeBondLength * 2) {
+    for (let index = 0; index < 16; index += 1) {
+      const angle = index * Math.PI * 2 / 16;
+      addCandidate({ x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius });
+    }
+  }
+  // A dense drawing can occupy the local candidates. The grid guarantees a deterministic
+  // page-wide search without ever compromising the one-bond-length separation invariant.
+  for (let y = nativeBondLength; y <= page.height - nativeBondLength; y += nativeBondLength * 2) {
+    for (let x = nativeBondLength; x <= page.width - nativeBondLength; x += nativeBondLength * 2) {
+      addCandidate({ x, y });
+    }
+  }
+
+  for (const candidate of candidates) {
+    const molecule = createNativeTemplateMolecule(document, candidate, templateId);
+    if (isClear(molecule)) {
+      return molecule;
+    }
+  }
+  return undefined;
 }
 
 /** Commit a plan produced by {@link planNativeTemplatePlacement}. */
@@ -3653,6 +3912,7 @@ function refreshNativeCyclicDoubleBondSides(molecule: MoleculeObject): MoleculeO
     }
 
     const currentSide = bond.display?.doubleBondSide;
+    if (currentSide === "center") return bond;
     const cycle =
       owningCycles.find((candidate) => doubleBondSideTowardPoint(fromAtom, toAtom, candidate.center) === currentSide)
       ?? owningCycles[0];
@@ -4034,18 +4294,130 @@ function nativeTemplateSpiroCrowding(
     ), 0);
 }
 
+export interface TextToAtomLabelResult {
+  document: ChemDraftDocument;
+  target?: NativeMoleculeDeleteTarget;
+  message?: string;
+  disabledReason?: string;
+}
+
+function nativeTextObjectToAtomLabelTarget(
+  document: ChemDraftDocument,
+  objectId: string,
+  hitRadius: number
+): { text: TextObject; target?: NativeMoleculeDeleteTarget; molecule?: MoleculeObject } | undefined {
+  const page = firstPage(document);
+  const text = page.objects.find((object): object is TextObject => object.id === objectId && object.type === "text");
+  if (!text) {
+    return undefined;
+  }
+  const nearest = page.objects.flatMap((object, layerIndex) => {
+    if (object.type !== "molecule") return [];
+    const hit = findNearestAtomAtPoint({ atoms: object.atoms, point: text, hitRadius });
+    return hit ? [{ object, hit, layerIndex }] : [];
+  }).sort((left, right) => left.hit.distance - right.hit.distance || right.layerIndex - left.layerIndex)[0];
+  return {
+    text,
+    ...(nearest ? {
+      molecule: nearest.object,
+      target: {
+        objectId: nearest.object.id,
+        kind: "atom" as const,
+        atomId: nearest.hit.atomId,
+        distanceToPointer: nearest.hit.distance
+      }
+    } : {})
+  };
+}
+
+function nativeTextObjectToAtomLabelDisabledReason(
+  candidate: ReturnType<typeof nativeTextObjectToAtomLabelTarget>
+): string | undefined {
+  if (!candidate) {
+    return "Select one text box";
+  }
+  if (!candidate.target || !candidate.molecule) {
+    return "No atom within reach of the text anchor";
+  }
+  if (!isEditableNativeMoleculeGraph(candidate.molecule) || normalizeNativeAtomElementLabel(candidate.text.text).length === 0) {
+    return candidate.text.text.trim().length === 0
+      ? "Atom labels cannot be empty"
+      : "This molecule cannot be edited with the atom-label editor";
+  }
+  return undefined;
+}
+
+/** Cheap command availability check: it shares conversion's target and validation rules but applies no patches. */
+export function selectedTextToAtomLabelDisabledReason(document: ChemDraftDocument): string | undefined {
+  if (document.selection.objectIds.length !== 1) {
+    return "Select one text box";
+  }
+  const reason = nativeTextObjectToAtomLabelDisabledReason(
+    nativeTextObjectToAtomLabelTarget(document, document.selection.objectIds[0]!, nativeBondLengthPx)
+  );
+  return reason === "No atom within reach of the text anchor"
+    ? "No atom within one bond length of the text anchor"
+    : reason;
+}
+
+/** Use the inline editor's literal-label path; no abbreviation expansion or separate parser. */
+export function convertNativeTextObjectToAtomLabel(
+  document: ChemDraftDocument,
+  objectId: string,
+  hitRadius = nativeAtomHitRadiusPx
+): TextToAtomLabelResult {
+  const candidate = nativeTextObjectToAtomLabelTarget(document, objectId, hitRadius);
+  if (!candidate) {
+    return { document, disabledReason: "Select one text box" };
+  }
+  const { text, target, molecule } = candidate;
+  if (!target || !molecule) {
+    return { document, disabledReason: "No atom within reach of the text anchor" };
+  }
+  // These are the same guards used by applyNativeAtomElementTarget. An already identical label
+  // is still accepted: the conversion removes the redundant text box.
+  const disabledReason = nativeTextObjectToAtomLabelDisabledReason(candidate);
+  if (disabledReason) {
+    return { document, target, disabledReason, message: `Text kept: ${disabledReason}` };
+  }
+  const page = firstPage(document);
+  const labeled = applyNativeAtomElementTarget(document, target, text.text, { literal: true });
+  return {
+    document: applyPatches(labeled, [
+      { op: "removeObject", objectId },
+      { op: "setSelection", pageId: page.id, objectIds: [target.objectId] }
+    ], { now: phase4Timestamp }),
+    target,
+    message: `Converted “${normalizeNativeAtomElementLabel(text.text)}” to an atom label`
+  };
+}
+
+export function selectedTextToAtomLabelResult(document: ChemDraftDocument): TextToAtomLabelResult {
+  if (document.selection.objectIds.length !== 1) {
+    return { document, disabledReason: "Select one text box" };
+  }
+  const result = convertNativeTextObjectToAtomLabel(document, document.selection.objectIds[0]!, nativeBondLengthPx);
+  return result.disabledReason === "No atom within reach of the text anchor"
+    ? { ...result, disabledReason: "No atom within one bond length of the text anchor" }
+    : result;
+}
+
 /**
- * When a committed text box holds exactly an element symbol ("C", "fe", "Br"…), turn it into a
- * real naked atom: a one-atom molecule at the text's position, participating in hover hotkeys,
- * bonding, and valence checking. A bare neutral atom of a covalent-table element shows the
- * invalid badge until it gains bonds; elements outside the covalent valence tables (all d-block
- * metals, the noble gases) have no single correct valence to violate, so they convert unflagged
- * by design. Any other text stays a text object.
+ * Text anchored on an atom uses the literal label editor's path. In open space, keep the
+ * existing exact-element conversion: a one-atom molecule at the text box's center. Other text
+ * stays text. A bare covalent-table element is valence-flagged until it gains enough bonds.
  */
 export function convertNativeTextObjectToAtom(
   document: ChemDraftDocument,
-  objectId: string
+  objectId: string,
+  options: { skipAtomLabel?: boolean } = {}
 ): ChemDraftDocument {
+  if (!options.skipAtomLabel) {
+    const labelResult = convertNativeTextObjectToAtomLabel(document, objectId);
+    if (labelResult.target) {
+      return labelResult.document;
+    }
+  }
   const page = firstPage(document);
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
@@ -6800,8 +7172,13 @@ function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, 
   if (!element) {
     return true;
   }
-  const usage = nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
+  const usage = nativeAtomValenceUsage(molecule, atom);
   return nativeAtomChargeSupportsValence(element, usage, charge);
+}
+
+/** Bond-order usage plus radical electrons, shared by every native valence admission check. */
+function nativeAtomValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom): number {
+  return nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
 }
 
 export function nativeChargeStackRefusal(
@@ -8071,10 +8448,32 @@ export function applyNativeMoleculeBondOrderValueTarget(
   );
 }
 
+/** Display-only edit: retain chemistry, coordinates, and the current selection. */
+export function applyMoleculeDoubleBondPosition(
+  document: ChemDraftDocument,
+  targets: readonly { objectId: string; bondId: string }[],
+  position: "left" | "center" | "right" | "automatic"
+): ChemDraftDocument {
+  return targets.reduce((current, target) => {
+    const molecule = firstPage(current).objects.find((object): object is MoleculeObject =>
+      object.type === "molecule" && object.id === target.objectId);
+    const bond = molecule?.bonds.find((candidate) => candidate.id === target.bondId);
+    if (!molecule || !bond || bond.order !== "double") return current;
+    const side = position === "automatic" ? undefined : position;
+    if (bond.display?.doubleBondSide === side) return current;
+    const display = { ...bond.display };
+    if (side === undefined) delete display.doubleBondSide;
+    else display.doubleBondSide = side;
+    const bonds = molecule.bonds.map((candidate) => candidate.id === bond.id ? { ...candidate, display } : candidate);
+    return applyPatch(current, { op: "updateObject", objectId: molecule.id, changes: { bonds } }, { now: phase4Timestamp });
+  }, document);
+}
+
 export function applyNativeDoubleBondSideTarget(
   document: ChemDraftDocument,
   target: NativeBondOrderTarget,
-  point: PagePoint
+  point: PagePoint,
+  hitTolerance: NativeMoleculeHitTolerance = {}
 ): ChemDraftDocument {
   const page = firstPage(document);
   const molecule = page.objects.find((object): object is MoleculeObject =>
@@ -8089,7 +8488,7 @@ export function applyNativeDoubleBondSideTarget(
     return document;
   }
 
-  const doubleBondSide = doubleBondSideForPoint(molecule, bond, point);
+  const doubleBondSide = doubleBondSideForPoint(molecule, bond, point, hitTolerance);
   if (!doubleBondSide || bond.display?.doubleBondSide === doubleBondSide) {
     return document;
   }
@@ -8099,11 +8498,10 @@ export function applyNativeDoubleBondSideTarget(
       ? { ...candidate, display: { ...(candidate.display ?? {}), doubleBondSide } }
       : candidate
   );
-  const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
 
   return applyPatch(
     document,
-    { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
+    { op: "updateObject", objectId: molecule.id, changes: { bonds } },
     { now: phase4Timestamp }
   );
 }
@@ -8463,6 +8861,9 @@ export function previewNativeMoleculeFreeformBondGrowth(
     minimumBondLength: freeformMinimumBondLength,
     customLengthBreakawayDistance: freeformCustomLengthBreakawayDistance,
     forceCustomLength: options.forceCustomLength,
+    directionDegrees: options.placementAltKey === undefined
+      ? undefined
+      : snapPlacementDegrees(placementAimDegrees(sourceAtom, point), options.placementAltKey),
     snapHitRadius: atomHitRadius
   });
   if (!extension) {
@@ -10783,7 +11184,6 @@ export function nativeMoleculePartRotationPivot(
 /** How close a drag must get before the canonical-geometry magnet engages. */
 export const nativeDragSnapAngleToleranceDegrees = 6;
 export const nativeDragSnapLengthTolerancePx = 3;
-export const nativeRotationSnapToleranceDegrees = 3;
 
 /** Canonical drawing directions repeat every 30° (the 120° zig-zag lives on this grid). */
 const canonicalAngleGridDegrees = 30;
@@ -10919,18 +11319,19 @@ export function snapNativeMoleculePartDragDelta(
 export function snapNativeMoleculePartRotationDegrees(
   molecule: MoleculeObject,
   target: NativeMoleculePartMoveTarget,
-  angleDegrees: number
+  angleDegrees: number,
+  shiftKey = false
 ): number {
+  if (shiftKey) {
+    return snapRotationDegrees(angleDegrees, { shiftKey });
+  }
   const targetAtomIds = nativeMoleculePartAtomIds(molecule, target);
   const junctionId = nativeMoleculePartJunctionAtomId(molecule, targetAtomIds);
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const junction = junctionId ? atomById.get(junctionId) : undefined;
 
   if (!junction) {
-    const stepped = Math.round(angleDegrees / 15) * 15;
-    return Math.abs(wrapDegrees180(angleDegrees - stepped)) <= nativeRotationSnapToleranceDegrees
-      ? stepped
-      : angleDegrees;
+    return snapRotationDegrees(angleDegrees);
   }
 
   let referenceAngle: number | undefined;
@@ -10957,9 +11358,11 @@ export function snapNativeMoleculePartRotationDegrees(
     return angleDegrees;
   }
 
-  const rotatedAngle = referenceAngle + angleDegrees;
-  const snapped = nearestCanonicalAngleDegrees(rotatedAngle, stationaryBaseAngles, nativeRotationSnapToleranceDegrees);
-  return snapped === undefined ? angleDegrees : angleDegrees + wrapDegrees180(snapped - rotatedAngle);
+  return snapRotationDegrees(angleDegrees, {
+    referenceDegrees: referenceAngle,
+    stepDegrees: canonicalAngleGridDegrees,
+    additionalAbsoluteAngles: stationaryBaseAngles.flatMap((base) => [base + 120, base - 120])
+  });
 }
 
 export function rotateNativeMoleculeParts(
@@ -11032,6 +11435,28 @@ export function rotateDocumentObject(
     );
   }
 
+  if (isNativeOrbitalLobe(object)) {
+    const rotation = normalizeDegrees(object.rotation + angleDegrees);
+    const tip = nativeOrbitalLobeTip(object, object.rotation);
+    const nextTip = nativeOrbitalLobeTip(object, rotation);
+    const dx = tip.x - nextTip.x;
+    const dy = tip.y - nextTip.y;
+    return applyPatch(
+      document,
+      {
+        op: "updateObject",
+        objectId,
+        changes: {
+          x: object.x + dx,
+          y: object.y + dy,
+          data: translateGraphicObjectData(object.data, dx, dy),
+          rotation
+        }
+      },
+      { now: phase4Timestamp }
+    );
+  }
+
   return applyPatch(
     document,
     {
@@ -11042,6 +11467,20 @@ export function rotateDocumentObject(
       }
     },
     { now: phase4Timestamp }
+  );
+}
+
+function isNativeOrbitalLobe(object: DocumentObject): object is GraphicObject {
+  return object.type === "graphic" && (object.data.artToolId === "lobe" || object.data.artToolId === "shadedLobe");
+}
+
+/** The page-relative local tip, after the graphic's ordinary centre rotation. */
+function nativeOrbitalLobeTip(object: GraphicObject, rotationDegrees: number): PagePoint {
+  const center = { x: object.width / 2, y: object.height / 2 };
+  return rotatePointAround(
+    { x: object.width / 2, y: object.height },
+    center,
+    degreesToRadians(rotationDegrees)
   );
 }
 
@@ -13801,11 +14240,16 @@ export function applyNativeMoleculeEngineRelayout(
   // Recompute each double bond's drawn side from the new geometry (ring doubles draw inward).
   const geometry = moleculeGeometryFromAtoms(atoms);
   const sideMolecule: MoleculeObject = { ...molecule, atoms, bonds: baseBonds, ...geometry };
-  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) =>
-    bond.order === "double"
-      ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: defaultDoubleBondSide(sideMolecule, bond) } }
-      : bond
-  );
+  const originalSides = new Map(molecule.bonds.map((bond) => [bond.id, bond.display?.doubleBondSide]));
+  const sidedBonds: MoleculeBond[] = baseBonds.map((bond) => {
+    if (bond.order !== "double") return bond;
+    // Center defaults remain automatic unless the user chose a position. Ring/alkene
+    // defaults continue to be recomputed from the new geometry as before.
+    const doubleBondSide = isDefaultCenteredDoubleBond(sideMolecule, bond)
+      ? originalSides.get(bond.id) : defaultDoubleBondSide(sideMolecule, bond);
+    const display = { ...bond.display, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
+    return { ...bond, display: Object.keys(display).length ? display : undefined };
+  });
 
   // Read-back stereo guard, the same one flatten uses. The wedges above carry the parities the
   // engine computed for ITS geometry; the fold, settle and arrange passes then moved atoms
@@ -16046,24 +16490,8 @@ export function flattenSpunMolecule(
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
-  const ringInteriorSides = ringInteriorDoubleBondSides(sideMolecule);
-  const nextBonds = projectedBonds.map((bond, bondIndex) => {
+  const nextBonds = projectedDoubleBondSides(sideMolecule).map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
-    if (bond.order === "double") {
-      // Baking a side unconditionally broke "releasing changes nothing visually": a bond that
-      // renders as the symmetric straddle has no side, and writing one turned it one-sided the
-      // instant the spin was committed. An explicit side is itself one of the conditions that
-      // suppresses the straddle, so only bonds that really draw with a side get one.
-      const fromAtom = nextAtoms.find((atom) => atom.id === bond.fromAtomId);
-      const toAtom = nextAtoms.find((atom) => atom.id === bond.toAtomId);
-      const symmetric = fromAtom !== undefined && toAtom !== undefined &&
-        doubleBondRendersSymmetric(fromAtom, toAtom, sideMolecule, bond, ringInteriorSides.get(bond.id));
-      if (symmetric) {
-        delete display.doubleBondSide;
-      } else {
-        display.doubleBondSide = defaultDoubleBondSide(sideMolecule, bond);
-      }
-    }
     const depthWeight = depthWeightFor(bondIndex);
     if (depthWeight !== undefined) display.depthWeight = depthWeight;
     else delete display.depthWeight;
@@ -17655,7 +18083,7 @@ function addCarbonylOxygenToAtom(
   };
   const bonds = [
     ...molecule.bonds,
-    nativeBondWithOrderAndDisplay(molecule, newBond, "double")
+    nativeBondWithOrderAndDisplay({ ...molecule, atoms: [...molecule.atoms, newAtom], bonds: [...molecule.bonds, newBond] }, newBond, "double")
   ];
 
   return refreshNativeSingleBondGraph(molecule, [...molecule.atoms, newAtom], bonds);
@@ -17970,14 +18398,13 @@ function nativeBondWithOrderAndDisplay(
 ): MoleculeBond {
   const bondStyle = bond.display?.bondStyle;
   if (order === "double") {
+    const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
+    const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,
       order,
-      display: {
-        ...(bond.display ?? {}),
-        ...(bondStyle ? { bondStyle } : {}),
-        doubleBondSide: bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, bond)
-      }
+      display: Object.keys(display).length ? display : undefined
     };
   }
 
@@ -18008,10 +18435,11 @@ function nativeBondDisplayObject(
   return bondStyle ? { display: { bondStyle } } : {};
 }
 
-function doubleBondSideForPoint(
+export function doubleBondSideForPoint(
   molecule: MoleculeObject,
   bond: MoleculeBond,
-  point: PagePoint
+  point: PagePoint,
+  hitTolerance: NativeMoleculeHitTolerance = {}
 ): NativeDoubleBondSide | undefined {
   const geometry = bondGeometry(molecule, bond);
   if (!geometry) {
@@ -18023,6 +18451,9 @@ function doubleBondSideForPoint(
     y: (geometry.fromAtom.y + geometry.toAtom.y) / 2
   };
   const score = (point.x - midpoint.x) * geometry.normal.x + (point.y - midpoint.y) * geometry.normal.y;
+  const gap = nativeMultipleBondGapPx(nativeMoleculeBondDrawingStyle(molecule, bond.id));
+  const centerRadius = Math.max(gap / 2, hitTolerance.bondHitRadius ?? 0);
+  if (Math.abs(score) <= centerRadius) return "center";
   return score >= 0 ? "left" : "right";
 }
 

@@ -17,7 +17,10 @@ import { applyPatches, createEmptyDocument, DefaultNativeTextStyle, type Molecul
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PaletteWindow } from "./PaletteWindow";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
-import { moleculeStructureBondLengthCommandId } from "./commands";
+import { moleculeStructureBondLengthCommandId, moleculeDoubleBondPositionCommandId } from "./commands";
+import { planPageSvgRender, type PageSvgFragment } from "@chemdraft/layout-engine";
+import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { exportDocumentToPdf } from "@chemdraft/export-engine/pdf";
 import {
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
@@ -147,9 +150,77 @@ describe("PaletteWindow molecule inspector bridge", () => {
     });
     expect(commandsByChannel.get(PALETTE_COMMAND_COMMIT_EVENT)).toContain(moleculeStructureBondLengthCommandId(20));
   });
+
+  it("commits Left/Center/Right for a multi-bond selection and explains disabled state", async () => {
+    await act(async () => {
+      root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" }));
+      await Promise.resolve();
+    });
+    const base = selectedMoleculeDocument();
+    const mol = base.pages[0].objects[0] as MoleculeObject;
+    const selected = applyPatches(base, [{ op: "updateObject", objectId: mol.id, changes: {
+      bonds: [{ ...mol.bonds[0], order: "double" }, { ...mol.bonds[0], id: "bond_002", order: "double" }]
+    } }]);
+    const model = createMoleculeInspectorModel(selected, {
+      selectedObjectIds: [],
+      selectedPart: { objectId: mol.id, kind: "parts", atomIds: [], bondIds: ["bond_001", "bond_002"] }
+    });
+    expect(model.structure.doubleBondTargetCount).toBe(2);
+    await act(async () => {
+      await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model));
+    });
+    act(() => { container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-structure")!.click(); });
+    const control = container.querySelector<HTMLSelectElement>('[aria-label="Double-bond position"]')!;
+    expect(control.disabled).toBe(false);
+    for (const side of ["left", "center", "right"] as const) {
+      act(() => { control.value = side; control.dispatchEvent(new Event("change", { bubbles: true })); });
+      expect(commandsByChannel.get(PALETTE_COMMAND_COMMIT_EVENT)!.filter((id) => id === moleculeDoubleBondPositionCommandId(side))).toHaveLength(1);
+    }
+    const empty = createMoleculeInspectorModel(base, { selectedObjectIds: [], selectedPart: { objectId: mol.id, kind: "bond", bondId: "bond_001" } });
+    await act(async () => {
+      await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", empty));
+    });
+    const disabled = container.querySelector<HTMLSelectElement>('[aria-label="Double-bond position"]')!;
+    expect(disabled.disabled).toBe(true);
+    expect(disabled.title).toBe("Select a double bond");
+  });
 });
 
 describe("the detached Molecular Inspector palette can actually act", () => {
+  it("exports the same centered lines as the canvas planner to SVG and PDF", async () => {
+    const base = selectedMoleculeDocument();
+    const mol = base.pages[0].objects[0] as MoleculeObject;
+    const centered = applyPatches(base, [{ op: "updateObject", objectId: mol.id, changes: {
+      atoms: mol.atoms.map((atom) => ({ ...atom, element: "C" })),
+      bonds: [{ ...mol.bonds[0], order: "double", display: { doubleBondSide: "center" } }]
+    } }]);
+    const lines: Record<string, unknown>[] = [];
+    const visit = (fragment: PageSvgFragment) => {
+      if (fragment.kind !== "element") return;
+      if (String(fragment.attrs.class ?? "").includes("native-bond-line")) lines.push(fragment.attrs);
+      fragment.children.forEach(visit);
+    };
+    planPageSvgRender(centered.pages[0]).fragments.forEach(visit);
+    expect(lines).toHaveLength(2);
+    const svg = exportDocumentToSvg(centered);
+    const parsed = new DOMParser().parseFromString(svg.contents, "image/svg+xml");
+    const exported = Array.from(parsed.querySelectorAll("line"));
+    expect(exported).toHaveLength(2);
+    for (const [index, line] of exported.entries()) {
+      for (const coord of ["x1", "y1", "x2", "y2"]) expect(Number(line.getAttribute(coord))).toBeCloseTo(Number(lines[index][coord]), 3);
+    }
+    const pdf = await exportDocumentToPdf(centered, { domParser: new DOMParser(), compress: false });
+    expect(pdf.warnings).toEqual(svg.warnings);
+    const contents = new TextDecoder().decode(pdf.bytes);
+    expect(contents.startsWith("%PDF-")).toBe(true);
+    // svg2pdf emits each full centered line as a move/line path in SVG user coordinates.
+    const paths = Array.from(contents.matchAll(/([\d.-]+) ([\d.-]+) m\n([\d.-]+) ([\d.-]+) l/g),
+      (match) => match.slice(1).map(Number));
+    for (const line of lines) {
+      const expected = [line.x1, line.y1, line.x2, line.y2].map(Number);
+      expect(paths.some((path) => path.every((coordinate, index) => Math.abs(coordinate - expected[index]) < 1e-6))).toBe(true);
+    }
+  });
   // The palette forwarded the report and the busy flag but neither handler, so on the SHIPPING desktop
   // path (`shouldDefaultToNativePalettes()`) Copy rendered "Copied" onto an empty clipboard and the
   // interpretation select accepted changes that went nowhere. The inline web-preview branch supplied

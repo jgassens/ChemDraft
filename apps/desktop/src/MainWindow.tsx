@@ -1,3 +1,6 @@
+import { snapRotationDegrees } from "./rotationSnap";
+import { snapPlacementDegrees } from "./placementSnap";
+import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
   memo,
@@ -155,25 +158,16 @@ import {
   atomLabelRunFontSize,
   averageDefinedDepthWeights,
   bondRefKey,
-  depthCuedBondColor,
-  depthCuedBondStrokeWidth,
   depthCuedLabelColor,
   depthCuedLabelScale,
-  doubleBondMinimumVisibleSegmentPx,
-  doubleBondRendersSymmetric,
-  doubleBondSecondaryFlushEnds,
-  ringInteriorDoubleBondSides,
-  isTerminalHeteroatomDoubleBond,
-  labelEndpointClearance,
   nativeBondOrderResolution,
   nativeMoleculeRings,
-  nativeMultipleBondGapPx,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
   planPageSvgRender,
   planNativeArtVisual,
+  placementAimDegrees,
   sameBondRef,
-  smallestRingAtomIdsByBondId,
   styleColorMapValue,
   textObjectSpansForRendering,
   type PageSvgAttributeValue,
@@ -215,6 +209,9 @@ import {
   artBooleanOperationCommandIds,
   createLayerActions,
   createQuickActions,
+  createDoubleBondPositionActions,
+  moleculeDoubleBondPositionForCommand,
+  convertTextToAtomLabelCommandId,
   distributeModeCommandIds,
   editActions,
   objectColorForCommand,
@@ -351,6 +348,7 @@ import {
 } from "./clipboard";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
+  aimNativeSingleBondPlacement,
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
@@ -373,6 +371,7 @@ import {
   applyNativeRingAttachAtAtomTarget,
   applyNativeRingFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
+  applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -388,7 +387,9 @@ import {
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
   planNativeTemplatePlacement,
+  applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
+  type NativeTemplateFallbackReason,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -439,6 +440,7 @@ import {
   type Spin3dEngineProvenance,
   type StereoPerceiver,
   flattenSpunMolecule,
+  doubleBondSideForPoint,
   deleteSelectedDocumentObjects,
   splitNativeGraphicPathSegmentAtPoint,
   exportPhase4Cdxml,
@@ -552,6 +554,9 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
+  convertNativeTextObjectToAtomLabel,
+  selectedTextToAtomLabelDisabledReason,
+  selectedTextToAtomLabelResult,
   updateNativeTextObjectText,
   updateNativeGraphicCornerRadius,
   updateNativeGraphicLinearGradientHandle,
@@ -589,6 +594,7 @@ import {
   type NativeBondDisplayStyle,
   type NativeMoleculeTemplateId,
   type NativeMoleculeDeleteHit,
+  type NativeMoleculeHitTolerance,
   type NativeMoleculeFragmentSelection,
   type NativeDoubleBondSide,
   type NativeMoleculeDeleteTarget,
@@ -742,7 +748,7 @@ import {
   type Quaternion,
   type Vec3
 } from "./interaction/rotation3d";
-import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinDoubleBondSecondaryLine, type ScreenPlacement } from "./interaction/spinOverlay";
+import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
 import { getConformerWorkerClient } from "./conformerClient";
 import { buildSpin3dFlattenStereoOptions } from "./spin3dFlattenStereoPolicy";
 import {
@@ -861,7 +867,9 @@ type NativeBondDragState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
+  connectsForeignAtom: boolean;
   freeformUnlocked: boolean;
+  altKey: boolean;
 };
 type NativePlacementDragState = {
   pointerId: number;
@@ -881,6 +889,7 @@ type NativePlacementDragState = {
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
   dragging: boolean;
+  altKey: boolean;
 };
 type NativeBondEditDragState = {
   pointerId: number;
@@ -1027,6 +1036,7 @@ type ObjectRotateDragState = {
   startPoint: ClientPoint;
   startRotationDegrees: number;
   latestPoint: ClientPoint;
+  shiftKey: boolean;
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
   dragging: boolean;
   spin3dModel?: Spin3dRotateSnapshot;
@@ -1169,6 +1179,7 @@ type GroupTransformDragState = {
   center: ClientPoint;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
+  shiftKey: boolean;
   latestTiltXRad?: number;
   latestTiltYRad?: number;
   clamped?: boolean;
@@ -1248,7 +1259,13 @@ type AtomLabelEditState = {
 type AtomLabelFinishReason = "commit" | "blur";
 type AtomLabelEditOptions = {
   clearDraft?: boolean;
+  draft?: string;
 };
+
+/** A native palette/popover deactivates the document; that blur does not finish an inline edit. */
+function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
+  return editor.ownerDocument.hasFocus();
+}
 type SelectionMarqueeState = {
   pointerId: number;
   startPoint: ClientPoint;
@@ -1469,7 +1486,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.16.57-opus";
+const CURRENT_BUILD_STAMP = "10.10.17.10-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1945,6 +1962,13 @@ export function MainWindow({
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
+  // Only the first committed edit of each box placed by the Text tool may become an atom label.
+  // Existing captions always remain text when reopened; the explicit command remains available.
+  // A second placement can end an earlier edit before React observes it, so pending ids cannot be
+  // kept in one overwriteable slot.
+  const textObjectIdsAwaitingAutoConversionRef = useRef<Set<string>>(new Set());
+  const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
+  activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
   const [activeGraphicTransformObjectId, setActiveGraphicTransformObjectId] = useState<string | undefined>();
   // The line-family art arrow/line currently open for in-place editing while a line-draw art tool is
@@ -2178,6 +2202,7 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
+  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string } | undefined>(undefined);
   // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
   // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
@@ -2210,15 +2235,22 @@ export function MainWindow({
   // disk writes complete out of order and leave the file disagreeing with the in-memory state.
   const layoutSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const shiftKeyPressedRef = useRef(false);
+  const heldHintModifiersRef = useRef<HeldModifiers>({});
+  const hintHoverTargetRef = useRef<ModifierHintContext["hoverTarget"]>(undefined);
+  const [statusModifierHint, setStatusModifierHint] = useState("");
+  const refreshModifierHintRef = useRef<() => void>(() => undefined);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
   // template click can reuse exactly what the highlight is painting (see
   // currentTemplateTargetFromHoverOrHit) rather than recompute a possibly-disagreeing hit.
   const templateHoverTargetRef = useRef<TemplateHoverSample | undefined>(undefined);
-  // Memo key for the ghost preview so we only recompute the plan (and its Kekulé pass) when the
-  // hovered target or pointer cell changes, not on every sub-pixel pointer move.
+  // The target key prevents repeat Kekulé passes while the pointer stays on a fuse/spiro target.
+  // A rejected target is different: its standalone fallback starts at the pointer, so its cached
+  // plan intentionally replans on each move.
   const templatePreviewKeyRef = useRef<string | undefined>(undefined);
+  const templatePreviewTargetKeyRef = useRef<string | undefined>(undefined);
+  const templatePreviewPlanRef = useRef<NativeTemplatePlacementPlan | undefined>(undefined);
   const activeTextSelectionRef = useRef<{ objectId: string; range: NativeTextSelectionRange } | undefined>(undefined);
   const toolbarStyleTargetRef = useRef<ToolbarStyleTargetSnapshot | undefined>(undefined);
   const viewportRef = useRef(viewport);
@@ -2615,7 +2647,9 @@ export function MainWindow({
   );
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
-    if (!target || target.kind !== "atom") {
+    const assignment = hoverLabelAssignmentRef.current;
+    if (target?.kind !== "atom" || target.objectId !== assignment?.objectId || target.atomId !== assignment.atomId) {
+      hoverLabelAssignmentRef.current = undefined;
     }
     setHoveredNativeDeleteTarget(target);
   }, []);
@@ -4089,67 +4123,18 @@ export function MainWindow({
   /** Compute the overlay placement for a conformer against the molecule's drawn 2D geometry. */
   const spinPlacementFor = useCallback((molecule: MoleculeObject, coords3d: Float64Array, orientation?: Quaternion): {
     bondPairs: [number, number][];
-    bondRender: SpinBondRenderInfo[];
     atomLabels: (string | undefined)[];
     atomLabelStyles: (NativeDrawingStyle | undefined)[];
     atoms: readonly MoleculeAtom[];
     placement: ScreenPlacement;
   } => {
     const atomIndex = new Map(molecule.atoms.map((atom, index) => [atom.id, index] as const));
-    const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom] as const));
-    // Adjacency (atom index → neighbor indices) for the double-bond side heuristic.
-    const adjacency = new Map<number, number[]>();
-    for (const bond of molecule.bonds) {
-      const from = atomIndex.get(bond.fromAtomId);
-      const to = atomIndex.get(bond.toAtomId);
-      if (from === undefined || to === undefined) continue;
-      (adjacency.get(from) ?? adjacency.set(from, []).get(from)!).push(to);
-      (adjacency.get(to) ?? adjacency.set(to, []).get(to)!).push(from);
-    }
-    // Smallest ring per bond, as atom INDICES — so a ring double bond's inner line can point
-    // to the PROJECTED ring interior each frame (matching the 2D drawing and the flatten),
-    // instead of the substituent-count heuristic that flips outward on substituted rings.
-    const ringAtomIdsByBond = smallestRingAtomIdsByBondId(molecule);
-    // Same per-molecule ring-interior map the committed drawing uses, so the symmetric decision
-    // below is answered from identical inputs.
-    const ringInteriorSides = ringInteriorDoubleBondSides(molecule);
     const bondPairs: [number, number][] = [];
-    const bondRender: SpinBondRenderInfo[] = [];
     for (const bond of molecule.bonds) {
       const from = atomIndex.get(bond.fromAtomId);
       const to = atomIndex.get(bond.toAtomId);
       if (from === undefined || to === undefined) continue;
       bondPairs.push([from, to]);
-      const fromAtom = atomById.get(bond.fromAtomId);
-      const toAtom = atomById.get(bond.toAtomId);
-      const neighborIndices = [...(adjacency.get(from) ?? []), ...(adjacency.get(to) ?? [])]
-        .filter((index) => index !== from && index !== to);
-      const ringAtomIds = ringAtomIdsByBond.get(bond.id);
-      const ringAtomIndices = ringAtomIds
-        ? ringAtomIds
-            .map((atomId) => atomIndex.get(atomId))
-            .filter((index): index is number => index !== undefined)
-        : undefined;
-      bondRender.push({
-        // aromatic/unknown render as a single line ON PURPOSE: the 2D layout engine
-        // (bondLineSegments) only draws inner lines for double/triple, so matching it here
-        // keeps the spin overlay identical to the drawing it replaces (and to the flatten).
-        order: bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1,
-        bold: bond.display?.bondStyle === "bold",
-        // Ask the layout engine the same question the committed drawing asks. Testing only
-        // `isTerminalHeteroatomDoubleBond` used the last of four clauses, so an aldehyde or amide
-        // C=O with a derivable inner side drew one-sided on canvas but symmetric while spinning.
-        symmetric: fromAtom !== undefined && toAtom !== undefined &&
-          doubleBondRendersSymmetric(fromAtom, toAtom, molecule, bond, ringInteriorSides.get(bond.id)),
-        // Likewise for the secondary line's end insets. A terminal methylene (=CH2) draws flush,
-        // and copying only the inset formula shortened ethylene and every terminal alkene here
-        // while the committed drawing left it flush.
-        secondaryFlush: fromAtom !== undefined && toAtom !== undefined
-          ? doubleBondSecondaryFlushEnds(fromAtom, toAtom, molecule, bond)
-          : { from: false, to: false },
-        neighborIndices,
-        ringAtomIndices
-      });
     }
     // The exact labels the 2D drawing shows (element + implicit H + charge; plain
     // bonded carbons stay unlabeled) so the spinning structure reads as the SAME one.
@@ -4162,7 +4147,7 @@ export function MainWindow({
     const scale = orientation
       ? orientedOverlayScale(points2d, coords3d, bondPairs, quatToViewMatrix(orientation))
       : overlayScale(points2d, coords3d, bondPairs);
-    return { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
+    return { bondPairs, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
   const startSpin3d = useCallback(async () => {
@@ -4268,13 +4253,13 @@ export function MainWindow({
       spin3dPendingRef.current?.cancel();
       spin3dPendingRef.current = undefined;
       spin3dRequestRef.current += 1;
-      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
+      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, reopen.coords3d, reopen.quat);
       applySpin({
         objectId,
         quat: reopen.quat,
         coords3d: reopen.coords3d,
         bondPairs,
-        bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
         atoms,
@@ -4374,7 +4359,7 @@ export function MainWindow({
         return;
       }
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, bondRender, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
@@ -4382,7 +4367,7 @@ export function MainWindow({
         quat: initialViewQuaternion(coords3d),
         coords3d,
         bondPairs,
-        bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         atomLabelStyles,
         atoms,
@@ -4415,12 +4400,12 @@ export function MainWindow({
         message: conformer.forceField?.status
       });
       const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, bondRender, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
+      const { bondPairs, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
       applySpin({
         ...state,
         coords3d,
         bondPairs,
-        bondRender,
+        sourceMolecule: molecule,
         atomLabels,
         placement,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
@@ -5403,14 +5388,18 @@ export function MainWindow({
     replacePresentDocument((current) => selectDocumentObject(current, target.objectId));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit({
+    const edit: AtomLabelEditState = {
       objectId: target.objectId,
       atomId: target.atomId,
       initialElement: atom.element,
       initialLiteral: atom.labelLiteral === true,
-      draft: options.clearDraft ? "" : atom.element,
+      draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
-    });
+    };
+    // Own the keyboard immediately, including before React mounts/focuses the input.
+    activeAtomLabelEditRef.current = edit;
+    hoverLabelAssignmentRef.current = undefined;
+    setActiveAtomLabelEdit(edit);
     setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "atom", atomId: target.atomId });
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
@@ -5575,15 +5564,18 @@ export function MainWindow({
 
   /**
    * Put keyboard focus in an inline canvas editor and keep it there while the native window
-   * settles: raise this window and its webview, then retry, because a palette or popover window
-   * can still hold key status for a frame or two after the editor mounts. Shared by the text-object
-   * and atom-label editors; only one inline editor is active at a time, so they share the timers.
+   * settles: if the app is active, return focus from its palette or popover to the document.
+   * Retry DOM focus as the editor mounts, without taking the foreground from another app.
+   * Shared by the text-object and atom-label editors; only one inline editor is active at a time,
+   * so they share the timers.
    */
   const scheduleInlineEditorFocus = useCallback((focusEditor: () => void) => {
     clearScheduledTextEditorFocus();
 
     const focusNativeSurfaceAndEditor = () => {
-      void focusCurrentWindowAndWebview().finally(focusEditor);
+      if (!window.document.hasFocus()) {
+        void focusCurrentWindowAndWebview({ onlyIfAppActive: true }).finally(focusEditor);
+      }
       focusEditor();
     };
 
@@ -5593,39 +5585,41 @@ export function MainWindow({
     );
   }, [clearScheduledTextEditorFocus]);
 
-  const focusTextObjectEditor = useCallback((objectId: string) => {
-    scheduleInlineEditorFocus(() => {
-      const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-        `[data-object-id="${objectId}"] .text-object-editor`
-      );
-      if (!editor) {
-        return;
-      }
+  const focusTextObjectEditorDom = useCallback((objectId: string) => {
+    const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
+      `[data-object-id="${objectId}"] .text-object-editor`
+    );
+    if (!editor) {
+      return;
+    }
 
-      window.focus();
-      editor.focus({ preventScroll: true });
-      if (editor.value === "Text") {
-        editor.select();
-      }
-    });
-  }, [scheduleInlineEditorFocus]);
+    editor.focus({ preventScroll: true });
+    if (editor.value === "Text") {
+      editor.select();
+    }
+  }, []);
+
+  const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
+    const editor = pageRef.current?.querySelector<HTMLInputElement>(
+      `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+    );
+    // Already focused: leave it, so a retry never moves the caret the user is typing at.
+    if (!editor || editor.ownerDocument.activeElement === editor) {
+      return;
+    }
+
+    editor.focus({ preventScroll: true });
+    const end = editor.value.length;
+    editor.setSelectionRange(end, end);
+  }, []);
+
+  const focusTextObjectEditor = useCallback((objectId: string) => {
+    scheduleInlineEditorFocus(() => focusTextObjectEditorDom(objectId));
+  }, [focusTextObjectEditorDom, scheduleInlineEditorFocus]);
 
   const focusAtomLabelEditor = useCallback((objectId: string, atomId: string) => {
-    scheduleInlineEditorFocus(() => {
-      const editor = pageRef.current?.querySelector<HTMLInputElement>(
-        `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
-      );
-      // Already focused: leave it, so a retry never moves the caret the user is typing at.
-      if (!editor || editor.ownerDocument.activeElement === editor) {
-        return;
-      }
-
-      window.focus();
-      editor.focus({ preventScroll: true });
-      const end = editor.value.length;
-      editor.setSelectionRange(end, end);
-    });
-  }, [scheduleInlineEditorFocus]);
+    scheduleInlineEditorFocus(() => focusAtomLabelEditorDom(objectId, atomId));
+  }, [focusAtomLabelEditorDom, scheduleInlineEditorFocus]);
 
   const recordTextSelection = useCallback((objectId: string, range: NativeTextSelectionRange) => {
     const nextSelection = { objectId, range };
@@ -5681,6 +5675,9 @@ export function MainWindow({
     const nextDocument = insertNativeTextObject(currentDocument, point, "Text", textStyleDefaults);
     const inserted = getSelectedTextObject(nextDocument);
     commitDocumentChange(nextDocument);
+    if (inserted) {
+      textObjectIdsAwaitingAutoConversionRef.current.add(inserted.id);
+    }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(inserted?.id);
@@ -6097,10 +6094,34 @@ export function MainWindow({
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
 
-  // Catch-all for the element-symbol conversion: a text edit can end through MANY paths (Escape,
+  const convertCommittedText = useCallback((objectId: string) => {
+    if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
+      return;
+    }
+    const currentDocument = documentRef.current;
+    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
+    if (labelResult.target) {
+      if (labelResult.document !== currentDocument) {
+        commitDocumentChange(labelResult.document, "Convert Text to Atom Label");
+        setSelectedNativeMoleculePart(labelResult.target);
+      }
+      if (labelResult.message) setStatus(labelResult.message);
+      return;
+    }
+    // The label path above already performed the atom hit-test. Only its no-target path reaches
+    // the open-space element conversion, so do not repeat that hit-test here.
+    const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
+    if (converted !== currentDocument) {
+      commitDocumentChange(converted);
+      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
+      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+    }
+  }, [commitDocumentChange]);
+
+  // Catch-all for text conversion: a text edit can end through MANY paths (Escape,
   // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
   // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
-  // unreliable). Whatever ended the edit, convert the object it was editing.
+  // unreliable). Whichever path ends the first edit of a newly placed object converts it.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const previous = previousTextEditObjectIdRef.current;
@@ -6108,14 +6129,8 @@ export function MainWindow({
     if (!previous || previous === activeTextEditObjectId) {
       return;
     }
-    const currentDocument = documentRef.current;
-    const converted = convertNativeTextObjectToAtom(currentDocument, previous);
-    if (converted !== currentDocument) {
-      commitDocumentChange(converted);
-      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
-    }
-  }, [activeTextEditObjectId, commitDocumentChange]);
+    convertCommittedText(previous);
+  }, [activeTextEditObjectId, convertCommittedText]);
 
   const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
     // The editor's blur passes its own object id: a click-away clears activeTextEditObjectId in a
@@ -6126,17 +6141,8 @@ export function MainWindow({
     if (!objectId) {
       return;
     }
-    // A text box holding exactly an element symbol becomes a real naked atom on commit — it
-    // joins the molecule model with hover hotkeys and valence checking instead of staying inert
-    // text drawn near the structure.
-    const currentDocument = documentRef.current;
-    const converted = convertNativeTextObjectToAtom(currentDocument, objectId);
-    if (converted !== currentDocument) {
-      commitDocumentChange(converted);
-      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
-    }
-  }, [activeTextEditObjectId, commitDocumentChange]);
+    convertCommittedText(objectId);
+  }, [activeTextEditObjectId, convertCommittedText]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
     const currentDocument = documentRef.current;
@@ -6968,6 +6974,15 @@ export function MainWindow({
       return baseStyleResult(patch, field);
     };
     const bondTargets = currentMoleculeInspector.targets.bondTargets;
+    const position = moleculeDoubleBondPositionForCommand(commandId);
+    if (position) {
+      return {
+        document: applyMoleculeDoubleBondPosition(currentDocument, currentMoleculeInspector.structure.doubleBondTargets, position.value),
+        handled: true,
+        targeted: currentMoleculeInspector.structure.doubleBondTargetCount > 0,
+        message: `Double-bond position: ${position.value}`
+      };
+    }
     const bondTargetCount = bondTargets.length;
     const bondStyleResult = (patch: Parameters<typeof applyMoleculeBondStylePatch>[2], field: string) => {
       if (bondTargetCount > 0) {
@@ -7165,6 +7180,8 @@ export function MainWindow({
     currentMoleculeInspector.targets.atomTargets,
     currentMoleculeInspector.targets.atomLabelTargets,
     currentMoleculeInspector.targets.bondTargets,
+    currentMoleculeInspector.structure.doubleBondTargets,
+    currentMoleculeInspector.structure.doubleBondTargetCount,
     currentMoleculeInspector.targets.moleculeObjectIds,
     selectedMoleculeRingTargetsForCommand
   ]);
@@ -7176,11 +7193,11 @@ export function MainWindow({
     }
 
     if (!result.targeted) {
-      setStatus("Select a molecule before changing Drawn Structure Settings style");
+      setStatus(moleculeDoubleBondPositionForCommand(commandId) ? "Select a double bond" : "Select a molecule before changing Drawn Structure Settings style");
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -7213,7 +7230,7 @@ export function MainWindow({
       return;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
   }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentChange, replacePresentDocument]);
@@ -8053,6 +8070,10 @@ export function MainWindow({
       });
     };
 
+    createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
+      register(action, () => { applyMoleculeInspectorCommand(action.id); });
+    });
+
     register(
       {
         id: PLUGIN_MANAGER_COMMAND_ID,
@@ -8095,6 +8116,18 @@ export function MainWindow({
 
     quickActions.forEach((action) => {
       register(action, async () => {
+        if (action.id === convertTextToAtomLabelCommandId) {
+          const result = selectedTextToAtomLabelResult(documentRef.current);
+          if (result.disabledReason) {
+            setStatus(result.disabledReason);
+            return;
+          }
+          commitDocumentChange(result.document, "Convert Text to Atom Label");
+          setActiveTextEditObjectId(undefined);
+          setSelectedNativeMoleculePart(result.target);
+          if (result.message) setStatus(result.message);
+          return;
+        }
         if (action.id === "document.new") {
           resetDocumentHistory(createPhase4Document());
           clearDocumentInteractionState({ clearSpin3dModelCache: true });
@@ -8667,6 +8700,7 @@ export function MainWindow({
     applyObjectStyleCommand,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
+    currentMoleculeInspector,
     performCopyAs,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
@@ -9248,6 +9282,13 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (commandId === convertTextToAtomLabelCommandId) {
+      const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
+      if (disabledReason) {
+        setStatus(disabledReason);
+        return;
+      }
+    }
     if (commandId === "view.customizeToolbars") {
       setCustomizeToolbarsOpen(true);
       return;
@@ -9518,7 +9559,8 @@ export function MainWindow({
     }
 
     focusTextObjectEditor(activeTextEditObjectId);
-  }, [activeTextEditObjectId, document, focusTextObjectEditor]);
+    return clearScheduledTextEditorFocus;
+  }, [activeTextEditObjectId, clearScheduledTextEditorFocus, document, focusTextObjectEditor]);
 
   // Harden focus once per atom-label edit (not per keystroke: the draft changes on every key).
   const atomLabelEditObjectId = activeAtomLabelEdit?.objectId;
@@ -9533,6 +9575,22 @@ export function MainWindow({
     // window again over whatever the user moved on to.
     return clearScheduledTextEditorFocus;
   }, [atomLabelEditAtomId, atomLabelEditObjectId, clearScheduledTextEditorFocus, focusAtomLabelEditor]);
+
+  // Startup retries are finite. Resume a surviving edit even if another app window held focus
+  // longer than those retries, for both kinds of inline editor. The window is already focused:
+  // restore only DOM focus, never schedule another native raise in response to a focus event.
+  useEffect(() => {
+    const resumeInlineEditor = () => {
+      const atomEdit = activeAtomLabelEditRef.current;
+      if (atomEdit) {
+        focusAtomLabelEditorDom(atomEdit.objectId, atomEdit.atomId);
+      } else if (activeTextEditObjectIdRef.current) {
+        focusTextObjectEditorDom(activeTextEditObjectIdRef.current);
+      }
+    };
+    window.addEventListener("focus", resumeInlineEditor);
+    return () => window.removeEventListener("focus", resumeInlineEditor);
+  }, [focusAtomLabelEditorDom, focusTextObjectEditorDom]);
 
   // The one place an atom-label edit's close is handled. Dozens of paths end an edit by clearing
   // `activeAtomLabelEdit` directly — a tool picked in the palette, a palette command, a click on the
@@ -10130,6 +10188,11 @@ export function MainWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // WebKit reports the typed character during IME composition; WebView2 uses Process/229.
+      // Neither is a canvas shortcut or hover-label continuation until composition commits.
+      if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -10145,6 +10208,17 @@ export function MainWindow({
       }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
         return;
+      }
+      // Target-based shortcut filtering alone misses an editor waiting for native focus (or a
+      // palette that temporarily took it). An open edit owns every key during that interval too.
+      if (
+        (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current) &&
+        shouldBlockPendingInlineEditorCanvasKey(event)
+      ) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey || (!/^[a-z0-9]$/i.test(event.key) && event.key !== "Shift")) {
+        hoverLabelAssignmentRef.current = undefined;
       }
 
       if (event.key === "Escape" && graphicCornerRadiusDragRef.current) {
@@ -10268,6 +10342,25 @@ export function MainWindow({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        const hoveredTarget = hoveredNativeDeleteTargetRef.current;
+        const assignment = hoverLabelAssignmentRef.current;
+        if (event.key !== "Shift") {
+          hoverLabelAssignmentRef.current = undefined;
+        }
+        if (
+          assignment && hoveredTarget?.kind === "atom" &&
+          hoveredTarget.objectId === assignment.objectId && hoveredTarget.atomId === assignment.atomId &&
+          /^[a-z0-9]$/i.test(event.key)
+        ) {
+          const object = findDocumentObject(documentRef.current, assignment.objectId);
+          const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
+          const draft = `${assignment.label}${event.key}`;
+          if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, { draft })) {
+            event.preventDefault();
+            updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
+            return;
+          }
+        }
         const hoveredTargetCommandId = activeNativeTargetShortcutCommand(
           documentRef.current,
           selectedNativeMoleculePart,
@@ -10278,6 +10371,19 @@ export function MainWindow({
         if (hoveredTargetCommandId) {
           event.preventDefault();
           invokeCommandRef.current(hoveredTargetCommandId);
+          // Only a label assignment made by a hover key starts continuation. Other keys and
+          // selected-atom assignments retain their existing shortcut behavior.
+          const assignedElement = nativeElementFromKeyboardKey(event.key);
+          if (
+            keybindingSchemeRef.current === "chemdraft" && hoveredTarget?.kind === "atom" &&
+            assignedElement
+          ) {
+            const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
+            const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
+            if (atom?.element === assignedElement) {
+              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element };
+            }
+          }
           return;
         }
       }
@@ -10313,9 +10419,21 @@ export function MainWindow({
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
     shortcutRegistry,
+    startAtomLabelEdit,
     switchToSelectTool,
-    syncPathArtPreview
+    syncPathArtPreview,
+    updateAtomLabelDraft
   ]);
+
+  useEffect(() => {
+    // A pointer press ends the brief hover-key continuation window, even if the press stays on
+    // the same atom. Otherwise typing after a bond-tool click can append to a stale label edit.
+    const resetHoverLabelContinuation = () => {
+      hoverLabelAssignmentRef.current = undefined;
+    };
+    window.addEventListener("pointerdown", resetHoverLabelContinuation, true);
+    return () => window.removeEventListener("pointerdown", resetHoverLabelContinuation, true);
+  }, []);
 
   useEffect(() => {
     const setShiftPressed = (pressed: boolean) => {
@@ -10365,6 +10483,71 @@ export function MainWindow({
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
       window.document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  // Observe in capture phase so inline editors and handles can keep their own propagation rules.
+  // Read drag refs after event dispatch: pointer-down/up handlers create/clear them synchronously.
+  // No observer cancels an event or moves focus, and unchanged hints do not cause extra renders.
+  useEffect(() => {
+    let mounted = true;
+    const refreshAfterEvent = () => queueMicrotask(() => {
+      if (mounted) refreshModifierHintRef.current();
+    });
+    const recordModifiers = (event: globalThis.KeyboardEvent | globalThis.PointerEvent) => {
+      heldHintModifiersRef.current = {
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey
+      };
+    };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      recordModifiers(event);
+      const modifier = { Shift: "shiftKey", Alt: "altKey", Meta: "metaKey", Control: "ctrlKey" } as const;
+      const key = modifier[event.key as keyof typeof modifier];
+      if (key) heldHintModifiersRef.current[key] = event.type === "keydown";
+      refreshAfterEvent();
+    };
+    const onPointer = (event: globalThis.PointerEvent) => {
+      recordModifiers(event);
+      const target = event.target instanceof Element ? event.target : undefined;
+      const objectId = target?.closest<HTMLElement>("[data-object-id]")?.dataset.objectId;
+      const object = objectId ? findDocumentObject(documentRef.current, objectId) : undefined;
+      hintHoverTargetRef.current = !target?.closest(".canvas-region") ? undefined
+        : object?.type === "molecule" ? "molecule"
+        : object && isNativeArrowGraphic(object) ? "arrow"
+        : object ? "object" : "empty";
+      refreshAfterEvent();
+    };
+    const clearModifiers = () => {
+      heldHintModifiersRef.current = {};
+      hintHoverTargetRef.current = undefined;
+      refreshModifierHintRef.current();
+    };
+    const onVisibility = () => {
+      if (window.document.visibilityState !== "visible") clearModifiers();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKey, true);
+    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+      window.addEventListener(type, onPointer, true);
+    }
+    window.addEventListener("focusin", refreshAfterEvent, true);
+    window.addEventListener("focusout", refreshAfterEvent, true);
+    window.addEventListener("blur", clearModifiers);
+    window.document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      mounted = false;
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKey, true);
+      for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
+        window.removeEventListener(type, onPointer, true);
+      }
+      window.removeEventListener("focusin", refreshAfterEvent, true);
+      window.removeEventListener("focusout", refreshAfterEvent, true);
+      window.removeEventListener("blur", clearModifiers);
+      window.document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
@@ -10890,11 +11073,17 @@ export function MainWindow({
     templateId: NonNullable<ReturnType<typeof nativeTemplateForToolCommand>>,
     target?: NativeMoleculeDeleteTarget
   ) => {
-    const nextDocument = target
-      ? applyNativeTemplateToolAtTarget(documentRef.current, target, point, templateId)
-      : applyNativeTemplateToolAtPoint(documentRef.current, point, templateId);
-    if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+    const currentDocument = documentRef.current;
+    const plan = planNativeTemplatePlacement(currentDocument, { point, target }, templateId);
+    const nextDocument = plan
+      ? applyNativeTemplatePlacementPlan(currentDocument, plan)
+      : currentDocument;
+    const changed = nextDocument !== currentDocument;
+    if (changed) {
+      commitDocumentChange(
+        nextDocument,
+        plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
+      );
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -10904,7 +11093,9 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setTemplatePreview(undefined);
     templatePreviewKeyRef.current = undefined;
-    setStatus(nativeTemplateStatusForApplication(templateId, target, nextDocument !== documentRef.current));
+    templatePreviewTargetKeyRef.current = undefined;
+    templatePreviewPlanRef.current = undefined;
+    setStatus(nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((
@@ -10949,6 +11140,7 @@ export function MainWindow({
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
+      altKey: event.altKey,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
@@ -10969,6 +11161,8 @@ export function MainWindow({
     // The drag commits a live preview document, so the hover ghost would double up — drop it.
     setTemplatePreview(undefined);
     templatePreviewKeyRef.current = undefined;
+    templatePreviewTargetKeyRef.current = undefined;
+    templatePreviewPlanRef.current = undefined;
     event.currentTarget.setPointerCapture(event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
@@ -11047,12 +11241,14 @@ export function MainWindow({
     atomId: string,
     point: ClientPoint,
     forceCustomLength: boolean,
-    bondStyle?: NativeBondDisplayStyle
+    bondStyle?: NativeBondDisplayStyle,
+    placementAltKey = false
   ) => {
     const previousMolecule = findDocumentObject(sourceDocument, objectId);
     const nextDocument = applyFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
       forceCustomLength,
-      bondStyle
+      bondStyle,
+      placementAltKey
     });
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
@@ -11120,6 +11316,8 @@ export function MainWindow({
       assignHoveredNativeDeleteTarget(undefined);
       setTemplatePreview(undefined);
       templatePreviewKeyRef.current = undefined;
+      templatePreviewTargetKeyRef.current = undefined;
+      templatePreviewPlanRef.current = undefined;
       return;
     }
 
@@ -11151,25 +11349,31 @@ export function MainWindow({
       : undefined;
 
     // Ghost preview: the exact ring a click would place. A fuse/spiro plan is determined by its
-    // target (the shared edge/atom), so we key on that and skip recomputing the Kekulé pass while
-    // the pointer wanders the same bond — only a standalone ring follows the cursor cell-by-cell.
+    // target (the shared edge/atom); standalone and rejected-target fallback rings follow the
+    // pointer because their clear placement starts there.
     if (activeNativeTemplateId) {
-      const previewKey = target
-        ? [activeNativeTemplateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|")
-        : ["standalone", activeNativeTemplateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
-      if (previewKey !== templatePreviewKeyRef.current) {
-        templatePreviewKeyRef.current = previewKey;
-        setTemplatePreview(planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId));
+      const targetKey = nativeTemplatePreviewTargetKey(activeNativeTemplateId, target, point);
+      if (shouldReplanNativeTemplatePreview(templatePreviewTargetKeyRef.current, targetKey, templatePreviewPlanRef.current)) {
+        const plan = planNativeTemplatePlacement(sourceDocument, { point, target: target ?? undefined }, activeNativeTemplateId);
+        const previewKey = nativeTemplatePreviewKey(activeNativeTemplateId, target, point, plan);
+        templatePreviewTargetKeyRef.current = targetKey;
+        templatePreviewPlanRef.current = plan;
+        if (previewKey !== templatePreviewKeyRef.current) {
+          templatePreviewKeyRef.current = previewKey;
+          setTemplatePreview(plan);
+        }
       }
     } else if (templatePreviewKeyRef.current !== undefined) {
       templatePreviewKeyRef.current = undefined;
+      templatePreviewTargetKeyRef.current = undefined;
+      templatePreviewPlanRef.current = undefined;
       setTemplatePreview(undefined);
     }
 
     if (activeToolState.activeCommandId === "tool.bond" && target) {
       const object = findDocumentObject(sourceDocument, target.objectId);
       setNativeDoubleBondSidePreview(object?.type === "molecule"
-        ? nativeDoubleBondSidePreviewFromHit(target.objectId, object, target, point)
+        ? nativeDoubleBondSidePreviewFromHit(target.objectId, object, target, point, hitToleranceForScale(viewportRef.current.scale))
         : undefined);
     } else {
       setNativeDoubleBondSidePreview(undefined);
@@ -11244,11 +11448,13 @@ export function MainWindow({
       foreignTarget?.atomPoint ?? point,
       page.width,
       page.height,
-      { forceCustomLength: drag.freeformUnlocked || foreignTarget !== undefined }
+      {
+        forceCustomLength: drag.freeformUnlocked || foreignTarget !== undefined,
+        placementAltKey: foreignTarget ? undefined : drag.altKey
+      }
     );
-    if (preview?.customLength) {
-      drag.freeformUnlocked = true;
-    }
+    drag.connectsForeignAtom = foreignTarget !== undefined;
+    if (preview?.customLength) drag.freeformUnlocked = true;
     setFreeformNativeBond(preview ? {
       objectId: molecule.id,
       atomId: preview.atomId,
@@ -11306,6 +11512,9 @@ export function MainWindow({
       // pointer sets the head, so length and angle follow the drag (identical to ChemDraw's arrow).
       return applyNativeArtLineToolAtPoint(drag.startDocument, drag.startPoint, point, drag.artLineCommandId);
     }
+    if (drag.kind === "single-bond") {
+      return aimNativeSingleBondPlacement(drag.placementDocument, drag.objectId, drag.startPoint, point, drag.altKey);
+    }
     if (drag.kind === "chain") {
       // Chains regenerate from the start document each move: the drag vector sets axis and
       // segment count, so the whole zig-zag is recomputed rather than transformed.
@@ -11324,18 +11533,20 @@ export function MainWindow({
         }
         return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
           preview: options.preview,
+          placementAltKey: drag.altKey,
           pathPoints: [...drag.chainPath, point]
         });
       }
       return applyNativeChainTool(drag.startDocument, drag.startPoint, point, drag.chainAnchor, {
-        preview: options.preview
+        preview: options.preview,
+        placementAltKey: drag.altKey
       });
     }
     return rotateNativeMoleculeObjectAroundPoint(
       drag.placementDocument,
       drag.objectId,
       drag.startPoint,
-      nativePlacementRotationDegrees(drag.startPoint, point)
+      snapPlacementDegrees(nativePlacementRotationDegrees(drag.startPoint, point), drag.altKey)
     );
   }, []);
 
@@ -11344,7 +11555,8 @@ export function MainWindow({
     replacePresentDocument(nativePlacementDocumentFromDrag(drag, point));
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
-  const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, point: ClientPoint): boolean => {
+  const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
+    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -11545,17 +11757,19 @@ export function MainWindow({
     return true;
   }, [commitDocumentHistoryFrom, graphicGradientDocumentFromDrag, replacePresentDocument]);
 
-  // Fragment rotations click onto canonical directions (30° grid, 120° off the junction's
-  // stationary bonds); center-pivoted part rotations click at 15° steps.
+  // One snap policy for live preview and release; fragments retain their bond-direction grid.
   const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     if (!drag.target) {
-      return degrees;
+      return snapRotationDegrees(degrees, {
+        shiftKey: drag.shiftKey,
+        referenceDegrees: drag.startRotationDegrees
+      });
     }
     const molecule = findDocumentObject(drag.startDocument, drag.objectId);
     return molecule?.type === "molecule"
-      ? snapNativeMoleculePartRotationDegrees(molecule, drag.target, degrees)
-      : degrees;
+      ? snapNativeMoleculePartRotationDegrees(molecule, drag.target, degrees, drag.shiftKey)
+      : snapRotationDegrees(degrees, { shiftKey: drag.shiftKey });
   }, []);
 
   const objectRotateDocumentFromDrag = useCallback((drag: ObjectRotateDragState, point: ClientPoint): ChemDraftDocument => {
@@ -11767,13 +11981,13 @@ export function MainWindow({
 
   const previewNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint) => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
-    const nextDocument = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point);
+    const nextDocument = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point, hitToleranceForScale(viewportRef.current.scale));
     replacePresentDocument(nextDocument);
   }, [replacePresentDocument]);
 
   const commitNativeDoubleBondSideDrag = useCallback((drag: NativeBondEditDragState, point: ClientPoint): boolean => {
     const selectedStartDocument = selectDocumentObject(drag.startDocument, drag.target.objectId);
-    const moved = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point);
+    const moved = applyNativeDoubleBondSideTarget(selectedStartDocument, drag.target, point, hitToleranceForScale(viewportRef.current.scale));
     if (moved === selectedStartDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -11834,7 +12048,7 @@ export function MainWindow({
     // re-projects from a consistent source instead of jumping.
     let committed = rotated;
     if (drag.spin3dModel && !drag.target) {
-      const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
+      const degrees = objectRotateDragDegrees(drag, point);
       // NOTE the negated angle: flattenSpunMolecule flips Y on output (math y-up → document
       // y-down), so a +θ screen rotation (rotateDocumentObject, which is what the user sees)
       // corresponds to a −θ rotation about the math-frame +Z axis. Folding +θ here would store
@@ -11852,7 +12066,7 @@ export function MainWindow({
 
     commitDocumentHistoryFrom(drag.startDocument, committed);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument]);
 
   const commitProjectedPlaneTilt = useCallback((drag: ProjectedPlaneTiltDragState, point: ClientPoint): boolean => {
     const result = projectedPlaneTiltFromDrag(drag, point);
@@ -12570,13 +12784,16 @@ export function MainWindow({
   }, []);
 
   // Transform the whole selected group about its shared visual selection-box center.
+  // The axis-aligned selection frame has no persistent orientation, so groups snap the delta.
   const groupTransformDocument = useCallback((
     drag: GroupTransformDragState,
     point: ClientPoint,
     stretch = false
   ): ChemDraftDocument => {
     if (drag.mode === "rotate") {
-      const degrees = rotationDeltaDegrees(drag.center, drag.startPoint, point);
+      const degrees = snapRotationDegrees(rotationDeltaDegrees(drag.center, drag.startPoint, point), {
+        shiftKey: drag.shiftKey
+      });
       return rotateDocumentObjectsAroundPoint(drag.startDocument, drag.objectIds, drag.center, degrees);
     }
     if (drag.mode === "projected-plane-tilt") {
@@ -12627,6 +12844,7 @@ export function MainWindow({
       center: { x: bounds.centerX, y: bounds.centerY },
       startPoint: point,
       latestPoint: point,
+      shiftKey: event.shiftKey,
       dragging: false
     };
     groupTransformMachineRef.current = interactionReducer(initialInteractionState(), {
@@ -12996,10 +13214,10 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text") {
       event.preventDefault();
       event.stopPropagation();
-      // Same hover-honoring rule as the charge tools: a highlighted atom means this press
-      // edits that atom's label, not "drop a text box on top of the molecule".
-      const hoveredTarget = hoveredNativeDeleteTargetRef.current;
-      if (hoveredTarget?.kind === "atom" && startAtomLabelEdit(hoveredTarget, { clearDraft: true })) {
+      const target = nativeMoleculeCanvasHoverTarget(
+        documentRef.current, point, event.target, hitToleranceForScale(viewportRef.current.scale)
+      );
+      if (target?.kind === "atom" && startAtomLabelEdit(target, { clearDraft: true })) {
         return;
       }
       applyTextDocumentAtPoint(point);
@@ -13065,6 +13283,7 @@ export function MainWindow({
         return;
       }
       groupTransform.latestPoint = point;
+      groupTransform.shiftKey = event.shiftKey;
       groupTransformMachineRef.current = interactionReducer(groupTransformMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = groupTransformMachineRef.current.phase === "dragging";
       if (!groupTransform.dragging && nowDragging) {
@@ -13171,6 +13390,7 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
+      objectRotateDrag.shiftKey = event.shiftKey;
       objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = objectRotateMachineRef.current.phase === "dragging";
       if (!objectRotateDrag.dragging && nowDragging) {
@@ -13387,6 +13607,7 @@ export function MainWindow({
       }
 
       nativePlacementDrag.latestPoint = point;
+      nativePlacementDrag.altKey = event.altKey;
       placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = placementMachineRef.current.phase === "dragging";
       if (!nativePlacementDrag.dragging && nowDragging) {
@@ -13505,7 +13726,9 @@ export function MainWindow({
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
+      const point = groupTransform.mode === "rotate"
+        ? groupTransform.latestPoint
+        : pagePointFromPointerEvent(event) ?? groupTransform.latestPoint;
       groupTransformMachineRef.current = initialInteractionState();
       if (groupTransform.dragging) {
         const result = groupTransform.mode === "projected-plane-tilt"
@@ -13606,7 +13829,8 @@ export function MainWindow({
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      // Commit the last visible angle even if Shift is released with the pointer.
+      const point = objectRotateDrag.latestPoint;
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
@@ -13732,8 +13956,7 @@ export function MainWindow({
     const nativePlacementDrag = nativePlacementDragRef.current;
     if (nativePlacementDrag?.pointerId === event.pointerId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint;
-      const changed = commitNativePlacementDrag(nativePlacementDrag, point);
+      const changed = commitNativePlacementDrag(nativePlacementDrag, pagePointFromPointerEvent(event) ?? nativePlacementDrag.latestPoint);
       const label = nativePlacementStatusLabel(nativePlacementDrag);
       const draggedVerb = nativePlacementDrag.kind === "arrow" || nativePlacementDrag.kind === "art-line"
         ? "Inserted angled"
@@ -14928,7 +15151,9 @@ export function MainWindow({
         startPoint: point,
         latestPoint: point,
         dragging: false,
-        freeformUnlocked: false
+        connectsForeignAtom: false,
+        freeformUnlocked: false,
+        altKey: event.altKey
       };
       captureElement.setPointerCapture(event.pointerId);
       setHoveredNativeAtom({
@@ -15139,6 +15364,7 @@ export function MainWindow({
         : object.rotation,
       latestPoint: point,
       artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, [objectId], viewportRef.current.scale),
+      shiftKey: event.shiftKey,
       dragging: false,
       // Keep the stored conformer's orientation in sync when Z-rotating a modeled
       // whole molecule (whole-molecule only; fragments/text stay on the legacy path).
@@ -16126,6 +16352,7 @@ export function MainWindow({
       }
 
       objectRotateDrag.latestPoint = point;
+      objectRotateDrag.shiftKey = event.shiftKey;
       objectRotateMachineRef.current = interactionReducer(objectRotateMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
       const nowDragging = objectRotateMachineRef.current.phase === "dragging";
       if (!objectRotateDrag.dragging && nowDragging) {
@@ -16317,6 +16544,7 @@ export function MainWindow({
       }
 
       if (drag.dragging) {
+        drag.altKey = event.altKey;
         updateFreeformBondPreview(document, drag, point);
       } else {
         updateBondGrowthPreview(document, point);
@@ -16396,7 +16624,7 @@ export function MainWindow({
     const objectRotateDrag = objectRotateDragRef.current;
     if (objectRotateDrag?.pointerId === event.pointerId && objectRotateDrag.objectId === objectId) {
       event.stopPropagation();
-      const point = pagePointFromPointerEvent(event) ?? objectRotateDrag.latestPoint;
+      const point = objectRotateDrag.latestPoint;
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
@@ -16514,7 +16742,7 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
     const selectedDocument = selectDocumentObject(document, objectId);
     if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, point, drag.freeformUnlocked, drag.bondStyle);
+      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
     } else {
       applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle);
     }
@@ -16865,6 +17093,7 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
+        canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
         keybindingScheme
@@ -16875,6 +17104,7 @@ export function MainWindow({
       canUndo,
       canRedo,
       document.selection.objectIds.length,
+      quickActions,
       keybindingScheme,
       selectedMolecule,
       visibleToolsetIds,
@@ -16926,6 +17156,66 @@ export function MainWindow({
     onAtomLabelCancel: cancelAtomLabelEdit,
     onAtomLabelFinish: finishAtomLabelEdit
   });
+
+  refreshModifierHintRef.current = () => {
+    let interaction: ModifierHintInteraction = "idle";
+    if (objectRotateDragRef.current || groupTransformDragRef.current?.mode === "rotate") interaction = "rotate-drag";
+    else if (objectResizeDragRef.current || groupTransformDragRef.current?.mode === "resize") interaction = "resize-drag";
+    else if (tapeMeasureDragRef.current) interaction = "measure-drag";
+    else if (graphicMarkerDragRef.current) interaction = "arrowhead-drag";
+    else if (selectionLassoRef.current) interaction = "lasso";
+    else if (selectionMarqueeRef.current) interaction = "marquee";
+    else if (objectDragRef.current || nativePartDragRef.current) interaction = "move-drag";
+    else if (nativeBondDragRef.current ||
+      (nativePlacementDragRef.current && !nativePlacementDragRef.current.chainFlexible &&
+        ["single-bond", "template", "chain"].includes(nativePlacementDragRef.current.kind))) interaction = "placement-drag";
+    else if (nativeBondEditDragRef.current) interaction = "bond-drag";
+    else if (
+      groupTransformDragRef.current || projectedPlaneTiltDragRef.current || nativePlacementDragRef.current ||
+      graphicPathEditDragRef.current || graphicGradientDragRef.current || graphicCornerRadiusDragRef.current ||
+      freehandArtDragRef.current || mechanismArrowDragRef.current || mechanismHandleDragRef.current ||
+      bezierArtNodeDragRef.current || pathArtDrawRef.current || textResizeRef.current || spin3dStateRef.current
+    ) interaction = "other-drag";
+    const selectedIds = resolveGroupedDocumentObjectIds(document.pages[0].objects, document.selection.objectIds);
+    const selectedIdSet = new Set(selectedIds);
+    const groupSelected = selectedIds.length > 1 && !selectedNativeMoleculePart;
+    const canRevealRotation = Boolean(selectedNativeMoleculePart && nativeTransformableSelectionPart(selectedNativeMoleculePart)) ||
+      document.pages[0].objects.some((object) => {
+        if (!selectedIdSet.has(object.id)) return false;
+        if (object.type === "text") return true;
+        if (object.type === "molecule") return isNativeMoleculeGraph(object);
+        if (!documentObjectSupportsArtTransform(object)) return false;
+        if (object.type === "graphic" && (activeToolState.activeCommandId === "tool.art.directEdit" || activeGraphicTransformObjectId !== object.id)) {
+          // Direct path/gradient controls occupy the frame until the object enters transform mode.
+          return !nativeGraphicPathEditPoints(object) && !nativeGraphicPathNodeEditPoints(object) &&
+            !nativeGraphicLinearGradientHandlePoints(object, effectiveArtPaintTarget) &&
+            !nativeGraphicRadialGradientHandlePoints(object, effectiveArtPaintTarget);
+        }
+        return true;
+      });
+    const selectionHandles = groupSelected
+      ? nativeMoleculeObjectIdsForGroupProjectedPlaneTilt(document.pages[0].objects, selectedIds).length > 1 ? "tilt" : "none"
+      : canRevealRotation ? "rotate" : "none";
+    const markerObject = graphicMarkerDragRef.current
+      ? findDocumentObject(graphicMarkerDragRef.current.startDocument, graphicMarkerDragRef.current.objectId)
+      : undefined;
+    const data = markerObject?.type === "graphic" ? markerObject.data : undefined;
+    const focusTarget = window.document.activeElement;
+    setStatusModifierHint(modifierHint({
+      activeTool: activeToolState.activeCommandId,
+      interaction,
+      hoverTarget: shiftHoveredArrowId ? "arrow" : hintHoverTargetRef.current,
+      hasSelection: selectedIds.length > 0 || selectedNativeMoleculePart !== undefined,
+      selectionHandles,
+      inlineEditing: Boolean(activeAtomLabelEdit || activeTextEditObjectId || activeEditorObjectId || rotationInput || objectResizeInput) ||
+        shouldIgnoreShortcutTarget(focusTarget, "Shift") || isBlockedByModalDialog(focusTarget),
+      dualShaftArrow: data?.dualShaft === true,
+      twoArrowheads: Boolean(data?.markerStart && data.markerStart.kind !== "none" && data.markerEnd && data.markerEnd.kind !== "none"),
+      lassoSubtracting: selectionLassoRef.current?.subtracting
+    }, heldHintModifiersRef.current));
+  };
+  // Also refresh after command-driven tool/selection changes and interaction cancellation.
+  useEffect(() => { refreshModifierHintRef.current(); });
 
   return (
     <main
@@ -17592,30 +17882,34 @@ export function MainWindow({
           Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
         </div>
         <div
-          aria-live="polite"
-          role="status"
           style={{
             position: "absolute",
             bottom: 8,
             left: 8,
-            maxWidth: "min(560px, calc(100% - 280px))",
-            overflow: "hidden",
+            maxWidth: "calc(100% - 240px)",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "baseline",
+            gap: "2px 10px",
             color: "var(--cd-text-secondary)",
             fontSize: 11,
             pointerEvents: "none",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
             zIndex: 1000
           }}
         >
-          {interactive3dWorkspace
-            ? [
-                interactive3dWorkspace.status,
-                interactive3dWorkspace.energyLabel,
-                ...new Set(interactive3dWorkspace.session?.warnings ?? []),
-                "Esc to close"
-              ].filter(Boolean).join(" · ")
-            : hoveredNativeWarning ?? status}
+          <span data-status-message role="status" aria-live="polite" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {interactive3dWorkspace
+              ? [
+                  interactive3dWorkspace.status,
+                  interactive3dWorkspace.energyLabel,
+                  ...new Set(interactive3dWorkspace.session?.warnings ?? []),
+                  "Esc to close"
+                ].filter(Boolean).join(" · ")
+              : hoveredNativeWarning ?? status}
+          </span>
+          {statusModifierHint ? (
+            <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
+          ) : null}
         </div>
       </section>
       {objectContextMenu ? (
@@ -19447,7 +19741,7 @@ export function nativePlacementRotationDegrees(start: ClientPoint, latest: Clien
     return 0;
   }
 
-  return Number((Math.atan2(dy, dx) * 180 / Math.PI).toFixed(3));
+  return placementAimDegrees(start, latest);
 }
 
 export function projectedPlaneTiltRadiansFromDrag(start: ClientPoint, latest: ClientPoint): number {
@@ -19745,10 +20039,11 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-function nativeTemplateStatusForApplication(
+export function nativeTemplateStatusForApplication(
   templateId: NativeMoleculeTemplateId,
   target: NativeMoleculeDeleteTarget | undefined,
-  changed: boolean
+  changed: boolean,
+  fallbackReason?: NativeTemplateFallbackReason
 ): string {
   if (!target) {
     return `Inserted ${nativeTemplateStatusLabel(templateId)} template`;
@@ -19758,9 +20053,65 @@ function nativeTemplateStatusForApplication(
     return `${capitalizeLabel(nativeTemplateStatusLabel(templateId))} template not applied`;
   }
 
+  if (fallbackReason) {
+    const reason = fallbackReason === "atom-no-free-valence"
+      ? "that atom has no free valence"
+      : fallbackReason === "structure-not-editable"
+        ? "that structure cannot be edited"
+        : fallbackReason === "bond-cannot-accept"
+          ? "that bond cannot accept a ring"
+          : "that target is unavailable";
+    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${reason}`;
+  }
+
   return target.kind === "bond"
     ? `Fused ${nativeTemplateStatusLabel(templateId)} template`
     : `Made spiro ${nativeTemplateStatusLabel(templateId)} template`;
+}
+
+/** Plain canvas keys wait for a newly opened inline editor to receive focus; command chords route. */
+export function shouldBlockPendingInlineEditorCanvasKey(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey">
+): boolean {
+  return !event.metaKey && !event.ctrlKey;
+}
+
+/** The stable portion of a template-hover cache key, known before the placement is planned. */
+export function nativeTemplatePreviewTargetKey(
+  templateId: NativeMoleculeTemplateId,
+  target: NativeMoleculeDeleteTarget | undefined,
+  point: ClientPoint
+): string {
+  if (!target) {
+    return ["standalone", templateId, Math.round(point.x / 4), Math.round(point.y / 4)].join("|");
+  }
+  return [templateId, target.objectId, target.kind, target.kind === "bond" ? target.bondId : target.atomId].join("|");
+}
+
+/** Rejected attachment plans follow the pointer; successful fuse/spiro plans stay target-stable. */
+export function shouldReplanNativeTemplatePreview(
+  cachedTargetKey: string | undefined,
+  targetKey: string,
+  cachedPlan: NativeTemplatePlacementPlan | undefined
+): boolean {
+  return cachedTargetKey !== targetKey || Boolean(cachedPlan?.fallbackReason);
+}
+
+/**
+ * A fallback ring's clear placement is selected from the pointer position, unlike a fuse/spiro
+ * plan. Keep that point in its cache key so the ring painted at the last hover is the ring clicked.
+ */
+export function nativeTemplatePreviewKey(
+  templateId: NativeMoleculeTemplateId,
+  target: NativeMoleculeDeleteTarget | undefined,
+  point: ClientPoint,
+  plan: NativeTemplatePlacementPlan | undefined
+): string {
+  const targetKey = nativeTemplatePreviewTargetKey(templateId, target, point);
+  if (!target) return targetKey;
+  return plan?.fallbackReason
+    ? [targetKey, point.x, point.y].join("|")
+    : targetKey;
 }
 
 function nativeAtomBondCount(molecule: MoleculeObject, atomId: string): number {
@@ -19771,7 +20122,8 @@ function nativeDoubleBondSidePreviewFromHit(
   objectId: string,
   molecule: MoleculeObject,
   hit: NativeMoleculeDeleteHit,
-  point: ClientPoint
+  point: ClientPoint,
+  hitTolerance: NativeMoleculeHitTolerance
 ): NativeDoubleBondSidePreview | undefined {
   if (hit.kind !== "bond") {
     return undefined;
@@ -19782,34 +20134,8 @@ function nativeDoubleBondSidePreviewFromHit(
     return undefined;
   }
 
-  const fromAtom = molecule.atoms.find((atom) => atom.id === bond.fromAtomId);
-  const toAtom = molecule.atoms.find((atom) => atom.id === bond.toAtomId);
-  if (!fromAtom || !toAtom) {
-    return undefined;
-  }
-
-  const dx = toAtom.x - fromAtom.x;
-  const dy = toAtom.y - fromAtom.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) {
-    return undefined;
-  }
-
-  const normal = {
-    x: -dy / length,
-    y: dx / length
-  };
-  const midpoint = {
-    x: (fromAtom.x + toAtom.x) / 2,
-    y: (fromAtom.y + toAtom.y) / 2
-  };
-  const score = (point.x - midpoint.x) * normal.x + (point.y - midpoint.y) * normal.y;
-
-  return {
-    objectId,
-    bondId: bond.id,
-    side: score >= 0 ? "left" : "right"
-  };
+  const side = doubleBondSideForPoint(molecule, bond, point, hitTolerance);
+  return side ? { objectId, bondId: bond.id, side } : undefined;
 }
 
 function updateVisibleToolsets(current: ReadonlySet<string>, toolsetId: string, visible: boolean): Set<string> {
@@ -20469,34 +20795,12 @@ function CrosshairOverlay({
 // one of the atoms it touches invalid — the same predicate that paints the red "!" — so valid
 // spiro rings (cyclohexane/cyclopentane, degree-4 sp3) stay neutral and only genuinely bad
 // products (e.g. a spiro carbon shared by two aromatic rings) warn.
-/** How one bond draws in the spin overlay — mirrors the 2D renderer's conventions. */
-interface SpinBondRenderInfo {
-  order: 1 | 2 | 3;
-  bold: boolean;
-  /** Terminal-heteroatom doubles (C=O etc.) straddle the bond axis symmetrically,
-   *  exactly like the 2D drawing; all other doubles draw axis + inset inner line. */
-  symmetric: boolean;
-  /** Which ends draw the secondary line flush rather than inset, from layout-engine's
-   *  `doubleBondSecondaryFlushEnds` — a terminal methylene (=CH2) has no junction to tuck away
-   *  from. Copying the inset formula without this exception shortened ethylene and every terminal
-   *  alkene while spinning, then drew it flush on commit. */
-  secondaryFlush: { from: boolean; to: boolean };
-  /** Atom indices bonded to either endpoint (excluding the endpoints): the fallback
-   *  substituent-rich side for NON-ring double bonds, matching `defaultDoubleBondSide`. */
-  neighborIndices: number[];
-  /** Atom indices of the smallest ring the bond lies on, if any. A ring double bond's inner
-   *  line points toward this ring's PROJECTED centroid (true interior), overriding the
-   *  neighbor-mass rule which flips outward when exocyclic substituents dominate. */
-  ringAtomIndices?: number[];
-}
-
 interface Spin3dState {
+  sourceMolecule: MoleculeObject;
   objectId: string;
   quat: Quaternion;
   coords3d: Float64Array;
   bondPairs: [number, number][];
-  /** Per bondPairs entry: how the bond renders, mirroring the 2D drawing conventions. */
-  bondRender: SpinBondRenderInfo[];
   /** Per atom: the exact label the 2D drawing shows (undefined = unlabeled carbon). */
   atomLabels: (string | undefined)[];
   /** Per atom: resolved label drawing style, including sparse atom-specific overrides. */
@@ -20632,102 +20936,7 @@ function SpinOverlay({
           counts as painted (fill is rgba 0, not `none`), so every in-page click reaches
           handleSpinOverlayPointerDown, which routes inside-box → rotate, outside → flatten. */}
       <rect x={0} y={0} width={pageWidth} height={pageHeight} fill="transparent" />
-      {projection.bonds.map((bond, index) => {
-        const a = projection.atoms[bond.from];
-        const b = projection.atoms[bond.to];
-        // The SAME depth-cue helpers AND the SAME weight the committed 2D drawing uses
-        // (flatten bakes the identical weight into display.depthWeight) — releasing changes
-        // nothing visually. undefined ⇒ no cue, exactly as the commit leaves a planar view.
-        const weight = depthWeights[bond.index];
-        const render = state.bondRender[bond.index]
-          ?? { order: 1, bold: false, symmetric: false, secondaryFlush: { from: false, to: false }, neighborIndices: [] };
-        const stroke = depthCuedBondColor(drawingStyle.bondColor, weight);
-        const baseWidth = render.bold ? drawingStyle.bondBoldWidthPx : drawingStyle.bondStrokeWidthPx;
-        const width = depthCuedBondStrokeWidth(baseWidth, weight);
-        const rawDx = b.sx - a.sx;
-        const rawDy = b.sy - a.sy;
-        const rawLength = Math.hypot(rawDx, rawDy) || 1;
-        const ux = rawDx / rawLength, uy = rawDy / rawLength;
-        const nx = -uy, ny = ux; // screen-space normal
-        // Trim bond ends back from atom labels exactly like the 2D renderer does, so
-        // lines never strike through an O / NH2 / charge label while spinning.
-        const clearance = labelEndpointClearance(
-          state.atoms[bond.from],
-          state.atoms[bond.to],
-          state.atomLabels[bond.from],
-          state.atomLabels[bond.to],
-          drawingStyle,
-          rawLength,
-          { x: ux, y: uy },
-          state.atomLabelStyles[bond.from],
-          state.atomLabelStyles[bond.to]
-        );
-        const ax = a.sx + ux * clearance.from, ay = a.sy + uy * clearance.from;
-        const bx = b.sx - ux * clearance.to, by = b.sy - uy * clearance.to;
-        const length = Math.hypot(bx - ax, by - ay) || 1;
-        const gap = nativeMultipleBondGapPx(drawingStyle);
-        const key = (suffix: string) => `${bond.from}-${bond.to}-${index}-${suffix}`;
-        const line = (sx1: number, sy1: number, sx2: number, sy2: number, suffix: string) => (
-          <line key={key(suffix)} x1={sx1} y1={sy1} x2={sx2} y2={sy2}
-            stroke={stroke} strokeWidth={width} strokeLinecap={drawingStyle.bondLineCap} />
-        );
-        if (render.order === 2 && render.symmetric) {
-          // Terminal heteroatom double (C=O …): two full lines straddling the axis — same as 2D.
-          const o = gap / 2;
-          return [
-            line(ax + nx * o, ay + ny * o, bx + nx * o, by + ny * o, "p"),
-            line(ax - nx * o, ay - ny * o, bx - nx * o, by - ny * o, "s")
-          ];
-        }
-        if (render.order === 2) {
-          // 2D convention: primary line on the bond axis, shorter secondary line a full gap to
-          // one side. The side is chosen per frame from PROJECTED positions so it tracks the
-          // rotation and matches the flattened drawing. For a RING bond the inner line points
-          // toward the projected ring CENTROID (true interior) — this is the fix for aromatic
-          // rings whose exocyclic substituents used to flip the neighbor-mass heuristic below
-          // and push the double bond outside. Non-ring doubles keep the substituent-rich rule,
-          // which is exactly what defaultDoubleBondSide falls back to on commit.
-          const mx = (ax + bx) / 2, my = (ay + by) / 2;
-          let score = 0;
-          if (render.ringAtomIndices && render.ringAtomIndices.length > 0) {
-            let cx = 0, cy = 0, n = 0;
-            for (const ringIndex of render.ringAtomIndices) {
-              const p = projection.atoms[ringIndex];
-              if (p) { cx += p.sx; cy += p.sy; n += 1; }
-            }
-            if (n > 0) score = (cx / n - mx) * nx + (cy / n - my) * ny;
-          }
-          if (score === 0) {
-            for (const neighborIndex of render.neighborIndices) {
-              const p = projection.atoms[neighborIndex];
-              if (p) score += (p.sx - mx) * nx + (p.sy - my) * ny;
-            }
-          }
-          const dir = score >= 0 ? 1 : -1;
-          const secondary = spinDoubleBondSecondaryLine({
-            from: { x: ax, y: ay },
-            to: { x: bx, y: by },
-            unit: { x: ux, y: uy },
-            normal: { x: nx, y: ny },
-            gap,
-            side: dir,
-            insetPx: drawingStyle.doubleBondInsetPx,
-            minimumVisiblePx: doubleBondMinimumVisibleSegmentPx,
-            flush: render.secondaryFlush
-          });
-          return [
-            line(ax, ay, bx, by, "p"),
-            line(secondary.x1, secondary.y1, secondary.x2, secondary.y2, "s")
-          ];
-        }
-        if (render.order === 3) {
-          // Triple: three full-length lines at -gap / 0 / +gap — same as 2D.
-          return [-1, 0, 1].map((step) =>
-            line(ax + nx * gap * step, ay + ny * gap * step, bx + nx * gap * step, by + ny * gap * step, `t${step}`)
-          );
-        }
-        return line(ax, ay, bx, by, "p");
-      })}
+      {spinJoinedBondFragments(state.sourceMolecule, projection, depthWeights).map(renderStaticPageSvgFragment)}
       {/* Labels, painted far → near, depth-cued to match the bonds: far labels fade lighter and
           shrink slightly, near labels stay dark and full-size. The knockout is a glyph-hugging
           halo (paint-order stroke, painted UNDER the fill) instead of an opaque box, so bonds
@@ -24323,7 +24532,7 @@ function DocumentObjectViewContent({
                     // deactivated (a native palette or popover became key), not the user leaving
                     // the editor. Keep the edit open: the browser hands focus back to this input
                     // when the window is reactivated, so the rest of the word still lands here.
-                    if (!event.currentTarget.ownerDocument.hasFocus()) {
+                    if (!inlineEditorBlurEndsEdit(event.currentTarget)) {
                       return;
                     }
                     onAtomLabelFinish(editingAtomLabel, "blur");
@@ -24524,7 +24733,11 @@ function DocumentObjectViewContent({
               }}
               // Click-away commits like Escape does (element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
-              onBlur={() => onTextEditFinish(object.id)}
+              onBlur={(event) => {
+                if (inlineEditorBlurEndsEdit(event.currentTarget)) {
+                  onTextEditFinish(object.id);
+                }
+              }}
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}

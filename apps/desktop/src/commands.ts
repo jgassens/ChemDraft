@@ -23,6 +23,7 @@ import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
   nativeHotkeyElements,
+  selectedTextToAtomLabelDisabledReason,
   selectedGroupObjectIds,
   selectedArtBooleanEligibleObjectIds,
   type NativeHotkeyElement
@@ -69,6 +70,7 @@ export function createQuickActions(
 ): CommandSpec[] {
   const hasClipboardSelection =
     document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
+  const textLabelDisabledReason = selectedTextToAtomLabelDisabledReason(document);
   return [
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
@@ -77,6 +79,14 @@ export function createQuickActions(
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },
+    {
+      id: convertTextToAtomLabelCommandId,
+      title: "Convert Text to Atom Label",
+      icon: "atom",
+      source: "core",
+      enabled: textLabelDisabledReason === undefined,
+      disabledReason: textLabelDisabledReason
+    },
     { id: "clipboard.cut", title: "Cut", icon: "copy", shortcut: "Cmd+X", source: "core", enabled: hasClipboardSelection },
     { id: "clipboard.copy", title: "Copy", icon: "copy", shortcut: "Cmd+C", source: "core", enabled: hasClipboardSelection },
     { id: "clipboard.paste", title: "Paste", icon: "paste", shortcut: "Cmd+V", source: "core" },
@@ -106,6 +116,7 @@ export function createQuickActions(
 export const paletteGroups = getToolsetCommandGroups("core.main");
 
 export const structureCleanupCommandId = "structure.cleanup2d";
+export const convertTextToAtomLabelCommandId = "text.convertToAtomLabel";
 export const structureSpin3dCommandId = "structure.spin3d";
 export const structureInteractive3dCommandId = "structure.openInteractive3d";
 export const structureCleanup3dCommandId = "structure.cleanup3d";
@@ -797,6 +808,25 @@ export const customMoleculeStructureBondSpacingModeCommandPrefix = "molecule.str
 export const customMoleculeStructureBondSpacingPercentCommandPrefix = "molecule.structure.bondSpacingPercent:";
 export const customMoleculeStructureMultipleBondGapCommandPrefix = "molecule.structure.multipleBondGap:";
 export const customMoleculeStructureDoubleBondInsetCommandPrefix = "molecule.structure.doubleBondInset:";
+export type DoubleBondPosition = "left" | "center" | "right" | "automatic";
+export function moleculeDoubleBondPositionCommandId(value: DoubleBondPosition): string {
+  return `molecule.structure.doubleBondPosition:${value}`;
+}
+export function moleculeDoubleBondPositionForCommand(commandId: string): { value: DoubleBondPosition } | undefined {
+  return (["left", "center", "right", "automatic"] as const)
+    .map((value) => ({ value }))
+    .find(({ value }) => moleculeDoubleBondPositionCommandId(value) === commandId);
+}
+export function createDoubleBondPositionActions(targetCount: number): CommandSpec[] {
+  return (["left", "center", "right", "automatic"] as const).map((value) => ({
+    id: moleculeDoubleBondPositionCommandId(value),
+    title: `Double-bond position: ${value}`,
+    source: "core",
+    icon: "bond",
+    enabled: targetCount > 0,
+    disabledReason: targetCount > 0 ? undefined : "Select a double bond"
+  }));
+}
 export const customMoleculeStructureBondMarginWidthCommandPrefix = "molecule.structure.bondMarginWidth:";
 export const customMoleculeStructureBondHashSpacingCommandPrefix = "molecule.structure.bondHashSpacing:";
 export const customMoleculeStructureOverlapClearanceCommandPrefix = "molecule.structure.overlapClearance:";

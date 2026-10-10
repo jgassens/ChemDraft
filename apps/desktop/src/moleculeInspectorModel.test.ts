@@ -3,6 +3,26 @@ import { createEmptyDocument, type ChemDraftDocument, type GraphicObject, type M
 import { createMoleculeInspectorModel, resolveMoleculeInspectorTargets } from "./moleculeInspectorModel";
 
 describe("moleculeInspectorModel", () => {
+  it("keeps position disabled for a whole molecule without a double bond", () => {
+    const molecule = singleBondMolecule("single", 100);
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
+    expect(model.structure.doubleBondTargetCount).toBe(0);
+    expect(model.structure.doubleBondDisabledReason).toBe("Select a double bond");
+  });
+
+  it("targets only selected bonds when a part selection accompanies its parent object", () => {
+    const molecule = benzeneMolecule();
+    molecule.bonds[0].order = "double";
+    molecule.bonds[2].order = "double";
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), {
+      selectedObjectIds: [molecule.id],
+      selectedPart: { objectId: molecule.id, kind: "bond", bondId: molecule.bonds[0].id }
+    });
+    expect(model.structure.doubleBondTargetCount).toBe(1);
+    expect(model.structure.doubleBondTargets).toEqual([{ objectId: molecule.id, bondId: molecule.bonds[0].id }]);
+    expect(model.structure.targetKind).toBe("bond");
+  });
+
   it("checks implicit-H availability with linear chemistry-field reads on a carbon chain", () => {
     const work = (size: number): number => {
       let reads = 0;

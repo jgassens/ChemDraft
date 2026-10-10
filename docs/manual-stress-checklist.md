@@ -84,3 +84,32 @@ CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a paste
 
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
+
+User-feedback surfaces added since: rotation snap on molecule, group, and art-object rotation —
+magnetic absolute 15° multiples for whole objects, exact absolute multiples when Shift is held
+mid-drag, and 15° increments for groups; held-mouse placement of bonds (including wedge, hashed,
+dashed, and bold), rings, and templates snapping to absolute 15° multiples, with Alt/Option for
+free aiming on both macOS and Windows. Drag a bond from an atom and empty space toward 23°:
+the preview and released bond should both aim at 30°, or exactly 23° with Alt/Option held, at
+standard length for short drags. From an atom, drag past about 1.4 bond lengths (including a 240 px
+drag): check that the custom length and Å readout remain, with the angle still snapped unless
+Alt/Option is held. Drag back below breakaway and check custom length stays unlocked. Aim near
+the page edge: the endpoint should shorten to the edge while retaining its angle.
+Toggle Alt/Option mid-drag, check the status hint (⌥ on macOS, Alt on Windows),
+and verify release matches the preview, click geometry stays unchanged, and one Undo removes
+the placement. Check straight chains' first bond snapping; flexible chains should follow a long curved
+trace without rotating the path or showing a snap hint. Check a one-click ring placement,
+a short toolbar press selecting the tool, a long press opening its flyout, and a ring clicked on a full atom
+placing separately with an accurate status message; OMe, CF3, and NO2 typed over a hovered atom
+building the label without activating the Eraser, including with an IME active; a text-box editor
+surviving focus moving to a palette flyout or popover and back; an orbital lobe placed on an atom
+putting its tip on the atom and rotating about that tip; a Text-tool click on an atom opening its
+label editor and Convert Text to Atom Label working on a selected text box; centred double-bond
+position from the inspector for a whole molecule and Shift-clicked bonds, by dragging the second line
+onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; centred defaults
+for acyclic C=X double bonds; status-line modifier hints on interaction start/end, tool changes,
+and modifier presses/releases, including Shift toggled mid-rotation, Alt selection/eyedropper,
+arrowhead sizing, stretching, measurement angles, and wheel zoom, with result messages retained,
+held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
+and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
+hashed, dashed, and wedge bonds showing no line through the hashes.

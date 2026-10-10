@@ -31,6 +31,8 @@ import {
   planPageSvgRender,
   planMoleculeAtomLabels,
   planFreeformBondExtension,
+  aimPlacementVertices,
+  placementAimDegrees,
   planReactionArrowGeometry,
   bracketGlyphPathD,
   ringInteriorDoubleBondSides,
@@ -370,6 +372,65 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.newAtomPoint.y).toBeCloseTo(248.436, 3);
     expect(plan?.direction.x).toBeCloseTo(0.935, 3);
     expect(plan?.direction.y).toBeCloseTo(0.355, 3);
+  });
+
+  it("uses the supplied placement aim and standard length even past the old breakaway", () => {
+    const atoms = structuredClone(baseInput.atoms);
+    const bonds = structuredClone(baseInput.bonds);
+    const plan = planFreeformBondExtension({
+      ...baseInput, sourceAtomId: "atom_002", endPoint: { x: 500, y: 320 },
+      directionDegrees: 30, standardLength: true
+    })!;
+    expect(plan.lengthMode).toBe("default");
+    expect(placementAimDegrees(atoms[1], plan.newAtomPoint)).toBeCloseTo(30, 10);
+    expect(Math.hypot(plan.newAtomPoint.x - atoms[1].x, plan.newAtomPoint.y - atoms[1].y)).toBeCloseTo(80, 10);
+    expect(baseInput.atoms).toEqual(atoms);
+    expect(baseInput.bonds).toEqual(bonds);
+  });
+
+  it.each([0, 30, -30, 60, -60, 180])("clamps off-page standard placement along its %s° aim", (degrees) => {
+    const plan = planFreeformBondExtension({
+      ...baseInput, sourceAtomId: "atom_002", endPoint: { x: 500, y: 320 },
+      directionDegrees: degrees, standardLength: true,
+      pageBounds: { x: 220, y: 200, width: 60, height: 40 }
+    })!;
+    expect(plan).toBeDefined();
+    expect(plan.lengthMode).toBe("default");
+    expect(placementAimDegrees(baseInput.atoms[1], plan.newAtomPoint)).toBeCloseTo(degrees, 10);
+    expect(plan.newAtomPoint.x).toBeGreaterThanOrEqual(220);
+    expect(plan.newAtomPoint.x).toBeLessThanOrEqual(280);
+    expect(plan.newAtomPoint.y).toBeGreaterThanOrEqual(200);
+    expect(plan.newAtomPoint.y).toBeLessThanOrEqual(240);
+    expect(Math.hypot(plan.newAtomPoint.x - 240, plan.newAtomPoint.y - 220)).toBeLessThan(80);
+  });
+
+  it("declines aimed placement that clamping would shorten below the minimum bond length", () => {
+    const aimedExtension = (sourceX: number) => planFreeformBondExtension({
+      atoms: [
+        { id: "atom_001", x: sourceX - 80, y: 220 },
+        { id: "atom_002", x: sourceX, y: 220 }
+      ],
+      bonds: [{ fromAtomId: "atom_001", toAtomId: "atom_002" }],
+      sourceAtomId: "atom_002",
+      endPoint: { x: 900, y: 220 },
+      bondLength: 80,
+      pageBounds: baseInput.pageBounds,
+      directionDegrees: 0,
+      standardLength: true
+    });
+
+    expect(aimedExtension(816)).toBeUndefined();
+    expect(aimedExtension(800)?.newAtomPoint).toEqual({ x: 816, y: 220 });
+    expect(aimedExtension(805)).toBeUndefined();
+  });
+
+  it("aims a vertex plan while preserving lengths and stopping at the page edge", () => {
+    const points = [{ x: 40, y: 40 }, { x: 120, y: 40 }, { x: 160, y: 80 }];
+    const aimed = aimPlacementVertices(points, 30);
+    expect(placementAimDegrees(aimed[0], aimed[1])).toBeCloseTo(30, 10);
+    for (let i = 1; i < points.length; i++) expect(Math.hypot(aimed[i].x - aimed[i - 1].x, aimed[i].y - aimed[i - 1].y))
+      .toBeCloseTo(Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y), 10);
+    expect(aimPlacementVertices(points, 30, { x: 0, y: 0, width: 200, height: 90 })).toEqual(aimed.slice(0, 2));
   });
 
   it("breaks freeform growth into custom length only after a larger drag", () => {
@@ -2849,7 +2910,7 @@ describe("layout-engine page SVG planner", () => {
     )).toBe(true);
   });
 
-  it("draws an aldehyde with a backbone-connected primary line and a short inward secondary line", () => {
+  it("draws an automatic aldehyde with both centered lines joined to the backbone", () => {
     const molecule = moleculeObject({
       id: "mol_aldehyde_double_bond",
       atoms: [
@@ -2892,28 +2953,22 @@ describe("layout-engine page SVG planner", () => {
       throw new Error("Expected backbone, primary carbonyl, and secondary carbonyl lines.");
     }
 
-    expect({ x: primary.attrs.x1, y: primary.attrs.y1 }).toEqual({ x: 142, y: 140 });
-    expect({ x: backbone.attrs.x2, y: backbone.attrs.y2 }).toEqual({ x: 142, y: 140 });
-    expect(primary.attrs["data-double-bond-side"]).toBe("left");
-    expect(secondary.attrs["data-double-bond-side"]).toBe("left");
-
-    const segmentLength = (fragment: PageSvgElementFragment) => Math.hypot(
-      Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
-      Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
-    );
-    expect(segmentLength(secondary)).toBeLessThan(segmentLength(primary));
-
-    const carbonylUnit = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
-    const carbonylNormal = { x: -carbonylUnit.y, y: carbonylUnit.x };
-    const secondaryOffset = {
-      x: Number(secondary.attrs.x1) - Number(primary.attrs.x1),
-      y: Number(secondary.attrs.y1) - Number(primary.attrs.y1)
-    };
-    const backboneDirection = { x: -22, y: 12 };
-    expect(secondaryOffset.x * carbonylNormal.x + secondaryOffset.y * carbonylNormal.y)
-      .toBeGreaterThan(0);
-    expect(backboneDirection.x * carbonylNormal.x + backboneDirection.y * carbonylNormal.y)
-      .toBeGreaterThan(0);
+    // The former terminal-heteroatom inward-side convention is replaced by the general C=X
+    // default: both full-length strokes use the same joined geometry as explicit Center.
+    const explicit = { ...molecule, bonds: molecule.bonds.map((bond) => bond.order === "double"
+      ? { ...bond, display: { doubleBondSide: "center" as const } } : bond) };
+    expect(fragments).toEqual(planPageSvgRender(pageWithObjects([explicit])).fragments.flatMap(elementFragments));
+    expect(primary.attrs["data-double-bond-side"]).toBe("center");
+    expect(secondary.attrs["data-double-bond-side"]).toBe("center");
+    const a = { x: Number(backbone.attrs.x1), y: Number(backbone.attrs.y1) };
+    const b = { x: Number(backbone.attrs.x2), y: Number(backbone.attrs.y2) };
+    for (const line of [primary, secondary]) {
+      const x = Number(line.attrs.x1), y = Number(line.attrs.y1);
+      const t = ((x - a.x) * (b.x - a.x) + (y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+      expect(t).toBeGreaterThanOrEqual(0);
+      expect(t).toBeLessThanOrEqual(1 + 1e-8);
+      expect(Math.hypot(x - a.x - t * (b.x - a.x), y - a.y - t * (b.y - a.y))).toBeLessThan(1e-8);
+    }
   });
 
   it("ends both lines of a terminal methylene at the same terminal plane", () => {
@@ -3083,8 +3138,8 @@ describe("layout-engine page SVG planner", () => {
       Number(fragment.attrs.x2) - Number(fragment.attrs.x1),
       Number(fragment.attrs.y2) - Number(fragment.attrs.y1)
     );
-    // The junction has two backbone neighbors, so no inner side is derivable: the pair must
-    // straddle the C=O centerline symmetrically with equal lengths, mirroring around x = 142.
+    // This now follows the general automatic C=X rule, rather than the old undecidable
+    // terminal-heteroatom exception. Symmetric joins still mirror around x = 142.
     expect(segmentLength(primary)).toBeCloseTo(segmentLength(secondary), 6);
     expect(Number(primary.attrs.x1) + Number(secondary.attrs.x1)).toBeCloseTo(284, 6);
     expect(Number(primary.attrs.x2) + Number(secondary.attrs.x2)).toBeCloseTo(284, 6);
