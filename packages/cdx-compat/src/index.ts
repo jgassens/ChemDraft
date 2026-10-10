@@ -1985,6 +1985,18 @@ function importFragment(
         context.bondRefsByCdxmlId.delete(cdxmlBondId);
       }
     }
+    // A warning names only bonds the molecule keeps: a skipped bond was never imported, so a warning
+    // about it alone is about the molecule.
+    for (const item of warnings) {
+      if (item.sourceObjectId === objectId && item.bondIds) {
+        const keptIds = item.bondIds.filter((bondId) => keptBondIds.has(bondId));
+        if (keptIds.length > 0) {
+          item.bondIds = keptIds;
+        } else {
+          delete item.bondIds;
+        }
+      }
+    }
     warnings.push({
       code: "cdxml.bond_endpoints_invalid",
       message: `Skipped ${bonds.length - joinedBonds.length} CDXML bond${bonds.length - joinedBonds.length === 1 ? "" : "s"} that did not join two different atoms of the fragment.`,

@@ -11019,14 +11019,26 @@ export function MainWindow({
 
   // Esc closes the open-warnings list and does nothing else. It is caught in the capture phase and
   // marked handled, so the canvas keydown handler (which skips handled events) neither cancels a drag
-  // nor leaves a tool; with the list closed nothing listens here and Esc does what it always did. A
-  // press outside the list closes it and goes on to do whatever it does.
+  // nor leaves a tool; with the list closed nothing listens here and Esc does what it always did. The
+  // list is the last thing Esc reaches: an inline label or text edit, a text field, or an open menu
+  // takes it first, and the list closes on the next one. A press outside the list closes it and goes
+  // on to do whatever it does.
   useEffect(() => {
     if (!openWarningsListShown) {
       return undefined;
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || isBlockedByModalDialog(event.target)) {
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (
+        activeAtomLabelEditRef.current
+        || activeTextEditObjectIdRef.current
+        || shouldIgnoreShortcutTarget(event.target, event.key)
+        || target?.closest("[role=\"menubar\"], [role=\"menu\"]")
+        || window.document.querySelector("[role=\"menubar\"] [aria-expanded=\"true\"]")
+      ) {
         return;
       }
       event.preventDefault();

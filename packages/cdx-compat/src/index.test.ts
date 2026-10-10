@@ -2568,6 +2568,25 @@ describe("CDXML import warnings name their atoms and bonds", () => {
     expect(warning("cdxml.dashed_single_read_as_dative")).toMatchObject({ sourceObjectId: molecule.id, bondIds: [molecule.bonds[3].id] });
   });
 
+  it("names only bonds that were imported: a bond skipped for a missing endpoint is not named", () => {
+    const skipped = openChemDraftPayload(`<CDXML><page id="1"><fragment id="f">
+      <n id="a0" p="0 0"/>
+      <n id="a1" p="14 0"/>
+      <b id="b0" B="a0" E="a1" Order="1.5"/>
+      <b id="b1" B="a1" E="missing" Order="1.5"/>
+      <b id="b2" B="a0" E="gone" Display="Dash"/>
+    </fragment></page></CDXML>`);
+    const kept = skipped.document?.pages[0].objects[0] as MoleculeObject;
+    expect(kept.bonds.map((bond) => bond.id)).toEqual(["bond_001"]);
+    expect(skipped.warnings.some(({ code }) => code === "cdxml.bond_endpoints_invalid")).toBe(true);
+    const aromatic = skipped.warnings.filter(({ code }) => code === "cdxml.aromatic_bond_import_approximation");
+    expect(aromatic.map((item) => item.bondIds)).toEqual([["bond_001"], undefined]);
+    expect(aromatic.every((item) => item.sourceObjectId === kept.id)).toBe(true);
+    const dashed = skipped.warnings.find(({ code }) => code === "cdxml.dashed_single_read_as_dative");
+    expect(dashed).toMatchObject({ sourceObjectId: kept.id });
+    expect(dashed && "bondIds" in dashed).toBe(false);
+  });
+
   it("keeps the document's stored warnings to code, message and object", () => {
     // Atom and bond ids are for the open-time list only; the saved compatibility record is unchanged.
     const stored = opened.document?.compatibility?.warnings ?? [];

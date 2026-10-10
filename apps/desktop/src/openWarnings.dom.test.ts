@@ -157,6 +157,32 @@ describe("open warnings list", () => {
     });
   }
 
+  /** Hover an atom with no button pressed, as the pointer passing over it does. */
+  async function hoverAtom(atom: { x: number; y: number }) {
+    const client = bridge().resolvePoint({ page: atom }).client;
+    const page = container.querySelector<HTMLElement>(".page")!;
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: client.x, clientY: client.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      page.dispatchEvent(event);
+    });
+  }
+
+  /** A typed key, with the browser's text-entry default applied when it lands in a focused field. */
+  async function type(key: string) {
+    const target = document.activeElement ?? document.body;
+    const event = await press(key, target);
+    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, target.value.slice(0, start) + key + target.value.slice(end));
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.setSelectionRange(start + 1, start + 1);
+      });
+    }
+  }
+
   it("keeps the count in the status line and lists every warning with what it is about", async () => {
     await mountWithFile(tenMetals, "ten-metals.cdxml");
 
@@ -253,6 +279,49 @@ describe("open warnings list", () => {
     // A focused button passes letter shortcuts on.
     await press("e");
     expect(bridge().snapshot().activeToolCommandId).toBe("tool.eraser");
+  });
+
+  it("Esc goes to a label being typed first; the list closes on the next one", async () => {
+    await mountWithFile(invalidElement, "invalid-element.cdxml");
+    await click(button()!);
+    expect(list()).not.toBeNull();
+
+    // Hover-typing over the * atom: the first letter assigns at once, the second opens the label editor.
+    const star = molecules()[0].atoms.find((atom) => atom.element === "*")!;
+    await hoverAtom(star);
+    expect(bridge().snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: star.id });
+    await type("O");
+    await type("M");
+    const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+    expect(editor()?.value).toBe("OM");
+    expect(document.activeElement).toBe(editor());
+
+    await press("Escape");
+    expect(editor()).toBeNull();
+    expect(molecules()[0].atoms.find((atom) => atom.id === star.id)?.element).toBe("O");
+    expect(list()).not.toBeNull();
+
+    await press("Escape");
+    expect(list()).toBeNull();
+  });
+
+  it("Esc goes to an open web menu first; the list closes on the next one", async () => {
+    await mountWithFile(invalidElement, "invalid-element.cdxml");
+    const fileMenu = container.querySelector<HTMLButtonElement>('[role="menubar"] [data-menu-section="file"]')!;
+    await click(fileMenu);
+    expect(fileMenu.getAttribute("aria-expanded")).toBe("true");
+    // Opened by command (a shortcut, say): a click on the count would have closed the menu.
+    await act(async () => {
+      await bridge().command(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+    });
+    expect(list()).not.toBeNull();
+
+    await press("Escape");
+    expect(fileMenu.getAttribute("aria-expanded")).toBe("false");
+    expect(list()).not.toBeNull();
+
+    await press("Escape", document.body);
+    expect(list()).toBeNull();
   });
 
   it("Esc closes the list and nothing else; with the list closed, Esc does what it always did", async () => {
