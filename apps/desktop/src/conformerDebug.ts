@@ -1,4 +1,5 @@
 import { isDesktopRuntime } from "./window-manager";
+import { listenTauriEvent } from "./window-manager/tauriEvents";
 
 export const SPIN3D_DEBUGGER_WINDOW_KIND = "spin3d-debugger";
 export const SPIN3D_DEBUGGER_COMMAND_ID = "view.toggle3dDebugger";
@@ -236,8 +237,7 @@ export async function listenForSpin3dTraceEvents(handler: (event: Spin3dTraceEve
     return unlistenDom;
   }
 
-  const { listen } = await import("@tauri-apps/api/event");
-  const unlistenTauri = await listen<Spin3dTraceEvent>(SPIN3D_TRACE_EVENT, (event) => {
+  const unlistenTauri = await listenTauriEvent<Spin3dTraceEvent>(SPIN3D_TRACE_EVENT, (event) => {
     if (isSpin3dTraceEvent(event.payload)) {
       handler(event.payload);
     }

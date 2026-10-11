@@ -1,6 +1,7 @@
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
+import { listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   activeOpenWarnings,
@@ -388,10 +389,10 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
-  applyNativeAtomSproutTarget,
+  nativeAtomSproutHotkeyTarget,
   applyNativeBondDisplayStyleTarget,
-  applyNativeRingAttachAtAtomTarget,
-  applyNativeRingFuseAtBondTarget,
+  nativeRingHotkeyAttachAtAtomTarget,
+  nativeRingHotkeyFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
@@ -414,6 +415,8 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
+  type NativeRingHotkeyResult,
+  type NativeRingHotkeyRefusal,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -1564,7 +1567,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.09.20-opus";
+const CURRENT_BUILD_STAMP = "10.11.12.10-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1800,6 +1803,12 @@ export interface MainWindowProps {
   initialCrosshairsVisible?: boolean;
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
+  /**
+   * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
+   * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
+   * on off the desktop runtime, as DOM tests do to exercise native-mode code, runs native mode with no
+   * window manager: no palette windows are reconciled, and no in-window palettes appear either.
+   */
   nativePalette?: boolean;
 }
 
@@ -3743,7 +3752,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3753,9 +3762,12 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = edit(currentDocument, target);
+    const result = edit(currentDocument, target);
+    const { document: nextDocument, refusal } = "document" in result ? result : { document: result, refusal: undefined };
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot add ${statusNoun} here`);
+      setStatus(refusal
+        ? `Cannot add ${statusNoun} here: ${nativeTemplateFallbackReasonText(refusal)}`
+        : `Cannot add ${statusNoun} here`);
       return;
     }
 
@@ -3772,19 +3784,19 @@ export function MainWindow({
 
   const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeAtomSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+      nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
   const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeRingAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
+      nativeRingHotkeyAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
   const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
-      applyNativeRingFuseAtBondTarget(document, target, templateId)
+      nativeRingHotkeyFuseAtBondTarget(document, target, templateId)
     );
   }, [applyHoveredNativeTargetEdit]);
 
@@ -10633,6 +10645,7 @@ export function MainWindow({
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const assignment = hoverLabelAssignmentRef.current;
+        let labelContinues = false;
         // A label key belongs to an atom. Mid-label, a key that continues the label goes to the atom
         // being labelled wherever the pointer has drifted (its bond, a neighbour, empty canvas); with
         // the pointer resting on a bond (easy on a zigzag chain, whose bond zones crowd the atoms),
@@ -10649,6 +10662,11 @@ export function MainWindow({
             hoverRetargetedForLabelRef.current = false;
             rederiveNativeCanvasHoverRef.current?.(documentRef.current);
           }
+          // Decided once, against what the pointer is over. Re-deciding after the hover moves onto the
+          // labelled atom would read a capital element letter typed after a drift (C, drift, F) as a
+          // new label on that atom, and CF3 would silently become F3.
+          labelContinues = assignment !== undefined &&
+            hoverLabelContinuesForKey(documentRef.current, hoveredNativeDeleteTargetRef.current, assignment, event.key);
           const labelAtom = hoverLabelAtomTargetForKey(
             documentRef.current,
             hoveredNativeDeleteTargetRef.current,
@@ -10668,7 +10686,7 @@ export function MainWindow({
         if (
           assignment && hoveredTarget?.kind === "atom" &&
           hoveredTarget.objectId === assignment.objectId && hoveredTarget.atomId === assignment.atomId &&
-          hoverLabelContinuesForKey(documentRef.current, hoveredTarget, assignment, event.key)
+          labelContinues
         ) {
           const object = findDocumentObject(documentRef.current, assignment.objectId);
           const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
@@ -10964,6 +10982,13 @@ export function MainWindow({
     if (!effectiveNativePalette) {
       return;
     }
+    // Native palette windows exist only in the desktop runtime, which is also the only place native
+    // palettes are on by default. Off it (a caller forcing `nativePalette`, as DOM tests do) there is
+    // no window manager to reconcile with: retrying would only end, about 0.4 s later, in the
+    // fallback below, posting its status over whatever the status line said at that moment.
+    if (!isDesktopRuntime()) {
+      return;
+    }
 
     let cancelled = false;
     void reconcileNativePaletteWindows({
@@ -11192,6 +11217,13 @@ export function MainWindow({
   // Apply in-place customize edit ops from the Main palette against the authoritative layout state.
   // Ops (not full state) so a stale palette snapshot can't clobber; the resulting commit re-broadcasts
   // and the palette repaints. `exitCustomize` is a mode signal, not a layout edit.
+  // The listener reads both callbacks through refs and subscribes once. With them as deps it
+  // re-subscribed whenever native-palette mode settled after startup, so every cold launch unlistened
+  // a listener the moment it attached: the gap Tauri 2.11's unlisten cannot survive (tauriEvents.ts).
+  const commitToolbarLayoutRef = useRef(commitToolbarLayout);
+  commitToolbarLayoutRef.current = commitToolbarLayout;
+  const setCustomizeModeRef = useRef(setCustomizeMode);
+  setCustomizeModeRef.current = setCustomizeMode;
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
@@ -11200,7 +11232,7 @@ export function MainWindow({
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
-        setCustomizeMode(false);
+        setCustomizeModeRef.current(false);
         return;
       }
       const registry = toolsetRegistryRef.current;
@@ -11223,7 +11255,7 @@ export function MainWindow({
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {
-        commitToolbarLayout(next, false);
+        commitToolbarLayoutRef.current(next, false);
       }
     })
       .then((cleanup) => {
@@ -11238,7 +11270,7 @@ export function MainWindow({
       active = false;
       unlisten?.();
     };
-  }, [commitToolbarLayout, setCustomizeMode]);
+  }, []);
 
   // Answer a late-joining palette's request for the current customize-mode state (mirrors the
   // layout-state responder above).
@@ -18325,56 +18357,46 @@ export function MainWindow({
             onClose={() => setCustomizeToolbarsOpen(false)}
           />
         ) : null}
-        <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
-          Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
-        </div>
-        <div
-          style={{
-            position: "absolute",
-            bottom: 8,
-            left: 8,
-            maxWidth: "calc(100% - 240px)",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "baseline",
-            gap: "2px 10px",
-            color: "var(--cd-text-secondary)",
-            fontSize: 11,
-            pointerEvents: "none",
-            zIndex: 1000
-          }}
-        >
-          <span data-status-message role="status" aria-live="polite" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {interactive3dWorkspace
-              ? [
-                  interactive3dWorkspace.status,
-                  interactive3dWorkspace.energyLabel,
-                  ...new Set(interactive3dWorkspace.session?.warnings ?? []),
-                  "Esc to close"
-                ].filter(Boolean).join(" · ")
-              : hoveredNativeWarning ?? status}
-          </span>
-          {openWarnings ? (
-            <button
-              type="button"
-              className="open-warnings-button"
-              data-open-warnings-button
-              aria-haspopup="dialog"
-              aria-expanded={openWarningsListShown}
-              aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
-              title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
-              // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
-              }}
-            >
-              {warningCountLabel(openWarnings.warnings.length)}
-            </button>
-          ) : null}
-          {statusModifierHint ? (
-            <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
-          ) : null}
+        {/* One row along the bottom of the workspace: the status (its text truncating), the warnings
+            count and the modifier hint on the left, the build stamp on the right, giving way first (App.css).
+            Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
+        <div className="status-row" data-status-row>
+          <div className="status-row-main">
+            <span data-status-message role="status" aria-live="polite" className="status-message">
+              {interactive3dWorkspace
+                ? [
+                    interactive3dWorkspace.status,
+                    interactive3dWorkspace.energyLabel,
+                    ...new Set(interactive3dWorkspace.session?.warnings ?? []),
+                    "Esc to close"
+                  ].filter(Boolean).join(" · ")
+                : hoveredNativeWarning ?? status}
+            </span>
+            {openWarnings ? (
+              <button
+                type="button"
+                className="open-warnings-button"
+                data-open-warnings-button
+                aria-haspopup="dialog"
+                aria-expanded={openWarningsListShown}
+                aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+                // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+                }}
+              >
+                {warningCountLabel(openWarnings.warnings.length)}
+              </button>
+            ) : null}
+            {statusModifierHint ? (
+              <span data-modifier-hint aria-live="polite" className="status-modifier-hint">{statusModifierHint}</span>
+            ) : null}
+          </div>
+          <div className="build-stamp" data-build-stamp title={`Build ${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__}`}>
+            Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
+          </div>
         </div>
         {openWarningsListShown && openWarnings ? (
           <OpenWarningsList
@@ -20512,6 +20534,30 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
+/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
+  switch (reason) {
+    case "atom-no-free-valence":
+      return "that atom has no free valence";
+    case "bond-atom-no-free-valence":
+      return "an atom on that bond has no free valence";
+    case "closure-atom-no-free-valence":
+      return "the ring would close onto an atom with no free valence";
+    case "double-bond-overfill":
+      return "the ring's double bonds would overfill a neighbouring atom";
+    case "atom-label-not-element":
+      return "that atom's label is an abbreviation; relabel it to an element first";
+    case "ring-geometry-unavailable":
+      return "the ring's geometry could not be placed there";
+    case "structure-not-editable":
+      return "that structure cannot be edited";
+    case "bond-cannot-accept":
+      return "that bond cannot accept a ring";
+    case "target-unavailable":
+      return "that target is unavailable";
+  }
+}
+
 export function nativeTemplateStatusForApplication(
   templateId: NativeMoleculeTemplateId,
   target: NativeMoleculeDeleteTarget | undefined,
@@ -20527,14 +20573,7 @@ export function nativeTemplateStatusForApplication(
   }
 
   if (fallbackReason) {
-    const reason = fallbackReason === "atom-no-free-valence"
-      ? "that atom has no free valence"
-      : fallbackReason === "structure-not-editable"
-        ? "that structure cannot be edited"
-        : fallbackReason === "bond-cannot-accept"
-          ? "that bond cannot accept a ring"
-          : "that target is unavailable";
-    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${reason}`;
+    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${nativeTemplateFallbackReasonText(fallbackReason)}`;
   }
 
   return target.kind === "bond"
@@ -29084,8 +29123,7 @@ async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayloa
 async function listenForNativeOpenDocuments(
   handler: (payload: NativeOpenDocumentPayload) => void
 ): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
-  return listen<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
+  return listenTauriEvent<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
     if (isNativeOpenDocumentPayload(event.payload)) {
       handler(event.payload);
     }

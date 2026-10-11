@@ -138,6 +138,28 @@ hashed, dashed, and wedge bonds showing no line through the hashes.
 On macOS and Windows, type OMe on all six atoms of benzene/cyclohexane, exercise nickname hotkeys and text conversion, then Enter/Tab/click-away/tool-change/Escape and Undo/Redo: check restored ring carbons, preview/commit placement, new-atom selection, valence guards, and specific status messages.
 Save with an OMe draft open (the saved file has the attachment; the editor stays open), retype a ring SCN to its starting text (no split or Undo entry), place Text during an open OMe edit (Undo removes text, then the attachment), and Escape after another atom was recoloured (the recolour remains).
 
+Cold launch on Windows: launch and quit ChemDraft ten times in a row, with its palettes open (on a busy
+machine as well as an idle one); no "ChemDraft ran into an error" dialog appears at launch, and tool
+shortcuts, palette commands, popovers and tooltips all respond afterwards.
+
+Quit and close timing: on Windows, launch and close the document window (title-bar ✕) 2, 4, 6 and 20 s after
+launch, and right after drawing, a hover-typed label and an undo; once the session is saved each exit follows
+within about 2 s, even on a busy machine and while the palettes are still building their popovers and
+tooltip, and the next launch starts a fresh process rather than handing off to a dying one. A preference
+changed just before the close (Preferences, a keybinding) is still set on relaunch. Double-clicking a `.chemdraft`
+while the app is exiting is ignored rather than shown in the dying window; once it has exited, the same
+double-click opens a fresh app with that document. On macOS, ⌘Q
+and the application menu's Quit the same way, with a palette open.
+
+Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
+neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
+unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
+and check it refuses with the same reason; benzene and cyclohexane on a benzene or cyclohexane bond
+still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom Label
+tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring is placed
+separately, the OMe and its bond are unchanged, and the status says an atom on that bond has no free
+valence.
+
 Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
 `invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
 one-warning file) after its text moves on; clicking it lists every warning with its message, what it
@@ -146,3 +168,7 @@ molecule or atom with the Select tool; tool shortcuts work straight after any cl
 the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
 always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
 scrolls in a small window at 125% and 150% display scale.
+
+Status row: at the 900×640 minimum window, open a file with warnings under a long name; the status text ends
+in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
+in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.

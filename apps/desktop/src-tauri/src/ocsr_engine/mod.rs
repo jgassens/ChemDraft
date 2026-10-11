@@ -325,6 +325,19 @@ impl OcsrEngineState {
         }
     }
 
+    /// A forced exit (lib.rs's exit watchdog): kill an install's uv tree and the sidecar at once,
+    /// then the usual shutdown. Neither child is tied to ChemDraft's lifetime (own process group, no
+    /// job object). `shutdown` runs once, and on the main thread it may be asking the sidecar to
+    /// quit; then the sidecar has been sent Shutdown and loses its stdin with this process, so it
+    /// ends either way.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn kill_for_forced_exit(&self) {
+        self.cancel_install.store(true, Ordering::SeqCst);
+        self.install_child.kill_tree();
+        self.sidecar_kill.kill_now();
+        self.shutdown();
+    }
+
     /// Stops the sidecar before its files are replaced or deleted. Blocking, but never on a
     /// recognition: a running one is killed, which releases the manager within milliseconds.
     /// Call it off the main thread.
