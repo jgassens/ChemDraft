@@ -26,7 +26,7 @@ interface RingStyle {
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
-  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
+  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): Json[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -336,6 +336,33 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(ringStyle.fillsUnderLabels(preNotch, ringAtoms, mol.atoms))
       .toEqual(expect.arrayContaining([expect.objectContaining({ label: "O", ring: oxetane })]));
     expect(ringStyle.fillsUnderLabels(read(join(fixtures, "paclitaxel-notched.svg")), ringAtoms, mol.atoms)).toEqual([]);
+  });
+
+  it("fails closed when the real notched render is missing the oxetane O label group", () => {
+    const doc = JSON.parse(read(join(fixtures, "paclitaxel-doc.json")));
+    const mol = molecule(doc), ringAtoms = ringAtomsFromDocument(mol);
+    const notched = read(join(fixtures, "paclitaxel-notched.svg"));
+    const oxygenGroup = [...notched.matchAll(/<g\s[^>]*data-atom-label="O"[^>]*>[\s\S]*?<\/g>/g)]
+      .find((group) => group[0].includes("translate(561.689 571.538)"));
+    expect(oxygenGroup).toBeDefined();
+
+    const withoutOxygen = notched.replace(oxygenGroup![0], "");
+    expect(ringStyle.fillsUnderLabels(withoutOxygen, ringAtoms, mol.atoms)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        missing: true,
+        atom: "a51",
+        label: "O",
+        ring: "b49|b50|b64|b9",
+        failure: "fill under a label: could not find the rendered label of ring atom a51 (O) to check it"
+      })
+    ]));
+  });
+
+  it("pairs a ring label at its document labelOffset anchor", () => {
+    const ring = "b0|b1|b2";
+    const svg = `<svg><path data-molecule-fill-ring="true" data-ring-key="${ring}" d="M 0 0 L 20 0 L 20 20 L 0 20 Z"/><g data-atom-label="O" transform="translate(30 10)" font-size="15"><text text-anchor="middle">O</text></g></svg>`;
+    const atoms = [{ id: "a0", element: "O", x: 10, y: 10, labelOffset: { x: 20, y: 0 } }];
+    expect(ringStyle.fillsUnderLabels(svg, new Map([[ring, new Set(["a0"])]]), atoms)).toEqual([]);
   });
 
   it("uses contrast without a halo for a ring atom enclosed only by another bridged ring's fill", () => {

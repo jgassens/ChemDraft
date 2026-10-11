@@ -1527,14 +1527,18 @@ function inEvenOddFill(point, faces) {
 
 /** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. The SVG
  * renderer gives atom-label groups a translated anchor, but intentionally does not emit atom ids
- * on those groups. Associate that anchor with the nearest document atom instead. Sample at 0.5 px
- * after a 0.5 px inset: this catches a fill under an outline label while allowing antialiased
- * edges. Non-ring substituent labels intentionally remain on the fill. The fill's own even-odd
- * subpaths are used, so rounded notch holes count as page background. */
+ * on those groups. Associate that anchor with the nearest document atom instead. A document atom
+ * with a labelOffset is anchored at that offset, as the renderer is. Sample at 0.5 px after a
+ * 0.5 px inset: this catches a fill under an outline label while allowing antialiased edges.
+ * Non-ring substituent labels intentionally remain on the fill. The fill's own even-odd subpaths
+ * are used, so rounded notch holes count as page background. */
 export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 0.5) {
   const anchorTolerancePx = 1.5;
   const atomAt = (label) => atoms
-    .map((atom) => ({ atom, distance: Math.hypot(atom.x - label.x, atom.y - label.y) }))
+    .map((atom) => {
+      const offset = atom.labelOffset ?? { x: 0, y: 0 };
+      return { atom, distance: Math.hypot(atom.x + offset.x - label.x, atom.y + offset.y - label.y) };
+    })
     .filter((match) => match.distance <= anchorTolerancePx)
     .sort((a, b) => a.distance - b.distance || a.atom.id.localeCompare(b.atom.id))[0]?.atom;
   const fills = [];
@@ -1544,12 +1548,36 @@ export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 
     const d = attr(tag, "d");
     if (d) fills.push({ ring: attr(tag, "data-ring-key") ?? "unknown ring", faces: polygonPathFaces(d) });
   }
-  const hits = [];
+  const labelsByAtomId = new Map();
   for (const label of svgGeometry(svg).labels) {
     const atom = atomAt(label);
     if (!atom) continue;
-    for (const fill of fills) {
-      if (!ringAtomsByKey.get(fill.ring)?.has(atom.id)) continue;
+    // There is one rendered group per atom. Keeping the nearest pairing makes an accidentally
+    // duplicated group fail closed for the atom whose real label is absent.
+    const previous = labelsByAtomId.get(atom.id);
+    if (!previous || Math.hypot(atom.x + (atom.labelOffset?.x ?? 0) - label.x, atom.y + (atom.labelOffset?.y ?? 0) - label.y) <
+      Math.hypot(atom.x + (atom.labelOffset?.x ?? 0) - previous.x, atom.y + (atom.labelOffset?.y ?? 0) - previous.y)) {
+      labelsByAtomId.set(atom.id, label);
+    }
+  }
+  const hits = [];
+  for (const fill of fills) {
+    for (const atomId of ringAtomsByKey.get(fill.ring) ?? []) {
+      const atom = atoms.find((candidate) => candidate.id === atomId);
+      // This is the labelBox distinction used elsewhere in this script: plain carbons have no
+      // label unless their caller marks them as one of the terminal-carbon labels it draws.
+      if (!atom || !(atom.labelShown ?? atom.element !== "C")) continue;
+      const label = labelsByAtomId.get(atom.id);
+      if (!label) {
+        hits.push({
+          missing: true,
+          atom: atom.id,
+          label: atom.element,
+          ring: fill.ring,
+          failure: `fill under a label: could not find the rendered label of ring atom ${atom.id} (${atom.element}) to check it`
+        });
+        continue;
+      }
       let hit = null;
       for (let x = label.box.x0 + tolerancePx; x <= label.box.x1 - tolerancePx && !hit; x += tolerancePx) {
         for (let y = label.box.y0 + tolerancePx; y <= label.box.y1 - tolerancePx; y += tolerancePx) {
@@ -1564,6 +1592,17 @@ export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 
 
 function ringAtomsByKey(buildMol) {
   return new Map((buildMol.rings ?? []).map((ring) => [ring.ringKey, new Set(ring.atomIds)]));
+}
+
+function atomsWithDrawnLabels(mol) {
+  const terminalCarbons = mol?.style?.atomLabelShowTerminalCarbonsByAtomId ?? {};
+  return (mol?.atoms ?? []).map((atom) => ({ ...atom, labelShown: atom.element !== "C" || !!terminalCarbons[atom.id] }));
+}
+
+function fillUnderLabelFailure(hit, kind) {
+  return hit.missing
+    ? hit.failure
+    : `fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y}) (${kind})`;
 }
 
 /** Label pairs that nearly touch, text objects that sit on a label or a bond, and, given
@@ -1731,8 +1770,8 @@ function runStyle(dir, name, optionsFile, checkout) {
     for (const [kind, drawing] of [["carbon", carbon], ["picture", picture]]) {
       const drawingMol = drawing.pages.flatMap((page) => page.objects).find((object) => object.id === buildMol.objectId) ??
         drawing.pages.flatMap((page) => page.objects).find((object) => object.type === "molecule");
-      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol), drawingMol?.atoms ?? [])) {
-        report.quality.failures.push(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y}) (${kind})`);
+      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol), atomsWithDrawnLabels(drawingMol))) {
+        report.quality.failures.push(fillUnderLabelFailure(hit, kind));
       }
     }
     writeJson(path.join(dir, `${name}-carbon.json`), carbon);
@@ -1838,8 +1877,11 @@ function documentFaults(dir, name, renders) {
     for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));
     for (const render of renders.filter((line) => line.document === file)) for (const svg of (render.files ?? []).filter((entry) => entry.toLowerCase().endsWith(".svg"))) {
       if (!fs.existsSync(svg)) { add(`${path.basename(svg)} is missing`, path.basename(file)); continue; }
-      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol), mol.atoms)) {
-        add(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y})`, path.basename(file));
+      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol), atomsWithDrawnLabels(mol))) {
+        const kind = path.basename(file);
+        add(hit.missing
+          ? hit.failure
+          : `fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y})`, kind);
       }
     }
   }
