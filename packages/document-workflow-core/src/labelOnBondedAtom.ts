@@ -1,7 +1,7 @@
 import type { MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import {
   nativeAtomBondOrderUsage, nativeAtomChargeSupportsValence, nativeAtomLabelFreeValence,
-  nativeAtomLabelReading, type NativeAtomLabelReading
+  nativeAtomLabelReading, nativeLabelBondSide, type NativeAtomLabelReading
 } from "./atoms";
 
 /** The validation/ring-template admission measure, including Kekulé orders and radicals. */
@@ -36,8 +36,13 @@ export function labelOnBondedAtom(
     : freeValence === 1 ? "one-bond" : undefined;
   if (!reason) return { ...base, kind: "relabel" };
 
-  const source = nativeAtomLabelReading(atom.element, { bonded: true });
-  const sourceFree = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, { bonded: true });
+  // #83 distinguishes an imported element (Ac/Pr/Ts/Ar) from the typed group spelling,
+  // and a cyano label's recorded bond side from the side its current geometry suggests.
+  const sourceBonds = molecule.bonds.filter(b => b.fromAtomId === atom.id || b.toAtomId === atom.id);
+  const bondSide = nativeLabelBondSide(atom, sourceBonds, molecule.atoms);
+  const sourceContext = { bonded: true, typed: atom.labelLiteral === true, ...(bondSide ? { bondSide } : {}) };
+  const source = nativeAtomLabelReading(atom.element, sourceContext);
+  const sourceFree = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, sourceContext);
   const supports = source.kind === "element"
     ? nativeAtomChargeSupportsValence(source.element, external + 1, atom.formalCharge)
     : source.kind === "heavy-hydrogen" ? external + 1 <= 1

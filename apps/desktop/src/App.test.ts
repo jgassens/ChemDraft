@@ -1811,7 +1811,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Creation program");
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
-    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentForFlush(), dialog)");
     expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
     expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
@@ -2516,6 +2516,30 @@ describe("ChemDraft desktop shell", () => {
     // No hovered target → hover hotkeys stay inert (matches ChemDraw's hotspot requirement).
     expect(hoveredNativeTargetShortcutCommand(undefined, "c", "chemdraw")).toBeUndefined();
     expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();
+  });
+
+  it("sends every committed document through the one commit funnel, which records label bond sides", () => {
+    // The five commit paths (initial document, open, label-editor keystroke, edit, history commit)
+    // all normalize through normalizeCommittedDocument, so a paste, template, plugin patch, agent
+    // command or merge cannot leave a cyano label unrecorded for a later rotation to re-read. Its
+    // behaviour is tested in abbreviationChemistry.test.ts; this guards the wiring. The sixth call
+    // is the flush (documentForFlush), which writes the document as an open label edit's close
+    // would leave it. History snapshots now strip live drafts before a seventh normalization.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(7);
+    expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
+    // A cancelled label edit, or one that ends on its starting text, puts back the record it
+    // started with, not the drawing's side: at the keystroke that brings it back, at the close,
+    // and in every flush taken while it is open.
+    expect(mainWindowSource).toContain("initialLabelBondSide: atom.labelBondSide");
+    expect(mainWindowSource).toContain("labelBondSide: state.initialLabelBondSide");
+    expect(mainWindowSource).toContain("applyNativeAtomLabelDraft(current,");
+    expect(mainWindowSource).toContain("finishNativeAtomLabelEdit(baseline,");
+    expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
+    expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
+    expect(mainWindowSource).toContain("const flushed = documentForFlush();");
+    expect(mainWindowSource).toContain("createNativeSavePayload(documentForFlush())");
+    expect(mainWindowSource).toContain("createDialogExportResult(documentForFlush(), dialog)");
+    expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
 
   it("keeps the hovered atom live across charge-hotkey commits, so repeated presses stack", () => {

@@ -74,7 +74,7 @@ function moleculeDraftPayload(molecule: MoleculeObject): string {
 /** Fields written by nativeAtomWithElement and relabel's import-H cleanup. Charge is unchanged. */
 function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom): MoleculeAtom {
   const restored = { ...atom };
-  for (const key of ["element", "labelVisible", "labelLiteral", "warningSuppressed", "hydrogenCount"] as const) {
+  for (const key of ["element", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"] as const) {
     if (Object.hasOwn(before, key)) Object.assign(restored, { [key]: before[key] });
     else delete restored[key];
   }

@@ -11,6 +11,7 @@ import { loadKeybindingSettings, saveKeybindingSettings } from "./keybindingSett
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { ANALYSIS_WINDOW_ACTION_EVENT } from "./plugins/panelBridge";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 
 const externalWrite = vi.hoisted(() => ({ object: undefined as MoleculeObject | undefined, pageId: "", proposalId: "" }));
 // Use the same runtime registration path as the plugin DOM fixtures, with real permission-gated writes.
@@ -27,7 +28,8 @@ vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
           contributes: { commands: [
             { id: "plugin.labelHistory.insert", title: "Insert other molecule", requiredPermissions: ["document.write"], enabled: true },
             { id: "plugin.labelHistory.move", title: "Move another atom", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true },
-            { id: "plugin.labelHistory.moveMolecule", title: "Move whole molecule", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true }
+            { id: "plugin.labelHistory.moveMolecule", title: "Move whole molecule", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true },
+            { id: "plugin.labelHistory.recolour", title: "Recolour another atom", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true }
           ] }
         }),
         options: { commandHandlers: {
@@ -45,6 +47,15 @@ vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
               patch: { op: "updateObject", objectId: molecule.id, changes: {
                 atoms: next.atoms, x: next.x, y: next.y, width: next.width, height: next.height
               } } });
+            externalWrite.proposalId = receipt.id;
+          },
+          "plugin.labelHistory.recolour": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => {
+            const document = (await context.documents.getActiveDocument())!;
+            const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+            const receipt = await context.documents.proposePatch({ reason: "Recolour another atom",
+              patch: { op: "updateObject", objectId: molecule.id, changes: { style: {
+                ...molecule.style, atomLabelColors: { [molecule.atoms[2]!.id]: "#b3261e" }
+              } } } });
             externalWrite.proposalId = receipt.id;
           },
           "plugin.labelHistory.moveMolecule": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => {
@@ -290,12 +301,15 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expect(editor()).toBeNull(); expect(molecule()).toEqual(before);
     await command("edit.undo"); expect(status()).toBe("Nothing to undo");
   });
-  it.each(["N", "F"])("retyping existing %s restores its flags without a status or an undo entry", async label => {
+  it.each(["N", "F"])("retyping existing %s becomes literal through the ordinary relabel decision", async label => {
     const d = ring(), m = d.pages[0].objects[0] as MoleculeObject;
     await mount(applyPatches(d, [{ op: "updateObject", objectId: m.id, changes: { atoms: m.atoms.map((a, i) => i === 0 ? { ...a, element: label, warningSuppressed: true } : a) } }]));
     const before = molecule(); await edit(0, label);
-    expect(molecule()).toEqual(before); expect(status()).toBe("");
-    await command("edit.undo"); expect(status()).toBe("Nothing to undo");
+    expect(molecule().atoms[0]).toMatchObject({ element: label, labelLiteral: true });
+    expect(status()).toBe(`Labeled atom ${label}`);
+    const after = molecule();
+    await history(); expect(molecule()).toEqual(before); expect(status()).toBe("Undid Edit Atom Label");
+    await history(true); expect(molecule()).toEqual(after);
   });
   it.each(["Escape", "empty", "Enter"])("%s restores imported hydrogen hints, atom flags and molecule data while preserving another commit", async finish => {
     const d = ring("benzene"), m = d.pages[0].objects[0] as MoleculeObject;
@@ -327,7 +341,7 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await history(true); expect(molecule()).toEqual(before);
     expect(current().pages[0].objects[1]).toEqual(other);
   });
-  it.each(["Escape", "empty", "same-label"])("%s without another edit restores hints and flags on every atom exactly", async finish => {
+  it.each(["Escape", "empty", "same-label"])("%s restores the baseline; ordinary retyped C then commits as literal", async finish => {
     const d = ring(), original = d.pages[0].objects[0] as MoleculeObject;
     const imported: MoleculeObject = { ...original, structureFormat: "molfile-v2000",
       structure: moleculeToMolfileV2000(original, { kekuleBondOrders: nativeBondOrderResolution(original.atoms, original.bonds).kekuleOrders }).contents,
@@ -341,6 +355,12 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     if (finish !== "Escape") await input(editor()!, finish === "empty" ? "" : "C");
     await key(finish === "Escape" ? "Escape" : "Enter");
     expect(editor()).toBeNull();
+    if (finish === "same-label") {
+      expect(molecule().atoms[0]).toMatchObject({ element: "C", labelLiteral: true });
+      expect(molecule().atoms.every(atom => atom.hydrogenCount === undefined)).toBe(true);
+      expect(status()).toBe("Labeled atom C");
+      await history(); expect(status()).toBe("Undid Edit Atom Label");
+    }
     expect(molecule()).toEqual(before);
     await command("edit.undo"); expect(status()).toBe("Nothing to undo");
   });
@@ -596,6 +616,85 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     const after = molecule(); await history();
     expect(molecule()).toEqual(before); expect(current().pages[0].objects.some(o => o.type === "text")).toBe(true);
     await history(true); expect(molecule()).toEqual(after);
+  });
+
+  it("Save writes an open OMe draft as a substituent and keeps the edit open", async () => {
+    const saved: Blob[] = [];
+    vi.stubGlobal("URL", class extends URL {
+      static createObjectURL(blob: Blob) { saved.push(blob); return "blob:saved"; }
+      static revokeObjectURL() {}
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    const draftEditor = editor();
+    await command("document.save");
+    expect(editor()).toBe(draftEditor); expect(editor()?.value).toBe("OMe");
+    expect(molecule().atoms).toHaveLength(6);
+    expect(saved).toHaveLength(1);
+    const reopened = openChemDraftPayload(await saved[0]!.text()).document!;
+    const written = reopened.pages[0].objects[0] as MoleculeObject;
+    expect(written.atoms.slice(0, 6)).toEqual(before.atoms);
+    expect(written.atoms[6]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(written.bonds).toHaveLength(7);
+    await key("Enter");
+    expect(molecule()).toEqual(written);
+    await history(); expect(molecule()).toEqual(before);
+  });
+
+  it.each([false, true])("an SCN ring session ending on its starting text never splits or adds history (literal=%s)", async literal => {
+    const d = ring(), original = d.pages[0].objects[0] as MoleculeObject;
+    const labeled = { ...original, atoms: original.atoms.map((atom, i) => i === 0
+      ? { ...atom, element: "SCN", labelLiteral: literal,
+        labelBondSide: { side: "left" as const, atomId: original.atoms[1]!.id } } : atom) };
+    await mount({ ...d, pages: d.pages.map(p => ({ ...p, objects: [labeled] })) });
+    const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    await input(editor()!, "O"); await input(editor()!, "SCN");
+    expect(container.querySelector('[data-atom-count]')?.getAttribute("data-atom-count")).toBe("6");
+    await key("Enter");
+    expect(editor()).toBeNull(); expect(molecule()).toEqual(before);
+    await command("edit.undo"); expect(status()).toBe("Nothing to undo");
+  });
+
+  it("a Text-tool press finishes OMe before placing text: Undo removes text, then the substituent", async () => {
+    await mount(ring(), "tool.text"); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!);
+    await input(editor()!, "OMe");
+    await pointer("pointerdown", { x: 600, y: 480 });
+    expect(editor()).toBeNull(); check(7, 7);
+    expect(current().pages[0].objects.map(o => o.type)).toEqual(["molecule", "text"]);
+    const textEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    await act(async () => textEditor.blur()); focused.mockRestore();
+    const split = molecule();
+    await history(); expect(current().pages[0].objects).toHaveLength(1);
+    expect(molecule()).toEqual(split);
+    await history(); expect(molecule()).toEqual(before); expect(status()).toBe("Undid Add OMe substituent");
+    await history(true); expect(molecule()).toEqual(split); expect(status()).toBe("Redid Add OMe substituent");
+    await history(true); expect(current().pages[0].objects.map(o => o.type)).toEqual(["molecule", "text"]);
+    expect(molecule()).toEqual(split);
+  });
+
+  it("Escape after another atom is recoloured keeps the recolour and clean Undo/Redo", async () => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("plugin.labelHistory.recolour"); });
+    await act(async () => { window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
+      detail: { kind: "acceptPluginProposal", proposalId: externalWrite.proposalId }
+    })); });
+    expect(editor()).not.toBeNull();
+    await input(editor()!, "OM"); await key("e");
+    await key("Escape");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms).toEqual(before.atoms); expect(molecule().bonds).toEqual(before.bonds);
+    expect(molecule().style.atomLabelColors).toEqual({ [before.atoms[2]!.id]: "#b3261e" });
+    expectFreshDerivedFields(molecule());
+    const recoloured = molecule();
+    await history(); expect(molecule()).toEqual(before);
+    await history(true); expect(molecule()).toEqual(recoloured);
   });
 
   it("stress: twelve ring labels, all nickname hotkeys, twenty chain edits and mixed Undo/Redo", async () => {

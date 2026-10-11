@@ -49,4 +49,17 @@ describe("labelOnBondedAtom", () => {
     const m = graph(); m.bonds[0]!.order = "double";
     expect(labelOnBondedAtom("NMe", m.atoms[0]!, m)).toMatchObject({ kind: "relabel", external: 3 });
   });
+
+  it.each(["Ac", "Pr", "Ts"])("a newly typed %s is still a one-bond group", label => {
+    const m = graph();
+    expect(labelOnBondedAtom(label, m.atoms[0]!, m)).toMatchObject({ kind: "substituent", reading: "group", freeValence: 1 });
+  });
+
+  it.each(["Ac", "Pr", "Ts"])("checks source %s as an imported element or a typed group", label => {
+    const m = graph(); m.atoms[0]!.element = label;
+    expect(labelOnBondedAtom("OMe", m.atoms[0]!, m).kind).toBe("substituent");
+    m.atoms[0]!.labelLiteral = true;
+    expect(labelOnBondedAtom("OMe", m.atoms[0]!, m)).toMatchObject({ kind: "relabel", reason: "source-valence" });
+  });
+
 });
