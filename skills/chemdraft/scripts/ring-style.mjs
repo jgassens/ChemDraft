@@ -1437,7 +1437,7 @@ export function svgGeometry(svg) {
       box.x0 = Math.min(box.x0, x0); box.x1 = Math.max(box.x1, x0 + w);
       box.y0 = Math.min(box.y0, base - 0.72 * fs_); box.y1 = Math.max(box.y1, base + 0.02 * fs_);
     }
-    if (box.x0 < Infinity) labels.push({ atom: attr(open, "data-atom-id"), text: atomLabel, x: ox, y: oy, box });
+    if (box.x0 < Infinity) labels.push({ atom: attr(open, "data-atom-id"), text: atomLabel, x: ox, y: oy, fontSize: size, box });
   }
   // Text objects (ring letters, captions): <text data-object-type="text" x y font-size text-anchor>.
   for (const t of svg.matchAll(/<text\s((?:[^>"]|"[^"]*")*data-object-type="text"(?:[^>"]|"[^"]*")*)>([\s\S]*?)<\/text>/g)) {
@@ -1528,16 +1528,30 @@ function inEvenOddFill(point, faces) {
 /** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. The SVG
  * renderer gives atom-label groups a translated anchor, but intentionally does not emit atom ids
  * on those groups. Associate that anchor with the nearest document atom instead. A document atom
- * with a labelOffset is anchored at that offset, as the renderer is. Sample at 0.5 px after a
+ * with a labelOffset is anchored at that offset, as the renderer is. Otherwise an above/below
+ * molecule or per-atom placement offsets the anchor by the label's height and font gap, just as
+ * the renderer does. Sample at 0.5 px after a
  * 0.5 px inset: this catches a fill under an outline label while allowing antialiased edges.
  * Non-ring substituent labels intentionally remain on the fill. The fill's own even-odd subpaths
  * are used, so rounded notch holes count as page background. */
 export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 0.5) {
   const anchorTolerancePx = 1.5;
+  const anchorFor = (atom, label) => {
+    if (atom.labelOffset) return { x: atom.x + atom.labelOffset.x, y: atom.y + atom.labelOffset.y };
+    const placement = atom.labelPlacement;
+    if (placement !== "above" && placement !== "below") return { x: atom.x, y: atom.y };
+    // atomLabelLayout's ordinary bounds are 1.08 em high before padding. The SVG group's own
+    // runs include superscripts and isotope prefixes, so retain the larger extent when it is
+    // available. This keeps the renderer's 1.5 px anchor tolerance exact enough without widening.
+    const fontSize = atom.labelFontSizePx ?? label.fontSize ?? 15;
+    const labelHeight = Math.max(label.box.y1 - label.box.y0, fontSize * 1.08 + 2 * (atom.labelPaddingPx ?? 2));
+    const offset = labelHeight / 2 + fontSize * 0.35;
+    return { x: atom.x, y: atom.y + (placement === "above" ? -offset : offset) };
+  };
   const atomAt = (label) => atoms
     .map((atom) => {
-      const offset = atom.labelOffset ?? { x: 0, y: 0 };
-      return { atom, distance: Math.hypot(atom.x + offset.x - label.x, atom.y + offset.y - label.y) };
+      const anchor = anchorFor(atom, label);
+      return { atom, anchor, distance: Math.hypot(anchor.x - label.x, anchor.y - label.y) };
     })
     .filter((match) => match.distance <= anchorTolerancePx)
     .sort((a, b) => a.distance - b.distance || a.atom.id.localeCompare(b.atom.id))[0]?.atom;
@@ -1555,8 +1569,10 @@ export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 
     // There is one rendered group per atom. Keeping the nearest pairing makes an accidentally
     // duplicated group fail closed for the atom whose real label is absent.
     const previous = labelsByAtomId.get(atom.id);
-    if (!previous || Math.hypot(atom.x + (atom.labelOffset?.x ?? 0) - label.x, atom.y + (atom.labelOffset?.y ?? 0) - label.y) <
-      Math.hypot(atom.x + (atom.labelOffset?.x ?? 0) - previous.x, atom.y + (atom.labelOffset?.y ?? 0) - previous.y)) {
+    const anchor = anchorFor(atom, label);
+    const previousAnchor = previous && anchorFor(atom, previous);
+    if (!previous || Math.hypot(anchor.x - label.x, anchor.y - label.y) <
+      Math.hypot(previousAnchor.x - previous.x, previousAnchor.y - previous.y)) {
       labelsByAtomId.set(atom.id, label);
     }
   }
@@ -1594,9 +1610,31 @@ function ringAtomsByKey(buildMol) {
   return new Map((buildMol.rings ?? []).map((ring) => [ring.ringKey, new Set(ring.atomIds)]));
 }
 
-function atomsWithDrawnLabels(mol) {
+export function atomsWithDrawnLabels(mol) {
   const terminalCarbons = mol?.style?.atomLabelShowTerminalCarbonsByAtomId ?? {};
-  return (mol?.atoms ?? []).map((atom) => ({ ...atom, labelShown: atom.element !== "C" || !!terminalCarbons[atom.id] }));
+  const placements = mol?.style?.atomLabelPlacements ?? {};
+  const fontSizes = mol?.style?.atomLabelFontSizes ?? {};
+  const paddings = mol?.style?.atomLabelPaddings ?? {};
+  const placementFor = (atom) => {
+    const placement = placements[atom.id] ?? mol?.style?.atomLabelPlacement;
+    return placement === "above" || placement === "below" ? placement : undefined;
+  };
+  const labelShown = (atom) => atom.element !== "C" ||
+    atom.formalCharge !== 0 ||
+    atom.isotope !== undefined ||
+    atom.radical === true ||
+    (atom.markRadicals ?? 0) > 0 ||
+    (typeof atom.label === "string" && atom.label.length > 0) ||
+    atom.labelLiteral === true ||
+    atom.labelVisible === true ||
+    !!terminalCarbons[atom.id];
+  return (mol?.atoms ?? []).map((atom) => ({
+    ...atom,
+    labelShown: labelShown(atom),
+    labelPlacement: placementFor(atom),
+    labelFontSizePx: fontSizes[atom.id] ?? mol?.style?.atomLabelFontSizePx,
+    labelPaddingPx: paddings[atom.id] ?? mol?.style?.atomLabelPaddingPx
+  }));
 }
 
 function fillUnderLabelFailure(hit, kind) {

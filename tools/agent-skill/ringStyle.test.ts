@@ -27,6 +27,7 @@ interface RingStyle {
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
   fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): Json[];
+  atomsWithDrawnLabels(mol: Json): Json[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -363,6 +364,25 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     const svg = `<svg><path data-molecule-fill-ring="true" data-ring-key="${ring}" d="M 0 0 L 20 0 L 20 20 L 0 20 Z"/><g data-atom-label="O" transform="translate(30 10)" font-size="15"><text text-anchor="middle">O</text></g></svg>`;
     const atoms = [{ id: "a0", element: "O", x: 10, y: 10, labelOffset: { x: 20, y: 0 } }];
     expect(ringStyle.fillsUnderLabels(svg, new Map([[ring, new Set(["a0"])]]), atoms)).toEqual([]);
+  });
+
+  it.each(["above", "below"] as const)("pairs a ring label at its %s placement anchor", (placement) => {
+    const ring = "b0|b1|b2";
+    const offset = 15.35 * (placement === "above" ? -1 : 1);
+    const svg = `<svg><path data-molecule-fill-ring="true" data-ring-key="${ring}" d="M 100 100 L 120 100 L 120 120 L 100 120 Z"/><g data-atom-label="O" transform="translate(10 ${10 + offset})" font-size="15"><text text-anchor="middle">O</text></g></svg>`;
+    const atoms = [{ id: "a0", element: "O", x: 10, y: 10, labelPlacement: placement, labelFontSizePx: 15, labelPaddingPx: 2 }];
+    expect(ringStyle.fillsUnderLabels(svg, new Map([[ring, new Set(["a0"])]]), atoms)).toEqual([]);
+  });
+
+  it("requires every renderer-labeled ring carbon for the fill check", () => {
+    const carbon = (id: string, fields: Json = {}) => ({ id, element: "C", x: 0, y: 0, formalCharge: 0, ...fields });
+    const atoms = ringStyle.atomsWithDrawnLabels({ atoms: [
+      carbon("plain"), carbon("charge", { formalCharge: 1 }), carbon("isotope", { isotope: 13 }),
+      carbon("radical", { radical: true }), carbon("marked-radical", { markRadicals: 1 }),
+      carbon("label", { label: "C*" }), carbon("literal", { labelLiteral: true }), carbon("visible", { labelVisible: true })
+    ], style: {} });
+    expect(atoms.filter((atom: Json) => atom.labelShown).map((atom: Json) => atom.id))
+      .toEqual(["charge", "isotope", "radical", "marked-radical", "label", "literal", "visible"]);
   });
 
   it("uses contrast without a halo for a ring atom enclosed only by another bridged ring's fill", () => {
@@ -742,6 +762,84 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
         expect(result.undone).toEqual([]);
         expect(result.verified).toBeNull();
         expect(result.withoutKey).toMatch(/^reads .*\[H\]/);
+      }, 180_000);
+
+      it("checks real notched fills for labeled carbons and above/below atom labels", async () => {
+        const result = await runRingStyleChild<Json>(`
+          const ringPath = (mol) => {
+            const adjacent = new Map(mol.atoms.map((atom) => [atom.id, []]));
+            for (const bond of mol.bonds) {
+              adjacent.get(bond.fromAtomId).push(bond.toAtomId);
+              adjacent.get(bond.toAtomId).push(bond.fromAtomId);
+            }
+            const ids = [mol.atoms[0].id];
+            while (ids.length < mol.atoms.length) {
+              const next = adjacent.get(ids[ids.length - 1]).find((id) => id !== ids[ids.length - 2] && !ids.includes(id));
+              if (!next) throw new Error("could not order the ring atoms");
+              ids.push(next);
+            }
+            return "M " + ids.map((id) => {
+              const atom = mol.atoms.find((candidate) => candidate.id === id);
+              return atom.x + " " + atom.y;
+            }).join(" L ") + " Z";
+          };
+          const placeOxygenForVerticalLabel = (mol, placement) => {
+            const oxygen = mol.atoms.find((atom) => atom.element === "O");
+            const adjacent = new Map(mol.atoms.map((atom) => [atom.id, []]));
+            for (const bond of mol.bonds) {
+              adjacent.get(bond.fromAtomId).push(bond.toAtomId);
+              adjacent.get(bond.toAtomId).push(bond.fromAtomId);
+            }
+            const ids = [oxygen.id];
+            while (ids.length < mol.atoms.length) {
+              const next = adjacent.get(ids[ids.length - 1]).find((id) => id !== ids[ids.length - 2] && !ids.includes(id));
+              if (!next) throw new Error("could not order the oxygen ring atoms");
+              ids.push(next);
+            }
+            const points = placement === "above"
+              ? [[100, 180], [180, 180], [180, 100], [100, 100]]
+              : [[100, 100], [180, 100], [180, 180], [100, 180]];
+            ids.forEach((id, index) => Object.assign(mol.atoms.find((atom) => atom.id === id), { x: points[index][0], y: points[index][1] }));
+          };
+          const replaceFillPath = (svg, ring, path) => svg.replace(/<path\\s((?:[^>"]|"[^"]*")*)\\/?>/g, (tag) =>
+            tag.includes('data-molecule-fill-ring="true"') && tag.includes('data-ring-key="' + ring + '"')
+              ? tag.replace(/\\sd="[^"]*"/, ' d="' + path + '"')
+              : tag
+          );
+          const renderCase = (name, expectedLabel, configure) => {
+            const built = cli.build(name.includes("oxygen") ? "C1COC1" : "C1CCCC1");
+            if (!built) throw new Error("could not build " + name);
+            const doc = built.doc, mol = molecule(doc);
+            const ring = mol.bonds.map((bond) => bond.id).sort().join("|");
+            configure(mol);
+            mol.style.ringStyles = { [ring]: { fillColor: "#43a047", fillOpacity: 0.9 } };
+            const svg = cli.renderSvg(doc), atoms = ringStyle.atomsWithDrawnLabels(mol);
+            const rings = new Map([[ring, new Set(mol.atoms.map((atom) => atom.id))]]);
+            const target = mol.atoms.find((atom) => atom.element === "O") ?? mol.atoms[0];
+            return {
+              name,
+              expectedLabel,
+              target: target.id,
+              shown: atoms.filter((atom) => atom.labelShown).map((atom) => atom.id),
+              notched: ringStyle.fillsUnderLabels(svg, rings, atoms),
+              restored: ringStyle.fillsUnderLabels(replaceFillPath(svg, ring, ringPath(mol)), rings, atoms)
+            };
+          };
+          return [
+            renderCase("charged carbon", "C", (mol) => { mol.atoms[0].formalCharge = 1; }),
+            // The native document represents an isotope-like literal atom label as 13C; it is
+            // intentionally a rendered carbon label rather than a terminal-carbon setting.
+            renderCase("13C isotope", "13C", (mol) => { Object.assign(mol.atoms[0], { element: "13C", labelLiteral: true }); }),
+            renderCase("oxygen above", "O", (mol) => { mol.style.atomLabelPlacement = "above"; placeOxygenForVerticalLabel(mol, "above"); }),
+            renderCase("oxygen below", "O", (mol) => { mol.style.atomLabelPlacement = "below"; placeOxygenForVerticalLabel(mol, "below"); })
+          ];
+        `, cliCheckout!);
+        for (const entry of result) {
+          expect(entry.notched, entry.name).toEqual([]);
+          expect(entry.notched.some((hit: Json) => hit.missing), entry.name).toBe(false);
+          expect(entry.shown, entry.name).toContain(entry.target);
+          expect(entry.restored.some((hit: Json) => !hit.missing && hit.label.includes(entry.expectedLabel)), entry.name).toBe(true);
+        }
       }, 180_000);
     });
   });
