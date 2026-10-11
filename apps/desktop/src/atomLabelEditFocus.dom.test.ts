@@ -545,14 +545,16 @@ describe("atom label editor focus", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Fused benzene template");
   });
 
-  it("reports a spiro benzene template through the real placement handler", async () => {
+  it("reports a spiro cyclohexane template through the real placement handler", async () => {
+    // Spiro benzene on a ring carbon would leave it five-valent, so the guard places it
+    // separately; a saturated spiro ring is the legal case.
     const initial = ringDocument();
     await renderMainWindow(initial);
     const ring = molecule();
     const atom = ring.atoms[0]!;
-    await paletteCommand("tool.benzene");
+    await paletteCommand("tool.cyclohexane");
     await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Made spiro benzene template");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Made spiro cyclohexane template");
   });
 
   it("reports a separately placed benzene fallback through the real placement handler", async () => {

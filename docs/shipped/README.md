@@ -34,6 +34,28 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Ring placement never over-fills an atom (2026-10-10)
+
+Branch `agentctl/fusion-20261010/ring-fusion-valence`. A ring tool clicked on a bond whose endpoint
+was already a four-bond carbon fused anyway and left a five-bond carbon with a "Fused" status
+(AGENTS.md section 7, Chemistry invariants). One result-based guard in `documentWorkflow.ts`
+(`nativeTemplatePlacementValenceRefusal`) now judges every ring placement that changes an existing
+molecule (bond fusion, closure onto a neighbouring ring, spiro attachment): every pre-existing atom
+whose bond-order use plus radicals rose must still be supported at its element and formal charge.
+Atoms whose label has no element (nicknames, generic R) are skipped, as every valence check skips them.
+
+- **Clicks and the ghost preview** share `planNativeTemplatePlacement`, so a refused click is
+  previewed and committed as a separate ring, the existing molecule untouched, with a status naming
+  why: "an atom on that bond has no free valence" or "the ring would close onto an atom with no free
+  valence" beside the existing spiro reason.
+- **Ring hotkeys** (numbers over a hovered bond or atom) go through the same guard and refuse
+  without changing anything, with the reason in the status line.
+- **Now refused, previously committed over-valent:** an aromatic spiro ring (benzene) on any ring
+  carbon or neutral nitrogen, and benzene on a bond whose Kekulé re-pairing would double the shared
+  bond next to an existing double bond (the central bond of s-cis butadiene).
+
+Windows hands-on verification is pending; the change is shared TypeScript with no platform branch.
+
 ## User feedback fixes (2026-10-09)
 
 Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, built

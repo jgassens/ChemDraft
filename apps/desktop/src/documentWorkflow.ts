@@ -2888,6 +2888,8 @@ export type NativeTemplateFallbackReason =
   | "structure-not-editable"
   | "target-unavailable"
   | "atom-no-free-valence"
+  | "bond-atom-no-free-valence"
+  | "closure-atom-no-free-valence"
   | "bond-cannot-accept";
 
 /** Compute the placement a template click would make, without mutating the document. */
@@ -2910,11 +2912,10 @@ export function planNativeTemplatePlacement(
       if (!atom) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
       }
-      const valenceUsed = nativeAtomValenceUsage(molecule, atom);
-      // A spiro ring adds two bonds at its shared atom. Refuse rather than creating an
-      // over-valent graph, then place the requested template separately.
-      const element = nativeElementFromAtomLabel(atom.element);
-      if (element && !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
+      // A spiro ring adds two bonds at its shared atom. This early refusal only keeps the
+      // reason specific when the crowded atom also leaves no room for the ring's geometry;
+      // the result guard below is what guarantees safety.
+      if (!nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + 2)) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
       }
     }
@@ -2929,6 +2930,10 @@ export function planNativeTemplatePlacement(
         templateId,
         target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable"
       );
+    }
+    const valenceRefusal = nativeTemplatePlacementValenceRefusal(molecule, nextMolecule, target);
+    if (valenceRefusal) {
+      return standaloneNativeTemplateFallbackPlan(document, point, templateId, valenceRefusal);
     }
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
@@ -2960,6 +2965,48 @@ export function planNativeTemplatePlacement(
     addedAtomIds: molecule.atoms.map((atom) => atom.id),
     addedBondIds: molecule.bonds.map((bond) => bond.id)
   };
+}
+
+/**
+ * The one valence guard for every ring placement that changes an existing molecule (bond fusion,
+ * closure onto a neighbouring ring, spiro attachment; clicks, previews and ring hotkeys alike).
+ * It judges the RESULT, not a prediction: every pre-existing atom whose valence use (bond orders
+ * plus radicals) rose must still be supported at its element and formal charge. That covers the
+ * bonds a ring adds at its shared atoms, atoms a closure reuses, and a shared bond whose order an
+ * aromatic template raised. Atoms whose valence use did not rise are not the placement's doing,
+ * and labels with no element (nicknames, generic R) are skipped as every valence check skips them.
+ * Returns why the placement must be refused, or undefined when it is chemically sound.
+ */
+function nativeTemplatePlacementValenceRefusal(
+  before: MoleculeObject,
+  after: MoleculeObject,
+  target: NativeMoleculeDeleteTarget
+): NativeTemplateFallbackReason | undefined {
+  const beforeById = new Map(before.atoms.map((atom) => [atom.id, atom]));
+  const overValentAtomIds = after.atoms.filter((atom) => {
+    const previous = beforeById.get(atom.id);
+    if (!previous) {
+      return false;
+    }
+    const usage = nativeAtomValenceUsage(after, atom);
+    return usage > nativeAtomValenceUsage(before, previous) && !nativeAtomSupportsValenceUsage(atom, usage);
+  }).map((atom) => atom.id);
+  if (overValentAtomIds.length === 0) {
+    return undefined;
+  }
+  if (target.kind === "atom") {
+    return "atom-no-free-valence";
+  }
+  const bond = before.bonds.find((candidate) => candidate.id === target.bondId);
+  return overValentAtomIds.some((atomId) => atomId === bond?.fromAtomId || atomId === bond?.toAtomId)
+    ? "bond-atom-no-free-valence"
+    : "closure-atom-no-free-valence";
+}
+
+/** Whether the atom's element admits this valence use at its formal charge; labels with no element pass. */
+function nativeAtomSupportsValenceUsage(atom: MoleculeAtom, usage: number): boolean {
+  const element = nativeElementFromAtomLabel(atom.element);
+  return !element || nativeAtomChargeSupportsValence(element, usage, atom.formalCharge);
 }
 
 function standaloneNativeTemplateFallbackPlan(
@@ -7610,6 +7657,15 @@ export function applyNativeAtomSproutTarget(
   return nativeMoleculePatched(document, page, molecule, grown);
 }
 
+/**
+ * A ring hotkey's outcome. A refused press leaves `document` untouched (there is no click point
+ * to place a separate ring at) and names why, using the same reasons the ring tools report.
+ */
+export type NativeRingHotkeyResult = {
+  document: ChemDraftDocument;
+  refusal?: NativeTemplateFallbackReason;
+};
+
 /** Attach a ring template at the hovered atom (the atom becomes a shared ring vertex), oriented
  *  along the growth arrow's direction — pressing 3/6/7 over an atom, ChemDraw-style. */
 export function applyNativeRingAttachAtAtomTarget(
@@ -7618,24 +7674,34 @@ export function applyNativeRingAttachAtAtomTarget(
   templateId: NativeMoleculeTemplateId,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeRingHotkeyAttachAtAtomTarget(document, target, templateId, plan).document;
+}
+
+/** {@link applyNativeRingAttachAtAtomTarget}, also reporting why a press was refused. */
+export function nativeRingHotkeyAttachAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId,
+  plan?: NativeBondGrowthPlan
+): NativeRingHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document };
   }
   const located = nativeMoleculeForPartTarget(document, target);
   if (!located) {
-    return document;
+    return { document };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return document;
+    return { document };
   }
   // A nickname or condensed label (Ph, OMe, CO2Me) is a superatom with no known free valence:
   // the bond tool and the sprout hotkeys already refuse it, and a ring fused onto "Ph" would be
   // chemistry nobody drew. Refuse here too, so the shipped doc's "relabel it to an element
   // first" is the whole story.
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
-    return document;
+    return { document };
   }
   const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
     ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
@@ -7645,7 +7711,21 @@ export function applyNativeRingAttachAtAtomTarget(
     y: sourceAtom.y + direction.y * nativeBondLength
   };
   const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
-  return nativeMoleculePatched(document, page, molecule, attached);
+  return nativeRingHotkeyPatched(document, page, molecule, attached, target);
+}
+
+/** Commit a ring hotkey's molecule only if it passes the shared ring-placement valence guard. */
+function nativeRingHotkeyPatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  next: MoleculeObject | undefined,
+  target: NativeMoleculeDeleteTarget
+): NativeRingHotkeyResult {
+  const refusal = next ? nativeTemplatePlacementValenceRefusal(molecule, next, target) : undefined;
+  return refusal
+    ? { document, refusal }
+    : { document: nativeMoleculePatched(document, page, molecule, next) };
 }
 
 /** Fuse a ring template onto the hovered bond, bulging away from the molecule's body — pressing
@@ -7655,19 +7735,28 @@ export function applyNativeRingFuseAtBondTarget(
   target: NativeMoleculeDeleteTarget,
   templateId: NativeMoleculeTemplateId
 ): ChemDraftDocument {
+  return nativeRingHotkeyFuseAtBondTarget(document, target, templateId).document;
+}
+
+/** {@link applyNativeRingFuseAtBondTarget}, also reporting why a press was refused. */
+export function nativeRingHotkeyFuseAtBondTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId
+): NativeRingHotkeyResult {
   if (target.kind !== "bond") {
-    return document;
+    return { document };
   }
   const located = nativeMoleculeForPartTarget(document, target);
   if (!located) {
-    return document;
+    return { document };
   }
   const { page, molecule } = located;
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
   const fromAtom = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
   const toAtom = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
   if (!bond || !fromAtom || !toAtom) {
-    return document;
+    return { document };
   }
 
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
@@ -7689,7 +7778,7 @@ export function applyNativeRingFuseAtBondTarget(
     y: midpoint.y + outward.y * nativeBondLength
   };
   const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
-  return nativeMoleculePatched(document, page, molecule, fused);
+  return nativeRingHotkeyPatched(document, page, molecule, fused, target);
 }
 
 function addChargeMarkAtPoint(

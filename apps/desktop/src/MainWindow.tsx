@@ -368,8 +368,8 @@ import {
   applyNativeWarningSuppressionToScope,
   applyNativeAtomSproutTarget,
   applyNativeBondDisplayStyleTarget,
-  applyNativeRingAttachAtAtomTarget,
-  applyNativeRingFuseAtBondTarget,
+  nativeRingHotkeyAttachAtAtomTarget,
+  nativeRingHotkeyFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
@@ -390,6 +390,7 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
+  type NativeRingHotkeyResult,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -1486,7 +1487,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.18.50-codex";
+const CURRENT_BUILD_STAMP = "10.10.20.40-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -3620,7 +3621,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3630,9 +3631,12 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = edit(currentDocument, target);
+    const result = edit(currentDocument, target);
+    const { document: nextDocument, refusal } = "document" in result ? result : { document: result, refusal: undefined };
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot add ${statusNoun} here`);
+      setStatus(refusal
+        ? `Cannot add ${statusNoun} here: ${nativeTemplateFallbackReasonText(refusal)}`
+        : `Cannot add ${statusNoun} here`);
       return;
     }
 
@@ -3655,13 +3659,13 @@ export function MainWindow({
 
   const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeRingAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
+      nativeRingHotkeyAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
   const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
-      applyNativeRingFuseAtBondTarget(document, target, templateId)
+      nativeRingHotkeyFuseAtBondTarget(document, target, templateId)
     );
   }, [applyHoveredNativeTargetEdit]);
 
@@ -20080,6 +20084,24 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
+/** Why a ring could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeTemplateFallbackReason): string {
+  switch (reason) {
+    case "atom-no-free-valence":
+      return "that atom has no free valence";
+    case "bond-atom-no-free-valence":
+      return "an atom on that bond has no free valence";
+    case "closure-atom-no-free-valence":
+      return "the ring would close onto an atom with no free valence";
+    case "structure-not-editable":
+      return "that structure cannot be edited";
+    case "bond-cannot-accept":
+      return "that bond cannot accept a ring";
+    case "target-unavailable":
+      return "that target is unavailable";
+  }
+}
+
 export function nativeTemplateStatusForApplication(
   templateId: NativeMoleculeTemplateId,
   target: NativeMoleculeDeleteTarget | undefined,
@@ -20095,14 +20117,7 @@ export function nativeTemplateStatusForApplication(
   }
 
   if (fallbackReason) {
-    const reason = fallbackReason === "atom-no-free-valence"
-      ? "that atom has no free valence"
-      : fallbackReason === "structure-not-editable"
-        ? "that structure cannot be edited"
-        : fallbackReason === "bond-cannot-accept"
-          ? "that bond cannot accept a ring"
-          : "that target is unavailable";
-    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${reason}`;
+    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${nativeTemplateFallbackReasonText(fallbackReason)}`;
   }
 
   return target.kind === "bond"
