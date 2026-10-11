@@ -1497,7 +1497,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.23.50-opus";
+const CURRENT_BUILD_STAMP = "10.11.09.24-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -18032,7 +18032,7 @@ export function MainWindow({
           />
         ) : null}
         {/* One row along the bottom of the workspace: the status (its text truncating), the warnings
-            count and the modifier hint on the left, the build stamp at its own width on the right.
+            count and the modifier hint on the left, the build stamp on the right, giving way first (App.css).
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
         <div className="status-row" data-status-row>
           <div className="status-row-main">
@@ -18068,7 +18068,7 @@ export function MainWindow({
               <span data-modifier-hint aria-live="polite" className="status-modifier-hint">{statusModifierHint}</span>
             ) : null}
           </div>
-          <div className="build-stamp" data-build-stamp>
+          <div className="build-stamp" data-build-stamp title={`Build ${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__}`}>
             Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
           </div>
         </div>

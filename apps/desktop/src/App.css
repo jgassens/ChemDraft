@@ -5510,8 +5510,11 @@ textarea:focus-visible,
 }
 
 /* The status row along the bottom of the workspace (MainWindow): the status, the warnings count and
-   the modifier hint on the left, the build stamp on the right. The left part shrinks and truncates;
-   the stamp keeps its own width, so the two never overlap at any window width. */
+   the modifier hint on the left, the build stamp on the right. When the row is short of room the
+   stamp gives way first, truncating with an ellipsis down to a floor that keeps its start (the build
+   and the start of the worktree label) readable; then the status truncates. The warnings count never
+   shrinks. A long branch-build stamp at a high display scale is wider than a narrow window's row, so
+   a stamp that kept its full width ran over the count and past the row's right edge. */
 .status-row {
   position: absolute;
   left: 8px;
@@ -5547,11 +5550,17 @@ textarea:focus-visible,
   opacity: 0.7;
 }
 
+/* Shrinks far ahead of the status (its shrink factor dwarfs the left part's), down to its floor; the
+   full stamp is in its title tooltip, the one reason it takes the pointer. */
 .build-stamp {
-  flex: 0 0 auto;
+  flex: 0 1000 auto;
+  min-width: min(260px, 45%);
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 10px;
   opacity: 0.5;
   white-space: nowrap;
+  pointer-events: auto;
 }
 
 /* The warnings a file open reported: a count in the status line, and a list above it. The list
