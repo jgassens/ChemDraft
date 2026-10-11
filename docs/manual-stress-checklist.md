@@ -120,5 +120,8 @@ hashed, dashed, and wedge bonds showing no line through the hashes.
 Quit and close timing: on Windows, launch and close the document window (title-bar ✕) 2, 4, 6 and 20 s after
 launch, and right after drawing, a hover-typed label and an undo; once the session is saved each exit follows
 within about 2 s, even on a busy machine and while the palettes are still building their popovers and
-tooltip, and the next launch starts a fresh process rather than handing off to a dying one. On macOS, ⌘Q
+tooltip, and the next launch starts a fresh process rather than handing off to a dying one. A preference
+changed just before the close (Preferences, a keybinding) is still set on relaunch. Double-clicking a `.chemdraft`
+while the app is exiting is ignored rather than shown in the dying window; once it has exited, the same
+double-click opens a fresh app with that document. On macOS, ⌘Q
 and the application menu's Quit the same way, with a palette open.

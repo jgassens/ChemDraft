@@ -191,8 +191,8 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(windows)]
     fn force_exit(&self, waited: Duration) {
         eprintln!(
-            "ChemDraft: the app had not exited {:.1} s after quitting (the main thread was busy); ending the process",
-            waited.as_secs_f64()
+            "ChemDraft: forced exit after flush; event loop did not exit within {} s",
+            waited.as_secs()
         );
         self.state::<ocsr_engine::OcsrEngineState>()
             .kill_for_forced_exit();
@@ -215,8 +215,8 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(not(windows))]
     fn force_exit(&self, waited: Duration) {
         eprintln!(
-            "ChemDraft: the app had not exited {:.1} s after quitting; leaving it to the event loop",
-            waited.as_secs_f64()
+            "ChemDraft: event loop did not exit within {} s of the quit; leaving it to the event loop",
+            waited.as_secs()
         );
     }
 }
@@ -561,15 +561,20 @@ pub fn run() {
     // app_data_dir. macOS routes such opens to the running app itself (RunEvent::Opened).
     #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        let setup_completed = app
+            .state::<PendingOpenDocument>()
+            .setup_completed
+            .load(Ordering::SeqCst);
+        let action = second_launch_action(quit_in_progress(), setup_completed);
+        if action == SecondLaunchAction::IgnoreWhileQuitting {
+            eprintln!("ChemDraft: a second launch arrived while quitting; ignored (this process is exiting)");
+            return;
+        }
         let cwd = PathBuf::from(cwd);
         if let Err(error) = handle_opened_document_args(app, argv.into_iter().skip(1), &cwd) {
             eprintln!("Could not open ChemDraft document from a second launch: {error}");
         }
-        if !app
-            .state::<PendingOpenDocument>()
-            .setup_completed
-            .load(Ordering::SeqCst)
-        {
+        if action == SecondLaunchAction::OpenOnly {
             return;
         }
         if let Err(error) = ensure_main_window_visible(app) {
@@ -1185,6 +1190,41 @@ static WINDOW_CREATION: Mutex<()> = Mutex::new(());
 
 /// What a window request gets once the app is quitting.
 const QUITTING_WINDOW_REFUSAL: &str = "ChemDraft is quitting; no new windows";
+
+/// What a second launch, forwarded here by the single-instance lock, does to this process.
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios", target_os = "android"),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecondLaunchAction {
+    /// Open its documents and bring the document window up.
+    OpenAndShow,
+    /// Setup has not finished: queue its documents; setup shows the window itself.
+    OpenOnly,
+    /// This process is quitting. Opening a document into it, or showing (even rebuilding) the
+    /// document window, would be lost with the process and would hold the main thread the quit is
+    /// waiting on. The exit is at most the flush plus `EXIT_WATCHDOG` away, and a launch after it
+    /// starts a fresh process; one made inside that window is lost, as the log line says. While a
+    /// window build holds the main thread this callback cannot run at all: the plugin's handoff
+    /// (a blocking WM_COPYDATA) waits until this process ends, then the second process exits, so
+    /// that launch is lost too, without the log line (measured on Windows).
+    IgnoreWhileQuitting,
+}
+
+#[cfg_attr(
+    any(target_os = "macos", target_os = "ios", target_os = "android"),
+    allow(dead_code)
+)]
+fn second_launch_action(quitting: bool, setup_completed: bool) -> SecondLaunchAction {
+    if quitting {
+        SecondLaunchAction::IgnoreWhileQuitting
+    } else if setup_completed {
+        SecondLaunchAction::OpenAndShow
+    } else {
+        SecondLaunchAction::OpenOnly
+    }
+}
 
 /// Whether a quit has begun: off macOS a document-window close requests one, and the exit itself
 /// raises `APP_QUITTING` everywhere.
@@ -5964,6 +6004,9 @@ mod tests {
     struct StuckAppHost {
         has_document: bool,
         calls: std::sync::Arc<Mutex<Vec<&'static str>>>,
+        /// When set, `exit` needs this "main thread" (it waits for the lock), as the real exit
+        /// request is served by the event loop on the main thread.
+        main_thread: Option<std::sync::Arc<Mutex<()>>>,
     }
 
     impl StuckAppHost {
@@ -5971,6 +6014,14 @@ mod tests {
             Self {
                 has_document,
                 calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+                main_thread: None,
+            }
+        }
+
+        fn needing_main_thread(main_thread: std::sync::Arc<Mutex<()>>) -> Self {
+            Self {
+                main_thread: Some(main_thread),
+                ..Self::new(true)
             }
         }
 
@@ -5996,6 +6047,9 @@ mod tests {
 
         fn exit(&self) {
             self.calls.lock().unwrap().push("exit");
+            if let Some(main_thread) = &self.main_thread {
+                drop(main_thread.lock().unwrap());
+            }
         }
 
         fn force_exit(&self, _waited: Duration) {
@@ -6043,7 +6097,9 @@ mod tests {
 
     #[test]
     fn an_unanswered_flush_quits_after_its_grace() {
-        let flow = test_quit_flow(Duration::from_millis(30), Duration::from_millis(20));
+        // A grace long enough that preemption between the request and the first check cannot let it
+        // run out first.
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
         let host = StuckAppHost::new(true);
         request_quit_with(flow, &host);
         assert_eq!(host.calls(), ["ask to flush"]);
@@ -6092,26 +6148,59 @@ mod tests {
     }
 
     #[test]
-    fn a_quit_decided_on_a_worker_needs_nothing_from_the_busy_main_thread() {
-        // quit_after_flush is async and runs on a worker. The "main thread" here is busy for the whole
-        // test: it holds a lock that the host would need to process anything on it. The decision,
-        // the watchdog and the forced exit all happen without it, as they must while a window build
-        // holds the real main thread.
+    fn the_watchdog_is_armed_before_the_exit_request_so_a_busy_main_thread_cannot_stop_it() {
+        // The "main thread" is busy for the whole test, and here `exit` needs it, as the real exit
+        // request is served there. The quit is decided on a worker (quit_after_flush is async), and
+        // the watchdog must be armed before the exit request: asked first, the worker would wait in
+        // `exit` for the busy thread and nothing would ever end the app.
         let main_thread = std::sync::Arc::new(Mutex::new(()));
         let busy = main_thread.lock().unwrap();
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
+        let host = StuckAppHost::needing_main_thread(main_thread.clone());
         let worker = {
             let host = host.clone();
             thread::spawn(move || quit_now_with(flow, &host))
         };
-        worker.join().unwrap();
-        assert!(flow.quitting.load(Ordering::SeqCst));
-        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        // The forced exit happens while the worker is still stuck in `exit` and the main thread busy.
         assert_eq!(host.wait_for_calls(2), ["exit", "force exit"]);
-        // The main thread never had to run anything.
-        assert!(main_thread.try_lock().is_err());
+        assert!(!worker.is_finished());
+        assert!(flow.quitting.load(Ordering::SeqCst));
         drop(busy);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn quit_after_flush_is_async_so_it_runs_off_the_main_thread() {
+        // A sync command runs on the main thread: while a window build held it, the document's
+        // answer waited too, and the quit started only at the 3 s grace (flush + 5 s to exit, as
+        // measured). Tauri runs an async command on a worker. Lines are compared trimmed, so a CRLF
+        // checkout matches and this test's own quoted text never does.
+        let lines: Vec<&str> = include_str!("lib.rs").lines().map(str::trim).collect();
+        let declared_async = lines.windows(2).any(|pair| {
+            pair[0] == "#[tauri::command]"
+                && pair[1] == "async fn quit_after_flush(app: tauri::AppHandle) {"
+        });
+        assert!(declared_async);
+    }
+
+    #[test]
+    fn a_second_launch_while_quitting_opens_and_shows_nothing() {
+        assert_eq!(
+            second_launch_action(true, true),
+            SecondLaunchAction::IgnoreWhileQuitting
+        );
+        assert_eq!(
+            second_launch_action(true, false),
+            SecondLaunchAction::IgnoreWhileQuitting
+        );
+        assert_eq!(
+            second_launch_action(false, true),
+            SecondLaunchAction::OpenAndShow
+        );
+        assert_eq!(
+            second_launch_action(false, false),
+            SecondLaunchAction::OpenOnly
+        );
     }
 
     #[test]
