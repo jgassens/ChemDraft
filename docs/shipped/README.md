@@ -42,8 +42,10 @@ was already a four-bond carbon fused anyway and left a five-bond carbon with a "
 (`nativeRingPlacementValenceRefusal`) now judges every ring placement that changes an existing
 molecule (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond hotkey's
 closure): every pre-existing atom whose bond-order use plus radicals rose must still be supported at
-its element and formal charge. Atoms whose label has no element (nicknames, generic R) are skipped,
-as every valence check skips them.
+its element and formal charge, or at its label's free valence when it is a group or spelled label,
+read with the drawing tools' label context (bonded, typed, and recorded or drawn bond side). Element
+labels keep the element rule; only labels with no free valence (generic placeholders such as R, bare
+formulas, and unrecognized text) are skipped.
 
 - **Clicks and the ghost preview** share `planNativeTemplatePlacement`, so a refused click is
   previewed and committed as a separate ring, the existing molecule untouched, with a status naming
@@ -61,6 +63,10 @@ as every valence check skips them.
 - **Now refused, previously committed over-valent:** an aromatic spiro ring (benzene) on any ring
   carbon or neutral nitrogen, and benzene on a bond whose Kekulé re-pairing would double the shared
   bond next to an existing double bond (the central bond of s-cis butadiene).
+- **Group and spelled labels:** one-bond OMe is full, so a ring onto its bond, a spiro ring on it,
+  and ring hotkeys refuse with the valence reason; one-bond NMe takes a fusion but not a spiro ring;
+  four-bond Ph now refuses a fusion; SCN read as thiocyanate is full at one bond, and a fusion onto
+  any SCN is refused because it would have two bonds, which #83 badges.
 
 Windows hands-on verification is pending; the change is shared TypeScript with no platform branch.
 
