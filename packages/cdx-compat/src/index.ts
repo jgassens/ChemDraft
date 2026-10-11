@@ -5,6 +5,7 @@ import {
   atomicNumberForElementSymbol,
   createEmptyDocument,
   deserializeDocument,
+  drawnLabelBondSide,
   elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
@@ -26,6 +27,7 @@ import {
   type Point,
   type TextObject
 } from "@chemdraft/chem-core";
+import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 
 export interface CompatibilityConversionWarning {
@@ -592,9 +594,18 @@ function exportMoleculeObject(
 ): string {
   const fragmentId = idFor(context.ids, molecule.id, allocator);
   const atomIds = new Map<string, string>();
+  const bondedAtomIds = new Set(molecule.bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
   const atomLines = molecule.atoms.map((atom) => {
     const nodeId = idFor(atomIds, atom.id, allocator);
-    const elementNumber = atomicNumberForElement(atom.element);
+    // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — typed as a label is
+    // not that element on a bonded atom. Writing its atomic number would hand every CDXML reader
+    // argon or tennessine, so it goes out as its label, the same way any other non-element label
+    // does, with a warning. An element that came from a structure (no `labelLiteral`) stays the
+    // element and keeps its atomic number: a real Ac–Cl bond is actinium.
+    const bondedMeaning = bondedAtomIds.has(atom.id) && atom.labelLiteral === true
+      ? bondedElementLabelMeaning(atom.element)
+      : undefined;
+    const elementNumber = bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`
@@ -604,9 +615,31 @@ function exportMoleculeObject(
     }
     if (elementNumber === undefined) {
       attributes.push(`Element="${escapeXmlAttribute(atom.element)}"`);
+      warnings.push(bondedMeaning === undefined
+        ? {
+            code: "cdxml.atom_element_symbol_exported",
+            message: `Atom element "${atom.element}" was exported as a CDXML element label because no atomic number mapping exists.`,
+            sourceObjectId: molecule.id
+          }
+        : {
+            code: "cdxml.bonded_element_label_exported",
+            message: `Atom "${atom.element}" on a bond is ${bondedMeaning}, not the element ${atom.element}; it was exported as the label "${atom.element}" rather than an atomic number.`,
+            sourceObjectId: molecule.id
+          });
+    }
+    // A side-dependent label ("SCN") means what it was written as, by the side its bond came from
+    // then (`labelBondSide`). The visible CDXML has only the drawing: when the molecule has been
+    // turned round since, a reader without ChemDraft's embedded document reads the drawn side, the
+    // other isomer. Say so, naming the atom (AGENTS.md §7: warn, never degrade quietly).
+    const record = atom.labelBondSide;
+    const recordedNeighbour = record ? molecule.atoms.find((candidate) => candidate.id === record.atomId) : undefined;
+    const drawnSide = recordedNeighbour ? drawnLabelBondSide(atom, [recordedNeighbour]) : undefined;
+    if (record && drawnSide && drawnSide !== record.side) {
       warnings.push({
-        code: "cdxml.atom_element_symbol_exported",
-        message: `Atom element "${atom.element}" was exported as a CDXML element label because no atomic number mapping exists.`,
+        code: "cdxml.label_bond_side_turned",
+        message: record.side === "left"
+          ? `Label "${atom.element}" on atom ${atom.id} was written with its bond on the left, as its cyano group; its bond is now drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps it as written.`
+          : `Label "${atom.element}" on atom ${atom.id} was written with its bond on the right, as the N-bonded isomer (a bare formula); its bond is now drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft's embedded document keeps it as written.`,
         sourceObjectId: molecule.id
       });
     }
@@ -1858,6 +1891,12 @@ function importFragment(
         ...(geometry ? { geometry } : {})
       };
     }
+    // A label written as text in Element ("Ar", "Ts" — how a bonded aryl or tosyl label is exported)
+    // is a typed label, so it keeps the group meaning a bonded one carries. A numeric Element is an
+    // element of the structure and stays one: Element="89" bonded to Cl is actinium, never acetyl.
+    const rawElement = atomElement.attributes.Element?.trim();
+    const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
+      bondedElementLabelMeaning(element) !== undefined;
     return {
       id: atomId,
       element: literalLabel ?? element,
@@ -1866,7 +1905,7 @@ function importFragment(
       formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
       // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
       // no implicit hydrogens are invented for a label like "SO3".
-      ...(literalLabel ? { labelLiteral: true } : {}),
+      ...(literalLabel || textLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
     };
   });

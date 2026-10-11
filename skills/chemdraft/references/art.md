@@ -222,25 +222,20 @@ Verified on `C[C@@]12CCCC[C@H]1CCCC2`: hashed H below the fusion, bold
 fusion bond, CH3 label; identical InChIKey. Always confirm: if the
 InChIKey changes, swap the H's wedge and hash.
 
-**Setting an atom's element to a label string changes the chemistry.**
-`atom.element` is the atom's identity, not its caption: `"Me"`, `"Et"`,
-`"Ph"` or any other string that is not an element turns that atom into a
-placeholder. A `Me` label (`atom.element = "Me"`) draws "Me", but the
-identity check writes it as a dummy atom `*` with a warning, the stereo
-counts then read every centre as unspecified, and a `.chemdraft` saved
-from that document holds `*` atoms, so anyone who opens or copies it
-gets the wrong molecule. The atom schema (`packages/chem-core`) has no
-display-label field that keeps the element C while showing "Me"; the
-closest is `atomLabelShowTerminalCarbonsByAtomId`, which draws CH3 and
-keeps the carbon.
+A `Me` label (`atom.element = "Me"`) draws "Me", and the identity check
+reads it as the methyl it stands for, so the canonical SMILES, InChIKey
+and stereo counts are those of the whole structure. The same holds for
+every abbreviation in ChemDraft's table (OMe, Ph, Boc, CO2Me, ...).
+Labels are case-sensitive: `ME` or `Ome` is not a group, and is written
+as a dummy atom `*` with a warning. So is a group whose bonds don't fit
+it (a `Me` with two bonds). Check that the reported SMILES has no `*`.
 
-So the trade-off is: the Me-labelled document is a picture only. Verify
-and save the figure with carbons (drawn CH3), relabel to `Me` as the
-last, display-only step, and render the picture from that copy. Hand
-over the carbon `.chemdraft` as the editable file and say that it shows
-CH3 where the picture shows Me. To check the picture, replace each `*`
-in its reported SMILES with `C` and confirm the InChIKey still matches.
-`scripts/ring-style.mjs` does exactly this (pattern 7).
+`scripts/ring-style.mjs` (pattern 7) verifies the figure with its methyls
+as carbons drawn CH3 and relabels them to `Me` only in the picture copy,
+handing over the carbon `.chemdraft` as the editable file. Its picture
+check (replace each `*` in the reported SMILES with `C`, then compare
+InChIKeys) still holds; with table abbreviations read as their groups,
+the picture's SMILES simply has no `*` to replace.
 
 ### 3. Highlight a substructure
 

@@ -1,5 +1,6 @@
 import {
   DefaultNativeDrawingStyle,
+  drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
   nativeDrawingStyleFromObjectStyle,
@@ -64,6 +65,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -81,6 +83,22 @@ export {
   nativeElementSymbols,
   normalizeNativeAtomElementLabel
 } from "./valence";
+
+export {
+  type AtomLabelAnchor,
+  nativeAtomLabelReading,
+  type NativeAtomLabelContext,
+  type NativeAtomLabelReading,
+  nativeAtomMaxValence,
+  nativeAtomValence,
+  nativeGroupLabelDisplay,
+  nativeLabelGroupAttachment,
+  type NativeLabelGroup,
+  type NativeLabelGroupAttachment,
+  nativeLabelReadingDependsOnBondSide,
+  nativeSingleHeavyElementLabelValence,
+  parseCondensedLabelFormula
+} from "./labelGrammar";
 
 export type LayoutCommandId =
   | "layout.group"
@@ -1575,7 +1593,9 @@ function planNativeMoleculeGraphSvg(
       toLabelPlan?.label,
       fromLabelPlan?.drawingStyle,
       toLabelPlan?.drawingStyle,
-      ringInteriorSides.get(bond.id)
+      ringInteriorSides.get(bond.id),
+      fromLabelPlan?.layout,
+      toLabelPlan?.layout
     ).map((segment, segmentIndex) => ({
       ...segment,
       bond,
@@ -4836,7 +4856,9 @@ function bondLineSegments(
   toLabel?: string,
   fromLabelStyle?: NativeDrawingStyle,
   toLabelStyle?: NativeDrawingStyle,
-  ringInteriorSide?: DoubleBondSide
+  ringInteriorSide?: DoubleBondSide,
+  fromLabelLayout?: AtomLabelLayout,
+  toLabelLayout?: AtomLabelLayout
 ): PageBondLineSegment[] {
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
@@ -4855,7 +4877,9 @@ function bondLineSegments(
     length,
     unit,
     fromLabelStyle,
-    toLabelStyle
+    toLabelStyle,
+    fromLabelLayout,
+    toLabelLayout
   );
   const x1 = fromAtom.x + unit.x * clearance.from;
   const y1 = fromAtom.y + unit.y * clearance.from;
@@ -5082,10 +5106,14 @@ export function labelEndpointClearance(
   bondLength: number,
   unit: { x: number; y: number },
   fromLabelStyle: NativeDrawingStyle = drawingStyle,
-  toLabelStyle: NativeDrawingStyle = drawingStyle
+  toLabelStyle: NativeDrawingStyle = drawingStyle,
+  // The labels' planned layouts (`AtomLabelPlan.layout`), so a group label anchored on its atom
+  // clips the bond where it is drawn; omitted, each is laid out centred from its text.
+  fromLabelLayout?: AtomLabelLayout,
+  toLabelLayout?: AtomLabelLayout
 ): { from: number; to: number } {
-  const from = atomLabelBondClearance(fromAtom, fromLabel, fromLabelStyle, unit);
-  const to = atomLabelBondClearance(toAtom, toLabel, toLabelStyle, { x: -unit.x, y: -unit.y });
+  const from = atomLabelBondClearance(fromAtom, fromLabel, fromLabelStyle, unit, fromLabelLayout);
+  const to = atomLabelBondClearance(toAtom, toLabel, toLabelStyle, { x: -unit.x, y: -unit.y }, toLabelLayout);
   const total = from + to;
   const maximumTotal = bondLength * 0.55;
   if (total <= maximumTotal || total === 0) {
@@ -5100,13 +5128,14 @@ function atomLabelBondClearance(
   atom: MoleculeAtom,
   label: string | undefined,
   drawingStyle: NativeDrawingStyle,
-  direction: { x: number; y: number }
+  direction: { x: number; y: number },
+  layout?: AtomLabelLayout
 ): number {
   if (!label) {
     return 0;
   }
 
-  const bounds = atomLabelBoundsRelativeToAtom(atom, label, drawingStyle);
+  const bounds = atomLabelBoundsRelativeToAtom(atom, label, drawingStyle, layout);
   const horizontalDistance = direction.x > 0.0001
     ? (bounds.x + bounds.width) / direction.x
     : direction.x < -0.0001
@@ -5124,35 +5153,6 @@ function atomLabelBondClearance(
     drawingStyle.bondMarginWidthPx,
     Math.max(0, labelBoundaryDistance)
   );
-}
-
-function atomLabelBox(
-  atom: MoleculeAtom,
-  label: string,
-  drawingStyle: NativeDrawingStyle
-): { x: number; y: number; width: number; height: number } {
-  const layout = atomLabelLayout(label, drawingStyle);
-  const anchor = atomLabelAnchor(atom, label, drawingStyle, layout);
-  const { bounds } = layout;
-  return {
-    x: anchor.x + bounds.x,
-    y: anchor.y + bounds.y,
-    width: bounds.width,
-    height: bounds.height
-  };
-}
-
-function atomLabelAnchor(
-  atom: MoleculeAtom,
-  label: string,
-  drawingStyle: NativeDrawingStyle,
-  layout = atomLabelLayout(label, drawingStyle)
-): LayoutPoint {
-  const offset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
-  return {
-    x: atom.x + offset.x,
-    y: atom.y + offset.y
-  };
 }
 
 export function atomLabelAnchorOffset(
@@ -5179,9 +5179,9 @@ export function atomLabelAnchorOffset(
 function atomLabelBoundsRelativeToAtom(
   atom: MoleculeAtom,
   label: string,
-  drawingStyle: NativeDrawingStyle
+  drawingStyle: NativeDrawingStyle,
+  layout: AtomLabelLayout = atomLabelLayout(label, drawingStyle)
 ): { x: number; y: number; width: number; height: number } {
-  const layout = atomLabelLayout(label, drawingStyle);
   const { bounds } = layout;
   const anchorOffset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
   return {
@@ -5213,6 +5213,8 @@ export interface AtomLabelLayout {
 export interface AtomLabelPlan {
   atom: MoleculeAtom;
   label: string;
+  /** For a group label, the characters that sit on the atom (`atomDisplayLabelPlacement`). */
+  labelAnchor?: AtomLabelAnchor;
   anchor: LayoutPoint;
   anchorOffset: LayoutPoint;
   layout: AtomLabelLayout;
@@ -5254,13 +5256,14 @@ export function planAtomLabel(
   atoms: readonly MoleculeAtom[],
   resolution?: NativeBondOrderResolution
 ): AtomLabelPlan | undefined {
-  const label = atomDisplayLabel(atom, bonds, drawingStyle, atoms, resolution);
-  if (!label) {
+  const placement = atomDisplayLabelPlacement(atom, bonds, drawingStyle, atoms, resolution);
+  if (!placement) {
     return undefined;
   }
 
-  const layout = atomLabelLayout(label, drawingStyle);
-  const anchorOffset = atomLabelAnchorOffset(atom, label, drawingStyle);
+  const { label, anchor: labelAnchor } = placement;
+  const layout = atomLabelLayout(label, drawingStyle, labelAnchor);
+  const anchorOffset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
   const anchor = {
     x: atom.x + anchorOffset.x,
     y: atom.y + anchorOffset.y
@@ -5269,6 +5272,7 @@ export function planAtomLabel(
   return {
     atom,
     label,
+    ...(labelAnchor ? { labelAnchor } : {}),
     anchor,
     anchorOffset,
     layout,
@@ -5283,8 +5287,18 @@ export function planAtomLabel(
   };
 }
 
-export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle): AtomLabelLayout {
+/**
+ * Lay out a drawn atom label around its atom (x = 0). With an `anchor` (a group label under
+ * automatic alignment, `atomDisplayLabelPlacement`), the label's first or last `anchor.length`
+ * characters are centred on the atom, so its bond meets the atom it bonds to: the O of "OMe", the C
+ * of "MeO2C". Without one, the first normal-script run is centred, as labels always have been.
+ */
+export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle, anchor?: AtomLabelAnchor): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
+  const anchored = anchor ? anchoredAtomLabelLayout(bodyRuns, chargeRun, anchor, drawingStyle) : undefined;
+  if (anchored) {
+    return anchored;
+  }
   const leadingHydrogenElement = leadingImplicitHydrogenElement(label);
   if (leadingHydrogenElement) {
     return leadingImplicitHydrogenAtomLabelLayout(
@@ -5324,11 +5338,7 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle)
   let top = -baseHalfHeight;
   let bottom = baseHalfHeight;
   let cursor = baseHalfWidth + drawingStyle.atomLabelFontSizePx * 0.04;
-  const scriptY = (script: AtomLabelScript): number => script === "subscript"
-    ? drawingStyle.atomLabelFontSizePx * 0.34
-    : script === "superscript"
-      ? -drawingStyle.atomLabelFontSizePx * 0.42
-      : 0;
+  const scriptY = (script: AtomLabelScript): number => atomLabelScriptOffsetY(script, drawingStyle);
 
   let leadingCursor = -baseHalfWidth - drawingStyle.atomLabelFontSizePx * 0.04;
   for (const run of [...leadingRuns].reverse()) {
@@ -5482,6 +5492,88 @@ function leadingImplicitHydrogenAtomLabelLayout(
   };
 }
 
+function atomLabelScriptOffsetY(script: AtomLabelScript, drawingStyle: NativeDrawingStyle): number {
+  return script === "subscript"
+    ? drawingStyle.atomLabelFontSizePx * 0.34
+    : script === "superscript"
+      ? -drawingStyle.atomLabelFontSizePx * 0.42
+      : 0;
+}
+
+/**
+ * A group label on one line with its first or last `anchor.length` characters centred on the atom.
+ * The run holding them is drawn from the atom outward (text-anchor "start" for a bond on the left,
+ * "end" for one on the right), so only those glyphs' width decides where the atom falls inside the
+ * label; the other runs follow, each placed by its glyphs' advance widths (`atomLabelRunAdvance`).
+ * Undefined when the anchor characters are not a normal-script run's end.
+ */
+function anchoredAtomLabelLayout(
+  bodyRuns: readonly AtomLabelRun[],
+  chargeRun: AtomLabelRun | undefined,
+  anchor: AtomLabelAnchor,
+  drawingStyle: NativeDrawingStyle
+): AtomLabelLayout | undefined {
+  const fontSize = drawingStyle.atomLabelFontSizePx;
+  const fromStart = anchor.side === "start";
+  const anchorRun = fromStart ? bodyRuns[0] : bodyRuns[bodyRuns.length - 1];
+  if (!anchorRun || anchorRun.script !== "normal" || anchor.length < 1 || anchor.length > anchorRun.text.length) {
+    return undefined;
+  }
+  const anchorText = fromStart ? anchorRun.text.slice(0, anchor.length) : anchorRun.text.slice(-anchor.length);
+  const half = atomLabelRunAdvance({ text: anchorText, script: "normal" }, drawingStyle) / 2;
+  // Advance widths already hold the glyphs' side bearings; a hair more where the script changes.
+  const gap = fontSize * 0.02;
+  let top = -fontSize * 0.54;
+  let bottom = fontSize * 0.54;
+  const place = (run: AtomLabelRun, x: number, textAnchor: "start" | "end"): AtomLabelLayoutRun => {
+    const y = atomLabelScriptOffsetY(run.script, drawingStyle);
+    const runFontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? fontSize;
+    top = Math.min(top, y - runFontSize * 0.52);
+    bottom = Math.max(bottom, y + runFontSize * 0.52);
+    return { ...run, x, y, textAnchor };
+  };
+  const runs: AtomLabelLayoutRun[] = [];
+  let left: number;
+  let right: number;
+  if (fromStart) {
+    left = -half;
+    let cursor = -half;
+    for (const run of bodyRuns) {
+      runs.push(place(run, cursor, "start"));
+      cursor += atomLabelRunAdvance(run, drawingStyle) + gap;
+    }
+    right = cursor - gap;
+  } else {
+    right = half;
+    let cursor = half;
+    for (const run of [...bodyRuns].reverse()) {
+      runs.unshift(place(run, cursor, "end"));
+      cursor -= atomLabelRunAdvance(run, drawingStyle) + gap;
+    }
+    left = cursor + gap;
+  }
+  if (chargeRun) {
+    // As in the centred layouts: raised after the label's right end.
+    const chargeFontSize = atomLabelRunFontSize(chargeRun.script, drawingStyle) ?? fontSize;
+    const x = right + fontSize * 0.08;
+    const y = -fontSize * 0.48;
+    runs.push({ ...chargeRun, x, y, textAnchor: "start" });
+    top = Math.min(top, y - chargeFontSize * 0.52);
+    bottom = Math.max(bottom, y + chargeFontSize * 0.52);
+    right = x + atomLabelRunAdvance(chargeRun, drawingStyle);
+  }
+  const padding = drawingStyle.atomLabelPaddingPx;
+  return {
+    bounds: {
+      x: left - padding,
+      y: top - padding,
+      width: right - left + padding * 2,
+      height: bottom - top + padding * 2
+    },
+    runs
+  };
+}
+
 function atomLabelParts(label: string): { bodyRuns: AtomLabelRun[]; chargeRun?: AtomLabelRun } {
   const { body, charge } = splitAtomLabelCharge(label);
   const runs = Array.from(body).reduce<AtomLabelRun[]>((currentRuns, character) => {
@@ -5529,6 +5621,33 @@ function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle):
   return run.text.length * fontSize * widthFactor * weightFactor * italicFactor;
 }
 
+/**
+ * Advance widths, in em, of Helvetica's glyphs (Arial's are the same), the default label font. The
+ * anchored layout places a label's runs by them, so the letter meant to sit on the atom does, and
+ * a subscript does not run into the letter before it; the flat estimate the centred layout keeps
+ * (0.62 em a letter) is too narrow for O, C or M and too wide for i or l. Any other character is
+ * taken at that flat estimate.
+ */
+const sansSerifAdvanceEm: Readonly<Record<string, number>> = {
+  A: 0.667, B: 0.667, C: 0.722, D: 0.722, E: 0.667, F: 0.611, G: 0.778, H: 0.722, I: 0.278, J: 0.5,
+  K: 0.667, L: 0.556, M: 0.833, N: 0.722, O: 0.778, P: 0.667, Q: 0.778, R: 0.722, S: 0.667, T: 0.611,
+  U: 0.722, V: 0.667, W: 0.944, X: 0.667, Y: 0.667, Z: 0.611,
+  a: 0.556, b: 0.556, c: 0.5, d: 0.556, e: 0.556, f: 0.278, g: 0.556, h: 0.556, i: 0.222, j: 0.222,
+  k: 0.5, l: 0.222, m: 0.833, n: 0.556, o: 0.556, p: 0.556, q: 0.556, r: 0.333, s: 0.5, t: 0.278,
+  u: 0.556, v: 0.5, w: 0.722, x: 0.5, y: 0.5, z: 0.5,
+  "0": 0.556, "1": 0.556, "2": 0.556, "3": 0.556, "4": 0.556, "5": 0.556, "6": 0.556, "7": 0.556,
+  "8": 0.556, "9": 0.556, "+": 0.584, "-": 0.333
+};
+
+/** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
+function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
+  const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+  const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
+  const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
+  const em = [...run.text].reduce((sum, character) => sum + (sansSerifAdvanceEm[character] ?? 0.62), 0);
+  return em * fontSize * weightFactor * italicFactor;
+}
+
 function atomLabelScript(character: string): AtomLabelScript {
   if (/\d/.test(character)) {
     return "subscript";
@@ -5563,14 +5682,38 @@ export function atomDisplayLabel(
   atoms: readonly MoleculeAtom[],
   resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
 ): string | undefined {
+  return atomDisplayLabelPlacement(atom, bonds, drawingStyle, atoms, resolution)?.label;
+}
+
+/** A drawn atom label, and for a group label the characters that sit on the atom. */
+export interface AtomDisplayLabelPlacement {
+  label: string;
+  /** Set for a group label under automatic alignment (`nativeGroupLabelDisplay`); unset, it is centred. */
+  anchor?: AtomLabelAnchor;
+}
+
+/**
+ * `atomDisplayLabel`, with where a group label meets its bond. Under the default (automatic)
+ * alignment, a group label is drawn the way round its bond reads and placed so the atom its bonds
+ * reach sits on the atom: "OMe" with its O on the atom, drawn "MeO" with the bond on its right
+ * (`nativeGroupLabelDisplay`). The side is the one the drawing shows, by chem-core's side test, as
+ * for "HO". Display only: the stored label and its chemistry never change. Every other label, and
+ * any label under an explicit alignment, is laid out as before.
+ */
+export function atomDisplayLabelPlacement(
+  atom: MoleculeAtom,
+  bonds: readonly CoreMoleculeBond[],
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
+  atoms: readonly MoleculeAtom[],
+  resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
+): AtomDisplayLabelPlacement | undefined {
   // The mark-contributed part of the charge is drawn by the floating charge mark itself, so the
   // label must not repeat it as a superscript — but hydrogen count always follows the FULL
   // charge, because the deprotonation is real regardless of which object displays the sign.
   const labelCharge = atom.formalCharge - (atom.markCharge ?? 0);
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
-    const symbol = atom.element.trim() || "C";
-    return `${symbol}${chargeLabelSuffix(labelCharge)}`;
+    return nonElementAtomLabelPlacement(atom, heavyAtomNeighbors(atom.id, resolution), drawingStyle)!;
   }
   // Aromatic bonds count at their Kekulé orders, resolved once per molecule — the same bonds the
   // formula and the valence check count, so the drawn H count and the formula agree. A molecule
@@ -5610,14 +5753,18 @@ export function atomDisplayLabel(
   }
 
   const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, resolution);
+  // HO, not OH, when the bond comes from the right: chem-core's side test, the same one that
+  // records a cyano label's bond side, so the drawing and the chemistry agree on "right".
   const hydrogenBeforeElement =
     implicitHydrogens === "H" &&
     element !== "H" &&
     singleHeavyNeighbor !== undefined &&
-    singleHeavyNeighbor.x > atom.x + 0.001;
-  return hydrogenBeforeElement
-    ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
-    : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`;
+    drawnLabelBondSide(atom, [singleHeavyNeighbor]) === "right";
+  return {
+    label: hydrogenBeforeElement
+      ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
+      : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
+  };
 }
 
 /**
@@ -5740,6 +5887,66 @@ function heavyAtomNeighborCount(
     }
   }
   return neighborIds.size;
+}
+
+/**
+ * How a label that is not an element symbol is drawn, given where its bonded heavy atoms lie: the
+ * text (turned round for a bond on its right when it reads the same, `nativeGroupLabelDisplay`)
+ * and the characters that sit on the atom, under automatic alignment. What `atomDisplayLabelPlacement`
+ * returns for such an atom; exported so the 3D spin overlay places a label by its projected bonds
+ * by the same rule. Undefined for an element label.
+ */
+export function nonElementAtomLabelPlacement(
+  atom: MoleculeAtom,
+  neighbors: readonly { x: number; y: number }[],
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle
+): AtomDisplayLabelPlacement | undefined {
+  if (nativeElementFromAtomLabel(atom.element)) {
+    return undefined;
+  }
+  const charge = chargeLabelSuffix(atom.formalCharge - (atom.markCharge ?? 0));
+  const symbol = atom.element.trim() || "C";
+  const side = drawingStyle.atomLabelAlignment === "automatic" ? groupLabelDisplaySide(atom, symbol, neighbors) : undefined;
+  const group = side ? nativeGroupLabelDisplay(symbol, side) : undefined;
+  return group ? { label: `${group.text}${charge}`, anchor: group.anchor } : { label: `${symbol}${charge}` };
+}
+
+/**
+ * The side a group label is drawn as bonded from. One bond: chem-core's side test, exactly as for
+ * "HO" and as #83 records a cyano label's side (`drawnLabelBondSide`). Two or more (a ring vertex):
+ * the side the bonds pull to, by the sign of their summed x-offsets, so the label points out of the
+ * ring; a vertex whose bonds pull neither way (the top or bottom of a hexagon, offsets summing to
+ * under a tenth of a bond) keeps the label as typed. Display only: the side a label's chemistry is
+ * read with is recorded from one bond and never from this.
+ */
+function groupLabelDisplaySide(
+  atom: { x: number; y: number },
+  label: string,
+  neighbors: readonly { x: number; y: number }[]
+): "left" | "right" | undefined {
+  if (neighbors.length < 2) {
+    return drawnLabelBondSide(atom, neighbors);
+  }
+  const pull = neighbors.reduce((sum, neighbor) => sum + (neighbor.x - atom.x), 0);
+  const bond = neighbors.reduce((sum, neighbor) => sum + Math.hypot(neighbor.x - atom.x, neighbor.y - atom.y), 0) / neighbors.length;
+  if (Math.abs(pull) >= bond * 0.1) {
+    return pull > 0 ? "right" : "left";
+  }
+  // As typed: the side whose reading leaves the label unturned ("MeO" keeps its O at the end).
+  return nativeGroupLabelDisplay(label, "left")?.text === label ? "left" : "right";
+}
+
+/** The atom's bonded neighbours that are not hydrogen, each once. */
+function heavyAtomNeighbors(atomId: string, resolution: NativeBondOrderResolution): MoleculeAtom[] {
+  const neighbors = new Map<string, MoleculeAtom>();
+  for (const bond of resolution.bondsByAtom.get(atomId) ?? []) {
+    const neighborId = bond.fromAtomId === atomId ? bond.toAtomId : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
+    const neighbor = neighborId ? resolution.atomById.get(neighborId) : undefined;
+    if (neighbor && nativeElementFromAtomLabel(neighbor.element) !== "H") {
+      neighbors.set(neighbor.id, neighbor);
+    }
+  }
+  return [...neighbors.values()];
 }
 
 function singleHeavyAtomNeighbor(
