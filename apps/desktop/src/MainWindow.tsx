@@ -382,10 +382,10 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
-  applyNativeAtomSproutTarget,
+  nativeAtomSproutHotkeyTarget,
   applyNativeBondDisplayStyleTarget,
-  applyNativeRingAttachAtAtomTarget,
-  applyNativeRingFuseAtBondTarget,
+  nativeRingHotkeyAttachAtAtomTarget,
+  nativeRingHotkeyFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
   applyNativeMoleculeBondOrderTarget,
@@ -408,6 +408,8 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
+  type NativeRingHotkeyResult,
+  type NativeRingHotkeyRefusal,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -1517,7 +1519,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.09.00-opus";
+const CURRENT_BUILD_STAMP = "10.11.09.45-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1753,6 +1755,12 @@ export interface MainWindowProps {
   initialCrosshairsVisible?: boolean;
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
+  /**
+   * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
+   * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
+   * on off the desktop runtime, as DOM tests do to exercise native-mode code, runs native mode with no
+   * window manager: no palette windows are reconciled, and no in-window palettes appear either.
+   */
   nativePalette?: boolean;
 }
 
@@ -3682,7 +3690,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3692,9 +3700,12 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = edit(currentDocument, target);
+    const result = edit(currentDocument, target);
+    const { document: nextDocument, refusal } = "document" in result ? result : { document: result, refusal: undefined };
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot add ${statusNoun} here`);
+      setStatus(refusal
+        ? `Cannot add ${statusNoun} here: ${nativeTemplateFallbackReasonText(refusal)}`
+        : `Cannot add ${statusNoun} here`);
       return;
     }
 
@@ -3711,19 +3722,19 @@ export function MainWindow({
 
   const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeAtomSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+      nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
   const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeRingAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
+      nativeRingHotkeyAttachAtAtomTarget(document, target, templateId, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
   const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
-      applyNativeRingFuseAtBondTarget(document, target, templateId)
+      nativeRingHotkeyFuseAtBondTarget(document, target, templateId)
     );
   }, [applyHoveredNativeTargetEdit]);
 
@@ -10840,6 +10851,13 @@ export function MainWindow({
   // never left with no toolbars.
   useEffect(() => {
     if (!effectiveNativePalette) {
+      return;
+    }
+    // Native palette windows exist only in the desktop runtime, which is also the only place native
+    // palettes are on by default. Off it (a caller forcing `nativePalette`, as DOM tests do) there is
+    // no window manager to reconcile with: retrying would only end, about 0.4 s later, in the
+    // fallback below, posting its status over whatever the status line said at that moment.
+    if (!isDesktopRuntime()) {
       return;
     }
 
@@ -20387,6 +20405,30 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
+/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
+  switch (reason) {
+    case "atom-no-free-valence":
+      return "that atom has no free valence";
+    case "bond-atom-no-free-valence":
+      return "an atom on that bond has no free valence";
+    case "closure-atom-no-free-valence":
+      return "the ring would close onto an atom with no free valence";
+    case "double-bond-overfill":
+      return "the ring's double bonds would overfill a neighbouring atom";
+    case "atom-label-not-element":
+      return "that atom's label is an abbreviation; relabel it to an element first";
+    case "ring-geometry-unavailable":
+      return "the ring's geometry could not be placed there";
+    case "structure-not-editable":
+      return "that structure cannot be edited";
+    case "bond-cannot-accept":
+      return "that bond cannot accept a ring";
+    case "target-unavailable":
+      return "that target is unavailable";
+  }
+}
+
 export function nativeTemplateStatusForApplication(
   templateId: NativeMoleculeTemplateId,
   target: NativeMoleculeDeleteTarget | undefined,
@@ -20402,14 +20444,7 @@ export function nativeTemplateStatusForApplication(
   }
 
   if (fallbackReason) {
-    const reason = fallbackReason === "atom-no-free-valence"
-      ? "that atom has no free valence"
-      : fallbackReason === "structure-not-editable"
-        ? "that structure cannot be edited"
-        : fallbackReason === "bond-cannot-accept"
-          ? "that bond cannot accept a ring"
-          : "that target is unavailable";
-    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${reason}`;
+    return `Placed ${nativeTemplateStatusLabel(templateId)} separately: ${nativeTemplateFallbackReasonText(fallbackReason)}`;
   }
 
   return target.kind === "bond"
@@ -24145,6 +24180,7 @@ function reactSvgAttributeName(name: string): string {
     "color-interpolation-filters": "colorInterpolationFilters",
     "dominant-baseline": "dominantBaseline",
     "fill-opacity": "fillOpacity",
+    "fill-rule": "fillRule",
     "flood-color": "floodColor",
     "flood-opacity": "floodOpacity",
     "font-family": "fontFamily",
