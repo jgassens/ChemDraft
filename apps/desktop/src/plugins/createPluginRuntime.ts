@@ -67,6 +67,8 @@ export interface DesktopPluginRuntimeOptions {
    * pushing onto it. Without one, the runtime falls back to {@link documentIdentityKey}.
    */
   getActiveDocumentKey?: () => string | undefined;
+  /** Desktop tab ownership, captured when a command starts even if its proposal arrives later. */
+  getActiveDocumentTab?: () => ProposalDocumentTab;
   /**
    * Builds an immutable selection snapshot from current desktop state. `warnings` is the collector of
    * the command invocation that asked (see {@link DesktopPluginRuntime.invokeCommand}); it is
@@ -155,6 +157,7 @@ export interface DesktopPluginRuntime {
   prompts: PluginPromptTextController;
   images: PluginImageRequestController;
   recognition: StructureRecognitionController;
+  proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -176,6 +179,11 @@ export interface DesktopPluginRuntime {
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
   onDidChange(listener: () => void): () => void;
+}
+
+export interface ProposalDocumentTab {
+  id: string;
+  title: string;
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
@@ -227,9 +235,24 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
+  const proposalTabs = new Map<string, ProposalDocumentTab>();
+  let proposingTab: ProposalDocumentTab | undefined;
   class DesktopPluginHost extends PluginHost {
     override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken);
+      const tab = options.getActiveDocumentTab?.();
+      const proposePatch = context.documents.proposePatch;
+      context.documents.proposePatch = (proposal) => {
+        // The host enqueues synchronously before returning its promise. Scope the queue notification
+        // to this context, so concurrent commands and late results retain their own source tab.
+        const previous = proposingTab;
+        proposingTab = tab;
+        try {
+          return proposePatch(proposal);
+        } finally {
+          proposingTab = previous;
+        }
+      };
       const collector = armedSelectionWarnings;
       armedSelectionWarnings = undefined;
       const selection = context.selection;
@@ -257,7 +280,20 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
     getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
     createStorage: options.createStorage,
-    onProposedPatchesChanged: options.onProposedPatchesChanged,
+    onProposedPatchesChanged: () => {
+      const pending = host.listProposedPatches("pending");
+      const pendingIds = new Set(pending.map((proposal) => proposal.id));
+      for (const id of proposalTabs.keys()) {
+        if (!pendingIds.has(id)) proposalTabs.delete(id);
+      }
+      for (const proposal of pending) {
+        if (proposalTabs.has(proposal.id)) continue;
+        // Trusted desktop callers of host.proposePatch have no invocation context.
+        const tab = proposingTab ?? options.getActiveDocumentTab?.();
+        if (tab) proposalTabs.set(proposal.id, { ...tab });
+      }
+      options.onProposedPatchesChanged?.();
+    },
     applyDocumentPatch: options.applyDocumentPatch,
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
@@ -284,6 +320,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     prompts,
     images,
     recognition,
+    proposalDocumentTab: (proposalId) => proposalTabs.get(proposalId),
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered

@@ -1572,7 +1572,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.14.42-opus";
+const CURRENT_BUILD_STAMP = "10.11.15.00-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7715,7 +7715,6 @@ export function MainWindow({
     );
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
-  const cancelTabProposalReviewRef = useRef<() => void>(() => undefined);
   const cancelDocumentTabSessions = useCallback(() => {
     // Roll back snapshot-based previews while their source document is still installed.
     const preview = rotationInputRef.current ?? objectResizeInputRef.current ??
@@ -7731,7 +7730,6 @@ export function MainWindow({
     cancelObjectStylePreview();
     cancelMoleculeInspectorPreview();
     cancelSpin3dSession(undefined, { clearModelCache: true });
-    cancelTabProposalReviewRef.current();
     // Releasing captures before clearing refs makes late pointer-up/cancel events harmless.
     const pointerSessions = [nativeBondDragRef, nativePlacementDragRef, nativeBondEditDragRef,
       nativePartDragRef, objectDragRef, graphicCornerRadiusDragRef, graphicPathEditDragRef,
@@ -9536,6 +9534,7 @@ export function MainWindow({
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
+    getActiveDocumentTab: () => documentTabsRef.current.find((tab) => tab.id === activeDocumentTabIdRef.current)!,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
     getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
@@ -9766,6 +9765,21 @@ export function MainWindow({
       const host = pluginRuntime.runtime.host;
       const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
       const recognized = proposal.proposal.recognition !== undefined;
+      const tab = pluginRuntime.runtime.proposalDocumentTab(proposal.id);
+      if (!tab || !documentTabsRef.current.some((candidate) => candidate.id === tab.id)) {
+        const message = tab
+          ? `Could not accept the proposal: its document was closed (${tab.title}). You can reject it.`
+          : "Could not accept the proposal: its document is unavailable. You can reject it.";
+        setStatus(message);
+        return { ok: false, message };
+      }
+      activateDocumentTab(tab.id);
+      // Switching is refused while Save/Discard/Cancel is pending. Never fall through onto its tab.
+      if (activeDocumentTabIdRef.current !== tab.id) {
+        const message = "Finish closing the current document, then accept the proposal again.";
+        setStatus(message);
+        return { ok: false, message };
+      }
       // An accept during a canvas session would be dropped by the session's own commit (see
       // isSnapshotSessionActive). The review window cannot wait for it, so the proposal stays pending
       // and the user accepts again once the edit is finished — nothing lost, nothing half-applied.
@@ -9778,8 +9792,7 @@ export function MainWindow({
       // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
-        // Laid onto the document in front of the user, which need not be the one the proposal was
-        // made in: a taken object id gets a fresh one, a missing page becomes this document's first.
+        // The proposal's own tab is now installed, including its independent undo history.
         const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
           apply: (current, proposed, options) => applyAcceptedPluginProposal(current, proposed, options).document
         });
@@ -9800,14 +9813,8 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
+    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
   );
-
-  cancelTabProposalReviewRef.current = () => {
-    for (const proposal of pluginRuntime.runtime.host.listProposedPatches("pending")) {
-      pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
-    }
-  };
 
   const rejectPluginProposal = useCallback(
     (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
@@ -9849,6 +9856,12 @@ export function MainWindow({
   // Pending proposal count and whether their review window is open, for the desktop badge that
   // reopens the window after the user closes it with proposals still waiting.
   const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
+  const proposalDocumentName = useCallback((proposal: QueuedProposedPatch): string | undefined => {
+    if (documentTabs.length < 2) return undefined;
+    const owner = pluginRuntime.runtime.proposalDocumentTab(proposal.id);
+    if (!owner) return "Unavailable document";
+    return documentTabs.find((tab) => tab.id === owner.id)?.title ?? `${owner.title} (closed)`;
+  }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
     (open: boolean, focus: boolean): Promise<boolean> => {
       const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
@@ -9857,12 +9870,13 @@ export function MainWindow({
         "Plugin Proposals",
         {
           kind: "patchReview",
-          proposals: pending.map((proposal) => proposalReviewItem(pluginRuntime.runtime.host, proposal))
+          proposals: pending.map((proposal) =>
+            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal)))
         },
         { open, focus, width: 420, height: 420 }
       );
     },
-    [pluginRuntime.runtime, publishAnalysisWindow]
+    [pluginRuntime.runtime, proposalDocumentName, publishAnalysisWindow]
   );
   /** Open the review window, and only once the native open has succeeded mark it open: on a
    *  failure the badge must stay, or the pending proposals have no way back on desktop. */
@@ -18846,6 +18860,7 @@ export function MainWindow({
           <PatchReviewTray
             host={pluginRuntime.runtime.host}
             queueVersion={patchQueueVersion}
+            getDocumentName={proposalDocumentName}
             onAccept={acceptPluginProposal}
             onReject={rejectPluginProposal}
           />

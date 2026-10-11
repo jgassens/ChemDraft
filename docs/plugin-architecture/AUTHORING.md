@@ -240,8 +240,7 @@ reference.
 command started and refuses `applyPatch` if a different document is active when the write arrives —
 after File > New, File > Open, or a switch to another document window — with "The document changed
 while the plugin was running; nothing was inserted." Edits and undo inside the same document do not
-count as a change. Proposals are unaffected: the user reviews and accepts them into the document in
-front of them.
+count as a change. Proposals remain queued for review in their originating document.
 
 ## Proposal lifetime
 
@@ -252,10 +251,16 @@ an accept or reject is carried by its return value and the `onProposedPatchesCha
 Pending proposals survive unregistering the plugin — an update or disable must not discard review the
 user has not done yet.
 
+A desktop proposal belongs to the document tab its command started in, even if the result arrives
+after a tab switch. Switching or closing tabs never discards pending proposals. Accepting brings the
+originating document forward and applies the proposal there; if that document was closed, Accept is
+refused and the proposal stays pending and can only be rejected. With multiple tabs open, the review
+window names each proposal's document.
+
 **Accepting is the user's action, not the plugin's.** `acceptProposedPatch` is the review step the
 recognition rule above waits for, so none of `applyPatch`'s refusals reach it: not the recognition
-rule, not the invocation binding (the command finished long ago), and not the document key (the user
-is accepting into the document in front of them). The desktop inserts an accepted proposal as one
+rule, not the invocation binding (the command finished long ago), and not the direct-write document
+key. The desktop activates the proposal's own tab and inserts an accepted proposal as one
 undo entry, selects what it inserted, and reports the result in the status line. A proposal whose
 patch cannot be applied stays pending, and the reason is shown both in the status line and on the
 proposal in the review window, so the user can retry or reject it. The review window waits for the

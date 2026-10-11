@@ -8,7 +8,12 @@ import { createNativeSavePayload, createPhase4Document } from "./documentWorkflo
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
-import { createPluginRuntime } from "./plugins/createPluginRuntime";
+import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+import type { DocumentPatch } from "@chemdraft/chem-core";
+import {
+  ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowSnapshotPayload,
+  broadcastAnalysisWindowSnapshot, respondToProposalDecision
+} from "./plugins/panelBridge";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
@@ -62,6 +67,11 @@ vi.mock("./plugins/createPluginRuntime", async (original) => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: vi.fn(actual.createPluginRuntime) };
 });
+vi.mock("./plugins/panelBridge", async (original) => {
+  const actual = await original<typeof import("./plugins/panelBridge")>();
+  return { ...actual, broadcastAnalysisWindowSnapshot: vi.fn().mockResolvedValue(undefined),
+    respondToProposalDecision: vi.fn().mockResolvedValue(undefined) };
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,6 +81,8 @@ describe("documents in one window", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
+    vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
     native.session = undefined;
     native.events.clear();
@@ -147,6 +159,158 @@ describe("documents in one window", () => {
     await act(async () => { window.dispatchEvent(event); });
     return event;
   }
+  const runtime = () => vi.mocked(createPluginRuntime).mock.results[0]!.value as DesktopPluginRuntime;
+  function registerProposal(patch: DocumentPatch, wait?: Promise<void>) {
+    const commandId = "plugin.tabProposal.review";
+    runtime().registerPlugin({
+      id: "org.test.tab-proposal", name: "Tab Proposal", version: "0.0.1", apiVersion: "^0.1.6",
+      entry: "dist/plugin.js", permissions: ["document.proposePatch"],
+      contributes: { commands: [{ id: commandId, title: "Review Result", requiredPermissions: ["document.proposePatch"] }] }
+    }, { commandHandlers: { [commandId]: async (context) => {
+      if (wait) await wait;
+      return context.documents.proposePatch({ reason: "Review this result", patch });
+    } } });
+    return commandId;
+  }
+  async function propose(patch: DocumentPatch) {
+    const commandId = registerProposal(patch);
+    await act(async () => { await runtime().invokeCommand(commandId); });
+    return runtime().host.listProposedPatches("pending")[0]!;
+  }
+  async function decide(kind: "acceptPluginProposal" | "rejectPluginProposal", proposalId: string) {
+    await act(async () => window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
+      detail: { kind, proposalId, requestId: "review-result" }
+    })));
+  }
+  const reviewItems = () => {
+    const snapshots = vi.mocked(broadcastAnalysisWindowSnapshot).mock.calls
+      .map(([payload]) => payload as AnalysisWindowSnapshotPayload);
+    const content = snapshots.filter((payload) => payload.content.kind === "patchReview").at(-1)!.content;
+    if (content.kind !== "patchReview") throw new Error("No proposal review snapshot");
+    return content.proposals;
+  };
+
+  it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {
+    await open("Source");
+    await paste("Source history");
+    const sourceBefore = bridge().snapshot().document;
+    const proposal = await propose({ op: "addObject", pageId: sourceBefore.pages[0]!.id, object: {
+      id: "proposal-rect", type: "graphic", graphicKind: "rect", x: 100, y: 100, width: 80, height: 50,
+      rotation: 0, style: {}, data: {}
+    } });
+    expect(reviewItems()[0]!.documentName).toBeUndefined();
+    await open("Other");
+    await paste("Other first edit");
+    const otherFirstEdit = bridge().snapshot().document;
+    await paste("Other second edit");
+    await activate(0);
+    await activate(1);
+    await command("edit.undo");
+    const otherBefore = bridge().snapshot().document;
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(reviewItems()[0]!.documentName).toBe("Source.chemdraft");
+    // Even disabling the plugin must retain the document binding and pending review.
+    await act(async () => runtime().unregisterPlugin(proposal.pluginId));
+    await decide("acceptPluginProposal", proposal.id);
+    expect(active()).toBe(0);
+    expect(bridge().snapshot().document.pages[0]!.objects.some((object) => object.id === "proposal-rect")).toBe(true);
+    expect(bridge().snapshot().document.selection.objectIds).toEqual(["proposal-rect"]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("applied proposal");
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(sourceBefore);
+    await activate(1);
+    expect(bridge().snapshot().document).toEqual(otherBefore);
+    await command("edit.redo");
+    expect(drawnText()).toContain("Other second edit");
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(otherBefore);
+    await command("edit.undo");
+    expect(bridge().snapshot().document.pages[0]!.objects).toHaveLength(0);
+    expect(otherFirstEdit.pages[0]!.objects).toHaveLength(1);
+  });
+
+  it.each(["updateObject", "removeObject"] as const)("applies %s only in the source tab when object ids repeat", async (op) => {
+    await paste("Source object");
+    const source = bridge().snapshot().document;
+    const objectId = source.pages[0]!.objects[0]!.id;
+    const proposal = await propose(op === "updateObject"
+      ? { op, objectId, changes: { text: "Reviewed source" } }
+      : { op, objectId });
+    await command("document.new");
+    await paste("Other object");
+    const other = bridge().snapshot().document;
+    expect(other.pages[0]!.objects[0]!.id).toBe(objectId);
+    await decide("acceptPluginProposal", proposal.id);
+    expect(active()).toBe(0);
+    expect(drawnText()).toBe(op === "updateObject" ? "Reviewed source" : "");
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(source);
+    await activate(1);
+    expect(bridge().snapshot().document).toEqual(other);
+    await command("edit.undo");
+    expect(bridge().snapshot().document.pages[0]!.objects).toHaveLength(0);
+  });
+
+  it("refuses Accept after its document closes, keeps it pending, and permits Reject from another tab", async () => {
+    await open("Closed source");
+    const proposal = await propose({ op: "updatePageLayout", pageId: bridge().snapshot().document.pages[0]!.id,
+      layout: bridge().snapshot().document.pages[0]!.layout });
+    await command("document.new");
+    await activate(0);
+    await command("document.closeTab");
+    const other = bridge().snapshot().document;
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    await decide("acceptPluginProposal", proposal.id);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("its document was closed (Closed source.chemdraft)");
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", {
+      ok: false, message: expect.stringContaining("its document was closed")
+    });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(bridge().snapshot().document).toEqual(other);
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+    await decide("rejectPluginProposal", proposal.id);
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    expect(bridge().snapshot().document).toEqual(other);
+  });
+
+  it("rejects a pending proposal from another open tab without switching or editing either document", async () => {
+    await paste("Source drawing for rejection");
+    const source = bridge().snapshot().document;
+    const proposal = await propose({ op: "removeObject", objectId: source.pages[0]!.objects[0]!.id });
+    await command("document.new");
+    const other = bridge().snapshot().document;
+    await decide("rejectPluginProposal", proposal.id);
+    expect(active()).toBe(1);
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    expect(bridge().snapshot().document).toEqual(other);
+    await activate(0);
+    expect(bridge().snapshot().document).toEqual(source);
+  });
+
+  it("queues a delayed proposal for the command's tab while a different tab is active", async () => {
+    await open("Delayed source");
+    await paste("Source drawing for delayed review");
+    const source = bridge().snapshot().document;
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const commandId = registerProposal({ op: "removeObject", objectId: source.pages[0]!.objects[0]!.id }, wait);
+    let invocation!: Promise<unknown>;
+    await act(async () => { invocation = runtime().invokeCommand(commandId); });
+    await command("document.new");
+    await paste("Other drawing");
+    const other = bridge().snapshot().document;
+    await act(async () => { finish(); await invocation; });
+    const proposal = runtime().host.listProposedPatches("pending")[0]!;
+    expect(active()).toBe(1);
+    expect(reviewItems()[0]!.documentName).toBe("Delayed source.chemdraft");
+    await decide("acceptPluginProposal", proposal.id);
+    expect(active()).toBe(0);
+    expect(drawnText()).toBe("");
+    await activate(1);
+    expect(bridge().snapshot().document).toEqual(other);
+  });
 
   it("hides the strip for one document; File New adds and activates an Untitled tab", async () => {
     expect(container.querySelector('[role="tablist"]')).toBeNull();
@@ -400,7 +564,7 @@ describe("documents in one window", () => {
     expect(tabs()).toHaveLength(3);
   });
 
-  it("cancels page-size and pending plugin proposal sessions when activating another tab", async () => {
+  it("cancels page-size editing but retains pending plugin proposals when activating another tab", async () => {
     await command("document.new");
     const runtime = vi.mocked(createPluginRuntime).mock.results[0]!.value;
     const proposal = {
@@ -416,8 +580,8 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     await activate(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(reject).toHaveBeenCalledWith("tab-bound-review");
-    expect(runtime.host.listProposedPatches("pending")).toEqual([]);
+    expect(reject).not.toHaveBeenCalled();
+    expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
   });
 
   function threeTabSession() {

@@ -189,3 +189,7 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
    prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after
    switching tabs; both must use the active document. Keep the worktree label visible throughout.
+   Queue a recognition proposal, switch tabs (also during recognition), and check its document name
+   in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
+   Accept must explain that its document was closed and keep the proposal pending; Reject must work
+   from any tab.

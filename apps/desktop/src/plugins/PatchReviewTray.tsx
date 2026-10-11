@@ -13,12 +13,14 @@ import { recognitionStructurePreview } from "./recognitionPreview";
 export function PatchReviewTray({
   host,
   queueVersion,
+  getDocumentName,
   onAccept,
   onReject
 }: {
   host: PluginHost;
   /** Bumped by the host's onProposedPatchesChanged callback so the pending list recomputes. */
   queueVersion: number;
+  getDocumentName?(proposal: QueuedProposedPatch): string | undefined;
   onAccept(proposal: QueuedProposedPatch): void;
   onReject(proposal: QueuedProposedPatch): void;
 }) {
@@ -34,7 +36,7 @@ export function PatchReviewTray({
     return null;
   }
 
-  const items = pending.map((proposal) => proposalReviewItem(host, proposal));
+  const items = pending.map((proposal) => proposalReviewItem(host, proposal, getDocumentName?.(proposal)));
 
   return (
     <div className="patch-review-tray" data-patch-review-tray="true">
@@ -122,6 +124,7 @@ export function PatchReviewList({
             <span className="patch-review-plugin">{proposal.pluginName}</span>
           </div>
           <p className="patch-review-reason">{proposal.reason}</p>
+          {proposal.documentName ? <p className="patch-review-document">Document: {proposal.documentName}</p> : null}
           {proposal.recognition ? (
             <div className="patch-review-recognition" data-testid="recognition-proposal-preview">
               <img src={proposal.recognition.sourceImageRef} alt="Source submitted for structure recognition" />
@@ -176,7 +179,9 @@ export function PatchReviewList({
   );
 }
 
-export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPatch): PluginProposalReviewItem {
+export function proposalReviewItem(
+  host: PluginHost, proposal: QueuedProposedPatch, documentName?: string
+): PluginProposalReviewItem {
   // The plugin host already attached its own record of a recognition (tier, image, warnings) on queueing.
   const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
   return {
@@ -184,6 +189,7 @@ export function proposalReviewItem(host: PluginHost, proposal: QueuedProposedPat
     pluginId: proposal.pluginId,
     pluginName: host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId,
     reason: proposal.proposal.reason,
+    documentName,
     warnings,
     recognition,
     structurePreview: recognitionStructurePreview(proposal.proposal)
