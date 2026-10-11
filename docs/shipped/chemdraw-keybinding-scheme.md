@@ -75,26 +75,31 @@ under the default ChemDraft scheme — `hoveredNativeTargetShortcutCommand` in `
 consults the same tables ahead of its legacy fallbacks. Carbonyl, historically `k` over an atom
 in the ChemDraft scheme, is `2` in both schemes; `k` keeps working under ChemDraft only.
 
-## Nickname labels: verbatim, not structural
+## Nickname labels: the label stays, the chemistry is the group
 
-The nickname hotkeys place the label VERBATIM as a superatom-style text label — ChemDraw expands
-them to real structure; ChemDraft does not (yet). The chemistry is handled honestly rather than
-silently: labels that spell a condensed formula of real elements (CF3, NO2, N3, MgBr) count in
-the molecular formula, opaque abbreviations (Et, Me, Ph, Boc, Cbz, Fmoc, OMe, CO2Me, R, X, D, ?)
-contribute nothing, and both kinds export to SMILES/molfile as a warned dummy atom (`[*]`/`*`)
-when no single-atom spelling exists. `D` is a plain label, not a modeled deuterium isotope.
-Nickname atoms are never valence-flagged (only the text tool creates literal checked atoms).
-Nickname atoms are superatoms to the drawing tools as well as to the exporters: the bond tool's
-growth arrow, the numeric sprout and ring hotkeys, and cross-molecule bonding all refuse a nickname
-atom because it has no known free valence (`nativeAtomAvailableBondCount` is zero for a non-element
-label). To grow from it, relabel it to an element first. Charge marks attach to nickname atoms and
-count in the formula and SMILES (`[*+]`), and the label's valence is never checked.
+The nickname hotkeys place the label verbatim: the document stores "OMe", and the canvas draws
+"OMe". Since the abbreviation slice (2026-10-10), every label in the template library's
+abbreviation table (Me, Et, Ph, OMe, CO2Me, CF3, NO2, N3, MgBr, Boc, Cbz, Fmoc and more) is read as
+the group it stands for. Matching is case-sensitive: "OMe" is methoxy, "Ome" is text. See
+`packages/template-library/README.md` and `nativeAtomLabelReading`.
+
+- **Valence.** A group's label bonds must fill its free valence, typed or placed by hotkey. "OMe" on
+  a ring carbon (an O with three bonds and no + charge) and a lone "OMe" (an open CH3O) are badged;
+  the reason names the bonds it takes and the charge that would fix it.
+- **Formula, SMILES, molfile, analysis.** A valid group counts and exports as its real atoms. A
+  molfile carries each as a superatom (`SUP`) S-group with its label. A flagged group counts nothing
+  and exports as a warned placeholder until it is fixed.
+- **Drawing tools.** The bond tool may draw the bonds a group is missing, never more. Ring attach
+  and bond-order changes still refuse non-element atoms.
+- **Placeholders.** R, X and ? (and the rest of `isGenericAtomLabel`) stay warned placeholders,
+  never badged. `D` is deuterium. Unrecognized text is badged and counts nothing.
+- **Charges** attach to nickname atoms and sit on the group's attachment atom: "OMe" carrying −1 is
+  methoxide.
 
 ## Deliberately not mapped
 
-`A`→Ac is absent: "Ac" normalizes to the element actinium, and silently turning an acetyl label
-into a metal is the abbreviation/element collision documented in `parseCondensedLabelFormula` —
-unmapped until that policy exists. Also absent: the fragment sprouts ChemDraft has no template
+`A`→Ac is absent: "Ac" normalizes to the element actinium, and elements win over the abbreviation
+table, so acetyl is in the table only as "COMe"/"MeCO". Also absent: the fragment sprouts ChemDraft has no template
 for (t-Bu on `k`, alkyne), dialogs (`=`, `/`), and tools ChemDraft lacks (TLC plate, orbitals,
 cyclopentadiene).
 

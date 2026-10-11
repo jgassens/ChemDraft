@@ -52,6 +52,7 @@ import {
   isMetalSymbol,
   moleculeToMolfileV2000,
   clearChangedAtomHydrogenHints,
+  drawnLabelBondSide,
   moleculeToMolfileV3000,
   UnknownBondOrderError,
   PageSizePresets,
@@ -155,6 +156,7 @@ import {
   defaultDoubleBondSide,
   defaultNativeMoleculeTransform,
   distance,
+  expandNativeMoleculeLabelGroups,
   findSingleCycleAtomIds,
   firstPage,
   insertNativeReactionArrow,
@@ -175,6 +177,14 @@ import {
   nativeComponents,
   type NativeDoubleBondSide,
   nativeElementFromAtomLabel,
+  nativeLabelGroupVerdict,
+  nativeAtomLabelReading,
+  nativeAtomLabelFreeValence,
+  type NativeAtomLabelContext,
+  nativeLabelBondSide,
+  nativeLabelReadingDependsOnBondSide,
+  withNativeDocumentLabelBondSides,
+  withNativeLabelBondSides,
   nativeMoleculeUnspellableLabels,
   nativeReactionArrowMinExtentPx,
   nativeSingleBondGraphMetadata,
@@ -2888,6 +2898,9 @@ export type NativeTemplateFallbackReason =
   | "structure-not-editable"
   | "target-unavailable"
   | "atom-no-free-valence"
+  | "bond-atom-no-free-valence"
+  | "closure-atom-no-free-valence"
+  | "double-bond-overfill"
   | "bond-cannot-accept";
 
 /** Compute the placement a template click would make, without mutating the document. */
@@ -2910,13 +2923,6 @@ export function planNativeTemplatePlacement(
       if (!atom) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
       }
-      const valenceUsed = nativeAtomValenceUsage(molecule, atom);
-      // A spiro ring adds two bonds at its shared atom. Refuse rather than creating an
-      // over-valent graph, then place the requested template separately.
-      const element = nativeElementFromAtomLabel(atom.element);
-      if (element && !nativeAtomChargeSupportsValence(element, valenceUsed + 2, atom.formalCharge)) {
-        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
-      }
     }
 
     const nextMolecule = target.kind === "bond"
@@ -2927,8 +2933,13 @@ export function planNativeTemplatePlacement(
         document,
         point,
         templateId,
-        target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable"
+        nativeRingTargetFailureValenceReason(molecule, target)
+          ?? (target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable")
       );
+    }
+    const valenceRefusal = nativeRingPlacementValenceRefusal(molecule, nextMolecule, target);
+    if (valenceRefusal) {
+      return standaloneNativeTemplateFallbackPlan(document, point, templateId, valenceRefusal);
     }
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
@@ -2960,6 +2971,101 @@ export function planNativeTemplatePlacement(
     addedAtomIds: molecule.atoms.map((atom) => atom.id),
     addedBondIds: molecule.bonds.map((bond) => bond.id)
   };
+}
+
+/** Why a ring placement is refused for valence: the outcome {@link nativeRingPlacementValenceRefusal} reports. */
+type NativeRingValenceRefusal = Extract<
+  NativeTemplateFallbackReason,
+  "atom-no-free-valence" | "bond-atom-no-free-valence" | "closure-atom-no-free-valence" | "double-bond-overfill"
+>;
+
+/**
+ * The one valence guard for every placement that closes or adds a ring on an existing molecule
+ * (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond closure;
+ * clicks, previews and hotkeys alike). It judges the RESULT, not a prediction: every pre-existing
+ * atom whose valence use (bond orders plus radicals) rose must still be supported at its element
+ * and formal charge. Atoms whose valence use did not rise are not the placement's doing, and
+ * labels with no element (nicknames, generic R) are skipped as every valence check skips them.
+ * The reason names the most direct culprit: the target atom itself (an atom target) or an
+ * endpoint of the target bond; else an existing atom that gained a new bond (a closure atom);
+ * else an atom whose valence rose only because an aromatic template's double-bond re-pairing
+ * raised one of its existing bonds. Returns undefined when the placement is chemically sound.
+ */
+function nativeRingPlacementValenceRefusal(
+  before: MoleculeObject,
+  after: MoleculeObject,
+  target: NativeMoleculeDeleteTarget
+): NativeRingValenceRefusal | undefined {
+  const beforeById = new Map(before.atoms.map((atom) => [atom.id, atom]));
+  const overValentAtomIds = after.atoms.filter((atom) => {
+    const previous = beforeById.get(atom.id);
+    if (!previous) {
+      return false;
+    }
+    const usage = nativeAtomValenceUsage(after, atom);
+    return usage > nativeAtomValenceUsage(before, previous) && !nativeAtomSupportsValenceUsage(after, atom, usage);
+  }).map((atom) => atom.id);
+  if (overValentAtomIds.length === 0) {
+    return undefined;
+  }
+  if (target.kind === "atom" && overValentAtomIds.includes(target.atomId)) {
+    return "atom-no-free-valence";
+  }
+  if (target.kind === "bond") {
+    const bond = before.bonds.find((candidate) => candidate.id === target.bondId);
+    if (overValentAtomIds.some((atomId) => atomId === bond?.fromAtomId || atomId === bond?.toAtomId)) {
+      return "bond-atom-no-free-valence";
+    }
+  }
+  const bondCount = (molecule: MoleculeObject, atomId: string) =>
+    molecule.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+  return overValentAtomIds.some((atomId) => bondCount(after, atomId) > bondCount(before, atomId))
+    ? "closure-atom-no-free-valence"
+    : "double-bond-overfill";
+}
+
+/**
+ * When a ring could not be drawn at its target at all, whether the target's atoms were also too
+ * full to take the bonds any ring there would add: a fused ring adds one bond at each endpoint of
+ * the target bond, and a spiro ring at least two single bonds at its atom. A full atom is the
+ * definitive reason (no other spot on the same target could work), so it wins over the geometry
+ * reason. This only names the failure; it never refuses a placement, so it cannot overrule the
+ * result guard ({@link nativeRingPlacementValenceRefusal}). Labels with no element pass.
+ */
+function nativeRingTargetFailureValenceReason(
+  molecule: MoleculeObject,
+  target: NativeMoleculeDeleteTarget
+): "atom-no-free-valence" | "bond-atom-no-free-valence" | undefined {
+  const isFull = (atomId: string | undefined, added: number) => {
+    const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+    return atom !== undefined && !nativeAtomSupportsValenceUsage(molecule, atom, nativeAtomValenceUsage(molecule, atom) + added);
+  };
+  if (target.kind === "atom") {
+    return isFull(target.atomId, 2) ? "atom-no-free-valence" : undefined;
+  }
+  const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
+  return bond && (isFull(bond.fromAtomId, 1) || isFull(bond.toAtomId, 1)) ? "bond-atom-no-free-valence" : undefined;
+}
+
+/**
+ * Whether the atom admits this valence use at its formal charge. A group or spelled label (#83:
+ * "OMe", "NMe") is judged by its free valence, so a one-bond "OMe" is full; an element
+ * label by its element; a label with no free valence (generic R, a bare formula, unrecognized
+ * text) passes, as every valence check skips it. The label is read with the drawing tools' context
+ * (`nativeAtomLabelContextInMolecule`), so an "SCN" with its bond on the right is a bare formula here too.
+ */
+function nativeAtomSupportsValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom, usage: number): boolean {
+  const bonded = molecule.bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  const context = nativeAtomLabelContextInMolecule(atom, molecule, bonded);
+  const freeValence = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, context);
+  if (freeValence !== undefined) {
+    return usage <= freeValence;
+  }
+  if (nativeAtomLabelReading(atom.element, context).kind === "generic") {
+    return true;
+  }
+  const element = nativeElementFromAtomLabel(atom.element);
+  return !element || nativeAtomChargeSupportsValence(element, usage, atom.formalCharge);
 }
 
 function standaloneNativeTemplateFallbackPlan(
@@ -7470,17 +7576,27 @@ export function applyNativeAtomSproutTarget(
   kind: NativeAtomSproutKind,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeAtomSproutHotkeyTarget(document, target, kind, plan).document;
+}
+
+/** {@link applyNativeAtomSproutTarget}, also reporting why a cyclic-bond closure was refused. */
+export function nativeAtomSproutHotkeyTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  kind: NativeAtomSproutKind,
+  plan?: NativeBondGrowthPlan
+): NativeRingHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document };
   }
   const located = nativeMoleculeForPartTarget(document, target);
   if (!located) {
-    return document;
+    return { document };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return document;
+    return { document };
   }
 
   const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
@@ -7488,12 +7604,12 @@ export function applyNativeAtomSproutTarget(
 
   if (kind === "wedge" || kind === "hashed") {
     if (!growthPlan || growthPlan.targetAtomId) {
-      return document;
+      return { document };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
       bondStyle: kind === "wedge" ? "wedge" : "hashed"
     });
-    return nativeMoleculePatched(document, page, molecule, grown);
+    return { document: nativeMoleculePatched(document, page, molecule, grown) };
   }
 
   if (kind === "methylidene") {
@@ -7506,11 +7622,11 @@ export function applyNativeAtomSproutTarget(
       nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
       !growthPlan || growthPlan.targetAtomId
     ) {
-      return document;
+      return { document };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!grown) {
-      return document;
+      return { document };
     }
     const newAtom = grown.atoms[grown.atoms.length - 1];
     const bonds = grown.bonds.map((bond) =>
@@ -7519,7 +7635,7 @@ export function applyNativeAtomSproutTarget(
         ? nativeBondWithOrderAndDisplay(grown, bond, "double")
         : bond
     );
-    return nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds));
+    return { document: nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds)) };
   }
 
   if (kind === "gemDimethyl") {
@@ -7528,21 +7644,21 @@ export function applyNativeAtomSproutTarget(
     // methyl when the second cannot be planned would read as success. So an atom without two free
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
-      return document;
+    if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0, molecule) < 2) {
+      return { document };
     }
     if (!growthPlan || growthPlan.targetAtomId) {
-      return document;
+      return { document };
     }
     const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!first) {
-      return document;
+      return { document };
     }
     const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
     const second = secondPlan && !secondPlan.targetAtomId
       ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
       : undefined;
-    return nativeMoleculePatched(document, page, molecule, second);
+    return { document: nativeMoleculePatched(document, page, molecule, second) };
   }
 
   // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
@@ -7586,12 +7702,11 @@ export function applyNativeAtomSproutTarget(
 
   if (outgoingDegrees === undefined) {
     if (!growthPlan) {
-      return document;
+      return { document };
     }
-    const grown = growthPlan.targetAtomId
-      ? connectNativeCarbonAtoms(molecule, target.atomId, growthPlan.targetAtomId)
-      : extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
-    return nativeMoleculePatched(document, page, molecule, grown);
+    return growthPlan.targetAtomId
+      ? nativeCyclicClosurePatched(document, page, molecule, target, growthPlan.targetAtomId)
+      : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint)) };
   }
 
   const nextPoint = {
@@ -7604,10 +7719,61 @@ export function applyNativeAtomSproutTarget(
     !nativeBondExistsBetween(molecule, target.atomId, atom.id) &&
     canConnectNativeAtoms(molecule, target.atomId, atom.id)
   );
-  const grown = closure
-    ? connectNativeCarbonAtoms(molecule, target.atomId, closure.id)
-    : extendNativeCarbonGraph(molecule, target.atomId, nextPoint);
-  return nativeMoleculePatched(document, page, molecule, grown);
+  return closure
+    ? nativeCyclicClosurePatched(document, page, molecule, target, closure.id)
+    : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, nextPoint)) };
+}
+
+/**
+ * Close the cyclic-bond chain onto an existing atom. Closing a ring is a ring placement, so the
+ * result goes through the shared ring-placement valence guard: a closure that would over-fill
+ * the closure atom (or the hovered atom) changes nothing and says why.
+ */
+function nativeCyclicClosurePatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  target: Extract<NativeMoleculeDeleteTarget, { kind: "atom" }>,
+  closureAtomId: string
+): NativeRingHotkeyResult {
+  const closed = connectNativeCarbonAtoms(molecule, target.atomId, closureAtomId);
+  if (!closed) {
+    return { document };
+  }
+  const refusal = nativeRingPlacementValenceRefusal(molecule, closed, target);
+  return refusal ? { document, refusal } : { document: nativeMoleculePatched(document, page, molecule, closed) };
+}
+
+/**
+ * A ring hotkey's outcome. A refused press leaves `document` untouched (there is no click point
+ * to place a separate ring at) and names why, using the same reasons the ring tools report.
+ */
+export type NativeRingHotkeyResult = {
+  document: ChemDraftDocument;
+  refusal?: NativeRingHotkeyRefusal;
+};
+
+/**
+ * Why a ring hotkey (or the cyclic-bond closure) changed nothing: the ring tools' reasons, plus
+ * two only a hotkey meets — an atom whose label is an abbreviation rather than an element, and a
+ * ring whose geometry could not be placed at the hovered target.
+ */
+export type NativeRingHotkeyRefusal =
+  | NativeTemplateFallbackReason
+  | "atom-label-not-element"
+  | "ring-geometry-unavailable";
+
+/** The hovered target's editable molecule, or why a hotkey cannot change it. */
+function nativeHotkeyMoleculeForTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): { page: ChemDraftDocument["pages"][number]; molecule: MoleculeObject } | { refusal: NativeRingHotkeyRefusal } {
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (located) {
+    return located;
+  }
+  const exists = firstPage(document).objects.some((object) => object.id === target.objectId && object.type === "molecule");
+  return { refusal: exists ? "structure-not-editable" : "target-unavailable" };
 }
 
 /** Attach a ring template at the hovered atom (the atom becomes a shared ring vertex), oriented
@@ -7618,24 +7784,34 @@ export function applyNativeRingAttachAtAtomTarget(
   templateId: NativeMoleculeTemplateId,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeRingHotkeyAttachAtAtomTarget(document, target, templateId, plan).document;
+}
+
+/** {@link applyNativeRingAttachAtAtomTarget}, also reporting why a press was refused. */
+export function nativeRingHotkeyAttachAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId,
+  plan?: NativeBondGrowthPlan
+): NativeRingHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return document;
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
-  // A nickname or condensed label (Ph, OMe, CO2Me) is a superatom with no known free valence:
-  // the bond tool and the sprout hotkeys already refuse it, and a ring fused onto "Ph" would be
-  // chemistry nobody drew. Refuse here too, so the shipped doc's "relabel it to an element
-  // first" is the whole story.
+  // Rings never attach at a non-element label. A table group (Ph, OMe, CO2Me) takes one bond and a
+  // ring would give it two; a composite such as "NMe" or "CMe2" may take two, but a ring template
+  // laid over its head is chemistry nobody drew; any other label takes no bonds at all. Refuse
+  // them all, so "relabel it to an element first" stays the whole story for rings.
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
-    return document;
+    return { document, refusal: "atom-label-not-element" };
   }
   const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
     ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
@@ -7645,7 +7821,27 @@ export function applyNativeRingAttachAtAtomTarget(
     y: sourceAtom.y + direction.y * nativeBondLength
   };
   const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
-  return nativeMoleculePatched(document, page, molecule, attached);
+  if (!attached) {
+    return {
+      document,
+      refusal: nativeRingTargetFailureValenceReason(molecule, target) ?? "ring-geometry-unavailable"
+    };
+  }
+  return nativeRingHotkeyPatched(document, page, molecule, attached, target);
+}
+
+/** Commit a hotkey's ring molecule only if it passes the shared ring-placement valence guard. */
+function nativeRingHotkeyPatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  next: MoleculeObject,
+  target: NativeMoleculeDeleteTarget
+): NativeRingHotkeyResult {
+  const refusal = nativeRingPlacementValenceRefusal(molecule, next, target);
+  return refusal
+    ? { document, refusal }
+    : { document: nativeMoleculePatched(document, page, molecule, next) };
 }
 
 /** Fuse a ring template onto the hovered bond, bulging away from the molecule's body — pressing
@@ -7655,19 +7851,28 @@ export function applyNativeRingFuseAtBondTarget(
   target: NativeMoleculeDeleteTarget,
   templateId: NativeMoleculeTemplateId
 ): ChemDraftDocument {
+  return nativeRingHotkeyFuseAtBondTarget(document, target, templateId).document;
+}
+
+/** {@link applyNativeRingFuseAtBondTarget}, also reporting why a press was refused. */
+export function nativeRingHotkeyFuseAtBondTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  templateId: NativeMoleculeTemplateId
+): NativeRingHotkeyResult {
   if (target.kind !== "bond") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return document;
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
   const fromAtom = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
   const toAtom = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
   if (!bond || !fromAtom || !toAtom) {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
@@ -7689,7 +7894,9 @@ export function applyNativeRingFuseAtBondTarget(
     y: midpoint.y + outward.y * nativeBondLength
   };
   const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
-  return nativeMoleculePatched(document, page, molecule, fused);
+  return fused
+    ? nativeRingHotkeyPatched(document, page, molecule, fused, target)
+    : { document, refusal: nativeRingTargetFailureValenceReason(molecule, target) ?? "ring-geometry-unavailable" };
 }
 
 function addChargeMarkAtPoint(
@@ -7757,6 +7964,23 @@ function addChargeMarkAtPoint(
  * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
  * copies pasted without their mark all settle correctly with no history diffing.
  */
+/**
+ * What every committed document passes through: MainWindow's five commit paths (the initial
+ * document, opening a file, each label-editor keystroke, an edit, a history commit) call this and
+ * nothing else, and undo/redo only reinstate documents that passed it. So it is the one place every
+ * in-app change — a paste of any format, a template, a plugin's patch, an agent command, a merge —
+ * goes through, and where each side-dependent label ("SCN") gets its bond side recorded
+ * (`withNativeDocumentLabelBondSides`) before a later rotation could change what it means. Charge
+ * marks are reconciled first. Both passes are idempotent and keep what is already right, so a layout
+ * commit changes nothing.
+ */
+export function normalizeCommittedDocument(document: ChemDraftDocument): ChemDraftDocument {
+  const reconciled = reconcileNativeChargeMarks(document);
+  const recorded = withNativeDocumentLabelBondSides(reconciled);
+  // Re-admitted to the patch engine's sharing, as `reconcileNativeChargeMarks` does.
+  return recorded === reconciled ? reconciled : adoptDerivedDocument(reconciled, recorded);
+}
+
 export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDraftDocument {
   let changed = false;
   const pages = document.pages.map((page) => {
@@ -8113,7 +8337,7 @@ export function findNativeMoleculeAtomHit(
   }
 
   const valenceUsed = atomBondOrderUsageMap(molecule.atoms, molecule.bonds).get(hit.atomId) ?? 0;
-  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed);
+  const availableBonds = nativeAtomAvailableBondCount(atom, valenceUsed, molecule);
   if (availableBonds <= 0) {
     return undefined;
   }
@@ -8661,7 +8885,15 @@ export function applyNativeAtomElementTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
   element: string,
-  options: { literal?: boolean } = {}
+  options: {
+    literal?: boolean;
+    /**
+     * Put this recorded bond side back with the label: cancelling a label edit restores the label
+     * as it was written, not as the drawing reads now. The record is kept while its neighbour is
+     * still the label's one bonded atom (`withNativeLabelBondSides`).
+     */
+    labelBondSide?: MoleculeAtom["labelBondSide"];
+  } = {}
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -8686,17 +8918,21 @@ export function applyNativeAtomElementTarget(
     return document;
   }
 
+  const restoredSide = options.labelBondSide;
   if (
     atom.element === normalizedElement &&
     (atom.labelVisible === true) === labelVisible &&
-    (atom.labelLiteral === true) === literal
+    (atom.labelLiteral === true) === literal &&
+    (restoredSide === undefined || sameLabelBondSide(atom.labelBondSide, restoredSide))
   ) {
     return document;
   }
 
-  const atoms = molecule.atoms.map((candidate) =>
-    candidate.id === target.atomId ? nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal) : candidate
-  );
+  const atoms = molecule.atoms.map((candidate) => {
+    if (candidate.id !== target.atomId) return candidate;
+    const relabelled = nativeAtomWithElement(candidate, normalizedElement, labelVisible, literal);
+    return restoredSide ? { ...relabelled, labelBondSide: restoredSide } : relabelled;
+  });
   const nextMolecule = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
 
   return applyPatch(
@@ -8704,6 +8940,80 @@ export function applyNativeAtomElementTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/** Two recorded bond sides are the same record: the same side, read against the same neighbour. */
+function sameLabelBondSide(
+  first: MoleculeAtom["labelBondSide"],
+  second: MoleculeAtom["labelBondSide"]
+): boolean {
+  return first?.side === second?.side && first?.atomId === second?.atomId;
+}
+
+/** A label-edit session's starting label: its text, literal flag and recorded bond side. */
+export interface NativeAtomLabelEditStart {
+  element: string;
+  literal: boolean;
+  labelBondSide?: MoleculeAtom["labelBondSide"];
+}
+
+/**
+ * Whether a label-edit session keeps its starting label when it comes back to that text: only a
+ * label whose reading depends on its bond's side — one with a recorded side, or a cyano spelling
+ * ("SCN", "CN") — whose chemistry retyping could change. Every other label keeps the editor's usual
+ * behaviour exactly as before: typed text is written as a typed (literal) label, so a C typed on a
+ * hidden carbon stays a typed C, and one session can make an element label literal.
+ */
+export function atomLabelEditKeepsStartingLabel(start: NativeAtomLabelEditStart): boolean {
+  return start.labelBondSide !== undefined || nativeLabelReadingDependsOnBondSide(start.element);
+}
+
+/**
+ * Write one label-editor keystroke. A draft that has come back to a side-dependent label's starting
+ * text is that label as it was written — its literal flag and recorded side (SCN → O → SCN) — so the
+ * document never holds a side re-read from a turned-round drawing mid-session, and a drag, a
+ * commit, an undo entry or a save taken then sees the original. Any other draft is typed text.
+ */
+export function applyNativeAtomLabelDraft(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  draft: string,
+  start: NativeAtomLabelEditStart
+): ChemDraftDocument {
+  if (normalizeNativeAtomElementLabel(draft) === start.element && atomLabelEditKeepsStartingLabel(start)) {
+    return applyNativeAtomElementTarget(document, target, start.element, {
+      literal: start.literal,
+      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {})
+    });
+  }
+  return applyNativeAtomElementTarget(document, target, draft, { literal: true });
+}
+
+/**
+ * Close a label-edit session: the same rule as each keystroke (`applyNativeAtomLabelDraft`), as a
+ * safety net for a close that comes before the draft's last keystroke was written. A side-dependent
+ * label whose session ends on its starting text is put back exactly as it was — its literal flag and
+ * recorded side — as cancelling does. Anything else is returned as is.
+ */
+export function finishNativeAtomLabelEdit(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  initial: NativeAtomLabelEditStart
+): ChemDraftDocument {
+  if (target.kind !== "atom" || !atomLabelEditKeepsStartingLabel(initial)) {
+    return document;
+  }
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  const atom = molecule?.atoms.find((candidate) => candidate.id === target.atomId);
+  if (!atom || atom.element !== initial.element) {
+    return document;
+  }
+  return applyNativeAtomElementTarget(document, target, initial.element, {
+    literal: initial.literal,
+    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {})
+  });
 }
 
 export function previewNativeMoleculeBondGrowth(
@@ -17215,10 +17525,14 @@ export function applyEditorSaveResultToSelectedObject(
   );
 }
 
-export function applyEditorSaveResultToSelectedMolecule(
+/**
+ * Apply a structure-editor save to the selected molecule, returning the side-dependent labels the
+ * save read again from their drawing (`carryLabelBondSidesThroughEditorSave`), for the caller to show.
+ */
+export function applyEditorSaveResultWithLabelWarnings(
   document: ChemDraftDocument,
   result: EditorSaveResult
-): ChemDraftDocument {
+): { document: ChemDraftDocument; labelWarnings: EditorSaveLabelWarning[] } {
   const selectedMolecule = getSelectedMolecule(document);
   if (!selectedMolecule) {
     throw new Error("Cannot apply editor save result: no molecule is selected.");
@@ -17227,10 +17541,11 @@ export function applyEditorSaveResultToSelectedMolecule(
     throw new Error(`Cannot apply editor save result: saved object is "${result.object.type}", not a molecule.`);
   }
 
-  return applyEditorSaveResultToSelectedObject(document, {
-    ...result,
-    object: syncMoleculePreviewFromEditorSave(selectedMolecule, result.object)
-  });
+  const synced = syncMoleculePreviewFromEditorSave(selectedMolecule, result.object);
+  return {
+    document: applyEditorSaveResultToSelectedObject(document, { ...result, object: synced.molecule }),
+    labelWarnings: synced.labelWarnings
+  };
 }
 
 /**
@@ -17273,8 +17588,27 @@ export function exportPhase4Cdxml(
   return exportDocumentToCdxmlText(document, options);
 }
 
+/**
+ * Opening a file is when its labels are written as far as this app knows: a label with no recorded
+ * bond side (an imported CDXML, a file from before the record existed) gets the side its drawing
+ * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
+ */
 export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  return openChemDraftPayload(contents);
+  const result = openChemDraftPayload(contents);
+  const { conflict } = result;
+  return {
+    ...result,
+    ...(result.document ? { document: withNativeDocumentLabelBondSides(result.document) } : {}),
+    ...(conflict
+      ? {
+        conflict: {
+          ...conflict,
+          embeddedDocument: withNativeDocumentLabelBondSides(conflict.embeddedDocument),
+          ...(conflict.visibleDocument ? { visibleDocument: withNativeDocumentLabelBondSides(conflict.visibleDocument) } : {})
+        }
+      }
+      : {})
+  };
 }
 
 const importedPageFitPaddingPx = 24;
@@ -17544,7 +17878,13 @@ export function copyAsMergedMolecule(
   const bonds: MoleculeBond[] = [];
   molecules.forEach((molecule, index) => {
     const prefix = `m${index}_`;
-    atoms.push(...molecule.atoms.map((atom) => ({ ...atom, id: `${prefix}${atom.id}` })));
+    // A recorded bond side names its neighbour by id, so it is namespaced with it; left behind, it
+    // would name no atom and the label would be read from the drawing instead.
+    atoms.push(...molecule.atoms.map((atom) => ({
+      ...atom,
+      id: `${prefix}${atom.id}`,
+      ...(atom.labelBondSide ? { labelBondSide: { ...atom.labelBondSide, atomId: `${prefix}${atom.labelBondSide.atomId}` } } : {})
+    })));
     bonds.push(...molecule.bonds.map((bond) => ({
       ...bond,
       id: `${prefix}${bond.id}`,
@@ -17562,11 +17902,14 @@ export function copyAsMergedMolecule(
  * system. Label handling is the same as the plugins' V2000 form: a condensed label the label grammar
  * spells as one element with stated hydrogens ("OH", "NH2", "CH3") is written as that element with
  * that many hydrogens, so ethanol drawn as C–C–OH keeps its formula and mass. Aromatic bonds are
- * written at their Kekulé orders, so pyrrole's "NH" is spelled too. Labels that grammar cannot spell
- * ("Ph", "OMe"), and spelled labels on an atom whose aromatic bonds have no resolved Kekulé order
- * (where the stated hydrogens have no exact valence), stay R-group placeholders —
- * `nativeMoleculeUnspellableLabels` names the first kind. What V3000 adds is room: it has no
- * 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure` string, silently.
+ * written at their Kekulé orders, so pyrrole's "NH" is spelled too. A group label whose bonds fit
+ * it ("Ph", "OMe", "NMe2", a bonded "Ts") is written out as its atoms, appended after the drawn ones
+ * so every drawn atom keeps its index (`expandNativeMoleculeLabelGroups`). What is left — a
+ * placeholder, unrecognized text, a flagged group, a bonded "Ar", and spelled labels on an atom whose
+ * aromatic bonds have no resolved Kekulé order (where the stated hydrogens have no exact valence) —
+ * stays an R-group placeholder; `nativeMoleculeUnspellableLabels` names those labels. What V3000 adds
+ * is room: it has no 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure`
+ * string, silently.
  */
 export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
@@ -17588,16 +17931,39 @@ export function analysisFacingStructure(molecule: MoleculeObject): { structureFo
     }
     return { structureFormat: molecule.structureFormat, structure: molecule.structure };
   }
+  // A valid group label ("OMe", "Ph") is analysed as the atoms it stands for, appended after the
+  // drawn atoms so every drawn atom keeps its index in the engine's input.
+  const { molecule: expanded, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
   return {
     structureFormat: "molfile-v3000",
-    structure: moleculeToMolfileV3000(molecule, {
+    structure: moleculeToMolfileV3000(expanded, {
       unknownBondOrders: "refuse",
       fromDocFrame: true,
       abbreviations: "rgroup",
-      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders,
-      spellLabel: nativeSingleHeavyElementLabelValence
+      kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
+      spellLabel: nativeSingleHeavyElementLabelValence,
+      placeholderAtoms
     }).contents
   };
+}
+
+/**
+ * What Validate hands the engine for `molecule`. A drawn graph is read from its live atoms through
+ * `analysisFacingStructure`, so a valid group is analysed as the atoms it stands for. The stored
+ * `structure` is never trusted for a graph: after a 3D flatten it is a molfile with a dummy "*" for
+ * every label, and an engine result for that placeholder graph would overwrite the correct formula
+ * (once a valid group no longer counts as a placeholder, nothing else would stop it). A molecule with
+ * no graph keeps its stored structure, as before.
+ */
+export function validationFacingStructure(
+  molecule: MoleculeObject
+): { format: MoleculeObject["structureFormat"]; value: string } {
+  if (molecule.atoms.length === 0) {
+    return { format: molecule.structureFormat, value: molecule.structure };
+  }
+  const { structureFormat, structure } = analysisFacingStructure(molecule);
+  // analysisFacingStructure writes a drawn graph as "molfile-v3000", one of the stored formats.
+  return { format: structureFormat as MoleculeObject["structureFormat"], value: structure };
 }
 
 /**
@@ -17635,23 +18001,30 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
 }
 
 /**
- * The copy scope as one merged molfile. `warningsOut` receives the writer's lossy-emission notes
- * (V2000 flattens dative bonds to single; non-element labels write as dummy atoms) — V3000 keeps
- * dative bonds as coordination type 9 and stays silent about them.
+ * The copy scope as one merged molfile. A group label whose bonds fit it is written out as its atoms
+ * inside a superatom (`SUP`) S-group carrying the label. `warningsOut` receives the writer's
+ * lossy-emission notes (V2000 flattens dative bonds to single; any other label — a placeholder,
+ * unrecognized text, a flagged group, a bonded "Ar" — writes as a dummy atom) — V3000 keeps dative
+ * bonds as coordination type 9 and stays silent about them.
  */
 export function copyAsMolfile(
   document: ChemDraftDocument,
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
-  const merged = copyAsMergedMolecule(copyAsScopeMolecules(document));
-  if (!merged) {
+  const scoped = copyAsMergedMolecule(copyAsScopeMolecules(document));
+  if (!scoped) {
     return undefined;
   }
+  // Valid group labels are written as their atoms, each wrapped in a superatom S-group carrying
+  // the label, so a reader that contracts abbreviations still shows "OMe".
+  const { molecule: merged, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(scoped);
   const options = {
     fromDocFrame: true,
     warnings: warningsOut,
-    kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders
+    kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
+    superatomGroups: expansions,
+    placeholderAtoms
   };
   return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
 }
@@ -17972,7 +18345,7 @@ function appendNativeCarbonVertices(
     // O(chain × molecule), and re-kekulized every aromatic ring per vertex.
     const canGrow = added === 0
       ? canGrowNativeAtom(molecule, attachAtomId)
-      : nativeAtomAvailableBondCount(atoms[atoms.length - 1], 1) > 0;
+      : nativeAtomAvailableBondCount(atoms[atoms.length - 1], 1, molecule) > 0;
     if (!canGrow) {
       break;
     }
@@ -18186,6 +18559,14 @@ function mergeNativeMoleculeObjects(
     atomIdMap.set(atom.id, id);
     atoms.push({ ...atom, id });
   });
+  // Re-minted ids are not a new bond: a label's recorded side follows its neighbour's new id, so
+  // merging never re-reads a side from the drawing (`withNativeLabelBondSides`).
+  for (let index = host.atoms.length; index < atoms.length; index += 1) {
+    const record = atoms[index]!.labelBondSide;
+    if (record) {
+      atoms[index] = { ...atoms[index]!, labelBondSide: { ...record, atomId: atomIdMap.get(record.atomId) ?? record.atomId } };
+    }
+  }
 
   const bondIdMap = new Map<string, string>();
   const usedBondIds = host.bonds.map((bond) => bond.id);
@@ -18357,7 +18738,14 @@ function nativeAtomWithElement(
   labelVisible: boolean,
   labelLiteral = false
 ): MoleculeAtom {
-  const { labelVisible: _labelVisible, labelLiteral: _labelLiteral, warningSuppressed, ...baseAtom } = atom;
+  // A new label is written afresh, so its recorded bond side goes too and is recorded again for it.
+  const {
+    labelVisible: _labelVisible,
+    labelLiteral: _labelLiteral,
+    labelBondSide: _labelBondSide,
+    warningSuppressed,
+    ...baseAtom
+  } = atom;
   // A dismissed valence warning was dismissed for THIS element under THIS label rule. Relabelling
   // makes a different atom with its own validity, so the dismissal does not travel: a suppressed
   // three-bond F retyped as O must show the invalid-oxygen badge again (it used to stay silent
@@ -18512,7 +18900,7 @@ function canSetNativeBondOrder(
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0) > 0;
+  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0;
 }
 
 function canConnectNativeAtoms(
@@ -18543,8 +18931,8 @@ function canConnectNativeAtoms(
   return (
     sourceAtom !== undefined &&
     targetAtom !== undefined &&
-    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0) > 0 &&
-    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0) > 0
+    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0, molecule) > 0 &&
+    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0, molecule) > 0
   );
 }
 
@@ -18628,6 +19016,9 @@ function refreshNativeSingleBondGraph(
 ): MoleculeObject {
   // Clear import hints before deriving labels, formula, validation and the stored structure.
   atoms = clearChangedAtomHydrogenHints(molecule, atoms, bonds);
+  // Every label and bond edit passes here, and no layout change does: record the side each
+  // side-dependent label ("SCN") was written with, so later moves, rotations and flips keep it.
+  atoms = withNativeLabelBondSides({ atoms: [...atoms], bonds: [...bonds] }).atoms;
   const storedSmiles = tryNativeSingleBondGraphSmiles(atoms, bonds);
   return normalizeNativeMoleculeGeometry({
     ...molecule,
@@ -18647,35 +19038,38 @@ function refreshNativeSingleBondGraph(
 function syncMoleculePreviewFromEditorSave(
   previous: MoleculeObject,
   saved: MoleculeObject
-): MoleculeObject {
+): { molecule: MoleculeObject; labelWarnings: EditorSaveLabelWarning[] } {
   if (saved.structureFormat !== "molfile-v3000") {
-    return saved;
+    return { molecule: saved, labelWarnings: [] };
   }
 
   const graph = parseV3000MoleculeGraph(saved.structure, previous);
   if (!graph) {
-    return saved;
+    return { molecule: saved, labelWarnings: [] };
   }
 
   const styleWithoutPrimitive = { ...saved.style };
   delete styleWithoutPrimitive.drawingPrimitive;
 
-  return normalizeNativeMoleculeGeometry({
-    ...saved,
-    style: {
-      ...styleWithoutPrimitive,
-      source: "ketcher-adapter"
-    },
-    chemistry: undefined,
-    atoms: graph.atoms,
-    bonds: graph.bonds
-  });
+  return {
+    molecule: normalizeNativeMoleculeGeometry({
+      ...saved,
+      style: {
+        ...styleWithoutPrimitive,
+        source: "ketcher-adapter"
+      },
+      chemistry: undefined,
+      atoms: graph.atoms,
+      bonds: graph.bonds
+    }),
+    labelWarnings: graph.labelWarnings
+  };
 }
 
 function parseV3000MoleculeGraph(
   molfile: string,
   previous: MoleculeObject
-): Pick<MoleculeObject, "atoms" | "bonds"> | undefined {
+): (Pick<MoleculeObject, "atoms" | "bonds"> & { labelWarnings: EditorSaveLabelWarning[] }) | undefined {
   const rawAtoms: Array<{ sourceId: string; element: string; x: number; y: number; formalCharge: number }> = [];
   const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
@@ -18743,15 +19137,19 @@ function parseV3000MoleculeGraph(
   };
   const scale = previewScaleFromV3000Graph(rawAtoms, rawBonds, previous);
   const atomIdBySourceId = new Map<string, string>();
-  const atoms = rawAtoms.map((atom, index) => {
+  const placed = rawAtoms.map((atom) => ({
+    x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
+    y: targetCenter.y - (atom.y - sourceCenter.y) * scale
+  }));
+  const atoms: MoleculeAtom[] = rawAtoms.map((atom, index) => {
     const id = previous.atoms[index]?.id ?? nextOrdinalId("atom", index);
     atomIdBySourceId.set(atom.sourceId, id);
 
     return {
       id,
       element: atom.element,
-      x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
-      y: targetCenter.y - (atom.y - sourceCenter.y) * scale,
+      x: placed[index]!.x,
+      y: placed[index]!.y,
       formalCharge: atom.formalCharge
     } satisfies MoleculeAtom;
   });
@@ -18771,7 +19169,173 @@ function parseV3000MoleculeGraph(
     } satisfies MoleculeBond];
   });
 
-  return { atoms, bonds };
+  const labelWarnings = carryLabelBondSidesThroughEditorSave(previous, atoms, bonds);
+  return { atoms, bonds, labelWarnings };
+}
+
+/**
+ * A side-dependent label a structure-editor save read again from its drawing: short for the status
+ * line (no atom id), long for the log (with it).
+ */
+export interface EditorSaveLabelWarning {
+  /** The label as drawn, such as "SCN". */
+  label: string;
+  /** What it reads as now, such as "its cyano group". */
+  reading: string;
+  reason: string;
+  detail: string;
+}
+
+/**
+ * The status line for a save's label warnings: the one reason, or one line naming each label and its
+ * reading (the log has each atom). Undefined when there are none.
+ */
+export function editorSaveLabelWarningsStatus(warnings: readonly EditorSaveLabelWarning[]): string | undefined {
+  if (warnings.length === 0) return undefined;
+  if (warnings.length === 1) return warnings[0]!.reason;
+  const readings = warnings.map((warning) => `${warning.label} as ${warning.reading}`).join(", ");
+  return `After the structure-editor save, these labels were read again from the drawing: ${readings}.`;
+}
+
+/**
+ * Carry each label's recorded bond side through a structure-editor save. The editor hands back an
+ * atom list in order and no atom identity, so identity is never guessed: a record is carried only
+ * when the pairing of saved atoms with previous ones is provably unique — the atom and bond counts
+ * are unchanged and the element sequences have exactly one optimal alignment (an unchanged list
+ * pairs every atom with itself) — and the label and the neighbour it was recorded against are paired
+ * and still bonded. Coordinates play no part, so a move, rotation or flip in the editor changes
+ * nothing. Every other side-dependent label with one bond is read again from its drawing (by the
+ * commit funnel), and the save names each one and its reading now, whether or not that reading
+ * changed: an editor save never changes a label's reading silently. (Sol and Fable rr7: SCN–C, SCN–C
+ * with the first pair deleted aligns two ways, and the old single alignment moved one SCN's record
+ * onto the other.)
+ *
+ * That the editor keeps its atoms in order (removing and appending, never reordering) is observed,
+ * not a documented contract. The rule leans on it less than the old carry did: an order that does
+ * not pair uniquely, or a label no longer bonded to its paired neighbour, is read again and named.
+ * Known limitation: a label deleted and redrawn in the editor with the same counts and order inherits
+ * the old record, which cannot be told apart from a rotation in the editor (that must carry
+ * silently). Mutates `atoms`, which this module's parser has just built.
+ */
+function carryLabelBondSidesThroughEditorSave(
+  previous: MoleculeObject,
+  atoms: MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): EditorSaveLabelWarning[] {
+  // Nothing was recorded, so nothing can be lost: labels are recorded from the drawing as on the canvas.
+  if (!previous.atoms.some((atom) => atom.labelBondSide)) {
+    return [];
+  }
+  const alignment = alignEditorSavedAtoms(
+    previous.atoms.map((atom) => atom.element),
+    atoms.map((atom) => atom.element)
+  );
+  const identified = alignment.unique &&
+    previous.atoms.length === atoms.length &&
+    previous.bonds.length === bonds.length;
+  const savedIndexByPrevious = new Map([...alignment.pairs].map(([saved, prior]) => [prior, saved]));
+  const previousIndexById = new Map(previous.atoms.map((atom, index) => [atom.id, index]));
+  const neighbourIds = (atomId: string) => bonds.flatMap((bond) =>
+    bond.fromAtomId === atomId ? [bond.toAtomId] : bond.toAtomId === atomId ? [bond.fromAtomId] : []
+  );
+  const reading = (side: "left" | "right") =>
+    side === "left" ? "its cyano group" : "the N-bonded isomer (a bare formula here)";
+  const warnings: EditorSaveLabelWarning[] = [];
+  atoms.forEach((atom, savedIndex) => {
+    const current = neighbourIds(atom.id);
+    const priorIndex = identified ? alignment.pairs.get(savedIndex) : undefined;
+    const record = priorIndex === undefined ? undefined : previous.atoms[priorIndex]!.labelBondSide;
+    if (record) {
+      const neighbourPriorIndex = previousIndexById.get(record.atomId);
+      const neighbourSavedIndex = neighbourPriorIndex === undefined ? undefined : savedIndexByPrevious.get(neighbourPriorIndex);
+      const neighbourId = neighbourSavedIndex === undefined ? undefined : atoms[neighbourSavedIndex]!.id;
+      if (neighbourId !== undefined && current.length === 1 && current[0] === neighbourId) {
+        atoms[savedIndex] = { ...atom, labelBondSide: { side: record.side, atomId: neighbourId } };
+        return;
+      }
+    } else if (identified) {
+      // Known to be an atom that had no record: a label written or bonded in the editor, recorded
+      // from its drawing as it would be on the canvas.
+      return;
+    }
+    // Read again from the drawing. A side-dependent label with no bond or two is badged on the
+    // canvas instead, and every other label reads the same from either side.
+    if (current.length !== 1 || nativeElementFromAtomLabel(atom.element) || !nativeLabelReadingDependsOnBondSide(atom.element)) {
+      return;
+    }
+    const neighbour = atoms.find((candidate) => candidate.id === current[0]);
+    const drawn = neighbour ? drawnLabelBondSide(atom, [neighbour]) : undefined;
+    if (!drawn) {
+      return;
+    }
+    const why = record
+      ? "the structure editor changed its bond"
+      : "the structure editor's save does not show which atom it was (its atoms or bonds changed, or its atom list matches more than one way)";
+    const before = record ? ` Before the save it was written with its bond on the ${record.side}, ${reading(record.side)}.` : "";
+    warnings.push({
+      label: atom.element,
+      reading: reading(drawn),
+      reason: `${atom.element} was read again from the drawing after the structure-editor save: it reads as ${reading(drawn)}.`,
+      detail: `Label "${atom.element}" on atom ${atom.id}: ${why}, so its side was read again from the drawing — bond on the ${drawn}, ${reading(drawn)}.${before}`
+    });
+  });
+  return warnings;
+}
+
+/**
+ * Pair saved atoms with previous ones by the longest common subsequence of their element sequences
+ * (saved index → previous index), and say whether that pairing is the only optimal one. An unchanged
+ * list pairs every atom with itself, uniquely.
+ */
+function alignEditorSavedAtoms(
+  previous: readonly string[],
+  saved: readonly string[]
+): { pairs: Map<number, number>; unique: boolean } {
+  if (previous.length === saved.length && previous.every((element, index) => element === saved[index])) {
+    return { pairs: new Map(saved.map((_, index) => [index, index])), unique: true };
+  }
+  const rows = previous.length + 1;
+  const columns = saved.length + 1;
+  const length = new Uint32Array(rows * columns);
+  // Optimal alignments of the two suffixes, counted up to 2 (all that uniqueness needs): `count` all
+  // of them, `withFirst` those that pair the previous suffix's first atom. Splitting on whether that
+  // atom is paired, and if so whether with the saved suffix's first atom, counts each alignment once
+  // with additions only, so the counts can saturate.
+  const count = new Uint8Array(rows * columns);
+  const withFirst = new Uint8Array(rows * columns);
+  const at = (i: number, j: number) => i * columns + j;
+  for (let j = 0; j <= saved.length; j += 1) count[at(previous.length, j)] = 1;
+  for (let i = 0; i <= previous.length; i += 1) count[at(i, saved.length)] = 1;
+  for (let i = previous.length - 1; i >= 0; i -= 1) {
+    for (let j = saved.length - 1; j >= 0; j -= 1) {
+      const match = previous[i] === saved[j];
+      // A match is always optimal here: no alignment of the rest is longer by more than one.
+      const longest = match
+        ? length[at(i + 1, j + 1)]! + 1
+        : Math.max(length[at(i + 1, j)]!, length[at(i, j + 1)]!);
+      length[at(i, j)] = longest;
+      const pairedHere = match ? count[at(i + 1, j + 1)]! : 0;
+      const pairedLater = length[at(i, j + 1)] === longest ? withFirst[at(i, j + 1)]! : 0;
+      withFirst[at(i, j)] = Math.min(2, pairedHere + pairedLater);
+      const unpaired = length[at(i + 1, j)] === longest ? count[at(i + 1, j)]! : 0;
+      count[at(i, j)] = Math.min(2, withFirst[at(i, j)]! + unpaired);
+    }
+  }
+  const pairs = new Map<number, number>();
+  let i = 0;
+  let j = 0;
+  while (i < previous.length && j < saved.length) {
+    if (previous[i] === saved[j] && length[at(i, j)] === length[at(i + 1, j + 1)]! + 1) {
+      pairs.set(j, i);
+      i += 1;
+      j += 1;
+    } else if (length[at(i + 1, j)]! >= length[at(i, j + 1)]!) {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  return { pairs, unique: count[at(0, 0)] === 1 };
 }
 
 function rawCoordinateCenter(atoms: readonly { x: number; y: number }[]): PagePoint {
@@ -18968,10 +19532,51 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number): number {
-  return nativeElementFromAtomLabel(atom.element) === undefined
-    ? 0
-    : Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
+/**
+ * The context an atom's label is read with in its molecule: `bonded` as the caller counts it,
+ * `typed` from the atom's `labelLiteral`, and the bond side its label records
+ * (`nativeLabelBondSide`) unless the label is an element. The drawing tools
+ * (`nativeAtomAvailableBondCount`) and the ring guard (`nativeAtomSupportsValenceUsage`) both read
+ * labels through it, so they never disagree about what a label means.
+ */
+export function nativeAtomLabelContextInMolecule(
+  atom: MoleculeAtom,
+  molecule: MoleculeObject,
+  bonded: boolean
+): NativeAtomLabelContext {
+  const bondSide = nativeElementFromAtomLabel(atom.element)
+    ? undefined
+    : nativeLabelBondSide(
+      atom,
+      molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
+      molecule.atoms
+    );
+  return {
+    bonded,
+    typed: atom.labelLiteral === true,
+    ...(bondSide ? { bondSide } : {})
+  };
+}
+
+function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
+  // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
+  // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
+  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
+  // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
+  // and takes bonds like one. A cyano label ("SCN") with its bond on the right is a bare formula,
+  // read with the same bond side as the badge and the formula.
+  const reading = nativeAtomLabelReading(atom.element, nativeAtomLabelContextInMolecule(atom, molecule, valenceUsed > 0));
+  if (reading.kind === "element") {
+    return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
+  }
+  if (reading.kind !== "group") {
+    return 0;
+  }
+  const used = valenceUsed + (atom.markRadicals ?? 0);
+  const verdict = nativeLabelGroupVerdict(reading.group, used, atom.formalCharge);
+  return !verdict.valid && verdict.expectedBondCount !== undefined
+    ? Math.max(0, verdict.expectedBondCount - used)
+    : 0;
 }
 
 function atomChargeLabelSuffix(charge: number): string {
