@@ -44,7 +44,9 @@ vi.mock("@scena/react-ruler", () => ({
 }));
 
 import { AGENT_BRIDGE_GLOBAL_NAME } from "./agentBridge";
+import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import {
+  applyNativeAtomElementTarget,
   createPhase4Document,
   insertNativeSingleBondMolecule,
   selectDocumentObjects
@@ -119,7 +121,9 @@ function createSelectedMoleculeDocument() {
   return selectDocumentObjects(document, page.id, [molecule.id]);
 }
 
-async function renderMainWindow(): Promise<{ bridge: ChemDraftAgentBridge; container: HTMLDivElement; root: Root }> {
+async function renderMainWindow(
+  initialDocument: ChemDraftDocument = createSelectedMoleculeDocument()
+): Promise<{ bridge: ChemDraftAgentBridge; container: HTMLDivElement; root: Root }> {
   installDomMocks();
   window.history.replaceState({}, "", "/?agentBridge=1");
   const container = document.createElement("div");
@@ -127,7 +131,7 @@ async function renderMainWindow(): Promise<{ bridge: ChemDraftAgentBridge; conta
   const root = createRoot(container);
   await act(async () => {
     root.render(createElement(MainWindow, {
-      initialDocument: createSelectedMoleculeDocument(),
+      initialDocument,
       initialPaletteMode: "hidden",
       initialRulersVisible: false,
       nativePalette: true
@@ -276,6 +280,39 @@ describe("Spin 3D session state", () => {
       expect(reopenedBounds.y).toBeCloseTo(committedBounds.y, 6);
       expect(reopenedBounds.width).toBeCloseTo(committedBounds.width, 6);
       expect(reopenedBounds.height).toBeCloseTo(committedBounds.height, 6);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("draws a group label in the overlay the way round its projected bond reads", async () => {
+    // OMe on the left end of a bond: its bond is on its right, so the drawing turns it round to
+    // "MeO" with its O on the atom. The overlay places labels by its projected bonds each frame
+    // (layout-engine's nonElementAtomLabelPlacement). The overlay opens on the conformer's own view,
+    // not the drawing's layout; this two-atom fixture opens in the identity view, which keeps the
+    // drawing's left-right order, so here it shows the same text and anchoring as the drawing.
+    const ethane = createSelectedMoleculeDocument();
+    const molecule = ethane.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const left = [...molecule.atoms].sort((first, second) => first.x - second.x)[0]!;
+    const labelled = applyNativeAtomElementTarget(ethane, { objectId: molecule.id, kind: "atom", atomId: left.id, distanceToPointer: 0 }, "OMe", { literal: true });
+    const { bridge, container, root } = await renderMainWindow(labelled);
+    try {
+      // Text and anchoring: the anchored "MeO" is drawn from its O outward (text-anchor "end"),
+      // where a centred label would be "middle".
+      const labelOf = (element: Element) => ({
+        label: element.getAttribute("data-atom-label"),
+        textAnchor: element.querySelector("text")?.getAttribute("text-anchor")
+      });
+      const drawn = [...container.querySelectorAll('[data-atom-label="MeO"]')]
+        .filter((element) => !element.closest('[data-spin3d-overlay="true"]'))
+        .map(labelOf);
+      expect(drawn).toEqual([{ label: "MeO", textAnchor: "end" }]);
+      await startSpinSession(bridge);
+      const overlay = container.querySelector('[data-spin3d-overlay="true"]');
+      expect(overlay).not.toBeNull();
+      expect([...overlay!.querySelectorAll("[data-atom-label]")].map(labelOf)).toEqual(drawn);
     } finally {
       await act(async () => {
         root.unmount();

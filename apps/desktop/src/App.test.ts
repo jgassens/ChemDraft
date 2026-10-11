@@ -162,6 +162,7 @@ import {
   eraserSweepInSelectionRect,
   eraserSweepStatus,
   flattenWarningMessages,
+  hoverLabelAtomTargetForKey,
   graphicArtTransformPreviewSvgDataUrl,
   groupedDragObjectIdsForPointer,
   selectionInSelectionLasso,
@@ -1104,6 +1105,47 @@ describe("ChemDraft desktop shell", () => {
     expect(kept?.bonds).toHaveLength(chain.bonds.length - 1);
   });
 
+  describe("which atom a label key typed over a bond belongs to", () => {
+    function singleBond() {
+      const document = insertNativeSingleBondMolecule(createPhase4Document("Hover label target"), { x: 220, y: 240 });
+      const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+      const bond = molecule.bonds[0]!;
+      const target = { objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0 };
+      return { document, molecule, bond, target };
+    }
+
+    it("breaks an exact-midpoint tie toward the bond's from-atom, every time", () => {
+      const { document, molecule, bond, target } = singleBond();
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+      const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      for (let repeat = 0; repeat < 3; repeat++) {
+        expect(hoverLabelAtomTargetForKey(document, target, midpoint, undefined, "O")).toMatchObject({ kind: "atom", atomId: from.id });
+      }
+      // Off the midpoint, the nearer end wins.
+      expect(hoverLabelAtomTargetForKey(document, target, { x: to.x - 1, y: to.y }, undefined, "O")).toMatchObject({ atomId: to.id });
+    });
+
+    it("handles a zero-length bond without failing", () => {
+      const { document, molecule, bond, target } = singleBond();
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const collapsed = applyPatch(document, {
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map((atom) => atom.id === bond.toAtomId ? { ...atom, x: from.x, y: from.y } : atom) }
+      });
+      const result = hoverLabelAtomTargetForKey(collapsed, target, { x: from.x + 5, y: from.y + 5 }, undefined, "N");
+      expect(result).toMatchObject({ kind: "atom", atomId: from.id });
+      expect(Number.isFinite(result!.distanceToPointer)).toBe(true);
+    });
+
+    it("leaves digits and non-element letters to the bond when no label is in progress", () => {
+      const { document, target } = singleBond();
+      expect(hoverLabelAtomTargetForKey(document, target, { x: 0, y: 0 }, undefined, "2")).toBeUndefined();
+      expect(hoverLabelAtomTargetForKey(document, target, { x: 0, y: 0 }, undefined, "e")).toBeUndefined();
+    });
+  });
+
   it("erases an atom inside the sweep together with its bonds", () => {
     const drawn = applyNativeChainTool(createPhase4Document("Eraser Atom Inside"), { x: 100, y: 300 }, { x: 500, y: 300 });
     const chain = drawn.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule");
@@ -1811,7 +1853,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Creation program");
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
-    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentRef.current, dialog)");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentForFlush(), dialog)");
     expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
     expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
@@ -2516,6 +2558,28 @@ describe("ChemDraft desktop shell", () => {
     // No hovered target → hover hotkeys stay inert (matches ChemDraw's hotspot requirement).
     expect(hoveredNativeTargetShortcutCommand(undefined, "c", "chemdraw")).toBeUndefined();
     expect(chemDrawHoveredTargetHotkeyCommand("atom", "toString")).toBeUndefined();
+  });
+
+  it("sends every committed document through the one commit funnel, which records label bond sides", () => {
+    // The five commit paths (initial document, open, label-editor keystroke, edit, history commit)
+    // all normalize through normalizeCommittedDocument, so a paste, template, plugin patch, agent
+    // command or merge cannot leave a cyano label unrecorded for a later rotation to re-read. Its
+    // behaviour is tested in abbreviationChemistry.test.ts; this guards the wiring. The sixth call
+    // is the flush (documentForFlush), which writes the document as an open label edit's close
+    // would leave it.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(6);
+    expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
+    // A cancelled label edit, or one that ends on its starting text, puts back the record it
+    // started with, not the drawing's side: at the keystroke that brings it back, at the close,
+    // and in every flush taken while it is open.
+    expect(mainWindowSource).toContain("initialLabelBondSide: atom.labelBondSide");
+    expect(mainWindowSource).toContain("labelBondSide: state.initialLabelBondSide");
+    expect(mainWindowSource).toContain("applyNativeAtomLabelDraft(current,");
+    expect(mainWindowSource).toContain("finishNativeAtomLabelEdit(current,");
+    expect(mainWindowSource).toContain("const flushed = documentForFlush();");
+    expect(mainWindowSource).toContain("createNativeSavePayload(documentForFlush())");
+    expect(mainWindowSource).toContain("createDialogExportResult(documentForFlush(), dialog)");
+    expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
 
   it("keeps the hovered atom live across charge-hotkey commits, so repeated presses stack", () => {

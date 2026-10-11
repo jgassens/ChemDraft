@@ -1,0 +1,142 @@
+import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
+
+/** Opens and closes the list of warnings the open document was opened with. */
+export const TOGGLE_OPEN_WARNINGS_COMMAND_ID = "view.toggleOpenWarnings";
+
+export const NO_OPEN_WARNINGS_REASON = "This document opened without warnings";
+
+/** The list's element id, for the status-line button's aria-controls. */
+export const OPEN_WARNINGS_LIST_ID = "open-warnings-list";
+
+/** One warning from opening a file, as the importer reported it. */
+export interface OpenWarning {
+  code: string;
+  message: string;
+  /** The native object the warning is about; absent for a warning about the whole file. */
+  sourceObjectId?: string;
+  atomIds?: readonly string[];
+  bondIds?: readonly string[];
+}
+
+/**
+ * What a file open reported, kept so the status line can offer the list after its own text has
+ * moved on. It belongs to the document that open produced, so whatever replaces that document
+ * (New, another open) drops it; document ids cannot tell them apart, as most documents are doc_001.
+ */
+export interface OpenWarningsReport {
+  displayName: string;
+  sourceLabel: string;
+  warnings: readonly OpenWarning[];
+}
+
+/** What a warning's Show button selects: an object, and the atoms or bonds of it the warning names. */
+export interface OpenWarningSelection {
+  objectId: string;
+  atomIds: readonly string[];
+  bondIds: readonly string[];
+}
+
+export interface OpenWarningTarget {
+  /** What the warning is about, in words: "Whole file", "Atom * in Molecule (CDXML fragment 12)". */
+  label: string;
+  /** Absent when the warning names nothing, or when what it named is no longer in the document. */
+  selection?: OpenWarningSelection;
+  /** True when the warning named an object, atom or bond that has since been deleted. */
+  missing: boolean;
+}
+
+/** "1 warning", "3 warnings". */
+export function warningCountLabel(count: number): string {
+  return count === 1 ? "1 warning" : `${count} warnings`;
+}
+
+export function openWarningsHeading(report: OpenWarningsReport): string {
+  return `Opened ${report.displayName} as ${report.sourceLabel}: ${warningCountLabel(report.warnings.length)}`;
+}
+
+/** The report, when it has warnings to show. */
+export function activeOpenWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
+  return report && report.warnings.length > 0 ? report : undefined;
+}
+
+export function describeOpenWarningTarget(document: ChemDraftDocument, warning: OpenWarning): OpenWarningTarget {
+  if (!warning.sourceObjectId) {
+    return { label: "Whole file", missing: false };
+  }
+
+  const object = findPageObject(document, warning.sourceObjectId);
+  if (!object) {
+    return { label: "An object no longer in the document", missing: true };
+  }
+
+  const objectLabel = describeObject(object);
+  const namedAtomIds = warning.atomIds ?? [];
+  const namedBondIds = warning.bondIds ?? [];
+  if (namedAtomIds.length === 0 && namedBondIds.length === 0) {
+    return { label: objectLabel, selection: { objectId: object.id, atomIds: [], bondIds: [] }, missing: false };
+  }
+
+  const atoms = object.type === "molecule" ? object.atoms.filter((atom) => namedAtomIds.includes(atom.id)) : [];
+  const bonds = object.type === "molecule" ? object.bonds.filter((bond) => namedBondIds.includes(bond.id)) : [];
+  if (atoms.length === 0 && bonds.length === 0) {
+    const parts = namedAtomIds.length > 0 ? partCount(namedAtomIds.length, "atom") : partCount(namedBondIds.length, "bond");
+    return { label: `${capitalize(parts)} no longer in ${objectLabel}`, missing: true };
+  }
+
+  const named = atoms.length === 1 && bonds.length === 0
+    ? `Atom ${atoms[0].element}`
+    : [atoms.length > 0 ? partCount(atoms.length, "atom") : "", bonds.length > 0 ? partCount(bonds.length, "bond") : ""]
+      .filter(Boolean)
+      .join(" and ");
+  return {
+    label: `${capitalize(named)} in ${objectLabel}`,
+    selection: { objectId: object.id, atomIds: atoms.map((atom) => atom.id), bondIds: bonds.map((bond) => bond.id) },
+    missing: false
+  };
+}
+
+function findPageObject(document: ChemDraftDocument, objectId: string): DocumentObject | undefined {
+  for (const page of document.pages) {
+    const object = page.objects.find((candidate) => candidate.id === objectId);
+    if (object) {
+      return object;
+    }
+  }
+  return undefined;
+}
+
+const objectTypeLabels: Partial<Record<DocumentObject["type"], string>> = {
+  molecule: "Molecule",
+  reaction: "Reaction",
+  "reaction-arrow": "Reaction arrow",
+  "mechanism-arrow": "Mechanism arrow",
+  "electron-mark": "Electron mark",
+  text: "Text",
+  bracket: "Bracket",
+  graphic: "Graphic",
+  plus: "Plus sign",
+  group: "Group",
+  annotation: "Annotation",
+  superatom: "Superatom",
+  "unknown-compatibility-object": "Unsupported object"
+};
+
+/** "Molecule (CDXML fragment 12)": the type, and the id the source file gave it, when it had one. */
+function describeObject(object: DocumentObject): string {
+  const typeLabel = objectTypeLabels[object.type] ?? "Object";
+  const compatibility = "compatibility" in object ? object.compatibility : undefined;
+  const sourceId = compatibility?.originalId;
+  if (!sourceId) {
+    return typeLabel;
+  }
+  const sourceFormat = compatibility?.sourceFormat?.toUpperCase();
+  return `${typeLabel} (${sourceFormat ? `${sourceFormat} ` : ""}${object.type === "molecule" ? "fragment " : "object "}${sourceId})`;
+}
+
+function partCount(count: number, noun: "atom" | "bond"): string {
+  return count === 1 ? `1 ${noun}` : `${count} ${noun}s`;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}

@@ -17,14 +17,15 @@ group's own chemistry, and no other program's nickname list was copied (AGENTS.m
   on the left of a structure is written.
 - **Elements win, except on a bond.** A label that is an element symbol is the element, so no label
   or alias may spell one (document-workflow-core's tests enforce this against the element table).
-  The exceptions are the `bondedSpellings` chemists write on bonds: on an atom with bonds, "Ac" is
-  acetyl, "Pr" n-propyl and "Ts" tosyl; unbonded, they are actinium, praseodymium and tennessine.
-  The parser applies the same rule to "Ar" (aryl, a placeholder). "CN" is cyano: case folding leaves
-  it as typed (layout-engine's `nativeFormulaTwoLetterLabels`), and only the exact "Cn" is copernicium.
-  Its meaning depends on which end faces the bond, so there is no "NC" alias, a composite reads "CN"
-  only last, after its head ("SCN", "CH2CN"), and the label parser reads "CN", "SCN" and "OCN" only
-  with the bond on the label's left. With the bond on the right a chemist means isocyano, an
-  isothiocyanate or an isocyanate, which the table lacks, so the label stays a bare formula.
+  The exceptions are the `bondedSpellings` chemists write on bonds: typed as a label on an atom with
+  bonds, "Ac" is acetyl, "Pr" n-propyl and "Ts" tosyl; unbonded, or read from a structure file, they
+  are actinium, praseodymium and tennessine. The parser applies the same rule to "Ar" (aryl, a
+  placeholder). "CN" is cyano: case folding leaves it as typed (layout-engine's
+  `nativeFormulaTwoLetterLabels`), and only the exact "Cn" is copernicium. Its meaning depends on
+  which end faces the bond, so there is no "NC" alias, a composite reads "CN" only last, after its
+  head ("SCN", "CH2CN"), and the label parser reads "CN", "SCN" and "OCN" as cyano groups unless the
+  bond comes from the label's right. There a chemist means isocyano, an isothiocyanate or an
+  isocyanate, which the table lacks, so the label stays a bare formula.
 - **Layouts** were computed from each SMILES with RDKit and normalized: the attachment atom at (0, 0),
   the atom the group bonds to at (−1, 0), bond length 1, y up. No group carries stereochemistry.
 

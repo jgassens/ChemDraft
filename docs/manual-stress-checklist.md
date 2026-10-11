@@ -85,6 +85,24 @@ N–H was inferred, and its reason in the status bar on hover; ring picking and 
 over a badge; a CDXML pyrrole with `NumHydrogens` N-methylated leaves no stale badge; Copy As MOL and
 CDXML of a pasted aromatic reopen with the same tautomer; and Spin 3D on a pasted aromatic.
 
+Abbreviation surfaces added since: every table abbreviation (`packages/template-library/README.md`)
+placed by hotkey and by typing on a chain end, where it is valid, and on a ring carbon, where it is
+badged (hover the badge for its reason); Ome, OME and ome badged as unrecognized text with the "did
+you mean OMe?" hint; a lone typed OMe badged, then given its one bond by the bond tool, which refuses a
+second; OMe with a − charge (methoxide) unbadged; R, X, ? and a bonded Ar never badged; Ph–OMe showing
+C7H8O; Copy As SMILES, MOL V2000 and V3000 of Ph–OMe pasted into another program as anisole; save and
+reopen, CDXML export and reopen, and undo/redo of a relabel, all keeping the label "OMe".
+
+Label anchoring surfaces added since: OMe typed on the left and right ends of a horizontal bond and
+on a ring carbon, with the bond meeting the O each time and the label drawn "MeO" with its bond on the
+right; the same for CO2Me (MeO2C), NHBoc (BocHN), and for Ph and TMS (the letter nearest the bond on
+the atom), with the bond going up and down as well; SCN never drawn "CNS"; a label moved, rotated or
+flipped redrawing the right way round while its formula and Copy As SMILES stay the same; Spin 3D on
+a chain of three or more atoms ending in OMe, the label reading toward its bond as the overlay draws
+it and turning as the bond swings to its other side (the overlay opens on the conformer's own view,
+not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
+centred on the atom.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
@@ -116,3 +134,12 @@ arrowhead sizing, stretching, measurement angles, and wheel zoom, with result me
 held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
+
+Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
+`invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
+one-warning file) after its text moves on; clicking it lists every warning with its message, what it
+names (Whole file, a molecule by its CDXML fragment, or "Atom * in …"), and its code; Show selects that
+molecule or atom with the Select tool; tool shortcuts work straight after any click there; Esc closes
+the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
+always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
+scrolls in a small window at 125% and 150% display scale.
