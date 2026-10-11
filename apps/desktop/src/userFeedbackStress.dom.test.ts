@@ -9,10 +9,12 @@ import {
   type ChemDraftDocument, type MoleculeObject, type Point, type ViewMatrix
 } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
-import { nativeBondLengthPx, nativeBondOrderResolution } from "@chemdraft/document-workflow-core";
+import {
+  nativeAtomBondOrderUsage, nativeAtomChargeSupportsValence, nativeBondLengthPx, nativeBondOrderResolution, nativeElementFromAtomLabel
+} from "@chemdraft/document-workflow-core";
 import { MainWindow, nativeTemplateStatusForApplication, rotationDeltaDegrees, visualSelectionBounds } from "./MainWindow";
 import {
-  applyNativeTemplatePlacementPlan, createPhase4Document, createSelectionClipboardPayload,
+  applyNativeAtomElementTarget, applyNativeAtomSproutTarget, applyNativeTemplatePlacementPlan, createPhase4Document, createSelectionClipboardPayload,
   flattenSpunMolecule, insertNativeArtGraphicObject, insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule, insertNativeTextObject, parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload, planNativeTemplatePlacement, rotateDocumentObjectsAroundPoint,
@@ -326,9 +328,8 @@ describe("user feedback app stress", () => {
     report("C", started, "refusedKinds=5 workflowRings=5 clicks=20 separateRings=20");
   }, 120000);
 
-  // Bug: plain bond fusion skips the endpoint-valence guard and creates a five-bond carbon.
-  it.fails("C bug: ring click on a full-valence bond endpoint should place separately", async () => {
-    const base = insertNativeSingleBondMolecule(createPhase4Document("Bond refusal bug"), { x: 300, y: 300 });
+  it("C: ring click on a full-valence bond endpoint places the ring separately", async () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Bond refusal"), { x: 300, y: 300 });
     const saturated = saturatedMolecule(molecules(base)[0]);
     const doc = applyPatches(base, [{ op: "updateObject", objectId: saturated.id, changes: saturated }]);
     await mount(doc, "tool.cyclohexane");
@@ -338,11 +339,341 @@ describe("user feedback app stress", () => {
     await pointer("pointerdown", point, wrapper); await pointer("pointerup", point, wrapper);
     const next = molecules(current())[0];
     const degree = next.bonds.filter(bond => bond.fromAtomId === a.id || bond.toAtomId === a.id).length;
-    console.info(`[stress C bond bug] clicks=1 originalDegree=4 committedDegree=${degree} objects=${molecules(current()).length} status=${status()} ms=${(performance.now() - started).toFixed(1)} FAIL`);
     expect(molecules(current())).toHaveLength(2);
     expect(next).toEqual(saturated);
-    expect(status()).toBe("Placed cyclohexane separately: that bond cannot accept a ring");
-  });
+    expect(status()).toBe("Placed cyclohexane separately: an atom on that bond has no free valence");
+    report("C bond", started, `clicks=1 originalDegree=4 committedDegree=${degree} objects=${molecules(current()).length}`);
+  }, 120000);
+
+  it("C: the fused-ring hotkey over a full-valence bond refuses with the same reason", async () => {
+    const base = insertNativeSingleBondMolecule(createPhase4Document("Hotkey refusal"), { x: 300, y: 300 });
+    const saturated = saturatedMolecule(molecules(base)[0]);
+    const doc = applyPatches(base, [{ op: "updateObject", objectId: saturated.id, changes: saturated }]);
+    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
+    const [a, b] = saturated.atoms, started = performance.now();
+    await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await key("6");
+    expect(molecules(current())).toEqual([saturated]);
+    expect(status()).toBe("Cannot add fused cyclohexane ring here: an atom on that bond has no free valence");
+    report("C bond hotkey", started, `keys=1 objects=${molecules(current()).length}`);
+  }, 120000);
+
+  /** A two-atom chain whose tip is labelled through the label workflow, e.g. "OMe" (#83: the group). */
+  function labelledTipDocument(label: string) {
+    const chain = insertNativeSingleBondMolecule(createPhase4Document(`${label} tip`), { x: 300, y: 300 });
+    const chainMol = molecules(chain)[0];
+    const tip = chainMol.atoms[1];
+    const labeled = applyNativeAtomElementTarget(chain, { objectId: chainMol.id, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, label);
+    const mol = molecules(labeled)[0];
+    const [a, b] = mol.atoms;
+    return { doc: selectDocumentObjects(labeled, labeled.pages[0].id, []), mol, tip: mol.atoms[1], bondMid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  }
+
+  it("C: a one-bond OMe atom is full: ring click on its bond, spiro and hotkey 6 all refuse with the valence reason", async () => {
+    const started = performance.now();
+    let { doc, mol, tip, bondMid } = labelledTipDocument("OMe");
+    expect(tip.element).toBe("OMe");
+    await mount(doc, "tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: an atom on that bond has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("OMe"));
+    await mount(doc, "tool.cyclohexane");
+    wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", tip, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    await pointer("pointerdown", tip, wrapper); await pointer("pointerup", tip, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: that atom has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("OMe"));
+    await mount(doc, "tool.bond");
+    await pointer("pointermove", bondMid);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await key("6");
+    expect(molecules(current())).toEqual([mol]);
+    expect(status()).toBe("Cannot add fused cyclohexane ring here: an atom on that bond has no free valence");
+    report("C OMe", started, "click=1 spiro=1 hotkey=1");
+  }, 120000);
+
+  it("C: a one-bond NMe atom refuses a spiro ring but takes a fused one", async () => {
+    const started = performance.now();
+    let { doc, mol, tip, bondMid } = labelledTipDocument("NMe");
+    await mount(doc, "tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", tip, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    await pointer("pointerdown", tip, wrapper); await pointer("pointerup", tip, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: that atom has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("NMe"));
+    await mount(doc, "tool.cyclohexane");
+    wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(1);
+    const fused = molecules(current())[0];
+    expect(fused.atoms).toHaveLength(6);
+    expect(fused.bonds.filter(bond => bond.fromAtomId === tip.id || bond.toAtomId === tip.id)).toHaveLength(2);
+    expect(fused.atoms.find(atom => atom.id === tip.id)?.element).toBe("NMe");
+    report("C NMe", started, "spiro=1 fuse=1");
+  }, 120000);
+
+  /** The star a user builds: one Bond-tool click on empty canvas, then three on the same end atom. */
+  async function clickBuiltStar() {
+    await mount(createPhase4Document("Clicked star"), "tool.bond");
+    await pointer("pointerdown", { x: 300, y: 300 }); await pointer("pointerup", { x: 300, y: 300 });
+    const first = molecules(current())[0];
+    expect(first.atoms).toHaveLength(2);
+    const centre = first.atoms[1];
+    for (let i = 0; i < 3; i++) {
+      const wrapper = container.querySelector(`[data-object-id="${first.id}"]`)!;
+      await pointer("pointermove", centre, wrapper);
+      await pointer("pointerdown", centre, wrapper); await pointer("pointerup", centre, wrapper);
+    }
+    const star = molecules(current())[0];
+    expect(molecules(current())).toHaveLength(1);
+    expect(star.atoms).toHaveLength(5);
+    expect(star.bonds.every(bond => bond.fromAtomId === centre.id || bond.toAtomId === centre.id)).toBe(true);
+    const bond = star.bonds[0];
+    const other = star.atoms.find(atom => atom.id === (bond.fromAtomId === centre.id ? bond.toAtomId : bond.fromAtomId))!;
+    await pointer("pointermove", { x: 600, y: 500 });
+    return { star, centre: star.atoms.find(atom => atom.id === centre.id)!, bondMid: { x: (centre.x + other.x) / 2, y: (centre.y + other.y) / 2 } };
+  }
+
+  it.each(["macos", "windows"] as const)("C: a click-built four-bond star reports the full centre, not the geometry (%s)", async p => {
+    platform(p);
+    const started = performance.now();
+    // Cyclohexane tool on a centre bond: no room for the ring AND a full centre — valence wins.
+    let { star, bondMid } = await clickBuiltStar();
+    await command("tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${star.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(star);
+    expect(status()).toBe("Placed cyclohexane separately: an atom on that bond has no free valence");
+
+    // Hover the same bond and press 6.
+    ({ star, bondMid } = await clickBuiltStar());
+    await pointer("pointermove", bondMid);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await key("6");
+    expect(molecules(current())).toEqual([star]);
+    expect(status()).toBe("Cannot add fused cyclohexane ring here: an atom on that bond has no free valence");
+
+    // Benzene tool on the centre atom itself (spiro).
+    let centre;
+    ({ star, centre } = await clickBuiltStar());
+    await command("tool.benzene");
+    wrapper = container.querySelector(`[data-object-id="${star.id}"]`)!;
+    await pointer("pointermove", centre, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: centre.id });
+    await pointer("pointerdown", centre, wrapper); await pointer("pointerup", centre, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(star);
+    expect(status()).toBe("Placed benzene separately: that atom has no free valence");
+    report(`C clicked star ${p}`, started, "click=1 hotkey=1 spiro=1");
+  }, 120000);
+
+  it("C: ring hotkeys name each non-valence refusal through real keys", async () => {
+    const L = nativeBondLengthPx;
+    const started = performance.now();
+    // An abbreviation label: pressing 3 (spiro benzene) over "Ph" refuses and says to relabel it.
+    const chain = insertNativeSingleBondMolecule(createPhase4Document("Abbreviation hotkey"), { x: 300, y: 300 });
+    const chainMol = molecules(chain)[0];
+    const tip = chainMol.atoms[1];
+    const labeled = applyNativeAtomElementTarget(chain, { objectId: chainMol.id, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, "Ph");
+    await mount(selectDocumentObjects(labeled, labeled.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: tip.x, y: tip.y });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    const beforeAbbreviation = molecules(current());
+    await key("3");
+    expect(molecules(current())).toEqual(beforeAbbreviation);
+    expect(status()).toBe("Cannot add benzene ring here: that atom's label is an abbreviation; relabel it to an element first");
+
+    // No room for the ring's geometry: on both sides of bond a-b, a square's far corner lands on
+    // an existing three-bond carbon, which a ring closure may not reuse. Pressing 4 (fused
+    // cyclobutane) over a-b refuses and says the ring could not be placed.
+    const crowdedBase = insertNativeSingleBondMolecule(createPhase4Document("Geometry hotkey"), { x: 300, y: 300 });
+    const crowdedMol = molecules(crowdedBase)[0];
+    const corner = (id: string, x: number, y: number, side: 1 | -1): Array<[string, number, number]> => [
+      [id, x, y], [`${id}1`, x - L * 0.87, y + side * L / 2], [`${id}2`, x, y + side * L], [`${id}3`, x - L * 0.87, y - side * L / 2]
+    ];
+    const crowdedAtoms: Array<[string, number, number]> = [
+      ["a", 300, 300], ["b", 300 + L, 300], ...corner("u", 300, 300 - L, -1), ...corner("d", 300, 300 + L, 1)
+    ];
+    const crowded = applyPatches(crowdedBase, [{ op: "updateObject", objectId: crowdedMol.id, changes: { ...crowdedMol,
+      atoms: crowdedAtoms.map(([id, x, y]) => ({ id, element: "C", x, y, formalCharge: 0 })),
+      bonds: [["a", "b"], ["u", "u1"], ["u", "u2"], ["u", "u3"], ["d", "d1"], ["d", "d2"], ["d", "d3"]].map(([fromAtomId, toAtomId], i) => ({
+        id: `gb${i}`, fromAtomId, toAtomId, order: "single" as const
+      })) } }]);
+    await mount(selectDocumentObjects(crowded, crowded.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: 300 + L / 2, y: 300 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: "gb0" });
+    const beforeGeometry = molecules(current());
+    await key("4");
+    expect(molecules(current())).toEqual(beforeGeometry);
+    expect(status()).toBe("Cannot add fused cyclobutane ring here: the ring's geometry could not be placed there");
+    report("C hotkey reasons", started, "keys=2 abbreviation=1 geometry=1");
+  }, 120000);
+
+  it("C: the cyclic-bond hotkey refuses a closure onto a saturated carbon and still closes an ordinary ring", async () => {
+    // Four 0-presses grow a hexagon chain; the fifth closes it onto the first atom.
+    let chain = insertNativeSingleBondMolecule(createPhase4Document("Cyclic closure"), { x: 300, y: 300 });
+    const objectId = molecules(chain)[0].id;
+    for (let press = 0; press < 4; press++) {
+      const tip = molecules(chain)[0].atoms.at(-1)!;
+      chain = applyNativeAtomSproutTarget(chain, { objectId, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, "cyclic");
+    }
+    const open = molecules(chain)[0];
+    expect(open.atoms).toHaveLength(6);
+    const first = open.atoms[0], last = open.atoms.at(-1)!;
+    const center = { x: open.atoms.reduce((sum, atom) => sum + atom.x, 0) / 6, y: open.atoms.reduce((sum, atom) => sum + atom.y, 0) / 6 };
+    const outward = Math.atan2(first.y - center.y, first.x - center.x);
+    // Saturate the first atom with three methyls pointing out of the ring.
+    const methyls = [-50, 0, 50].map((degrees, i) => ({
+      id: `me${i}`, element: "C", formalCharge: 0,
+      x: first.x + Math.cos(outward + degrees * Math.PI / 180) * nativeBondLengthPx,
+      y: first.y + Math.sin(outward + degrees * Math.PI / 180) * nativeBondLengthPx
+    }));
+    const saturated: MoleculeObject = { ...open, atoms: [...open.atoms, ...methyls],
+      bonds: [...open.bonds, ...methyls.map((methyl, i) => ({ id: `meb${i}`, fromAtomId: first.id, toAtomId: methyl.id, order: "single" as const }))] };
+    const saturatedDoc = applyPatches(chain, [{ op: "updateObject", objectId, changes: saturated }]);
+    const started = performance.now();
+
+    await mount(selectDocumentObjects(saturatedDoc, saturatedDoc.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: last.x, y: last.y });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: last.id });
+    const beforeRefusal = molecules(current());
+    await key("0");
+    expect(molecules(current())).toEqual(beforeRefusal);
+    expect(status()).toBe("Cannot add cyclic bond here: the ring would close onto an atom with no free valence");
+
+    // Without the methyls the same press closes the ring.
+    await mount(selectDocumentObjects(chain, chain.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: last.x, y: last.y });
+    await key("0");
+    const closed = molecules(current())[0];
+    expect(status()).toBe("Added cyclic bond");
+    expect(closed.atoms).toHaveLength(6);
+    expect(closed.bonds).toHaveLength(6);
+    report("C cyclic closure", started, "keys=2 refused=1 closed=1");
+  }, 120000);
+
+  it("C: 40 seeded ring clicks on random bonds and atoms never leave an over-valent atom", async () => {
+    // A page of saturated (neopentane), aromatic (benzene), ordinary (cyclohexane, ethane) and
+    // order-raising (s-cis butadiene, refused for benzene) molecules.
+    let doc = createPhase4Document("Ring valence stress");
+    const L = nativeBondLengthPx;
+    const handDrawn = (at: Point, atoms: Array<[string, number, number, string?]>, bonds: Array<[string, string, ("single" | "double")?]>) => {
+      doc = insertNativeSingleBondMolecule(doc, at);
+      const mol = molecules(doc).at(-1)!;
+      doc = applyPatches(doc, [{ op: "updateObject", objectId: mol.id, changes: { ...mol,
+        atoms: atoms.map(([id, dx, dy, element]) => ({ id, element: element ?? "C", x: at.x + dx, y: at.y + dy, formalCharge: 0 })),
+        bonds: bonds.map(([fromAtomId, toAtomId, order], i) => ({ id: `hb${i}`, fromAtomId, toAtomId, order: order ?? "single" })) } }]);
+    };
+    handDrawn({ x: 140, y: 140 }, [["q", 0, 0], ["m1", L, 0], ["m2", 0, L], ["m3", -L, 0], ["m4", 0, -L]],
+      [["q", "m1"], ["q", "m2"], ["q", "m3"], ["q", "m4"]]);
+    handDrawn({ x: 620, y: 300 }, [["c1", -L / 2, -L * Math.sqrt(3) / 2], ["a", 0, 0], ["b", L, 0], ["c4", 1.5 * L, -L * Math.sqrt(3) / 2]],
+      [["c1", "a", "double"], ["a", "b"], ["b", "c4", "double"]]);
+    doc = insertNativeTemplateMolecule(doc, { x: 400, y: 140 }, "benzene");
+    doc = insertNativeTemplateMolecule(doc, { x: 160, y: 430 }, "cyclohexane");
+    doc = insertNativeSingleBondMolecule(doc, { x: 430, y: 450 });
+    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.select");
+
+    let seed = 0x5eed1234;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)]!;
+    const templates = ["cyclohexane", "benzene", "cyclopentane", "chairCyclohexaneA"] as const;
+    const ringSize = { cyclohexane: 6, benzene: 6, cyclopentane: 5, chairCyclohexaneA: 6 } as const;
+    const overValent = (d: ChemDraftDocument) => molecules(d).flatMap(mol => mol.atoms.filter(atom => {
+      const element = nativeElementFromAtomLabel(atom.element);
+      const usage = nativeAtomBondOrderUsage(atom.id, mol.bonds, mol.atoms) + (atom.markRadicals ?? 0);
+      return element !== undefined && !nativeAtomChargeSupportsValence(element, usage, atom.formalCharge);
+    }).map(atom => `${mol.id}:${atom.id}`));
+    const segment = (x1: number, y1: number, x2: number, y2: number) => {
+      const ends = [`${x1.toFixed(2)},${y1.toFixed(2)}`, `${x2.toFixed(2)},${y2.toFixed(2)}`].sort();
+      return ends.join("-");
+    };
+    const ghostSegments = () => [...container.querySelectorAll(".native-template-ghost-bond")].map(line =>
+      segment(...(["x1", "y1", "x2", "y2"] as const).map(name => Number(line.getAttribute(name))) as [number, number, number, number])
+    ).sort();
+    expect(overValent(current())).toEqual([]);
+
+    const counts = { refused: 0, fused: 0, closures: 0, spiro: 0, atoms: 0, bonds: 0 };
+    const started = performance.now();
+    let activeTemplate: string | undefined;
+    for (let i = 0; i < 40; i++) {
+      const templateId = templates[i % templates.length]!;
+      if (templateId !== activeTemplate) { await command(`tool.${templateId}`); activeTemplate = templateId; }
+      const before = current();
+      const mol = pick(molecules(before));
+      const onAtom = random() < 0.5;
+      const point = onAtom
+        ? (({ x, y }) => ({ x, y }))(pick(mol.atoms))
+        : (bond => {
+            const from = mol.atoms.find(atom => atom.id === bond.fromAtomId)!, to = mol.atoms.find(atom => atom.id === bond.toAtomId)!;
+            return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+          })(pick(mol.bonds));
+      onAtom ? counts.atoms++ : counts.bonds++;
+      const wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+      await pointer("pointermove", point, wrapper);
+      const target = snapshot().hoveredNativeTarget as Parameters<typeof planNativeTemplatePlacement>[1]["target"];
+      expect(target).toBeDefined();
+      const plan = planNativeTemplatePlacement(before, { point, target }, templateId)!;
+      // Preview equals commit: the ghost on screen is the plan the click is about to make.
+      const ghost = ghostSegments();
+      expect(container.querySelector('[data-ghost-invalid="true"]')).toBeNull();
+      await pointer("pointerdown", point, wrapper); await pointer("pointerup", point, wrapper);
+      const after = current();
+      const committedSegments = (m: MoleculeObject, ids: readonly string[]) => m.bonds.filter(bond => ids.includes(bond.id)).map(bond => {
+        const from = m.atoms.find(atom => atom.id === bond.fromAtomId)!, to = m.atoms.find(atom => atom.id === bond.toAtomId)!;
+        return segment(from.x, from.y, to.x, to.y);
+      }).sort();
+
+      expect(overValent(after)).toEqual([]);
+      if (plan.kind === "standalone") {
+        counts.refused++;
+        expect(plan.fallbackReason).toBeDefined();
+        expect(status()).toMatch(/^Placed .+ separately: /);
+        // A refused click changes nothing that was already there and adds exactly one ring.
+        expect(molecules(after)).toHaveLength(molecules(before).length + 1);
+        expect(molecules(after).slice(0, -1)).toEqual(molecules(before));
+        const ring = molecules(after).at(-1)!;
+        expect(ring.atoms).toHaveLength(ringSize[templateId]);
+        expect(ghost).toEqual(committedSegments(ring, ring.bonds.map(bond => bond.id)));
+      } else {
+        counts[plan.kind === "fuse-bond" ? "fused" : plan.kind === "fused-closure" ? "closures" : "spiro"]++;
+        expect(molecules(after)).toHaveLength(molecules(before).length);
+        const edited = molecules(after).find(m => m.id === mol.id)!;
+        expect(edited.atoms).toHaveLength(mol.atoms.length + plan.addedAtomIds.length);
+        expect(edited.atoms).toEqual(plan.molecule.atoms);
+        expect(edited.bonds).toEqual(plan.molecule.bonds);
+        expect(molecules(after).filter(m => m.id !== mol.id)).toEqual(molecules(before).filter(m => m.id !== mol.id));
+        expect(ghost).toEqual(committedSegments(edited, plan.addedBondIds));
+      }
+    }
+    expect(counts.refused).toBeGreaterThan(0);
+    expect(counts.fused + counts.closures + counts.spiro).toBeGreaterThan(0);
+    report("C ring valence", started, `clicks=40 atomClicks=${counts.atoms} bondClicks=${counts.bonds} refusedSeparate=${counts.refused} fused=${counts.fused} closures=${counts.closures} spiro=${counts.spiro} molecules=${molecules(current()).length} overValent=0`);
+  }, 120000);
 
   it.each(["macos", "windows"] as const)("D: 30 rapid label characters and continuation Backspace/Delete never delete objects (%s)", async p => {
     platform(p); const doc = insertNativeTemplateMolecule(createPhase4Document("Typing"), { x: 300, y: 300 }, "cyclohexane");
@@ -362,7 +693,9 @@ describe("user feedback app stress", () => {
     report(`D continuation ${p}`, started, "characters=30 deletionKeys=2 deletedObjects=0");
   }, 120000);
 
-  it.each(["macos", "windows"] as const)("D: records O → bond drift → M → e (%s)", async p => {
+  // The pointer drifting off the atom onto its own bond mid-label used to fall through to tool
+  // shortcuts (M = Single Bond, e = Eraser). The label now continues on the atom.
+  it.each(["macos", "windows"] as const)("D: O → bond drift → M → e continues OMe rather than arming the Eraser (%s)", async p => {
     platform(p); const doc = insertNativeTemplateMolecule(createPhase4Document("Drift"), { x: 300, y: 300 }, "cyclohexane");
     await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
     const mol = molecules(current())[0], a = mol.atoms[0], b = mol.atoms[1], started = performance.now();
@@ -370,22 +703,11 @@ describe("user feedback app stress", () => {
     await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
     await key("M"); await key("e");
-    const label = molecules(current())[0].atoms[0].element;
     const deleted = doc.pages[0].objects.length - current().pages[0].objects.length;
-    console.info(`[stress D drift ${p}] keys=3 label=${label} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)} known-main-bond-hotkey-bug`);
-    expect(label).toBe("O"); expect(editor()).toBeNull(); expect(deleted).toBe(0);
-  });
-
-  // Known pre-existing main bug: 'e' over a hovered bond switches to the Eraser after label drift.
-  it.fails("D bug: bond drift should continue OMe rather than arming Eraser", async () => {
-    const doc = insertNativeTemplateMolecule(createPhase4Document("Drift bug"), { x: 300, y: 300 }, "cyclohexane");
-    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
-    const [a, b] = molecules(current())[0].atoms;
-    await pointer("pointermove", a); await key("O");
-    await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-    await key("M"); await key("e");
-    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    console.info(`[stress D drift ${p}] keys=3 editor=${editor()?.value} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)}`);
     expect(editor()?.value).toBe("OMe");
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(deleted).toBe(0);
   });
 
   it.each(["macos", "windows"] as const)("F: 50 rapid Text placements/commits have atomic conversion or label undo and leave no stray text (%s)", async p => {
@@ -435,4 +757,5 @@ describe("user feedback app stress", () => {
     }
     report("F explicit", started, "selectedBoxes=20 conversions=20 undoEntries=20 strayObjects=0");
   }, 120000);
+
 });

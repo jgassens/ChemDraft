@@ -181,19 +181,19 @@ rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text:
 ```
 
 Verified on gonane: four filled rings (solid and linear gradient fills,
-one glowing) with letters A–D centred, SMILES unchanged. On coloured
-fills, set `mol.style.atomLabelBackgroundColor = "transparent"` so
-heteroatom labels do not sit on white patches.
+one glowing) with letters A–D centred, SMILES unchanged. Ring fills are
+notched around labels of their own atoms on the outline, so those labels
+sit on the page background in a small rounded bite out of the fill, with no white box.
 
 For a vivid look (Nicolaou style), use saturated colours at
 `fillOpacity` about 0.9, never two alike side by side, and pick each
 ring letter's colour for its fill by luminance: white on red, green,
 blue, purple or magenta; near-black on yellow, orange, cyan or light
 green. `scripts/ring-style.mjs` (pattern 7) does all of this with a
-twelve-colour palette. A per-atom white
-`atomLabelBackgroundColors` patch on ring O atoms looked worse (a speck
-of fill shows inside the O); black O labels on the transparent default
-stayed readable at the ring corners.
+twelve-colour palette. A non-ring substituent label left inside a fill
+keeps the fill under it, with white or near-black text chosen by that
+fill's luminance and no halo. Ring-atom labels retain the molecule's
+normal colour in their outline notches.
 
 ### 2. Explicit H at a ring fusion, bold fusion bond, CH3 or Me
 
@@ -222,25 +222,20 @@ Verified on `C[C@@]12CCCC[C@H]1CCCC2`: hashed H below the fusion, bold
 fusion bond, CH3 label; identical InChIKey. Always confirm: if the
 InChIKey changes, swap the H's wedge and hash.
 
-**Setting an atom's element to a label string changes the chemistry.**
-`atom.element` is the atom's identity, not its caption: `"Me"`, `"Et"`,
-`"Ph"` or any other string that is not an element turns that atom into a
-placeholder. A `Me` label (`atom.element = "Me"`) draws "Me", but the
-identity check writes it as a dummy atom `*` with a warning, the stereo
-counts then read every centre as unspecified, and a `.chemdraft` saved
-from that document holds `*` atoms, so anyone who opens or copies it
-gets the wrong molecule. The atom schema (`packages/chem-core`) has no
-display-label field that keeps the element C while showing "Me"; the
-closest is `atomLabelShowTerminalCarbonsByAtomId`, which draws CH3 and
-keeps the carbon.
+A `Me` label (`atom.element = "Me"`) draws "Me", and the identity check
+reads it as the methyl it stands for, so the canonical SMILES, InChIKey
+and stereo counts are those of the whole structure. The same holds for
+every abbreviation in ChemDraft's table (OMe, Ph, Boc, CO2Me, ...).
+Labels are case-sensitive: `ME` or `Ome` is not a group, and is written
+as a dummy atom `*` with a warning. So is a group whose bonds don't fit
+it (a `Me` with two bonds). Check that the reported SMILES has no `*`.
 
-So the trade-off is: the Me-labelled document is a picture only. Verify
-and save the figure with carbons (drawn CH3), relabel to `Me` as the
-last, display-only step, and render the picture from that copy. Hand
-over the carbon `.chemdraft` as the editable file and say that it shows
-CH3 where the picture shows Me. To check the picture, replace each `*`
-in its reported SMILES with `C` and confirm the InChIKey still matches.
-`scripts/ring-style.mjs` does exactly this (pattern 7).
+`scripts/ring-style.mjs` (pattern 7) verifies the figure with its methyls
+as carbons drawn CH3 and relabels them to `Me` only in the picture copy,
+handing over the carbon `.chemdraft` as the editable file. Its picture
+check (replace each `*` in the reported SMILES with `C`, then compare
+InChIKeys) still holds; with table abbreviations read as their groups,
+the picture's SMILES simply has no `*` to replace.
 
 ### 3. Highlight a substructure
 
@@ -362,12 +357,14 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   each turn the options' `rotate` asks for, each fusion H) must read in
   the checkout's `render-document` as the same molecule and stereo
   counts, or it is undone and reported `UNDONE`; what cannot be cleared
-  is named, and a label left on a fill gets white or near-black text by
-  that fill's luminance (no box or halo). `"layout"` in the options
+  is named. A non-ring label left on a fill keeps the fill under it, uses
+  white or near-black text by the fill's luminance, and has no halo; the renderer
+  notches only labels of the filled ring's own outline atoms. `"layout"` in the options
   forces `"build"`, `"canonical"` or `"pubchem"`. Last, it runs the
   figure checks and exits 1 with a `FAILED` list when a lettered ring is
   a sliver, a bond or wedge is stretched, a letter shrank below 14 px, a
-  ring lies mostly under another's fill, or a fusion H was dropped
+  ring lies mostly under another's fill, a fill remains under a label of that ring's own atom,
+  or a fusion H was dropped
   (limits in recipe 11, rule 14). A figure that fails is not delivered as
   finished.
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
@@ -411,11 +408,6 @@ style step cannot repair).
   fonts were replaced; `render-document --format pdf` of the same aspirin
   document shows the same fault. View every PDF before
   delivering it, and prefer SVG or PNG until this is fixed.
-- **A ring fill runs under a ring heteroatom's label to the atom centre.**
-  With `atomLabelBackgroundColor` transparent (needed on coloured fills),
-  the fill polygon's corner shows inside the label, so a coloured point
-  pokes into the O of an oxetane or furan. Look for it at full size; it
-  cannot be hidden from the document today.
 - **Ring fills are painted in a fixed order the document cannot change.**
   Where a bridged ring's outline takes in part of another ring, the
   larger fill can cover the smaller one. `scripts/ring-style.mjs` then

@@ -34,6 +34,164 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Ring placement never over-fills an atom (2026-10-10)
+
+Branch `agentctl/fusion-20261010/ring-fusion-valence`. A ring tool clicked on a bond whose endpoint
+was already a four-bond carbon fused anyway and left a five-bond carbon with a "Fused" status
+(AGENTS.md section 7, Chemistry invariants). One result-based guard in `documentWorkflow.ts`
+(`nativeRingPlacementValenceRefusal`) now judges every ring placement that changes an existing
+molecule (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond hotkey's
+closure): every pre-existing atom whose bond-order use plus radicals rose must still be supported at
+its element and formal charge, or at its label's free valence when it is a group or spelled label,
+read with the drawing tools' label context (bonded, typed, and recorded or drawn bond side). Element
+labels keep the element rule; only labels with no free valence (generic placeholders such as R, bare
+formulas, and unrecognized text) are skipped.
+
+- **Clicks and the ghost preview** share `planNativeTemplatePlacement`, so a refused click is
+  previewed and committed as a separate ring, the existing molecule untouched, with a status naming
+  why: "an atom on that bond has no free valence", "the ring would close onto an atom with no free
+  valence" (an existing atom the ring gains a bond to), or "the ring's double bonds would overfill a
+  neighbouring atom" (an atom whose valence rose only because an aromatic template re-paired the
+  double bonds), beside the spiro reason "that atom has no free valence". No up-front prediction
+  refuses a spiro ring any more, so a benzene spiro on a one-bond S (S(IV)) or a two-bond P (P(V))
+  attaches.
+- **Ring hotkeys** (numbers over a hovered bond or atom) and the **cyclic-bond hotkey's closure**
+  (0) go through the same guard and refuse without changing anything, with the reason in the
+  status line. Ring hotkeys also name their other refusals: "that atom's label is an abbreviation;
+  relabel it to an element first", "the ring's geometry could not be placed there", "that structure
+  cannot be edited", and "that target is unavailable".
+- **Now refused, previously committed over-valent:** an aromatic spiro ring (benzene) on any ring
+  carbon or neutral nitrogen, and benzene on a bond whose Kekulé re-pairing would double the shared
+  bond next to an existing double bond (the central bond of s-cis butadiene).
+- **Group and spelled labels:** one-bond OMe is full, so a ring onto its bond, a spiro ring on it,
+  and ring hotkeys refuse with the valence reason; one-bond NMe takes a fusion but not a spiro ring;
+  four-bond Ph now refuses a fusion; SCN read as thiocyanate is full at one bond, and a fusion onto
+  any SCN is refused because it would have two bonds, which #83 badges.
+
+Windows hands-on verification is pending; the change is shared TypeScript with no platform branch.
+
+## Label anchoring (2026-10-10, branch `claude/label-anchoring`, jgassens/ChemDraft#97)
+
+A group label such as "OMe" drew centred on its atom, so its bond met the middle of the text, and a
+group bonded on its right still read left to right ("OMe–C"). Now the bond meets the atom it bonds
+to, and the label reads toward its bond ("MeO–C"). Display only: the stored label, its recorded bond
+side and its chemistry never change. Two commits:
+
+- **The atom-label grammar moved to layout-engine, verbatim** (`labelGrammar.ts`): the reading, the
+  composite parser, a group's attachment atom, and the valence tables they read. The drawn label and
+  the chemistry read a label with one implementation; document-workflow-core re-exports every name
+  and keeps the verdicts, validation and expansion.
+- **Anchoring and turning** (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`):
+  - With one bond, the side is the one the drawing shows, by the test that draws a hydroxyl as
+    "HO" (the same test #83 records a cyano label's side with). On a ring vertex (two or more
+    bonds) the label turns toward the side its bonds pull to, by the sign of their summed
+    x-offsets, so it points out of the ring; a vertex whose bonds pull neither way (the top or
+    bottom of a vertical-sided hexagon) keeps the label as typed.
+  - The letters of the atom the group's bonds reach sit on the atom: the O of OMe, the C of CO2Me,
+    the N of NHBoc, the Si of SiMe3.
+  - A label that spells that atom at its far end is drawn turned round, token by token: MeO,
+    MeO2C, BocHN, Me2N, PhH2C. A substituent that spells the atom it bonds by turns with it, so that
+    atom still faces the head: CH2OMe is drawn MeOH2C, never OMeH2C. It is turned only when the
+    turned text reads as the same group, so SCN is never drawn "CNS", and COMe (whose reversal
+    "MeOC" would read as another group) stays as typed.
+  - A label that does not spell its attachment (Ph, Boc, TMS), or that cannot be turned, puts the
+    letter nearest its bond on the atom.
+  - The anchored layout places runs by Helvetica/Arial advance widths, so subscripts sit clear of the
+    letter before them.
+  - Bond clipping, the CLI's render bounds and SVG/PDF export all use the planned layout, and the
+    Spin 3D overlay places a label from its projected bonds each frame (`nonElementAtomLabelPlacement`).
+    The overlay opens on the conformer's own view, not the drawing's layout, so a label there reads
+    toward its bond as the overlay draws it, which can differ from the flat drawing.
+  - Only under the default (automatic) label alignment; an explicit left, centre or right alignment
+    keeps the old layout.
+
+Stress numbers (`labelAnchoring.test.ts`, 15 px labels, 40 px bonds): the bond now stops 7–7.8 px
+from the atom along a horizontal bond, where it stopped 11.3–36.4 px away before (CO2Me with its bond
+on the right: 36.4 → 7.4 px). It never runs into the text: the gap between the bond's end and the label's box
+is 0–0.8 px in all 20 cases.
+
+Known limitations: element labels ("OH", "NH2", "CH3") keep their established centred geometry, and so
+do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centred. Two width
+models now coexist: anchored labels use Helvetica's advance widths, centred labels keep the flat
+estimate (0.62 em a letter) their established geometry is built on. Another font family places the
+anchored letter slightly off centre. A cyano
+label whose recorded side and drawn side differ (written, then turned round) is drawn as its text
+reads in the drawing, as before.
+
+## Abbreviation labels as chemistry (2026-10-10, branches `claude/abbreviation-label-reading` and `claude/awesome-ellis-421ab1`)
+
+Atom labels such as "OMe" were superatoms that nothing checked: "OMe" on a ring carbon (an O with
+three bonds and no charge) drew no badge, and the formula and every export skipped the group. Two
+PRs make the label mean its group.
+
+- **Table** (`packages/template-library`): 31 original, case-sensitive abbreviations, each defined
+  by SMILES, with right-to-left aliases ("MeO"), stated hydrogens, charges, free valence and an
+  RDKit-computed layout. Also the deliberate placeholders (R, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?,
+  `*`). No entry spells an element: "Ac" stays actinium, so acetyl is "COMe". "CN" is cyano, since
+  element case folding (jgassens/ChemDraft#85) leaves it as typed; there is no "NC" alias.
+- **Reading** (`nativeAtomLabelReading`): element (an exact symbol, or another case folded except for
+  eleven two-letter group labels such as "NH" and "CN"), abbreviation (case-sensitive), spelled
+  one-heavy-atom label ("NH2", "NH"), composite ("NMe2", "BocHN", "CH2Ph", "SCN"), placeholder, bare
+  formula, or unrecognized ("Ome", with a "did you mean OMe?" hint). A head written before O
+  ("COEt") is left unrecognized instead of read as C–OEt, and "CN" counts in a composite only last,
+  after its head ("CNO" stays a bare formula). Cyano reads as cyano unless its bond comes from the
+  label's right: "CN", "SCN" or "OCN" with the bond on the right means the N-bonded isomer, so it
+  stays a bare formula. The side is recorded on the atom (`labelBondSide`, with the neighbour it was
+  read against) when the label or its bond is written: every label and bond edit, opening a file and
+  importing CDXML (the test that draws OH as HO). It is read from there, never from the coordinates,
+  so moving, rotating, flipping, cleanup and Spin flatten never change what a label means; the
+  analysis key and the plugin fingerprint include it. Typed as a label on a bonded atom, "Ar" is
+  aryl (a placeholder) and "Ac", "Pr" and "Ts" are acetyl, n-propyl and tosyl. Unbonded, or read from
+  a structure file (molfile, SMILES, a numeric CDXML Element), they are their elements: a real Ac–Cl
+  is actinium chloride. `nativeAtomLabelFreeValence` gives the bonds each label takes.
+- **Badge**: a group whose bonds don't fill its free valence is flagged, whether typed or placed by
+  hotkey. The reason names the expected bond count, and the state carries the charge that would fix
+  it (O⁺ for the ring OMe). Unrecognized text gets its own code, `chemistry.unrecognized_label`.
+  Every badge's status-line reason is short and names no atom id ("OMe attaches by 1 bond; this
+  atom has 2.", "Ome isn't a known group. Did you mean OMe?", "C has unsupported valence 5."). The
+  long form, with the atom id, is `invalidDetail`: the chemistry warnings carry it, and the app
+  writes it to the console.
+- **Label edits and structure-editor saves**: a label edit that comes back to the text it started
+  with leaves the label as it was, recorded side and typed flag included. The keystroke that brings
+  it back writes it so (`applyNativeAtomLabelDraft`), and every close applies the same rule
+  (`finishNativeAtomLabelEdit`): Enter, Escape, a blur or click away, a tool picked in the palette, a
+  move to another atom's edit, a press that starts a drag. A close by undo, redo or a document
+  switch leaves the state it lands on untouched. The session autosave, the quit and window-close
+  flush, Save and export write the document as the open edit's close would leave it. Restarting an
+  edit on the same atom continues the session. Other labels keep the editor's typed (literal)
+  behaviour: a "C" typed on a hidden carbon is a typed C. The structure editor returns no atom
+  identity, so a save carries a record only when it can prove which atom is which (the atom and bond
+  counts are unchanged and the atoms match up only one way) and the label is still bonded to its
+  recorded neighbour. Otherwise every side-dependent label is read again from its drawing and the
+  status line names each with its reading, whether or not that changed.
+- **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
+  atoms appended after the drawn ones, so drawn indices never move, and the native formula is
+  counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
+  label. A group's stated hydrogens are written as explicit H atoms where the valence model would
+  not supply them (a hypervalent head such as "SHMe" on two bonds). Flagged groups, placeholders and
+  a bonded "Ar" stay warned placeholders. Validate reads the same expanded graph, never the stored
+  structure (a flatten stores "*" for every label). Tests hold the native formula and canonical
+  SMILES equal to RDKit's for every table entry, composite, bonded spelling and charged form.
+- **Bond tool**: a group may take the bonds it is missing (a lone "OMe" takes one), never more.
+
+Known limitations: Spin 3D, its sidecar, cleanup re-layout, flatten and the CIP guard
+(`stereoPerceptionMolfile`) still see one placeholder atom per label, since their atom-count and
+index contracts need one molfile atom per drawn atom. The user sees no wrong chemistry there: the guard
+only compares a perception with itself, and a placeholder can add a centre to it but never hide one.
+CDXML still writes a group label as `Element="OMe"` (it round-trips, but external readers see no
+structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a warning, never as the
+element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
+from RDKit's as they do for any molecule (atomic-weight table, no electron mass for ions). The table
+has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on the right counts
+as a bare formula and exports as a placeholder rather than as its real group. CDXML has no field
+for a label's recorded side: ChemDraft's own CDXML keeps it in the embedded payload, but a visible-
+layer-only reimport records the side the drawing shows, and the export warns
+(`cdxml.label_bond_side_turned`) when the two differ. A label deleted and redrawn in the structure
+editor with the same atom and bond counts and order inherits the old record: that cannot be told
+apart from a rotation in the editor, which must keep it. The bond tool judges a typed bonded "Ac" by
+its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
+one.
+
 ## User feedback fixes (2026-10-09)
 
 Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, built

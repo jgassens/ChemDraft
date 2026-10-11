@@ -771,6 +771,30 @@ describe("native document validation and serialization", () => {
     expect(plain).not.toHaveProperty("warningSuppressed");
   });
 
+  it("keeps a label's recorded bond side through the JSON round trip, and rejects a malformed one", () => {
+    const labelBondSide = { side: "right", atomId: "atom_002" } as const;
+    const molecule = {
+      ...moleculeObject(),
+      atoms: [
+        { id: "atom_001", element: "SCN", x: 0, y: 0, formalCharge: 0, labelLiteral: true, labelBondSide },
+        { id: "atom_002", element: "C", x: 22, y: 0, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    } satisfies MoleculeObject;
+    const document = applyPatch(
+      createEmptyDocument({ now: timestamp }),
+      { op: "addObject", pageId: "page_001", object: molecule },
+      { now: timestamp }
+    );
+    expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toMatchObject({
+      atoms: [{ id: "atom_001", labelBondSide }, { id: "atom_002" }]
+    });
+    const serialized = serializeDocument(document);
+    const malformed = serialized.replace(/"side":\s*"right"/, '"side": "up"');
+    expect(malformed).not.toBe(serialized);
+    expect(() => deserializeDocument(malformed)).toThrow();
+  });
+
   it("frames unrecognized atom keys as a possible newer-version file", () => {
     const molecule = {
       ...moleculeObject(),

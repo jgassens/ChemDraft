@@ -110,19 +110,27 @@ describe("pluginFacingStructure", () => {
     expect(facing.structure).toContain(" 10 11  0  0");
   });
 
-  it("hands an abbreviated label to the plugin as an R-group, never as a dummy carbon", () => {
-    const anisole = {
+  it("hands an abbreviation over as its atoms, and any other label as an R-group, never a dummy carbon", () => {
+    const withLabel = (label: string) => ({
       id: "m", type: "molecule", structureFormat: "smiles", structure: "",
       atoms: [
         { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
-        { id: "a1", element: "OMe", x: 1, y: 0, formalCharge: 0 }
+        { id: "a1", element: label, x: 1, y: 0, formalCharge: 0 }
       ],
       bonds: [{ id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" }]
-    } as unknown as Parameters<typeof pluginFacingStructure>[0];
-    const facing = pluginFacingStructure(anisole);
-    expect(facing.structure).toContain(" R# ");
-    expect(facing.structure).toContain("M  RGP  1   2   1");
-    expect(facing.structure).not.toContain(" *  ");
+    }) as unknown as Parameters<typeof pluginFacingStructure>[0];
+
+    // Dimethyl ether: the plugin's OpenChemLib reads O and C, appended after the drawn atoms.
+    const methoxy = pluginFacingStructure(withLabel("OMe")).structure.split("\n");
+    expect(methoxy[3]).toContain("  3  2  0");
+    expect(methoxy.slice(4, 7).map((line) => line.slice(31, 34).trim())).toEqual(["C", "O", "C"]);
+    expect(methoxy.join("\n")).not.toContain("R#");
+
+    // Case matters: "Ome" is text, handed over as an honest R-group placeholder.
+    const text = pluginFacingStructure(withLabel("Ome")).structure;
+    expect(text).toContain(" R# ");
+    expect(text).toContain("M  RGP  1   2   1");
+    expect(text).not.toContain(" *  ");
   });
 
   it("spells a condensed label with its hydrogens, so the plugin's OpenChemLib reads the molecule drawn", () => {
@@ -232,6 +240,42 @@ describe("computeObjectFingerprint", () => {
       atom.y -= 50;
     });
     expect(buildPluginSelectionSnapshot(moved).molecules[0]!.sourceFingerprint).toBe(before);
+
+    // A label's recorded bond side decides what a cyano label means, so a plugin result computed
+    // for the other side is stale.
+    const sideRecorded = documentWithUnknownOrderBond(["m1"]);
+    const sideAtoms = (sideRecorded.pages[0]!.objects[0] as { atoms: Array<{ id: string; labelBondSide?: unknown }> }).atoms;
+    sideAtoms[1]!.labelBondSide = { side: "right", atomId: sideAtoms[0]!.id };
+    expect(computeObjectFingerprint(sideRecorded, "m1")).not.toBe(before);
+  });
+
+  it("keys a recorded label bond side alongside a non-empty stored structure", () => {
+    // The stored SMILES need not show which side a cyano label was written with, so the record is
+    // keyed beside it; a molecule without one keeps its byte-for-byte fingerprint (below).
+    const withAtoms = () => {
+      const document = documentWith(["m1"]);
+      Object.assign(document.pages[0]!.objects[0]!, {
+        atoms: [
+          { id: "a1", element: "SCN", x: 30, y: 20, formalCharge: 0 },
+          { id: "a2", element: "C", x: 10, y: 20, formalCharge: 0 }
+        ],
+        bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
+      });
+      return document;
+    };
+    const before = computeObjectFingerprint(withAtoms(), "m1");
+    // With no record, the stored structure alone is keyed, exactly as before.
+    expect(before).toBe(computeObjectFingerprint(documentWith(["m1"]), "m1"));
+    const recorded = withAtoms();
+    const atoms = (recorded.pages[0]!.objects[0] as { atoms: Array<{ id: string; labelBondSide?: unknown }> }).atoms;
+    atoms[0]!.labelBondSide = { side: "left", atomId: atoms[1]!.id };
+    const left = computeObjectFingerprint(recorded, "m1");
+    atoms[0]!.labelBondSide = { side: "right", atomId: atoms[1]!.id };
+    const right = computeObjectFingerprint(recorded, "m1");
+    expect((recorded.pages[0]!.objects[0] as { structure: string }).structure).not.toBe("");
+    expect(left).not.toBe(before);
+    expect(right).not.toBe(left);
+    expect(buildPluginSelectionSnapshot(recorded).molecules[0]!.sourceFingerprint).toBe(right);
   });
 
   it("keeps the existing non-empty structure fingerprint unchanged", () => {
