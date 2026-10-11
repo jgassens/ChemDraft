@@ -2923,9 +2923,8 @@ export function planNativeTemplatePlacement(
         document,
         point,
         templateId,
-        target.kind === "bond"
-          ? "bond-cannot-accept"
-          : nativeSpiroAttachFailureValenceReason(molecule, target.atomId) ?? "target-unavailable"
+        nativeRingTargetFailureValenceReason(molecule, target)
+          ?? (target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable")
       );
     }
     const valenceRefusal = nativeRingPlacementValenceRefusal(molecule, nextMolecule, target);
@@ -3016,18 +3015,26 @@ function nativeRingPlacementValenceRefusal(
 }
 
 /**
- * When a spiro ring could not be drawn at an atom at all, whether the atom was also too full to
- * take one: every ring adds at least two single bonds at its spiro atom. This only names the
- * failure; it never refuses a placement, so it cannot overrule the result guard.
+ * When a ring could not be drawn at its target at all, whether the target's atoms were also too
+ * full to take the bonds any ring there would add: a fused ring adds one bond at each endpoint of
+ * the target bond, and a spiro ring at least two single bonds at its atom. A full atom is the
+ * definitive reason (no other spot on the same target could work), so it wins over the geometry
+ * reason. This only names the failure; it never refuses a placement, so it cannot overrule the
+ * result guard ({@link nativeRingPlacementValenceRefusal}). Labels with no element pass.
  */
-function nativeSpiroAttachFailureValenceReason(
+function nativeRingTargetFailureValenceReason(
   molecule: MoleculeObject,
-  atomId: string
-): "atom-no-free-valence" | undefined {
-  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom && !nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + 2)
-    ? "atom-no-free-valence"
-    : undefined;
+  target: NativeMoleculeDeleteTarget
+): "atom-no-free-valence" | "bond-atom-no-free-valence" | undefined {
+  const isFull = (atomId: string | undefined, added: number) => {
+    const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+    return atom !== undefined && !nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + added);
+  };
+  if (target.kind === "atom") {
+    return isFull(target.atomId, 2) ? "atom-no-free-valence" : undefined;
+  }
+  const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
+  return bond && (isFull(bond.fromAtomId, 1) || isFull(bond.toAtomId, 1)) ? "bond-atom-no-free-valence" : undefined;
 }
 
 /** Whether the atom's element admits this valence use at its formal charge; labels with no element pass. */
@@ -7792,7 +7799,7 @@ export function nativeRingHotkeyAttachAtAtomTarget(
   if (!attached) {
     return {
       document,
-      refusal: nativeSpiroAttachFailureValenceReason(molecule, target.atomId) ?? "ring-geometry-unavailable"
+      refusal: nativeRingTargetFailureValenceReason(molecule, target) ?? "ring-geometry-unavailable"
     };
   }
   return nativeRingHotkeyPatched(document, page, molecule, attached, target);
@@ -7864,7 +7871,7 @@ export function nativeRingHotkeyFuseAtBondTarget(
   const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
   return fused
     ? nativeRingHotkeyPatched(document, page, molecule, fused, target)
-    : { document, refusal: "ring-geometry-unavailable" };
+    : { document, refusal: nativeRingTargetFailureValenceReason(molecule, target) ?? "ring-geometry-unavailable" };
 }
 
 function addChargeMarkAtPoint(

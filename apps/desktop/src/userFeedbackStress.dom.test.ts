@@ -359,6 +359,64 @@ describe("user feedback app stress", () => {
     report("C bond hotkey", started, `keys=1 objects=${molecules(current()).length}`);
   }, 120000);
 
+  /** The star a user builds: one Bond-tool click on empty canvas, then three on the same end atom. */
+  async function clickBuiltStar() {
+    await mount(createPhase4Document("Clicked star"), "tool.bond");
+    await pointer("pointerdown", { x: 300, y: 300 }); await pointer("pointerup", { x: 300, y: 300 });
+    const first = molecules(current())[0];
+    expect(first.atoms).toHaveLength(2);
+    const centre = first.atoms[1];
+    for (let i = 0; i < 3; i++) {
+      const wrapper = container.querySelector(`[data-object-id="${first.id}"]`)!;
+      await pointer("pointermove", centre, wrapper);
+      await pointer("pointerdown", centre, wrapper); await pointer("pointerup", centre, wrapper);
+    }
+    const star = molecules(current())[0];
+    expect(molecules(current())).toHaveLength(1);
+    expect(star.atoms).toHaveLength(5);
+    expect(star.bonds.every(bond => bond.fromAtomId === centre.id || bond.toAtomId === centre.id)).toBe(true);
+    const bond = star.bonds[0];
+    const other = star.atoms.find(atom => atom.id === (bond.fromAtomId === centre.id ? bond.toAtomId : bond.fromAtomId))!;
+    await pointer("pointermove", { x: 600, y: 500 });
+    return { star, centre: star.atoms.find(atom => atom.id === centre.id)!, bondMid: { x: (centre.x + other.x) / 2, y: (centre.y + other.y) / 2 } };
+  }
+
+  it.each(["macos", "windows"] as const)("C: a click-built four-bond star reports the full centre, not the geometry (%s)", async p => {
+    platform(p);
+    const started = performance.now();
+    // Cyclohexane tool on a centre bond: no room for the ring AND a full centre — valence wins.
+    let { star, bondMid } = await clickBuiltStar();
+    await command("tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${star.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(star);
+    expect(status()).toBe("Placed cyclohexane separately: an atom on that bond has no free valence");
+
+    // Hover the same bond and press 6.
+    ({ star, bondMid } = await clickBuiltStar());
+    await pointer("pointermove", bondMid);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await key("6");
+    expect(molecules(current())).toEqual([star]);
+    expect(status()).toBe("Cannot add fused cyclohexane ring here: an atom on that bond has no free valence");
+
+    // Benzene tool on the centre atom itself (spiro).
+    let centre;
+    ({ star, centre } = await clickBuiltStar());
+    await command("tool.benzene");
+    wrapper = container.querySelector(`[data-object-id="${star.id}"]`)!;
+    await pointer("pointermove", centre, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: centre.id });
+    await pointer("pointerdown", centre, wrapper); await pointer("pointerup", centre, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(star);
+    expect(status()).toBe("Placed benzene separately: that atom has no free valence");
+    report(`C clicked star ${p}`, started, "click=1 hotkey=1 spiro=1");
+  }, 120000);
+
   it("C: ring hotkeys name each non-valence refusal through real keys", async () => {
     const L = nativeBondLengthPx;
     const started = performance.now();
