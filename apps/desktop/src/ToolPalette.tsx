@@ -133,6 +133,7 @@ import {
   textSizeCommands
 } from "./commands";
 import { Icon } from "./icons";
+import { getDrawingToolDefinition } from "./drawingTools";
 import { toolbarAsset } from "./toolbarAssets";
 import {
   commandShortcutDisplay,
@@ -3546,7 +3547,20 @@ function ToolbarPaletteItem({
     primaryCommand?.id === activeTool
     || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
   );
-  const tooltipText = toolbarTooltipText(item, primaryCommand);
+  const selectedDescription = primaryCommand?.description
+    ?? (primaryCommand ? getDrawingToolDefinition(primaryCommand.id)?.usageHint?.action : undefined);
+  const tooltipItem = followsSelectedTool && primaryCommand && primaryCommand.id !== defaultPrimaryCommand?.id
+    ? {
+        ...item,
+        tooltip: {
+          ...item.tooltip,
+          description: selectedDescription
+            ? `${primaryCommand.title}: ${selectedDescription}`
+            : primaryCommand.title
+        }
+      }
+    : item;
+  const tooltipText = toolbarTooltipText(tooltipItem, primaryCommand);
   // Injective sanitization: encode each disallowed char by code point so ids differing only in
   // punctuation (e.g. "plugin.foo:bar" vs "plugin.foo.bar") don't collapse to the same DOM id.
   const menuId = hasSubmenu
@@ -3872,7 +3886,7 @@ function ToolbarPaletteItem({
         <ToolbarItemTooltip
           disabledReason={primaryDisabled ? primaryCommand?.disabledReason ?? "unavailable" : undefined}
           id={tooltipId}
-          item={item}
+          item={tooltipItem}
           text={tooltipText}
         />
       </button>
