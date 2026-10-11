@@ -243,6 +243,40 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
+  it("hovers the bond again once a label typed over it commits, so Delete acts on the bond", async () => {
+    const { bond, near } = await hoverBond(0, 0.4);
+    await press("O");
+    await press("M");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)).toMatchObject({ element: "OMe" });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    // Delete over the bond removes the bond. Were the hover still on the atom, it would strip "OMe".
+    await press("Delete");
+    expect(molecule().bonds.some((candidate) => candidate.id === bond.id)).toBe(false);
+    expect(molecule().atoms.find((atom) => atom.id === near.id)).toMatchObject({ element: "OMe" });
+  });
+
+  it("hovers the bond again when the next key does not continue the label, so Delete acts on the bond", async () => {
+    const { bond, far } = await hoverBond(0, 0.6);
+    await press("N");
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("N");
+    // Delete does not continue a label, so the hover returns to the bond under the pointer first.
+    await press("Delete");
+    expect(molecule().bonds.some((candidate) => candidate.id === bond.id)).toBe(false);
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("N");
+  });
+
+  it("ends a label continuation when the tool changes, by menu command as well as by palette", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.select"); });
+    await press("M");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms[0]!.element).toBe("O");
+    expect(molecule().atoms).toHaveLength(6);
+  });
+
   it("over a bond, a bare non-element letter keeps its tool shortcut and a digit its bond order", async () => {
     const { bond } = await hoverBond(0, 0.5);
     await press("2");

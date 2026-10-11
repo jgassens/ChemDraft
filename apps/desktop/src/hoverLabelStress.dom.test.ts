@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
-// Stress: typing "OMe" with the pointer resting anywhere along a long zigzag chain, where bond hit
-// zones crowd the atoms. Every trial must label an atom and leave the active tool and the chain's
-// structure alone. HOVER_STRESS_TRIALS raises the trial count for a local run (default 24).
+// Stress: typing "OMe" with the pointer resting on a bond of a long zigzag chain, where bond hit
+// zones crowd the atoms. Every trial starts over a bond and must label one of its atoms while
+// leaving the active tool and the chain's structure alone.
+// HOVER_STRESS_TRIALS raises the trial count for a local run (default 24).
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -99,15 +100,21 @@ describe("hover label typing over a long chain (stress)", () => {
       const bond = current.bonds[Math.floor(random() * current.bonds.length)]!;
       const from = current.atoms.find((atom) => atom.id === bond.fromAtomId)!;
       const to = current.atoms.find((atom) => atom.id === bond.toAtomId)!;
-      const fraction = 0.1 + random() * 0.8;
-      const point = { x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction };
       const page = container.querySelector<HTMLElement>(".page")!;
-      await act(async () => {
-        const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
-        Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-        page.dispatchEvent(event);
-      });
-      const hovered = snapshot().hoveredNativeTarget as { kind?: string } | undefined;
+      const hoverAt = async (fraction: number) => {
+        const point = { x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction };
+        await act(async () => {
+          const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
+          Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+          page.dispatchEvent(event);
+        });
+        return snapshot().hoveredNativeTarget as { kind?: string; bondId?: string } | undefined;
+      };
+      // Every trial starts with the pointer on the bond itself (the case this guards): a point in the
+      // middle 40% of the bond, or its midpoint if that point still resolves to an atom.
+      let hovered = await hoverAt(0.3 + random() * 0.4);
+      if (hovered?.kind !== "bond") hovered = await hoverAt(0.5);
+      expect(hovered).toMatchObject({ kind: "bond", bondId: bond.id });
       tally.trials += 1;
       if (hovered?.kind === "bond") tally.overBond += 1;
       else if (hovered?.kind === "atom") tally.overAtom += 1;
@@ -138,6 +145,7 @@ describe("hover label typing over a long chain (stress)", () => {
     console.log(`[hover-stress] ${JSON.stringify(tally)}`);
     expect(tally.toolSwitched).toBe(0);
     expect(tally.structureChanged).toBe(0);
-    expect(tally.labelled).toBe(tally.trials - tally.overNothing);
+    expect(tally.overBond).toBe(tally.trials);
+    expect(tally.labelled).toBe(tally.trials);
   }, 120_000);
 });
