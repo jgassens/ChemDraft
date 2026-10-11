@@ -33,6 +33,18 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn().mockResolvedValue(() => {})
 }));
+// The flush test writes the editor's keystrokes plainly, without the rule that writes a label typed
+// back to its starting text as it started, so that only the flush's own rule can save it correctly.
+const labelDraftWrite = vi.hoisted(() => ({ plain: false }));
+vi.mock("./documentWorkflow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./documentWorkflow")>();
+  return {
+    ...actual,
+    applyNativeAtomLabelDraft: (...args: Parameters<typeof actual.applyNativeAtomLabelDraft>) => labelDraftWrite.plain
+      ? actual.applyNativeAtomElementTarget(args[0], args[1], args[2], { literal: true })
+      : actual.applyNativeAtomLabelDraft(...args)
+  };
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -77,6 +89,7 @@ describe("atom label editor focus", () => {
   });
 
   afterEach(() => {
+    labelDraftWrite.plain = false;
     act(() => {
       root.unmount();
     });
@@ -698,14 +711,21 @@ describe("atom label editor focus", () => {
 
     it("saved while the session is still open: the file holds the label as the close will leave it", async () => {
       // Every flush (Save, export, the session autosave, the quit and window-close flush) writes the
-      // document as if the open edit had closed. Save is the one reachable without the desktop
-      // runtime: off it, Save downloads the file, captured here.
+      // document as if the open edit had closed (documentForFlush). Save is the one reachable without
+      // the desktop runtime: off it, Save downloads the file, captured here. The keystroke rule already
+      // leaves the present document as the close will (tested above), so here keystrokes are written
+      // plainly: the present holds the side re-read from the turned-round drawing, and only the
+      // flush's own rule can save the starting one.
+      labelDraftWrite.plain = true;
       const saved: Blob[] = [];
       const createObjectURL = vi.fn((blob: Blob) => { saved.push(blob); return "blob:saved"; });
       Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
       vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
       await renderMainWindow(turnedThiocyanate());
-      await retypeSameLabel();
+      await startLabelEdit();
+      await typeIntoEditor("O");
+      await typeIntoEditor("SCN");
+      expect(side(), "written plainly, the present document holds the drawing's side").toBe("right");
       await paletteCommand("document.save");
       await settle();
       // The edit stays open, and the saved file holds the label with the side it was written with.
@@ -752,68 +772,34 @@ describe("atom label editor focus", () => {
     });
   });
 
-  describe("a label edit closed by a press that starts a drag", () => {
-    /** A press-and-drag the way the canvas receives it: moves go to whatever captured the pointer. */
-    async function pressAndDrag(target: Element, from: { x: number; y: number }, to: { x: number; y: number }) {
-      let captured: Element | undefined;
-      const capture = vi.spyOn(HTMLElement.prototype, "setPointerCapture").mockImplementation(function (this: HTMLElement) {
-        captured = this;
-      });
-      const send = (element: Element, type: string, point: { x: number; y: number }) => {
-        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
-          buttons: type === "pointerup" ? 0 : 1, clientX: point.x, clientY: point.y, detail: 1 });
-        Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 9 }, pointerType: { value: "mouse" } });
-        element.dispatchEvent(event);
-      };
-      await act(async () => { send(target, "pointerdown", from); });
-      await act(async () => { send(captured ?? target, "pointermove", to); });
-      await act(async () => { send(captured ?? target, "pointerup", to); });
-      capture.mockRestore();
-      await settle();
-    }
-
-    /** A key the way the browser delivers it, with the text-editing default jsdom lacks. */
-    async function typeKey(key: string) {
-      const target = document.activeElement ?? document.body;
-      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-      await act(async () => { target.dispatchEvent(event); });
-      if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
-        const caret = target.selectionStart ?? target.value.length;
-        const value = target.value.slice(0, caret) + key + target.value.slice(target.selectionEnd ?? caret);
-        await act(async () => {
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
-          target.dispatchEvent(new Event("input", { bubbles: true }));
-          target.setSelectionRange(caret + 1, caret + 1);
-        });
-      }
-    }
-
-    it("undoing the drag restores the label exactly as the session left it", async () => {
-      // Fable rr6: the drag takes the present document as its start before the edit closes. The
-      // Atom Label tool starts no drag; the Bond tool does, and its hover typing opens the same
-      // editor. Whatever the close writes, the keystrokes have already written (applyNativeAtomLabelDraft),
-      // so the drag's start and the closed session agree.
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      await renderMainWindow(turnedThiocyanate(), "tool.bond");
-      const atom = molecule().atoms.find((candidate) => candidate.id === "s1")!;
-      await act(async () => {
-        const hover = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
-        Object.defineProperties(hover, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-        container.querySelector(".page")!.dispatchEvent(hover);
-      });
-      for (const key of "OCN") {
-        await typeKey(key);
-      }
-      expect(labelEditor()?.value).toBe("OCN");
-      const labelled = molecule().atoms;
-      expect(thiocyanateSide(), "a new label, read from the drawing").toBe("right");
-      await pressAndDrag(container.querySelector(".page")!, { x: 600, y: 480 }, { x: 660, y: 500 });
+  describe("a label edit closed by a press that commits before the close", () => {
+    // Fable rr6: a press that closes the edit and commits takes the present document as its start
+    // (its undo entry) before the close runs. The Atom Label tool's presses commit nothing, and the
+    // Bond tool opens the editor only by hover typing, whose session starts on a single element letter
+    // that carries no record; tool hotkeys are blocked while an edit is open, and a palette tool pick
+    // closes it first. The Text tool is the one that both opens the editor on an atom and, pressed on
+    // empty canvas, commits a new text box from the open session's document.
+    it("undoing the commit restores the label with its starting record", async () => {
+      await renderMainWindow(turnedThiocyanate(), "tool.text");
+      await startLabelEdit();
+      await typeIntoEditor("O");
+      await typeIntoEditor("SCN");
+      await pointerPress(container.querySelector(".page")!, { x: 600, y: 480 });
       expect(labelEditor()).toBeNull();
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
-      expect(molecule().atoms, "closing the edit changed nothing the drag did not already hold").toEqual(labelled);
+      expect(bridge().snapshot().document.pages[0].objects.map((object) => object.type)).toEqual(["molecule", "text"]);
+      expect(thiocyanateSide()).toBe("left");
+      // Leave the new text box's editor the way a click elsewhere does, then undo its placement.
+      const textEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+      if (textEditor) {
+        const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+        await act(async () => { textEditor.blur(); });
+        hasFocus.mockRestore();
+        await settle();
+      }
       await paletteCommand("edit.undo");
-      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
-      expect(molecule().atoms).toEqual(labelled);
+      expect(bridge().snapshot().document.pages[0].objects.map((object) => object.type)).toEqual(["molecule"]);
+      expect(atomElement("s1")).toBe("SCN");
+      expect(thiocyanateSide(), "the commit's undo entry was taken mid-session").toBe("left");
     });
   });
 

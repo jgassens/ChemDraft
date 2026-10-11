@@ -16,12 +16,12 @@ import {
   analysisFacingStructure,
   applyAnalysisToSelectedMolecule,
   applyClipboardPastePayload,
-  applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultWithLabelWarnings,
   applyFreeformSingleBondToolAtPoint,
   applyNativeAtomElementTarget,
   applyNativeAtomLabelDraft,
   createSelectionClipboardPayload,
+  editorSaveLabelWarningsStatus,
   finishNativeAtomLabelEdit,
   normalizeCommittedDocument,
   pasteSelectionClipboardPayload,
@@ -471,10 +471,10 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     const right = [...selected.atoms].sort((first, second) => first.x - second.x)[1]!;
     // The editor hands back the molecule with its right-hand carbon now labelled SCN.
     const edited = { ...selected, atoms: selected.atoms.map((atom) => (atom.id === right.id ? { ...atom, element: "SCN" } : atom)) };
-    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(ethane, {
+    const saved = normalizeCommittedDocument(applyEditorSaveResultWithLabelWarnings(ethane, {
       object: { ...selected, structureFormat: "molfile-v3000", structure: editorV3000(edited) },
       warnings: []
-    }));
+    }).document);
     expect(await canonical(objectOf(saved, selected.id))).toBe("CSC#N");
     expect(await canonical(objectOf(turnRound(saved, selected.id), selected.id))).toBe("CSC#N");
   });
@@ -485,10 +485,10 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     // Opened in the editor and saved without changes: every atom comes back from the V3000, the
     // SCN now drawn with its bond on the right. Its record is carried, so it stays a thiocyanate.
     const selected = selectDocumentObject(document, objectId);
-    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(selected, {
+    const saved = normalizeCommittedDocument(applyEditorSaveResultWithLabelWarnings(selected, {
       object: { ...turned, structureFormat: "molfile-v3000", structure: editorV3000(turned) },
       warnings: []
-    }));
+    }).document);
     expect(await canonical(objectOf(saved, objectId))).toBe("CSC#N");
   });
 
@@ -526,10 +526,10 @@ describe("every way a cyano label enters the document keeps its meaning when tur
       atoms: before.atoms.filter((atom) => atom.id !== "x"),
       bonds: before.bonds.filter((bond) => bond.fromAtomId !== "x" && bond.toAtomId !== "x")
     };
-    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(written, {
+    const saved = normalizeCommittedDocument(applyEditorSaveResultWithLabelWarnings(written, {
       object: { ...before, structureFormat: "molfile-v3000", structure: editorV3000(edited) },
       warnings: []
-    }));
+    }).document);
     const after = objectOf(saved, "pair");
     // Each SCN keeps its own reading: one thiocyanate, one bare formula, exactly as before.
     const smiles = await canonical(after);
@@ -596,7 +596,7 @@ describe("every way a cyano label enters the document keeps its meaning when tur
       expect(await canonical(objectOf(saved.document, "ethyl"))).toBe("CCSC#N");
     });
 
-    it("re-reads a label whose own bond the editor changed, and warns when its reading changed", async () => {
+    it("re-reads a label whose own bond the editor changed, and names it with its reading now", async () => {
       const document = turnedEthyl();
       const before = objectOf(document, "ethyl");
       // In the editor, SCN is unbonded from c1 and bonded to x instead, which lies on its right.
@@ -609,12 +609,150 @@ describe("every way a cyano label enters the document keeps its meaning when tur
       };
       const saved = saveFromEditor(document, rebonded);
       expect(saved.labelWarnings).toHaveLength(1);
-      expect(saved.labelWarnings[0]!.reason).toBe("SCN's bond was changed in the structure editor, so it now reads as the N-bonded isomer (a bare formula here).");
-      expect(saved.labelWarnings[0]!.detail).toContain('Label "SCN" on atom s1');
+      expect(saved.labelWarnings[0]!.reason).toBe("SCN was read again from the drawing after the structure-editor save: it reads as the N-bonded isomer (a bare formula here).");
+      expect(saved.labelWarnings[0]!.detail).toContain('Label "SCN" on atom s1: the structure editor changed its bond');
       expect(saved.labelWarnings[0]!.detail).toContain("bond on the right");
       expect(saved.labelWarnings[0]!.detail).toContain("written with its bond on the left");
+      expect(editorSaveLabelWarningsStatus(saved.labelWarnings)).toBe(saved.labelWarnings[0]!.reason);
       expect(recordOf(saved.document)).toMatchObject({ side: "right" });
       expect(await canonical(objectOf(saved.document, "ethyl"))).not.toContain("#");
+    });
+
+    /** Save `edited` from the editor over the molecule `objectId`, then commit as MainWindow does. */
+    const saveObjectFromEditor = (document: ChemDraftDocument, objectId: string, edited: MoleculeObject) => {
+      const applied = applyEditorSaveResultWithLabelWarnings(selectDocumentObject(document, objectId), {
+        object: { ...objectOf(document, objectId), structureFormat: "molfile-v3000", structure: editorV3000(edited) },
+        warnings: []
+      });
+      return { document: normalizeCommittedDocument(applied.document), labelWarnings: applied.labelWarnings };
+    };
+    const written = (molecule: MoleculeObject): ChemDraftDocument => {
+      const start = createPhase4Document("Editor Identity");
+      return normalizeCommittedDocument(applyPatch(start, { op: "addObject", pageId: start.pages[0]!.id, object: molecule }));
+    };
+    const sideOf = (document: ChemDraftDocument, objectId: string) =>
+      objectOf(document, objectId).atoms.filter((atom) => atom.element === "SCN").map((atom) => atom.labelBondSide?.side);
+
+    it("never guesses which atom is which: SCN–C, SCN–C with the first pair deleted (Sol rr7)", async () => {
+      // s1's bond is on its right (the N-bonded isomer), s2's on its left (a thiocyanate). Deleting s1
+      // and c1 leaves [SCN, C], which aligns with either pair; matched to the first, s1's record
+      // would land on s2 and turn its thiocyanate into a bare formula.
+      const document = written({
+        id: "pairs", type: "molecule", x: 260, y: 280, width: 200, height: 40, rotation: 0, style: {},
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [
+          { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true },
+          { id: "c1", element: "C", x: 310, y: 300, formalCharge: 0 },
+          { id: "s2", element: "SCN", x: 440, y: 300, formalCharge: 0, labelLiteral: true },
+          { id: "c2", element: "C", x: 410, y: 300, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "b1", fromAtomId: "s1", toAtomId: "c1", order: "single" },
+          { id: "b2", fromAtomId: "c2", toAtomId: "s2", order: "single" }
+        ]
+      });
+      expect(sideOf(document, "pairs")).toEqual(["right", "left"]);
+      const before = objectOf(document, "pairs");
+      const edited = {
+        ...before,
+        atoms: before.atoms.filter((atom) => atom.id === "s2" || atom.id === "c2"),
+        bonds: before.bonds.filter((bond) => bond.id === "b2")
+      };
+      const saved = saveObjectFromEditor(document, "pairs", edited);
+      // Read again from its drawing, so still the thiocyanate, and named either way.
+      expect(sideOf(saved.document, "pairs")).toEqual(["left"]);
+      expect(await canonical(objectOf(saved.document, "pairs"))).toBe("CSC#N");
+      expect(saved.labelWarnings.map(({ label, reading }) => ({ label, reading }))).toEqual([
+        { label: "SCN", reading: "its cyano group" }
+      ]);
+      expect(saved.labelWarnings[0]!.detail).toContain("does not show which atom it was");
+    });
+
+    it("never guesses which atom is which: C–SCN, C–SCN with the first pair deleted (Fable rr7)", async () => {
+      // SCN1's bond is on its right, SCN3's on its left. Deleting C0 and SCN1 leaves [C, SCN], which
+      // the old alignment paired with the deleted pair, carrying SCN1's side onto SCN3.
+      const document = written({
+        id: "pairs", type: "molecule", x: 260, y: 280, width: 200, height: 40, rotation: 0, style: {},
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [
+          { id: "c0", element: "C", x: 310, y: 300, formalCharge: 0 },
+          { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true },
+          { id: "c2", element: "C", x: 410, y: 300, formalCharge: 0 },
+          { id: "s3", element: "SCN", x: 440, y: 300, formalCharge: 0, labelLiteral: true }
+        ],
+        bonds: [
+          { id: "b1", fromAtomId: "c0", toAtomId: "s1", order: "single" },
+          { id: "b2", fromAtomId: "c2", toAtomId: "s3", order: "single" }
+        ]
+      });
+      expect(sideOf(document, "pairs")).toEqual(["right", "left"]);
+      const before = objectOf(document, "pairs");
+      const edited = {
+        ...before,
+        atoms: before.atoms.filter((atom) => atom.id === "c2" || atom.id === "s3"),
+        bonds: before.bonds.filter((bond) => bond.id === "b2")
+      };
+      const saved = saveObjectFromEditor(document, "pairs", edited);
+      expect(sideOf(saved.document, "pairs")).toEqual(["left"]);
+      expect(await canonical(objectOf(saved.document, "pairs"))).toBe("CSC#N");
+      expect(saved.labelWarnings.map(({ label, reading }) => ({ label, reading }))).toEqual([
+        { label: "SCN", reading: "its cyano group" }
+      ]);
+    });
+
+    describe("two identical SCN–methyl fragments, one turned round", () => {
+      // sA is drawn as written (bond on its left). sB was written the same way and then turned round,
+      // so its record says left while its drawing says right: only the record keeps it a thiocyanate.
+      const twoFragments = (): ChemDraftDocument => written({
+        id: "frags", type: "molecule", x: 240, y: 280, width: 240, height: 40, rotation: 0, style: {},
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [
+          { id: "sA", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "cA" } },
+          { id: "cA", element: "C", x: 250, y: 300, formalCharge: 0 },
+          { id: "sB", element: "SCN", x: 420, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "cB" } },
+          { id: "cB", element: "C", x: 450, y: 300, formalCharge: 0 }
+        ],
+        bonds: [
+          { id: "bA", fromAtomId: "cA", toAtomId: "sA", order: "single" },
+          { id: "bB", fromAtomId: "cB", toAtomId: "sB", order: "single" }
+        ]
+      });
+
+      it("one moved in the editor: the pairing is unique, so both keep their records silently", async () => {
+        const document = twoFragments();
+        expect(await canonical(objectOf(document, "frags"))).toBe("CSC#N.CSC#N");
+        const before = objectOf(document, "frags");
+        const moved = { ...before, atoms: before.atoms.map((atom) => (atom.id === "cA" ? { ...atom, y: 330 } : atom)) };
+        const saved = saveObjectFromEditor(document, "frags", moved);
+        expect(saved.labelWarnings).toEqual([]);
+        expect(sideOf(saved.document, "frags")).toEqual(["left", "left"]);
+        expect(await canonical(objectOf(saved.document, "frags"))).toBe("CSC#N.CSC#N");
+      });
+
+      it("one given another carbon in the editor: nothing is carried by guess, and both are named", async () => {
+        const document = twoFragments();
+        const before = objectOf(document, "frags");
+        const extended: MoleculeObject = {
+          ...before,
+          atoms: [...before.atoms, { id: "cA2", element: "C", x: 230, y: 330, formalCharge: 0 }],
+          bonds: [...before.bonds, { id: "bA2", fromAtomId: "cA", toAtomId: "cA2", order: "single" }]
+        };
+        const saved = saveObjectFromEditor(document, "frags", extended);
+        // Each is read from its drawing: sA as before, sB (turned round) now the other isomer. Both
+        // are announced, whether or not their reading changed.
+        expect(sideOf(saved.document, "frags")).toEqual(["left", "right"]);
+        expect(saved.labelWarnings.map(({ label, reading }) => ({ label, reading }))).toEqual([
+          { label: "SCN", reading: "its cyano group" },
+          { label: "SCN", reading: "the N-bonded isomer (a bare formula here)" }
+        ]);
+        expect(editorSaveLabelWarningsStatus(saved.labelWarnings)).toBe(
+          "After the structure-editor save, these labels were read again from the drawing: SCN as its cyano group, SCN as the N-bonded isomer (a bare formula here)."
+        );
+        expect(saved.labelWarnings.every((warning) => !/atom \w+/.test(warning.reason))).toBe(true);
+        expect(saved.labelWarnings.map((warning) => warning.detail.match(/on atom (\w+)/)?.[1])).toEqual(["sA", "sB"]);
+        const smiles = await canonical(objectOf(saved.document, "frags"));
+        expect(smiles.match(/SC#N/g)).toHaveLength(1);
+      });
     });
   });
 

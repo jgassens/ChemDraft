@@ -67,6 +67,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -380,8 +381,8 @@ import {
   nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
   applyNativeMoleculePartsDelete,
-  applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultWithLabelWarnings,
+  editorSaveLabelWarningsStatus,
   applyAnalysisToSelectedMolecule,
   analysisFacingStructure,
   analysisSubjectKey,
@@ -1503,7 +1504,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.20.05-opus";
+const CURRENT_BUILD_STAMP = "10.10.20.27-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -17039,13 +17040,14 @@ export function MainWindow({
     setArrowEditTargetId((current) => current === objectId ? undefined : current);
   }, [assignHoveredNativeDeleteTarget]);
 
-  const handleApplyKetcherEdit = useCallback((result: Parameters<typeof applyEditorSaveResultToSelectedMolecule>[1]) => {
-    // A label whose bond the editor changed may now read differently: say so (short on the status
-    // line, the atom named in the log) rather than let the save change it silently.
+  const handleApplyKetcherEdit = useCallback((result: EditorSaveResult) => {
+    // A side-dependent label the save could not carry is read again from its drawing: say so (short
+    // on the status line, each atom named in the log) rather than let the save change it silently.
     const applied = applyEditorSaveResultWithLabelWarnings(documentRef.current, result);
     commitDocumentChange(applied.document);
-    if (applied.labelWarnings.length > 0) {
-      setStatus(applied.labelWarnings.map((warning) => warning.reason).join(" "));
+    const labelStatus = editorSaveLabelWarningsStatus(applied.labelWarnings);
+    if (labelStatus) {
+      setStatus(labelStatus);
       applied.labelWarnings.forEach((warning) => console.info(warning.detail));
     }
   }, [commitDocumentChange]);

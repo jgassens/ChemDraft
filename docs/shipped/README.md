@@ -75,9 +75,11 @@ PRs make the label mean its group.
   switch leaves the state it lands on untouched. The session autosave, the quit and window-close
   flush, Save and export write the document as the open edit's close would leave it. Restarting an
   edit on the same atom continues the session. Other labels keep the editor's typed (literal)
-  behaviour: a "C" typed on a hidden carbon is a typed C. A structure-editor save keeps a record when
-  the label and its recorded neighbour are matched through the save and still bonded; otherwise the
-  label is read again from the drawing, and the status line says so when its reading changed.
+  behaviour: a "C" typed on a hidden carbon is a typed C. The structure editor returns no atom
+  identity, so a save carries a record only when it can prove which atom is which (the atom and bond
+  counts are unchanged and the atoms match up only one way) and the label is still bonded to its
+  recorded neighbour. Otherwise every side-dependent label is read again from its drawing and the
+  status line names each with its reading, whether or not that changed.
 - **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
   atoms appended after the drawn ones, so drawn indices never move, and the native formula is
   counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
@@ -100,7 +102,9 @@ has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on
 as a bare formula and exports as a placeholder rather than as its real group. CDXML has no field
 for a label's recorded side: ChemDraft's own CDXML keeps it in the embedded payload, but a visible-
 layer-only reimport records the side the drawing shows, and the export warns
-(`cdxml.label_bond_side_turned`) when the two differ. The bond tool judges a typed bonded "Ac" by
+(`cdxml.label_bond_side_turned`) when the two differ. A label deleted and redrawn in the structure
+editor with the same atom and bond counts and order inherits the old record: that cannot be told
+apart from a rotation in the editor, which must keep it. The bond tool judges a typed bonded "Ac" by
 its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
 one.
 

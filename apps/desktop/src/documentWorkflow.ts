@@ -17326,16 +17326,9 @@ export function applyEditorSaveResultToSelectedObject(
   );
 }
 
-export function applyEditorSaveResultToSelectedMolecule(
-  document: ChemDraftDocument,
-  result: EditorSaveResult
-): ChemDraftDocument {
-  return applyEditorSaveResultWithLabelWarnings(document, result).document;
-}
-
 /**
- * `applyEditorSaveResultToSelectedMolecule`, also returning the labels whose reading the save
- * changed (`carryLabelBondSidesThroughEditorSave`), for the caller to show.
+ * Apply a structure-editor save to the selected molecule, returning the side-dependent labels the
+ * save read again from their drawing (`carryLabelBondSidesThroughEditorSave`), for the caller to show.
  */
 export function applyEditorSaveResultWithLabelWarnings(
   document: ChemDraftDocument,
@@ -18981,33 +18974,67 @@ function parseV3000MoleculeGraph(
   return { atoms, bonds, labelWarnings };
 }
 
-/** A label whose reading a structure-editor save changed: short for the status line, long for the log. */
+/**
+ * A side-dependent label a structure-editor save read again from its drawing: short for the status
+ * line (no atom id), long for the log (with it).
+ */
 export interface EditorSaveLabelWarning {
+  /** The label as drawn, such as "SCN". */
+  label: string;
+  /** What it reads as now, such as "its cyano group". */
+  reading: string;
   reason: string;
   detail: string;
 }
 
 /**
- * Carry each label's recorded bond side through a structure-editor save, by graph identity rather
- * than coordinates (the editor may move, rotate or flip). The editor keeps its atoms in order and
- * only removes or appends them, so the longest common subsequence of the two element sequences
- * pairs each saved atom with the atom it was. A label keeps its record when it, and the neighbour it
- * was recorded against, are both paired and still bonded — the same label on the same bond — so
- * moving any atom, the label's own included, changes nothing. A label whose bond the editor changed
- * is recorded again from its drawing (by the commit funnel), and when that changes its reading the
- * save says so, naming the atom: an editor save never changes a label's reading silently.
- * Mutates `atoms`, which this module's parser has just built.
+ * The status line for a save's label warnings: the one reason, or one line naming each label and its
+ * reading (the log has each atom). Undefined when there are none.
+ */
+export function editorSaveLabelWarningsStatus(warnings: readonly EditorSaveLabelWarning[]): string | undefined {
+  if (warnings.length === 0) return undefined;
+  if (warnings.length === 1) return warnings[0]!.reason;
+  const readings = warnings.map((warning) => `${warning.label} as ${warning.reading}`).join(", ");
+  return `After the structure-editor save, these labels were read again from the drawing: ${readings}.`;
+}
+
+/**
+ * Carry each label's recorded bond side through a structure-editor save. The editor hands back an
+ * atom list in order and no atom identity, so identity is never guessed: a record is carried only
+ * when the pairing of saved atoms with previous ones is provably unique — the atom and bond counts
+ * are unchanged and the element sequences have exactly one optimal alignment (an unchanged list
+ * pairs every atom with itself) — and the label and the neighbour it was recorded against are paired
+ * and still bonded. Coordinates play no part, so a move, rotation or flip in the editor changes
+ * nothing. Every other side-dependent label with one bond is read again from its drawing (by the
+ * commit funnel), and the save names each one and its reading now, whether or not that reading
+ * changed: an editor save never changes a label's reading silently. (Sol and Fable rr7: SCN–C, SCN–C
+ * with the first pair deleted aligns two ways, and the old single alignment moved one SCN's record
+ * onto the other.)
+ *
+ * That the editor keeps its atoms in order (removing and appending, never reordering) is observed,
+ * not a documented contract. The rule leans on it less than the old carry did: an order that does
+ * not pair uniquely, or a label no longer bonded to its paired neighbour, is read again and named.
+ * Known limitation: a label deleted and redrawn in the editor with the same counts and order inherits
+ * the old record, which cannot be told apart from a rotation in the editor (that must carry
+ * silently). Mutates `atoms`, which this module's parser has just built.
  */
 function carryLabelBondSidesThroughEditorSave(
   previous: MoleculeObject,
   atoms: MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): EditorSaveLabelWarning[] {
-  const previousIndexBySaved = alignEditorSavedAtoms(
+  // Nothing was recorded, so nothing can be lost: labels are recorded from the drawing as on the canvas.
+  if (!previous.atoms.some((atom) => atom.labelBondSide)) {
+    return [];
+  }
+  const alignment = alignEditorSavedAtoms(
     previous.atoms.map((atom) => atom.element),
     atoms.map((atom) => atom.element)
   );
-  const savedIndexByPrevious = new Map([...previousIndexBySaved].map(([saved, prior]) => [prior, saved]));
+  const identified = alignment.unique &&
+    previous.atoms.length === atoms.length &&
+    previous.bonds.length === bonds.length;
+  const savedIndexByPrevious = new Map([...alignment.pairs].map(([saved, prior]) => [prior, saved]));
   const previousIndexById = new Map(previous.atoms.map((atom, index) => [atom.id, index]));
   const neighbourIds = (atomId: string) => bonds.flatMap((bond) =>
     bond.fromAtomId === atomId ? [bond.toAtomId] : bond.toAtomId === atomId ? [bond.fromAtomId] : []
@@ -19016,64 +19043,100 @@ function carryLabelBondSidesThroughEditorSave(
     side === "left" ? "its cyano group" : "the N-bonded isomer (a bare formula here)";
   const warnings: EditorSaveLabelWarning[] = [];
   atoms.forEach((atom, savedIndex) => {
-    const priorIndex = previousIndexBySaved.get(savedIndex);
-    const record = priorIndex === undefined ? undefined : previous.atoms[priorIndex]!.labelBondSide;
-    if (!record) return;
-    const neighbourPriorIndex = previousIndexById.get(record.atomId);
-    const neighbourSavedIndex = neighbourPriorIndex === undefined ? undefined : savedIndexByPrevious.get(neighbourPriorIndex);
-    const neighbourId = neighbourSavedIndex === undefined ? undefined : atoms[neighbourSavedIndex]!.id;
     const current = neighbourIds(atom.id);
-    if (neighbourId !== undefined && current.length === 1 && current[0] === neighbourId) {
-      atoms[savedIndex] = { ...atom, labelBondSide: { side: record.side, atomId: neighbourId } };
+    const priorIndex = identified ? alignment.pairs.get(savedIndex) : undefined;
+    const record = priorIndex === undefined ? undefined : previous.atoms[priorIndex]!.labelBondSide;
+    if (record) {
+      const neighbourPriorIndex = previousIndexById.get(record.atomId);
+      const neighbourSavedIndex = neighbourPriorIndex === undefined ? undefined : savedIndexByPrevious.get(neighbourPriorIndex);
+      const neighbourId = neighbourSavedIndex === undefined ? undefined : atoms[neighbourSavedIndex]!.id;
+      if (neighbourId !== undefined && current.length === 1 && current[0] === neighbourId) {
+        atoms[savedIndex] = { ...atom, labelBondSide: { side: record.side, atomId: neighbourId } };
+        return;
+      }
+    } else if (identified) {
+      // Known to be an atom that had no record: a label written or bonded in the editor, recorded
+      // from its drawing as it would be on the canvas.
       return;
     }
-    // Its bond changed in the editor: it is recorded again from the drawing. Warn when that reads
-    // differently (no bond, or two, is badged on the canvas and needs no warning here).
-    const neighbour = current.length === 1 ? atoms.find((candidate) => candidate.id === current[0]) : undefined;
-    const drawn = neighbour ? drawnLabelBondSide(atom, [neighbour]) : undefined;
-    if (drawn && drawn !== record.side) {
-      warnings.push({
-        reason: `${atom.element}'s bond was changed in the structure editor, so it now reads as ${reading(drawn)}.`,
-        detail: `Label "${atom.element}" on atom ${atom.id}: the structure editor changed its bond, so its side was read again from the drawing — bond on the ${drawn}, ${reading(drawn)}; before the save it was written with its bond on the ${record.side}, ${reading(record.side)}.`
-      });
+    // Read again from the drawing. A side-dependent label with no bond or two is badged on the
+    // canvas instead, and every other label reads the same from either side.
+    if (current.length !== 1 || nativeElementFromAtomLabel(atom.element) || !nativeLabelReadingDependsOnBondSide(atom.element)) {
+      return;
     }
+    const neighbour = atoms.find((candidate) => candidate.id === current[0]);
+    const drawn = neighbour ? drawnLabelBondSide(atom, [neighbour]) : undefined;
+    if (!drawn) {
+      return;
+    }
+    const why = record
+      ? "the structure editor changed its bond"
+      : "the structure editor's save does not show which atom it was (its atoms or bonds changed, or its atom list matches more than one way)";
+    const before = record ? ` Before the save it was written with its bond on the ${record.side}, ${reading(record.side)}.` : "";
+    warnings.push({
+      label: atom.element,
+      reading: reading(drawn),
+      reason: `${atom.element} was read again from the drawing after the structure-editor save: it reads as ${reading(drawn)}.`,
+      detail: `Label "${atom.element}" on atom ${atom.id}: ${why}, so its side was read again from the drawing — bond on the ${drawn}, ${reading(drawn)}.${before}`
+    });
   });
   return warnings;
 }
 
 /**
- * Pair saved atoms with previous ones by the longest common subsequence of their element sequences:
- * saved index → previous index. An unchanged list pairs every atom with itself.
+ * Pair saved atoms with previous ones by the longest common subsequence of their element sequences
+ * (saved index → previous index), and say whether that pairing is the only optimal one. An unchanged
+ * list pairs every atom with itself, uniquely.
  */
-function alignEditorSavedAtoms(previous: readonly string[], saved: readonly string[]): Map<number, number> {
+function alignEditorSavedAtoms(
+  previous: readonly string[],
+  saved: readonly string[]
+): { pairs: Map<number, number>; unique: boolean } {
   if (previous.length === saved.length && previous.every((element, index) => element === saved[index])) {
-    return new Map(saved.map((_, index) => [index, index]));
+    return { pairs: new Map(saved.map((_, index) => [index, index])), unique: true };
   }
   const rows = previous.length + 1;
   const columns = saved.length + 1;
-  const table = new Uint32Array(rows * columns);
+  const length = new Uint32Array(rows * columns);
+  // Optimal alignments of the two suffixes, counted up to 2 (all that uniqueness needs): `count` all
+  // of them, `withFirst` those that pair the previous suffix's first atom. Splitting on whether that
+  // atom is paired, and if so whether with the saved suffix's first atom, counts each alignment once
+  // with additions only, so the counts can saturate.
+  const count = new Uint8Array(rows * columns);
+  const withFirst = new Uint8Array(rows * columns);
+  const at = (i: number, j: number) => i * columns + j;
+  for (let j = 0; j <= saved.length; j += 1) count[at(previous.length, j)] = 1;
+  for (let i = 0; i <= previous.length; i += 1) count[at(i, saved.length)] = 1;
   for (let i = previous.length - 1; i >= 0; i -= 1) {
     for (let j = saved.length - 1; j >= 0; j -= 1) {
-      table[i * columns + j] = previous[i] === saved[j]
-        ? table[(i + 1) * columns + j + 1]! + 1
-        : Math.max(table[(i + 1) * columns + j]!, table[i * columns + j + 1]!);
+      const match = previous[i] === saved[j];
+      // A match is always optimal here: no alignment of the rest is longer by more than one.
+      const longest = match
+        ? length[at(i + 1, j + 1)]! + 1
+        : Math.max(length[at(i + 1, j)]!, length[at(i, j + 1)]!);
+      length[at(i, j)] = longest;
+      const pairedHere = match ? count[at(i + 1, j + 1)]! : 0;
+      const pairedLater = length[at(i, j + 1)] === longest ? withFirst[at(i, j + 1)]! : 0;
+      withFirst[at(i, j)] = Math.min(2, pairedHere + pairedLater);
+      const unpaired = length[at(i + 1, j)] === longest ? count[at(i + 1, j)]! : 0;
+      count[at(i, j)] = Math.min(2, withFirst[at(i, j)]! + unpaired);
     }
   }
   const pairs = new Map<number, number>();
   let i = 0;
   let j = 0;
   while (i < previous.length && j < saved.length) {
-    if (previous[i] === saved[j] && table[i * columns + j] === table[(i + 1) * columns + j + 1]! + 1) {
+    if (previous[i] === saved[j] && length[at(i, j)] === length[at(i + 1, j + 1)]! + 1) {
       pairs.set(j, i);
       i += 1;
       j += 1;
-    } else if (table[(i + 1) * columns + j]! >= table[i * columns + j + 1]!) {
+    } else if (length[at(i + 1, j)]! >= length[at(i, j + 1)]!) {
       i += 1;
     } else {
       j += 1;
     }
   }
-  return pairs;
+  return { pairs, unique: count[at(0, 0)] === 1 };
 }
 
 function rawCoordinateCenter(atoms: readonly { x: number; y: number }[]): PagePoint {

@@ -101,8 +101,8 @@ import {
   applyToolbarColorToSelection,
   alignSelectedDocumentObjects,
   applyAnalysisToSelectedMolecule,
-  applyEditorSaveResultToSelectedMolecule,
   applyEditorSaveResultToSelectedObject,
+  applyEditorSaveResultWithLabelWarnings,
   applyFreeformSingleBondToolAtPoint,
   applyNativeBondDisplayStyleTarget,
   applyNativeAtomSproutTarget,
@@ -14034,14 +14034,14 @@ describe("Phase 4 document workflow", () => {
       { op: "setSelection", pageId: document.pages[0].id, objectIds: [selected.id] }
     ]);
 
-    const updated = applyEditorSaveResultToSelectedMolecule(withOtherObject, {
+    const updated = applyEditorSaveResultWithLabelWarnings(withOtherObject, {
       object: {
         ...selected,
         structureFormat: "molfile-v3000",
         structure: "edited-molfile-v3000"
       },
       warnings: []
-    });
+    }).document;
 
     expect(updated.pages[0].layout).toEqual(withOtherObject.pages[0].layout);
     expect(updated.pages[0].objects).toHaveLength(2);
@@ -14206,14 +14206,14 @@ describe("Phase 4 document workflow", () => {
       "M  END"
     ].join("\n");
 
-    const updated = applyEditorSaveResultToSelectedMolecule(document, {
+    const updated = applyEditorSaveResultWithLabelWarnings(document, {
       object: {
         ...selected,
         structureFormat: "molfile-v3000",
         structure: v3000
       },
       warnings: []
-    });
+    }).document;
     const molecule = getSelectedMolecule(updated);
     const previewCenterX = selected.x + selected.width / 2;
 
@@ -14265,14 +14265,14 @@ describe("Phase 4 document workflow", () => {
     ]);
 
     expect(() =>
-      applyEditorSaveResultToSelectedMolecule(withTextSelected, {
+      applyEditorSaveResultWithLabelWarnings(withTextSelected, {
         object: {
           ...selected,
           structureFormat: "molfile-v3000",
           structure: "edited-molfile-v3000"
         },
         warnings: []
-      })
+      }).document
     ).toThrow("no molecule is selected");
     expect(withTextSelected.pages[0].objects[0]).toEqual(selected);
   });
