@@ -3585,20 +3585,36 @@ export function subtractPolygonPaths(
     throw new Error("Polygon difference requires a valid subject polygon.");
   }
   if (subject.orientation() === Flatten.ORIENTATION.CW) subject.reverse();
+  const subjectArea = subject.area();
+  const subjectBox = subject.box;
   const overlappingCutoutIndices: number[] = [];
-  const polygons = [subject];
+  let difference = subject;
+  let remainingArea = subjectArea;
   cutouts.forEach((points, index) => {
     const cutout = nativeArtBooleanPolygonFromPoints(points);
     if (!cutout) {
       throw new Error(`Polygon difference requires a valid cutout polygon at index ${index}.`);
     }
     if (cutout.orientation() === Flatten.ORIENTATION.CW) cutout.reverse();
-    if (nativeArtBooleanPolygonHasArea(Flatten.BooleanOperations.intersect(subject, cutout))) {
+    if (subjectBox.not_intersect(cutout.box)) return;
+    // One boolean pass both cuts and detects overlap. The area threshold matches
+    // nativeArtBooleanPolygonHasArea, which previously tested an intersection.
+    const next = remainingArea > 0.01
+      ? Flatten.BooleanOperations.subtract(difference, cutout)
+      : difference;
+    const nextArea = next.area();
+    const removedArea = remainingArea - nextArea;
+    // A prior cutter may already have consumed this label's whole clearance.
+    // Only that no-change case needs a check against the original subject, so
+    // its overlap is still reported (including after the ring is fully removed).
+    const originalOverlap = removedArea > 0.01 || (difference !== subject
+      && subjectArea - Flatten.BooleanOperations.subtract(subject, cutout).area() > 0.01);
+    if (originalOverlap) {
       overlappingCutoutIndices.push(index);
-      polygons.push(cutout);
+      difference = next;
+      remainingArea = nextArea;
     }
   });
-  const difference = reduceNativeArtBooleanPolygons(polygons, "subtract");
   const pathD = nativeArtBooleanPolygonHasArea(difference)
     ? (Array.from(difference.faces) as Flatten.Face[]).map((face) => pointsPathD(
         cleanNativeArtBooleanRingPoints(face.vertices.map((point) => ({ x: point.x, y: point.y }))),

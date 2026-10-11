@@ -10,6 +10,7 @@ import {
   renderRingFixture, ringFixtureFills, ringFixtureFragments
 } from "./ringFillNotches.fixture";
 import { sketchRegressionMolecule } from "./sketchRegression.fixture";
+import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 
 function labelBox(plan: AtomLabelPlan, scale = 1): LayoutBounds {
   return {
@@ -19,6 +20,54 @@ function labelBox(plan: AtomLabelPlan, scale = 1): LayoutBounds {
 }
 
 describe("ring fill label notches", () => {
+  it("reuses a geometry-keyed result across fresh copies, missing on label or ring movement", () => {
+    const object = filledRingFixture();
+    object.atoms[0]!.element = "O";
+    const ring = nativeMoleculeRings(object)[0]!;
+    const clearances = planMoleculeAtomLabels(object).map((plan) => atomLabelRingClearance(plan, 1));
+    const result = notchedRingPath(ring.points, clearances);
+    expect(notchedRingPath(structuredClone(ring.points), structuredClone(clearances))).toBe(result);
+    const movedLabel = structuredClone(clearances);
+    movedLabel[0]!.bounds.x += 0.5;
+    expect(notchedRingPath(ring.points, movedLabel)).not.toBe(result);
+    const movedRing = ring.points.map((point) => ({ x: point.x + 0.5, y: point.y }));
+    expect(notchedRingPath(movedRing, clearances)).not.toBe(result);
+  });
+
+  it("rejects distant clearances and keeps cache indices independent of atom IDs", () => {
+    const object = filledRingFixture();
+    object.atoms[0]!.element = "O";
+    object.atoms.push({ id: "outside", element: "O", x: 240, y: 140, formalCharge: 0 });
+    const ring = nativeMoleculeRings(object)[0]!;
+    const clearances = planMoleculeAtomLabels(object).map((plan) => atomLabelRingClearance(plan, 1));
+    expect(ringOverlappingClearances(ring.points, clearances)).toEqual([0]);
+    ringFixtureFills(object);
+    object.style.atomLabelBackgroundColor = "#ffffff";
+    object.atoms[0]!.id = "renamed";
+    object.bonds.forEach((bond) => {
+      if (bond.fromAtomId === "a0") bond.fromAtomId = "renamed";
+      if (bond.toAtomId === "a0") bond.toAtomId = "renamed";
+    });
+    expect(ringFixtureFragments(object).some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-renamed"))).toBe(false);
+  });
+
+  it("evicts the least recently used geometry after 256 entries", () => {
+    const object = filledRingFixture();
+    object.atoms[0]!.element = "O";
+    const clearances = planMoleculeAtomLabels(object).map((plan) => atomLabelRingClearance(plan, 1));
+    const points = nativeMoleculeRings(object)[0]!.points;
+    const first = notchedRingPath(points, clearances);
+    const secondPoints = points.map((point) => ({ ...point, x: point.x + 0.25 }));
+    const second = notchedRingPath(secondPoints, clearances);
+    for (let i = 1; i <= 254; i++) {
+      notchedRingPath(points.map((point) => ({ ...point, x: point.x + i })), clearances);
+    }
+    expect(notchedRingPath(structuredClone(points), structuredClone(clearances))).toBe(first);
+    notchedRingPath(points.map((point) => ({ ...point, x: point.x + 255 })), clearances);
+    expect(notchedRingPath(points, clearances)).toBe(first);
+    expect(notchedRingPath(secondPoints, clearances)).not.toBe(second);
+  });
+
   for (const element of ["O", "N", "S", "Me", "H", "OH"]) {
     it(`clears a ${element} label at a ring corner with a rounded bite`, () => {
       const object = filledRingFixture();
@@ -28,8 +77,9 @@ describe("ring fill label notches", () => {
       expect(fill.attrs.d).not.toBe(nativeMoleculeRings(object)[0]!.pathD);
       expect(fill.attrs["fill-rule"]).toBe("evenodd");
       expect(fillAreaInsideBox(String(fill.attrs.d), labelBox(label))).toBeLessThan(0.001);
-      // Rounded boundary has many distinct short chords, not four straight box edges.
-      expect(polygonPathFaces(String(fill.attrs.d))[0]!.length).toBeGreaterThan(15);
+      // The 0.1 px approximation uses fewer chords than the old 0.015 px one,
+      // while still distinguishing the rounded bite from a rectangular cutout.
+      expect(polygonPathFaces(String(fill.attrs.d))[0]!.length).toBeGreaterThan(8);
       expect(fillAreaInsideBox(String(fill.attrs.d), { x: 120, y: 120, width: 30, height: 30 })).toBeCloseTo(900, 3);
     });
   }

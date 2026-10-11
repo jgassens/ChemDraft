@@ -8,6 +8,22 @@ const rectangle = (x: number, y: number, width: number, height: number) => [
 const subject = rectangle(10, 20, 100, 80);
 
 describe("generic polygon path difference", () => {
+  it("reports a duplicate clearance already removed by an earlier cut", () => {
+    const cutout = rectangle(30, 40, 20, 10);
+    const single = subtractPolygonPaths(subject, [cutout]);
+    const duplicate = subtractPolygonPaths(subject, [cutout, cutout]);
+    expect(duplicate.overlappingCutoutIndices).toEqual([0, 1]);
+    expect(duplicate.pathD).toBe(single.pathD);
+  });
+
+  it("rejects edge contact and bbox overlap without polygon overlap after an earlier cut", () => {
+    const triangle = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 0, y: 100 }];
+    const result = subtractPolygonPaths(triangle, [
+      rectangle(10, 10, 10, 10), rectangle(80, 80, 10, 10), rectangle(100, 0, 10, 10)
+    ]);
+    expect(result.overlappingCutoutIndices).toEqual([0]);
+  });
+
   it("preserves input coordinates and emits an interior hole", () => {
     const result = subtractPolygonPaths(subject, [rectangle(30, 40, 20, 10)]);
     expect(result.overlappingCutoutIndices).toEqual([0]);

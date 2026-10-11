@@ -23,7 +23,6 @@ import {
 } from "@chemdraft/chem-core";
 import {
   planNativeArtVisual as planNativeArtVisualFromArtEngine,
-  subtractPolygonPaths,
   visualEffectPlansForStyle,
   visualEffectsForStyle
 } from "@chemdraft/art-engine";
@@ -65,6 +64,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
@@ -1783,7 +1783,7 @@ function moleculeFillUnderlayFragments(
   const rings = nativeMoleculeRings(object);
   const notchedAtomIds = new Set<string>();
   // Lazily build these only if there is a painted ring. Unfilled molecules retain their exact plan.
-  let clearances: LayoutPoint[][] | undefined;
+  let clearances: ReturnType<typeof atomLabelRingClearance>[] | undefined;
 
   const fragments = rings.flatMap((ring) => {
     const paint = moleculeRingFillPaint(object, ring.ringKey);
@@ -1792,13 +1792,15 @@ function moleculeFillUnderlayFragments(
     }
 
     const opacity = moleculeRingFillOpacity(object, ring.ringKey, paint);
-    clearances ??= atomLabels.map((plan) => atomLabelRingClearancePolygon(
+    const labelClearances = clearances ??= atomLabels.map((plan) => atomLabelRingClearance(
       plan, depthCuedLabelScale(labelDepthWeightByAtomId.get(plan.atom.id))
     ));
-    const difference = clearances.length > 0
-      ? subtractPolygonPaths(ring.points, clearances)
+    // Reject distant labels before constructing polygons or entering flatten-js.
+    const candidates = ringOverlappingClearances(ring.points, labelClearances);
+    const difference = candidates.length > 0
+      ? notchedRingPath(ring.points, candidates.map((index) => labelClearances[index]!))
       : { pathD: ring.pathD, overlappingCutoutIndices: [] };
-    difference.overlappingCutoutIndices.forEach((index) => notchedAtomIds.add(atomLabels[index]!.atom.id));
+    difference.overlappingCutoutIndices.forEach((index) => notchedAtomIds.add(atomLabels[candidates[index]!]!.atom.id));
     const pathD = difference.overlappingCutoutIndices.length > 0 ? difference.pathD : ring.pathD;
     if (!pathD) {
       return [];
@@ -1842,37 +1844,6 @@ function moleculeFillUnderlayFragments(
     ];
   });
   return { fragments, notchedAtomIds };
-}
-
-/** A fully rounded clearance from the SAME bounds/anchor/scale used to paint the label. */
-function atomLabelRingClearancePolygon(plan: AtomLabelPlan, scale: number): LayoutPoint[] {
-  const bounds = {
-    x: plan.anchor.x + plan.layout.bounds.x * scale,
-    y: plan.anchor.y + plan.layout.bounds.y * scale,
-    width: plan.layout.bounds.width * scale,
-    height: plan.layout.bounds.height * scale
-  };
-  // A stadium inscribed in a naively padded box clips text-box corners. This extra expansion
-  // circumscribes those corners, plus 1–2 px of air using the configured bond clearance.
-  const padding = Math.max(1, Math.min(2, plan.drawingStyle.atomLabelBondClearancePx)) * scale
-    + (Math.SQRT2 - 1) * Math.min(bounds.width, bounds.height) / 2;
-  const radius = Math.min(bounds.width, bounds.height) / 2 + padding;
-  const left = bounds.x - padding;
-  const top = bounds.y - padding;
-  const right = bounds.x + bounds.width + padding;
-  const bottom = bounds.y + bounds.height + padding;
-  const centers = [
-    { x: right - radius, y: top + radius },
-    { x: right - radius, y: bottom - radius },
-    { x: left + radius, y: bottom - radius },
-    { x: left + radius, y: top + radius }
-  ];
-  // Chord error <= 0.015 px: below 0.06 screen pixels even at 4x zoom.
-  const steps = Math.max(8, Math.ceil(Math.PI / 2 / (2 * Math.acos(1 - Math.min(0.015 / radius, 1)))));
-  return centers.flatMap((center, corner) => Array.from({ length: steps + 1 }, (_, step) => {
-    const angle = -Math.PI / 2 + (corner + step / steps) * Math.PI / 2;
-    return { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) };
-  }));
 }
 
 // Transparent interior catchers, one per ring, that route a pointer press on an empty ring
