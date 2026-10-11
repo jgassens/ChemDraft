@@ -1519,7 +1519,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.08.57-opus";
+const CURRENT_BUILD_STAMP = "10.11.09.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -24112,6 +24112,7 @@ function reactSvgAttributeName(name: string): string {
     "color-interpolation-filters": "colorInterpolationFilters",
     "dominant-baseline": "dominantBaseline",
     "fill-opacity": "fillOpacity",
+    "fill-rule": "fillRule",
     "flood-color": "floodColor",
     "flood-opacity": "floodOpacity",
     "font-family": "fontFamily",
