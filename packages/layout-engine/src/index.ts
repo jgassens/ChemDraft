@@ -1356,7 +1356,10 @@ export function planPageSvgRender(
   const objectIdsWithGaps = new Set(crossings.map((crossing) => crossing.back.objectId));
 
   return {
-    fragments: page.objects.flatMap((object, layerIndex) => {
+    // Preserve layer metadata while painting text last on canvas and export surfaces.
+    fragments: page.objects.map((object, layerIndex) => ({ object, layerIndex }))
+      .sort((a, b) => Number(a.object.type === "text") - Number(b.object.type === "text"))
+      .flatMap(({ object, layerIndex }) => {
       if (object.type === "molecule") {
         return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
       }

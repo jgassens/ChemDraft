@@ -1567,7 +1567,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.12.10-opus";
+const CURRENT_BUILD_STAMP = "10.11.12.11-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2629,12 +2629,17 @@ export function MainWindow({
     [labelDisplayPage, nativeDoubleBondSidePreview]);
   const editorSvgDisplayPage = useMemo(() => {
     const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object));
-    if (svgObjects.length === plannedDisplayPage.objects.length) {
+    // Live art transforms paint their preview in the interaction layer; suppress the base drawing.
+    const surfaceObjects = svgObjects.filter((object) => !(
+      (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") &&
+      objectTransformPreview?.objectIds.includes(object.id)
+    ));
+    if (surfaceObjects.length === plannedDisplayPage.objects.length) {
       return plannedDisplayPage;
     }
 
-    return { ...plannedDisplayPage, objects: svgObjects };
-  }, [plannedDisplayPage]);
+    return { ...plannedDisplayPage, objects: surfaceObjects };
+  }, [plannedDisplayPage, objectTransformPreview]);
   const pageSvgRenderPlan = useMemo(() =>
     markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage, { anchorResolutionPage: plannedDisplayPage })), [editorSvgDisplayPage, plannedDisplayPage]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
@@ -24128,13 +24133,7 @@ function PageSvgSurface({
 }
 
 export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
-  // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
-  // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
-  // #111111. Export is unaffected: it plans the page directly and never applies this filter.
-  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
-    return false;
-  }
-
+  // Art and text share the SVG paint order; overlays retain their editing controls.
   return object.type !== "molecule" || !isNativeMoleculeGraph(object);
 }
 
@@ -24240,6 +24239,16 @@ function renderPageSvgFragment(
     ? fragment.attrs["data-object-id"]
     : undefined;
   const props = reactSvgProps(fragment.attrs);
+  if (typeof props.className === "string") {
+    props.className = props.className.replace(/graphic-glyph/g, "page-art");
+  }
+  if (["graphic", "bracket", "reaction-arrow"].includes(String(fragment.attrs["data-object-type"]))) {
+    // Keep existing object DOM lookups pointed at the interaction overlay.
+    props["data-svg-object-id"] = props["data-object-id"];
+    props["data-svg-object-type"] = props["data-object-type"];
+    delete props["data-object-id"];
+    delete props["data-object-type"];
+  }
   if (objectId) {
     Object.assign(props, {
       onContextMenu: (event: ObjectMouseEvent) => handlers.onContextMenu(objectId, event),

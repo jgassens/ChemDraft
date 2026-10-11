@@ -17,6 +17,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
+import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import {
   projectGraphicObjectPoint
 } from "@chemdraft/art-engine";
@@ -3995,16 +3996,14 @@ describe("ChemDraft desktop shell", () => {
     });
   });
 
-  it("lets the overlay own brackets and arrows so the editor does not paint them twice", () => {
-    // The overlay draws both types in full (BracketGlyph, the arrow geometry renderer). Including
-    // them in the editor surface too doubled every stroke in a second colour.
+  it("includes art and text in the shared SVG page surface", () => {
     expect(editorPageSvgSurfaceIncludesObject({
       id: "bracket_001",
       type: "bracket",
       x: 10, y: 10, width: 16, height: 64, rotation: 0, style: {},
       bracketKind: "curly",
       containedObjectIds: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     expect(editorPageSvgSurfaceIncludesObject({
       id: "arrow_001",
       type: "reaction-arrow",
@@ -4013,7 +4012,7 @@ describe("ChemDraft desktop shell", () => {
       start: { kind: "point", point: { x: 10, y: 22 } },
       end: { kind: "point", point: { x: 130, y: 22 } },
       labels: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     // Text still comes from the surface.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "text_001",
@@ -4022,6 +4021,28 @@ describe("ChemDraft desktop shell", () => {
       text: "A",
       spans: []
     } as DocumentObject)).toBe(true);
+  });
+
+  it("paints overlapping text after art in both canvas and exported SVG", () => {
+    const withText = insertNativeTextObject(createPhase4Document("Text Above Art"), { x: 160, y: 180 }, "Text above shape");
+    // Insert art later to exercise the paint policy rather than insertion order.
+    const document = insertNativeArtGraphicObject(withText, { x: 160, y: 180 }, "tool.art.circle");
+    const text = document.pages[0]!.objects.find((object) => object.type === "text")!;
+    const art = document.pages[0]!.objects.find((object) => object.type === "graphic")!;
+    const filledDocument = structuredClone(document);
+    filledDocument.pages[0]!.objects.find((object) => object.id === art.id)!.style.fillColor = "#ff0000";
+    const markup = renderToStaticMarkup(createElement(MainWindow, {
+      initialDocument: filledDocument, initialPaletteMode: "hidden", nativePalette: true
+    }));
+    const canvasSvg = markup.match(/<svg[^>]*data-page-svg-surface="true"[\s\S]*?<\/svg>/)?.[0];
+    expect(canvasSvg).toBeDefined();
+    for (const svg of [canvasSvg!, exportDocumentToSvg(filledDocument).contents]) {
+      const artIndex = svg.search(new RegExp('data-(?:svg-)?object-id="' + art.id + '"'));
+      const textIndex = svg.indexOf('data-object-id="' + text.id + '"');
+      expect(artIndex).toBeGreaterThan(-1);
+      expect(textIndex).toBeGreaterThan(artIndex);
+      expect(svg).toContain("Text above shape");
+    }
   });
 
   it("lets arrows and art shapes start on top of an existing object", () => {

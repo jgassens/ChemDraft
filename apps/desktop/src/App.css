@@ -3730,6 +3730,13 @@ textarea:focus-visible,
   visibility: hidden;
 }
 
+/* The page SVG paints art beneath text. Keep overlay glyphs for live previews. */
+.graphic-object:not([data-art-transform-preview="true"]) .graphic-glyph,
+.bracket-object:not([data-art-transform-preview="true"]) .bracket-glyph,
+.reaction-arrow-object:not([data-art-transform-preview="true"]) .reaction-arrow-glyph {
+  visibility: hidden;
+}
+
 .art-transform-drag-preview {
   position: absolute;
   inset: 0;

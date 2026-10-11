@@ -728,7 +728,7 @@ describe("exportDocumentToSvg", () => {
     );
 
     const result = exportDocumentToSvg(document);
-    const indexes = objects.map((object) => result.contents.indexOf(`data-object-id="${object.id}"`));
+    const indexes = [...objects.filter((object) => object.type !== "text"), ...objects.filter((object) => object.type === "text")].map((object) => result.contents.indexOf(`data-object-id="${object.id}"`));
 
     expect(indexes.every((index) => index > -1)).toBe(true);
     expect(indexes).toEqual([...indexes].sort((left, right) => left - right));

@@ -1038,7 +1038,7 @@ describe("layout-engine page SVG planner", () => {
     expect(planPageSvgRender(pageWithObjects([horizontal, vertical])).crossings).toHaveLength(0);
   });
 
-  it("preserves mixed object order across text, charge marks, arrows, and graphics", () => {
+  it("paints text after charge marks, arrows, and graphics", () => {
     const page = pageWithObjects([
       {
         id: "text_001",
@@ -1096,10 +1096,10 @@ describe("layout-engine page SVG planner", () => {
     const plan = planPageSvgRender(page);
 
     expect(topLevelObjectRuns(plan.fragments)).toEqual([
-      "text_001",
       "charge_001",
       "arrow_001",
-      "graphic_001"
+      "graphic_001",
+      "text_001"
     ]);
     expect(plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001")).toHaveLength(2);
     const arrowFragments = plan.fragments.filter((fragment) => fragment.attrs["data-object-id"] === "arrow_001");
@@ -1265,11 +1265,11 @@ describe("layout-engine page SVG planner", () => {
         "text|mol_snapshot|molecule|native-atom-label-halo|5.8500000000000005|-7.199999999999999|start",
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
-        "text|text_snapshot|text|220|178|start",
-        "tspan|text_snapshot|text|220|178|start",
         "circle|charge_snapshot|electron-mark",
         "line|charge_snapshot|electron-mark|325.832|169|332.168|169",
         "line|charge_snapshot|electron-mark|329|165.832|329|172.168",
+        "text|text_snapshot|text|220|178|start",
+        "tspan|text_snapshot|text|220|178|start",
       ]
     `);
   });
