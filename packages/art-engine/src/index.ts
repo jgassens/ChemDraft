@@ -3570,6 +3570,44 @@ function nativeArtBooleanPolygonFromPoints(points: readonly NativeArtPoint[]): F
   }
 }
 
+/**
+ * Difference of a simple polygon and simple polygon cutouts, in the input coordinate space.
+ * The plain SVG path includes every surviving face (including holes); draw with evenodd.
+ * Overlap indices refer to the original subject, even when earlier cutouts consumed it.
+ * Callers own the meaning and construction of their polygons.
+ */
+export function subtractPolygonPaths(
+  subjectPoints: readonly NativeArtPoint[],
+  cutouts: readonly (readonly NativeArtPoint[])[]
+): { pathD: string; overlappingCutoutIndices: number[] } {
+  const subject = nativeArtBooleanPolygonFromPoints(subjectPoints);
+  if (!subject) {
+    throw new Error("Polygon difference requires a valid subject polygon.");
+  }
+  if (subject.orientation() === Flatten.ORIENTATION.CW) subject.reverse();
+  const overlappingCutoutIndices: number[] = [];
+  const polygons = [subject];
+  cutouts.forEach((points, index) => {
+    const cutout = nativeArtBooleanPolygonFromPoints(points);
+    if (!cutout) {
+      throw new Error(`Polygon difference requires a valid cutout polygon at index ${index}.`);
+    }
+    if (cutout.orientation() === Flatten.ORIENTATION.CW) cutout.reverse();
+    if (nativeArtBooleanPolygonHasArea(Flatten.BooleanOperations.intersect(subject, cutout))) {
+      overlappingCutoutIndices.push(index);
+      polygons.push(cutout);
+    }
+  });
+  const difference = reduceNativeArtBooleanPolygons(polygons, "subtract");
+  const pathD = nativeArtBooleanPolygonHasArea(difference)
+    ? (Array.from(difference.faces) as Flatten.Face[]).map((face) => pointsPathD(
+        cleanNativeArtBooleanRingPoints(face.vertices.map((point) => ({ x: point.x, y: point.y }))),
+        true
+      )).join(" ")
+    : "";
+  return { pathD, overlappingCutoutIndices };
+}
+
 function reduceNativeArtBooleanPolygons(
   polygons: readonly Flatten.Polygon[],
   operation: Exclude<NativeArtBooleanOperation, "split">
