@@ -1,8 +1,8 @@
 // A group label meets its bond at the atom it bonds to (PLANS.md, label anchoring): "OMe" with its
 // O on the atom, drawn "MeO" with the bond on its right. Display only: the stored label is never
-// touched. The stress table below prints, for each label and bond direction, what is drawn, the
-// label's box around its atom, and where the bond stops against that box, beside the old centred
-// layout's numbers.
+// touched. The stress cases below check, for each label and bond direction, what is drawn, which
+// character sits on the atom, and where the bond stops against the label's box, against the old
+// centred layout. (The numbers are in PR #97's body.)
 
 import { describe, expect, it } from "vitest";
 import {
@@ -37,6 +37,12 @@ describe("how a group label is drawn the way round its bond reads", () => {
     ["NHBoc", "right", "BocHN", "end", 1],
     ["NMe2", "right", "Me2N", "end", 1],
     ["CH2Ph", "right", "PhH2C", "end", 1],
+    // A substituent that spells the atom it bonds by turns with the label, so that atom still
+    // faces the head: "MeOH2C", never "OMeH2C".
+    ["CH2OMe", "left", "CH2OMe", "start", 1],
+    ["CH2OMe", "right", "MeOH2C", "end", 1],
+    ["MeOH2C", "left", "CH2OMe", "start", 1],
+    ["CH2CO2Me", "right", "MeO2CH2C", "end", 1],
     ["SiMe3", "left", "SiMe3", "start", 2],
     ["SiMe3", "right", "Me3Si", "end", 2],
     ["SCN", "left", "SCN", "start", 1],
@@ -54,7 +60,9 @@ describe("how a group label is drawn the way round its bond reads", () => {
     ["SCN", "right", "cyano with its bond on the right reads as a bare formula, and is never drawn CNS"],
     ["CH2CN", "right", "the same for a cyano composite"],
     ["Ome", "left", "unrecognised text is not a group"],
-    ["CONH2", "left", "a bare formula is not a group"]
+    ["CONH2", "left", "a bare formula is not a group"],
+    ["CH2NMe2", "left", "two heavy atoms (NMe2 is no table abbreviation) are not one group"],
+    ["CH2NMe2", "right", "the same with its bond on the right"]
   ] as const)("%s with its bond on the %s keeps the centred layout: %s", (label, side, _why) => {
     expect(nativeGroupLabelDisplay(label, side)).toBeUndefined();
   });
@@ -94,9 +102,6 @@ describe("label anchoring stress: OMe, CO2Me, NHBoc, Ph and TMS at four bond dir
     const along = (low: number, high: number, d: number) => d > 0.0001 ? high / d : d < -0.0001 ? low / d : Number.POSITIVE_INFINITY;
     return Math.min(along(box.x, box.x + box.width, direction.x), along(box.y, box.y + box.height, direction.y));
   }
-
-  const round = (value: number) => Math.round(value * 10) / 10;
-  const rows: string[] = [];
 
   it.each(
     ["OMe", "CO2Me", "NHBoc", "Ph", "TMS"].flatMap((label) =>
@@ -140,20 +145,11 @@ describe("label anchoring stress: OMe, CO2Me, NHBoc, Ph and TMS at four bond dir
     expect(glyphLeft).toBeLessThanOrEqual(0);
     expect(glyphLeft + glyph).toBeGreaterThanOrEqual(0);
 
-    const centred = atomLabelLayout(label, drawingStyle).bounds;
-    const centredReach = boxReach(centred, direction);
-    rows.push([
-      label.padEnd(6), directionName.padEnd(6), plan.label.padEnd(6),
-      `${plan.labelAnchor?.side ?? "centre"}`.padEnd(6),
-      `[${round(box.x)}, ${round(box.x + box.width)}]`.padEnd(15),
-      String(round(reach)).padEnd(6), String(round(bondEnd)).padEnd(6), String(round(bondEnd - reach)).padEnd(5),
-      `[${round(centred.x)}, ${round(centred.x + centred.width)}]`.padEnd(15), String(round(centredReach))
-    ].join(" | "));
-  });
-
-  it("prints the table", () => {
-    const header = "label  | bond   | drawn  | anchor | box x (px)      | edge   | bond   | gap   | centred box x   | centred edge";
-    console.info(["", header, ...rows].join("\n"));
-    expect(rows).toHaveLength(20);
+    // And the bond reaches the label at least as far as the centred label let it: much farther along
+    // a horizontal bond (36.4 px → 7.4 px for CO2Me with its bond on the right), the same up or down.
+    const centredReach = boxReach(atomLabelLayout(label, drawingStyle).bounds, direction);
+    expect(bondEnd).toBeLessThanOrEqual(
+      Math.max(centredReach, drawingStyle.atomLabelBondClearancePx, drawingStyle.bondMarginWidthPx) + 0.001
+    );
   });
 });

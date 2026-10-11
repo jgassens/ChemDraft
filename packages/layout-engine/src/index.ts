@@ -5137,35 +5137,6 @@ function atomLabelBondClearance(
   );
 }
 
-function atomLabelBox(
-  atom: MoleculeAtom,
-  label: string,
-  drawingStyle: NativeDrawingStyle
-): { x: number; y: number; width: number; height: number } {
-  const layout = atomLabelLayout(label, drawingStyle);
-  const anchor = atomLabelAnchor(atom, label, drawingStyle, layout);
-  const { bounds } = layout;
-  return {
-    x: anchor.x + bounds.x,
-    y: anchor.y + bounds.y,
-    width: bounds.width,
-    height: bounds.height
-  };
-}
-
-function atomLabelAnchor(
-  atom: MoleculeAtom,
-  label: string,
-  drawingStyle: NativeDrawingStyle,
-  layout = atomLabelLayout(label, drawingStyle)
-): LayoutPoint {
-  const offset = atomLabelAnchorOffset(atom, label, drawingStyle, layout);
-  return {
-    x: atom.x + offset.x,
-    y: atom.y + offset.y
-  };
-}
-
 export function atomLabelAnchorOffset(
   atom: MoleculeAtom,
   label: string,

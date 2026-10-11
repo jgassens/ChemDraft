@@ -438,10 +438,11 @@ function spelledAttachmentEnd(label: string, symbol: string): "start" | "end" | 
 
 /**
  * The group label turned round so `symbol` is at the `wanted` end, or undefined when the turned text
- * would not read as the same group. A composite reverses its tokens ("NHBoc" → "BocHN") and must
- * read back with the same head, hydrogens and substituents. A table abbreviation takes the one of its
- * own spellings with the same characters and the attachment at that end ("CO2Me" → "MeO2C",
- * "COOMe" → "MeOOC"); "COMe" has none ("MeCO" bonds at its C in the middle).
+ * would not read as the same group. A table abbreviation takes its own turned spelling
+ * (`turnedAbbreviationSpelling`). A composite reverses its tokens ("NHBoc" → "BocHN"), turning each
+ * substituent too so the atom it bonds by still faces the head ("CH2OMe" → "MeOH2C", never
+ * "OMeH2C"); a substituent that spells that atom but has no turned spelling stops the turn. The
+ * turned composite must read back with the same head, hydrogens and substituents.
  */
 function turnedGroupLabel(
   label: string,
@@ -450,20 +451,18 @@ function turnedGroupLabel(
   wanted: "start" | "end",
   bondSide: "left" | "right"
 ): string | undefined {
-  const sameCharacters = (left: string, right: string) =>
-    [...left].sort().join("") === [...right].sort().join("");
   if (group.kind === "abbreviation") {
-    const { definition } = group;
-    return [definition.label, ...definition.aliases].find((spelling) =>
-      spelling !== label &&
-      sameCharacters(spelling, label) &&
-      spelledAttachmentEnd(spelling, symbol) === wanted &&
-      abbreviationForLabel(spelling) === definition
-    );
+    return turnedAbbreviationSpelling(label, group.definition, wanted);
   }
   const read = readCompositeLabel(label, bondSide);
   if (!read) return undefined;
-  const turned = [...read.tokens].reverse().join("");
+  const tokens: string[] = [];
+  for (const token of [...read.tokens].reverse()) {
+    const turnedToken = substituentTokenFacing(token, wanted);
+    if (turnedToken === undefined) return undefined;
+    tokens.push(turnedToken);
+  }
+  const turned = tokens.join("");
   const back = readCompositeLabel(turned, bondSide)?.group;
   if (back?.kind !== "composite" || spelledAttachmentEnd(turned, symbol) !== wanted) return undefined;
   const definitions = (substituents: readonly AbbreviationDefinition[]) =>
@@ -473,4 +472,42 @@ function turnedGroupLabel(
     definitions(back.substituents) === definitions(group.substituents)
     ? turned
     : undefined;
+}
+
+/**
+ * The one of an abbreviation's own spellings with the same characters as `spelling` and the atom it
+ * bonds by at the `toward` end ("CO2Me" → "MeO2C", "COOMe" → "MeOOC", "OMe" → "MeO"), or undefined
+ * when it has none: "COMe" has none, since "MeCO" bonds at its C in the middle.
+ */
+function turnedAbbreviationSpelling(
+  spelling: string,
+  definition: AbbreviationDefinition,
+  toward: "start" | "end"
+): string | undefined {
+  const symbol = definition.atoms[0]!.element;
+  const sameCharacters = (left: string, right: string) =>
+    [...left].sort().join("") === [...right].sort().join("");
+  return [definition.label, ...definition.aliases].find((candidate) =>
+    candidate !== spelling &&
+    sameCharacters(candidate, spelling) &&
+    spelledAttachmentEnd(candidate, symbol) === toward &&
+    abbreviationForLabel(candidate) === definition
+  );
+}
+
+/**
+ * A composite's token in its turned label, where the head sits at the `headAt` end: a substituent
+ * that spells the atom it bonds by turns so that atom faces the head ("OMe" → "MeO" before a head at
+ * the end), keeping its count; the head, its hydrogens, and a substituent that does not spell its
+ * bonding atom ("Me", "Boc") stay as written. Undefined when a substituent would need to turn and
+ * has no turned spelling.
+ */
+function substituentTokenFacing(token: string, headAt: "start" | "end"): string | undefined {
+  const [, spelling = token, count = ""] = /^(.*?)(\d*)$/.exec(token) ?? [];
+  const definition = abbreviationForLabel(spelling) ?? abbreviationForBondedElementLabel(spelling);
+  if (!definition) return token;
+  const spelledAt = spelledAttachmentEnd(spelling, definition.atoms[0]!.element);
+  if (spelledAt === undefined || spelledAt === headAt) return token;
+  const turned = turnedAbbreviationSpelling(spelling, definition, headAt);
+  return turned === undefined ? undefined : `${turned}${count}`;
 }

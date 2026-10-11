@@ -50,9 +50,10 @@ side and its chemistry never change. Two commits:
   - The letters of the atom the group's bonds reach sit on the atom: the O of OMe, the C of CO2Me,
     the N of NHBoc, the Si of SiMe3.
   - A label that spells that atom at its far end is drawn turned round, token by token: MeO,
-    MeO2C, BocHN, Me2N, PhH2C. It is turned only when the turned text reads as the same group, so
-    SCN is never drawn "CNS", and COMe (whose reversal "MeOC" would read as another group) stays as
-    typed.
+    MeO2C, BocHN, Me2N, PhH2C. A substituent that spells the atom it bonds by turns with it, so that
+    atom still faces the head: CH2OMe is drawn MeOH2C, never OMeH2C. It is turned only when the
+    turned text reads as the same group, so SCN is never drawn "CNS", and COMe (whose reversal
+    "MeOC" would read as another group) stays as typed.
   - A label that does not spell its attachment (Ph, Boc, TMS), or that cannot be turned, puts the
     letter nearest its bond on the atom.
   - The anchored layout places runs by Helvetica/Arial advance widths, so subscripts sit clear of the
@@ -68,8 +69,10 @@ on the right: 36.4 → 7.4 px). It never runs into the text: the gap between the
 is 0–0.8 px in all 20 cases.
 
 Known limitations: element labels ("OH", "NH2", "CH3") keep their established centred geometry, and so
-do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centred. The advance
-widths are Helvetica's: another font family places the anchored letter slightly off centre. A cyano
+do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centred. Two width
+models now coexist: anchored labels use Helvetica's advance widths, centred labels keep the flat
+estimate (0.62 em a letter) their established geometry is built on. Another font family places the
+anchored letter slightly off centre. A cyano
 label whose recorded side and drawn side differ (written, then turned round) is drawn as its text
 reads in the drawing, as before.
 
