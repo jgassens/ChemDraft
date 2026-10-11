@@ -3,6 +3,7 @@
 // this package's README.
 
 import {
+  drawnLabelBondSide,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -603,8 +604,7 @@ export function nativeLabelBondSideFromGeometry(
     .map((bond) => (bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId))
     .map((id) => atoms.find((candidate) => candidate.id === id))
     .filter((neighbour): neighbour is MoleculeAtom => neighbour !== undefined);
-  if (neighbours.length === 0) return undefined;
-  return neighbours.every((neighbour) => neighbour.x > atom.x + 0.001) ? "right" : "left";
+  return drawnLabelBondSide(atom, neighbours);
 }
 
 /**

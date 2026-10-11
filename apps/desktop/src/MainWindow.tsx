@@ -1250,6 +1250,13 @@ type AtomLabelEditState = {
    * molecule turned round since the label was written.
    */
   initialLabelBondSide?: MoleculeAtom["labelBondSide"];
+  /**
+   * The document and history position the session began in. Its close writes the label back only
+   * into that same document and history line — never into a file opened since, or the state an
+   * undo or redo landed on.
+   */
+  documentIdentity: number;
+  historyNavigation: number;
   draft: string;
   /**
    * The selection in force before the edit selected the atom. A blur-ended edit restores it (minus
@@ -1494,7 +1501,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.18.45-opus";
+const CURRENT_BUILD_STAMP = "10.10.19.32-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2160,6 +2167,9 @@ export function MainWindow({
   // never on an ordinary edit, so a plugin write started before a replace and landing after it is
   // refused rather than silently inserted into the new document.
   const documentIdentityRef = useRef(0);
+  // Counts undo and redo steps. A label-edit session closed by one must not write into the history
+  // state it landed on (see the atom-label close effect).
+  const historyNavigationCountRef = useRef(0);
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
@@ -5408,6 +5418,8 @@ export function MainWindow({
       initialElement: atom.element,
       initialLiteral: atom.labelLiteral === true,
       ...(atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {}),
+      documentIdentity: documentIdentityRef.current,
+      historyNavigation: historyNavigationCountRef.current,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
     };
@@ -5480,17 +5492,10 @@ export function MainWindow({
     if (reason === "commit") {
       atomLabelEditKeepsSelectionRef.current = state;
     }
-    // A session that ended on its starting text did not rewrite the label: keep the bond side it
-    // was written with, as cancelling does (finishNativeAtomLabelEdit).
-    replacePresentDocument((current) => finishNativeAtomLabelEdit(current, {
-      objectId: state.objectId,
-      kind: "atom",
-      atomId: state.atomId,
-      distanceToPointer: 0
-    }, { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide }));
-    // Any other close restores the pre-edit selection: see the atom-label close effect.
+    // Any other close restores the pre-edit selection, and every close applies the same-text rule:
+    // see the atom-label close effect.
     setActiveAtomLabelEdit(undefined);
-  }, [replacePresentDocument]);
+  }, []);
 
   /**
    * Put the selection back the way it was before `state`'s edit selected its atom. The atom was
@@ -7431,6 +7436,7 @@ export function MainWindow({
       ? documentUndoLabelsRef.current.get(currentHistory.present)
       : documentUndoLabelsRef.current.get(nextHistory.present);
 
+    historyNavigationCountRef.current += 1;
     installDocumentHistory(nextHistory);
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
@@ -9624,7 +9630,27 @@ export function MainWindow({
   useLayoutEffect(() => {
     const previous = previousAtomLabelEditRef.current;
     previousAtomLabelEditRef.current = activeAtomLabelEdit;
-    if (!previous || activeAtomLabelEdit) {
+    if (!previous || (activeAtomLabelEdit?.objectId === previous.objectId && activeAtomLabelEdit.atomId === previous.atomId)) {
+      return;
+    }
+    // Every way a session closes passes here — Enter, Escape, a blur or click away, a tool picked in
+    // the palette or by key, a move straight to another atom's edit. One that ended on its starting
+    // text did not rewrite the label, so it keeps the bond side it was written with
+    // (finishNativeAtomLabelEdit); re-read from a turned-round drawing, the chemistry would change.
+    // A close by undo or redo, or by opening another document, leaves that state exactly as it is.
+    if (
+      previous.documentIdentity === documentIdentityRef.current &&
+      previous.historyNavigation === historyNavigationCountRef.current
+    ) {
+      replacePresentDocument((current) => finishNativeAtomLabelEdit(current, {
+        objectId: previous.objectId,
+        kind: "atom",
+        atomId: previous.atomId,
+        distanceToPointer: 0
+      }, { element: previous.initialElement, literal: previous.initialLiteral, labelBondSide: previous.initialLabelBondSide }));
+    }
+    if (activeAtomLabelEdit) {
+      // Moved straight to another atom's edit: that edit owns the selection now.
       return;
     }
     const kept = atomLabelEditKeepsSelectionRef.current;
@@ -9633,7 +9659,7 @@ export function MainWindow({
       return;
     }
     restoreSelectionAfterAtomLabelEdit(previous);
-  }, [activeAtomLabelEdit, restoreSelectionAfterAtomLabelEdit]);
+  }, [activeAtomLabelEdit, replacePresentDocument, restoreSelectionAfterAtomLabelEdit]);
 
   useEffect(() => {
     const objectIds = [...document.selection.objectIds];

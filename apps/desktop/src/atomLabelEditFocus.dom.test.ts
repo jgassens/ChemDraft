@@ -606,6 +606,98 @@ describe("atom label editor focus", () => {
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
   });
 
+  describe("a session that ends on its starting text keeps a cyano label's bond side, however it closes", () => {
+    // Sol rr5: SCN written with its bond on the left, then turned round (its neighbour now on its
+    // right). One session types O, then SCN again: each keystroke rewrites the label, so mid-session
+    // it reads from the drawing. Every close must put the original side back.
+    function turnedThiocyanate(extraEthane = false): ChemDraftDocument {
+      const start = createPhase4Document("Turned SCN");
+      const molecule: MoleculeObject = {
+        id: "scn", type: "molecule", x: 260, y: 280, width: 80, height: 40, rotation: 0, style: {},
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [
+          { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "c1" } },
+          { id: "c1", element: "C", x: 310, y: 300, formalCharge: 0 }
+        ],
+        bonds: [{ id: "b1", fromAtomId: "c1", toAtomId: "s1", order: "single" }]
+      };
+      const withMolecule = applyPatches(start, [{ op: "addObject", pageId: start.pages[0].id, object: molecule }]);
+      const document = extraEthane ? insertNativeSingleBondMolecule(withMolecule, { x: 500, y: 300 }) : withMolecule;
+      return selectDocumentObjects(document, document.pages[0].id, []);
+    }
+    const side = () => molecule().atoms.find((atom) => atom.id === "s1")?.labelBondSide?.side;
+
+    async function retypeSameLabel() {
+      expect(side()).toBe("left");
+      await startLabelEdit();
+      await typeIntoEditor("O");
+      await typeIntoEditor("SCN");
+      expect(side(), "mid-session, the retyped label reads the turned-round drawing").toBe("right");
+    }
+
+    it.each([
+      ["Enter", () => pressWhereFocused("Enter")],
+      ["Escape", () => pressWhereFocused("Escape")],
+      ["a blur or click elsewhere in the app", () => blurWithinFocusedWindow()],
+      ["a tool picked in the native palette", () => paletteCommand("tool.text")]
+    ] as const)("closed by %s", async (_name, close) => {
+      await renderMainWindow(turnedThiocyanate());
+      await retypeSameLabel();
+      await close();
+      await settle();
+      expect(labelEditor()).toBeNull();
+      expect(atomElement("s1")).toBe("SCN");
+      expect(side()).toBe("left");
+    });
+
+    it("closed by moving straight to another atom's edit", async () => {
+      await renderMainWindow(turnedThiocyanate(true));
+      await retypeSameLabel();
+      await startLabelEdit(1);
+      expect(labelEditor()?.getAttribute("data-atom-id")).toBe(molecule(1).atoms[0]!.id);
+      expect(side()).toBe("left");
+    });
+
+    it("closed by a canvas undo: the state undo lands on is left exactly as it was", async () => {
+      // While the editor holds focus, Ctrl+Z is the text field's own undo; a canvas undo reaches the
+      // document once focus has gone to another window (the path tested above for Backspace).
+      setShortcutPlatform("windows");
+      // A committed change to undo first: delete the extra ethane.
+      const document = turnedThiocyanate(true);
+      const ethaneId = document.pages[0].objects[1]!.id;
+      await renderMainWindow(selectDocumentObjects(document, document.pages[0].id, [ethaneId]));
+      await pressOnCanvas({ key: "Delete" });
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+      await retypeSameLabel();
+      await loseFocusToAnotherWindow();
+      await pressOnCanvas({ key: "z", ctrlKey: true });
+      await settle();
+      expect(labelEditor()).toBeNull();
+      const restored = bridge().snapshot().document.pages[0].objects;
+      expect(restored).toHaveLength(2);
+      expect(molecule()).toEqual(document.pages[0].objects[0]);
+    });
+
+    it("closed by switching to a new document: nothing is written into it", async () => {
+      await renderMainWindow(turnedThiocyanate());
+      await retypeSameLabel();
+      await paletteCommand("document.new");
+      await settle();
+      expect(labelEditor()).toBeNull();
+      expect(bridge().snapshot().document.pages[0].objects.filter((object) => object.type === "molecule")).toEqual([]);
+    });
+
+    it("a session that ends on other text is a new label, read from the drawing", async () => {
+      await renderMainWindow(turnedThiocyanate());
+      await startLabelEdit();
+      await typeIntoEditor("OCN");
+      await pressWhereFocused("Enter");
+      await settle();
+      expect(atomElement("s1")).toBe("OCN");
+      expect(side()).toBe("right");
+    });
+  });
+
   it("focuses the label editor when an edit starts", async () => {
     await renderMainWindow(ringDocument());
     await startLabelEdit();

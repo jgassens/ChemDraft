@@ -5,6 +5,7 @@ import {
   atomicNumberForElementSymbol,
   createEmptyDocument,
   deserializeDocument,
+  drawnLabelBondSide,
   elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
@@ -625,6 +626,22 @@ function exportMoleculeObject(
             message: `Atom "${atom.element}" on a bond is ${bondedMeaning}, not the element ${atom.element}; it was exported as the label "${atom.element}" rather than an atomic number.`,
             sourceObjectId: molecule.id
           });
+    }
+    // A side-dependent label ("SCN") means what it was written as, by the side its bond came from
+    // then (`labelBondSide`). The visible CDXML has only the drawing: when the molecule has been
+    // turned round since, a reader without ChemDraft's embedded document reads the drawn side, the
+    // other isomer. Say so, naming the atom (AGENTS.md §7: warn, never degrade quietly).
+    const record = atom.labelBondSide;
+    const recordedNeighbour = record ? molecule.atoms.find((candidate) => candidate.id === record.atomId) : undefined;
+    const drawnSide = recordedNeighbour ? drawnLabelBondSide(atom, [recordedNeighbour]) : undefined;
+    if (record && drawnSide && drawnSide !== record.side) {
+      warnings.push({
+        code: "cdxml.label_bond_side_turned",
+        message: record.side === "left"
+          ? `Label "${atom.element}" on atom ${atom.id} was written with its bond on the left, as its cyano group; its bond is now drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps it as written.`
+          : `Label "${atom.element}" on atom ${atom.id} was written with its bond on the right, as the N-bonded isomer (a bare formula); its bond is now drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft's embedded document keeps it as written.`,
+        sourceObjectId: molecule.id
+      });
     }
     if (atom.formalCharge !== 0) {
       attributes.push(`Charge="${atom.formalCharge}"`);

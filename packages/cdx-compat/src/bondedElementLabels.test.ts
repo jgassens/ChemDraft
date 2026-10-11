@@ -125,3 +125,34 @@ describe("CDXML import keeps a numeric element an element, and a text label a la
     expect(nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds).formula).toBe("AcCl");
   });
 });
+
+describe("CDXML export of a cyano label turned round since it was written", () => {
+  // SCN on atom a3, bonded to c1 at x = 30. The record says which side its bond came from when it
+  // was written; the visible CDXML carries only the drawing.
+  const scn = (side: "left" | "right", labelX: number) => documentWith(
+    [
+      { id: "a3", element: "SCN", x: labelX, y: 0, formalCharge: 0, labelLiteral: true, labelBondSide: { side, atomId: "c1" } },
+      { id: "c1", element: "C", x: 30, y: 0, formalCharge: 0 }
+    ],
+    [{ id: "b1", fromAtomId: "c1", toAtomId: "a3", order: "single" }]
+  );
+  const turnedWarnings = (document: ReturnType<typeof scn>) =>
+    exportDocumentToCdxml(document).warnings.filter((warning) => warning.code === "cdxml.label_bond_side_turned");
+
+  it("names the atom and how the visible layer will read when the drawing no longer matches", () => {
+    // Written with its bond on the left (a thiocyanate), now drawn with its neighbour on its right.
+    const turned = turnedWarnings(scn("left", 0));
+    expect(turned).toHaveLength(1);
+    expect(turned[0]!.message).toContain('Label "SCN" on atom a3');
+    expect(turned[0]!.message).toContain("imports as an unrecognized group");
+    // And the other way round: written on the right, now drawn with its bond on the left.
+    const otherWay = turnedWarnings(scn("right", 60));
+    expect(otherWay).toHaveLength(1);
+    expect(otherWay[0]!.message).toContain("reads as its cyano group");
+  });
+
+  it("says nothing when the drawing still shows the side it was written with", () => {
+    expect(turnedWarnings(scn("left", 60))).toEqual([]);
+    expect(turnedWarnings(scn("right", 0))).toEqual([]);
+  });
+});

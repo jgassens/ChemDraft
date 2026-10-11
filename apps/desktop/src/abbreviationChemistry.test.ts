@@ -490,6 +490,58 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     expect(await canonical(objectOf(saved, objectId))).toBe("CSC#N");
   });
 
+  it("through an editor save that deletes an earlier atom: no record moves to another SCN", async () => {
+    // Two SCN labels, each drawn as written: s1 with its bond on the left (a thiocyanate), s2 with its
+    // bond on the right (the other isomer). An earlier atom x is deleted in the editor, so the saved
+    // atoms shift up a place; matched by position in the list, s1's record would land on s2.
+    const start = createPhase4Document("Editor Delete");
+    const molecule: MoleculeObject = {
+      id: "pair", type: "molecule", x: 200, y: 260, width: 200, height: 80, rotation: 0, style: {},
+      structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+      atoms: [
+        { id: "x", element: "C", x: 230, y: 330, formalCharge: 0 },
+        { id: "s1", element: "SCN", x: 260, y: 300, formalCharge: 0, labelLiteral: true },
+        { id: "s2", element: "SCN", x: 340, y: 300, formalCharge: 0, labelLiteral: true },
+        { id: "c1", element: "C", x: 230, y: 300, formalCharge: 0 },
+        { id: "c2", element: "C", x: 370, y: 300, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "c1", toAtomId: "s1", order: "single" },
+        { id: "b2", fromAtomId: "s2", toAtomId: "c2", order: "single" },
+        { id: "b3", fromAtomId: "x", toAtomId: "c1", order: "single" }
+      ]
+    };
+    const written = normalizeCommittedDocument(selectDocumentObject(
+      applyPatch(start, { op: "addObject", pageId: start.pages[0]!.id, object: molecule }), "pair"
+    ));
+    const before = objectOf(written, "pair");
+    expect(before.atoms.find((atom) => atom.id === "s1")!.labelBondSide).toMatchObject({ side: "left" });
+    expect(before.atoms.find((atom) => atom.id === "s2")!.labelBondSide).toMatchObject({ side: "right" });
+    const beforeSmiles = await canonical(before);
+    // Saved from the editor without x.
+    const edited: MoleculeObject = {
+      ...before,
+      atoms: before.atoms.filter((atom) => atom.id !== "x"),
+      bonds: before.bonds.filter((bond) => bond.fromAtomId !== "x" && bond.toAtomId !== "x")
+    };
+    const saved = normalizeCommittedDocument(applyEditorSaveResultToSelectedMolecule(written, {
+      object: { ...before, structureFormat: "molfile-v3000", structure: editorV3000(edited) },
+      warnings: []
+    }));
+    const after = objectOf(saved, "pair");
+    // Each SCN keeps its own reading: one thiocyanate, one bare formula, exactly as before.
+    const smiles = await canonical(after);
+    expect(smiles.match(/SC#N/g)).toHaveLength(1);
+    expect(smiles).toContain("*");
+    expect(beforeSmiles.match(/SC#N/g)).toHaveLength(1);
+    for (const atom of after.atoms.filter((candidate) => candidate.element === "SCN")) {
+      const neighbourId = after.bonds.find((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)!;
+      const neighbour = after.atoms.find((candidate) =>
+        candidate.id === (neighbourId.fromAtomId === atom.id ? neighbourId.toAtomId : neighbourId.fromAtomId))!;
+      expect(atom.labelBondSide?.side).toBe(neighbour.x > atom.x ? "right" : "left");
+    }
+  });
+
   it("through a native copy and paste", async () => {
     const { document, objectId } = writtenThenTurned();
     const selected = selectDocumentObject(document, objectId);
@@ -565,6 +617,36 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     expect(await canonical(objectOf(typedBack, objectId))).not.toContain("#");
     const finished = normalizeCommittedDocument(finishNativeAtomLabelEdit(typedBack, target, initial));
     expect(objectOf(finished, objectId).atoms.find((atom) => atom.id === labelAtomId)!.labelBondSide).toEqual(initial.labelBondSide);
+    expect(await canonical(objectOf(finished, objectId))).toBe("CSC#N");
+  });
+
+  it("through one edit session on an unflagged label that ends on its starting text: flag and side both kept", async () => {
+    // A label without the typed (literal) flag, as a MOL paste leaves it. The editor writes each
+    // keystroke as typed; ending on the same text must put the flag back too, as Escape does.
+    const { document, objectId, labelAtomId } = writtenThenTurned();
+    const unflagged = normalizeCommittedDocument(applyPatch(document, {
+      op: "updateObject",
+      objectId,
+      changes: {
+        atoms: objectOf(document, objectId).atoms.map((atom) => {
+          if (atom.id !== labelAtomId) return atom;
+          const { labelLiteral: _labelLiteral, ...rest } = atom;
+          return rest;
+        })
+      }
+    }));
+    const startAtom = objectOf(unflagged, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
+    expect(startAtom.labelLiteral).toBeUndefined();
+    expect(startAtom.labelBondSide).toMatchObject({ side: "left" });
+    const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
+    const typedO = normalizeCommittedDocument(applyNativeAtomElementTarget(unflagged, target, "O", { literal: true }));
+    const typedBack = normalizeCommittedDocument(applyNativeAtomElementTarget(typedO, target, "SCN", { literal: true }));
+    const finished = normalizeCommittedDocument(finishNativeAtomLabelEdit(typedBack, target, {
+      element: startAtom.element, literal: false, labelBondSide: startAtom.labelBondSide
+    }));
+    const endAtom = objectOf(finished, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
+    expect(endAtom.labelLiteral).toBeUndefined();
+    expect(endAtom.labelBondSide).toEqual(startAtom.labelBondSide);
     expect(await canonical(objectOf(finished, objectId))).toBe("CSC#N");
   });
 

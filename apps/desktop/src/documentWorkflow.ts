@@ -8722,7 +8722,7 @@ export function applyNativeAtomElementTarget(
     atom.element === normalizedElement &&
     (atom.labelVisible === true) === labelVisible &&
     (atom.labelLiteral === true) === literal &&
-    (restoredSide === undefined || JSON.stringify(atom.labelBondSide) === JSON.stringify(restoredSide))
+    (restoredSide === undefined || sameLabelBondSide(atom.labelBondSide, restoredSide))
   ) {
     return document;
   }
@@ -8741,32 +8741,41 @@ export function applyNativeAtomElementTarget(
   );
 }
 
+/** Two recorded bond sides are the same record: the same side, read against the same neighbour. */
+function sameLabelBondSide(
+  first: MoleculeAtom["labelBondSide"],
+  second: MoleculeAtom["labelBondSide"]
+): boolean {
+  return first?.side === second?.side && first?.atomId === second?.atomId;
+}
+
 /**
- * Close a label-edit session. Each keystroke wrote the draft and so dropped the label's recorded
- * bond side; a session that ends on the text and literal flag it started with (SCN → O → SCN, then
- * Enter or a blur) did not rewrite the label, so its original record is put back, exactly as
- * cancelling does — re-reading the side from a turned-round drawing would silently change the
- * chemistry. A session that ended on other text wrote a new label, recorded at its own commit, and
- * the document is returned unchanged.
+ * Close a label-edit session. Each keystroke wrote the draft as a typed (literal) label and so
+ * dropped the label's recorded bond side. A session that ends on the text it started with (SCN → O
+ * → SCN, then Enter or a blur) did not rewrite the label, so it is put back exactly as it was —
+ * its literal flag, whatever it was, and its recorded side — as cancelling does. Otherwise an
+ * unchanged edit could change the chemistry: the side re-read from a turned-round drawing, or a
+ * structure file's bonded actinium ("Ac", no flag) turned into a typed acetyl. A session that ended
+ * on other text wrote a new label, recorded at its own commit, and the document is returned as is.
  */
 export function finishNativeAtomLabelEdit(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
   initial: { element: string; literal: boolean; labelBondSide?: MoleculeAtom["labelBondSide"] }
 ): ChemDraftDocument {
-  if (target.kind !== "atom" || !initial.labelBondSide) {
+  if (target.kind !== "atom") {
     return document;
   }
   const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
     object.id === target.objectId && object.type === "molecule"
   );
   const atom = molecule?.atoms.find((candidate) => candidate.id === target.atomId);
-  if (!atom || atom.element !== initial.element || (atom.labelLiteral === true) !== initial.literal) {
+  if (!atom || atom.element !== initial.element) {
     return document;
   }
   return applyNativeAtomElementTarget(document, target, initial.element, {
     literal: initial.literal,
-    labelBondSide: initial.labelBondSide
+    ...(initial.labelBondSide ? { labelBondSide: initial.labelBondSide } : {})
   });
 }
 
@@ -18883,25 +18892,34 @@ function parseV3000MoleculeGraph(
   };
   const scale = previewScaleFromV3000Graph(rawAtoms, rawBonds, previous);
   const atomIdBySourceId = new Map<string, string>();
+  const placed = rawAtoms.map((atom) => ({
+    x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
+    y: targetCenter.y - (atom.y - sourceCenter.y) * scale
+  }));
+  // The editor writes every atom back from its V3000, labels included (an "SCN" in the atom field
+  // lands as that label), and ids are reassigned by position in the list. A recorded bond side may
+  // be carried over only when every atom is provably the same atom: an unchanged round trip, with
+  // the same elements in the same order, every one moved by the single translation the save's
+  // re-centring applies. Any edit in the editor (an atom deleted, added or moved) carries nothing,
+  // and each label is recorded as newly written — a record never moves to another atom.
+  const unchangedRoundTrip = rawAtoms.length === previous.atoms.length &&
+    rawAtoms.every((atom, index) => previous.atoms[index]!.element === atom.element) &&
+    placed.every((point, index) =>
+      Math.abs(point.x - previous.atoms[index]!.x - (placed[0]!.x - previous.atoms[0]!.x)) < 0.5 &&
+      Math.abs(point.y - previous.atoms[index]!.y - (placed[0]!.y - previous.atoms[0]!.y)) < 0.5
+    );
   const atoms = rawAtoms.map((atom, index) => {
     const before = previous.atoms[index];
     const id = before?.id ?? nextOrdinalId("atom", index);
     atomIdBySourceId.set(atom.sourceId, id);
-    // The editor writes every atom back from its V3000, labels included (an "SCN" in the atom field
-    // lands as that label). One that keeps its place and its label keeps the bond side it was written
-    // with; the recorder drops the record if its neighbour changed (`withNativeLabelBondSides`).
-    // Re-read from the editor's drawing instead, an unchanged round trip could change the chemistry.
-    const carried = before && before.element === atom.element && before.labelBondSide
-      ? { labelBondSide: before.labelBondSide }
-      : {};
 
     return {
       id,
       element: atom.element,
-      x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
-      y: targetCenter.y - (atom.y - sourceCenter.y) * scale,
+      x: placed[index]!.x,
+      y: placed[index]!.y,
       formalCharge: atom.formalCharge,
-      ...carried
+      ...(unchangedRoundTrip && before?.labelBondSide ? { labelBondSide: before.labelBondSide } : {})
     } satisfies MoleculeAtom;
   });
   const bonds = rawBonds.flatMap((bond, index) => {
