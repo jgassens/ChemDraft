@@ -10,6 +10,8 @@ import { pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
+import { exportDocumentToSvg } from "./svg";
+import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../layout-engine/src/ringFillNotches.fixture";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
@@ -33,6 +35,48 @@ describe("exportDocumentToPdf", () => {
 
     expect(result.format).toBe("pdf");
     expect(new TextDecoder().decode(result.bytes.slice(0, 5))).toBe("%PDF-");
+  });
+
+  it("exports the same notched ring path as SVG, with an even-odd PDF hole", async () => {
+    const object = filledRingFixture();
+    object.atoms[0]!.element = "O";
+    // Only ring atoms notch the fill, even when their authored label offset is inward.
+    Object.assign(object.atoms[1]!, { element: "N", labelLiteral: true, labelOffset: { x: -40, y: 40 } });
+    object.style.atomLabelBackgroundColor = "#ffffff";
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
+      op: "addObject", pageId: "page_001", object
+    }, { now: timestamp });
+    const pathD = String(ringFixtureFills(object)[0]!.attrs.d);
+    const faces = polygonPathFaces(pathD);
+    expect(faces).toHaveLength(2); // A corner bite plus an interior hole.
+    const svg = exportDocumentToSvg(document).contents;
+    expect(svg).toContain(`d="${pathD}" fill-rule="evenodd"`);
+    let parsedPathD: string | null = null;
+    const result = await withPdfDom((domParser) => {
+      const trackingParser = {
+        parseFromString: (source: string, mime: DOMParserSupportedType) => {
+          const parsed = domParser.parseFromString(source, mime);
+          const fill = parsed.querySelector('[data-molecule-fill-ring="true"]')!;
+          parsedPathD = fill.getAttribute("d");
+          expect(fill.getAttribute("fill-rule")).toBe("evenodd");
+          return parsed;
+        }
+      } as DOMParser;
+      return exportDocumentToPdf(document, { domParser: trackingParser, compress: false });
+    });
+    expect(parsedPathD).toBe(pathD);
+    const pdfText = new TextDecoder("latin1").decode(result.bytes);
+    // Inspect actual PDF drawing operators, not just the SVG handed to the writer.
+    const filledPaths = [...pdfText.matchAll(/((?:[-\d.]+ [-\d.]+ [ml]\n|h\n)+)f\*/g)];
+    const vertices = faces.flat();
+    const ringPath = filledPaths.find((match) => (match[1]!.match(/[ml]\n/g) ?? []).length === vertices.length);
+    expect(ringPath, "PDF must emit the notched compound path with the even-odd f* operator").toBeDefined();
+    const pdfVertices = [...ringPath![1]!.matchAll(/([-\d.]+) ([-\d.]+) [ml]/g)];
+    pdfVertices.forEach((vertex, index) => {
+      expect(Number(vertex[1])).toBeCloseTo(vertices[index]!.x, 3);
+      expect(Number(vertex[2])).toBeCloseTo(vertices[index]!.y, 3);
+    });
+    expect((ringPath![1]!.match(/h\n/g) ?? []).length).toBe(faces.length);
   });
 
   it("uses the ChemDraft page dimensions for the PDF media box", async () => {

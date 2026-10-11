@@ -97,4 +97,19 @@ describe("the analysis subject key", () => {
     expect(analysisSubjectKey(charged)).not.toBe(analysisSubjectKey(ethanol));
     expect(analysisSubjectKey(relabelled)).not.toBe(analysisSubjectKey(ethanol));
   });
+
+  it("changes with a label's recorded bond side, which decides what a cyano label means", () => {
+    // The side is part of the chemistry ("SCN" bonded on its left is a thiocyanate, on its right an
+    // isothiocyanate), recorded when the label is written. Re-typing or re-importing it with the
+    // other side must make a report stale, while moving it (above) must not.
+    const thiocyanate = molecule(["C", "SCN"], [[0, 1, "single"]]);
+    const withSide = (side: "left" | "right") => ({
+      ...thiocyanate,
+      atoms: thiocyanate.atoms.map((atom) => (atom.id === "a1" ? { ...atom, labelBondSide: { side, atomId: "a0" } } : atom))
+    });
+    expect(analysisSubjectKey(withSide("left"))).not.toBe(analysisSubjectKey(withSide("right")));
+    const moved = withSide("left");
+    expect(analysisSubjectKey({ ...moved, atoms: moved.atoms.map((atom) => ({ ...atom, x: -atom.x })) }))
+      .toBe(analysisSubjectKey(withSide("left")));
+  });
 });

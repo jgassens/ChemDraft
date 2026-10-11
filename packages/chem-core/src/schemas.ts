@@ -344,6 +344,15 @@ export const MoleculeAtomSchema = z
      * from the same menu.
      */
     warningSuppressed: z.boolean().optional(),
+    /**
+     * Which side of the label its one bond came from when the label was written, for a label whose
+     * meaning depends on it: "SCN" with its bond on the left is a thiocyanate, with it on the right
+     * an isothiocyanate. Recorded when the label or its bond is committed (typing, a bond edit,
+     * opening or importing a file) and read from here, never from the live coordinates, so moving,
+     * rotating or flipping the drawing never changes its chemistry. `atomId` is the neighbour it
+     * was read against; the record holds only while that is still the label's one bonded atom.
+     */
+    labelBondSide: z.object({ side: z.enum(["left", "right"]), atomId: z.string() }).strict().optional(),
     labelOffset: PointSchema.optional()
   })
   .strict();
