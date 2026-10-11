@@ -164,6 +164,8 @@ import {
   moleculeObjectChanges,
   nativeAdjacency,
   nativeAtomBondOrderUsage,
+  nativeAtomExternalValence,
+  labelOnBondedAtom,
   nativeAtomChargeSupportsValence,
   nativeAtomFormalChargeForValence,
   nativeAtomValence,
@@ -4381,14 +4383,14 @@ export function convertNativeTextObjectToAtomLabel(
     return { document, target, disabledReason, message: `Text kept: ${disabledReason}` };
   }
   const page = firstPage(document);
-  const labeled = applyNativeAtomElementTarget(document, target, text.text, { literal: true });
+  const labeled = commitNativeAtomLabelTarget(document, target, text.text, { literal: true });
   return {
-    document: applyPatches(labeled, [
+    document: applyPatches(labeled.document, [
       { op: "removeObject", objectId },
       { op: "setSelection", pageId: page.id, objectIds: [target.objectId] }
     ], { now: phase4Timestamp }),
-    target,
-    message: `Converted “${normalizeNativeAtomElementLabel(text.text)}” to an atom label`
+    target: labeled.target,
+    message: labeled.message ?? `Converted “${normalizeNativeAtomElementLabel(text.text)}” to an atom label`
   };
 }
 
@@ -7178,7 +7180,7 @@ function nativeAtomCanCarryCharge(molecule: MoleculeObject, atom: MoleculeAtom, 
 
 /** Bond-order usage plus radical electrons, shared by every native valence admission check. */
 function nativeAtomValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom): number {
-  return nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms) + (atom.markRadicals ?? 0);
+  return nativeAtomExternalValence(molecule, atom);
 }
 
 export function nativeChargeStackRefusal(
@@ -8704,6 +8706,55 @@ export function applyNativeAtomElementTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/** One commit-time label operation. Drafts continue to use the ordinary relabel helper. */
+export function commitNativeAtomLabelTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  label: string,
+  options: { literal?: boolean; beforeAtom?: MoleculeAtom; beforeMolecule?: MoleculeObject } = {}
+): { document: ChemDraftDocument; target: NativeMoleculeDeleteTarget; message?: string } {
+  const page = firstPage(document);
+  const molecule = page.objects.find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule");
+  const atom = target.kind === "atom" ? molecule?.atoms.find(a => a.id === target.atomId) : undefined;
+  if (!atom || !molecule || !isEditableNativeMoleculeGraph(molecule) || !label.trim()) return { document, target };
+  const beforeAtom = options.beforeAtom ?? atom;
+  const beforeMolecule = options.beforeMolecule ?? molecule;
+  const normalized = normalizeNativeAtomElementLabel(label);
+  const decision = labelOnBondedAtom(normalized, beforeAtom, beforeMolecule);
+  const relabel = () => applyNativeAtomElementTarget(document, target, label, options);
+  if (decision.kind !== "substituent") return {
+    document: relabel(), target,
+    ...(decision.reason === "source-valence" ? { message: `Relabeled ${normalized}: the original ${beforeAtom.element} atom cannot take another bond` } : {})
+  };
+  const atoms = molecule.atoms.map(a => a.id === atom.id ? { ...beforeAtom, x: a.x, y: a.y } : a);
+  const source = atoms.find(a => a.id === atom.id)!;
+  const style = nativeDrawingStyleFromObjectStyle(molecule.style);
+  const placement = planBondExtension({
+    atoms, bonds: molecule.bonds, clickPoint: source, preferredAtomId: source.id,
+    bondLength: style.bondLengthPx, hitRadius: atomHitRadius,
+    maxBondsPerAtom: nativeAtomInvalidGrowthLimit, targetBondAngleDegrees: style.chainAngleDegrees,
+    pageBounds: { x: 0, y: 0, width: page.width, height: page.height }
+  });
+  if (!placement || atoms.some(a => Math.hypot(a.x - placement.newAtomPoint.x, a.y - placement.newAtomPoint.y) < style.bondLengthPx * 0.5)) {
+    return { document: relabel(), target, message: `Relabeled ${normalized}: no clear substituent position on the page` };
+  }
+  const pageMolecules = page.objects.filter((o): o is MoleculeObject => o.type === "molecule");
+  const newAtom = nativeAtomWithElement({
+    id: nextIndexedIds("atom", pageMolecules.flatMap(m => m.atoms.map(a => a.id)), 1)[0]!,
+    element: "C", formalCharge: 0, ...placement.newAtomPoint
+  }, normalized, normalized === "C", options.literal === true);
+  const bond: MoleculeBond = {
+    id: nextIndexedIds("bond", pageMolecules.flatMap(m => m.bonds.map(b => b.id)), 1)[0]!,
+    fromAtomId: atom.id, toAtomId: newAtom.id, order: "single"
+  };
+  const nextMolecule = refreshNativeSingleBondGraph(molecule, [...atoms, newAtom], [...molecule.bonds, bond]);
+  return {
+    document: applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: nextMolecule }, { now: phase4Timestamp }),
+    target: { ...target, kind: "atom", atomId: newAtom.id },
+    message: `Attached ${normalized} as a substituent: ${normalized} ${decision.reason === "generic" ? "is a one-bond placeholder" : "takes one bond"} and this atom already has ${decision.bondCount}`
+  };
 }
 
 export function previewNativeMoleculeBondGrowth(

@@ -12,6 +12,7 @@ export {
   subtreeSize
 } from "./graph";
 export * from "./labelGroups";
+export * from "./labelOnBondedAtom";
 export * from "./molecule";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";

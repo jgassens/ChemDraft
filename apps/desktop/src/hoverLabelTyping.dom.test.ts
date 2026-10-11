@@ -129,11 +129,13 @@ describe("hover label typing", () => {
     }
     await press("Enter");
     expect(editor()).toBeNull();
-    expect(molecule().atoms[0]).toMatchObject({ element: label, labelLiteral: true });
-    expect(molecule().bonds).toEqual(before.bonds);
-    expect(molecule().atoms.map(({ id, x, y, formalCharge }) => ({ id, x, y, formalCharge })))
-      .toEqual(before.atoms.map(({ id, x, y, formalCharge }) => ({ id, x, y, formalCharge })));
-    expectIntact();
+    // All six labels take one bond: on this ring they attach rather than replace its carbon.
+    expect(molecule().atoms.slice(0, 6)).toEqual(before.atoms);
+    expect(molecule().atoms[6]).toMatchObject({ element: label, labelLiteral: true });
+    expect(molecule().bonds.slice(0, 6)).toEqual(before.bonds);
+    expect(molecule().atoms).toHaveLength(7);
+    expect(molecule().bonds).toHaveLength(7);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(`Attached ${label} as a substituent`);
   });
 
   it("assigns N to atom A then O to atom B instantly", async () => {

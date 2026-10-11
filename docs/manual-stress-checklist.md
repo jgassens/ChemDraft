@@ -116,3 +116,5 @@ arrowhead sizing, stretching, measurement angles, and wheel zoom, with result me
 held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
+
+On macOS and Windows, type OMe on all six atoms of benzene/cyclohexane, exercise nickname hotkeys and text conversion, then Enter/Tab/click-away/tool-change/Escape and Undo/Redo: check restored ring carbons, preview/commit placement, new-atom selection, valence guards, and specific status messages.

@@ -20,6 +20,7 @@ desktop importers did not change.
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata; the atom-label reading (`nativeAtomLabelReading`: element, abbreviation, spelled, composite, placeholder, formula or unrecognized) and each label's free valence; re-exports layout-engine's element table and bond-order counting |
 | `labelGroups.ts` | The shape of a group a label names (a template-library abbreviation, or an element carrying them) and its attachment atom |
+| `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
 | `graph.ts` | Graph walks over native atoms and bonds, including the longest path the SMILES writer and 2D cleanup lay a component along |

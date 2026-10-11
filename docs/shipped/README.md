@@ -34,6 +34,18 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Labels on bonded atoms (2026-10-10)
+
+One-bond labels typed on ring or chain atoms attach as substituents at commit, preserving the
+original atom. The inline editor, hover continuation and nickname hotkeys, and text conversion
+share a pure label/valence decision; elements and matching multi-bond labels still relabel.
+Attachments preview the committed geometry, use the bond tools' placement planner, select the
+new atom on deliberate commits, and explain the result in the status line. Full-valence atoms
+fall back to relabelling with a specific message. Escape restores the original graph; inline
+edits have one labelled undo entry and hover continuation reuses its first-letter entry.
+Unit, graph/canonical-chemistry, and real-event DOM/stress tests cover both shortcut platforms.
+Native macOS and Windows hands-on verification remains pending.
+
 ## User feedback fixes (2026-10-09)
 
 Branch `claude/user-feedback-fixes` (PR to be opened). Three feedback slices shipped together, built
