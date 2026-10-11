@@ -541,7 +541,10 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).not.toContain("statusbar");
     expect(markup).not.toContain("EditorAdapter not connected");
     expect(markup).not.toContain("tool-palette docked");
-    expect(markup.indexOf("web-floating-palette")).toBeLessThan(markup.indexOf('class="workspace"'));
+    expect(markup.indexOf("web-floating-palette")).toBeLessThan(markup.indexOf('class="workspace workspace-with-tabs"'));
+    expect(markup).toContain('role="tablist" aria-label="Open documents"');
+    expect(markup).toContain('aria-label="New tab" title="New tab"');
+    expect(markup.indexOf('class="document-tab-strip"')).toBeLessThan(markup.indexOf('class="canvas-region'));
   });
 
   it("keeps the browser-only menu bar out of Tauri runtime renders", () => {

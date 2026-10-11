@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
 import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
 import { createViewportState } from "@chemdraft/viewport-engine";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import type { DocumentPatch } from "@chemdraft/chem-core";
@@ -41,6 +41,7 @@ vi.mock("./window-manager", async (original) => ({
   isDesktopRuntime: () => native.desktop,
   loadDocumentSession: native.load,
   saveDocumentSession: native.saveSession,
+  setToolbarsMenu: vi.fn().mockResolvedValue(undefined),
   listenForQuitFlushRequest: async (handler: () => Promise<void>) => {
     native.quitFlush = handler;
     return () => { native.quitFlush = undefined; };
@@ -81,6 +82,7 @@ describe("documents in one window", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(setToolbarsMenu).mockResolvedValue(undefined);
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
@@ -133,6 +135,23 @@ describe("documents in one window", () => {
   }
   async function activate(index: number) {
     await act(async () => tabs()[index]!.click());
+  }
+  async function closeTab(index = active()) {
+    await act(async () => container.querySelectorAll<HTMLButtonElement>(".document-tab-close")[index]!.click());
+  }
+  async function expectPristineUntitled(title = createPhase4Document().title) {
+    expect(tabs()).toHaveLength(1);
+    expect(active()).toBe(0);
+    expect(tabs()[0]!.textContent).toBe("Untitled");
+    expect(bridge().snapshot().file).toEqual({ dirty: false });
+    expect(bridge().snapshot().document.title).toBe(title);
+    expect(bridge().snapshot().page.objectCount).toBe(0);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const saved = await flush();
+    expect(saved.tabs).toHaveLength(1);
+    expect(saved.tabs![0]).toMatchObject({ pristine: true, blank: true, dirty: false });
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
   }
   async function paste(text: string) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -252,13 +271,15 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document.pages[0]!.objects).toHaveLength(0);
   });
 
-  it("refuses Accept after its document closes, keeps it pending, and permits Reject from another tab", async () => {
+  it.each([false, true])("tab x leaves a closed document's proposal pending and refuses Accept (multiple: %s)", async (multiple) => {
     await open("Closed source");
     const proposal = await propose({ op: "updatePageLayout", pageId: bridge().snapshot().document.pages[0]!.id,
       layout: bridge().snapshot().document.pages[0]!.layout });
-    await command("document.new");
-    await activate(0);
-    await command("document.closeTab");
+    if (multiple) {
+      await command("document.new");
+      await activate(0);
+    }
+    await closeTab();
     const other = bridge().snapshot().document;
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
     await decide("acceptPluginProposal", proposal.id);
@@ -312,8 +333,9 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document).toEqual(other);
   });
 
-  it("hides the strip for one document; File New adds and activates an Untitled tab", async () => {
-    expect(container.querySelector('[role="tablist"]')).toBeNull();
+  it("always shows the strip; File New adds and activates an Untitled tab", async () => {
+    expect(container.querySelector('[role="tablist"]')).not.toBeNull();
+    expect(tabs()).toHaveLength(1);
     await command("document.new");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
@@ -321,9 +343,39 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().page.objectCount).toBe(0);
   });
 
+  it("keeps native Close Window / Close Tab menu routing tied to the document count", async () => {
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    await command("document.new");
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true);
+    await closeTab();
+    expect(tabs()).toHaveLength(1);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    await closeTab();
+    expect(tabs()).toHaveLength(1);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+  });
+
+  it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
+    const invoke = vi.spyOn(runtime().host, "invokeCommand");
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="New tab"]')!;
+    expect(button.title).toBe("New tab");
+    expect(button.tabIndex).toBe(0);
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    expect(container.querySelector(".document-tab-strip")!.lastElementChild).toBe(button);
+    await act(async () => button.click());
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("document.new");
+    expect(tabs()).toHaveLength(2);
+    expect(active()).toBe(1);
+    expect(tabs()[1]!.textContent).toBe("Untitled");
+    expect(bridge().snapshot().file).toEqual({ dirty: false });
+    expect(bridge().snapshot().page.objectCount).toBe(0);
+  });
+
   it("Open reuses a pristine Untitled, adds after a file is open, and activates an already open file", async () => {
     await open("First");
-    expect(tabs()).toHaveLength(0);
+    expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().file.path).toBe("/tmp/First.chemdraft");
     await paste("Retain this note");
     await open("Second");
@@ -351,7 +403,7 @@ describe("documents in one window", () => {
   it("OS open-with and native file drop use the same reuse and duplicate rules", async () => {
     const contents = fileContents("OS opened");
     await act(async () => native.events.get("chemdraft://open-document")!({ path: "C:\\Drawings\\open.chemdraft", displayName: "open.chemdraft", contents }));
-    expect(tabs()).toHaveLength(0);
+    expect(tabs()).toHaveLength(1);
     await paste("Keep OS edits");
     native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fileContents("Dropped")));
     await act(async () => native.events.get("tauri://drag-drop")!({ paths: ["C:\\Drawings\\drop.chemdraft"] }));
@@ -370,7 +422,7 @@ describe("documents in one window", () => {
       await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
     }
     await drop("First.chemdraft");
-    expect(tabs()).toHaveLength(0);
+    expect(tabs()).toHaveLength(1);
     await drop("Second.chemdraft");
     expect(tabs()).toHaveLength(2);
     await drop("First.chemdraft");
@@ -431,18 +483,21 @@ describe("documents in one window", () => {
     expect(drawnText()).toContain("First note for history");
   });
 
-  it("dirty close is aria-modal; Cancel retains the tab and Discard selects its neighbour", async () => {
+  it("dirty tab x uses the registered close command; Cancel retains it and Discard selects its neighbour", async () => {
     await paste("Keep the first drawing");
     await command("document.new");
     await paste("Second dirty drawing");
-    await command("document.closeTab");
+    const invoke = vi.spyOn(runtime().host, "invokeCommand");
+    await closeTab();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./));
     expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
-    await command("document.closeTab");
+    expect(drawnText()).toContain("Second dirty drawing");
+    await closeTab();
     await modalButton("Discard");
-    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(tabs()).toHaveLength(1);
     expect(drawnText()).toContain("Keep the first drawing");
   });
 
@@ -451,30 +506,73 @@ describe("documents in one window", () => {
     await command("document.new");
     await paste("Current drawing stays active");
     const currentDocument = bridge().snapshot().document;
-    await act(async () => container.querySelector<HTMLButtonElement>(".document-tab-close")!.click());
+    await closeTab(0);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(bridge().snapshot().document).toEqual(currentDocument);
     expect(drawnText()).toContain("Current drawing stays active");
   });
 
-  it("Save closes only after success; picker cancellation and write failure retain the tab", async () => {
-    await command("document.new");
+  it.each([false, true])("tab x Save closes only after success; cancellation and failure retain it (multiple: %s)", async (multiple) => {
+    if (multiple) await command("document.new");
     await paste("Save before closing");
-    await command("document.closeTab");
+    await closeTab();
     await modalButton("Save");
-    expect(tabs()).toHaveLength(2);
+    expect(tabs()).toHaveLength(multiple ? 2 : 1);
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     native.writeFile.mockRejectedValueOnce(new Error("disk full"));
     await modalButton("Save");
-    expect(tabs()).toHaveLength(2);
+    expect(tabs()).toHaveLength(multiple ? 2 : 1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("disk full");
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain("disk full");
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     await modalButton("Save");
     expect(native.writeFile).toHaveBeenLastCalledWith("/tmp/saved.chemdraft", expect.any(String));
-    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
+  });
+
+  it.each([false, true])("the only clean tab x leaves a pristine Untitled without prompting (saved: %s)", async (saved) => {
+    if (saved) await open("Clean saved drawing");
+    const closedTab = tabs()[0];
+    await closeTab();
+    expect(tabs()[0]).not.toBe(closedTab);
+    await expectPristineUntitled();
+  });
+
+  it("the only dirty tab x prompts; Cancel keeps it and Discard leaves a pristine Untitled", async () => {
+    await paste("Only unsaved drawing");
+    const before = bridge().snapshot().document;
+    const closedTab = tabs()[0];
+    await closeTab();
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Save the changes to Untitled?");
+    await modalButton("Cancel");
+    expect(tabs()).toHaveLength(1);
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    await closeTab();
+    await modalButton("Discard");
+    expect(tabs()[0]).not.toBe(closedTab);
+    await expectPristineUntitled();
+  });
+
+  it("one dirty tab leaves CmdOrCtrl+W to window close and flushes the work without prompting", async () => {
+    await paste("Retained by window close");
+    const before = bridge().snapshot().document;
+    const invoke = vi.spyOn(runtime().host, "invokeCommand");
+    for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
+      const event = new KeyboardEvent("keydown", { key: "w", ...modifiers, bubbles: true, cancelable: true });
+      await act(async () => window.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(invoke).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    const saved = await flush();
+    expect(native.quit).toHaveBeenCalledOnce();
+    expect(saved.tabs![0]).toMatchObject({ dirty: true });
+    expect(saved.tabs![0]!.contents).toContain("Retained by window close");
   });
 
   it("a Save that completes after switching updates its original tab", async () => {
@@ -643,7 +741,7 @@ describe("documents in one window", () => {
     expect(saved.tabs).toHaveLength(1);
     expect(saved.tabs![0]!.pristine).toBe(true);
     await remount();
-    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().document.title).toBe("Untitled");
     expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Restored last session");
     // A clean no-restore read still permits later autosaves.
@@ -653,24 +751,28 @@ describe("documents in one window", () => {
     expect(native.saveSession).toHaveBeenCalledTimes(1);
   });
 
-  it("queues OS open-with behind Save/Discard/Cancel so Save writes the prompted drawing", async () => {
-    await paste("Original prompted drawing");
-    await command("document.new");
+  it.each([false, true])("tab x queues OS open-with so Save writes the prompted drawing (multiple: %s)", async (multiple) => {
+    if (multiple) {
+      await paste("Original prompted drawing");
+      await command("document.new");
+    }
     await paste("Drawing being closed");
-    await command("document.closeTab");
+    await closeTab();
     await act(async () => native.events.get("chemdraft://open-document")!({
       path: "/tmp/incoming.chemdraft", displayName: "incoming.chemdraft", contents: fileContents("Incoming drawing")
     }));
-    expect(active()).toBe(1);
+    expect(active()).toBe(multiple ? 1 : 0);
     expect(drawnText()).toContain("Drawing being closed");
     native.savePicker.mockResolvedValueOnce("/tmp/closed.chemdraft");
     await modalButton("Save");
     expect(native.writeFile.mock.calls.at(-1)![0]).toBe("/tmp/closed.chemdraft");
     expect(native.writeFile.mock.calls.at(-1)![1]).toContain("Drawing being closed");
     expect(bridge().snapshot().document.title).toBe("Incoming drawing");
-    expect(tabs()).toHaveLength(2);
-    await activate(0);
-    expect(drawnText()).toContain("Original prompted drawing");
+    expect(tabs()).toHaveLength(multiple ? 2 : 1);
+    if (multiple) {
+      await activate(0);
+      expect(drawnText()).toContain("Original prompted drawing");
+    }
   });
 
   it("zoom autosave keeps views current without serializing unchanged foreground or background tabs", async () => {
@@ -688,7 +790,7 @@ describe("documents in one window", () => {
     expect(createNativeSavePayload).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels a live art drag before switching, and ignores its late pointer release", async () => {
+  it.each(["switch", "close"])("cancels a live art drag before tab %s, and ignores its late pointer release", async (action) => {
     const drawing = createPhase4Document("Drag source");
     drawing.pages[0]!.objects = [{
       id: "drag-rect", type: "graphic", graphicKind: "rect", x: 100, y: 100, width: 80, height: 50,
@@ -717,14 +819,18 @@ describe("documents in one window", () => {
     }
     await pointer(handle, "pointerdown", 180, 150);
     await pointer(page, "pointermove", 230, 180);
-    await key();
-    expect(active()).toBe(1);
+    if (action === "switch") await key();
+    else await closeTab();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(active()).toBe(action === "switch" ? 1 : 0);
     await pointer(page, "pointerup", 230, 180);
     expect(bridge().snapshot().document).toEqual(other);
     await command("edit.undo");
     expect(bridge().snapshot().document).toEqual(other);
-    await activate(0);
-    expect(bridge().snapshot().document).toEqual(start);
+    if (action === "switch") {
+      await activate(0);
+      expect(bridge().snapshot().document).toEqual(start);
+    }
   });
 
   it.each(["rotation", "resize"])("cancels a typed %s on Ctrl+Tab before Escape or Enter can affect the next document", async (kind) => {
@@ -771,7 +877,7 @@ describe("documents in one window", () => {
     native.session = buildDocumentSessionEnvelope(createNativeSavePayload(createPhase4Document("Legacy session")),
       { path: "/tmp/legacy.chemdraft", dirty: true }, "legacy.chemdraft", true);
     await remount();
-    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().document.title).toBe("Legacy session");
     expect(bridge().snapshot().file).toMatchObject({ path: "/tmp/legacy.chemdraft", dirty: true });
   });

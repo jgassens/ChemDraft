@@ -173,9 +173,11 @@ Status row: at the 900×640 minimum window, open a file with warnings under a lo
 in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
 in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.
 
-1. **Document tabs, on macOS and Windows:** start with one document and confirm there is no tab strip.
-   File ▸ New adds an Untitled tab inside the same document window; with two or more tabs the strip
-   stays below the toolbar and above the canvas rulers, clear of the status row at minimum window
+1. **Document tabs, on macOS and Windows:** start with one document and confirm the tab strip is visible.
+   File ▸ New and the + button after the last tab add and activate an Untitled tab inside the same
+   document window. Tab to + and activate it with Enter and Space; confirm its "New tab" accessible
+   name and tooltip. With many tabs, scroll the tabs and confirm + stays visible. The strip stays
+   below the toolbar and above the canvas rulers, clear of the status row at minimum window
    size and 125%/150% display scale. Open, file drop and OS open-with reuse a never-edited,
    never-saved Untitled; otherwise they add a tab, and reopening a file activates its existing tab
    without replacing edits. Give three tabs different drawings, selections (including atom/bond
@@ -184,7 +186,13 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
    by their button and CmdOrCtrl+W: the Save/Discard/Cancel modal blocks document actions; floating native palettes remain above the dialog.
    Cancel keeps the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
-   inactive tab too. With one tab, CmdOrCtrl+W and the window close retain their existing behavior.
+   inactive tab too; a clean tab's × closes without prompting. Close the only tab by ×, both clean
+   and dirty: Cancel keeps a dirty drawing, Save closes only on success, and closing leaves one fresh
+   pristine Untitled with no undo history. With one tab, CmdOrCtrl+W and the window close still close
+   the window without prompting and keep the work in the session; with multiple tabs CmdOrCtrl+W
+   closes the active tab with the dirty prompt. On macOS, the native menu reads Close Window for one
+   tab and Close Tab for multiple tabs. Relaunch with only a pristine blank Untitled: the strip is
+   visible with one fresh tab, and no restored-session announcement appears.
    Quit immediately after an edit with three tabs (one untitled and dirty, one pristine Untitled),
    then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
    prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after

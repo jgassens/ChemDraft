@@ -736,9 +736,33 @@ textarea:focus-visible,
   display: flex;
   gap: 2px;
   padding: 3px 8px 0;
-  overflow-x: auto;
+  min-width: 0;
   background: var(--cd-bg-panel);
   border-bottom: 1px solid var(--cd-border);
+}
+
+.document-tab-list {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.document-tab-new {
+  flex: 0 0 30px;
+  align-self: flex-start;
+  padding: 3px 5px;
+  border: 0;
+  background: transparent;
+  color: var(--cd-text-secondary);
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.document-tab-new:hover {
+  background: var(--cd-bg-control);
 }
 
 .document-tab {
@@ -783,7 +807,8 @@ textarea:focus-visible,
   height: 14px;
 }
 
-.document-tab button:focus-visible {
+.document-tab button:focus-visible,
+.document-tab-new:focus-visible {
   outline: 2px solid var(--cd-text-primary);
   outline-offset: -2px;
 }

@@ -1572,7 +1572,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.15.00-opus";
+const CURRENT_BUILD_STAMP = "10.11.16.44-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7886,11 +7886,24 @@ export function MainWindow({
     pendingTabScrollRef.current = { left: 0, top: 0 };
   }, [snapshotDocumentTab]);
 
+  const newDocumentTab = useCallback(() => {
+    addDocumentTab("Untitled");
+    resetDocumentHistory(createPhase4Document());
+    clearDocumentInteractionState({ clearSpin3dModelCache: true });
+    tabPageFitRef.current = undefined;
+    setPageFitPrompt(undefined);
+    setStatus("Blank native document");
+  }, [addDocumentTab, clearDocumentInteractionState, resetDocumentHistory]);
+
   const removeDocumentTab = useCallback((id: string) => {
-    const tabs = documentTabsRef.current;
-    if (tabs.length < 2) return;
+    let tabs = documentTabsRef.current;
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    // Closing the last document keeps the window open with a fresh document identity and history.
+    if (tabs.length === 1) {
+      newDocumentTab();
+      tabs = documentTabsRef.current;
+    }
     const remaining = tabs.filter((tab) => tab.id !== id);
     if (id === activeDocumentTabIdRef.current) {
       snapshotDocumentTab();
@@ -7902,10 +7915,10 @@ export function MainWindow({
     documentTabsRef.current = remaining;
     setDocumentTabs(remaining);
     setCloseTabPrompt(undefined);
-  }, [installDocumentTab, snapshotDocumentTab]);
+  }, [installDocumentTab, newDocumentTab, snapshotDocumentTab]);
 
   const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
-    if (documentTabsRef.current.length < 2 || closeTabPrompt) return;
+    if (closeTabPrompt) return;
     if (!documentTabsRef.current.some((tab) => tab.id === id)) return;
     if (id !== activeDocumentTabIdRef.current && !documentTabSnapshotsRef.current.get(id)?.file.dirty) {
       removeDocumentTab(id);
@@ -8808,12 +8821,7 @@ export function MainWindow({
         if (action.id === "document.nextTab") cycleDocumentTab(1);
         if (action.id === "document.previousTab") cycleDocumentTab(-1);
         if (action.id === "document.new") {
-          addDocumentTab("Untitled");
-          resetDocumentHistory(createPhase4Document());
-          clearDocumentInteractionState({ clearSpin3dModelCache: true });
-          tabPageFitRef.current = undefined;
-          setPageFitPrompt(undefined);
-          setStatus("Blank native document");
+          newDocumentTab();
         }
         if (action.id === "edit.undo") {
           restoreDocumentHistory("undo");
@@ -9377,7 +9385,7 @@ export function MainWindow({
     return bindings;
   }, [
     activateDocumentTab,
-    addDocumentTab,
+    newDocumentTab,
     cycleDocumentTab,
     documentTabs,
     requestCloseDocumentTab,
@@ -18395,9 +18403,9 @@ export function MainWindow({
           </section>
         </div>
       ) : null}
-      <section className={documentTabs.length > 1 ? "workspace workspace-with-tabs" : "workspace"}>
-        {documentTabs.length > 1 ? (
-          <div className="document-tab-strip" role="tablist" aria-label="Open documents">
+      <section className="workspace workspace-with-tabs">
+        <div className="document-tab-strip">
+          <div className="document-tab-list" role="tablist" aria-label="Open documents">
             {documentTabs.map((tab) => {
               const active = tab.id === activeDocumentTabId;
               const file = active ? fileState : documentTabSnapshotsRef.current.get(tab.id)?.file;
@@ -18414,7 +18422,9 @@ export function MainWindow({
               );
             })}
           </div>
-        ) : null}
+          <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
+            onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
+        </div>
         <section
           ref={canvasRegionRef}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
