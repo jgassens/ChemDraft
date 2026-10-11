@@ -135,6 +135,19 @@ held keys cleared on window blur, no focus stealing, hints hidden during inline 
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
 
+Cold launch on Windows: launch and quit ChemDraft ten times in a row, with its palettes open (on a busy
+machine as well as an idle one); no "ChemDraft ran into an error" dialog appears at launch, and tool
+shortcuts, palette commands, popovers and tooltips all respond afterwards.
+
+Quit and close timing: on Windows, launch and close the document window (title-bar ✕) 2, 4, 6 and 20 s after
+launch, and right after drawing, a hover-typed label and an undo; once the session is saved each exit follows
+within about 2 s, even on a busy machine and while the palettes are still building their popovers and
+tooltip, and the next launch starts a fresh process rather than handing off to a dying one. A preference
+changed just before the close (Preferences, a keybinding) is still set on relaunch. Double-clicking a `.chemdraft`
+while the app is exiting is ignored rather than shown in the dying window; once it has exited, the same
+double-click opens a fresh app with that document. On macOS, ⌘Q
+and the application menu's Quit the same way, with a palette open.
+
 Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
 neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
 unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
