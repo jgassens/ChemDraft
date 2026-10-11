@@ -34,8 +34,8 @@ export interface SafeTauriListener {
  * - if that unlisten fails because the entry is not there yet, retries it a few times, so the native
  *   listener is still removed rather than leaked; and never leaves a rejection unhandled.
  *
- * TODO(tauri-events): drop the retry once @tauri-apps/api and tauri are ≥ 2.12.0, whose unlisten
- * checks that the entry exists; the mute and the once-only unlisten stay.
+ * TODO(tauri-events): drop the retry once the tauri release we use includes the unlisten guard (upstream
+ * dev has it; not confirmed for 2.12.0). The mute and the once-only unlisten stay.
  */
 export function safeTauriListen<T>(eventName: string, attach: TauriAttach<T>, handler: EventCallback<T>): SafeTauriListener {
   let stopped = false;

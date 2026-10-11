@@ -6,12 +6,18 @@ import { safeTauriListen, UNLISTEN_ATTEMPTS } from "./tauriEvents";
 
 /**
  * Tauri 2.11.2 as the page sees it: `listen()` resolves on the IPC reply, while the script that puts
- * the listener's entry into the page runs separately (`register()` here). Unlisten reads that entry's
- * `handlerId` with no guard, so an unlisten that runs before the entry exists rejects with the
- * TypeError the crash reporter showed, and removes nothing.
+ * the listener's entry into the page runs separately (`register()` here). Unlisten looks up the
+ * event's bucket of entries and, if there is one, reads the entry's `handlerId` with no guard:
+ * - no bucket yet (no listener of this event name has registered): nothing is read, nothing throws,
+ *   and the native listener is removed;
+ * - a bucket without this entry: the TypeError the crash reporter showed, and nothing is removed;
+ * - the entry is there: the native listener is removed.
+ * `primed` starts with another listener of the event already registered, so its bucket exists: the
+ * usual case, an event several windows or effects listen to, or one listened to before.
  */
-function tauri2112() {
+function tauri2112({ primed = false }: { primed?: boolean } = {}) {
   let nextId = 1;
+  let bucket = primed;
   const registered = new Set<number>();
   const pending: number[] = [];
   const handlers = new Map<number, EventCallback<string>>();
@@ -23,7 +29,7 @@ function tauri2112() {
     pending.push(id);
     return Promise.resolve(async () => {
       counts.unlistenCalls += 1;
-      if (!registered.has(id)) {
+      if (bucket && !registered.has(id)) {
         throw new TypeError("Cannot read properties of undefined (reading 'handlerId')");
       }
       if (handlers.delete(id)) {
@@ -36,7 +42,10 @@ function tauri2112() {
     counts,
     /** The page runs the scripts that register every listener attached so far. */
     register() {
-      for (const id of pending.splice(0)) registered.add(id);
+      for (const id of pending.splice(0)) {
+        registered.add(id);
+        bucket = true;
+      }
     },
     /** Deliver to every native listener still in place, registered or not. */
     deliver(payload: string) {
@@ -66,7 +75,7 @@ describe("safeTauriListen", () => {
   });
 
   it("is what crashed: Tauri's own unlisten, run before the page registers the listener, rejects", async () => {
-    const page = tauri2112();
+    const page = tauri2112({ primed: true });
     const unlisten = await page.attach(() => undefined);
     await expect(unlisten()).rejects.toThrow("reading 'handlerId'");
     expect(page.counts.removed).toBe(0);
@@ -104,7 +113,7 @@ describe("safeTauriListen", () => {
   });
 
   it("survives a stop in the gap before the page registers the listener, and still removes it", async () => {
-    const page = tauri2112();
+    const page = tauri2112({ primed: true });
     const { stop, attached } = safeTauriListen("test", page.attach, () => undefined);
     await attached;
     stop(); // The page has not run the registration script yet: Tauri's unlisten rejects.
@@ -116,6 +125,22 @@ describe("safeTauriListen", () => {
     await vi.runAllTimersAsync();
     expect(page.counts.unlistenCalls).toBe(2);
     expect(page.counts.removed).toBe(1);
+  });
+
+  it("the first listener of an event name: Tauri reads nothing in the gap, so stop removes it at once", async () => {
+    const page = tauri2112();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const handler = vi.fn();
+    const { stop, attached } = safeTauriListen<string>("test", page.attach, handler);
+    await attached;
+    stop(); // No listener of this event has registered, so 2.11.2 finds no bucket and does not throw.
+    await vi.runAllTimersAsync();
+    expect(page.counts.unlistenCalls).toBe(1);
+    expect(page.counts.removed).toBe(1);
+    expect(warn).not.toHaveBeenCalled();
+    page.register();
+    page.deliver("after");
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("mutes the handler at stop, even while the native listener is still in place", async () => {
@@ -132,7 +157,7 @@ describe("safeTauriListen", () => {
   });
 
   it("gives up after a bounded number of tries with a console warning, never a rejection", async () => {
-    const page = tauri2112();
+    const page = tauri2112({ primed: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const handler = vi.fn();
     const { stop, attached } = safeTauriListen<string>("test", page.attach, handler);
@@ -169,11 +194,14 @@ describe("safeTauriListen", () => {
 describe("every Tauri listener goes through safeTauriListen", () => {
   // A direct `listen` brings back the unguarded unlisten: these are the forms the app used.
   const forbidden = [
-    /import\s*\{[^}]*\blisten\b[^}]*\}\s*from\s*["']@tauri-apps\/api\/event["']/,
-    /\{[^}]*\blisten\b[^}]*\}\s*=\s*await\s+import\(\s*["']@tauri-apps\/api\/event["']\s*\)/,
-    /\.then\(\s*\(\s*\{[^}]*\blisten\b[^}]*\}\s*\)\s*=>/,
-    /getCurrentWebviewWindow\(\)\s*\.listen\s*[<(]/,
-    /\b(?:getCurrentWindow|getCurrentWebview)\(\)\s*\.(?:listen|once)\s*[<(]/,
+    // listen or once from the event module: a named import, a destructured dynamic import, or a
+    // destructured .then of one.
+    /import\s*\{[^}]*\b(?:listen|once)\b[^}]*\}\s*from\s*["']@tauri-apps\/api\/event["']/,
+    /\{[^}]*\b(?:listen|once)\b[^}]*\}\s*=\s*await\s+import\(\s*["']@tauri-apps\/api\/event["']\s*\)/,
+    /\.then\(\s*\(\s*\{[^}]*\b(?:listen|once)\b[^}]*\}\s*\)\s*=>/,
+    // .listen or .once on anything: getCurrentWebviewWindow(), getCurrentWindow(), getByLabel(...), or a
+    // window, webview or event module held in a variable. Nothing else in the app has such methods.
+    /\.(?:listen|once)\s*(?:<[^>()]*(?:<[^>]*>)?[^>()]*>)?\s*\(/,
     // Tauri's window helpers listen internally and hand back the same unguarded unlisten.
     /\.(?:onFocusChanged|onCloseRequested|onResized|onMoved|onScaleChanged|onDragDropEvent|onThemeChanged)\s*\(/
   ];
@@ -184,6 +212,31 @@ describe("every Tauri listener goes through safeTauriListen", () => {
       return statSync(path).isDirectory() ? walk(path) : /\.(ts|tsx)$/.test(name) && !/\.test\.tsx?$/.test(name) ? [path] : [];
     });
   })(sourceRoot);
+
+  it("catches every direct form, and not the app's own helpers", () => {
+    const caught = (source: string) => forbidden.some((pattern) => pattern.test(source));
+    for (const direct of [
+      `import { listen } from "@tauri-apps/api/event";`,
+      `import { emit, once } from "@tauri-apps/api/event";`,
+      `const { once } = await import("@tauri-apps/api/event");`,
+      `void import("@tauri-apps/api/event").then(({ listen }) => listen("x", cb));`,
+      `const win = getCurrentWebviewWindow(); await win.listen("x", cb);`,
+      `getCurrentWindow().once<string>("x", cb);`,
+      `WebviewWindow.getByLabel("main")?.listen("x", cb);`,
+      `getCurrentWindow().onFocusChanged(cb);`
+    ]) {
+      expect(caught(direct), direct).toBe(true);
+    }
+    for (const allowed of [
+      `await listenTauriEvent<string>("x", cb);`,
+      `listenCurrentWindowEvent("x", cb);`,
+      `void listenForToolsetCommands(cb).then((cleanup) => cleanup());`,
+      `window.addEventListener("keydown", onKey);`,
+      `const { emit } = await import("@tauri-apps/api/event");`
+    ]) {
+      expect(caught(allowed), allowed).toBe(false);
+    }
+  });
 
   it("finds the app sources", () => {
     expect(files.length).toBeGreaterThan(50);
