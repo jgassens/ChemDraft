@@ -171,6 +171,7 @@ import {
   nativeAtomExternalValence,
   labelOnBondedAtom,
   nativeAtomLabelFreeValence,
+  nativeAtomLabelContextInMolecule,
   type LabelOnBondedAtomDecision,
   nativeAtomChargeSupportsValence,
   nativeAtomFormalChargeForValence,
@@ -185,7 +186,6 @@ import {
   nativeElementFromAtomLabel,
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
-  type NativeAtomLabelContext,
   nativeLabelBondSide,
   nativeLabelReadingDependsOnBondSide,
   withNativeDocumentLabelBondSides,
@@ -221,6 +221,7 @@ export {
   insertNativeReactionArrow,
   insertNativeTextObject,
   insertSmilesMolecule,
+  nativeAtomLabelContextInMolecule,
   nativeAtomValidationState,
   nativeBondLengthPx,
   nativeElementFromAtomLabel,
@@ -2990,7 +2991,8 @@ type NativeRingValenceRefusal = Extract<
  * clicks, previews and hotkeys alike). It judges the RESULT, not a prediction: every pre-existing
  * atom whose valence use (bond orders plus radicals) rose must still be supported at its element
  * and formal charge. Atoms whose valence use did not rise are not the placement's doing, and
- * labels with no element (nicknames, generic R) are skipped as every valence check skips them.
+ * group or spelled labels ("OMe", "NMe") are judged by their free valence, element labels by their
+ * element, and labels with no free valence (generic R, a bare formula, unrecognized text) pass.
  * The reason names the most direct culprit: the target atom itself (an atom target) or an
  * endpoint of the target bond; else an existing atom that gained a new bond (a closure atom);
  * else an atom whose valence rose only because an aromatic template's double-bond re-pairing
@@ -3035,7 +3037,9 @@ function nativeRingPlacementValenceRefusal(
  * the target bond, and a spiro ring at least two single bonds at its atom. A full atom is the
  * definitive reason (no other spot on the same target could work), so it wins over the geometry
  * reason. This only names the failure; it never refuses a placement, so it cannot overrule the
- * result guard ({@link nativeRingPlacementValenceRefusal}). Labels with no element pass.
+ * result guard ({@link nativeRingPlacementValenceRefusal}). Group or spelled labels ("OMe", "NMe")
+ * are judged by their free valence, element labels by their element, and labels with no free
+ * valence (generic R, a bare formula, unrecognized text) pass.
  */
 function nativeRingTargetFailureValenceReason(
   molecule: MoleculeObject,
@@ -19634,32 +19638,6 @@ function reorderMoleculeBonds(
     }
   }
   return reordered;
-}
-
-/**
- * The context an atom's label is read with in its molecule: `bonded` as the caller counts it,
- * `typed` from the atom's `labelLiteral`, and the bond side its label records
- * (`nativeLabelBondSide`) unless the label is an element. The drawing tools
- * (`nativeAtomAvailableBondCount`) and the ring guard (`nativeAtomSupportsValenceUsage`) both read
- * labels through it, so they never disagree about what a label means.
- */
-export function nativeAtomLabelContextInMolecule(
-  atom: MoleculeAtom,
-  molecule: MoleculeObject,
-  bonded: boolean
-): NativeAtomLabelContext {
-  const bondSide = nativeElementFromAtomLabel(atom.element)
-    ? undefined
-    : nativeLabelBondSide(
-      atom,
-      molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
-      molecule.atoms
-    );
-  return {
-    bonded,
-    typed: atom.labelLiteral === true,
-    ...(bondSide ? { bondSide } : {})
-  };
 }
 
 function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
