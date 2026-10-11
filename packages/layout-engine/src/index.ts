@@ -1,5 +1,6 @@
 import {
   DefaultNativeDrawingStyle,
+  drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
   nativeDrawingStyleFromObjectStyle,
@@ -5505,11 +5506,13 @@ export function atomDisplayLabel(
   }
 
   const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, resolution);
+  // HO, not OH, when the bond comes from the right: chem-core's side test, the same one that
+  // records a cyano label's bond side, so the drawing and the chemistry agree on "right".
   const hydrogenBeforeElement =
     implicitHydrogens === "H" &&
     element !== "H" &&
     singleHeavyNeighbor !== undefined &&
-    singleHeavyNeighbor.x > atom.x + 0.001;
+    drawnLabelBondSide(atom, [singleHeavyNeighbor]) === "right";
   return hydrogenBeforeElement
     ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
     : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`;

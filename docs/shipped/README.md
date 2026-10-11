@@ -67,6 +67,17 @@ PRs make the label mean its group.
   atom has 2.", "Ome isn't a known group. Did you mean OMe?", "C has unsupported valence 5."). The
   long form, with the atom id, is `invalidDetail`: the chemistry warnings carry it, and the app
   writes it to the console.
+- **Label edits and structure-editor saves**: a label edit that comes back to the text it started
+  with leaves the label as it was, recorded side and typed flag included. The keystroke that brings
+  it back writes it so (`applyNativeAtomLabelDraft`), and every close applies the same rule
+  (`finishNativeAtomLabelEdit`): Enter, Escape, a blur or click away, a tool picked in the palette, a
+  move to another atom's edit, a press that starts a drag. A close by undo, redo or a document
+  switch leaves the state it lands on untouched. The session autosave, the quit and window-close
+  flush, Save and export write the document as the open edit's close would leave it. Restarting an
+  edit on the same atom continues the session. Other labels keep the editor's typed (literal)
+  behaviour: a "C" typed on a hidden carbon is a typed C. A structure-editor save keeps a record when
+  the label and its recorded neighbour are matched through the save and still bonded; otherwise the
+  label is read again from the drawing, and the status line says so when its reading changed.
 - **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
   atoms appended after the drawn ones, so drawn indices never move, and the native formula is
   counted over that expansion. Molfile copies and SDF carry each group as a `SUP` S-group with its
@@ -88,7 +99,8 @@ from RDKit's as they do for any molecule (atomic-weight table, no electron mass 
 has no isocyano, isocyanate or isothiocyanate, so a cyano label with its bond on the right counts
 as a bare formula and exports as a placeholder rather than as its real group. CDXML has no field
 for a label's recorded side: ChemDraft's own CDXML keeps it in the embedded payload, but a visible-
-layer-only reimport records the side the drawing shows. The bond tool judges a typed bonded "Ac" by
+layer-only reimport records the side the drawing shows, and the export warns
+(`cdxml.label_bond_side_turned`) when the two differ. The bond tool judges a typed bonded "Ac" by
 its valence, and the badge by its bond count, which differ when its only bond is a dashed (dative)
 one.
 

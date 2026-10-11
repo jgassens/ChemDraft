@@ -17,8 +17,10 @@ import {
   applyAnalysisToSelectedMolecule,
   applyClipboardPastePayload,
   applyEditorSaveResultToSelectedMolecule,
+  applyEditorSaveResultWithLabelWarnings,
   applyFreeformSingleBondToolAtPoint,
   applyNativeAtomElementTarget,
+  applyNativeAtomLabelDraft,
   createSelectionClipboardPayload,
   finishNativeAtomLabelEdit,
   normalizeCommittedDocument,
@@ -542,6 +544,80 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     }
   });
 
+  describe("through structure-editor saves that change the drawing", () => {
+    // Ethyl thiocyanate written with its bond on the left, then turned round: s1 now has c1 on its right.
+    const turnedEthyl = (): ChemDraftDocument => {
+      const start = createPhase4Document("Editor Changes");
+      const molecule: MoleculeObject = {
+        id: "ethyl", type: "molecule", x: 260, y: 280, width: 120, height: 40, rotation: 0, style: {},
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+        atoms: [
+          { id: "x", element: "C", x: 340, y: 300, formalCharge: 0 },
+          { id: "c1", element: "C", x: 310, y: 300, formalCharge: 0 },
+          { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "c1" } }
+        ],
+        bonds: [
+          { id: "b1", fromAtomId: "x", toAtomId: "c1", order: "single" },
+          { id: "b2", fromAtomId: "c1", toAtomId: "s1", order: "single" }
+        ]
+      };
+      return normalizeCommittedDocument(selectDocumentObject(
+        applyPatch(start, { op: "addObject", pageId: start.pages[0]!.id, object: molecule }), "ethyl"
+      ));
+    };
+    const saveFromEditor = (document: ChemDraftDocument, edited: MoleculeObject) => {
+      const before = objectOf(document, "ethyl");
+      const applied = applyEditorSaveResultWithLabelWarnings(document, {
+        object: { ...before, structureFormat: "molfile-v3000", structure: editorV3000(edited) },
+        warnings: []
+      });
+      return { document: normalizeCommittedDocument(applied.document), labelWarnings: applied.labelWarnings };
+    };
+    const recordOf = (document: ChemDraftDocument) =>
+      objectOf(document, "ethyl").atoms.find((atom) => atom.element === "SCN")!.labelBondSide;
+
+    it("keeps the reading when an unrelated atom moves", async () => {
+      const document = turnedEthyl();
+      expect(await canonical(objectOf(document, "ethyl"))).toBe("CCSC#N");
+      const before = objectOf(document, "ethyl");
+      const moved = { ...before, atoms: before.atoms.map((atom) => (atom.id === "x" ? { ...atom, x: 350, y: 330 } : atom)) };
+      const saved = saveFromEditor(document, moved);
+      expect(saved.labelWarnings).toEqual([]);
+      expect(recordOf(saved.document)).toMatchObject({ side: "left" });
+      expect(await canonical(objectOf(saved.document, "ethyl"))).toBe("CCSC#N");
+    });
+
+    it("keeps the reading when the editor rotates or flips the whole molecule", async () => {
+      const document = turnedEthyl();
+      const before = objectOf(document, "ethyl");
+      const flipped = { ...before, atoms: before.atoms.map((atom) => ({ ...atom, x: 620 - atom.x })) };
+      const saved = saveFromEditor(document, flipped);
+      expect(saved.labelWarnings).toEqual([]);
+      expect(await canonical(objectOf(saved.document, "ethyl"))).toBe("CCSC#N");
+    });
+
+    it("re-reads a label whose own bond the editor changed, and warns when its reading changed", async () => {
+      const document = turnedEthyl();
+      const before = objectOf(document, "ethyl");
+      // In the editor, SCN is unbonded from c1 and bonded to x instead, which lies on its right.
+      const rebonded = {
+        ...before,
+        bonds: [
+          { id: "b1", fromAtomId: "x", toAtomId: "c1", order: "single" as const },
+          { id: "b2", fromAtomId: "x", toAtomId: "s1", order: "single" as const }
+        ]
+      };
+      const saved = saveFromEditor(document, rebonded);
+      expect(saved.labelWarnings).toHaveLength(1);
+      expect(saved.labelWarnings[0]!.reason).toBe("SCN's bond was changed in the structure editor, so it now reads as the N-bonded isomer (a bare formula here).");
+      expect(saved.labelWarnings[0]!.detail).toContain('Label "SCN" on atom s1');
+      expect(saved.labelWarnings[0]!.detail).toContain("bond on the right");
+      expect(saved.labelWarnings[0]!.detail).toContain("written with its bond on the left");
+      expect(recordOf(saved.document)).toMatchObject({ side: "right" });
+      expect(await canonical(objectOf(saved.document, "ethyl"))).not.toContain("#");
+    });
+  });
+
   it("through a native copy and paste", async () => {
     const { document, objectId } = writtenThenTurned();
     const selected = selectDocumentObject(document, objectId);
@@ -610,7 +686,8 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     const initialAtom = objectOf(document, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
     const initial = { element: initialAtom.element, literal: true, labelBondSide: initialAtom.labelBondSide };
     const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
-    // Each keystroke is committed through the funnel, as MainWindow's label editor does.
+    // Each keystroke written plainly through the funnel, without the editor's keystroke rule (tested
+    // below): the close's own rule must still restore the label.
     const typedO = normalizeCommittedDocument(applyNativeAtomElementTarget(document, target, "O", { literal: true }));
     const typedBack = normalizeCommittedDocument(applyNativeAtomElementTarget(typedO, target, "SCN", { literal: true }));
     // Without the finish, the retyped label would be read from the turned-round drawing.
@@ -669,6 +746,24 @@ describe("every way a cyano label enters the document keeps its meaning when tur
     const secondDone = normalizeCommittedDocument(finishNativeAtomLabelEdit(toScn, target, secondStart));
     expect(objectOf(secondDone, objectId).atoms.find((atom) => atom.id === labelAtomId)!.labelBondSide).toMatchObject({ side: "right" });
     expect(await canonical(objectOf(secondDone, objectId))).not.toContain("#");
+  });
+
+  it("through the editor's keystrokes: after every one, closing the session would change nothing", async () => {
+    // Anything that takes the present document mid-session (a drag's start, a commit, a flush)
+    // holds what the close will leave, because each keystroke writes it (applyNativeAtomLabelDraft).
+    const { document, objectId, labelAtomId } = writtenThenTurned();
+    const startAtom = objectOf(document, objectId).atoms.find((atom) => atom.id === labelAtomId)!;
+    const start = { element: startAtom.element, literal: startAtom.labelLiteral === true, labelBondSide: startAtom.labelBondSide };
+    const target = { objectId, kind: "atom" as const, atomId: labelAtomId, distanceToPointer: 0 };
+    let present = document;
+    for (const draft of ["S", "SC", "SCN", "O", "OCN", " SCN "]) {
+      present = applyNativeAtomLabelDraft(present, target, draft, start);
+      expect(finishNativeAtomLabelEdit(present, target, start).pages, `after "${draft}"`).toEqual(present.pages);
+    }
+    expect(objectOf(present, objectId).atoms.find((atom) => atom.id === labelAtomId)).toMatchObject({
+      element: "SCN", labelLiteral: true, labelBondSide: startAtom.labelBondSide
+    });
+    expect(await canonical(objectOf(present, objectId))).toBe("CSC#N");
   });
 });
 

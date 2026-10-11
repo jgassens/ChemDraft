@@ -52,6 +52,7 @@ import {
   isMetalSymbol,
   moleculeToMolfileV2000,
   clearChangedAtomHydrogenHints,
+  drawnLabelBondSide,
   moleculeToMolfileV3000,
   UnknownBondOrderError,
   PageSizePresets,
@@ -179,6 +180,7 @@ import {
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
   nativeLabelBondSide,
+  nativeLabelReadingDependsOnBondSide,
   withNativeDocumentLabelBondSides,
   withNativeLabelBondSides,
   nativeMoleculeUnspellableLabels,
@@ -8749,21 +8751,57 @@ function sameLabelBondSide(
   return first?.side === second?.side && first?.atomId === second?.atomId;
 }
 
+/** A label-edit session's starting label: its text, literal flag and recorded bond side. */
+export interface NativeAtomLabelEditStart {
+  element: string;
+  literal: boolean;
+  labelBondSide?: MoleculeAtom["labelBondSide"];
+}
+
 /**
- * Close a label-edit session. Each keystroke wrote the draft as a typed (literal) label and so
- * dropped the label's recorded bond side. A session that ends on the text it started with (SCN → O
- * → SCN, then Enter or a blur) did not rewrite the label, so it is put back exactly as it was —
- * its literal flag, whatever it was, and its recorded side — as cancelling does. Otherwise an
- * unchanged edit could change the chemistry: the side re-read from a turned-round drawing, or a
- * structure file's bonded actinium ("Ac", no flag) turned into a typed acetyl. A session that ended
- * on other text wrote a new label, recorded at its own commit, and the document is returned as is.
+ * Whether a label-edit session keeps its starting label when it comes back to that text: only a
+ * label whose reading depends on its bond's side — one with a recorded side, or a cyano spelling
+ * ("SCN", "CN") — whose chemistry retyping could change. Every other label keeps the editor's usual
+ * behaviour exactly as before: typed text is written as a typed (literal) label, so a C typed on a
+ * hidden carbon stays a typed C, and one session can make an element label literal.
+ */
+export function atomLabelEditKeepsStartingLabel(start: NativeAtomLabelEditStart): boolean {
+  return start.labelBondSide !== undefined || nativeLabelReadingDependsOnBondSide(start.element);
+}
+
+/**
+ * Write one label-editor keystroke. A draft that has come back to a side-dependent label's starting
+ * text is that label as it was written — its literal flag and recorded side (SCN → O → SCN) — so the
+ * document never holds a side re-read from a turned-round drawing mid-session, and a drag, a
+ * commit, an undo entry or a save taken then sees the original. Any other draft is typed text.
+ */
+export function applyNativeAtomLabelDraft(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  draft: string,
+  start: NativeAtomLabelEditStart
+): ChemDraftDocument {
+  if (normalizeNativeAtomElementLabel(draft) === start.element && atomLabelEditKeepsStartingLabel(start)) {
+    return applyNativeAtomElementTarget(document, target, start.element, {
+      literal: start.literal,
+      ...(start.labelBondSide ? { labelBondSide: start.labelBondSide } : {})
+    });
+  }
+  return applyNativeAtomElementTarget(document, target, draft, { literal: true });
+}
+
+/**
+ * Close a label-edit session: the same rule as each keystroke (`applyNativeAtomLabelDraft`), as a
+ * safety net for a close that comes before the draft's last keystroke was written. A side-dependent
+ * label whose session ends on its starting text is put back exactly as it was — its literal flag and
+ * recorded side — as cancelling does. Anything else is returned as is.
  */
 export function finishNativeAtomLabelEdit(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
-  initial: { element: string; literal: boolean; labelBondSide?: MoleculeAtom["labelBondSide"] }
+  initial: NativeAtomLabelEditStart
 ): ChemDraftDocument {
-  if (target.kind !== "atom") {
+  if (target.kind !== "atom" || !atomLabelEditKeepsStartingLabel(initial)) {
     return document;
   }
   const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
@@ -17292,6 +17330,17 @@ export function applyEditorSaveResultToSelectedMolecule(
   document: ChemDraftDocument,
   result: EditorSaveResult
 ): ChemDraftDocument {
+  return applyEditorSaveResultWithLabelWarnings(document, result).document;
+}
+
+/**
+ * `applyEditorSaveResultToSelectedMolecule`, also returning the labels whose reading the save
+ * changed (`carryLabelBondSidesThroughEditorSave`), for the caller to show.
+ */
+export function applyEditorSaveResultWithLabelWarnings(
+  document: ChemDraftDocument,
+  result: EditorSaveResult
+): { document: ChemDraftDocument; labelWarnings: EditorSaveLabelWarning[] } {
   const selectedMolecule = getSelectedMolecule(document);
   if (!selectedMolecule) {
     throw new Error("Cannot apply editor save result: no molecule is selected.");
@@ -17300,10 +17349,11 @@ export function applyEditorSaveResultToSelectedMolecule(
     throw new Error(`Cannot apply editor save result: saved object is "${result.object.type}", not a molecule.`);
   }
 
-  return applyEditorSaveResultToSelectedObject(document, {
-    ...result,
-    object: syncMoleculePreviewFromEditorSave(selectedMolecule, result.object)
-  });
+  const synced = syncMoleculePreviewFromEditorSave(selectedMolecule, result.object);
+  return {
+    document: applyEditorSaveResultToSelectedObject(document, { ...result, object: synced.molecule }),
+    labelWarnings: synced.labelWarnings
+  };
 }
 
 /**
@@ -18796,35 +18846,38 @@ function refreshNativeSingleBondGraph(
 function syncMoleculePreviewFromEditorSave(
   previous: MoleculeObject,
   saved: MoleculeObject
-): MoleculeObject {
+): { molecule: MoleculeObject; labelWarnings: EditorSaveLabelWarning[] } {
   if (saved.structureFormat !== "molfile-v3000") {
-    return saved;
+    return { molecule: saved, labelWarnings: [] };
   }
 
   const graph = parseV3000MoleculeGraph(saved.structure, previous);
   if (!graph) {
-    return saved;
+    return { molecule: saved, labelWarnings: [] };
   }
 
   const styleWithoutPrimitive = { ...saved.style };
   delete styleWithoutPrimitive.drawingPrimitive;
 
-  return normalizeNativeMoleculeGeometry({
-    ...saved,
-    style: {
-      ...styleWithoutPrimitive,
-      source: "ketcher-adapter"
-    },
-    chemistry: undefined,
-    atoms: graph.atoms,
-    bonds: graph.bonds
-  });
+  return {
+    molecule: normalizeNativeMoleculeGeometry({
+      ...saved,
+      style: {
+        ...styleWithoutPrimitive,
+        source: "ketcher-adapter"
+      },
+      chemistry: undefined,
+      atoms: graph.atoms,
+      bonds: graph.bonds
+    }),
+    labelWarnings: graph.labelWarnings
+  };
 }
 
 function parseV3000MoleculeGraph(
   molfile: string,
   previous: MoleculeObject
-): Pick<MoleculeObject, "atoms" | "bonds"> | undefined {
+): (Pick<MoleculeObject, "atoms" | "bonds"> & { labelWarnings: EditorSaveLabelWarning[] }) | undefined {
   const rawAtoms: Array<{ sourceId: string; element: string; x: number; y: number; formalCharge: number }> = [];
   const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
@@ -18896,21 +18949,8 @@ function parseV3000MoleculeGraph(
     x: targetCenter.x + (atom.x - sourceCenter.x) * scale,
     y: targetCenter.y - (atom.y - sourceCenter.y) * scale
   }));
-  // The editor writes every atom back from its V3000, labels included (an "SCN" in the atom field
-  // lands as that label), and ids are reassigned by position in the list. A recorded bond side may
-  // be carried over only when every atom is provably the same atom: an unchanged round trip, with
-  // the same elements in the same order, every one moved by the single translation the save's
-  // re-centring applies. Any edit in the editor (an atom deleted, added or moved) carries nothing,
-  // and each label is recorded as newly written — a record never moves to another atom.
-  const unchangedRoundTrip = rawAtoms.length === previous.atoms.length &&
-    rawAtoms.every((atom, index) => previous.atoms[index]!.element === atom.element) &&
-    placed.every((point, index) =>
-      Math.abs(point.x - previous.atoms[index]!.x - (placed[0]!.x - previous.atoms[0]!.x)) < 0.5 &&
-      Math.abs(point.y - previous.atoms[index]!.y - (placed[0]!.y - previous.atoms[0]!.y)) < 0.5
-    );
-  const atoms = rawAtoms.map((atom, index) => {
-    const before = previous.atoms[index];
-    const id = before?.id ?? nextOrdinalId("atom", index);
+  const atoms: MoleculeAtom[] = rawAtoms.map((atom, index) => {
+    const id = previous.atoms[index]?.id ?? nextOrdinalId("atom", index);
     atomIdBySourceId.set(atom.sourceId, id);
 
     return {
@@ -18918,8 +18958,7 @@ function parseV3000MoleculeGraph(
       element: atom.element,
       x: placed[index]!.x,
       y: placed[index]!.y,
-      formalCharge: atom.formalCharge,
-      ...(unchangedRoundTrip && before?.labelBondSide ? { labelBondSide: before.labelBondSide } : {})
+      formalCharge: atom.formalCharge
     } satisfies MoleculeAtom;
   });
   const bonds = rawBonds.flatMap((bond, index) => {
@@ -18938,7 +18977,103 @@ function parseV3000MoleculeGraph(
     } satisfies MoleculeBond];
   });
 
-  return { atoms, bonds };
+  const labelWarnings = carryLabelBondSidesThroughEditorSave(previous, atoms, bonds);
+  return { atoms, bonds, labelWarnings };
+}
+
+/** A label whose reading a structure-editor save changed: short for the status line, long for the log. */
+export interface EditorSaveLabelWarning {
+  reason: string;
+  detail: string;
+}
+
+/**
+ * Carry each label's recorded bond side through a structure-editor save, by graph identity rather
+ * than coordinates (the editor may move, rotate or flip). The editor keeps its atoms in order and
+ * only removes or appends them, so the longest common subsequence of the two element sequences
+ * pairs each saved atom with the atom it was. A label keeps its record when it, and the neighbour it
+ * was recorded against, are both paired and still bonded — the same label on the same bond — so
+ * moving any atom, the label's own included, changes nothing. A label whose bond the editor changed
+ * is recorded again from its drawing (by the commit funnel), and when that changes its reading the
+ * save says so, naming the atom: an editor save never changes a label's reading silently.
+ * Mutates `atoms`, which this module's parser has just built.
+ */
+function carryLabelBondSidesThroughEditorSave(
+  previous: MoleculeObject,
+  atoms: MoleculeAtom[],
+  bonds: readonly MoleculeBond[]
+): EditorSaveLabelWarning[] {
+  const previousIndexBySaved = alignEditorSavedAtoms(
+    previous.atoms.map((atom) => atom.element),
+    atoms.map((atom) => atom.element)
+  );
+  const savedIndexByPrevious = new Map([...previousIndexBySaved].map(([saved, prior]) => [prior, saved]));
+  const previousIndexById = new Map(previous.atoms.map((atom, index) => [atom.id, index]));
+  const neighbourIds = (atomId: string) => bonds.flatMap((bond) =>
+    bond.fromAtomId === atomId ? [bond.toAtomId] : bond.toAtomId === atomId ? [bond.fromAtomId] : []
+  );
+  const reading = (side: "left" | "right") =>
+    side === "left" ? "its cyano group" : "the N-bonded isomer (a bare formula here)";
+  const warnings: EditorSaveLabelWarning[] = [];
+  atoms.forEach((atom, savedIndex) => {
+    const priorIndex = previousIndexBySaved.get(savedIndex);
+    const record = priorIndex === undefined ? undefined : previous.atoms[priorIndex]!.labelBondSide;
+    if (!record) return;
+    const neighbourPriorIndex = previousIndexById.get(record.atomId);
+    const neighbourSavedIndex = neighbourPriorIndex === undefined ? undefined : savedIndexByPrevious.get(neighbourPriorIndex);
+    const neighbourId = neighbourSavedIndex === undefined ? undefined : atoms[neighbourSavedIndex]!.id;
+    const current = neighbourIds(atom.id);
+    if (neighbourId !== undefined && current.length === 1 && current[0] === neighbourId) {
+      atoms[savedIndex] = { ...atom, labelBondSide: { side: record.side, atomId: neighbourId } };
+      return;
+    }
+    // Its bond changed in the editor: it is recorded again from the drawing. Warn when that reads
+    // differently (no bond, or two, is badged on the canvas and needs no warning here).
+    const neighbour = current.length === 1 ? atoms.find((candidate) => candidate.id === current[0]) : undefined;
+    const drawn = neighbour ? drawnLabelBondSide(atom, [neighbour]) : undefined;
+    if (drawn && drawn !== record.side) {
+      warnings.push({
+        reason: `${atom.element}'s bond was changed in the structure editor, so it now reads as ${reading(drawn)}.`,
+        detail: `Label "${atom.element}" on atom ${atom.id}: the structure editor changed its bond, so its side was read again from the drawing — bond on the ${drawn}, ${reading(drawn)}; before the save it was written with its bond on the ${record.side}, ${reading(record.side)}.`
+      });
+    }
+  });
+  return warnings;
+}
+
+/**
+ * Pair saved atoms with previous ones by the longest common subsequence of their element sequences:
+ * saved index → previous index. An unchanged list pairs every atom with itself.
+ */
+function alignEditorSavedAtoms(previous: readonly string[], saved: readonly string[]): Map<number, number> {
+  if (previous.length === saved.length && previous.every((element, index) => element === saved[index])) {
+    return new Map(saved.map((_, index) => [index, index]));
+  }
+  const rows = previous.length + 1;
+  const columns = saved.length + 1;
+  const table = new Uint32Array(rows * columns);
+  for (let i = previous.length - 1; i >= 0; i -= 1) {
+    for (let j = saved.length - 1; j >= 0; j -= 1) {
+      table[i * columns + j] = previous[i] === saved[j]
+        ? table[(i + 1) * columns + j + 1]! + 1
+        : Math.max(table[(i + 1) * columns + j]!, table[i * columns + j + 1]!);
+    }
+  }
+  const pairs = new Map<number, number>();
+  let i = 0;
+  let j = 0;
+  while (i < previous.length && j < saved.length) {
+    if (previous[i] === saved[j] && table[i * columns + j] === table[(i + 1) * columns + j + 1]! + 1) {
+      pairs.set(j, i);
+      i += 1;
+      j += 1;
+    } else if (table[(i + 1) * columns + j]! >= table[i * columns + j + 1]!) {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  return pairs;
 }
 
 function rawCoordinateCenter(atoms: readonly { x: number; y: number }[]): PagePoint {

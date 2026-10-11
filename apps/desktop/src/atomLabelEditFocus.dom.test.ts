@@ -8,10 +8,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { applyPatches, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { applyNativeAtomElementTarget, createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { convertTextToAtomLabelCommandId } from "./commands";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT, focusCurrentWindowAndWebview } from "./window-manager";
@@ -606,33 +607,41 @@ describe("atom label editor focus", () => {
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
   });
 
-  describe("a session that ends on its starting text keeps a cyano label's bond side, however it closes", () => {
-    // Sol rr5: SCN written with its bond on the left, then turned round (its neighbour now on its
-    // right). One session types O, then SCN again: each keystroke rewrites the label, so mid-session
-    // it reads from the drawing. Every close must put the original side back.
-    function turnedThiocyanate(extraEthane = false): ChemDraftDocument {
-      const start = createPhase4Document("Turned SCN");
-      const molecule: MoleculeObject = {
-        id: "scn", type: "molecule", x: 260, y: 280, width: 80, height: 40, rotation: 0, style: {},
-        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
-        atoms: [
-          { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "c1" } },
-          { id: "c1", element: "C", x: 310, y: 300, formalCharge: 0 }
-        ],
-        bonds: [{ id: "b1", fromAtomId: "c1", toAtomId: "s1", order: "single" }]
-      };
-      const withMolecule = applyPatches(start, [{ op: "addObject", pageId: start.pages[0].id, object: molecule }]);
-      const document = extraEthane ? insertNativeSingleBondMolecule(withMolecule, { x: 500, y: 300 }) : withMolecule;
-      return selectDocumentObjects(document, document.pages[0].id, []);
-    }
-    const side = () => molecule().atoms.find((atom) => atom.id === "s1")?.labelBondSide?.side;
+  /**
+   * Sol rr5: SCN written with its bond on the left, then turned round (its neighbour now on its
+   * right), so a label written now would read from the drawing as the N-bonded isomer.
+   */
+  function turnedThiocyanate(extraEthane = false): ChemDraftDocument {
+    const start = createPhase4Document("Turned SCN");
+    const molecule: MoleculeObject = {
+      id: "scn", type: "molecule", x: 260, y: 280, width: 80, height: 40, rotation: 0, style: {},
+      structureFormat: "smiles", structure: "", superatoms: [], rGroups: [],
+      atoms: [
+        { id: "s1", element: "SCN", x: 280, y: 300, formalCharge: 0, labelLiteral: true, labelBondSide: { side: "left", atomId: "c1" } },
+        { id: "c1", element: "C", x: 310, y: 300, formalCharge: 0 }
+      ],
+      bonds: [{ id: "b1", fromAtomId: "c1", toAtomId: "s1", order: "single" }]
+    };
+    const withMolecule = applyPatches(start, [{ op: "addObject", pageId: start.pages[0].id, object: molecule }]);
+    const document = extraEthane ? insertNativeSingleBondMolecule(withMolecule, { x: 500, y: 300 }) : withMolecule;
+    return selectDocumentObjects(document, document.pages[0].id, []);
+  }
 
+  const thiocyanateSide = () => molecule().atoms.find((atom) => atom.id === "s1")?.labelBondSide?.side;
+
+  describe("a session that ends on its starting text keeps a cyano label's bond side, however it closes", () => {
+    const side = thiocyanateSide;
+
+    /** One session types O, then SCN again. */
     async function retypeSameLabel() {
       expect(side()).toBe("left");
       await startLabelEdit();
       await typeIntoEditor("O");
+      expect(side(), "O carries no record").toBeUndefined();
       await typeIntoEditor("SCN");
-      expect(side(), "mid-session, the retyped label reads the turned-round drawing").toBe("right");
+      // The keystroke that brings the label back writes it as it started, so the document never
+      // holds a side re-read from the turned-round drawing, mid-session or after.
+      expect(side(), "typed back, the label is written as it started").toBe("left");
     }
 
     it.each([
@@ -687,6 +696,51 @@ describe("atom label editor focus", () => {
       expect(bridge().snapshot().document.pages[0].objects.filter((object) => object.type === "molecule")).toEqual([]);
     });
 
+    it("saved while the session is still open: the file holds the label as the close will leave it", async () => {
+      // Every flush (Save, export, the session autosave, the quit and window-close flush) writes the
+      // document as if the open edit had closed. Save is the one reachable without the desktop
+      // runtime: off it, Save downloads the file, captured here.
+      const saved: Blob[] = [];
+      const createObjectURL = vi.fn((blob: Blob) => { saved.push(blob); return "blob:saved"; });
+      Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      await renderMainWindow(turnedThiocyanate());
+      await retypeSameLabel();
+      await paletteCommand("document.save");
+      await settle();
+      // The edit stays open, and the saved file holds the label with the side it was written with.
+      expect(labelEditor()).not.toBeNull();
+      expect(saved).toHaveLength(1);
+      const reopened = openChemDraftPayload(await saved[0]!.text()).document!;
+      const savedMolecule = reopened.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+      expect(savedMolecule.atoms.find((atom) => atom.id === "s1")).toMatchObject({
+        element: "SCN", labelBondSide: { side: "left", atomId: "c1" }
+      });
+    });
+
+    it("a commit made while the session is open: its undo entry keeps the starting record", async () => {
+      await renderMainWindow(turnedThiocyanate());
+      await retypeSameLabel();
+      // The edited molecule is selected; recolouring it commits while the label edit is open.
+      await paletteCommand("object.color.red");
+      expect(side()).toBe("left");
+      await paletteCommand("edit.undo");
+      expect(atomElement("s1")).toBe("SCN");
+      expect(side()).toBe("left");
+    });
+
+    it("restarted on the same atom: the session keeps the label it started from", async () => {
+      await renderMainWindow(turnedThiocyanate());
+      await startLabelEdit();
+      await typeIntoEditor("O");
+      await startLabelEdit();
+      await typeIntoEditor("SCN");
+      await pressWhereFocused("Enter");
+      await settle();
+      expect(atomElement("s1")).toBe("SCN");
+      expect(side()).toBe("left");
+    });
+
     it("a session that ends on other text is a new label, read from the drawing", async () => {
       await renderMainWindow(turnedThiocyanate());
       await startLabelEdit();
@@ -695,6 +749,98 @@ describe("atom label editor focus", () => {
       await settle();
       expect(atomElement("s1")).toBe("OCN");
       expect(side()).toBe("right");
+    });
+  });
+
+  describe("a label edit closed by a press that starts a drag", () => {
+    /** A press-and-drag the way the canvas receives it: moves go to whatever captured the pointer. */
+    async function pressAndDrag(target: Element, from: { x: number; y: number }, to: { x: number; y: number }) {
+      let captured: Element | undefined;
+      const capture = vi.spyOn(HTMLElement.prototype, "setPointerCapture").mockImplementation(function (this: HTMLElement) {
+        captured = this;
+      });
+      const send = (element: Element, type: string, point: { x: number; y: number }) => {
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === "pointerup" ? 0 : 1, clientX: point.x, clientY: point.y, detail: 1 });
+        Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 9 }, pointerType: { value: "mouse" } });
+        element.dispatchEvent(event);
+      };
+      await act(async () => { send(target, "pointerdown", from); });
+      await act(async () => { send(captured ?? target, "pointermove", to); });
+      await act(async () => { send(captured ?? target, "pointerup", to); });
+      capture.mockRestore();
+      await settle();
+    }
+
+    /** A key the way the browser delivers it, with the text-editing default jsdom lacks. */
+    async function typeKey(key: string) {
+      const target = document.activeElement ?? document.body;
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => { target.dispatchEvent(event); });
+      if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+        const caret = target.selectionStart ?? target.value.length;
+        const value = target.value.slice(0, caret) + key + target.value.slice(target.selectionEnd ?? caret);
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
+          target.dispatchEvent(new Event("input", { bubbles: true }));
+          target.setSelectionRange(caret + 1, caret + 1);
+        });
+      }
+    }
+
+    it("undoing the drag restores the label exactly as the session left it", async () => {
+      // Fable rr6: the drag takes the present document as its start before the edit closes. The
+      // Atom Label tool starts no drag; the Bond tool does, and its hover typing opens the same
+      // editor. Whatever the close writes, the keystrokes have already written (applyNativeAtomLabelDraft),
+      // so the drag's start and the closed session agree.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await renderMainWindow(turnedThiocyanate(), "tool.bond");
+      const atom = molecule().atoms.find((candidate) => candidate.id === "s1")!;
+      await act(async () => {
+        const hover = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
+        Object.defineProperties(hover, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        container.querySelector(".page")!.dispatchEvent(hover);
+      });
+      for (const key of "OCN") {
+        await typeKey(key);
+      }
+      expect(labelEditor()?.value).toBe("OCN");
+      const labelled = molecule().atoms;
+      expect(thiocyanateSide(), "a new label, read from the drawing").toBe("right");
+      await pressAndDrag(container.querySelector(".page")!, { x: 600, y: 480 }, { x: 660, y: 500 });
+      expect(labelEditor()).toBeNull();
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+      expect(molecule().atoms, "closing the edit changed nothing the drag did not already hold").toEqual(labelled);
+      await paletteCommand("edit.undo");
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+      expect(molecule().atoms).toEqual(labelled);
+    });
+  });
+
+  describe("every other label keeps the editor's usual typed (literal) behaviour", () => {
+    it("a C typed on a hidden carbon becomes a typed C", async () => {
+      await renderMainWindow(ringDocument());
+      const atomId = await startLabelEdit();
+      expect(molecule().atoms.find((atom) => atom.id === atomId)?.labelLiteral).toBeUndefined();
+      await typeIntoEditor("C");
+      await pressWhereFocused("Enter");
+      await settle();
+      expect(molecule().atoms.find((atom) => atom.id === atomId)).toMatchObject({ element: "C", labelLiteral: true });
+    });
+
+    it("one session can make an element label literal by typing its own text", async () => {
+      const ring = ringDocument();
+      const ringId = ring.pages[0].objects[0]!.id;
+      const ringAtomId = (ring.pages[0].objects[0] as MoleculeObject).atoms[0]!.id;
+      // A hotkey nitrogen: an element atom, not literal.
+      const withNitrogen = applyNativeAtomElementTarget(ring, { objectId: ringId, kind: "atom", atomId: ringAtomId, distanceToPointer: 0 }, "N");
+      await renderMainWindow(selectDocumentObjects(withNitrogen, withNitrogen.pages[0].id, []));
+      expect(molecule().atoms[0]!.labelLiteral).toBeUndefined();
+      await startLabelEdit();
+      await typeIntoEditor("N");
+      await pressWhereFocused("Enter");
+      await settle();
+      expect(molecule().atoms[0]).toMatchObject({ element: "N", labelLiteral: true });
     });
   });
 

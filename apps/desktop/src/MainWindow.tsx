@@ -354,6 +354,7 @@ import {
   applyNativeArtBooleanOperationToSelection,
   applyNativeCarbonylAtAtomTarget,
   applyNativeAtomElementTarget,
+  applyNativeAtomLabelDraft,
   finishNativeAtomLabelEdit,
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
@@ -380,6 +381,7 @@ import {
   applyNativeMoleculePartDeleteTarget,
   applyNativeMoleculePartsDelete,
   applyEditorSaveResultToSelectedMolecule,
+  applyEditorSaveResultWithLabelWarnings,
   applyAnalysisToSelectedMolecule,
   analysisFacingStructure,
   analysisSubjectKey,
@@ -1501,7 +1503,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.19.32-opus";
+const CURRENT_BUILD_STAMP = "10.10.19.57-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -5412,14 +5414,22 @@ export function MainWindow({
     replacePresentDocument((current) => selectDocumentObject(current, target.objectId));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    // Restarting an edit on the atom already being edited continues that session: it keeps the
+    // label the session started from (text, flag, recorded side), not the draft written since.
+    const running = activeAtomLabelEditRef.current;
+    const continuing = running && running.objectId === target.objectId && running.atomId === target.atomId
+      ? running
+      : undefined;
     const edit: AtomLabelEditState = {
       objectId: target.objectId,
       atomId: target.atomId,
-      initialElement: atom.element,
-      initialLiteral: atom.labelLiteral === true,
-      ...(atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {}),
-      documentIdentity: documentIdentityRef.current,
-      historyNavigation: historyNavigationCountRef.current,
+      initialElement: continuing?.initialElement ?? atom.element,
+      initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
+      ...(continuing
+        ? (continuing.initialLabelBondSide ? { initialLabelBondSide: continuing.initialLabelBondSide } : {})
+        : (atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {})),
+      documentIdentity: continuing?.documentIdentity ?? documentIdentityRef.current,
+      historyNavigation: continuing?.historyNavigation ?? historyNavigationCountRef.current,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
     };
@@ -5447,13 +5457,14 @@ export function MainWindow({
 
     replacePresentDocument((current) =>
       // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
-      // hydrogens, and are valence-checked without them.
-      applyNativeAtomElementTarget(current, {
+      // hydrogens, and are valence-checked without them. A side-dependent label typed back to its
+      // starting text is written as it started (applyNativeAtomLabelDraft).
+      applyNativeAtomLabelDraft(current, {
         objectId: state.objectId,
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, draft, { literal: true })
+      }, draft, { element: state.initialElement, literal: state.initialLiteral, labelBondSide: state.initialLabelBondSide })
     );
   }, [replacePresentDocument]);
 
@@ -7715,6 +7726,31 @@ export function MainWindow({
     };
   }, [openDocumentContents]);
 
+  // What every flush writes — the session autosave, the quit and window-close flush (macOS and
+  // Windows), Save and export: the working document as it would be if an open label edit closed
+  // now. The keystroke that brings a session back to its starting text already writes the label as
+  // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
+  // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
+  // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
+  // refs only.
+  const documentForFlush = useCallback((): ChemDraftDocument => {
+    const current = documentRef.current;
+    const edit = activeAtomLabelEditRef.current;
+    if (
+      !edit ||
+      edit.documentIdentity !== documentIdentityRef.current ||
+      edit.historyNavigation !== historyNavigationCountRef.current
+    ) {
+      return current;
+    }
+    return normalizeCommittedDocument(finishNativeAtomLabelEdit(current, {
+      objectId: edit.objectId,
+      kind: "atom",
+      atomId: edit.atomId,
+      distanceToPointer: 0
+    }, { element: edit.initialElement, literal: edit.initialLiteral, labelBondSide: edit.initialLabelBondSide }));
+  }, []);
+
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
   // so the startup blank can't clobber the previous session before the restore above has read it.
@@ -7738,13 +7774,14 @@ export function MainWindow({
       return;
     }
     try {
-      const payload = createNativeSavePayload(documentRef.current);
+      const flushed = documentForFlush();
+      const payload = createNativeSavePayload(flushed);
       const path = fileStateRef.current.path;
       const envelope = buildDocumentSessionEnvelope(
         payload,
         fileStateRef.current,
         path ? nativePathBasename(path) : payload.filename,
-        documentIsBlank(documentRef.current)
+        documentIsBlank(flushed)
       );
       await saveDocumentSession(envelope, { strict: options?.strict });
     } catch (error) {
@@ -7754,7 +7791,7 @@ export function MainWindow({
       // Serialization or the write must never break editing (or block a quit); the previous
       // autosave stays.
     }
-  }, []);
+  }, [documentForFlush]);
 
   // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
   // explicit save.
@@ -7893,7 +7930,7 @@ export function MainWindow({
   }, []);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
-    const payload = createNativeSavePayload(documentRef.current);
+    const payload = createNativeSavePayload(documentForFlush());
 
     if (!isDesktopRuntime()) {
       downloadText(payload.filename, payload.contents, payload.mimeType);
@@ -7931,7 +7968,7 @@ export function MainWindow({
     } catch (error) {
       setStatus(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, []);
+  }, [documentForFlush]);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -7999,7 +8036,7 @@ export function MainWindow({
         return;
       }
 
-      const result = await createDialogExportResult(documentRef.current, dialog);
+      const result = await createDialogExportResult(documentForFlush(), dialog);
       const filename = ensureExportFileExtension(dialog.filename, descriptor.extensions);
 
       if (!isDesktopRuntime()) {
@@ -8028,7 +8065,7 @@ export function MainWindow({
       setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
       setExportDialog((current) => current ? { ...current, busy: false } : current);
     }
-  }, [exportDialog]);
+  }, [documentForFlush, exportDialog]);
 
   const cancelExportDialog = useCallback(() => {
     if (!exportDialog?.busy) {
@@ -17003,7 +17040,14 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget]);
 
   const handleApplyKetcherEdit = useCallback((result: Parameters<typeof applyEditorSaveResultToSelectedMolecule>[1]) => {
-    commitDocumentChange((current) => applyEditorSaveResultToSelectedMolecule(current, result));
+    // A label whose bond the editor changed may now read differently: say so (short on the status
+    // line, the atom named in the log) rather than let the save change it silently.
+    const applied = applyEditorSaveResultWithLabelWarnings(documentRef.current, result);
+    commitDocumentChange(applied.document);
+    if (applied.labelWarnings.length > 0) {
+      setStatus(applied.labelWarnings.map((warning) => warning.reason).join(" "));
+      applied.labelWarnings.forEach((warning) => console.info(warning.detail));
+    }
   }, [commitDocumentChange]);
 
   const createAgentSnapshot = useCallback((): AgentSnapshot => {
