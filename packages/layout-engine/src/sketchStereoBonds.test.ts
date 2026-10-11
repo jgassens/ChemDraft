@@ -68,13 +68,13 @@ function sketchStrokes(bondStyle: BondStyle): { length: number; start: string }[
 describe("sketch effect on stereo bonds", () => {
   it("traces each hash of a hashed bond, with no full-length stroke through them", () => {
     const strokes = sketchStrokes("hashed");
-    const normalHashes = render("hashed", true).filter((fragment) =>
+    const normalHashes = render("hashed", false).filter((fragment) =>
       fragment.tag === "line" && fragment.attrs.class === "native-bond-hash"
     );
     expect(normalHashes.length).toBeGreaterThan(1);
     expect(strokes.some((stroke) => stroke.length >= BOND_LENGTH * 0.9)).toBe(false);
     // One stroke per hash line, plus one outline for the terminal join polygon when drawn.
-    const joins = render("hashed", true).filter((fragment) =>
+    const joins = render("hashed", false).filter((fragment) =>
       fragment.tag === "polygon" && fragment.attrs.class === "native-bond-hash"
     ).length;
     expect(strokes.length).toBe(normalHashes.length + joins);
@@ -121,7 +121,15 @@ describe("sketch effect on stereo bonds", () => {
         fragments
           .filter((fragment) => String(fragment.attrs.class ?? "").includes("native-bond"))
           .map((fragment) => JSON.stringify(fragment.attrs));
-      expect(bondLayer(render(style, true))).toEqual(bondLayer(off));
+      if (style === "hashed" || style === "dashed") {
+        expect(render(style, true).some((fragment) => fragment.attrs["data-bond-style"] === style)).toBe(false);
+        const targets = (fragments: ReturnType<typeof render>) => fragments.filter((fragment) =>
+          fragment.attrs.class === "native-bond-hit-target" || fragment.attrs.class === "native-bond-hover-decorator"
+        );
+        expect(targets(render(style, true))).toEqual(targets(off));
+      } else {
+        expect(bondLayer(render(style, true))).toEqual(bondLayer(off));
+      }
     }
     const dashed = render("dashed", false).find((fragment) => fragment.attrs["data-bond-style"] === "dashed");
     expect(dashed?.attrs["stroke-dasharray"]).toBe("4.4 3.6");
