@@ -1486,7 +1486,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.20.41-opus";
+const CURRENT_BUILD_STAMP = "10.10.20.57-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7433,6 +7433,8 @@ export function MainWindow({
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
+    hoverLabelAssignmentRef.current = undefined;
     setFreeformNativeBond(undefined);
     setLastAnalysis(null);
     setStatus(
@@ -7455,6 +7457,7 @@ export function MainWindow({
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
+    hoverLabelAssignmentRef.current = undefined;
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
     setLastAnalysis(null);
@@ -10221,10 +10224,14 @@ export function MainWindow({
 
       // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
       // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
+      // A key the canvas never sees (in a dialog or another text field) ends a hover-label
+      // continuation, so the next canvas key is not appended to the old label.
       if (isBlockedByModalDialog(event.target)) {
+        hoverLabelAssignmentRef.current = undefined;
         return;
       }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
+        hoverLabelAssignmentRef.current = undefined;
         return;
       }
       // Target-based shortcut filtering alone misses an editor waiting for native focus (or a
@@ -10521,12 +10528,18 @@ export function MainWindow({
         setShiftPressed(false);
       }
     };
+    // Leaving the window (another app, a hidden window) also ends a hover-label continuation: the
+    // next key typed after coming back is a new action, not the rest of the old label.
     const handleVisibilityChange = () => {
       if (window.document.visibilityState !== "visible") {
         setShiftPressed(false);
+        hoverLabelAssignmentRef.current = undefined;
       }
     };
-    const handleBlur = () => setShiftPressed(false);
+    const handleBlur = () => {
+      setShiftPressed(false);
+      hoverLabelAssignmentRef.current = undefined;
+    };
 
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);

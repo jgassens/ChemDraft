@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
@@ -340,6 +340,79 @@ describe("hover label typing", () => {
     expect(editor()).toBeNull();
     expect(snapshot().activeToolCommandId).toBe("tool.eraser");
     expect(molecule().atoms.map((atom) => atom.element)).toEqual(["C", "C", "C", "C", "C", "C"]);
+  });
+
+  // Now that the pointer leaving the atom no longer ends a continuation, every other change of
+  // context must. Each case: "O" on atom 0, the context change, a drift to atom 1, then "e", which
+  // must choose the Eraser rather than continue the old label as "Oe".
+  async function expectContinuationEnded() {
+    await hover(1);
+    await press("e");
+    expect(editor()).toBeNull();
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(molecule().atoms[0]!.element).toBe("O");
+    expect(molecule().atoms).toHaveLength(6);
+  }
+
+  it("ends a label continuation on undo then redo from the menu", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(molecule().atoms[0]!.element).toBe("O");
+    await expectContinuationEnded();
+  });
+
+  it("ends a label continuation when a document is opened, even one with the same atoms", async () => {
+    await hover(0);
+    await press("O");
+    const labelled = molecule();
+    expect(snapshot().file.dirty).toBe(true);
+    // Reopen the document as it stands: same object and atom ids, atom 0 still "O".
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Open native ChemDraft document"]')!;
+    const file = new File([serializeDocument(snapshot().document)], "same.chemdraft", { type: "application/json" });
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await file.text();
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(snapshot().file.dirty).toBe(false);
+    expect(molecule().id).toBe(labelled.id);
+    expect(molecule().atoms[0]).toMatchObject({ id: labelled.atoms[0]!.id, element: "O" });
+    await expectContinuationEnded();
+  });
+
+  it("ends a label continuation when a key goes to a dialog opened from the menu", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("page.setSizeCustom"); });
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Custom page size"]')!;
+    expect(dialog).not.toBeNull();
+    await press("Tab", dialog);
+    const cancel = [...dialog.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Cancel")!;
+    await act(async () => { cancel.click(); });
+    expect(container.querySelector('[role="dialog"][aria-label="Custom page size"]')).toBeNull();
+    await expectContinuationEnded();
+  });
+
+  it("ends a label continuation when the window loses focus", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { window.dispatchEvent(new Event("blur")); });
+    await expectContinuationEnded();
+  });
+
+  it("ends a label continuation when the window is hidden", async () => {
+    await hover(0);
+    await press("O");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+    await expectContinuationEnded();
   });
 
   it("hovers the bond again once a label typed over it commits, so Delete acts on the bond", async () => {

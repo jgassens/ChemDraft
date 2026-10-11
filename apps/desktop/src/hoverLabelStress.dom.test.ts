@@ -265,6 +265,8 @@ describe("hover label typing over a long chain (stress)", () => {
     }
 
     console.log(`[hover-wander-stress] ${JSON.stringify(tally)}`);
+    // The drift must actually happen: in most trials the pointer leaves the labelled atom mid-label.
+    expect(tally.wanderedOffLabelledAtom).toBeGreaterThanOrEqual(Math.ceil(tally.trials / 2));
     expect(tally.toolSwitched).toBe(0);
     expect(tally.structureChanged).toBe(0);
     expect(tally.labelled).toBe(tally.trials);
