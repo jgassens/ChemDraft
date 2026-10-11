@@ -93,6 +93,14 @@ second; OMe with a − charge (methoxide) unbadged; R, X, ? and a bonded Ar neve
 C7H8O; Copy As SMILES, MOL V2000 and V3000 of Ph–OMe pasted into another program as anisole; save and
 reopen, CDXML export and reopen, and undo/redo of a relabel, all keeping the label "OMe".
 
+Label anchoring surfaces added since: OMe typed on the left and right ends of a horizontal bond and
+on a ring carbon, with the bond meeting the O each time and the label drawn "MeO" with its bond on the
+right; the same for CO2Me (MeO2C), NHBoc (BocHN), and for Ph and TMS (the letter nearest the bond on
+the atom), with the bond going up and down as well; SCN never drawn "CNS"; a label moved, rotated or
+flipped redrawing the right way round while its formula and Copy As SMILES stay the same; Spin 3D on
+a molecule with OMe, the overlay showing the same label as the drawing at rest; SVG and PDF export
+matching the canvas; the label editor still opening centred on the atom.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

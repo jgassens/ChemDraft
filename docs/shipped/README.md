@@ -34,6 +34,45 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Label anchoring (2026-10-10, branch `claude/label-anchoring`, jgassens/ChemDraft#97)
+
+A group label such as "OMe" drew centred on its atom, so its bond met the middle of the text, and a
+group bonded on its right still read left to right ("OMe–C"). Now the bond meets the atom it bonds
+to, and the label reads toward its bond ("MeO–C"). Display only: the stored label, its recorded bond
+side and its chemistry never change. Two commits:
+
+- **The atom-label grammar moved to layout-engine, verbatim** (`labelGrammar.ts`): the reading, the
+  composite parser, a group's attachment atom, and the valence tables they read. The drawn label and
+  the chemistry read a label with one implementation; document-workflow-core re-exports every name
+  and keeps the verdicts, validation and expansion.
+- **Anchoring and turning** (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`):
+  - The side is the one the drawing shows, by the test that draws a hydroxyl as "HO".
+  - The letters of the atom the group's bonds reach sit on the atom: the O of OMe, the C of CO2Me,
+    the N of NHBoc, the Si of SiMe3.
+  - A label that spells that atom at its far end is drawn turned round, token by token: MeO,
+    MeO2C, BocHN, Me2N, PhH2C. It is turned only when the turned text reads as the same group, so
+    SCN is never drawn "CNS", and COMe (whose reversal "MeOC" would read as another group) stays as
+    typed.
+  - A label that does not spell its attachment (Ph, Boc, TMS), or that cannot be turned, puts the
+    letter nearest its bond on the atom.
+  - The anchored layout places runs by Helvetica/Arial advance widths, so subscripts sit clear of the
+    letter before them.
+  - Bond clipping, the CLI's render bounds and SVG/PDF export all use the planned layout, and the
+    Spin 3D overlay places a label from its projected bonds each frame (`nonElementAtomLabelPlacement`).
+  - Only under the default (automatic) label alignment; an explicit left, centre or right alignment
+    keeps the old layout.
+
+Stress numbers (`labelAnchoring.test.ts`, 15 px labels, 40 px bonds): the bond now stops 7–7.8 px
+from the atom along a horizontal bond, where it stopped 11.3–36.4 px away before (CO2Me with its bond
+on the right: 36.4 → 7.4 px). It never runs into the text: the gap between the bond's end and the label's box
+is 0–0.8 px in all 20 cases.
+
+Known limitations: element labels ("OH", "NH2", "CH3") keep their established centred geometry, and so
+do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centred. The advance
+widths are Helvetica's: another font family places the anchored letter slightly off centre. A cyano
+label whose recorded side and drawn side differ (written, then turned round) is drawn as its text
+reads in the drawing, as before.
+
 ## Abbreviation labels as chemistry (2026-10-10, branches `claude/abbreviation-label-reading` and `claude/awesome-ellis-421ab1`)
 
 Atom labels such as "OMe" were superatoms that nothing checked: "OMe" on a ring carbon (an O with

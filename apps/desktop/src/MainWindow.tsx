@@ -162,7 +162,9 @@ import {
   depthCuedLabelColor,
   depthCuedLabelScale,
   nativeBondOrderResolution,
+  nativeElementFromAtomLabel,
   nativeMoleculeRings,
+  nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
   planPageSvgRender,
@@ -1504,7 +1506,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.20.49-opus";
+const CURRENT_BUILD_STAMP = "10.10.22.13-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -21031,12 +21033,33 @@ function SpinOverlay({
   // the projection stacks them; halo and fill passes share this order. Each label resolves its
   // per-atom Inspector style (font, color, halo color/width, anchor placement) exactly as the
   // committed 2D render does, so styled labels look identical live and on flatten.
+  // A group label ("OMe") is drawn the way round its bond reads, with the atom it bonds to on the
+  // atom, as the flat drawing does (layout-engine's nonElementAtomLabelPlacement). Its bonds turn as
+  // the molecule spins, so it is placed from the projected heavy neighbours each frame.
+  const projectedByIndex = new Map(projection.atoms.map((atom) => [atom.index, atom]));
+  const heavyNeighbourIndices: number[][] = state.atoms.map(() => []);
+  state.bondPairs.forEach(([from, to]) => {
+    if (nativeElementFromAtomLabel(state.atoms[to]?.element ?? "") !== "H") heavyNeighbourIndices[from]?.push(to);
+    if (nativeElementFromAtomLabel(state.atoms[from]?.element ?? "") !== "H") heavyNeighbourIndices[to]?.push(from);
+  });
   const spinLabels = projection.atoms
     .flatMap((atom) => {
-      const label = state.atomLabels[atom.index];
-      if (!label) return [];
+      const drawnLabel = state.atomLabels[atom.index];
+      if (!drawnLabel) return [];
       const labelStyle = state.atomLabelStyles[atom.index] ?? drawingStyle;
-      const layout = atomLabelLayout(label, labelStyle);
+      const groupAtom = state.atoms[atom.index];
+      const placement = groupAtom
+        ? nonElementAtomLabelPlacement(
+            { ...groupAtom, x: atom.sx },
+            (heavyNeighbourIndices[atom.index] ?? []).flatMap((index) => {
+              const neighbour = projectedByIndex.get(index);
+              return neighbour ? [{ x: neighbour.sx }] : [];
+            }),
+            labelStyle
+          )
+        : undefined;
+      const label = placement?.label ?? drawnLabel;
+      const layout = atomLabelLayout(label, labelStyle, placement?.anchor);
       const sourceAtom = state.atoms[atom.index];
       const anchorOffset = sourceAtom
         ? atomLabelAnchorOffset(sourceAtom, label, labelStyle, layout)

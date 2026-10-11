@@ -249,10 +249,23 @@ const sideDependentSpellings: ReadonlySet<string> = new Set(["CN"]);
  * count as groups here: "NHAc" is an acetamide N, "OTs" a tosylate O, "NPr2" a dipropylamino N.
  */
 function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): NativeLabelGroup | undefined {
+  return readCompositeLabel(label, bondSide)?.group;
+}
+
+/**
+ * `nativeCompositeLabelGroup`, also returning the label's tokens in the order they were read, each
+ * with its count: "NHBoc" is ["N", "H", "Boc"], "NMe2" is ["N", "Me2"]. The drawn label reverses them
+ * for a bond on its right ("BocHN", "Me2N").
+ */
+function readCompositeLabel(
+  label: string,
+  bondSide?: "left" | "right"
+): { group: NativeLabelGroup; tokens: string[] } | undefined {
   let head: NativeElementSymbol | undefined;
   let headEnd = -1;
   let hydrogens = 0;
   const substituents: AbbreviationDefinition[] = [];
+  const tokens: string[] = [];
   let index = 0;
   const readCount = (): number | undefined => {
     const digits = /^\d*/.exec(label.slice(index))![0];
@@ -262,6 +275,7 @@ function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): 
     return count >= 1 && count <= 4 ? count : undefined;
   };
   while (index < label.length) {
+    const tokenStart = index;
     const spelling = compositeTokenSpellings.find((candidate) => label.startsWith(candidate, index));
     if (spelling) {
       if (index === headEnd && spelling.startsWith("O")) return undefined;
@@ -274,6 +288,7 @@ function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): 
         (head === undefined || index < label.length || bondSide === "right")
       ) return undefined;
       for (let copy = 0; copy < count; copy += 1) substituents.push(definition);
+      tokens.push(label.slice(tokenStart, index));
       continue;
     }
     // An element symbol in its own case; the second letter must be lower case, so "NMe" is N + Me.
@@ -298,6 +313,7 @@ function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): 
     index += symbol.length;
     const count = readCount();
     if (count === undefined) return undefined;
+    tokens.push(label.slice(tokenStart, index));
     if (symbolElement === "H") {
       hydrogens += count;
       continue;
@@ -307,7 +323,7 @@ function nativeCompositeLabelGroup(label: string, bondSide?: "left" | "right"): 
     headEnd = index;
   }
   return head !== undefined && substituents.length > 0
-    ? { kind: "composite", label, head, hydrogens, substituents }
+    ? { group: { kind: "composite", label, head, hydrogens, substituents }, tokens }
     : undefined;
 }
 
@@ -368,4 +384,93 @@ export function nativeSingleHeavyElementLabelValence(
   }
 
   return { element, hydrogens: counts.get("H") ?? 0 };
+}
+
+/** The characters of a drawn group label that sit on its atom: its first or last `length`. */
+export interface AtomLabelAnchor {
+  side: "start" | "end";
+  length: number;
+}
+
+/**
+ * How a group label is drawn when its bond comes from `bondSide` (the side test that draws a hydroxyl
+ * as "HO"): the text, and which of its characters sit on the atom.
+ *
+ * The atom the group's bonds reach (`nativeLabelGroupAttachment`) sits on the atom when the label
+ * spells it at the end its bond comes from: the O of "OMe", the C of "CO2Me", the N of "NHBoc". A
+ * label that spells it at the far end is drawn turned round, token by token ("MeO", "MeO2C",
+ * "BocHN", "Me2N"), but only when the turned text reads as the same group: "SCN" is never drawn
+ * "CNS", and "COMe", whose reversal would read as something else, stays as typed. A label that does
+ * not spell its attachment ("Ph", "Boc", "TMS"), or that cannot be turned, puts the letter nearest the
+ * bond on the atom. Undefined for a label that is not a group, or whose bond-end character is not a
+ * letter: those keep the centred layout.
+ *
+ * Display only. The stored label, and what it means, never change.
+ */
+export function nativeGroupLabelDisplay(
+  label: string,
+  bondSide: "left" | "right"
+): { text: string; anchor: AtomLabelAnchor } | undefined {
+  const reading = nativeAtomLabelReading(label, { bonded: true, bondSide });
+  if (reading.kind !== "group") return undefined;
+  const wanted = bondSide === "right" ? "end" : "start";
+  const symbol = nativeLabelGroupAttachment(reading.group).element;
+  const spelledAt = spelledAttachmentEnd(label, symbol);
+  if (spelledAt === wanted) {
+    return { text: label, anchor: { side: wanted, length: symbol.length } };
+  }
+  if (spelledAt !== undefined) {
+    const turned = turnedGroupLabel(label, reading.group, symbol, wanted, bondSide);
+    if (turned !== undefined) {
+      return { text: turned, anchor: { side: wanted, length: symbol.length } };
+    }
+  }
+  const bondEnd = wanted === "start" ? label.slice(0, 1) : label.slice(-1);
+  return /^[A-Za-z]$/.test(bondEnd) ? { text: label, anchor: { side: wanted, length: 1 } } : undefined;
+}
+
+/** Which end of a label spells `symbol` as a whole token: "C" starts "CO2Me" but not "Cl". */
+function spelledAttachmentEnd(label: string, symbol: string): "start" | "end" | undefined {
+  if (/^[A-Z][a-z]?/.exec(label)?.[0] === symbol) return "start";
+  if (/[A-Z][a-z]?$/.exec(label)?.[0] === symbol) return "end";
+  return undefined;
+}
+
+/**
+ * The group label turned round so `symbol` is at the `wanted` end, or undefined when the turned text
+ * would not read as the same group. A composite reverses its tokens ("NHBoc" → "BocHN") and must
+ * read back with the same head, hydrogens and substituents. A table abbreviation takes the one of its
+ * own spellings with the same characters and the attachment at that end ("CO2Me" → "MeO2C",
+ * "COOMe" → "MeOOC"); "COMe" has none ("MeCO" bonds at its C in the middle).
+ */
+function turnedGroupLabel(
+  label: string,
+  group: NativeLabelGroup,
+  symbol: string,
+  wanted: "start" | "end",
+  bondSide: "left" | "right"
+): string | undefined {
+  const sameCharacters = (left: string, right: string) =>
+    [...left].sort().join("") === [...right].sort().join("");
+  if (group.kind === "abbreviation") {
+    const { definition } = group;
+    return [definition.label, ...definition.aliases].find((spelling) =>
+      spelling !== label &&
+      sameCharacters(spelling, label) &&
+      spelledAttachmentEnd(spelling, symbol) === wanted &&
+      abbreviationForLabel(spelling) === definition
+    );
+  }
+  const read = readCompositeLabel(label, bondSide);
+  if (!read) return undefined;
+  const turned = [...read.tokens].reverse().join("");
+  const back = readCompositeLabel(turned, bondSide)?.group;
+  if (back?.kind !== "composite" || spelledAttachmentEnd(turned, symbol) !== wanted) return undefined;
+  const definitions = (substituents: readonly AbbreviationDefinition[]) =>
+    substituents.map((definition) => definition.label).sort().join(",");
+  return back.head === group.head &&
+    back.hydrogens === group.hydrogens &&
+    definitions(back.substituents) === definitions(group.substituents)
+    ? turned
+    : undefined;
 }

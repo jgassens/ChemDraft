@@ -8,28 +8,8 @@ in progress rather than a changelog.
 
 # In flight
 
-## Label anchoring (branch `claude/label-anchoring`, stacked on #83)
-
-A group label such as "OMe" draws centred on its atom, so the bond meets the label's middle rather
-than the atom it bonds to, and a group bonded on its right still reads left to right ("OMe–C"
-instead of "MeO–C"). Two commits, each reviewed on its own:
-
-1. **Move the atom-label grammar into layout-engine, verbatim** (`labelGrammar.ts`): the reading,
-   the composite parser, the group's attachment atom and the valence tables it needs.
-   document-workflow-core re-exports every name and keeps the verdicts, validation and expansion.
-   No behaviour changes; the existing reading tests pass unchanged.
-2. **Anchor and flip, in layout-engine.**
-   - The attachment atom's symbol sits on the atom (the O of OMe, the C of CO2Me, a composite's
-     head). A label that does not spell its attachment (Ph, Ms, Boc, TMS) puts its bond-end character
-     there. Bond clipping follows the asymmetric bounds.
-   - A group bonded on its right is drawn token-reversed (MeO, MeO2C, BocHN, PhH2C), but only when the
-     reversed text reads as the same group; SCN is never drawn as NCS.
-   - Display only: the stored label, its recorded bond side and the chemistry are untouched. The inline
-     label editor stays centred.
-
-Gates: stress numbers for canvas, SVG/PDF export, CLI bounds and bond clipping (OMe, CO2Me, NHBoc,
-Ph, TMS × bonds left, right, up, down); review of each commit; the owner's check of OMe on both ends
-of a bond and on a ring carbon.
+Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
+`docs/shipped/README.md`.)
 
 ---
 
