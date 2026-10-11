@@ -10294,6 +10294,7 @@ function gradientStopsWithPrimaryColor(
     return denominator > 0 ? range / denominator : 0;
   };
   const baseSaturation = baseColor ? saturation(channels(baseColor)) : 0;
+  const nextSaturation = saturation(nextChannels);
   const nextLightness = lightness(nextChannels);
   const nextRange = Math.max(...nextChannels) - Math.min(...nextChannels);
   return stops.map((stop, index) => {
@@ -10314,9 +10315,12 @@ function gradientStopsWithPrimaryColor(
       : nextLightness * (1 + amount);
     // Preserve saturation relative to the base so changing hue and back retains highlights.
     const stopSaturation = saturation(channels(normalizedStopColor));
-    const recoloredSaturation = baseSaturation > 0
-      ? Math.min(1, saturation(nextChannels) * stopSaturation / baseSaturation)
-      : saturation(nextChannels);
+    const saturationAmount = stopSaturation > baseSaturation
+      ? (1 - baseSaturation === 0 ? 0 : (stopSaturation - baseSaturation) / (1 - baseSaturation))
+      : baseSaturation > 0 ? (stopSaturation - baseSaturation) / baseSaturation : 0;
+    const recoloredSaturation = saturationAmount > 0
+      ? nextSaturation + (1 - nextSaturation) * saturationAmount
+      : nextSaturation * (1 + saturationAmount);
     const recoloredRange = (255 - Math.abs(2 * recoloredLightness - 255)) * recoloredSaturation;
     const recolored = nextChannels.map((channel) => Math.round(
       recoloredLightness + (nextRange > 0 ? (channel - nextLightness) / nextRange * recoloredRange : 0)

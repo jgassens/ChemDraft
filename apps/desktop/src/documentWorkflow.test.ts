@@ -8783,42 +8783,55 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(recolored, objectId).style.fillPaint).toEqual(paint);
   });
 
-  it("restores the radial sphere highlight after blue to red to blue recoloring", () => {
-    const document = insertNativeArtGraphicObject(
-      createPhase4Document("Recolor Radial Sphere"),
-      { x: 220, y: 180 },
-      "tool.art.rect"
-    );
-    const objectId = document.selection.objectIds[0]!;
-    const paint = {
-      kind: "radial-gradient" as const,
-      units: "object" as const,
-      cx: 0.5, cy: 0.5, r: 0.72, fx: 0.32, fy: 0.28,
-      stops: [
-        { offset: 0, color: "#99bbdd", opacity: 0.8 },
-        { offset: 0.5, color: "#336699" },
-        { offset: 1, color: "#224466" }
-      ]
-    };
-    const painted = applyPatches(document, [{
-      op: "updateObject", objectId,
-      changes: { style: { fillPaint: paint, fillColor: "#224466" } }
-    }]);
-    let recolored = painted;
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      recolored = applyGraphicObjectColorToSelection(recolored, "fill", "#aa2222");
-      recolored = applyGraphicObjectColorToSelection(recolored, "fill", "#224466");
-      const restoredPaint = graphicById(recolored, objectId).style.fillPaint;
-      expect(restoredPaint?.kind).toBe("radial-gradient");
-      if (restoredPaint?.kind !== "radial-gradient") throw new Error("Expected radial gradient");
-      const highlight = restoredPaint.stops[0]!;
-      expect(highlight.offset).toBe(paint.stops[0]!.offset);
-      expect(highlight.opacity).toBe(paint.stops[0]!.opacity);
-      for (const channel of [1, 3, 5]) {
-        expect(Math.abs(
-          parseInt(highlight.color.slice(channel, channel + 2), 16)
-          - parseInt(paint.stops[0]!.color.slice(channel, channel + 2), 16)
-        )).toBeLessThanOrEqual(1);
+  it("restores every radial sphere stop across repeated color round trips", () => {
+    for (const [baseColor, highlightColor] of [
+      ["#667788", "#99bbdd"],
+      ["#887766", "#ddbb99"],
+      ["#668877", "#99ddbb"],
+      ["#224466", "#99bbdd"]
+    ] as const) {
+      const document = insertNativeArtGraphicObject(
+        createPhase4Document("Recolor Radial Sphere"),
+        { x: 220, y: 180 },
+        "tool.art.rect"
+      );
+      const objectId = document.selection.objectIds[0]!;
+      const paint = {
+        kind: "radial-gradient" as const,
+        units: "object" as const,
+        cx: 0.5, cy: 0.5, r: 0.72, fx: 0.32, fy: 0.28,
+        stops: [
+          { offset: 0, color: highlightColor, opacity: 0.8 },
+          { offset: 0.5, color: baseColor === "#224466" ? "#336699" : baseColor },
+          { offset: 1, color: baseColor }
+        ]
+      };
+      let recolored = applyPatches(document, [{
+        op: "updateObject", objectId,
+        changes: { style: { fillPaint: paint, fillColor: baseColor } }
+      }]);
+      let firstRoundTripColors: string[] | undefined;
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        recolored = applyGraphicObjectColorToSelection(recolored, "fill", "#aa2222");
+        recolored = applyGraphicObjectColorToSelection(recolored, "fill", baseColor);
+        const restoredPaint = graphicById(recolored, objectId).style.fillPaint;
+        expect(restoredPaint?.kind).toBe("radial-gradient");
+        if (restoredPaint?.kind !== "radial-gradient") throw new Error("Expected radial gradient");
+        expect(restoredPaint.stops).toHaveLength(paint.stops.length);
+        for (const [index, stop] of restoredPaint.stops.entries()) {
+          const original = paint.stops[index]!;
+          expect(stop.offset).toBe(original.offset);
+          expect(stop.opacity).toBe(original.opacity);
+          for (const channel of [1, 3, 5]) {
+            expect(Math.abs(
+              parseInt(stop.color.slice(channel, channel + 2), 16)
+              - parseInt(original.color.slice(channel, channel + 2), 16)
+            )).toBeLessThanOrEqual(1);
+          }
+        }
+        const colors = restoredPaint.stops.map((stop) => stop.color);
+        if (firstRoundTripColors) expect(colors).toEqual(firstRoundTripColors);
+        else firstRoundTripColors = colors;
       }
     }
   });
