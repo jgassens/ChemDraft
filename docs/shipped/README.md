@@ -46,7 +46,11 @@ side and its chemistry never change. Two commits:
   the chemistry read a label with one implementation; document-workflow-core re-exports every name
   and keeps the verdicts, validation and expansion.
 - **Anchoring and turning** (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`):
-  - The side is the one the drawing shows, by the test that draws a hydroxyl as "HO".
+  - With one bond, the side is the one the drawing shows, by the test that draws a hydroxyl as
+    "HO" (the same test #83 records a cyano label's side with). On a ring vertex (two or more
+    bonds) the label turns toward the side its bonds pull to, by the sign of their summed
+    x-offsets, so it points out of the ring; a vertex whose bonds pull neither way (the top or
+    bottom of a vertical-sided hexagon) keeps the label as typed.
   - The letters of the atom the group's bonds reach sit on the atom: the O of OMe, the C of CO2Me,
     the N of NHBoc, the Si of SiMe3.
   - A label that spells that atom at its far end is drawn turned round, token by token: MeO,
@@ -60,6 +64,8 @@ side and its chemistry never change. Two commits:
     letter before them.
   - Bond clipping, the CLI's render bounds and SVG/PDF export all use the planned layout, and the
     Spin 3D overlay places a label from its projected bonds each frame (`nonElementAtomLabelPlacement`).
+    The overlay opens on the conformer's own view, not the drawing's layout, so a label there reads
+    toward its bond as the overlay draws it, which can differ from the flat drawing.
   - Only under the default (automatic) label alignment; an explicit left, centre or right alignment
     keeps the old layout.
 

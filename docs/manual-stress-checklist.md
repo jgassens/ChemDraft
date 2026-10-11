@@ -98,8 +98,10 @@ on a ring carbon, with the bond meeting the O each time and the label drawn "MeO
 right; the same for CO2Me (MeO2C), NHBoc (BocHN), and for Ph and TMS (the letter nearest the bond on
 the atom), with the bond going up and down as well; SCN never drawn "CNS"; a label moved, rotated or
 flipped redrawing the right way round while its formula and Copy As SMILES stay the same; Spin 3D on
-a molecule with OMe, the overlay showing the same label as the drawing at rest; SVG and PDF export
-matching the canvas; the label editor still opening centred on the atom.
+a chain of three or more atoms ending in OMe, the label reading toward its bond as the overlay draws
+it and turning as the bond swings to its other side (the overlay opens on the conformer's own view,
+not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
+centred on the atom.
 
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.

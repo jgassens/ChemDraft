@@ -1506,7 +1506,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.22.36-opus";
+const CURRENT_BUILD_STAMP = "10.10.23.23-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -21050,10 +21050,10 @@ function SpinOverlay({
       const groupAtom = state.atoms[atom.index];
       const placement = groupAtom
         ? nonElementAtomLabelPlacement(
-            { ...groupAtom, x: atom.sx },
+            { ...groupAtom, x: atom.sx, y: atom.sy },
             (heavyNeighbourIndices[atom.index] ?? []).flatMap((index) => {
               const neighbour = projectedByIndex.get(index);
-              return neighbour ? [{ x: neighbour.sx }] : [];
+              return neighbour ? [{ x: neighbour.sx, y: neighbour.sy }] : [];
             }),
             labelStyle
           )

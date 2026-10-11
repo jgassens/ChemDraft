@@ -14,8 +14,10 @@ keeps what is built on it (valence verdicts, validation, expansion); it must not
 A group label is drawn the way round its bond reads, with the atom it bonds to on the atom
 (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`): "OMe" with its O on the atom, drawn "MeO"
 with its bond on the right, but only when the turned text reads as the same group. `AtomLabelPlan`
-carries the anchor, and bond clipping, the CLI's bounds, SVG/PDF export and the Spin 3D overlay all lay
-the label out from it. Display only; under an explicit label alignment the old centred layout stays.
+carries the anchor, and bond clipping, the CLI's bounds and SVG/PDF export lay the label out from it;
+the Spin 3D overlay applies the same rule each frame to its projected bonds
+(`nonElementAtomLabelPlacement`). Display only; under an explicit label alignment the old centred
+layout stays.
 
 `src/valence.ts` is the one implementation of how many bonds an atom uses: the element table,
 `nativeAtomValenceForCharge`, and `nativeBondOrderResolution`, which replaces each aromatic bond

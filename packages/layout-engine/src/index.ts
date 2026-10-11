@@ -5876,11 +5876,11 @@ function heavyAtomNeighborCount(
  * text (turned round for a bond on its right when it reads the same, `nativeGroupLabelDisplay`)
  * and the characters that sit on the atom, under automatic alignment. What `atomDisplayLabelPlacement`
  * returns for such an atom; exported so the 3D spin overlay places a label by its projected bonds
- * exactly as the flat drawing does. Undefined for an element label.
+ * by the same rule. Undefined for an element label.
  */
 export function nonElementAtomLabelPlacement(
   atom: MoleculeAtom,
-  neighbors: readonly { x: number }[],
+  neighbors: readonly { x: number; y: number }[],
   drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle
 ): AtomDisplayLabelPlacement | undefined {
   if (nativeElementFromAtomLabel(atom.element)) {
@@ -5888,9 +5888,34 @@ export function nonElementAtomLabelPlacement(
   }
   const charge = chargeLabelSuffix(atom.formalCharge - (atom.markCharge ?? 0));
   const symbol = atom.element.trim() || "C";
-  const side = drawingStyle.atomLabelAlignment === "automatic" ? drawnLabelBondSide(atom, neighbors) : undefined;
+  const side = drawingStyle.atomLabelAlignment === "automatic" ? groupLabelDisplaySide(atom, symbol, neighbors) : undefined;
   const group = side ? nativeGroupLabelDisplay(symbol, side) : undefined;
   return group ? { label: `${group.text}${charge}`, anchor: group.anchor } : { label: `${symbol}${charge}` };
+}
+
+/**
+ * The side a group label is drawn as bonded from. One bond: chem-core's side test, exactly as for
+ * "HO" and as #83 records a cyano label's side (`drawnLabelBondSide`). Two or more (a ring vertex):
+ * the side the bonds pull to, by the sign of their summed x-offsets, so the label points out of the
+ * ring; a vertex whose bonds pull neither way (the top or bottom of a hexagon, offsets summing to
+ * under a tenth of a bond) keeps the label as typed. Display only: the side a label's chemistry is
+ * read with is recorded from one bond and never from this.
+ */
+function groupLabelDisplaySide(
+  atom: { x: number; y: number },
+  label: string,
+  neighbors: readonly { x: number; y: number }[]
+): "left" | "right" | undefined {
+  if (neighbors.length < 2) {
+    return drawnLabelBondSide(atom, neighbors);
+  }
+  const pull = neighbors.reduce((sum, neighbor) => sum + (neighbor.x - atom.x), 0);
+  const bond = neighbors.reduce((sum, neighbor) => sum + Math.hypot(neighbor.x - atom.x, neighbor.y - atom.y), 0) / neighbors.length;
+  if (Math.abs(pull) >= bond * 0.1) {
+    return pull > 0 ? "right" : "left";
+  }
+  // As typed: the side whose reading leaves the label unturned ("MeO" keeps its O at the end).
+  return nativeGroupLabelDisplay(label, "left")?.text === label ? "left" : "right";
 }
 
 /** The atom's bonded neighbours that are not hydrogen, each once. */

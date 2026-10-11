@@ -287,10 +287,12 @@ describe("Spin 3D session state", () => {
     }
   });
 
-  it("draws a group label in the overlay the way round the flat drawing does", async () => {
+  it("draws a group label in the overlay the way round its projected bond reads", async () => {
     // OMe on the left end of a bond: its bond is on its right, so the drawing turns it round to
-    // "MeO" with its O on the atom. The overlay places labels by the projected bonds each frame, and
-    // at rest must show the same text (layout-engine's nonElementAtomLabelPlacement).
+    // "MeO" with its O on the atom. The overlay places labels by its projected bonds each frame
+    // (layout-engine's nonElementAtomLabelPlacement). The overlay opens on the conformer's own view,
+    // not the drawing's layout; this two-atom fixture opens in the identity view, which keeps the
+    // drawing's left-right order, so here it shows the same text and anchoring as the drawing.
     const ethane = createSelectedMoleculeDocument();
     const molecule = ethane.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
     const left = [...molecule.atoms].sort((first, second) => first.x - second.x)[0]!;

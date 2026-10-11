@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
+  drawnLabelBondSide,
   nativeDrawingStyleFromObjectStyle,
   stylePresetToObjectStyle,
   type MoleculeAtom,
@@ -66,6 +67,81 @@ describe("how a group label is drawn the way round its bond reads", () => {
   ] as const)("%s with its bond on the %s keeps the centred layout: %s", (label, side, _why) => {
     expect(nativeGroupLabelDisplay(label, side)).toBeUndefined();
   });
+});
+
+describe("a group label on a ring vertex points out of the ring", () => {
+  const style = { ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset), source: "chemdraft-native-drawing" as const };
+  const radius = 30;
+  /** A hexagon, "vertical-sided" (a vertex at the top) or "flat-topped", with `label` on vertex `at`. */
+  function ring(orientation: "vertical-sided" | "flat-topped", at: number, label: string, literal = true): MoleculeObject {
+    const start = orientation === "vertical-sided" ? -90 : 0;
+    const atoms: MoleculeAtom[] = Array.from({ length: 6 }, (_, index) => {
+      const angle = ((start + 60 * index) * Math.PI) / 180;
+      return {
+        id: `v${index}`, element: index === at ? label : "C",
+        x: 300 + radius * Math.cos(angle), y: 300 + radius * Math.sin(angle), formalCharge: 0,
+        ...(index === at && literal ? { labelLiteral: true } : {})
+      };
+    });
+    return {
+      id: "ring", type: "molecule", x: 260, y: 260, width: 80, height: 80, rotation: 0, style,
+      structureFormat: "smiles", structure: "", superatoms: [], rGroups: [], atoms,
+      bonds: atoms.map((atom, index) => ({ id: `b${index}`, fromAtomId: atom.id, toAtomId: atoms[(index + 1) % 6]!.id, order: "single" as const }))
+    };
+  }
+  const planAt = (molecule: MoleculeObject, at: number) =>
+    planMoleculeAtomLabels(molecule).find((plan) => plan.atom.id === `v${at}`)!;
+
+  // The side each vertex's bonds pull to; "tie" for the top and bottom of a vertical-sided ring.
+  const sides = {
+    "vertical-sided": ["tie", "left", "left", "tie", "right", "right"],
+    "flat-topped": ["left", "left", "right", "right", "right", "left"]
+  } as const;
+  const drawnFor = (label: "OMe" | "NMe", side: "left" | "right" | "tie") =>
+    side === "right" ? { text: label === "OMe" ? "MeO" : "MeN", anchor: "end" } : { text: label, anchor: "start" };
+
+  it.each((["vertical-sided", "flat-topped"] as const).flatMap((orientation) =>
+    (["OMe", "NMe"] as const).flatMap((label) => [0, 1, 2, 3, 4, 5].map((at) => [label, at, orientation] as const))
+  ))("%s on vertex %d of a %s ring", (label, at, orientation) => {
+    const molecule = ring(orientation, at, label);
+    const plan = planAt(molecule, at);
+    const expected = drawnFor(label, sides[orientation][at]!);
+    expect({ text: plan.label, anchor: plan.labelAnchor?.side }).toEqual(expected);
+    // Display only: the planned atom is the stored one, with no recorded side added.
+    expect(plan.atom).toBe(molecule.atoms[at]);
+    expect(plan.atom.labelBondSide).toBeUndefined();
+  });
+
+  it("keeps a label as typed where its bonds pull neither way (the top of a vertical-sided ring)", () => {
+    expect({ text: planAt(ring("vertical-sided", 0, "MeO"), 0).label, anchor: planAt(ring("vertical-sided", 0, "MeO"), 0).labelAnchor?.side })
+      .toEqual({ text: "MeO", anchor: "end" });
+    expect({ text: planAt(ring("vertical-sided", 3, "OMe"), 3).label, anchor: planAt(ring("vertical-sided", 3, "OMe"), 3).labelAnchor?.side })
+      .toEqual({ text: "OMe", anchor: "start" });
+  });
+
+  it("leaves element labels as they were: a typed NH, and a ring N drawn with its H", () => {
+    // Vertex 5 of a vertical-sided ring pulls right, which would turn a group label.
+    const typed = planAt(ring("vertical-sided", 5, "NH"), 5);
+    expect({ label: typed.label, anchor: typed.labelAnchor }).toEqual({ label: "NH", anchor: undefined });
+    const element = planAt(ring("vertical-sided", 5, "N", false), 5);
+    expect({ label: element.label, anchor: element.labelAnchor }).toEqual({ label: "NH", anchor: undefined });
+  });
+
+  it.each([0, 30, 60, 89.99, 90, 90.01, 120, 180, 240, 270, 300, 330])(
+    "a one-bond label keeps chem-core's side test exactly: bond at %d°",
+    (degrees) => {
+      const radians = (degrees * Math.PI) / 180;
+      const atom: MoleculeAtom = { id: "L", element: "OMe", x: 300, y: 300, formalCharge: 0, labelLiteral: true };
+      const neighbour: MoleculeAtom = { id: "c", element: "C", x: 300 + 30 * Math.cos(radians), y: 300 - 30 * Math.sin(radians), formalCharge: 0 };
+      const molecule: MoleculeObject = {
+        id: "one", type: "molecule", x: 260, y: 260, width: 80, height: 80, rotation: 0, style,
+        structureFormat: "smiles", structure: "", superatoms: [], rGroups: [], atoms: [atom, neighbour],
+        bonds: [{ id: "b", fromAtomId: "L", toAtomId: "c", order: "single" }]
+      };
+      const plan = planMoleculeAtomLabels(molecule).find((candidate) => candidate.atom.id === "L")!;
+      expect(plan.labelAnchor?.side).toBe(drawnLabelBondSide(atom, [neighbour]) === "right" ? "end" : "start");
+    }
+  );
 });
 
 describe("label anchoring stress: OMe, CO2Me, NHBoc, Ph and TMS at four bond directions", () => {
