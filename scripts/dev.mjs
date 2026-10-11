@@ -11,7 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prependToPath, worktreeIdentity } from "./worktree-identity.mjs";
 
@@ -53,6 +53,43 @@ function onPath(command) {
 }
 
 const env = { ...process.env };
+
+// Windows keeps a running executable locked. Close only this checkout's debug app before Cargo
+// rebuilds it; let the normal window-close handler flush the session, and never force termination.
+if (process.platform === "win32") {
+  const targetDir = env.CARGO_TARGET_DIR
+    ? resolve(APP_DIR, "src-tauri", env.CARGO_TARGET_DIR)
+    : join(APP_DIR, "src-tauri", "target");
+  const cleanup = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+    $ErrorActionPreference = 'Stop'
+    try {
+      $targetExe = [IO.Path]::GetFullPath($env:CHEMDRAFT_DEV_EXECUTABLE)
+      $runningApps = @(Get-Process -Name chemdraft -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and [IO.Path]::GetFullPath($_.Path) -ieq $targetExe
+      })
+      foreach ($runningApp in $runningApps) {
+        if ($runningApp.HasExited) { continue }
+        Write-Host 'Closing the running ChemDraft app from this checkout before rebuilding.'
+        if (-not $runningApp.CloseMainWindow()) {
+          throw 'Close the ChemDraft app from this checkout, then run pnpm dev again.'
+        }
+        if (-not $runningApp.WaitForExit(10000)) {
+          throw 'ChemDraft is still closing. Finish any open dialog, close the app, then run pnpm dev again.'
+        }
+      }
+    } catch {
+      [Console]::Error.WriteLine($_.Exception.Message)
+      exit 1
+    }
+  `], {
+    cwd: ROOT_DIR,
+    env: { ...env, CHEMDRAFT_DEV_EXECUTABLE: join(targetDir, "debug", "chemdraft.exe") },
+    stdio: "inherit",
+    windowsHide: true
+  });
+  if (cleanup.error) console.error(`Could not close the running ChemDraft app: ${cleanup.error.message}`);
+  if (cleanup.status !== 0) process.exit(cleanup.status ?? 1);
+}
 
 if (!existsSync(join(ROOT_DIR, "node_modules")) || !existsSync(join(APP_DIR, "node_modules"))) {
   const install = spawnSync("pnpm", ["install"], { cwd: ROOT_DIR, stdio: "inherit", shell: true });
