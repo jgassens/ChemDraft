@@ -66,6 +66,7 @@ import {
 } from "./valence";
 import { formatNumber } from "./formatNumber";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
+import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
@@ -1624,7 +1625,6 @@ function planNativeMoleculeGraphSvg(
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
   const effectFilterId = `molecule-effects-${object.id}`;
-  const fillUnderlayFragments = moleculeFillUnderlayFragments(object, drawingStyle);
   const bondLayerFragments = bondSegmentGroups.map(({ bond, drawingStyle: bondDrawingStyle, segments }) =>
     elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
       "data-bond-layer-id": bond.id
@@ -1675,6 +1675,9 @@ function planNativeMoleculeGraphSvg(
   }
   const labelDepthWeightByAtomId = new Map<string, number | undefined>(
     atomLabels.map((plan) => [plan.atom.id, averageDefinedDepthWeights(incidentBondWeights.get(plan.atom.id) ?? [])])
+  );
+  const fillUnderlayFragments = moleculeFillUnderlayFragments(
+    object, atomLabels, labelDepthWeightByAtomId
   );
   // Paint labels far → near so a nearer heteroatom's glyph sits over a farther one where the 3D
   // projection stacks them (the "ONH" pile-ups on a symmetric cage). Halos share the order.
@@ -1794,12 +1797,12 @@ function planNativeMoleculeGraphSvg(
 
 function moleculeFillUnderlayFragments(
   object: MoleculeObject,
-  _drawingStyle: NativeDrawingStyle
+  atomLabels: readonly AtomLabelPlan[],
+  labelDepthWeightByAtomId: ReadonlyMap<string, number | undefined>
 ): PageSvgFragment[] {
   const rings = nativeMoleculeRings(object);
-  if (rings.length === 0) {
-    return [];
-  }
+  // Lazily build these only if there is a painted ring. Unfilled molecules retain their exact plan.
+  let clearances: ReturnType<typeof atomLabelRingClearance>[] | undefined;
 
   return rings.flatMap((ring) => {
     const paint = moleculeRingFillPaint(object, ring.ringKey);
@@ -1808,10 +1811,24 @@ function moleculeFillUnderlayFragments(
     }
 
     const opacity = moleculeRingFillOpacity(object, ring.ringKey, paint);
+    const labelClearances = clearances ??= atomLabels.map((plan) => atomLabelRingClearance(
+      plan, depthCuedLabelScale(labelDepthWeightByAtomId.get(plan.atom.id))
+    ));
+    // Only this ring's own atoms notch its outline. Floating substituent labels retain fill
+    // underneath and their usual background halo. Reject distant labels before boolean work.
+    const candidates = ringOverlappingClearances(ring.points, labelClearances)
+      .filter((index) => ring.atomIds.includes(atomLabels[index]!.atom.id));
+    const difference = candidates.length > 0
+      ? notchedRingPath(ring.points, candidates.map((index) => labelClearances[index]!))
+      : { pathD: ring.pathD, overlappingCutoutIndices: [] };
+    const pathD = difference.overlappingCutoutIndices.length > 0 ? difference.pathD : ring.pathD;
+    if (!pathD) {
+      return [];
+    }
     const effects = visualEffectPlansForStyle({
       objectId: `${object.id}-${stableSvgIdPart(ring.ringKey)}`,
       style: moleculeRingStyle(object, ring.ringKey),
-      sketchBasePathD: ring.pathD,
+      sketchBasePathD: pathD,
       sketchStrokeWidthPx: 1.5
     });
     const effectFilterId = `molecule-ring-effects-${object.id}-${stableSvgIdPart(ring.ringKey)}`;
@@ -1832,7 +1849,8 @@ function moleculeFillUnderlayFragments(
         "data-molecule-fill": "true",
         "data-molecule-fill-ring": "true",
         "data-ring-key": ring.ringKey,
-        d: ring.pathD,
+        d: pathD,
+        "fill-rule": difference.overlappingCutoutIndices.length > 0 ? "evenodd" : undefined,
         ...moleculePaintAttrs("fill", paint, paintId, opacity),
         filter,
         stroke: "none",

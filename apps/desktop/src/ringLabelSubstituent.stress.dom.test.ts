@@ -552,6 +552,97 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expect(status()).toContain("already has 2"); const after = molecule();
     await history(); expect(molecule()).toEqual(before); await history(true); expect(molecule()).toEqual(after);
   });
+
+  async function hoverRingBond(before: MoleculeObject) {
+    const bond = before.bonds[0]!;
+    const near = before.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const far = before.atoms.find(atom => atom.id === bond.toAtomId)!;
+    await pointer("pointermove", { x: near.x + (far.x - near.x) * 0.4, y: near.y + (far.y - near.y) * 0.4 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    return { bond, near, far };
+  }
+
+  function expectAttachedOMe(before: MoleculeObject, atomId: string) {
+    check(7, 7);
+    expect(editor()).toBeNull();
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(molecule().atoms.slice(0, 6)).toEqual(before.atoms);
+    expect(molecule().bonds.slice(0, 6)).toEqual(before.bonds);
+    const substituent = molecule().atoms[6]!;
+    expect(substituent).toMatchObject({ element: "OMe", labelLiteral: true });
+    const attachment = molecule().bonds[6]!;
+    expect(attachment.order).toBe("single");
+    expect([attachment.fromAtomId, attachment.toAtomId].sort()).toEqual([atomId, substituent.id].sort());
+  }
+
+  it("bond-hover O-M-e attaches OMe to the nearer ring carbon, restores bond hover and has one named Undo entry", async () => {
+    await mount(ring(), "tool.bond");
+    const before = molecule();
+    const { bond, near } = await hoverRingBond(before);
+    for (const char of "OMe") await key(char);
+    expect(editor()?.value).toBe("OMe");
+    await key("Enter");
+    expectAttachedOMe(before, near.id);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    const after = molecule();
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe("Undid Add OMe substituent");
+    await history();
+    expect(molecule()).toEqual(before);
+    await history(true);
+    expect(molecule()).toEqual(after);
+    expect(status()).toBe("Redid Add OMe substituent");
+  });
+
+  it.each(["neighbour", "empty page"])("ring O-M-e stays one continuation after drifting to %s and commits a substituent", async drift => {
+    await mount(ring(), "tool.bond");
+    const before = molecule(), atom = before.atoms[0]!;
+    const destination = drift === "neighbour" ? before.atoms[1]! : { x: 40, y: 40 };
+    await pointer("pointermove", atom);
+    await key("O");
+    await pointer("pointermove", destination);
+    if (drift === "neighbour") expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: before.atoms[1]!.id });
+    else expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await key("M");
+    expect(editor()?.value).toBe("OM");
+    await key("e");
+    expect(editor()?.value).toBe("OMe");
+    await key("Enter");
+    expectAttachedOMe(before, atom.id);
+    if (drift === "neighbour") expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: before.atoms[1]!.id });
+    else expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe("Undid Add OMe substituent");
+  });
+
+  it("the substituent commit ends continuation and the next key acts freshly on the bond under the pointer", async () => {
+    await mount(ring(), "tool.bond");
+    const before = molecule();
+    const { bond, near, far } = await hoverRingBond(before);
+    for (const char of "OMe") await key(char);
+    await key("Enter");
+    expectAttachedOMe(before, near.id);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    const attached = molecule();
+    await key("e");
+    expect(editor()).toBeNull();
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    expect(molecule()).toEqual(attached);
+    await key("N");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms.find(atom => atom.id === near.id)!.element).toBe("N");
+    expect(molecule().atoms.find(atom => atom.id === far.id)!.element).toBe("C");
+    expect(molecule().atoms[6]).toEqual(attached.atoms[6]);
+    await history();
+    expect(molecule()).toEqual(attached);
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe("Undid Add OMe substituent");
+  });
+
   it("names hover continuations for their final substituent or relabel result", async () => {
     await mount(ring(), "tool.bond");
     const ringBefore = molecule();

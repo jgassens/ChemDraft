@@ -162,6 +162,7 @@ import {
   eraserSweepInSelectionRect,
   eraserSweepStatus,
   flattenWarningMessages,
+  hoverLabelAtomTargetForKey,
   graphicArtTransformPreviewSvgDataUrl,
   groupedDragObjectIdsForPointer,
   selectionInSelectionLasso,
@@ -1102,6 +1103,47 @@ describe("ChemDraft desktop shell", () => {
     expect(kept?.atoms).toHaveLength(chain.atoms.length);
     expect(kept?.atoms.find((atom) => atom.id === end.id)?.element).toBe("O");
     expect(kept?.bonds).toHaveLength(chain.bonds.length - 1);
+  });
+
+  describe("which atom a label key typed over a bond belongs to", () => {
+    function singleBond() {
+      const document = insertNativeSingleBondMolecule(createPhase4Document("Hover label target"), { x: 220, y: 240 });
+      const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+      const bond = molecule.bonds[0]!;
+      const target = { objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0 };
+      return { document, molecule, bond, target };
+    }
+
+    it("breaks an exact-midpoint tie toward the bond's from-atom, every time", () => {
+      const { document, molecule, bond, target } = singleBond();
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const to = molecule.atoms.find((atom) => atom.id === bond.toAtomId)!;
+      const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      for (let repeat = 0; repeat < 3; repeat++) {
+        expect(hoverLabelAtomTargetForKey(document, target, midpoint, undefined, "O")).toMatchObject({ kind: "atom", atomId: from.id });
+      }
+      // Off the midpoint, the nearer end wins.
+      expect(hoverLabelAtomTargetForKey(document, target, { x: to.x - 1, y: to.y }, undefined, "O")).toMatchObject({ atomId: to.id });
+    });
+
+    it("handles a zero-length bond without failing", () => {
+      const { document, molecule, bond, target } = singleBond();
+      const from = molecule.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const collapsed = applyPatch(document, {
+        op: "updateObject",
+        objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map((atom) => atom.id === bond.toAtomId ? { ...atom, x: from.x, y: from.y } : atom) }
+      });
+      const result = hoverLabelAtomTargetForKey(collapsed, target, { x: from.x + 5, y: from.y + 5 }, undefined, "N");
+      expect(result).toMatchObject({ kind: "atom", atomId: from.id });
+      expect(Number.isFinite(result!.distanceToPointer)).toBe(true);
+    });
+
+    it("leaves digits and non-element letters to the bond when no label is in progress", () => {
+      const { document, target } = singleBond();
+      expect(hoverLabelAtomTargetForKey(document, target, { x: 0, y: 0 }, undefined, "2")).toBeUndefined();
+      expect(hoverLabelAtomTargetForKey(document, target, { x: 0, y: 0 }, undefined, "e")).toBeUndefined();
+    });
   });
 
   it("erases an atom inside the sweep together with its bonds", () => {
