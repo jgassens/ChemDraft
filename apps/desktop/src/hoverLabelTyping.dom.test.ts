@@ -113,17 +113,21 @@ describe("hover label typing", () => {
     expect(molecule().bonds).toHaveLength(6 + attachments);
   }
 
-  function expectOMeSubstituent(atomId = molecule().atoms[0]!.id) {
+  function expectSubstituent(label: string, atomId = molecule().atoms[0]!.id) {
     const current = molecule();
     expect(current.atoms.find(atom => atom.id === atomId)).toMatchObject({ element: "C" });
     const substituent = current.atoms[6]!;
-    expect(substituent).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(substituent).toMatchObject({ element: label, labelLiteral: true });
     const attachment = current.bonds.filter(bond => bond.fromAtomId === substituent.id || bond.toAtomId === substituent.id);
     expect(attachment).toHaveLength(1);
     expect([attachment[0]!.fromAtomId, attachment[0]!.toAtomId]).toContain(atomId);
     expect(attachment[0]!.order).toBe("single");
     expectIntact(1);
     return substituent;
+  }
+
+  function expectOMeSubstituent(atomId = molecule().atoms[0]!.id) {
+    return expectSubstituent("OMe", atomId);
   }
 
   it.each(["OMe", "OEt", "CF3", "NO2", "OBn", "CH3"])("types %s through the existing label editor without erasing", async (label) => {
@@ -294,6 +298,7 @@ describe("hover label typing", () => {
   // key was re-judged against the labelled atom it had just moved the hover back to, read as a new
   // label there, and CF3 silently became F3.
   it("keeps CF3 when the pointer drifts onto empty page right after the first letter", async () => {
+    const before = molecule();
     await hover(0);
     await press("C");
     await hoverPoint({ x: 40, y: 40 });
@@ -303,8 +308,12 @@ describe("hover label typing", () => {
     await press("3");
     expect(editor()?.value).toBe("CF3");
     await press("Enter");
-    expect(molecule().atoms[0]).toMatchObject({ element: "CF3", labelLiteral: true });
-    expectIntact();
+    expect(molecule().atoms[0]!.element).toBe("C");
+    expectSubstituent("CF3");
+    expect(molecule().atoms).toHaveLength(7);
+    expect(molecule().bonds.slice(0, 6)).toEqual(before.bonds);
+    expectIntact(1);
+    expect(molecule().atoms.some(atom => atom.element === "F3" || atom.element === "F")).toBe(false);
   });
 
   it("starts a new label on the neighbouring atom for a capital element letter typed right after the first letter", async () => {
