@@ -379,11 +379,11 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     const atoms = ringStyle.atomsWithDrawnLabels({ atoms: [
       carbon("charge", { formalCharge: 1 }), { ...carbon("isotope"), element: "13C" },
       carbon("marked-radical", { markRadicals: 1 }), carbon("literal", { labelLiteral: true }),
-      carbon("visible", { labelVisible: true })
+      carbon("visible", { labelVisible: true }), { id: "missing-charge", element: "C", x: 0, y: 0 }
     ], bonds: [
       { fromAtomId: "charge", toAtomId: "isotope" }, { fromAtomId: "isotope", toAtomId: "marked-radical" },
       { fromAtomId: "marked-radical", toAtomId: "literal" }, { fromAtomId: "literal", toAtomId: "visible" },
-      { fromAtomId: "visible", toAtomId: "charge" }
+      { fromAtomId: "visible", toAtomId: "charge" }, { fromAtomId: "missing-charge", toAtomId: "charge" }
     ], style: {} });
     expect(atoms.filter((atom: Json) => atom.labelShown).map((atom: Json) => atom.id))
       .toEqual(["charge", "isotope", "visible"]);

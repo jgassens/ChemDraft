@@ -1628,7 +1628,7 @@ export function atomsWithDrawnLabels(mol) {
     return placement === "above" || placement === "below" ? placement : undefined;
   };
   const labelShown = (atom) => {
-    if (atom.element !== "C" || atom.formalCharge !== 0) return true;
+    if (atom.element !== "C" || (atom.formalCharge ?? 0) !== 0) return true;
     const incidentBonds = incidentBondsByAtomId.get(atom.id) ?? [];
     const heavyNeighbors = new Set(incidentBonds.map((bond) =>
       bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId
