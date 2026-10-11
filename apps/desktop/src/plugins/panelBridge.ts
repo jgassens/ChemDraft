@@ -1,6 +1,7 @@
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
+import { listenTauriEvent } from "../window-manager/tauriEvents";
 import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
 
@@ -167,12 +168,12 @@ export async function requestSaveTextFileFromMain(
   const requestId = `save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let unlisten: (() => void) | undefined;
   try {
-    const { emit, listen } = await import("@tauri-apps/api/event");
+    const { emit } = await import("@tauri-apps/api/event");
     let answer: (result: SaveTextFileResult) => void = () => undefined;
     const answered = new Promise<SaveTextFileResult>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isSaveResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.result);
       }
@@ -227,12 +228,12 @@ export async function requestProposalDecision(
   let unlisten: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { emit, listen } = await import("@tauri-apps/api/event");
+    const { emit } = await import("@tauri-apps/api/event");
     let answer: (outcome: ProposalDecisionOutcome) => void = () => undefined;
     const answered = new Promise<ProposalDecisionOutcome>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isProposalResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.proposal);
       }
@@ -285,12 +286,12 @@ export async function requestCopyMolecularInspectorText(text: string): Promise<b
   const requestId = `copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let unlisten: (() => void) | undefined;
   try {
-    const { emit, listen } = await import("@tauri-apps/api/event");
+    const { emit } = await import("@tauri-apps/api/event");
     let answer: (ok: boolean) => void = () => undefined;
     const answered = new Promise<boolean>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listen<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isCopyResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.ok);
       }
@@ -538,16 +539,12 @@ function attachTauriListener<T>(
   let unlistenTauri: (() => void) | undefined;
 
   if (isDesktopRuntime()) {
-    void import("@tauri-apps/api/event")
-      .then(async ({ listen }) => {
-        if (cancelled) {
-          return;
-        }
-        const unlisten = await listen<T>(eventName, (event) => {
-          if (!cancelled && validate(event.payload)) {
-            handler(event.payload);
-          }
-        });
+    void listenTauriEvent<T>(eventName, (event) => {
+      if (!cancelled && validate(event.payload)) {
+        handler(event.payload);
+      }
+    })
+      .then((unlisten) => {
         if (cancelled) {
           unlisten();
         } else {

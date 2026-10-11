@@ -135,6 +135,10 @@ held keys cleared on window blur, no focus stealing, hints hidden during inline 
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
 
+Cold launch on Windows: launch and quit ChemDraft ten times in a row, with its palettes open (on a busy
+machine as well as an idle one); no "ChemDraft ran into an error" dialog appears at launch, and tool
+shortcuts, palette commands, popovers and tooltips all respond afterwards.
+
 Quit and close timing: on Windows, launch and close the document window (title-bar ✕) 2, 4, 6 and 20 s after
 launch, and right after drawing, a hover-typed label and an undo; once the session is saved each exit follows
 within about 2 s, even on a busy machine and while the palettes are still building their popovers and
