@@ -8749,7 +8749,22 @@ export function commitNativeAtomLabelTarget(
     id: nextIndexedIds("bond", pageMolecules.flatMap(m => m.bonds.map(b => b.id)), 1)[0]!,
     fromAtomId: atom.id, toAtomId: newAtom.id, order: "single"
   };
-  const nextMolecule = refreshNativeSingleBondGraph(molecule, [...atoms, newAtom], [...molecule.bonds, bond]);
+  // These maps are consumed by layout-engine's per-atom label style resolver. The
+  // attachment is the user's label moved to a new atom, so it keeps that typography.
+  const nextStyle = { ...molecule.style };
+  for (const key of [
+    "atomLabelFontFamilies", "atomLabelFontSizes", "atomLabelFontWeights", "atomLabelFontStyles",
+    "atomLabelColors", "atomLabelBackgroundColors", "atomLabelPaddings", "atomLabelBondClearances",
+    "atomLabelAlignments", "atomLabelPlacements", "atomLabelShowTerminalCarbonsByAtomId",
+    "atomLabelHideImplicitHydrogensByAtomId"
+  ]) {
+    const entries = molecule.style[key];
+    if (entries && typeof entries === "object" && !Array.isArray(entries) && Object.hasOwn(entries, atom.id)) {
+      const map = entries as Record<string, unknown>;
+      nextStyle[key] = { ...map, [newAtom.id]: map[atom.id] };
+    }
+  }
+  const nextMolecule = refreshNativeSingleBondGraph({ ...molecule, style: nextStyle }, [...atoms, newAtom], [...molecule.bonds, bond]);
   return {
     document: applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: nextMolecule }, { now: phase4Timestamp }),
     target: { ...target, kind: "atom", atomId: newAtom.id },

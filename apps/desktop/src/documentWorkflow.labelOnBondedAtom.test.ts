@@ -50,6 +50,62 @@ function canonicalLabelGraph(m: MoleculeObject) {
 }
 
 describe("commitNativeAtomLabelTarget", () => {
+  it("inherits every per-atom label style without changing the source entries", () => {
+    const { document, m, target } = setup();
+    const values = {
+      atomLabelFontFamilies: "Georgia", atomLabelFontSizes: 20, atomLabelFontWeights: 700,
+      atomLabelFontStyles: "italic", atomLabelColors: "#123456", atomLabelBackgroundColors: "#abcdef",
+      atomLabelPaddings: 4, atomLabelBondClearances: 3, atomLabelAlignments: "right",
+      atomLabelPlacements: "above", atomLabelShowTerminalCarbonsByAtomId: false,
+      atomLabelHideImplicitHydrogensByAtomId: true
+    };
+    const style = { ...m.style, ...Object.fromEntries(Object.entries(values).map(([key, value]) =>
+      [key, { [target.atomId]: value, unrelated: value }])) };
+    const styled = applyPatches(document, [{ op: "updateObject", objectId: m.id, changes: { style } }]);
+    const result = commitNativeAtomLabelTarget(styled, target, "OMe", { literal: true });
+    const after = molecule(result.document), added = after.atoms[6]!;
+    for (const [key, value] of Object.entries(values)) {
+      expect(after.style[key]).toEqual({ [target.atomId]: value, unrelated: value, [added.id]: value });
+      expect(molecule(styled).style[key]).toEqual({ [target.atomId]: value, unrelated: value });
+    }
+    expect(after.atoms[0]).toEqual(molecule(styled).atoms[0]);
+  });
+  it("relabels with a specific warning when all attachment positions are crowded", () => {
+    const { document, m, target } = setup();
+    const source = m.atoms[0]!, length = nativeDrawingStyleFromObjectStyle(m.style).bondLengthPx;
+    // Every point at one bond length is within half a bond length of a blocker.
+    const blockers = Array.from({ length: 24 }, (_, i) => ({ ...source, id: `blocker${i}`,
+      x: source.x + length * Math.cos(i * Math.PI / 12), y: source.y + length * Math.sin(i * Math.PI / 12) }));
+    const crowded = applyPatches(document, [{ op: "updateObject", objectId: m.id, changes: { atoms: [...m.atoms, ...blockers] } }]);
+    const result = commitNativeAtomLabelTarget(crowded, target, "OMe", { literal: true });
+    expect(result.target).toBe(target);
+    expect(molecule(result.document).atoms).toHaveLength(30);
+    expect(molecule(result.document).atoms[0]!.element).toBe("OMe");
+    expect(result.message).toBe("Relabeled OMe: no clear substituent position on the page");
+  });
+  it.each([1, 13])("clamps an outward attachment at an edge with %s px remaining, falling back if too short", remaining => {
+    const { document, m, target } = setup();
+    const source = m.atoms[0]!;
+    const center = { x: m.atoms.reduce((sum, a) => sum + a.x, 0) / 6, y: m.atoms.reduce((sum, a) => sum + a.y, 0) / 6 };
+    const length = nativeDrawingStyleFromObjectStyle(m.style).bondLengthPx;
+    const dx = source.x - center.x, dy = source.y - center.y;
+    // Put the source at the boundary its ring's outward normal points toward.
+    const shift = Math.abs(dx) > Math.abs(dy)
+      ? { x: (dx > 0 ? document.pages[0].width - remaining : remaining) - source.x, y: 0 }
+      : { x: 0, y: (dy > 0 ? document.pages[0].height - remaining : remaining) - source.y };
+    const shifted = { ...m, atoms: m.atoms.map(a => ({ ...a, x: a.x + shift.x, y: a.y + shift.y })) };
+    const edge = applyPatches(document, [{ op: "updateObject", objectId: m.id, changes: shifted }]);
+    const result = commitNativeAtomLabelTarget(edge, target, "OMe", { literal: true });
+    if (remaining < length * 0.5) {
+      expect(molecule(result.document).atoms).toHaveLength(6);
+      expect(molecule(result.document).atoms[0]!.element).toBe("OMe");
+      expect(result.message).toBe("Relabeled OMe: no clear substituent position on the page");
+    } else {
+      const added = molecule(result.document).atoms[6]!;
+      expect(Math.hypot(added.x - shifted.atoms[0]!.x, added.y - shifted.atoms[0]!.y)).toBeCloseTo(remaining, 8);
+      expect(result.message).toContain("Attached OMe");
+    }
+  });
   it.each([
     ["benzene", "OMe", "COc1ccccc1", 7],
     ["cyclohexane", "NMe", "CN1CCCCC1", 6],

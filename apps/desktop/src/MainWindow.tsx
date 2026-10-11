@@ -1,4 +1,5 @@
 import { snapRotationDegrees } from "./rotationSnap";
+import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
@@ -2518,30 +2519,11 @@ export function MainWindow({
       literal: true, beforeAtom: activeAtomLabelEdit.beforeAtom, beforeMolecule: activeAtomLabelEdit.beforeMolecule
     });
   }, [document, activeAtomLabelEdit]);
-  const plannedDisplayPage = useMemo(() => {
-    const labelDisplayPage = atomLabelPreview?.document.pages[0] ?? activePage;
-    if (!nativeDoubleBondSidePreview) {
-      return labelDisplayPage;
-    }
-
-    return {
-      ...labelDisplayPage,
-      objects: labelDisplayPage.objects.map((object) => {
-        if (object.type !== "molecule" || object.id !== nativeDoubleBondSidePreview.objectId) {
-          return object;
-        }
-
-        return {
-          ...object,
-          bonds: object.bonds.map((bond) => (
-            bond.id === nativeDoubleBondSidePreview.bondId && bond.order === "double"
-              ? { ...bond, display: { ...(bond.display ?? {}), doubleBondSide: nativeDoubleBondSidePreview.side } }
-              : bond
-          ))
-        };
-      })
-    };
-  }, [activePage, atomLabelPreview, nativeDoubleBondSidePreview]);
+  const labelDisplayPage = useMemo(() => planDisplayPage(activePage, atomLabelPreview), [activePage, atomLabelPreview]);
+  // The double-bond hover plan changes SVG geometry only, as before label previews.
+  // Object views keep real bond metadata for selection chrome and interaction.
+  const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
+    [labelDisplayPage, nativeDoubleBondSidePreview]);
   const editorSvgDisplayPage = useMemo(() => {
     const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object));
     if (svgObjects.length === plannedDisplayPage.objects.length) {
@@ -17719,7 +17701,7 @@ export function MainWindow({
                   }
                   return (
                   <>
-                {plannedDisplayPage.objects.map((object, layerIndex) => {
+                {labelDisplayPage.objects.map((object, layerIndex) => {
                   // An Eraser sweep shows its own preview; leftover selection chrome (a whole chain
                   // highlighted by the chain tool) would read as "all of this will be erased".
                   const selectionChromeActive = activeToolState.activeKind === "selection" && eraserSweepPreview === undefined;
