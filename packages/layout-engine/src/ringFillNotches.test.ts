@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { visualEffectPlansForStyle } from "@chemdraft/art-engine";
 import {
-  averageDefinedDepthWeights, depthCuedLabelScale, nativeMoleculeRings, planMoleculeAtomLabels,
+  atomLabelHaloWidthPx, averageDefinedDepthWeights, depthCuedLabelScale, nativeMoleculeRings, planMoleculeAtomLabels,
   type AtomLabelPlan, type LayoutBounds
 } from "./index";
 import {
@@ -32,6 +32,17 @@ describe("ring fill label notches", () => {
     expect(notchedRingPath(ring.points, movedLabel)).not.toBe(result);
     const movedRing = ring.points.map((point) => ({ x: point.x + 0.5, y: point.y }));
     expect(notchedRingPath(movedRing, clearances)).not.toBe(result);
+    const roundedDifferently = structuredClone(clearances);
+    roundedDifferently[0]!.radius /= 2;
+    expect(notchedRingPath(ring.points, roundedDifferently)).not.toBe(result);
+    const label = planMoleculeAtomLabels(object)[0]!;
+    const withHalo = atomLabelRingClearance({ ...label, backgroundVisible: true }, 1);
+    expect(notchedRingPath(ring.points, [withHalo])).not.toBe(result);
+    const widerHalo = atomLabelRingClearance({
+      ...label, backgroundVisible: true,
+      drawingStyle: { ...label.drawingStyle, atomLabelFontSizePx: label.fontSizePx + 4 }
+    }, 1);
+    expect(notchedRingPath(ring.points, [widerHalo])).not.toBe(notchedRingPath(ring.points, [withHalo]));
   });
 
   it("rejects distant clearances and keeps cache indices independent of atom IDs", () => {
@@ -48,7 +59,7 @@ describe("ring fill label notches", () => {
       if (bond.fromAtomId === "a0") bond.fromAtomId = "renamed";
       if (bond.toAtomId === "a0") bond.toAtomId = "renamed";
     });
-    expect(ringFixtureFragments(object).some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-renamed"))).toBe(false);
+    expect(ringFixtureFragments(object).some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-renamed"))).toBe(true);
   });
 
   it("evicts the least recently used geometry after 256 entries", () => {
@@ -84,13 +95,22 @@ describe("ring fill label notches", () => {
     });
   }
 
-  it("cuts a true interior hole for a non-ring atom's methyl label", () => {
+  it.each(["transparent", "#ffffff"])("keeps fill beneath a non-ring methyl label and its %s background", (background) => {
     const object = filledRingFixture();
     object.atoms.push({ id: "inside", element: "Me", x: 140, y: 140, formalCharge: 0 });
+    object.style.atomLabelBackgroundColor = background;
     const label = planMoleculeAtomLabels(object).find((plan) => plan.atom.id === "inside")!;
     const fill = ringFixtureFills(object)[0]!;
-    expect(polygonPathFaces(String(fill.attrs.d))).toHaveLength(2);
-    expect(fillAreaInsideBox(String(fill.attrs.d), labelBox(label))).toBeLessThan(0.001);
+    expect(fill.attrs.d).toBe(nativeMoleculeRings(object)[0]!.pathD);
+    const box = labelBox(label);
+    expect(fillAreaInsideBox(String(fill.attrs.d), box)).toBeCloseTo(box.width * box.height, 3);
+    const unfilled = structuredClone(object);
+    unfilled.style.fillColor = "transparent";
+    const labelFragments = (molecule: typeof object) => ringFixtureFragments(molecule)
+      .filter((fragment) => fragment.key.startsWith("label-run-") || fragment.attrs.class === "native-atom-label");
+    expect(labelFragments(object)).toEqual(labelFragments(unfilled));
+    expect(labelFragments(object).some((fragment) => fragment.attrs.class === "native-atom-label-halo"))
+      .toBe(background !== "transparent");
   });
 
   it("preserves the exact path and background behavior of an outside label", () => {
@@ -103,10 +123,8 @@ describe("ring fill label notches", () => {
 
   it("unions two overlapping clearances without restoring fill in their overlap", () => {
     const object = filledRingFixture();
-    object.atoms.push(
-      { id: "inside1", element: "Me", x: 140, y: 140, formalCharge: 0 },
-      { id: "inside2", element: "H", x: 145, y: 140, formalCharge: 0 }
-    );
+    Object.assign(object.atoms[0]!, { element: "Me", labelOffset: { x: 40, y: 40 } });
+    Object.assign(object.atoms[1]!, { element: "H", labelOffset: { x: -35, y: 40 } });
     const pathD = String(ringFixtureFills(object)[0]!.attrs.d);
     expect(polygonPathFaces(pathD)).toHaveLength(2);
     for (const label of planMoleculeAtomLabels(object)) {
@@ -116,15 +134,15 @@ describe("ring fill label notches", () => {
 
   it("omits an empty fill and its effects when a label covers the entire ring", () => {
     const object = filledRingFixture();
-    object.atoms.push({ id: "huge", element: "O", x: 140, y: 140, formalCharge: 0, labelLiteral: true });
-    object.style.atomLabelFontSizes = { huge: 400 };
+    Object.assign(object.atoms[0]!, { element: "O", labelOffset: { x: 40, y: 40 }, labelLiteral: true });
+    object.style.atomLabelFontSizes = { a0: 400 };
     object.style.atomLabelBackgroundColor = "#ffffff";
     const key = nativeMoleculeRings(object)[0]!.ringKey;
     object.style.ringStyles = { [key]: { visualEffects: [{ kind: "sketch" }, { kind: "shadow" }] } };
     const fragments = ringFixtureFragments(object);
     expect(ringFixtureFills(object)).toHaveLength(0);
     expect(fragments.some((fragment) => fragment.attrs.class === "native-molecule-ring-sketch")).toBe(false);
-    expect(fragments.some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-huge"))).toBe(false);
+    expect(fragments.some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-a0"))).toBe(true);
   });
 
   it("keeps gradient coordinates exactly the same after a notch", () => {
@@ -165,14 +183,15 @@ describe("ring fill label notches", () => {
   });
 
   for (const kind of ["paclitaxel-like", "cholesterol-like"] as const) {
-    it(`${kind}: emitted fill has zero intersection with every atom label box`, () => {
+    it(`${kind}: emitted fill has zero intersection with its own ring-atom label boxes`, () => {
       const object = naturalProductLikeFixture(kind);
       const before = JSON.stringify(object);
       const fills = ringFixtureFills(object);
       expect(fills.length).toBeGreaterThanOrEqual(4);
       expect(planMoleculeAtomLabels(object).some((plan) => plan.label === "Me")).toBe(true);
-      for (const label of planMoleculeAtomLabels(object)) {
-        for (const fill of fills) {
+      for (const fill of fills) {
+        const ring = nativeMoleculeRings(object).find((ring) => ring.ringKey === fill.attrs["data-ring-key"])!;
+        for (const label of planMoleculeAtomLabels(object).filter((plan) => ring.atomIds.includes(plan.atom.id))) {
           // Exact polygon/rectangle intersection; 0.001 square px is well below 0.5 px tolerance.
           expect(fillAreaInsideBox(String(fill.attrs.d), labelBox(label)), `${kind} ${label.label}`).toBeLessThan(0.001);
         }
@@ -193,16 +212,55 @@ describe("ring fill label notches", () => {
     expect(fillAreaInsideBox(String(ringFixtureFills(object)[0]!.attrs.d), labelBox(label, scale))).toBeLessThan(0.001);
   });
 
-  it("emits no rectangle or glyph background for notched labels, retaining other backgrounds", () => {
+  it("emits the usual glyph halo for notched labels, retaining other backgrounds", () => {
     const object = filledRingFixture();
     object.atoms[0]!.element = "O";
     object.atoms.push({ id: "outside", element: "O", x: 240, y: 140, formalCharge: 0 });
     object.style.atomLabelBackgroundColor = "#ffffff";
     const fragments = ringFixtureFragments(object);
-    expect(fragments.some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-a0"))).toBe(false);
+    expect(ringFixtureFills(object)[0]!.attrs.d).not.toBe(nativeMoleculeRings(object)[0]!.pathD);
+    const halo = fragments.find((fragment) => fragment.key === "label-run-halo-notched-ring-a0-0")!;
+    expect(halo.attrs).toMatchObject({
+      fill: "#ffffff", stroke: "#ffffff", "stroke-linejoin": "round", "stroke-linecap": "round"
+    });
+    expect(Number(halo.attrs["stroke-width"])).toBeCloseTo(atomLabelHaloWidthPx(planMoleculeAtomLabels(object)[0]!.drawingStyle), 3);
     expect(fragments.some((fragment) => fragment.key.startsWith("label-run-halo-notched-ring-outside"))).toBe(true);
     expect(fragments.some((fragment) => fragment.tag === "rect")).toBe(false);
   });
+
+  for (const scale of [0.936, 1, 1.08]) {
+    it(`contains the complete halo extent including scripts at depth scale ${scale}`, () => {
+      const object = filledRingFixture();
+      Object.assign(object.atoms[0]!, { element: "N", formalCharge: 1, labelOffset: { x: 40, y: 40 } });
+      object.style.atomLabelFontSizes = { a0: 23 };
+      object.style.atomLabelBackgroundColor = "#ffffff";
+      const plan = planMoleculeAtomLabels(object)[0]!;
+      expect(plan.layout.runs.some((run) => run.script === "superscript")).toBe(true);
+      const haloExtent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
+      const box = labelBox(plan, scale);
+      const haloBox = {
+        x: box.x - haloExtent, y: box.y - haloExtent,
+        width: box.width + 2 * haloExtent, height: box.height + 2 * haloExtent
+      };
+      const path = notchedRingPath(nativeMoleculeRings(object)[0]!.points, [atomLabelRingClearance(plan, scale)]);
+      expect(fillAreaInsideBox(path.pathD, haloBox)).toBeLessThan(0.001);
+    });
+
+    it(`bounds a single-letter clearance to the layout height plus halo and air at scale ${scale}`, () => {
+      const object = filledRingFixture();
+      object.atoms[0]!.element = "O";
+      object.style.atomLabelBackgroundColor = "#ffffff";
+      const plan = planMoleculeAtomLabels(object)[0]!;
+      const clearance = atomLabelRingClearance(plan, scale);
+      // Layout has no measured ink box; its height is the conservative text-height fallback.
+      const haloExtent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
+      const limit = plan.layout.bounds.height * scale + 2 * (haloExtent + 1.5 * scale);
+      expect(clearance.bounds.width).toBeLessThanOrEqual(limit);
+      expect(clearance.bounds.height).toBeLessThanOrEqual(limit);
+      expect(clearance.bounds.height).toBeCloseTo(plan.layout.bounds.height * scale + 2 * (haloExtent + scale), 5);
+      expect(clearance.radius).toBeGreaterThan(0);
+    });
+  }
 
   it("keeps an unfilled molecule byte-identical to its pre-change renderer digest", () => {
     // Existing pre-change fixture/digest, also guarded by sketchTicks.test.ts; never refreshed.

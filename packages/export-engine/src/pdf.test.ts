@@ -40,8 +40,9 @@ describe("exportDocumentToPdf", () => {
   it("exports the same notched ring path as SVG, with an even-odd PDF hole", async () => {
     const object = filledRingFixture();
     object.atoms[0]!.element = "O";
-    object.atoms.push({ id: "inside", element: "H", x: 140, y: 140, formalCharge: 0 });
-    object.bonds.push({ id: "h-bond", fromAtomId: "a1", toAtomId: "inside", order: "single" });
+    // Only ring atoms notch the fill, even when their authored label offset is inward.
+    Object.assign(object.atoms[1]!, { element: "N", labelLiteral: true, labelOffset: { x: -40, y: 40 } });
+    object.style.atomLabelBackgroundColor = "#ffffff";
     const document = applyPatch(createEmptyDocument({ now: timestamp }), {
       op: "addObject", pageId: "page_001", object
     }, { now: timestamp });

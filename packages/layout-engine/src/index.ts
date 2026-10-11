@@ -1656,7 +1656,7 @@ function planNativeMoleculeGraphSvg(
   const labelDepthWeightByAtomId = new Map<string, number | undefined>(
     atomLabels.map((plan) => [plan.atom.id, averageDefinedDepthWeights(incidentBondWeights.get(plan.atom.id) ?? [])])
   );
-  const { fragments: fillUnderlayFragments, notchedAtomIds } = moleculeFillUnderlayFragments(
+  const fillUnderlayFragments = moleculeFillUnderlayFragments(
     object, atomLabels, labelDepthWeightByAtomId
   );
   // Paint labels far → near so a nearer heteroatom's glyph sits over a farther one where the 3D
@@ -1713,7 +1713,7 @@ function planNativeMoleculeGraphSvg(
       "font-weight": plan.fontWeight,
       "font-style": plan.fontStyle
     }, [
-      ...(plan.backgroundVisible && !notchedAtomIds.has(plan.atom.id)
+      ...(plan.backgroundVisible
         ? plan.layout.runs.map((run, index) => labelRun(run, index, "halo"))
         : []),
       ...plan.layout.runs.map((run, index) => labelRun(run, index, "fill"))
@@ -1779,13 +1779,12 @@ function moleculeFillUnderlayFragments(
   object: MoleculeObject,
   atomLabels: readonly AtomLabelPlan[],
   labelDepthWeightByAtomId: ReadonlyMap<string, number | undefined>
-): { fragments: PageSvgFragment[]; notchedAtomIds: Set<string> } {
+): PageSvgFragment[] {
   const rings = nativeMoleculeRings(object);
-  const notchedAtomIds = new Set<string>();
   // Lazily build these only if there is a painted ring. Unfilled molecules retain their exact plan.
   let clearances: ReturnType<typeof atomLabelRingClearance>[] | undefined;
 
-  const fragments = rings.flatMap((ring) => {
+  return rings.flatMap((ring) => {
     const paint = moleculeRingFillPaint(object, ring.ringKey);
     if (paint.kind === "none") {
       return [];
@@ -1795,12 +1794,13 @@ function moleculeFillUnderlayFragments(
     const labelClearances = clearances ??= atomLabels.map((plan) => atomLabelRingClearance(
       plan, depthCuedLabelScale(labelDepthWeightByAtomId.get(plan.atom.id))
     ));
-    // Reject distant labels before constructing polygons or entering flatten-js.
-    const candidates = ringOverlappingClearances(ring.points, labelClearances);
+    // Only this ring's own atoms notch its outline. Floating substituent labels retain fill
+    // underneath and their usual background halo. Reject distant labels before boolean work.
+    const candidates = ringOverlappingClearances(ring.points, labelClearances)
+      .filter((index) => ring.atomIds.includes(atomLabels[index]!.atom.id));
     const difference = candidates.length > 0
       ? notchedRingPath(ring.points, candidates.map((index) => labelClearances[index]!))
       : { pathD: ring.pathD, overlappingCutoutIndices: [] };
-    difference.overlappingCutoutIndices.forEach((index) => notchedAtomIds.add(atomLabels[candidates[index]!]!.atom.id));
     const pathD = difference.overlappingCutoutIndices.length > 0 ? difference.pathD : ring.pathD;
     if (!pathD) {
       return [];
@@ -1843,7 +1843,6 @@ function moleculeFillUnderlayFragments(
       })
     ];
   });
-  return { fragments, notchedAtomIds };
 }
 
 // Transparent interior catchers, one per ring, that route a pointer press on an empty ring

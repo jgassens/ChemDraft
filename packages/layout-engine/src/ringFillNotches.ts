@@ -1,5 +1,5 @@
 import { subtractPolygonPaths } from "@chemdraft/art-engine";
-import type { AtomLabelPlan, LayoutBounds, LayoutPoint } from "./index";
+import { atomLabelHaloWidthPx, type AtomLabelPlan, type LayoutBounds, type LayoutPoint } from "./index";
 
 interface LabelClearance {
   bounds: LayoutBounds;
@@ -16,9 +16,11 @@ const clearancePolygons = new WeakMap<LabelClearance, LayoutPoint[]>();
 export function atomLabelRingClearance(plan: AtomLabelPlan, scale: number): LabelClearance {
   const width = plan.layout.bounds.width * scale;
   const height = plan.layout.bounds.height * scale;
-  // Circumscribe the text-box corners, plus the existing 1–2 px bond clearance.
-  const padding = Math.max(1, Math.min(2, plan.drawingStyle.atomLabelBondClearancePx)) * scale
-    + (Math.SQRT2 - 1) * Math.min(width, height) / 2;
+  // Layout supplies only an estimated run box, not measured glyph-ink bounds. Keep that
+  // conservative box (including scripts) and the same half-stroke extent as the glyph halo.
+  const haloExtent = plan.backgroundVisible ? atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2 : 0;
+  const air = scale;
+  const padding = haloExtent + air;
   return {
     bounds: {
       x: plan.anchor.x + plan.layout.bounds.x * scale - padding,
@@ -26,7 +28,12 @@ export function atomLabelRingClearance(plan: AtomLabelPlan, scale: number): Labe
       width: width + 2 * padding,
       height: height + 2 * padding
     },
-    radius: Math.min(width, height) / 2 + padding
+    // Largest rounded corner that contains the halo-expanded box corners. Reserve the
+    // polygon's 0.1 px chord error too, so the inscribed approximation still contains them.
+    radius: Math.min(
+      Math.min(width, height) / 2 + padding,
+      (air - 0.1) / (1 - Math.SQRT1_2)
+    )
   };
 }
 
@@ -78,7 +85,7 @@ function atomLabelRingClearancePolygon(clearance: LabelClearance): LayoutPoint[]
     { x: left + radius, y: top + radius }
   ];
   // A 0.1 px chord error is at most 0.4 screen pixels at 4x zoom, below a pixel
-  // even there. Keep the same stadium and padding, with far fewer boolean edges.
+  // even there. Rounded corners retain this bound without a circumscribing stadium.
   const steps = Math.max(3, Math.ceil(Math.PI / 2 / (2 * Math.acos(1 - Math.min(0.1 / radius, 1)))));
   const points = centers.flatMap((center, corner) => Array.from({ length: steps + 1 }, (_, step) => {
     const angle = -Math.PI / 2 + (corner + step / steps) * Math.PI / 2;
