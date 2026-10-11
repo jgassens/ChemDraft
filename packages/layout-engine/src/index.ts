@@ -82,6 +82,20 @@ export {
   normalizeNativeAtomElementLabel
 } from "./valence";
 
+export {
+  nativeAtomLabelReading,
+  type NativeAtomLabelContext,
+  type NativeAtomLabelReading,
+  nativeAtomMaxValence,
+  nativeAtomValence,
+  nativeLabelGroupAttachment,
+  type NativeLabelGroup,
+  type NativeLabelGroupAttachment,
+  nativeLabelReadingDependsOnBondSide,
+  nativeSingleHeavyElementLabelValence,
+  parseCondensedLabelFormula
+} from "./labelGrammar";
+
 export type LayoutCommandId =
   | "layout.group"
   | "layout.ungroup"

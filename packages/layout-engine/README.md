@@ -4,6 +4,13 @@ Owns page and object layout operations such as align, distribute, group, rotate,
 
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
 
+`src/labelGrammar.ts` is the one atom-label grammar: what a label's text means (an element, one heavy
+atom spelled with its hydrogens, a template-library abbreviation or an element carrying them, a
+placeholder, a bare formula, or unrecognized text), which atom of a group its bonds reach, and the
+valence tables the reading needs. It is pure text in, reading out, so the drawn label can place a
+group by the same reading the chemistry uses. `@chemdraft/document-workflow-core` re-exports it and
+keeps what is built on it (valence verdicts, validation, expansion); it must not carry a copy.
+
 `src/valence.ts` is the one implementation of how many bonds an atom uses: the element table,
 `nativeAtomValenceForCharge`, and `nativeBondOrderResolution`, which replaces each aromatic bond
 (MOL type 4, CDXML Order=1.5) with its Kekulé order once per molecule. The drawn atom label, the
