@@ -16,29 +16,6 @@ import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../lay
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
-  it("uses requested physical dimensions for the media box", async () => {
-    const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
-    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
-      domParser, outputWidth: 960, outputHeight: 480, compress: false
-    }));
-    expect(new TextDecoder().decode(result.bytes)).toMatch(/\/MediaBox \[0 0 720\.?0* 360\.?0*\]/);
-    expect(document.pages[0].width).not.toBe(960);
-  });
-  it("uses host-outlined text before passing the SVG to the PDF renderer", async () => {
-    const document = createEmptyDocument({ title: "Outlined PDF", now: timestamp });
-    let inputSvg = "";
-    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
-      domParser,
-      compress: false,
-      outlineSvgText: async (svg) => {
-        inputSvg = svg;
-        return '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><path d="M 10 10 L 20 20" stroke="black"/></svg>';
-      }
-    }));
-    expect(inputSvg).toContain("<svg");
-    expect(new TextDecoder().decode(result.bytes)).toContain(" l");
-  });
-
   it("exports the active page as PDF bytes through the SVG renderer", async () => {
     const document = createEmptyDocument({ title: "PDF Export", now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));

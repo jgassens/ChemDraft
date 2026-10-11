@@ -21,19 +21,6 @@ fn export_svg_options() -> usvg::Options<'static> {
     }
 }
 
-/// PDF's built-in fonts cannot encode scientific Unicode. Shape text with the
-/// same system font database as raster export, then retain it as vector paths.
-#[tauri::command]
-pub(crate) fn outline_svg_text(svg: String) -> Result<String, String> {
-    let options = export_svg_options();
-    let tree = usvg::Tree::from_data(svg.as_bytes(), &options)
-        .map_err(|error| format!("Could not parse SVG for PDF export: {error}"))?;
-    Ok(tree.to_string(&usvg::WriteOptions {
-        preserve_text: false,
-        ..Default::default()
-    }))
-}
-
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RasterExportFormat {
@@ -411,15 +398,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdf_text_is_shaped_into_vector_paths() {
-        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="80"><text x="10" y="30" font-family="Arial" font-size="20">[Zr₆(μ₃-O)₄(μ₃-OH)₄(BDC)₆]ₙ</text><text x="10" y="60" font-family="Arial" font-weight="bold">BDC²⁻ · Zr₆ cluster node</text></svg>"#;
-        let outlined = outline_svg_text(svg.to_string()).expect("PDF text should be outlined");
-        assert!(!outlined.contains("<text"));
-        assert!(outlined.contains("<path"));
-        assert!(outline_svg_text("invalid SVG".to_string()).is_err());
-    }
-
-    #[test]
     fn export_images_accept_only_data_urls() {
         let directory =
             std::env::temp_dir().join(format!("chemdraft-export-images-{}", std::process::id()));
@@ -435,30 +413,34 @@ mod tests {
             "fixture.svg".to_string(),
             absolute,
         ] {
-            let svg = format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="{href}" width="8" height="8"/></svg>"#
-            );
-            let tree = usvg::Tree::from_data(svg.as_bytes(), &options).expect("parse SVG");
-            assert!(tree.root().children().is_empty(), "must not load {href}");
-            let outlined = outline_svg_text(svg.clone()).expect("outline SVG");
-            assert!(
-                !outlined.contains("<image"),
-                "outlined SVG must not load {href}"
-            );
-            let response = rasterize_svg_impl(RasterExportRequest {
-                svg,
-                background: Some("transparent".to_string()),
-                ..request(RasterExportFormat::Png)
-            })
-            .expect("rasterize SVG");
-            let pixels = image::load_from_memory(&response.bytes)
-                .expect("decode PNG")
-                .to_rgba8();
-            assert!(
-                pixels.pixels().all(|pixel| pixel[3] == 0),
-                "raster must not load {href}"
-            );
+            let escaped_href = href
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&apos;");
+            for attribute in ["href", "xlink:href"] {
+                let svg = format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><image {attribute}="{escaped_href}" width="8" height="8"/></svg>"#
+                );
+                let tree = usvg::Tree::from_data(svg.as_bytes(), &options).expect("parse SVG");
+                assert!(tree.root().children().is_empty(), "must not load {href}");
+                let response = rasterize_svg_impl(RasterExportRequest {
+                    svg,
+                    background: Some("transparent".to_string()),
+                    ..request(RasterExportFormat::Png)
+                })
+                .expect("rasterize SVG");
+                let pixels = image::load_from_memory(&response.bytes)
+                    .expect("decode PNG")
+                    .to_rgba8();
+                assert!(
+                    pixels.pixels().all(|pixel| pixel[3] == 0),
+                    "raster must not load {href}"
+                );
+            }
         }
+
         let embedded = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='red'/%3E%3C/svg%3E" width="8" height="8"/></svg>"#;
         let tree =
             usvg::Tree::from_data(embedded.as_bytes(), &options).expect("parse embedded SVG");
