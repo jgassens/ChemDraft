@@ -56,6 +56,7 @@ const env = { ...process.env };
 
 // Windows keeps a running executable locked. Close only this checkout's debug app before Cargo
 // rebuilds it; let the normal window-close handler flush the session, and never force termination.
+// 8.3 short names, subst drives, and junctions are not resolved; such paths do not match, so nothing is closed.
 if (process.platform === "win32") {
   const targetDir = env.CARGO_TARGET_DIR
     ? resolve(APP_DIR, "src-tauri", env.CARGO_TARGET_DIR)
@@ -70,11 +71,10 @@ if (process.platform === "win32") {
       foreach ($runningApp in $runningApps) {
         if ($runningApp.HasExited) { continue }
         Write-Host 'Closing the running ChemDraft app from this checkout before rebuilding.'
-        if (-not $runningApp.CloseMainWindow()) {
-          throw 'Close the ChemDraft app from this checkout, then run pnpm dev again.'
-        }
+        [void]$runningApp.CloseMainWindow()
         if (-not $runningApp.WaitForExit(10000)) {
-          throw 'ChemDraft is still closing. Finish any open dialog, close the app, then run pnpm dev again.'
+          [Console]::Error.WriteLine('ChemDraft did not close. Finish any open dialog, close the app, then run pnpm dev again.')
+          exit 2
         }
       }
     } catch {
@@ -87,8 +87,11 @@ if (process.platform === "win32") {
     stdio: "inherit",
     windowsHide: true
   });
-  if (cleanup.error) console.error(`Could not close the running ChemDraft app: ${cleanup.error.message}`);
-  if (cleanup.status !== 0) process.exit(cleanup.status ?? 1);
+  // Exit 2 specifically means a matching app remained running after the wait.
+  if (!cleanup.error && cleanup.status === 2) process.exit(1);
+  if (cleanup.error || cleanup.status !== 0) {
+    console.warn("Could not check for a running ChemDraft app; continuing");
+  }
 }
 
 if (!existsSync(join(ROOT_DIR, "node_modules")) || !existsSync(join(APP_DIR, "node_modules"))) {
