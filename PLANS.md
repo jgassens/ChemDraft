@@ -8,7 +8,8 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`.
+Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
+`docs/shipped/README.md`.)
 
 ---
 

@@ -7,51 +7,11 @@
 
 import { ChemDraftSyntheticStylePreset, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
 import type { AbbreviationDefinition } from "@chemdraft/template-library";
+import { nativeLabelGroupAttachment, type NativeLabelGroup, type NativeLabelGroupAttachment } from "@chemdraft/layout-engine";
 
-/** What a label spells when it names a group. */
-export type NativeLabelGroup =
-  | {
-      kind: "abbreviation";
-      label: string;
-      definition: AbbreviationDefinition;
-    }
-  | {
-      /** One element carrying stated hydrogens and abbreviations, all bonded to it: "NMe2", "CH2Ph". */
-      kind: "composite";
-      label: string;
-      head: string;
-      hydrogens: number;
-      /** One entry per substituent, repeated for a count: "NMe2" lists Me twice. */
-      substituents: readonly AbbreviationDefinition[];
-    };
-
-/** The atom a group's label bonds connect to, as the group itself defines it. */
-export interface NativeLabelGroupAttachment {
-  element: string;
-  /** Valence the attachment atom already uses inside the group: its bonds there plus its hydrogens. */
-  internalValence: number;
-  /** Formal charge the attachment atom carries inside the group (nitro's N⁺). */
-  charge: number;
-  /** The free valence the table states; a composite's follows from its head instead. */
-  declaredAttachmentCount?: number;
-}
-
-export function nativeLabelGroupAttachment(group: NativeLabelGroup): NativeLabelGroupAttachment {
-  if (group.kind === "composite") {
-    return { element: group.head, internalValence: group.hydrogens + group.substituents.length, charge: 0 };
-  }
-  const { definition } = group;
-  const attachment = definition.atoms[0]!;
-  const bondValence = definition.bonds
-    .filter(([from, to]) => from === 0 || to === 0)
-    .reduce((sum, [, , order]) => sum + order, 0);
-  return {
-    element: attachment.element,
-    internalValence: bondValence + attachment.hydrogens,
-    charge: attachment.charge ?? 0,
-    declaredAttachmentCount: definition.attachmentCount
-  };
-}
+// What a group is, and the atom its label bonds connect to, belong to the label grammar
+// (layout-engine's labelGrammar.ts); re-exported under the same names.
+export { nativeLabelGroupAttachment, type NativeLabelGroup, type NativeLabelGroupAttachment } from "@chemdraft/layout-engine";
 
 /** One group written out as atoms. */
 export interface NativeLabelGroupExpansion {

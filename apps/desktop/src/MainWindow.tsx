@@ -1,5 +1,15 @@
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { OpenWarningsList } from "./OpenWarningsList";
+import {
+  activeOpenWarnings,
+  NO_OPEN_WARNINGS_REASON,
+  OPEN_WARNINGS_LIST_ID,
+  TOGGLE_OPEN_WARNINGS_COMMAND_ID,
+  warningCountLabel,
+  type OpenWarningSelection,
+  type OpenWarningsReport
+} from "./openWarnings";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
@@ -162,7 +172,9 @@ import {
   depthCuedLabelColor,
   depthCuedLabelScale,
   nativeBondOrderResolution,
+  nativeElementFromAtomLabel,
   nativeMoleculeRings,
+  nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
   planPageSvgRender,
@@ -306,6 +318,7 @@ import {
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
+  createOpenWarningsAction,
   pageCustomSizeAction,
   PAGE_CUSTOM_SIZE_COMMAND_ID,
   PREFERENCES_COMMAND_ID,
@@ -1506,7 +1519,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.08.30-opus";
+const CURRENT_BUILD_STAMP = "10.11.08.57-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2155,6 +2168,14 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
+  // What the last file open reported, so the status line can still list it after its own text has
+  // moved on. Replacing the document drops it (resetDocumentHistory); an open sets it again.
+  const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
+  const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
+  const openWarnings = activeOpenWarnings(openWarningsReport);
+  const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
+  const openWarningsRef = useRef(openWarnings);
+  openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
@@ -2232,6 +2253,13 @@ export function MainWindow({
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
   const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string } | undefined>(undefined);
+  // The page point the canvas hover was last resolved at: picks a hovered bond's nearer atom
+  // when an element key is typed with the pointer resting on the bond.
+  const hoverPagePointRef = useRef<ClientPoint | undefined>(undefined);
+  // Set while a label key has moved the hover from a bond onto one of its atoms. Once that label is
+  // no longer in progress, the hover goes back to whatever is under the pointer (the bond), so the
+  // next Delete or digit acts on what the user is pointing at.
+  const hoverRetargetedFromBondRef = useRef(false);
   // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
   // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
@@ -2646,12 +2674,12 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
-        availability: { canUndo, canRedo },
+        availability: { canUndo, canRedo, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, keybindingScheme, selectedMolecule, toolsetRegistry]
+    [canRedo, canUndo, document, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -2676,8 +2704,7 @@ export function MainWindow({
   );
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
-    const assignment = hoverLabelAssignmentRef.current;
-    if (target?.kind !== "atom" || target.objectId !== assignment?.objectId || target.atomId !== assignment.atomId) {
+    if (!hoverTargetKeepsLabelContinuation(target, hoverLabelAssignmentRef.current)) {
       hoverLabelAssignmentRef.current = undefined;
     }
     setHoveredNativeDeleteTarget(target);
@@ -2736,6 +2763,8 @@ export function MainWindow({
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
+    setOpenWarningsReport(undefined);
+    setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
@@ -5395,6 +5424,40 @@ export function MainWindow({
       : "All canvas objects already selected");
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
+  // A row of the open-warnings list selects what its warning names: the object, and the atoms or
+  // bonds of it when the warning names some, with the Select tool so the selection is in reach.
+  const showOpenWarningTarget = useCallback((selection: OpenWarningSelection, label: string) => {
+    if (!findDocumentObject(documentRef.current, selection.objectId)) {
+      setStatus(`${label} is no longer in the document`);
+      return;
+    }
+
+    const { objectId, atomIds, bondIds } = selection;
+    replacePresentDocument((current) => selectDocumentObject(current, objectId));
+    setActiveEditorObjectId(undefined);
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setHoveredNativeAtom(undefined);
+    assignHoveredNativeDeleteTarget(undefined);
+    setFreeformNativeBond(undefined);
+    setNativeDoubleBondSidePreview(undefined);
+    setObjectContextMenu(undefined);
+    setSelectedNativeMoleculePart(
+      atomIds.length === 1 && bondIds.length === 0
+        ? { objectId, kind: "atom", atomId: atomIds[0] }
+        : bondIds.length === 1 && atomIds.length === 0
+          ? { objectId, kind: "bond", bondId: bondIds[0] }
+          : atomIds.length + bondIds.length > 0
+            ? { objectId, kind: "parts", atomIds, bondIds }
+            : undefined
+    );
+    toolBeforeTextPlacementRef.current = undefined;
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
+  }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
+
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
       return false;
@@ -7520,8 +7583,10 @@ export function MainWindow({
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
+    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+    setOpenWarningsReport({ displayName, sourceLabel, warnings: opened.warnings });
     const openStatus = options?.statusOverride
-      ?? formatOpenStatus(displayName, resolvedOpen.source, opened.warnings, resolvedOpen.statusSourceLabel);
+      ?? formatOpenStatus(displayName, sourceLabel, opened.warnings);
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
@@ -8760,8 +8825,17 @@ export function MainWindow({
       });
     });
 
+    register(createOpenWarningsAction({ hasOpenWarnings: openWarnings !== undefined }), () => {
+      if (!openWarningsRef.current) {
+        setStatus(NO_OPEN_WARNINGS_REASON);
+        return;
+      }
+      setOpenWarningsListOpen((open) => !open);
+    });
+
     return bindings;
   }, [
+    openWarnings,
     activeToolState,
     analysisBusy,
     analysisInterpretation,
@@ -9696,6 +9770,11 @@ export function MainWindow({
       // Moved straight to another atom's edit: that edit owns the selection now.
       return;
     }
+    // A label typed with the pointer on a bond is done: hover what the pointer is on again.
+    if (hoverRetargetedFromBondRef.current) {
+      hoverRetargetedFromBondRef.current = false;
+      rederiveNativeCanvasHoverRef.current?.(documentRef.current);
+    }
     const kept = atomLabelEditKeepsSelectionRef.current;
     atomLabelEditKeepsSelectionRef.current = undefined;
     if (kept && kept.objectId === previous.objectId && kept.atomId === previous.atomId) {
@@ -10436,8 +10515,34 @@ export function MainWindow({
       }
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-        const hoveredTarget = hoveredNativeDeleteTargetRef.current;
         const assignment = hoverLabelAssignmentRef.current;
+        // With the pointer resting on a bond (easy on a zigzag chain, whose bond zones crowd the
+        // atoms), a label key belongs to an atom: the one being labelled if the bond is its own,
+        // otherwise the bond's end nearer the pointer. Hovering that atom first keeps every key on
+        // the atom path, so no letter falls through to a tool shortcut mid-label ("e" = Eraser).
+        if (keybindingSchemeRef.current === "chemdraft") {
+          // A key that doesn't continue the label ends it: re-derive the hover from the pointer first.
+          const current = hoveredNativeDeleteTargetRef.current;
+          const continuingOnAtom = assignment !== undefined && current?.kind === "atom" &&
+            current.objectId === assignment.objectId && current.atomId === assignment.atomId &&
+            /^[a-z0-9]$/i.test(event.key);
+          if (hoverRetargetedFromBondRef.current && !continuingOnAtom && !activeAtomLabelEditRef.current) {
+            hoverRetargetedFromBondRef.current = false;
+            rederiveNativeCanvasHoverRef.current?.(documentRef.current);
+          }
+          const labelAtom = hoverLabelAtomTargetForKey(
+            documentRef.current,
+            hoveredNativeDeleteTargetRef.current,
+            hoverPagePointRef.current,
+            assignment,
+            event.key
+          );
+          if (labelAtom) {
+            assignHoveredNativeDeleteTarget(labelAtom);
+            hoverRetargetedFromBondRef.current = true;
+          }
+        }
+        const hoveredTarget = hoveredNativeDeleteTargetRef.current;
         if (event.key !== "Shift") {
           hoverLabelAssignmentRef.current = undefined;
         }
@@ -10512,12 +10617,20 @@ export function MainWindow({
     replacePresentDocument,
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
+    assignHoveredNativeDeleteTarget,
     shortcutRegistry,
     startAtomLabelEdit,
     switchToSelectTool,
     syncPathArtPreview,
     updateAtomLabelDraft
   ]);
+
+  // Any tool change ends a hover-label continuation, whichever way it arrives (palette, native menu,
+  // shortcut), so a letter typed after switching tools is never appended to the earlier label.
+  // A layout effect, so it lands before the browser can deliver the next key.
+  useLayoutEffect(() => {
+    hoverLabelAssignmentRef.current = undefined;
+  }, [activeToolState.activeCommandId]);
 
   useEffect(() => {
     // A pointer press ends the brief hover-key continuation window, even if the press stays on
@@ -11044,6 +11157,52 @@ export function MainWindow({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [customizeMainToolbarActive, setCustomizeMode]);
 
+  // Esc closes the open-warnings list and does nothing else. It is caught in the capture phase and
+  // marked handled, so the canvas keydown handler (which skips handled events) neither cancels a drag
+  // nor leaves a tool; with the list closed nothing listens here and Esc does what it always did. The
+  // list is the last thing Esc reaches: an inline label or text edit, a text field, or an open menu
+  // takes it first, and the list closes on the next one. A press outside the list closes it and goes
+  // on to do whatever it does.
+  useEffect(() => {
+    if (!openWarningsListShown) {
+      return undefined;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || isBlockedByModalDialog(event.target)) {
+        return;
+      }
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (
+        activeAtomLabelEditRef.current
+        || activeTextEditObjectIdRef.current
+        || shouldIgnoreShortcutTarget(event.target, event.key)
+        || target?.closest("[role=\"menubar\"], [role=\"menu\"]")
+        || window.document.querySelector("[role=\"menubar\"] [aria-expanded=\"true\"]")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const focused = window.document.activeElement;
+      if (focused instanceof HTMLElement && focused.closest("[data-open-warnings-list]")) {
+        window.document.querySelector<HTMLElement>("[data-open-warnings-button]")?.focus();
+      }
+      setOpenWarningsListOpen(false);
+    };
+    const onPointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (!target?.closest("[data-open-warnings-list], [data-open-warnings-button]")) {
+        setOpenWarningsListOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [openWarningsListShown]);
+
   // Label the web document by its worktree so browser tabs and accessibility state distinguish
   // nearby checkouts. On macOS, index.html's initial title can overwrite the Rust setup title without
   // following this later React update, so the Tauri page-load hook separately reasserts the same
@@ -11404,6 +11563,8 @@ export function MainWindow({
     point: ClientPoint | undefined,
     eventTarget?: EventTarget | null
   ) => {
+    hoverPagePointRef.current = point;
+    hoverRetargetedFromBondRef.current = false;
     if (!point) {
       setHoveredNativeAtom(undefined);
       setNativeDoubleBondSidePreview(undefined);
@@ -11494,7 +11655,10 @@ export function MainWindow({
     const clientPoint = lastCanvasPointerClientPointRef.current;
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
     // resolve the element at the pointer the way a real pointer event's target would report it.
-    const eventTarget = clientPoint ? window.document.elementFromPoint(clientPoint.x, clientPoint.y) : undefined;
+    // (Guarded like agentBridge.ts: hosts without layout, such as jsdom, have no elementFromPoint.)
+    const eventTarget = clientPoint && typeof window.document.elementFromPoint === "function"
+      ? window.document.elementFromPoint(clientPoint.x, clientPoint.y)
+      : undefined;
     updateNativeCanvasHover(sourceDocument, clientPoint ? pagePointFromClientPoint(clientPoint) : undefined, eventTarget);
   }, [pagePointFromClientPoint, updateNativeCanvasHover]);
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
@@ -18049,10 +18213,36 @@ export function MainWindow({
                 ].filter(Boolean).join(" · ")
               : hoveredNativeWarning ?? status}
           </span>
+          {openWarnings ? (
+            <button
+              type="button"
+              className="open-warnings-button"
+              data-open-warnings-button
+              aria-haspopup="dialog"
+              aria-expanded={openWarningsListShown}
+              aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+              title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+              // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+              }}
+            >
+              {warningCountLabel(openWarnings.warnings.length)}
+            </button>
+          ) : null}
           {statusModifierHint ? (
             <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
           ) : null}
         </div>
+        {openWarningsListShown && openWarnings ? (
+          <OpenWarningsList
+            report={openWarnings}
+            document={document}
+            onShow={showOpenWarningTarget}
+            onClose={() => setOpenWarningsListOpen(false)}
+          />
+        ) : null}
       </section>
       {objectContextMenu ? (
         <ObjectLayerContextMenu
@@ -20369,6 +20559,62 @@ export function hoveredNativeTargetShortcutCommand(
   return element ? atomElementCommandId(element) : undefined;
 }
 
+type HoverLabelAssignment = { objectId: string; atomId: string; label: string };
+
+/**
+ * Whether moving the hover to `target` keeps a hover-label continuation alive: still on the atom
+ * being labelled, or on one of that atom's own bonds (the pointer drifting off a small atom mid-word).
+ */
+export function hoverTargetKeepsLabelContinuation(
+  target: NativeMoleculeDeleteTarget | undefined,
+  assignment: HoverLabelAssignment | undefined
+): boolean {
+  if (!assignment || !target || target.objectId !== assignment.objectId) {
+    return false;
+  }
+  return target.kind === "atom"
+    ? target.atomId === assignment.atomId
+    : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
+}
+
+/**
+ * The atom a key typed over a hovered BOND belongs to (ChemDraft scheme), or undefined to leave the
+ * hover as it is. Mid-label (a continuation is open and the bond is the labelled atom's own), any
+ * letter or digit goes to that atom, so "CF3" never turns its 3 into a bond order. Otherwise an
+ * element key, which would label an atom if one were hovered, labels the bond's end nearer the
+ * pointer. Digits keep their bond-order meaning and other letters keep their tool shortcuts, as they
+ * do over an atom.
+ */
+export function hoverLabelAtomTargetForKey(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget | undefined,
+  pointer: ClientPoint | undefined,
+  assignment: HoverLabelAssignment | undefined,
+  key: string
+): NativeMoleculeDeleteTarget | undefined {
+  if (target?.kind !== "bond") {
+    return undefined;
+  }
+  if (assignment && /^[a-z0-9]$/i.test(key) && hoverTargetKeepsLabelContinuation(target, assignment)) {
+    return { objectId: target.objectId, kind: "atom", atomId: assignment.atomId, distanceToPointer: 0 };
+  }
+  if (Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key) || !nativeElementFromKeyboardKey(key)) {
+    return undefined;
+  }
+  const molecule = findDocumentObject(document, target.objectId);
+  if (molecule?.type !== "molecule") {
+    return undefined;
+  }
+  const from = molecule.atoms.find((atom) => atom.id === target.fromAtomId);
+  const to = molecule.atoms.find((atom) => atom.id === target.toAtomId);
+  if (!from || !to) {
+    return undefined;
+  }
+  const distance = (atom: MoleculeAtom) => pointer ? Math.hypot(atom.x - pointer.x, atom.y - pointer.y) : 0;
+  const nearer = distance(to) < distance(from) ? to : from;
+  return { objectId: target.objectId, kind: "atom", atomId: nearer.id, distanceToPointer: distance(nearer) };
+}
+
 export function activeNativeTargetShortcutCommand(
   document: ChemDraftDocument,
   selectedPart: NativeMoleculeSelectionPart | undefined,
@@ -21053,12 +21299,33 @@ function SpinOverlay({
   // the projection stacks them; halo and fill passes share this order. Each label resolves its
   // per-atom Inspector style (font, color, halo color/width, anchor placement) exactly as the
   // committed 2D render does, so styled labels look identical live and on flatten.
+  // A group label ("OMe") is drawn the way round its bond reads, with the atom it bonds to on the
+  // atom, as the flat drawing does (layout-engine's nonElementAtomLabelPlacement). Its bonds turn as
+  // the molecule spins, so it is placed from the projected heavy neighbours each frame.
+  const projectedByIndex = new Map(projection.atoms.map((atom) => [atom.index, atom]));
+  const heavyNeighbourIndices: number[][] = state.atoms.map(() => []);
+  state.bondPairs.forEach(([from, to]) => {
+    if (nativeElementFromAtomLabel(state.atoms[to]?.element ?? "") !== "H") heavyNeighbourIndices[from]?.push(to);
+    if (nativeElementFromAtomLabel(state.atoms[from]?.element ?? "") !== "H") heavyNeighbourIndices[to]?.push(from);
+  });
   const spinLabels = projection.atoms
     .flatMap((atom) => {
-      const label = state.atomLabels[atom.index];
-      if (!label) return [];
+      const drawnLabel = state.atomLabels[atom.index];
+      if (!drawnLabel) return [];
       const labelStyle = state.atomLabelStyles[atom.index] ?? drawingStyle;
-      const layout = atomLabelLayout(label, labelStyle);
+      const groupAtom = state.atoms[atom.index];
+      const placement = groupAtom
+        ? nonElementAtomLabelPlacement(
+            { ...groupAtom, x: atom.sx, y: atom.sy },
+            (heavyNeighbourIndices[atom.index] ?? []).flatMap((index) => {
+              const neighbour = projectedByIndex.get(index);
+              return neighbour ? [{ x: neighbour.sx, y: neighbour.sy }] : [];
+            }),
+            labelStyle
+          )
+        : undefined;
+      const label = placement?.label ?? drawnLabel;
+      const layout = atomLabelLayout(label, labelStyle, placement?.anchor);
       const sourceAtom = state.atoms[atom.index];
       const anchorOffset = sourceAtom
         ? atomLabelAnchorOffset(sourceAtom, label, labelStyle, layout)
@@ -28534,21 +28801,19 @@ function sanitizedDialogNumber(value: number, fallback: number, min: number, max
   return Number.isFinite(value) ? clamp(value, min, max) : fallback;
 }
 
-function formatOpenStatus(
-  filename: string,
-  source: ReturnType<typeof openNativeDocument>["source"],
-  warnings: readonly { code: string; message: string }[],
-  statusSourceLabel?: string
-): string {
-  const sourceLabel = statusSourceLabel ?? (
+function openSourceLabel(source: ReturnType<typeof openNativeDocument>["source"], statusSourceLabel?: string): string {
+  return statusSourceLabel ?? (
     source === "legacy-json"
       ? "legacy ChemDraft JSON"
       : source === "external-cdxml"
         ? "external CDXML subset"
         : "ChemDraft CDXML envelope"
   );
+}
+
+function formatOpenStatus(filename: string, sourceLabel: string, warnings: readonly { code: string; message: string }[]): string {
   return warnings.length > 0
-    ? `Opened ${filename} as ${sourceLabel} with ${warnings.length} warning(s)`
+    ? `Opened ${filename} as ${sourceLabel} with ${warningCountLabel(warnings.length)}`
     : `Opened ${filename} as ${sourceLabel}`;
 }
 
