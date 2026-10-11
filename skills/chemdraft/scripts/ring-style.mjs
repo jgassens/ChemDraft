@@ -1611,24 +1611,37 @@ function ringAtomsByKey(buildMol) {
 }
 
 export function atomsWithDrawnLabels(mol) {
+  const atoms = mol?.atoms ?? [];
   const terminalCarbons = mol?.style?.atomLabelShowTerminalCarbonsByAtomId ?? {};
   const placements = mol?.style?.atomLabelPlacements ?? {};
   const fontSizes = mol?.style?.atomLabelFontSizes ?? {};
   const paddings = mol?.style?.atomLabelPaddings ?? {};
+  const atomsById = new Map(atoms.map((atom) => [atom.id, atom]));
+  const incidentBondsByAtomId = new Map(atoms.map((atom) => [atom.id, []]));
+  for (const bond of mol?.bonds ?? []) {
+    for (const atomId of [bond.fromAtomId, bond.toAtomId]) {
+      incidentBondsByAtomId.get(atomId)?.push(bond);
+    }
+  }
   const placementFor = (atom) => {
     const placement = placements[atom.id] ?? mol?.style?.atomLabelPlacement;
     return placement === "above" || placement === "below" ? placement : undefined;
   };
-  const labelShown = (atom) => atom.element !== "C" ||
-    atom.formalCharge !== 0 ||
-    atom.isotope !== undefined ||
-    atom.radical === true ||
-    (atom.markRadicals ?? 0) > 0 ||
-    (typeof atom.label === "string" && atom.label.length > 0) ||
-    atom.labelLiteral === true ||
-    atom.labelVisible === true ||
-    !!terminalCarbons[atom.id];
-  return (mol?.atoms ?? []).map((atom) => ({
+  const labelShown = (atom) => {
+    if (atom.element !== "C" || atom.formalCharge !== 0) return true;
+    const incidentBonds = incidentBondsByAtomId.get(atom.id) ?? [];
+    const heavyNeighbors = new Set(incidentBonds.map((bond) =>
+      bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId
+    ).filter((atomId) => atomsById.get(atomId)?.element.trim().toUpperCase() !== "H"));
+    const terminalCarbonSetting = terminalCarbons[atom.id];
+    const showTerminalCarbons = typeof terminalCarbonSetting === "boolean"
+      ? terminalCarbonSetting
+      : mol?.style?.atomLabelShowTerminalCarbons === true;
+    return atom.labelVisible === true ||
+      incidentBonds.length === 0 ||
+      (atom.labelVisible !== false && showTerminalCarbons === true && heavyNeighbors.size === 1);
+  };
+  return atoms.map((atom) => ({
     ...atom,
     labelShown: labelShown(atom),
     labelPlacement: placementFor(atom),

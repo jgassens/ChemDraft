@@ -377,12 +377,16 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
   it("requires every renderer-labeled ring carbon for the fill check", () => {
     const carbon = (id: string, fields: Json = {}) => ({ id, element: "C", x: 0, y: 0, formalCharge: 0, ...fields });
     const atoms = ringStyle.atomsWithDrawnLabels({ atoms: [
-      carbon("plain"), carbon("charge", { formalCharge: 1 }), carbon("isotope", { isotope: 13 }),
-      carbon("radical", { radical: true }), carbon("marked-radical", { markRadicals: 1 }),
-      carbon("label", { label: "C*" }), carbon("literal", { labelLiteral: true }), carbon("visible", { labelVisible: true })
+      carbon("charge", { formalCharge: 1 }), { ...carbon("isotope"), element: "13C" },
+      carbon("marked-radical", { markRadicals: 1 }), carbon("literal", { labelLiteral: true }),
+      carbon("visible", { labelVisible: true })
+    ], bonds: [
+      { fromAtomId: "charge", toAtomId: "isotope" }, { fromAtomId: "isotope", toAtomId: "marked-radical" },
+      { fromAtomId: "marked-radical", toAtomId: "literal" }, { fromAtomId: "literal", toAtomId: "visible" },
+      { fromAtomId: "visible", toAtomId: "charge" }
     ], style: {} });
     expect(atoms.filter((atom: Json) => atom.labelShown).map((atom: Json) => atom.id))
-      .toEqual(["charge", "isotope", "radical", "marked-radical", "label", "literal", "visible"]);
+      .toEqual(["charge", "isotope", "visible"]);
   });
 
   it("uses contrast without a halo for a ring atom enclosed only by another bridged ring's fill", () => {
