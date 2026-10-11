@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
+import { toolbarAsset } from "./toolbarAssets";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
@@ -977,6 +978,23 @@ describe("ToolPalette arrange flyouts", () => {
       expect(command.assetName).toBeUndefined();
       expect(command.icon).toBeUndefined();
     }
+  });
+
+  it("keeps another toolbar item's asset icon ahead of its command icon", () => {
+    // Use a distinct item asset and command icon so the assertion checks the rendered image.
+    const source = getToolsetItemGroups("core.art").flat().find((entry) => entry.primary.type === "command");
+    if (!source || source.primary.type !== "command") throw new Error("Expected command toolbar item.");
+    const assetItem: ToolbarPaletteItemModel = {
+      ...source,
+      assetName: "Art_Shapes",
+      primary: { type: "command", command: { ...source.primary.command, assetName: "Art_Circle", icon: "bond" } }
+    };
+    act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[assetItem]], onInvoke: vi.fn() }));
+    });
+    const image = container.querySelector<HTMLImageElement>("button > .tool-icon-image");
+    expect(image?.getAttribute("src")).toBe(toolbarAsset("Art_Shapes"));
+    expect(image?.getAttribute("src")).not.toBe(toolbarAsset("Art_Circle"));
   });
 
   it("remembers every selected symbol in the group preview and primary action", () => {

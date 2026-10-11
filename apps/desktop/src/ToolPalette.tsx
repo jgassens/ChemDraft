@@ -3975,9 +3975,9 @@ export function ToolbarItemIcon({
   if (item.iconDataUri) {
     return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
   }
-  // Command-specific icons must win over the palette item's cached asset. Customize previews build
-  // an item model from both sources, and the stale shared asset can otherwise hide the real glyph.
-  if (command) {
+  // Only the Symbol/charge group previews its selected command instead of its shared asset.
+  const primaryId = item.primary.type === "command" ? item.primary.command.id : undefined;
+  if (command && (primaryId === "tool.symbol" || primaryId === "tool.charge")) {
     return <ToolbarCommandIcon command={command} />;
   }
   // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
@@ -3985,6 +3985,9 @@ export function ToolbarItemIcon({
   const assetSrc = item.assetName ? toolbarAsset(item.assetName) : undefined;
   if (assetSrc) {
     return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
+  }
+  if (command) {
+    return <ToolbarCommandIcon command={command} />;
   }
   if (item.icon && item.icon !== "palette") {
     return <Icon name={item.icon} />;
