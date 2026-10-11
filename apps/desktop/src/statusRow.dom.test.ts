@@ -98,4 +98,10 @@ describe("status row", () => {
     expect(cssRule(".build-stamp")).toMatch(/white-space: nowrap;/);
     expect(cssRule(".open-warnings-button")).toMatch(/flex: 0 0 auto;/);
   });
+
+  it("lets clicks through the row to the canvas, except on the warnings count", () => {
+    // The row spans the bottom of the workspace above the canvas; only the count takes the pointer.
+    expect(cssRule(".status-row")).toMatch(/pointer-events: none;/);
+    expect(cssRule(".open-warnings-button")).toMatch(/pointer-events: auto;/);
+  });
 });

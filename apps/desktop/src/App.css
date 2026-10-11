@@ -5549,7 +5549,6 @@ textarea:focus-visible,
 
 .build-stamp {
   flex: 0 0 auto;
-  margin-left: auto;
   font-size: 10px;
   opacity: 0.5;
   white-space: nowrap;
