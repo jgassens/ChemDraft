@@ -148,4 +148,125 @@ describe("hover label typing over a long chain (stress)", () => {
     expect(tally.overBond).toBe(tally.trials);
     expect(tally.labelled).toBe(tally.trials);
   }, 120_000);
+
+  async function pointAt(point: { x: number; y: number }) {
+    const page = container.querySelector<HTMLElement>(".page")!;
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      page.dispatchEvent(event);
+    });
+    return snapshot().hoveredNativeTarget as { kind?: string; atomId?: string; bondId?: string } | undefined;
+  }
+
+  // Undo back to the plain chain and the Bond tool, so every trial starts the same.
+  async function resetTrial() {
+    if (snapshot().activeToolCommandId !== "tool.bond") {
+      await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.bond"); });
+    }
+    for (let undo = 0; undo < 6 && molecule().atoms.some((atom) => atom.element !== "C"); undo++) {
+      await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    }
+    expect(molecule().atoms.every((atom) => atom.element === "C")).toBe(true);
+  }
+
+  const DRIFTS = [0.35, 0.5, 0.65, 1] as const;
+
+  it(`keeps OMe on its atom when the pointer drifts ${DRIFTS.join("/")} of the way to a neighbour after "O" (${TRIALS} trials)`, async () => {
+    const start = molecule();
+    let seed = 20261011;
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    // Per drift: what the pointer landed on (the labelled atom, a bond, the neighbour, nothing) and
+    // whether the label stayed on the atom with the tool and structure unchanged.
+    const tally = Object.fromEntries(DRIFTS.map((drift) => [drift, { trials: 0, onAtom: 0, onBond: 0, onNeighbour: 0, onNothing: 0, labelled: 0, toolSwitched: 0, structureChanged: 0 }]));
+
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const drift = DRIFTS[trial % DRIFTS.length]!;
+      const bond = start.bonds[Math.floor(random() * start.bonds.length)]!;
+      const [atomId, neighbourId] = random() < 0.5 ? [bond.fromAtomId, bond.toAtomId] : [bond.toAtomId, bond.fromAtomId];
+      const atom = start.atoms.find((candidate) => candidate.id === atomId)!;
+      const neighbour = start.atoms.find((candidate) => candidate.id === neighbourId)!;
+      expect(await pointAt(atom)).toMatchObject({ kind: "atom", atomId: atom.id });
+      await press("O");
+      expect(molecule().atoms.find((candidate) => candidate.id === atom.id)!.element).toBe("O");
+
+      const landed = await pointAt({ x: atom.x + (neighbour.x - atom.x) * drift, y: atom.y + (neighbour.y - atom.y) * drift });
+      const row = tally[drift]!;
+      row.trials += 1;
+      if (landed?.kind === "atom" && landed.atomId === atom.id) row.onAtom += 1;
+      else if (landed?.kind === "atom" && landed.atomId === neighbour.id) row.onNeighbour += 1;
+      else if (landed?.kind === "bond") row.onBond += 1;
+      else row.onNothing += 1;
+
+      for (const key of ["M", "e"]) await press(key);
+      await press("Enter");
+      const after = molecule();
+      const changed = after.atoms.filter((candidate) => start.atoms.find((old) => old.id === candidate.id)?.element !== candidate.element);
+      if (changed.length === 1 && changed[0]!.id === atom.id && changed[0]!.element === "OMe") row.labelled += 1;
+      if (snapshot().activeToolCommandId !== "tool.bond") row.toolSwitched += 1;
+      if (after.atoms.length !== start.atoms.length || after.bonds.length !== start.bonds.length) row.structureChanged += 1;
+      await resetTrial();
+    }
+
+    console.log(`[hover-drift-stress] ${JSON.stringify(tally)}`);
+    for (const drift of DRIFTS) {
+      const row = tally[drift]!;
+      expect(row.labelled, `drift ${drift}`).toBe(row.trials);
+      expect(row.toolSwitched, `drift ${drift}`).toBe(0);
+      expect(row.structureChanged, `drift ${drift}`).toBe(0);
+    }
+    // The full drift lands on the neighbouring atom: the case that used to end the label.
+    expect(tally[1]!.onNeighbour).toBe(tally[1]!.trials);
+  }, 120_000);
+
+  it(`types OMe on the chain with the pointer wandering between keys (${TRIALS} trials)`, async () => {
+    // The original report: "OMe" typed onto a long chain, the pointer not quite still. Each trial
+    // starts on the chain (an atom or a bond) and moves the pointer up to 0.6 bond lengths in a
+    // random direction before every following key, onto neighbours, bonds or empty page.
+    const start = molecule();
+    const bondLength = Math.hypot(
+      start.atoms[1]!.x - start.atoms[0]!.x,
+      start.atoms[1]!.y - start.atoms[0]!.y
+    );
+    let seed = 20261012;
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    const tally = { trials: 0, startOnAtom: 0, startOnBond: 0, wanderedOffLabelledAtom: 0, labelled: 0, toolSwitched: 0, structureChanged: 0 };
+
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const bond = start.bonds[Math.floor(random() * start.bonds.length)]!;
+      const from = start.atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const to = start.atoms.find((atom) => atom.id === bond.toAtomId)!;
+      const fraction = random();
+      let point = { x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction };
+      const first = await pointAt(point);
+      expect(first?.kind === "atom" || first?.kind === "bond").toBe(true);
+      tally.trials += 1;
+      if (first?.kind === "atom") tally.startOnAtom += 1; else tally.startOnBond += 1;
+
+      await press("O");
+      const labelled = molecule().atoms.filter((atom) => atom.element === "O");
+      expect(labelled).toHaveLength(1);
+      let wandered = false;
+      for (const key of ["M", "e"]) {
+        const angle = random() * 2 * Math.PI, distance = random() * 0.6 * bondLength;
+        point = { x: point.x + Math.cos(angle) * distance, y: point.y + Math.sin(angle) * distance };
+        const hovered = await pointAt(point);
+        if (!(hovered?.kind === "atom" && hovered.atomId === labelled[0]!.id)) wandered = true;
+        await press(key);
+      }
+      if (wandered) tally.wanderedOffLabelledAtom += 1;
+      await press("Enter");
+      const after = molecule();
+      const changed = after.atoms.filter((atom) => start.atoms.find((old) => old.id === atom.id)?.element !== atom.element);
+      if (changed.length === 1 && changed[0]!.id === labelled[0]!.id && changed[0]!.element === "OMe") tally.labelled += 1;
+      if (snapshot().activeToolCommandId !== "tool.bond") tally.toolSwitched += 1;
+      if (after.atoms.length !== start.atoms.length || after.bonds.length !== start.bonds.length) tally.structureChanged += 1;
+      await resetTrial();
+    }
+
+    console.log(`[hover-wander-stress] ${JSON.stringify(tally)}`);
+    expect(tally.toolSwitched).toBe(0);
+    expect(tally.structureChanged).toBe(0);
+    expect(tally.labelled).toBe(tally.trials);
+  }, 120_000);
 });

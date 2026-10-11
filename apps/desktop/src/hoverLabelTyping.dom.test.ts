@@ -243,6 +243,105 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
+  async function hoverPoint(point: { x: number; y: number }) {
+    const page = container.querySelector<HTMLElement>(".page")!;
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      page.dispatchEvent(event);
+    });
+  }
+
+  it("keeps a label going when the pointer drifts onto a neighbouring atom", async () => {
+    await hover(0);
+    await press("O");
+    await hover(1);
+    await press("M");
+    expect(editor()?.value).toBe("OM");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().atoms[1]!.element).toBe("C");
+    expectIntact();
+    // The label is done: the hover is back on the atom under the pointer.
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: molecule().atoms[1]!.id });
+  });
+
+  it("keeps a label going when the pointer drifts off the molecule onto empty page", async () => {
+    await hover(0);
+    await press("O");
+    await hoverPoint({ x: 40, y: 40 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await press("M");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expectIntact();
+  });
+
+  it("keeps a label going over another atom's bond, for a key that cannot start a label", async () => {
+    await hover(0);
+    await press("O");
+    const { bond } = await hoverBond(3, 0.5);
+    await press("M");
+    expect(editor()?.value).toBe("OM");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
+    expectIntact();
+  });
+
+  it("keeps a digit in the label after a drift onto a neighbour, rather than acting on the neighbour", async () => {
+    await hover(0);
+    await press("N");
+    const before = molecule();
+    await hover(1);
+    await press("2");
+    expect(editor()?.value).toBe("N2");
+    expect(molecule().atoms[1]).toMatchObject(before.atoms[1]!);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expectIntact();
+  });
+
+  it("starts a new label for a capital element letter over a neighbour after a drift", async () => {
+    await hover(0);
+    await press("O");
+    await hover(1);
+    await press("N");
+    expect(molecule().atoms[0]!.element).toBe("O");
+    expect(molecule().atoms[1]!.element).toBe("N");
+    expect(editor()).toBeNull();
+    // And that new label continues on the neighbour.
+    await press("a");
+    expect(editor()?.value).toBe("Na");
+    expectIntact();
+  });
+
+  it("labels the nearer end of another atom's bond for a capital element letter after a drift", async () => {
+    await hover(0);
+    await press("O");
+    const { near, far } = await hoverBond(3, 0.4);
+    await press("S");
+    expect(molecule().atoms[0]!.element).toBe("O");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)!.element).toBe("S");
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("C");
+    expect(editor()).toBeNull();
+    expectIntact();
+  });
+
+  it("does not continue a label that was undone before the drift", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule().atoms[0]!.element).toBe("C");
+    await hover(1);
+    await press("e");
+    expect(editor()).toBeNull();
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(molecule().atoms.map((atom) => atom.element)).toEqual(["C", "C", "C", "C", "C", "C"]);
+  });
+
   it("hovers the bond again once a label typed over it commits, so Delete acts on the bond", async () => {
     const { bond, near } = await hoverBond(0, 0.4);
     await press("O");
