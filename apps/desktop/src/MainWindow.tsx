@@ -2760,10 +2760,14 @@ export function MainWindow({
    *  shared install plus the unsaved-changes bookkeeping every document mutation owes. */
   const commitDocumentHistoryFrom = useCallback((
     startDocument: ChemDraftDocument,
-    nextDocument: ChemDraftDocument
+    nextDocument: ChemDraftDocument,
+    undoLabel?: string
   ) => {
     const currentHistory = documentHistoryRef.current;
     const present = reconcileNativeChargeMarks(nextDocument);
+    if (undoLabel) {
+      documentUndoLabelsRef.current.set(present, undoLabel);
+    }
     installDocumentHistory({
       past: boundedHistoryPast([...currentHistory.past, startDocument], present),
       present,
@@ -3606,7 +3610,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, `Label atom ${label}`);
+    commitDocumentChange(nextDocument, split ? `Add ${label} substituent` : `Label atom ${label}`);
     if (split) {
       setSelectedNativeMoleculePart(result.target);
     }
@@ -6107,7 +6111,10 @@ export function MainWindow({
     const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
     if (labelResult.target) {
       if (labelResult.document !== currentDocument) {
-        commitDocumentChange(labelResult.document, "Convert Text to Atom Label");
+        commitDocumentChange(
+          labelResult.document,
+          atomLabelUndoLabel(currentDocument, labelResult.target, nativeTextObjectLabel(currentDocument, objectId))
+        );
         setSelectedNativeMoleculePart(labelResult.target);
       }
       if (labelResult.message) setStatus(labelResult.message);
@@ -8127,7 +8134,10 @@ export function MainWindow({
             setStatus(result.disabledReason);
             return;
           }
-          commitDocumentChange(result.document, "Convert Text to Atom Label");
+          commitDocumentChange(
+            result.document,
+            atomLabelUndoLabel(documentRef.current, result.target, selectedNativeTextObjectLabel(documentRef.current))
+          );
           setActiveTextEditObjectId(undefined);
           setSelectedNativeMoleculePart(result.target);
           if (result.message) setStatus(result.message);
@@ -9622,9 +9632,16 @@ export function MainWindow({
       });
       if (previous.continuesHotkey) {
         replacePresentDocument(result.document);
+        documentUndoLabelsRef.current.set(
+          documentRef.current,
+          atomLabelUndoLabel(previous.beforeDocument, result.target, previous.draft)
+        );
       } else if (JSON.stringify(previous.beforeMolecule.atoms) !== JSON.stringify(object.atoms) || result.document !== documentRef.current) {
-        commitDocumentHistoryFrom(previous.beforeDocument, result.document);
-        documentUndoLabelsRef.current.set(documentRef.current, "Edit Atom Label");
+        commitDocumentHistoryFrom(
+          previous.beforeDocument,
+          result.document,
+          atomLabelUndoLabel(previous.beforeDocument, result.target, previous.draft)
+        );
       }
       if (result.message) setStatus(result.message);
       if (kept && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
@@ -28714,6 +28731,31 @@ function findDocumentObject(document: ChemDraftDocument, objectId: string): Docu
   }
 
   return undefined;
+}
+
+function atomLabelUndoLabel(
+  sourceDocument: ChemDraftDocument,
+  resultTarget: NativeMoleculeDeleteTarget | undefined,
+  label: string
+): string {
+  const sourceObject = resultTarget?.kind === "atom"
+    ? findDocumentObject(sourceDocument, resultTarget.objectId)
+    : undefined;
+  const attachedSubstituent = sourceObject?.type === "molecule" && resultTarget?.kind === "atom" &&
+    !sourceObject.atoms.some((atom) => atom.id === resultTarget.atomId);
+  return attachedSubstituent
+    ? `Add ${normalizeNativeAtomElementLabel(label)} substituent`
+    : "Edit Atom Label";
+}
+
+function nativeTextObjectLabel(document: ChemDraftDocument, objectId: string): string {
+  const object = findDocumentObject(document, objectId);
+  return object?.type === "text" ? object.text : "";
+}
+
+function selectedNativeTextObjectLabel(document: ChemDraftDocument): string {
+  const objectId = document.selection.objectIds[0];
+  return objectId ? nativeTextObjectLabel(document, objectId) : "";
 }
 
 function agentObjectSummary(object: DocumentObject): AgentSnapshot["objects"][number] {

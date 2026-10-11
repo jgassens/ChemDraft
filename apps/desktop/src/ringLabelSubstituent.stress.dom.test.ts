@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type Point } from "@chemdraft/chem-core";
 import { createNativeTextObject, nativeAtomExternalValence, nativeAtomChargeSupportsValence, nativeAtomLabelReading, nativeLabelGroupVerdict, normalizeNativeMoleculeGeometry } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { nativeNicknameLabels } from "./commands";
 import { loadKeybindingSettings, saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -173,6 +173,60 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expect(status()).toContain("already has 2"); const after = molecule();
     await history(); expect(molecule()).toEqual(before); await history(true); expect(molecule()).toEqual(after);
   });
+  it("names hover continuations for their final substituent or relabel result", async () => {
+    await mount(ring(), "tool.bond");
+    const ringBefore = molecule();
+    await pointer("pointermove", ringBefore.atoms[0]!);
+    for (const char of "OMe") await key(char);
+    await key("Enter");
+    const ringAfter = molecule();
+    await history();
+    expect(molecule()).toEqual(ringBefore);
+    expect(status()).toBe("Undid Add OMe substituent");
+    await history(true);
+    expect(molecule()).toEqual(ringAfter);
+    expect(status()).toBe("Redid Add OMe substituent");
+
+    const chain = insertNativeSingleBondMolecule(createPhase4Document("Terminal relabel"), { x: 300, y: 300 });
+    await mount(selectDocumentObjects(chain, chain.pages[0].id, []), "tool.bond");
+    const chainBefore = molecule();
+    await pointer("pointermove", chainBefore.atoms[0]!);
+    for (const char of "OMe") await key(char);
+    await key("Enter");
+    const chainAfter = molecule();
+    await history();
+    expect(molecule()).toEqual(chainBefore);
+    expect(status()).toBe("Undid Edit Atom Label");
+    await history(true);
+    expect(molecule()).toEqual(chainAfter);
+    expect(status()).toBe("Redid Edit Atom Label");
+  });
+  it("names inline ring-label attachments for Undo and Redo", async () => {
+    await mount();
+    const before = molecule();
+    await edit(0, "OMe");
+    const after = molecule();
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe("Undid Add OMe substituent");
+    await history(true);
+    expect(molecule()).toEqual(after);
+    expect(status()).toBe("Redid Add OMe substituent");
+  });
+  it("names nickname-label hotkey attachments for Undo and Redo", async () => {
+    saveKeybindingSettings({ scheme: "chemdraw" });
+    await mount(ring(), "tool.bond");
+    const before = molecule();
+    await pointer("pointermove", before.atoms[0]!);
+    await key("m");
+    const after = molecule();
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe("Undid Add Me substituent");
+    await history(true);
+    expect(molecule()).toEqual(after);
+    expect(status()).toBe("Redid Add Me substituent");
+  });
   it("ordinary NMe relabel has the same one Undo entry as the split", async () => {
     await mount(); const before = molecule(); await edit(0, "NMe"); check(6, 6);
     expect(molecule().atoms[0]!.element).toBe("NMe"); const after = molecule();
@@ -196,7 +250,8 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await command("text.convertToAtomLabel"); check(7, 7); expect(current().pages[0].objects).toHaveLength(1);
     expect(snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: molecule().atoms[6]!.id });
     expect(status()).toContain("Attached OMe"); const after = current().pages[0].objects;
-    await history(); expect(current().pages[0].objects).toEqual(before); await history(true); expect(current().pages[0].objects).toEqual(after);
+    await history(); expect(current().pages[0].objects).toEqual(before); expect(status()).toBe("Undid Add OMe substituent");
+    await history(true); expect(current().pages[0].objects).toEqual(after); expect(status()).toBe("Redid Add OMe substituent");
   });
   it("fresh Text-tool text within reach converts automatically once", async () => {
     const d = ring(), m = d.pages[0].objects.find((o): o is MoleculeObject => o.type === "molecule")!;
