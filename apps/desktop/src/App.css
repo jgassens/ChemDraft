@@ -5509,9 +5509,56 @@ textarea:focus-visible,
   gap: 8px;
 }
 
+/* The status row along the bottom of the workspace (MainWindow): the status, the warnings count and
+   the modifier hint on the left, the build stamp on the right. The left part shrinks and truncates;
+   the stamp keeps its own width, so the two never overlap at any window width. */
+.status-row {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 1000;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  color: var(--cd-text-secondary);
+  pointer-events: none;
+}
+
+.status-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.status-message,
+.status-modifier-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-modifier-hint {
+  opacity: 0.7;
+}
+
+.build-stamp {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
 /* The warnings a file open reported: a count in the status line, and a list above it. The list
    fits the window it is in and scrolls, so a small window at a high display scale still shows it. */
 .open-warnings-button {
+  flex: 0 0 auto;
   pointer-events: auto;
   border: 0;
   background: none;

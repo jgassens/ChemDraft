@@ -1497,7 +1497,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.19.47-opus";
+const CURRENT_BUILD_STAMP = "10.10.23.50-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -18031,56 +18031,46 @@ export function MainWindow({
             onClose={() => setCustomizeToolbarsOpen(false)}
           />
         ) : null}
-        <div style={{ position: "absolute", bottom: 8, right: 8, color: "var(--cd-text-secondary)", opacity: 0.5, pointerEvents: "none", fontSize: 10, zIndex: 1000 }}>
-          Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
-        </div>
-        <div
-          style={{
-            position: "absolute",
-            bottom: 8,
-            left: 8,
-            maxWidth: "calc(100% - 240px)",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "baseline",
-            gap: "2px 10px",
-            color: "var(--cd-text-secondary)",
-            fontSize: 11,
-            pointerEvents: "none",
-            zIndex: 1000
-          }}
-        >
-          <span data-status-message role="status" aria-live="polite" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {interactive3dWorkspace
-              ? [
-                  interactive3dWorkspace.status,
-                  interactive3dWorkspace.energyLabel,
-                  ...new Set(interactive3dWorkspace.session?.warnings ?? []),
-                  "Esc to close"
-                ].filter(Boolean).join(" · ")
-              : hoveredNativeWarning ?? status}
-          </span>
-          {openWarnings ? (
-            <button
-              type="button"
-              className="open-warnings-button"
-              data-open-warnings-button
-              aria-haspopup="dialog"
-              aria-expanded={openWarningsListShown}
-              aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
-              title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
-              // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
-              }}
-            >
-              {warningCountLabel(openWarnings.warnings.length)}
-            </button>
-          ) : null}
-          {statusModifierHint ? (
-            <span data-modifier-hint aria-live="polite" style={{ opacity: 0.7 }}>{statusModifierHint}</span>
-          ) : null}
+        {/* One row along the bottom of the workspace: the status (its text truncating), the warnings
+            count and the modifier hint on the left, the build stamp at its own width on the right.
+            Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
+        <div className="status-row" data-status-row>
+          <div className="status-row-main">
+            <span data-status-message role="status" aria-live="polite" className="status-message">
+              {interactive3dWorkspace
+                ? [
+                    interactive3dWorkspace.status,
+                    interactive3dWorkspace.energyLabel,
+                    ...new Set(interactive3dWorkspace.session?.warnings ?? []),
+                    "Esc to close"
+                  ].filter(Boolean).join(" · ")
+                : hoveredNativeWarning ?? status}
+            </span>
+            {openWarnings ? (
+              <button
+                type="button"
+                className="open-warnings-button"
+                data-open-warnings-button
+                aria-haspopup="dialog"
+                aria-expanded={openWarningsListShown}
+                aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+                // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
+                }}
+              >
+                {warningCountLabel(openWarnings.warnings.length)}
+              </button>
+            ) : null}
+            {statusModifierHint ? (
+              <span data-modifier-hint aria-live="polite" className="status-modifier-hint">{statusModifierHint}</span>
+            ) : null}
+          </div>
+          <div className="build-stamp" data-build-stamp>
+            Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
+          </div>
         </div>
         {openWarningsListShown && openWarnings ? (
           <OpenWarningsList
