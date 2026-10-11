@@ -254,7 +254,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(report.layout.stuck).toHaveLength(2);
     const fillB = ring("B").fill;
     const originalBackground = molecule(doc).style.atomLabelBackgroundColor;
-    const ringAtomIds = new Set(build.rings.flatMap((r: Json) => r.atomIds));
+    const ringAtomIds = new Set<string>(build.rings.flatMap((r: Json) => r.atomIds as string[]));
     for (const [copy, list] of [[carbon, report.labelsOnFills.carbon], [picture, report.labelsOnFills.picture]] as const) {
       const stuck = report.layout.stuck.map((x: Json) => x.group.split(" ")[0]);
       expect(list.map((l: Json) => l.atom).sort()).toEqual(stuck.sort());
