@@ -182,8 +182,8 @@ rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text:
 
 Verified on gonane: four filled rings (solid and linear gradient fills,
 one glowing) with letters A–D centred, SMILES unchanged. Ring fills are
-notched around atom labels on or inside them, so those labels sit on the
-page background without white label boxes.
+notched around atom labels on or inside them, so each such label sits on
+the page background in a small rounded bite out of the fill, with no white box.
 
 For a vivid look (Nicolaou style), use saturated colours at
 `fillOpacity` about 0.9, never two alike side by side, and pick each
@@ -411,9 +411,6 @@ style step cannot repair).
   fonts were replaced; `render-document --format pdf` of the same aspirin
   document shows the same fault. View every PDF before
   delivering it, and prefer SVG or PNG until this is fixed.
-- **Ring fills notch around atom labels.** A label on or inside a filled
-  ring sits on the page background in a rounded bite out of the fill; the
-  renderer does not paint a rectangular white label box there.
 - **Ring fills are painted in a fixed order the document cannot change.**
   Where a bridged ring's outline takes in part of another ring, the
   larger fill can cover the smaller one. `scripts/ring-style.mjs` then
