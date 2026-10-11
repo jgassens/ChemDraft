@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { win32 } from "node:path";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { withNativeDocumentLabelBondSides } from "@chemdraft/document-workflow-core";
 import { validateBatchName, CliUsageError } from "./output";
 
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
@@ -44,7 +45,9 @@ export async function loadAgentDocument(file: string) {
         "Expected native document JSON or a ChemDraft envelope.");
     }
     validateAgentDocument(opened.document);
-    return opened;
+    // As the app does on opening: a side-dependent label ("SCN") with no recorded bond side gets
+    // the one its drawing shows, so its reading never depends on coordinates again.
+    return { ...opened, document: withNativeDocumentLabelBondSides(opened.document) };
   } catch (error) {
     throw new CliUsageError(`Could not load document "${file}": ${error instanceof Error ? error.message : String(error)}`);
   }
