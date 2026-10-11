@@ -179,6 +179,7 @@ import {
   nativeElementFromAtomLabel,
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
+  nativeAtomLabelFreeValence,
   nativeLabelBondSide,
   nativeLabelReadingDependsOnBondSide,
   withNativeDocumentLabelBondSides,
@@ -3001,7 +3002,7 @@ function nativeRingPlacementValenceRefusal(
       return false;
     }
     const usage = nativeAtomValenceUsage(after, atom);
-    return usage > nativeAtomValenceUsage(before, previous) && !nativeAtomSupportsValenceUsage(atom, usage);
+    return usage > nativeAtomValenceUsage(before, previous) && !nativeAtomSupportsValenceUsage(after, atom, usage);
   }).map((atom) => atom.id);
   if (overValentAtomIds.length === 0) {
     return undefined;
@@ -3036,7 +3037,7 @@ function nativeRingTargetFailureValenceReason(
 ): "atom-no-free-valence" | "bond-atom-no-free-valence" | undefined {
   const isFull = (atomId: string | undefined, added: number) => {
     const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-    return atom !== undefined && !nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + added);
+    return atom !== undefined && !nativeAtomSupportsValenceUsage(molecule, atom, nativeAtomValenceUsage(molecule, atom) + added);
   };
   if (target.kind === "atom") {
     return isFull(target.atomId, 2) ? "atom-no-free-valence" : undefined;
@@ -3045,8 +3046,21 @@ function nativeRingTargetFailureValenceReason(
   return bond && (isFull(bond.fromAtomId, 1) || isFull(bond.toAtomId, 1)) ? "bond-atom-no-free-valence" : undefined;
 }
 
-/** Whether the atom's element admits this valence use at its formal charge; labels with no element pass. */
-function nativeAtomSupportsValenceUsage(atom: MoleculeAtom, usage: number): boolean {
+/**
+ * Whether the atom admits this valence use at its formal charge. A group or spelled label (#83:
+ * "OMe", "NMe") is judged by its free valence, so a one-bond "OMe" is full; an element
+ * label by its element; a label with no free valence (generic R, a bare formula, unrecognized
+ * text) passes, as every valence check skips it.
+ */
+function nativeAtomSupportsValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom, usage: number): boolean {
+  const bonded = molecule.bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+  const freeValence = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, { bonded });
+  if (freeValence !== undefined) {
+    return usage <= freeValence;
+  }
+  if (nativeAtomLabelReading(atom.element, { bonded }).kind === "generic") {
+    return true;
+  }
   const element = nativeElementFromAtomLabel(atom.element);
   return !element || nativeAtomChargeSupportsValence(element, usage, atom.formalCharge);
 }

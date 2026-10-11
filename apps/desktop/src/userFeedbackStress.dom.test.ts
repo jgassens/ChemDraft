@@ -359,6 +359,76 @@ describe("user feedback app stress", () => {
     report("C bond hotkey", started, `keys=1 objects=${molecules(current()).length}`);
   }, 120000);
 
+  /** A two-atom chain whose tip is labelled through the label workflow, e.g. "OMe" (#83: the group). */
+  function labelledTipDocument(label: string) {
+    const chain = insertNativeSingleBondMolecule(createPhase4Document(`${label} tip`), { x: 300, y: 300 });
+    const chainMol = molecules(chain)[0];
+    const tip = chainMol.atoms[1];
+    const labeled = applyNativeAtomElementTarget(chain, { objectId: chainMol.id, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, label);
+    const mol = molecules(labeled)[0];
+    const [a, b] = mol.atoms;
+    return { doc: selectDocumentObjects(labeled, labeled.pages[0].id, []), mol, tip: mol.atoms[1], bondMid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  }
+
+  it("C: a one-bond OMe atom is full: ring click on its bond, spiro and hotkey 6 all refuse with the valence reason", async () => {
+    const started = performance.now();
+    let { doc, mol, tip, bondMid } = labelledTipDocument("OMe");
+    expect(tip.element).toBe("OMe");
+    await mount(doc, "tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: an atom on that bond has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("OMe"));
+    await mount(doc, "tool.cyclohexane");
+    wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", tip, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    await pointer("pointerdown", tip, wrapper); await pointer("pointerup", tip, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: that atom has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("OMe"));
+    await mount(doc, "tool.bond");
+    await pointer("pointermove", bondMid);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await key("6");
+    expect(molecules(current())).toEqual([mol]);
+    expect(status()).toBe("Cannot add fused cyclohexane ring here: an atom on that bond has no free valence");
+    report("C OMe", started, "click=1 spiro=1 hotkey=1");
+  }, 120000);
+
+  it("C: a one-bond NMe atom refuses a spiro ring but takes a fused one", async () => {
+    const started = performance.now();
+    let { doc, mol, tip, bondMid } = labelledTipDocument("NMe");
+    await mount(doc, "tool.cyclohexane");
+    let wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", tip, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    await pointer("pointerdown", tip, wrapper); await pointer("pointerup", tip, wrapper);
+    expect(molecules(current())).toHaveLength(2);
+    expect(molecules(current())[0]).toEqual(mol);
+    expect(status()).toBe("Placed cyclohexane separately: that atom has no free valence");
+
+    ({ doc, mol, tip, bondMid } = labelledTipDocument("NMe"));
+    await mount(doc, "tool.cyclohexane");
+    wrapper = container.querySelector(`[data-object-id="${mol.id}"]`)!;
+    await pointer("pointermove", bondMid, wrapper);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
+    await pointer("pointerdown", bondMid, wrapper); await pointer("pointerup", bondMid, wrapper);
+    expect(molecules(current())).toHaveLength(1);
+    const fused = molecules(current())[0];
+    expect(fused.atoms).toHaveLength(6);
+    expect(fused.bonds.filter(bond => bond.fromAtomId === tip.id || bond.toAtomId === tip.id)).toHaveLength(2);
+    expect(fused.atoms.find(atom => atom.id === tip.id)?.element).toBe("NMe");
+    report("C NMe", started, "spiro=1 fuse=1");
+  }, 120000);
+
   /** The star a user builds: one Bond-tool click on empty canvas, then three on the same end atom. */
   async function clickBuiltStar() {
     await mount(createPhase4Document("Clicked star"), "tool.bond");

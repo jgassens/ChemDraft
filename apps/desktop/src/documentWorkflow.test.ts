@@ -17109,11 +17109,14 @@ describe("ring placement valence guard", () => {
     expectRefusedSeparately(oxaDocument, oxaMolecule, bondPlan(oxaDocument, oxaMolecule, "bond_002", "cyclohexane"), "closure-atom-no-free-valence");
   });
 
-  it("skips endpoints whose label has no element, as the spiro check does", () => {
-    const { document, molecule } = neopentane("Ph");
-    const plan = bondPlan(document, molecule, "gb1", "cyclohexane");
+  it("skips endpoints whose label has no free valence, and judges a group label by its group", () => {
+    const generic = neopentane("R");
+    const plan = bondPlan(generic.document, generic.molecule, "gb1", "cyclohexane");
     expect(plan?.kind).toBe("fuse-bond");
     expect(plan?.fallbackReason).toBeUndefined();
+    // "Ph" means phenyl (#83), which takes one bond: a fused ring would over-fill it further.
+    const phenyl = neopentane("Ph");
+    expectRefusedSeparately(phenyl.document, phenyl.molecule, bondPlan(phenyl.document, phenyl.molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
   });
 
   it("still fuses benzene into naphthalene, cyclohexane into decalin, and a spiro ring on a two-bond carbon", () => {
@@ -17316,5 +17319,47 @@ describe("ring placement valence guard", () => {
     expect(fused.refusal).toBeUndefined();
     expect(fused.document).not.toBe(legal.document);
     expect(nativeMoleculeInvalidAtomStates(moleculeById(fused.document, legal.molecule.id))).toEqual([]);
+  });
+
+  // A group label means its group (#83): "OMe" takes exactly one bond, "NMe" two. A label at the
+  // end of a two-carbon chain: bond gb1 joins it to c1.
+  function labelledChain(label: string) {
+    return guardDocument([
+      ["g", label, 300, 300], ["c1", "C", 300 + L, 300], ["c2", "C", 300 + L * 1.5, 300 + L * Math.sqrt(3) / 2]
+    ], [["g", "c1"], ["c1", "c2"]]);
+  }
+  const spiroPoint = { x: 300 - L / 2, y: 300 - L * Math.sqrt(3) / 2 };
+
+  it("judges a one-bond OMe atom full by its group's free valence", () => {
+    const { document, molecule } = labelledChain("OMe");
+    expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+    expectRefusedSeparately(document, molecule, planNativeTemplatePlacement(
+      document, { point: spiroPoint, target: moleculeAtomTarget(molecule, "g") }, "cyclohexane"
+    ), "atom-no-free-valence");
+    expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane")).toEqual({
+      document, refusal: "bond-atom-no-free-valence"
+    });
+  });
+
+  it("lets a one-bond NMe atom take one more bond, not two", () => {
+    const { document, molecule } = labelledChain("NMe");
+    expectRefusedSeparately(document, molecule, planNativeTemplatePlacement(
+      document, { point: spiroPoint, target: moleculeAtomTarget(molecule, "g") }, "cyclohexane"
+    ), "atom-no-free-valence");
+    const fused = bondPlan(document, molecule, "gb1", "cyclohexane");
+    expect(fused).toMatchObject({ kind: "fuse-bond" });
+    expect(fused?.fallbackReason).toBeUndefined();
+    expect(fused!.molecule.bonds.filter((bond) => bond.fromAtomId === "g" || bond.toAtomId === "g")).toHaveLength(2);
+    expect(valenceUse(fused!.molecule, "g")).toBe(2);
+  });
+
+  it("still skips a generic R placeholder", () => {
+    const { document, molecule } = labelledChain("R");
+    const spiro = planNativeTemplatePlacement(document, { point: spiroPoint, target: moleculeAtomTarget(molecule, "g") }, "cyclohexane");
+    expect(spiro).toMatchObject({ kind: "attach-atom" });
+    expect(spiro?.fallbackReason).toBeUndefined();
+    const fused = bondPlan(document, molecule, "gb1", "cyclohexane");
+    expect(fused).toMatchObject({ kind: "fuse-bond" });
+    expect(fused?.fallbackReason).toBeUndefined();
   });
 });
