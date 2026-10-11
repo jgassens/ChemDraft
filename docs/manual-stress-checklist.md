@@ -135,6 +135,15 @@ held keys cleared on window blur, no focus stealing, hints hidden during inline 
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
 
+Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
+neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
+unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
+and check it refuses with the same reason; benzene and cyclohexane on a benzene or cyclohexane bond
+still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom Label
+tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring is placed
+separately, the OMe and its bond are unchanged, and the status says an atom on that bond has no free
+valence.
+
 Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
 `invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
 one-warning file) after its text moves on; clicking it lists every warning with its message, what it
