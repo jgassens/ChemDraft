@@ -156,6 +156,41 @@ impl QuitFlow {
     }
 }
 
+/// How a quit was decided. The forced-exit line names it, since only a confirmed flush means the
+/// last edits were saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitReason {
+    /// The document window confirmed its session flush (`quit_after_flush`).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    FlushConfirmed,
+    /// The document window did not answer within the flush grace.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    GraceExpired,
+    /// There was no document window to ask.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    NoDocument,
+}
+
+impl QuitReason {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::FlushConfirmed => "after the session flush was confirmed",
+            Self::GraceExpired => "after the flush grace expired (session flush not confirmed)",
+            Self::NoDocument => "with no document window to flush",
+        }
+    }
+}
+
+/// The watchdog's stderr line: the quit's path, then how long the event loop was given.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn forced_exit_message(reason: QuitReason, waited: Duration) -> String {
+    format!(
+        "ChemDraft: forced exit {}; event loop did not exit within {} s",
+        reason.describe(),
+        waited.as_secs()
+    )
+}
+
 /// What the quit flow does to the app. A fake stands in for it in the tests.
 trait QuitHost: Clone + Send + 'static {
     /// Asks the document window to flush its session; false when there is none to ask.
@@ -164,7 +199,7 @@ trait QuitHost: Clone + Send + 'static {
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Ends the process now, from the watchdog thread.
-    fn force_exit(&self, waited: Duration);
+    fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
 
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
@@ -189,11 +224,8 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     /// children outlive a process (their own process group, no job object), so they are killed
     /// first; interactive 3D sidecars end with their stdin, as they do at a normal exit.
     #[cfg(windows)]
-    fn force_exit(&self, waited: Duration) {
-        eprintln!(
-            "ChemDraft: forced exit after flush; event loop did not exit within {} s",
-            waited.as_secs()
-        );
+    fn force_exit(&self, waited: Duration, reason: QuitReason) {
+        eprintln!("{}", forced_exit_message(reason, waited));
         self.state::<ocsr_engine::OcsrEngineState>()
             .kill_for_forced_exit();
         // TerminateProcess, not std::process::exit: ExitProcess runs every DLL's detach, and
@@ -213,10 +245,11 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     /// application menu's, through NSApplication termination (which Sparkle relies on). Linux is
     /// not shipped. Should a quit ever reach this, the event loop is left to end the app.
     #[cfg(not(windows))]
-    fn force_exit(&self, waited: Duration) {
+    fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!(
-            "ChemDraft: event loop did not exit within {} s of the quit; leaving it to the event loop",
-            waited.as_secs()
+            "ChemDraft: event loop did not exit within {} s of the quit (decided {}); leaving it to the event loop",
+            waited.as_secs(),
+            reason.describe()
         );
     }
 }
@@ -236,20 +269,20 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
         return;
     }
     if !host.ask_document_to_flush() {
-        quit_now_with(flow, host);
+        quit_now_with(flow, host, QuitReason::NoDocument);
         return;
     }
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
     });
 }
 
 /// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
 /// armed here and nowhere else, so it can never end a process whose session has not been flushed
-/// or given its grace.
-fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+/// or given its grace. Only the first decision arms it, so its `reason` is the path that decided.
+fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
     // Raised first so the palette teardown that follows isn't recorded as user closes.
     flow.quitting.store(true, Ordering::SeqCst);
     if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
@@ -257,7 +290,7 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
         let wait = flow.exit_watchdog;
         thread::spawn(move || {
             thread::sleep(wait);
-            host.force_exit(wait);
+            host.force_exit(wait, reason);
         });
     }
     host.exit();
@@ -270,7 +303,7 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
 /// none of which needs the main thread.
 #[tauri::command]
 async fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now_with(&QUIT, &app);
+    quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
 }
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -6007,6 +6040,8 @@ mod tests {
         /// When set, `exit` needs this "main thread" (it waits for the lock), as the real exit
         /// request is served by the event loop on the main thread.
         main_thread: Option<std::sync::Arc<Mutex<()>>>,
+        /// The reason the watchdog was given, once it has fired.
+        forced_reason: std::sync::Arc<Mutex<Option<QuitReason>>>,
     }
 
     impl StuckAppHost {
@@ -6015,6 +6050,7 @@ mod tests {
                 has_document,
                 calls: std::sync::Arc::new(Mutex::new(Vec::new())),
                 main_thread: None,
+                forced_reason: std::sync::Arc::new(Mutex::new(None)),
             }
         }
 
@@ -6023,6 +6059,10 @@ mod tests {
                 main_thread: Some(main_thread),
                 ..Self::new(true)
             }
+        }
+
+        fn forced_reason(&self) -> Option<QuitReason> {
+            *self.forced_reason.lock().unwrap()
         }
 
         fn calls(&self) -> Vec<&'static str> {
@@ -6052,7 +6092,8 @@ mod tests {
             }
         }
 
-        fn force_exit(&self, _waited: Duration) {
+        fn force_exit(&self, _waited: Duration, reason: QuitReason) {
+            *self.forced_reason.lock().unwrap() = Some(reason);
             self.calls.lock().unwrap().push("force exit");
         }
     }
@@ -6086,13 +6127,15 @@ mod tests {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
         request_quit_with(flow, &host);
-        quit_now_with(flow, &host); // quit_after_flush: the session is written
+        // quit_after_flush: the session is written
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         assert!(flow.quitting.load(Ordering::SeqCst));
         assert!(flow.watchdog_armed.load(Ordering::SeqCst));
         assert_eq!(
             host.wait_for_calls(3),
             ["ask to flush", "exit", "force exit"]
         );
+        assert_eq!(host.forced_reason(), Some(QuitReason::FlushConfirmed));
     }
 
     #[test]
@@ -6107,6 +6150,7 @@ mod tests {
             host.wait_for_calls(3),
             ["ask to flush", "exit", "force exit"]
         );
+        assert_eq!(host.forced_reason(), Some(QuitReason::GraceExpired));
     }
 
     #[test]
@@ -6119,6 +6163,7 @@ mod tests {
             host.wait_for_calls(3),
             ["ask to flush", "exit", "force exit"]
         );
+        assert_eq!(host.forced_reason(), Some(QuitReason::NoDocument));
     }
 
     #[test]
@@ -6127,8 +6172,8 @@ mod tests {
         let host = StuckAppHost::new(true);
         request_quit_with(flow, &host);
         request_quit_with(flow, &host);
-        quit_now_with(flow, &host);
-        quit_now_with(flow, &host);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         // Asked once, two exits (each confirmation asks the event loop again), one forced exit.
         let calls = host.wait_for_calls(4);
         thread::sleep(Duration::from_millis(200));
@@ -6159,7 +6204,7 @@ mod tests {
         let host = StuckAppHost::needing_main_thread(main_thread.clone());
         let worker = {
             let host = host.clone();
-            thread::spawn(move || quit_now_with(flow, &host))
+            thread::spawn(move || quit_now_with(flow, &host, QuitReason::FlushConfirmed))
         };
         // The forced exit happens while the worker is still stuck in `exit` and the main thread busy.
         assert_eq!(host.wait_for_calls(2), ["exit", "force exit"]);
@@ -6167,6 +6212,23 @@ mod tests {
         assert!(flow.quitting.load(Ordering::SeqCst));
         drop(busy);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_forced_exit_line_names_how_the_quit_was_decided() {
+        let waited = Duration::from_secs(2);
+        assert_eq!(
+            forced_exit_message(QuitReason::FlushConfirmed, waited),
+            "ChemDraft: forced exit after the session flush was confirmed; event loop did not exit within 2 s"
+        );
+        assert_eq!(
+            forced_exit_message(QuitReason::GraceExpired, waited),
+            "ChemDraft: forced exit after the flush grace expired (session flush not confirmed); event loop did not exit within 2 s"
+        );
+        assert_eq!(
+            forced_exit_message(QuitReason::NoDocument, waited),
+            "ChemDraft: forced exit with no document window to flush; event loop did not exit within 2 s"
+        );
     }
 
     #[test]
