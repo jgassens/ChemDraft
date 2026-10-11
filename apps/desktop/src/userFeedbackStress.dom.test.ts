@@ -14,7 +14,7 @@ import {
 } from "@chemdraft/document-workflow-core";
 import { MainWindow, nativeTemplateStatusForApplication, rotationDeltaDegrees, visualSelectionBounds } from "./MainWindow";
 import {
-  applyNativeTemplatePlacementPlan, createPhase4Document, createSelectionClipboardPayload,
+  applyNativeAtomElementTarget, applyNativeAtomSproutTarget, applyNativeTemplatePlacementPlan, createPhase4Document, createSelectionClipboardPayload,
   flattenSpunMolecule, insertNativeArtGraphicObject, insertNativeSingleBondMolecule,
   insertNativeTemplateMolecule, insertNativeTextObject, parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload, planNativeTemplatePlacement, rotateDocumentObjectsAroundPoint,
@@ -359,6 +359,91 @@ describe("user feedback app stress", () => {
     report("C bond hotkey", started, `keys=1 objects=${molecules(current()).length}`);
   }, 120000);
 
+  it("C: ring hotkeys name each non-valence refusal through real keys", async () => {
+    const L = nativeBondLengthPx;
+    const started = performance.now();
+    // An abbreviation label: pressing 3 (spiro benzene) over "Ph" refuses and says to relabel it.
+    const chain = insertNativeSingleBondMolecule(createPhase4Document("Abbreviation hotkey"), { x: 300, y: 300 });
+    const chainMol = molecules(chain)[0];
+    const tip = chainMol.atoms[1];
+    const labeled = applyNativeAtomElementTarget(chain, { objectId: chainMol.id, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, "Ph");
+    await mount(selectDocumentObjects(labeled, labeled.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: tip.x, y: tip.y });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
+    const beforeAbbreviation = molecules(current());
+    await key("3");
+    expect(molecules(current())).toEqual(beforeAbbreviation);
+    expect(status()).toBe("Cannot add benzene ring here: that atom's label is an abbreviation; relabel it to an element first");
+
+    // No room for the ring's geometry: on both sides of bond a-b, a square's far corner lands on
+    // an existing three-bond carbon, which a ring closure may not reuse. Pressing 4 (fused
+    // cyclobutane) over a-b refuses and says the ring could not be placed.
+    const crowdedBase = insertNativeSingleBondMolecule(createPhase4Document("Geometry hotkey"), { x: 300, y: 300 });
+    const crowdedMol = molecules(crowdedBase)[0];
+    const corner = (id: string, x: number, y: number, side: 1 | -1): Array<[string, number, number]> => [
+      [id, x, y], [`${id}1`, x - L * 0.87, y + side * L / 2], [`${id}2`, x, y + side * L], [`${id}3`, x - L * 0.87, y - side * L / 2]
+    ];
+    const crowdedAtoms: Array<[string, number, number]> = [
+      ["a", 300, 300], ["b", 300 + L, 300], ...corner("u", 300, 300 - L, -1), ...corner("d", 300, 300 + L, 1)
+    ];
+    const crowded = applyPatches(crowdedBase, [{ op: "updateObject", objectId: crowdedMol.id, changes: { ...crowdedMol,
+      atoms: crowdedAtoms.map(([id, x, y]) => ({ id, element: "C", x, y, formalCharge: 0 })),
+      bonds: [["a", "b"], ["u", "u1"], ["u", "u2"], ["u", "u3"], ["d", "d1"], ["d", "d2"], ["d", "d3"]].map(([fromAtomId, toAtomId], i) => ({
+        id: `gb${i}`, fromAtomId, toAtomId, order: "single" as const
+      })) } }]);
+    await mount(selectDocumentObjects(crowded, crowded.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: 300 + L / 2, y: 300 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: "gb0" });
+    const beforeGeometry = molecules(current());
+    await key("4");
+    expect(molecules(current())).toEqual(beforeGeometry);
+    expect(status()).toBe("Cannot add fused cyclobutane ring here: the ring's geometry could not be placed there");
+    report("C hotkey reasons", started, "keys=2 abbreviation=1 geometry=1");
+  }, 120000);
+
+  it("C: the cyclic-bond hotkey refuses a closure onto a saturated carbon and still closes an ordinary ring", async () => {
+    // Four 0-presses grow a hexagon chain; the fifth closes it onto the first atom.
+    let chain = insertNativeSingleBondMolecule(createPhase4Document("Cyclic closure"), { x: 300, y: 300 });
+    const objectId = molecules(chain)[0].id;
+    for (let press = 0; press < 4; press++) {
+      const tip = molecules(chain)[0].atoms.at(-1)!;
+      chain = applyNativeAtomSproutTarget(chain, { objectId, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, "cyclic");
+    }
+    const open = molecules(chain)[0];
+    expect(open.atoms).toHaveLength(6);
+    const first = open.atoms[0], last = open.atoms.at(-1)!;
+    const center = { x: open.atoms.reduce((sum, atom) => sum + atom.x, 0) / 6, y: open.atoms.reduce((sum, atom) => sum + atom.y, 0) / 6 };
+    const outward = Math.atan2(first.y - center.y, first.x - center.x);
+    // Saturate the first atom with three methyls pointing out of the ring.
+    const methyls = [-50, 0, 50].map((degrees, i) => ({
+      id: `me${i}`, element: "C", formalCharge: 0,
+      x: first.x + Math.cos(outward + degrees * Math.PI / 180) * nativeBondLengthPx,
+      y: first.y + Math.sin(outward + degrees * Math.PI / 180) * nativeBondLengthPx
+    }));
+    const saturated: MoleculeObject = { ...open, atoms: [...open.atoms, ...methyls],
+      bonds: [...open.bonds, ...methyls.map((methyl, i) => ({ id: `meb${i}`, fromAtomId: first.id, toAtomId: methyl.id, order: "single" as const }))] };
+    const saturatedDoc = applyPatches(chain, [{ op: "updateObject", objectId, changes: saturated }]);
+    const started = performance.now();
+
+    await mount(selectDocumentObjects(saturatedDoc, saturatedDoc.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: last.x, y: last.y });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: last.id });
+    const beforeRefusal = molecules(current());
+    await key("0");
+    expect(molecules(current())).toEqual(beforeRefusal);
+    expect(status()).toBe("Cannot add cyclic bond here: the ring would close onto an atom with no free valence");
+
+    // Without the methyls the same press closes the ring.
+    await mount(selectDocumentObjects(chain, chain.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", { x: last.x, y: last.y });
+    await key("0");
+    const closed = molecules(current())[0];
+    expect(status()).toBe("Added cyclic bond");
+    expect(closed.atoms).toHaveLength(6);
+    expect(closed.bonds).toHaveLength(6);
+    report("C cyclic closure", started, "keys=2 refused=1 closed=1");
+  }, 120000);
+
   it("C: 40 seeded ring clicks on random bonds and atoms never leave an over-valent atom", async () => {
     // A page of saturated (neopentane), aromatic (benzene), ordinary (cyclohexane, ethane) and
     // order-raising (s-cis butadiene, refused for benzene) molecules.
@@ -553,4 +638,5 @@ describe("user feedback app stress", () => {
     }
     report("F explicit", started, "selectedBoxes=20 conversions=20 undoEntries=20 strayObjects=0");
   }, 120000);
+
 });

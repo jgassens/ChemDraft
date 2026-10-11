@@ -2890,6 +2890,7 @@ export type NativeTemplateFallbackReason =
   | "atom-no-free-valence"
   | "bond-atom-no-free-valence"
   | "closure-atom-no-free-valence"
+  | "double-bond-overfill"
   | "bond-cannot-accept";
 
 /** Compute the placement a template click would make, without mutating the document. */
@@ -2912,12 +2913,6 @@ export function planNativeTemplatePlacement(
       if (!atom) {
         return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
       }
-      // A spiro ring adds two bonds at its shared atom. This early refusal only keeps the
-      // reason specific when the crowded atom also leaves no room for the ring's geometry;
-      // the result guard below is what guarantees safety.
-      if (!nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + 2)) {
-        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "atom-no-free-valence");
-      }
     }
 
     const nextMolecule = target.kind === "bond"
@@ -2928,10 +2923,12 @@ export function planNativeTemplatePlacement(
         document,
         point,
         templateId,
-        target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable"
+        target.kind === "bond"
+          ? "bond-cannot-accept"
+          : nativeSpiroAttachFailureValenceReason(molecule, target.atomId) ?? "target-unavailable"
       );
     }
-    const valenceRefusal = nativeTemplatePlacementValenceRefusal(molecule, nextMolecule, target);
+    const valenceRefusal = nativeRingPlacementValenceRefusal(molecule, nextMolecule, target);
     if (valenceRefusal) {
       return standaloneNativeTemplateFallbackPlan(document, point, templateId, valenceRefusal);
     }
@@ -2967,21 +2964,29 @@ export function planNativeTemplatePlacement(
   };
 }
 
+/** Why a ring placement is refused for valence: the outcome {@link nativeRingPlacementValenceRefusal} reports. */
+type NativeRingValenceRefusal = Extract<
+  NativeTemplateFallbackReason,
+  "atom-no-free-valence" | "bond-atom-no-free-valence" | "closure-atom-no-free-valence" | "double-bond-overfill"
+>;
+
 /**
- * The one valence guard for every ring placement that changes an existing molecule (bond fusion,
- * closure onto a neighbouring ring, spiro attachment; clicks, previews and ring hotkeys alike).
- * It judges the RESULT, not a prediction: every pre-existing atom whose valence use (bond orders
- * plus radicals) rose must still be supported at its element and formal charge. That covers the
- * bonds a ring adds at its shared atoms, atoms a closure reuses, and a shared bond whose order an
- * aromatic template raised. Atoms whose valence use did not rise are not the placement's doing,
- * and labels with no element (nicknames, generic R) are skipped as every valence check skips them.
- * Returns why the placement must be refused, or undefined when it is chemically sound.
+ * The one valence guard for every placement that closes or adds a ring on an existing molecule
+ * (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond closure;
+ * clicks, previews and hotkeys alike). It judges the RESULT, not a prediction: every pre-existing
+ * atom whose valence use (bond orders plus radicals) rose must still be supported at its element
+ * and formal charge. Atoms whose valence use did not rise are not the placement's doing, and
+ * labels with no element (nicknames, generic R) are skipped as every valence check skips them.
+ * The reason names the most direct culprit: the target atom itself (an atom target) or an
+ * endpoint of the target bond; else an existing atom that gained a new bond (a closure atom);
+ * else an atom whose valence rose only because an aromatic template's double-bond re-pairing
+ * raised one of its existing bonds. Returns undefined when the placement is chemically sound.
  */
-function nativeTemplatePlacementValenceRefusal(
+function nativeRingPlacementValenceRefusal(
   before: MoleculeObject,
   after: MoleculeObject,
   target: NativeMoleculeDeleteTarget
-): NativeTemplateFallbackReason | undefined {
+): NativeRingValenceRefusal | undefined {
   const beforeById = new Map(before.atoms.map((atom) => [atom.id, atom]));
   const overValentAtomIds = after.atoms.filter((atom) => {
     const previous = beforeById.get(atom.id);
@@ -2994,13 +2999,35 @@ function nativeTemplatePlacementValenceRefusal(
   if (overValentAtomIds.length === 0) {
     return undefined;
   }
-  if (target.kind === "atom") {
+  if (target.kind === "atom" && overValentAtomIds.includes(target.atomId)) {
     return "atom-no-free-valence";
   }
-  const bond = before.bonds.find((candidate) => candidate.id === target.bondId);
-  return overValentAtomIds.some((atomId) => atomId === bond?.fromAtomId || atomId === bond?.toAtomId)
-    ? "bond-atom-no-free-valence"
-    : "closure-atom-no-free-valence";
+  if (target.kind === "bond") {
+    const bond = before.bonds.find((candidate) => candidate.id === target.bondId);
+    if (overValentAtomIds.some((atomId) => atomId === bond?.fromAtomId || atomId === bond?.toAtomId)) {
+      return "bond-atom-no-free-valence";
+    }
+  }
+  const bondCount = (molecule: MoleculeObject, atomId: string) =>
+    molecule.bonds.filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId).length;
+  return overValentAtomIds.some((atomId) => bondCount(after, atomId) > bondCount(before, atomId))
+    ? "closure-atom-no-free-valence"
+    : "double-bond-overfill";
+}
+
+/**
+ * When a spiro ring could not be drawn at an atom at all, whether the atom was also too full to
+ * take one: every ring adds at least two single bonds at its spiro atom. This only names the
+ * failure; it never refuses a placement, so it cannot overrule the result guard.
+ */
+function nativeSpiroAttachFailureValenceReason(
+  molecule: MoleculeObject,
+  atomId: string
+): "atom-no-free-valence" | undefined {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  return atom && !nativeAtomSupportsValenceUsage(atom, nativeAtomValenceUsage(molecule, atom) + 2)
+    ? "atom-no-free-valence"
+    : undefined;
 }
 
 /** Whether the atom's element admits this valence use at its formal charge; labels with no element pass. */
@@ -7517,17 +7544,27 @@ export function applyNativeAtomSproutTarget(
   kind: NativeAtomSproutKind,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeAtomSproutHotkeyTarget(document, target, kind, plan).document;
+}
+
+/** {@link applyNativeAtomSproutTarget}, also reporting why a cyclic-bond closure was refused. */
+export function nativeAtomSproutHotkeyTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  kind: NativeAtomSproutKind,
+  plan?: NativeBondGrowthPlan
+): NativeRingHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document };
   }
   const located = nativeMoleculeForPartTarget(document, target);
   if (!located) {
-    return document;
+    return { document };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return document;
+    return { document };
   }
 
   const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
@@ -7535,12 +7572,12 @@ export function applyNativeAtomSproutTarget(
 
   if (kind === "wedge" || kind === "hashed") {
     if (!growthPlan || growthPlan.targetAtomId) {
-      return document;
+      return { document };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
       bondStyle: kind === "wedge" ? "wedge" : "hashed"
     });
-    return nativeMoleculePatched(document, page, molecule, grown);
+    return { document: nativeMoleculePatched(document, page, molecule, grown) };
   }
 
   if (kind === "methylidene") {
@@ -7553,11 +7590,11 @@ export function applyNativeAtomSproutTarget(
       nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
       !growthPlan || growthPlan.targetAtomId
     ) {
-      return document;
+      return { document };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!grown) {
-      return document;
+      return { document };
     }
     const newAtom = grown.atoms[grown.atoms.length - 1];
     const bonds = grown.bonds.map((bond) =>
@@ -7566,7 +7603,7 @@ export function applyNativeAtomSproutTarget(
         ? nativeBondWithOrderAndDisplay(grown, bond, "double")
         : bond
     );
-    return nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds));
+    return { document: nativeMoleculePatched(document, page, molecule, refreshNativeSingleBondGraph(grown, grown.atoms, bonds)) };
   }
 
   if (kind === "gemDimethyl") {
@@ -7576,20 +7613,20 @@ export function applyNativeAtomSproutTarget(
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
     if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0) < 2) {
-      return document;
+      return { document };
     }
     if (!growthPlan || growthPlan.targetAtomId) {
-      return document;
+      return { document };
     }
     const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!first) {
-      return document;
+      return { document };
     }
     const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
     const second = secondPlan && !secondPlan.targetAtomId
       ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
       : undefined;
-    return nativeMoleculePatched(document, page, molecule, second);
+    return { document: nativeMoleculePatched(document, page, molecule, second) };
   }
 
   // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
@@ -7633,12 +7670,11 @@ export function applyNativeAtomSproutTarget(
 
   if (outgoingDegrees === undefined) {
     if (!growthPlan) {
-      return document;
+      return { document };
     }
-    const grown = growthPlan.targetAtomId
-      ? connectNativeCarbonAtoms(molecule, target.atomId, growthPlan.targetAtomId)
-      : extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
-    return nativeMoleculePatched(document, page, molecule, grown);
+    return growthPlan.targetAtomId
+      ? nativeCyclicClosurePatched(document, page, molecule, target, growthPlan.targetAtomId)
+      : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint)) };
   }
 
   const nextPoint = {
@@ -7651,10 +7687,29 @@ export function applyNativeAtomSproutTarget(
     !nativeBondExistsBetween(molecule, target.atomId, atom.id) &&
     canConnectNativeAtoms(molecule, target.atomId, atom.id)
   );
-  const grown = closure
-    ? connectNativeCarbonAtoms(molecule, target.atomId, closure.id)
-    : extendNativeCarbonGraph(molecule, target.atomId, nextPoint);
-  return nativeMoleculePatched(document, page, molecule, grown);
+  return closure
+    ? nativeCyclicClosurePatched(document, page, molecule, target, closure.id)
+    : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, nextPoint)) };
+}
+
+/**
+ * Close the cyclic-bond chain onto an existing atom. Closing a ring is a ring placement, so the
+ * result goes through the shared ring-placement valence guard: a closure that would over-fill
+ * the closure atom (or the hovered atom) changes nothing and says why.
+ */
+function nativeCyclicClosurePatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  target: Extract<NativeMoleculeDeleteTarget, { kind: "atom" }>,
+  closureAtomId: string
+): NativeRingHotkeyResult {
+  const closed = connectNativeCarbonAtoms(molecule, target.atomId, closureAtomId);
+  if (!closed) {
+    return { document };
+  }
+  const refusal = nativeRingPlacementValenceRefusal(molecule, closed, target);
+  return refusal ? { document, refusal } : { document: nativeMoleculePatched(document, page, molecule, closed) };
 }
 
 /**
@@ -7663,8 +7718,31 @@ export function applyNativeAtomSproutTarget(
  */
 export type NativeRingHotkeyResult = {
   document: ChemDraftDocument;
-  refusal?: NativeTemplateFallbackReason;
+  refusal?: NativeRingHotkeyRefusal;
 };
+
+/**
+ * Why a ring hotkey (or the cyclic-bond closure) changed nothing: the ring tools' reasons, plus
+ * two only a hotkey meets — an atom whose label is an abbreviation rather than an element, and a
+ * ring whose geometry could not be placed at the hovered target.
+ */
+export type NativeRingHotkeyRefusal =
+  | NativeTemplateFallbackReason
+  | "atom-label-not-element"
+  | "ring-geometry-unavailable";
+
+/** The hovered target's editable molecule, or why a hotkey cannot change it. */
+function nativeHotkeyMoleculeForTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget
+): { page: ChemDraftDocument["pages"][number]; molecule: MoleculeObject } | { refusal: NativeRingHotkeyRefusal } {
+  const located = nativeMoleculeForPartTarget(document, target);
+  if (located) {
+    return located;
+  }
+  const exists = firstPage(document).objects.some((object) => object.id === target.objectId && object.type === "molecule");
+  return { refusal: exists ? "structure-not-editable" : "target-unavailable" };
+}
 
 /** Attach a ring template at the hovered atom (the atom becomes a shared ring vertex), oriented
  *  along the growth arrow's direction — pressing 3/6/7 over an atom, ChemDraw-style. */
@@ -7685,23 +7763,23 @@ export function nativeRingHotkeyAttachAtAtomTarget(
   plan?: NativeBondGrowthPlan
 ): NativeRingHotkeyResult {
   if (target.kind !== "atom") {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return { document };
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
   // A nickname or condensed label (Ph, OMe, CO2Me) is a superatom with no known free valence:
   // the bond tool and the sprout hotkeys already refuse it, and a ring fused onto "Ph" would be
   // chemistry nobody drew. Refuse here too, so the shipped doc's "relabel it to an element
   // first" is the whole story.
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
-    return { document };
+    return { document, refusal: "atom-label-not-element" };
   }
   const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
     ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
@@ -7711,18 +7789,24 @@ export function nativeRingHotkeyAttachAtAtomTarget(
     y: sourceAtom.y + direction.y * nativeBondLength
   };
   const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
+  if (!attached) {
+    return {
+      document,
+      refusal: nativeSpiroAttachFailureValenceReason(molecule, target.atomId) ?? "ring-geometry-unavailable"
+    };
+  }
   return nativeRingHotkeyPatched(document, page, molecule, attached, target);
 }
 
-/** Commit a ring hotkey's molecule only if it passes the shared ring-placement valence guard. */
+/** Commit a hotkey's ring molecule only if it passes the shared ring-placement valence guard. */
 function nativeRingHotkeyPatched(
   document: ChemDraftDocument,
   page: ChemDraftDocument["pages"][number],
   molecule: MoleculeObject,
-  next: MoleculeObject | undefined,
+  next: MoleculeObject,
   target: NativeMoleculeDeleteTarget
 ): NativeRingHotkeyResult {
-  const refusal = next ? nativeTemplatePlacementValenceRefusal(molecule, next, target) : undefined;
+  const refusal = nativeRingPlacementValenceRefusal(molecule, next, target);
   return refusal
     ? { document, refusal }
     : { document: nativeMoleculePatched(document, page, molecule, next) };
@@ -7745,18 +7829,18 @@ export function nativeRingHotkeyFuseAtBondTarget(
   templateId: NativeMoleculeTemplateId
 ): NativeRingHotkeyResult {
   if (target.kind !== "bond") {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return { document };
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
   const fromAtom = molecule.atoms.find((atom) => atom.id === bond?.fromAtomId);
   const toAtom = molecule.atoms.find((atom) => atom.id === bond?.toAtomId);
   if (!bond || !fromAtom || !toAtom) {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
 
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
@@ -7778,7 +7862,9 @@ export function nativeRingHotkeyFuseAtBondTarget(
     y: midpoint.y + outward.y * nativeBondLength
   };
   const fused = fuseNativeTemplateRingToBond(molecule, target.bondId, orientationPoint, templateId);
-  return nativeRingHotkeyPatched(document, page, molecule, fused, target);
+  return fused
+    ? nativeRingHotkeyPatched(document, page, molecule, fused, target)
+    : { document, refusal: "ring-geometry-unavailable" };
 }
 
 function addChargeMarkAtPoint(

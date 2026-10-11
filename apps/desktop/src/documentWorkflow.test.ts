@@ -111,6 +111,7 @@ import {
   applyNativeRingFuseAtBondTarget,
   nativeRingHotkeyAttachAtAtomTarget,
   nativeRingHotkeyFuseAtBondTarget,
+  nativeAtomSproutHotkeyTarget,
   applyNativeAtomElementTarget,
   applyNativeAtomLabelClearTarget,
   applyNativeAtomWarningSuppression,
@@ -17087,6 +17088,163 @@ describe("ring placement valence guard", () => {
     );
     expect(spiro?.kind).toBe("attach-atom");
     expect(spiro!.molecule.chemistry).toMatchObject({ formula: "C11H20", atomCount: 11, bondCount: 12 });
+  });
+
+  const valenceUse = (molecule: MoleculeObject, atomId: string) => molecule.bonds
+    .filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .reduce((sum, bond) => sum + (bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1), 0);
+
+  it("lets the result decide spiro rings: S(IV) and P(V) benzene spiros attach, full atoms still refuse", () => {
+    // A neutral S with one bond: the aromatic spiro ring adds a single and a double bond, S(IV).
+    const thio = guardDocument([["s", "S", 300, 300], ["m1", "C", 300 + L, 300]], [["s", "m1"]]);
+    const thioTarget = moleculeAtomTarget(thio.molecule, "s");
+    const thioPlan = planNativeTemplatePlacement(thio.document, { point: { x: 300 - L, y: 300 }, target: thioTarget }, "benzene");
+    expect(thioPlan).toMatchObject({ kind: "attach-atom" });
+    expect(thioPlan?.fallbackReason).toBeUndefined();
+    expect(valenceUse(thioPlan!.molecule, "s")).toBe(4);
+    expect(nativeMoleculeInvalidAtomStates(thioPlan!.molecule)).toEqual([]);
+    const thioHotkey = nativeRingHotkeyAttachAtAtomTarget(thio.document, thioTarget, "benzene");
+    expect(thioHotkey.refusal).toBeUndefined();
+    expect(valenceUse(moleculeById(thioHotkey.document, thio.molecule.id), "s")).toBe(4);
+
+    // A neutral P with two bonds becomes P(V).
+    const phospha = guardDocument([
+      ["p", "P", 300, 300], ["m1", "C", 300 + L, 300], ["m2", "C", 300 - L / 2, 300 + L * Math.sqrt(3) / 2]
+    ], [["p", "m1"], ["p", "m2"]]);
+    const phosphaTarget = moleculeAtomTarget(phospha.molecule, "p");
+    const phosphaPlan = planNativeTemplatePlacement(
+      phospha.document, { point: { x: 300 - L / 2, y: 300 - L * Math.sqrt(3) / 2 }, target: phosphaTarget }, "benzene"
+    );
+    expect(phosphaPlan).toMatchObject({ kind: "attach-atom" });
+    expect(phosphaPlan?.fallbackReason).toBeUndefined();
+    expect(valenceUse(phosphaPlan!.molecule, "p")).toBe(5);
+    expect(nativeMoleculeInvalidAtomStates(phosphaPlan!.molecule)).toEqual([]);
+    expect(nativeRingHotkeyAttachAtAtomTarget(phospha.document, phosphaTarget, "benzene").refusal).toBeUndefined();
+
+    // A ring carbon and a neutral two-bond N still refuse a benzene spiro, for the same reason.
+    const ringDocument = insertNativeTemplateMolecule(createPhase4Document("Ring spiro"), { x: 360, y: 320 }, "cyclohexane");
+    const ring = selectedMolecule(ringDocument);
+    expectRefusedSeparately(ringDocument, ring, planNativeTemplatePlacement(
+      ringDocument, { point: moleculeAtom(ring, "atom_001"), target: moleculeAtomTarget(ring, "atom_001") }, "benzene"
+    ), "atom-no-free-valence");
+    const amine = guardDocument([
+      ["n", "N", 300, 300], ["m1", "C", 300 + L, 300], ["m2", "C", 300 - L / 2, 300 + L * Math.sqrt(3) / 2]
+    ], [["n", "m1"], ["n", "m2"]]);
+    expectRefusedSeparately(amine.document, amine.molecule, planNativeTemplatePlacement(
+      amine.document, { point: { x: 300 - L / 2, y: 300 - L * Math.sqrt(3) / 2 }, target: moleculeAtomTarget(amine.molecule, "n") }, "benzene"
+    ), "atom-no-free-valence");
+    expect(nativeRingHotkeyAttachAtAtomTarget(amine.document, moleculeAtomTarget(amine.molecule, "n"), "benzene")).toEqual({
+      document: amine.document, refusal: "atom-no-free-valence"
+    });
+  });
+
+  it("names a double-bond re-pairing overfill apart from a closure atom", () => {
+    // cyclohexa-2,4-dien-1-one (r1 carries the C=O) with a two-carbon arm on r6. Fusing benzene on
+    // the arm's far bond re-pairs every six-carbon ring with two double bonds: the dienone ring
+    // gets a third double bond, and every pairing gives one to r1, which gains no new bond and
+    // is neither end of the target bond.
+    const at = (degrees: number, radius: number = L) => [
+      300 + Math.cos(degrees * Math.PI / 180) * radius, 300 + Math.sin(degrees * Math.PI / 180) * radius
+    ] as const;
+    const { document, molecule } = guardDocument([
+      ["r1", "C", ...at(-90)], ["r2", "C", ...at(-30)], ["r3", "C", ...at(30)],
+      ["r4", "C", ...at(90)], ["r5", "C", ...at(150)], ["r6", "C", ...at(210)],
+      ["o", "O", ...at(-90, 2 * L)],
+      ["c1", "C", 300 - L * Math.sqrt(3), 300 - L], ["c2", "C", 300 - L * Math.sqrt(3), 300 - 2 * L]
+    ], [
+      ["r1", "r2"], ["r2", "r3", "double"], ["r3", "r4"], ["r4", "r5", "double"], ["r5", "r6"], ["r6", "r1"],
+      ["r1", "o", "double"], ["r6", "c1"], ["c1", "c2"]
+    ]);
+    const away = { x: 300 - L * Math.sqrt(3) - L, y: 300 - 1.5 * L };
+    expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb9", "benzene", away), "double-bond-overfill");
+    expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb9"), "benzene")).toEqual({
+      document, refusal: "double-bond-overfill"
+    });
+    // A saturated ring changes no bond order and fuses.
+    expect(bondPlan(document, molecule, "gb9", "cyclohexane", away)?.kind).toBe("fuse-bond");
+    // The closure onto a full rim atom (the oxa-decalin test above) keeps the closure reason.
+  });
+
+  it("refuses a cyclic-bond closure that would over-fill the closure atom and leaves the document unchanged", () => {
+    let document = insertNativeSingleBondMolecule(createPhase4Document("Cyclic closure guard"), { x: 300, y: 300 });
+    const objectId = selectedMolecule(document).id;
+    const tipTarget = () => {
+      const tip = selectedMolecule(document).atoms.at(-1)!;
+      return { objectId, kind: "atom" as const, atomId: tip.id, distanceToPointer: 0 };
+    };
+    for (let press = 0; press < 4; press += 1) {
+      document = applyNativeAtomSproutTarget(document, tipTarget(), "cyclic");
+    }
+    const open = selectedMolecule(document);
+    const target = tipTarget();
+    // The ordinary closure still closes the hexagon.
+    const ordinary = nativeAtomSproutHotkeyTarget(document, target, "cyclic");
+    expect(ordinary.refusal).toBeUndefined();
+    expect(moleculeById(ordinary.document, objectId).structure).toBe("C1CCCCC1");
+
+    // Saturate the first atom with three methyls pointing out of the ring.
+    const first = open.atoms[0]!;
+    const center = {
+      x: open.atoms.reduce((sum, atom) => sum + atom.x, 0) / open.atoms.length,
+      y: open.atoms.reduce((sum, atom) => sum + atom.y, 0) / open.atoms.length
+    };
+    const outward = Math.atan2(first.y - center.y, first.x - center.x);
+    const methyls = [-50, 0, 50].map((degrees, index) => ({
+      id: `me${index}`, element: "C", formalCharge: 0,
+      x: first.x + Math.cos(outward + degrees * Math.PI / 180) * L,
+      y: first.y + Math.sin(outward + degrees * Math.PI / 180) * L
+    }));
+    const saturated = applyPatches(document, [{ op: "updateObject", objectId, changes: {
+      ...open,
+      atoms: [...open.atoms, ...methyls],
+      bonds: [...open.bonds, ...methyls.map((methyl, index) => ({
+        id: `meb${index}`, fromAtomId: first.id, toAtomId: methyl.id, order: "single" as const
+      }))]
+    } }]);
+    expect(nativeAtomSproutHotkeyTarget(saturated, target, "cyclic")).toEqual({
+      document: saturated, refusal: "closure-atom-no-free-valence"
+    });
+    expect(applyNativeAtomSproutTarget(saturated, target, "cyclic")).toBe(saturated);
+  });
+
+  it("names every non-valence ring hotkey refusal", () => {
+    // An abbreviation label has no element to judge.
+    const chain = guardDocument([["a", "C", 300, 300], ["b", "C", 300 + L, 300]], [["a", "b"]]);
+    const labeled = applyNativeAtomElementTarget(chain.document, moleculeAtomTarget(chain.molecule, "b"), "Ph");
+    expect(nativeRingHotkeyAttachAtAtomTarget(labeled, moleculeAtomTarget(chain.molecule, "b"), "benzene")).toEqual({
+      document: labeled, refusal: "atom-label-not-element"
+    });
+
+    // A molecule the native editor cannot edit (an atom with a blank label).
+    const blank = guardDocument([["a", "C", 300, 300], ["b", "C", 300 + L, 300], ["c", " ", 300, 300 + 3 * L]], [["a", "b"]]);
+    expect(nativeRingHotkeyFuseAtBondTarget(blank.document, moleculeBondTarget(blank.molecule, "gb1"), "cyclohexane")).toEqual({
+      document: blank.document, refusal: "structure-not-editable"
+    });
+    expect(nativeRingHotkeyAttachAtAtomTarget(blank.document, moleculeAtomTarget(blank.molecule, "a"), "cyclohexane")).toEqual({
+      document: blank.document, refusal: "structure-not-editable"
+    });
+
+    // A target that no longer exists.
+    const missingAtom = { ...moleculeAtomTarget(chain.molecule, "a"), atomId: "gone" };
+    expect(nativeRingHotkeyAttachAtAtomTarget(chain.document, missingAtom, "benzene")).toEqual({
+      document: chain.document, refusal: "target-unavailable"
+    });
+    const missingMolecule = { ...moleculeBondTarget(chain.molecule, "gb1"), objectId: "gone" };
+    expect(nativeRingHotkeyFuseAtBondTarget(chain.document, missingMolecule, "benzene")).toEqual({
+      document: chain.document, refusal: "target-unavailable"
+    });
+
+    // No room for the ring: each side's far corner lands on a three-bond carbon a closure may not reuse.
+    const corner = (id: string, x: number, y: number, side: 1 | -1): GuardAtom[] => [
+      [id, "C", x, y], [`${id}1`, "C", x - L * 0.87, y + side * L / 2], [`${id}2`, "C", x, y + side * L], [`${id}3`, "C", x - L * 0.87, y - side * L / 2]
+    ];
+    const crowded = guardDocument(
+      [["a", "C", 300, 300], ["b", "C", 300 + L, 300], ...corner("u", 300, 300 - L, -1), ...corner("d", 300, 300 + L, 1)],
+      [["a", "b"], ["u", "u1"], ["u", "u2"], ["u", "u3"], ["d", "d1"], ["d", "d2"], ["d", "d3"]]
+    );
+    expect(nativeRingHotkeyFuseAtBondTarget(crowded.document, moleculeBondTarget(crowded.molecule, "gb1"), "cyclobutane")).toEqual({
+      document: crowded.document, refusal: "ring-geometry-unavailable"
+    });
   });
 
   it("guards the ring hotkeys with the same check and names the refusal", () => {

@@ -366,7 +366,7 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
-  applyNativeAtomSproutTarget,
+  nativeAtomSproutHotkeyTarget,
   applyNativeBondDisplayStyleTarget,
   nativeRingHotkeyAttachAtAtomTarget,
   nativeRingHotkeyFuseAtBondTarget,
@@ -391,6 +391,7 @@ import {
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
   type NativeRingHotkeyResult,
+  type NativeRingHotkeyRefusal,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
   applyToolbarColorToSelection,
@@ -3653,7 +3654,7 @@ export function MainWindow({
 
   const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      applyNativeAtomSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+      nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
@@ -20084,8 +20085,8 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-/** Why a ring could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeTemplateFallbackReason): string {
+/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
   switch (reason) {
     case "atom-no-free-valence":
       return "that atom has no free valence";
@@ -20093,6 +20094,12 @@ export function nativeTemplateFallbackReasonText(reason: NativeTemplateFallbackR
       return "an atom on that bond has no free valence";
     case "closure-atom-no-free-valence":
       return "the ring would close onto an atom with no free valence";
+    case "double-bond-overfill":
+      return "the ring's double bonds would overfill a neighbouring atom";
+    case "atom-label-not-element":
+      return "that atom's label is an abbreviation; relabel it to an element first";
+    case "ring-geometry-unavailable":
+      return "the ring's geometry could not be placed there";
     case "structure-not-editable":
       return "that structure cannot be edited";
     case "bond-cannot-accept":

@@ -39,17 +39,25 @@ the superseding entry says so — read the newest entry that touches a subsystem
 Branch `agentctl/fusion-20261010/ring-fusion-valence`. A ring tool clicked on a bond whose endpoint
 was already a four-bond carbon fused anyway and left a five-bond carbon with a "Fused" status
 (AGENTS.md section 7, Chemistry invariants). One result-based guard in `documentWorkflow.ts`
-(`nativeTemplatePlacementValenceRefusal`) now judges every ring placement that changes an existing
-molecule (bond fusion, closure onto a neighbouring ring, spiro attachment): every pre-existing atom
-whose bond-order use plus radicals rose must still be supported at its element and formal charge.
-Atoms whose label has no element (nicknames, generic R) are skipped, as every valence check skips them.
+(`nativeRingPlacementValenceRefusal`) now judges every ring placement that changes an existing
+molecule (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond hotkey's
+closure): every pre-existing atom whose bond-order use plus radicals rose must still be supported at
+its element and formal charge. Atoms whose label has no element (nicknames, generic R) are skipped,
+as every valence check skips them.
 
 - **Clicks and the ghost preview** share `planNativeTemplatePlacement`, so a refused click is
   previewed and committed as a separate ring, the existing molecule untouched, with a status naming
-  why: "an atom on that bond has no free valence" or "the ring would close onto an atom with no free
-  valence" beside the existing spiro reason.
-- **Ring hotkeys** (numbers over a hovered bond or atom) go through the same guard and refuse
-  without changing anything, with the reason in the status line.
+  why: "an atom on that bond has no free valence", "the ring would close onto an atom with no free
+  valence" (an existing atom the ring gains a bond to), or "the ring's double bonds would overfill a
+  neighbouring atom" (an atom whose valence rose only because an aromatic template re-paired the
+  double bonds), beside the spiro reason "that atom has no free valence". No up-front prediction
+  refuses a spiro ring any more, so a benzene spiro on a one-bond S (S(IV)) or a two-bond P (P(V))
+  attaches.
+- **Ring hotkeys** (numbers over a hovered bond or atom) and the **cyclic-bond hotkey's closure**
+  (0) go through the same guard and refuse without changing anything, with the reason in the
+  status line. Ring hotkeys also name their other refusals: "that atom's label is an abbreviation;
+  relabel it to an element first", "the ring's geometry could not be placed there", "that structure
+  cannot be edited", and "that target is unavailable".
 - **Now refused, previously committed over-valent:** an aromatic spiro ring (benzene) on any ring
   carbon or neutral nitrogen, and benzene on a bond whose Kekulé re-pairing would double the shared
   bond next to an existing double bond (the central bond of s-cis butadiene).
