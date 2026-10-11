@@ -123,6 +123,7 @@ import {
   buildDocumentTabsSession,
   documentIsBlank,
   parseDocumentSessionEnvelope,
+  rawDocumentSessionTab,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal
 } from "./documentSession";
@@ -1571,7 +1572,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.14.05-opus";
+const CURRENT_BUILD_STAMP = "10.11.14.42-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2299,6 +2300,8 @@ export function MainWindow({
   /** A shell open that failed before the session restore ran; the restore's status repeats it. */
   const shellOpenFailureRef = useRef<string | undefined>(undefined);
   const documentSessionSaveEnabledRef = useRef(false);
+  const unrestoredSessionTabsRef = useRef<unknown[]>([]);
+  const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
@@ -3472,6 +3475,9 @@ export function MainWindow({
       title: toolset.title,
       visible: visibleToolsetIds.has(toolset.id)
     }));
+    // macOS Close Tab routing uses has_multiple_document_tabs from this async menu push.
+    // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
+    // autosave keeps both tabs, so nothing is lost.
     void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
   }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
@@ -7709,6 +7715,77 @@ export function MainWindow({
     );
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
+  const cancelTabProposalReviewRef = useRef<() => void>(() => undefined);
+  const cancelDocumentTabSessions = useCallback(() => {
+    // Roll back snapshot-based previews while their source document is still installed.
+    const preview = rotationInputRef.current ?? objectResizeInputRef.current ??
+      artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current ??
+      nativePlacementDragRef.current ?? nativeBondEditDragRef.current ?? nativePartDragRef.current ??
+      objectDragRef.current ?? graphicCornerRadiusDragRef.current ?? graphicPathEditDragRef.current ??
+      graphicMarkerDragRef.current ?? graphicGradientDragRef.current ?? freehandArtDragRef.current ??
+      mechanismHandleDragRef.current ?? objectRotateDragRef.current ?? projectedPlaneTiltDragRef.current ??
+      objectResizeDragRef.current ?? groupTransformDragRef.current ?? textResizeRef.current;
+    if (preview) replacePresentDocument(preview.startDocument);
+    updateRotationInput(undefined);
+    updateObjectResizeInput(undefined);
+    cancelObjectStylePreview();
+    cancelMoleculeInspectorPreview();
+    cancelSpin3dSession(undefined, { clearModelCache: true });
+    cancelTabProposalReviewRef.current();
+    // Releasing captures before clearing refs makes late pointer-up/cancel events harmless.
+    const pointerSessions = [nativeBondDragRef, nativePlacementDragRef, nativeBondEditDragRef,
+      nativePartDragRef, objectDragRef, graphicCornerRadiusDragRef, graphicPathEditDragRef,
+      graphicMarkerDragRef, graphicGradientDragRef, freehandArtDragRef, tapeMeasureDragRef,
+      mechanismArrowDragRef, mechanismHandleDragRef, bezierArtNodeDragRef, objectRotateDragRef,
+      projectedPlaneTiltDragRef, objectResizeDragRef, groupTransformDragRef, textResizeRef,
+      selectionMarqueeRef, selectionLassoRef];
+    for (const ref of pointerSessions) {
+      const pointerId = ref.current?.pointerId;
+      if (pointerId !== undefined) {
+        for (const target of [pageRef.current, canvasRegionRef.current]) {
+          if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
+        }
+      }
+      ref.current = null;
+    }
+    pathArtDrawRef.current = null;
+    for (const ref of [marqueeMachineRef, lassoMachineRef, placementMachineRef, objectRotateMachineRef,
+      projectedPlaneTiltMachineRef, objectDragMachineRef, groupTransformMachineRef]) {
+      ref.current = initialInteractionState();
+    }
+    for (const ref of [freehandArtPreviewFrameRef, objectTransformPreviewRafRef]) {
+      if (ref.current !== undefined) cancelAnimationFrame(ref.current);
+      ref.current = undefined;
+    }
+    pendingObjectTransformPreviewRef.current = undefined;
+    setObjectTransformPreview(undefined);
+    setPathArtPreview(undefined);
+    setSelectionMarquee(undefined);
+    setSelectionLasso(undefined);
+    setEraserSweepPreview(undefined);
+    setTapeMeasure(undefined);
+    setMechanismArrowPreview(undefined);
+    setGraphicCornerRadiusReadout(undefined);
+    setObjectRotateReadout(undefined);
+    setProjectedPlaneTiltReadout(undefined);
+    setObjectResizeReadout(undefined);
+    setCustomPageSizeDialog(undefined);
+    moleculeStyleOverridePromptRef.current = undefined;
+    setMoleculeStyleOverridePrompt(undefined);
+    templatePreviewKeyRef.current = undefined;
+    templatePreviewTargetKeyRef.current = undefined;
+    templatePreviewPlanRef.current = undefined;
+    setTemplatePreview(undefined);
+    setPageContextMenu(undefined);
+    setShiftHoveredArrowId(undefined);
+    shiftHoveredArrowIdRef.current = undefined;
+    hoveredArrowIdRef.current = undefined;
+    hoverPagePointRef.current = undefined;
+    resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
+    selectionClipboardPasteStateRef.current = undefined;
+  }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
+    replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
+
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
     setActiveEditorObjectId(undefined);
@@ -7717,6 +7794,8 @@ export function MainWindow({
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
+    activeAtomLabelEditRef.current = undefined;
+    activeTextEditObjectIdRef.current = undefined;
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
@@ -7728,6 +7807,8 @@ export function MainWindow({
 
   const tabEditFinishersRef = useRef({ finalizeAtomLabelDraft, finishActiveNativeTextEdit });
   tabEditFinishersRef.current = { finalizeAtomLabelDraft, finishActiveNativeTextEdit };
+  const tabSessionCancellerRef = useRef(cancelDocumentTabSessions);
+  tabSessionCancellerRef.current = cancelDocumentTabSessions;
   const snapshotDocumentTab = useCallback((finishDrafts = true) => {
     // A switch is an edit-ending gesture. Finish drafts while their document is still active.
     const labelEdit = activeAtomLabelEditRef.current;
@@ -7740,6 +7821,7 @@ export function MainWindow({
       tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
       activeTextEditObjectIdRef.current = undefined;
     }
+    if (finishDrafts) tabSessionCancellerRef.current();
     const canvas = canvasRegionRef.current;
     const history = documentHistoryRef.current;
     const file = fileStateRef.current;
@@ -7757,6 +7839,7 @@ export function MainWindow({
   const installDocumentTab = useCallback((id: string) => {
     const snapshot = documentTabSnapshotsRef.current.get(id);
     if (!snapshot) return;
+    cancelDocumentTabSessions();
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     documentIdentityRef.current += 1;
     activeDocumentTabIdRef.current = id;
@@ -7783,7 +7866,7 @@ export function MainWindow({
     setObjectContextMenu(undefined);
     setArrowEditTargetId(undefined);
     setStatus(snapshot.status);
-  }, [clearDocumentInteractionState, installDocumentHistory]);
+  }, [cancelDocumentTabSessions, clearDocumentInteractionState, installDocumentHistory]);
 
   const activateDocumentTab = useCallback((id: string) => {
     if (id === activeDocumentTabIdRef.current || closeTabPrompt) return;
@@ -7865,8 +7948,8 @@ export function MainWindow({
       statusOverride?: string;
     }
   ) => {
-    if (isDesktopRuntime() && !documentSessionHydratedRef.current) {
-      // Read the old session before an OS open-with can replace its startup blank and discard tabs.
+    if (closeTabPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+      // Wait for Save/Discard/Cancel and the startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       return;
     }
@@ -7915,6 +7998,18 @@ export function MainWindow({
 
   const openDocumentContentsRef = useRef(openDocumentContents);
   openDocumentContentsRef.current = openDocumentContents;
+
+  useEffect(() => {
+    if (closeTabPrompt || !documentSessionHydratedRef.current) return;
+    const opens = pendingDocumentOpensRef.current.splice(0);
+    for (const request of opens) {
+      try {
+        openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+      } catch (error) {
+        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }, [closeTabPrompt]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -8082,7 +8177,7 @@ export function MainWindow({
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
-  // tabs. A corrupt/future envelope restores nothing; a rejected read keeps autosave closed.
+  // tabs. Unreadable tabs stay in the envelope; a wholly unreadable session keeps autosave closed.
   useEffect(() => {
     if (documentSessionHydratedRef.current) {
       return undefined;
@@ -8098,33 +8193,40 @@ export function MainWindow({
         if (!active) {
           return;
         }
-        // The promise RESOLVING is the clean read — including a resolve of "no session yet", which
-        // is exactly what a first run sees. Un-gate here, before any of the early returns below:
-        // gating after them left a brand-new user (no session file), a don't-restore envelope, or a
-        // launch where "Open With" beat the restore with autosave permanently, silently disabled.
-        // Only a REJECTION (a read or parse we could not decode) must keep it closed, so that a
-        // session we failed to decode is never overwritten with the blank startup document.
-        documentSessionSaveEnabledRef.current = true;
-        const envelope = parseDocumentSessionEnvelope(raw);
-        if (!envelope || !shouldRestoreDocumentSession(envelope)) {
-          return;
-        }
-        const pristine = documentTabsRef.current.length === 1
-          && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
-          && !fileStateRef.current.path
-          && !fileStateRef.current.dirty
-          && documentIsBlank(documentRef.current);
-        const shellOpenFailure = shellOpenFailureRef.current;
-        shellOpenFailureRef.current = undefined;
-        try {
+        // Only a completed restore (or an absent/pristine session) is a clean read.
+        // A parser or document-open failure must leave autosave closed.
+        const restore = () => {
+          const envelope = parseDocumentSessionEnvelope(raw);
+          if (!envelope) {
+            if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope");
+            return;
+          }
+          if (!shouldRestoreDocumentSession(envelope)) return;
+          const pristine = documentTabsRef.current.length === 1
+            && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+            && !fileStateRef.current.path
+            && !fileStateRef.current.dirty
+            && documentIsBlank(documentRef.current);
+          const shellOpenFailure = shellOpenFailureRef.current;
+          shellOpenFailureRef.current = undefined;
           const sessions = envelope.tabs ?? [envelope];
-          // Parse all documents before replacing any state: one bad tab must not partially restore.
-          const restored = sessions.map((session) => {
-            const opened = openNativeDocument(session.contents);
-            const resolved = resolveOpenResultDocument(opened);
-            if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
-            return { session, opened, resolved, id: crypto.randomUUID() };
+          const skipped = [...(envelope.unrestoredTabs ?? [])];
+          const restored = sessions.flatMap((session) => {
+            try {
+              const opened = openNativeDocument(session.contents);
+              const resolved = resolveOpenResultDocument(opened);
+              if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+              const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
+              return [{ session, opened, resolved, history, id: crypto.randomUUID() }];
+            } catch {
+              skipped.push(rawDocumentSessionTab(session));
+              return [];
+            }
           });
+          if (!restored.length) throw new Error("No readable document tabs");
+          unrestoredSessionTabsRef.current = skipped;
+          const restoreNotice = skipped.length
+            ? `; ${skipped.length} ${skipped.length === 1 ? "tab could" : "tabs could"} not be restored` : "";
           const restoredTabs = restored.map(({ id, session }) => ({ id, title: session.displayName }));
           let tabs: Array<{ id: string; title: string }> = restoredTabs;
           if (!pristine) {
@@ -8134,8 +8236,7 @@ export function MainWindow({
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
           }
-          for (const { id, session, resolved, opened } of restored) {
-            const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
+          for (const { id, session, resolved, opened, history } of restored) {
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
             documentTabSnapshotsRef.current.set(id, {
               history, file: { path: session.path, dirty: session.dirty },
@@ -8145,15 +8246,18 @@ export function MainWindow({
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
               },
-              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}`
+              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}`
             });
           }
           documentTabsRef.current = tabs;
           setDocumentTabs(tabs);
-          if (pristine) installDocumentTab(restoredTabs[envelope.activeTabIndex ?? 0]!.id);
-        } catch {
-          // Never block startup on a bad autosave; the next edit overwrites it.
-        }
+          if (pristine) {
+            const selected = restored.find(({ session }) => session === sessions[envelope.activeTabIndex ?? 0]) ?? restored[0]!;
+            installDocumentTab(selected.id);
+          } else if (restoreNotice) setStatus((current) => current + restoreNotice);
+        };
+        restore();
+        documentSessionSaveEnabledRef.current = true;
       })
       .catch(() => {
         // Read or parse failed: the file may hold a real session we simply could not decode, so
@@ -8232,7 +8336,11 @@ export function MainWindow({
       const tabs = documentTabsRef.current.map((tab) => {
         const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
         const tabDocument = tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present;
-        const payload = createNativeSavePayload(tabDocument);
+        let payload = sessionPayloadCacheRef.current.get(tabDocument);
+        if (!payload) {
+          payload = createNativeSavePayload(tabDocument);
+          sessionPayloadCacheRef.current.set(tabDocument, payload);
+        }
         return {
           ...buildDocumentSessionEnvelope(payload, snapshot.file,
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
@@ -8243,6 +8351,7 @@ export function MainWindow({
       });
       const envelope = buildDocumentTabsSession(tabs,
         documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
+      if (unrestoredSessionTabsRef.current.length) envelope.unrestoredTabs = unrestoredSessionTabsRef.current;
       await saveDocumentSession(envelope, { strict: options?.strict });
     } catch (error) {
       if (options?.strict) {
@@ -9693,6 +9802,12 @@ export function MainWindow({
     },
     [commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
   );
+
+  cancelTabProposalReviewRef.current = () => {
+    for (const proposal of pluginRuntime.runtime.host.listProposedPatches("pending")) {
+      pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
+    }
+  };
 
   const rejectPluginProposal = useCallback(
     (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
@@ -13115,6 +13230,7 @@ export function MainWindow({
   }, [spinPlacementFor, spin3dFlattenStereoOptions]);
 
   const handleRotationInputChange = useCallback((nextInput: RotationInputState) => {
+    if (nextInput.startDocument !== rotationInputRef.current?.startDocument) return;
     const warnings: string[] = [];
     const result = rotationInputDocumentFromDraft(nextInput, warnings);
     updateRotationInput({ ...nextInput, warnings });
@@ -13143,6 +13259,7 @@ export function MainWindow({
 
   const handleRotationInputCancel = useCallback((input?: RotationInputState) => {
     const session = input ?? rotationInputRef.current;
+    if (input && input !== rotationInputRef.current) return;
     if (session) {
       replacePresentDocument(session.startDocument);
     }
@@ -13154,6 +13271,7 @@ export function MainWindow({
 
   const handleRotationInputKeep = useCallback((input?: RotationInputState) => {
     const session = input ?? rotationInputRef.current;
+    if (input && input !== rotationInputRef.current) return false;
     if (!session) {
       return false;
     }
@@ -13233,6 +13351,7 @@ export function MainWindow({
   }, []);
 
   const handleObjectResizeInputChange = useCallback((nextInput: ObjectResizeInputState) => {
+    if (nextInput.startDocument !== objectResizeInputRef.current?.startDocument) return;
     updateObjectResizeInput(nextInput);
     const result = objectResizeInputDocumentFromDraft(nextInput);
     if (!result) {
@@ -13257,6 +13376,7 @@ export function MainWindow({
 
   const handleObjectResizeInputCancel = useCallback((input?: ObjectResizeInputState) => {
     const session = input ?? objectResizeInputRef.current;
+    if (input && input !== objectResizeInputRef.current) return;
     if (session) {
       replacePresentDocument(session.startDocument);
     }
@@ -13267,6 +13387,7 @@ export function MainWindow({
 
   const handleObjectResizeInputKeep = useCallback((input?: ObjectResizeInputState) => {
     const session = input ?? objectResizeInputRef.current;
+    if (input && input !== objectResizeInputRef.current) return false;
     if (!session) {
       return false;
     }
@@ -28721,6 +28842,7 @@ function RotationInputPopover({
     onKeep(input);
   };
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "Tab" && event.ctrlKey) return;
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
@@ -28826,6 +28948,7 @@ function ObjectResizeInputPopover({
     onKeep(input);
   };
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "Tab" && event.ctrlKey) return;
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();

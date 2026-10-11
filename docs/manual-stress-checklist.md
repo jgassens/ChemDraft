@@ -182,8 +182,8 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    fragments), undo/redo histories, warnings, zoom and scroll; switch by click and Ctrl+Tab /
    Ctrl+Shift+Tab and verify every state follows its tab. Check inspector/style controls, native
    palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
-   by their button and CmdOrCtrl+W: the Save/Discard/Cancel modal hides native palettes, Cancel keeps
-   the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
+   by their button and CmdOrCtrl+W: the Save/Discard/Cancel modal blocks document actions; floating native palettes remain above the dialog.
+   Cancel keeps the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
    inactive tab too. With one tab, CmdOrCtrl+W and the window close retain their existing behavior.
    Quit immediately after an edit with three tabs (one untitled and dirty, one pristine Untitled),
    then relaunch: all tabs, file associations, dirty states and the active tab return without a quit

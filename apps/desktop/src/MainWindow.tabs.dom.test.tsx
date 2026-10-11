@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
 import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime } from "./plugins/createPluginRuntime";
@@ -25,6 +26,10 @@ const native = vi.hoisted(() => ({
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>()
 }));
+vi.mock("./documentWorkflow", async (original) => {
+  const actual = await original<typeof import("./documentWorkflow")>();
+  return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload) };
+});
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
@@ -90,11 +95,11 @@ describe("documents in one window", () => {
     vi.unstubAllGlobals();
   });
 
-  async function mount() {
+  async function mount(initialDocument = createPhase4Document("Untitled")) {
     root = createRoot(container);
     await act(async () => {
       root!.render(createElement(MainWindow, {
-        initialDocument: createPhase4Document("Untitled"), initialActiveToolCommandId: "tool.select",
+        initialDocument, initialActiveToolCommandId: "tool.select",
         initialPaletteMode: "hidden", initialCrosshairsVisible: false, initialRulersVisible: false, nativePalette: true
       }));
     });
@@ -393,6 +398,209 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().page.objectCount).toBe(0);
     await open("Reused restored pristine");
     expect(tabs()).toHaveLength(3);
+  });
+
+  it("cancels page-size and pending plugin proposal sessions when activating another tab", async () => {
+    await command("document.new");
+    const runtime = vi.mocked(createPluginRuntime).mock.results[0]!.value;
+    const proposal = {
+      id: "tab-bound-review", pluginId: "test.plugin", status: "pending" as const,
+      proposal: { title: "Tab A proposal", patch: { operations: [] } }
+    };
+    const list = vi.spyOn(runtime.host, "listProposedPatches").mockReturnValue([proposal] as never);
+    const reject = vi.spyOn(runtime.host, "rejectProposedPatch").mockImplementation(() => {
+      list.mockReturnValue([]);
+      return { ...proposal, status: "rejected" } as never;
+    });
+    await command("page.setSizeCustom");
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    await activate(0);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(reject).toHaveBeenCalledWith("tab-bound-review");
+    expect(runtime.host.listProposedPatches("pending")).toEqual([]);
+  });
+
+  function threeTabSession() {
+    return buildDocumentTabsSession(["First", "Second", "Third"].map((name) => ({
+      ...buildDocumentSessionEnvelope(createNativeSavePayload(createPhase4Document(name)),
+        { path: `/tmp/${name}.chemdraft`, dirty: true }, name, true),
+      view: { viewport: createViewportState(), scrollLeft: 0, scrollTop: 0 }
+    })), 1);
+  }
+
+  it("restores all three tabs despite negative scroll or malformed cosmetic data", async () => {
+    const session = threeTabSession();
+    session.tabs![1]!.view!.scrollTop = -3;
+    session.tabs![2]!.openWarnings = { warnings: "bad" } as never;
+    native.session = session;
+    await remount();
+    expect(tabs()).toHaveLength(3);
+    expect(active()).toBe(1);
+    expect(container.querySelector<HTMLElement>('[aria-label="Document workspace"]')!.scrollTop).toBe(0);
+    await activate(2);
+    expect(bridge().snapshot().document.title).toBe("Third");
+  });
+
+  it("skips a corrupt active tab, reports it, and preserves its raw envelope on every autosave", async () => {
+    const session = threeTabSession();
+    const corrupt = { ...session.tabs![1]!, contents: "unreadable document", extraRecoveryData: { original: [1, 2, 3] } };
+    session.tabs![1] = corrupt;
+    let finishRead!: (value: unknown) => void;
+    native.load.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    await remount();
+    await act(async () => finishRead(session));
+    expect(tabs()).toHaveLength(2);
+    expect(bridge().snapshot().document.title).toBe("First");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("1 tab could not be restored");
+    const saved = await flush();
+    expect(saved.unrestoredTabs).toEqual([corrupt]);
+    expect(saved.tabs!.map((tab) => tab.displayName)).toEqual(["First.chemdraft", "Third.chemdraft"]);
+    await remount();
+    expect(tabs()).toHaveLength(2);
+    await command("view.zoomIn");
+    expect((await flush()).unrestoredTabs).toEqual([corrupt]);
+  });
+
+  it.each(["envelope", "contents"])("never overwrites a wholly unreadable session (%s)", async (failure) => {
+    const raw = failure === "envelope" ? { version: 99, recoverMe: true } :
+      { ...threeTabSession(), tabs: threeTabSession().tabs!.map((tab) => ({ ...tab, contents: "corrupt" })) };
+    native.session = raw;
+    await remount();
+    native.saveSession.mockClear();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("will not be autosaved");
+    await paste("Drawing after failed restore");
+    await flush();
+    expect(native.saveSession).not.toHaveBeenCalled();
+    expect(native.session).toEqual(raw);
+  });
+
+  it("neither restores nor announces a sole pristine blank Untitled tab", async () => {
+    const saved = await flush();
+    expect(saved.tabs).toHaveLength(1);
+    expect(saved.tabs![0]!.pristine).toBe(true);
+    await remount();
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(bridge().snapshot().document.title).toBe("Untitled");
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Restored last session");
+    // A clean no-restore read still permits later autosaves.
+    native.saveSession.mockClear();
+    await paste("Fresh drawing");
+    await flush();
+    expect(native.saveSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues OS open-with behind Save/Discard/Cancel so Save writes the prompted drawing", async () => {
+    await paste("Original prompted drawing");
+    await command("document.new");
+    await paste("Drawing being closed");
+    await command("document.closeTab");
+    await act(async () => native.events.get("chemdraft://open-document")!({
+      path: "/tmp/incoming.chemdraft", displayName: "incoming.chemdraft", contents: fileContents("Incoming drawing")
+    }));
+    expect(active()).toBe(1);
+    expect(drawnText()).toContain("Drawing being closed");
+    native.savePicker.mockResolvedValueOnce("/tmp/closed.chemdraft");
+    await modalButton("Save");
+    expect(native.writeFile.mock.calls.at(-1)![0]).toBe("/tmp/closed.chemdraft");
+    expect(native.writeFile.mock.calls.at(-1)![1]).toContain("Drawing being closed");
+    expect(bridge().snapshot().document.title).toBe("Incoming drawing");
+    expect(tabs()).toHaveLength(2);
+    await activate(0);
+    expect(drawnText()).toContain("Original prompted drawing");
+  });
+
+  it("zoom autosave keeps views current without serializing unchanged foreground or background tabs", async () => {
+    await open("Background");
+    await open("Foreground");
+    await flush();
+    vi.mocked(createNativeSavePayload).mockClear();
+    await command("view.zoomIn");
+    const view = bridge().snapshot().viewport;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
+    expect(createNativeSavePayload).not.toHaveBeenCalled();
+    expect(parseDocumentSessionEnvelope(native.session)!.tabs![1]!.view!.viewport).toEqual(view);
+    await paste("Changed foreground");
+    await flush();
+    expect(createNativeSavePayload).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a live art drag before switching, and ignores its late pointer release", async () => {
+    const drawing = createPhase4Document("Drag source");
+    drawing.pages[0]!.objects = [{
+      id: "drag-rect", type: "graphic", graphicKind: "rect", x: 100, y: 100, width: 80, height: 50,
+      rotation: 0, style: {}, data: {}
+    }];
+    drawing.selection.objectIds = ["drag-rect"];
+    act(() => root!.unmount());
+    container.innerHTML = "";
+    await mount(drawing);
+    await command("document.new");
+    const other = bridge().snapshot().document;
+    await activate(0);
+    const start = bridge().snapshot().document;
+    const page = container.querySelector<HTMLElement>(".page")!;
+    page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 1056,
+      width: 816, height: 1056, toJSON: () => ({}) });
+    page.hasPointerCapture = () => false;
+    page.setPointerCapture = () => undefined;
+    page.releasePointerCapture = () => undefined;
+    const handle = container.querySelector('[data-object-resize-corner="bottom-right"]')!;
+    expect(handle).not.toBeNull();
+    async function pointer(target: Element, type: string, x: number, y: number) {
+      const event = new MouseEvent(type, { button: 0, buttons: 1, clientX: x, clientY: y, bubbles: true, cancelable: true });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      await act(async () => target.dispatchEvent(event));
+    }
+    await pointer(handle, "pointerdown", 180, 150);
+    await pointer(page, "pointermove", 230, 180);
+    await key();
+    expect(active()).toBe(1);
+    await pointer(page, "pointerup", 230, 180);
+    expect(bridge().snapshot().document).toEqual(other);
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(other);
+    await activate(0);
+    expect(bridge().snapshot().document).toEqual(start);
+  });
+
+  it.each(["rotation", "resize"])("cancels a typed %s on Ctrl+Tab before Escape or Enter can affect the next document", async (kind) => {
+    const drawing = createPhase4Document("Tab A");
+    drawing.pages[0]!.objects = [{
+      id: "rect-a", type: "graphic", graphicKind: "rect", x: 100, y: 100, width: 80, height: 50,
+      rotation: 0, style: {}, data: {}
+    }];
+    drawing.selection.objectIds = ["rect-a"];
+    act(() => root!.unmount());
+    container.innerHTML = "";
+    await mount(drawing);
+    await command("document.new");
+    const before = bridge().snapshot();
+    await activate(0);
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", shiftKey: true, bubbles: true })));
+    const handle = container.querySelector(kind === "rotation"
+      ? '[data-selection-rotate-handle="true"]' : '[data-object-resize-corner]');
+    expect(handle).not.toBeNull();
+    await act(async () => handle!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    const input = container.querySelector<HTMLInputElement>(kind === "rotation"
+      ? '[aria-label="Z rotation degrees"]' : '[aria-label="X stretch percent"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, kind === "rotation" ? "25" : "125");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, bubbles: true, cancelable: true })));
+    expect(active()).toBe(1);
+    expect(container.querySelector('[data-rotation-input-popover]')).toBeNull();
+    expect(container.querySelector('[data-scale-input-popover]')).toBeNull();
+    for (const key of ["Escape", "Enter"]) {
+      await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+    }
+    expect(bridge().snapshot().document).toEqual(before.document);
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(before.document);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+    await activate(0);
+    expect(bridge().snapshot().document.pages[0]!.objects[0]!.rotation).toBe(0);
   });
 
   it("an old single-document session restores as one tab with its dirty state", async () => {

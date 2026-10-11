@@ -43,6 +43,8 @@ export interface DocumentSessionEnvelope {
   /** Additive multi-tab extension. Top-level fields still describe the active document. */
   tabs?: DocumentSessionEnvelope[];
   activeTabIndex?: number;
+  /** Raw envelopes we could not restore; retained verbatim on every autosave. */
+  unrestoredTabs?: unknown[];
   /** Once edited or saved, an Untitled can never be replaced by Open. */
   pristine?: boolean;
   view?: DocumentSessionView;
@@ -69,12 +71,14 @@ function parseSessionView(raw: unknown): DocumentSessionView | undefined {
     "pageOriginX", "pageOriginY", "minZoom", "maxZoom"] as const;
   if (!numberKeys.every((key) => finite(viewport[key])) ||
       (viewport.minZoom as number) <= 0 || (viewport.maxZoom as number) < (viewport.minZoom as number) ||
-      (viewport.scale as number) < (viewport.minZoom as number) || (viewport.scale as number) > (viewport.maxZoom as number) ||
-      !finite(raw.scrollLeft) || raw.scrollLeft < 0 || !finite(raw.scrollTop) || raw.scrollTop < 0 ||
+      !finite(raw.scrollLeft) || !finite(raw.scrollTop) ||
       !["inch", "centimeter", "pixel"].includes(unit.kind as string) ||
       typeof unit.label !== "string" || !finite(unit.pixelsPerUnit) || unit.pixelsPerUnit <= 0 ||
       !finite(unit.subdivisions) || unit.subdivisions <= 0) return undefined;
-  return { viewport: viewport as unknown as ViewportState, scrollLeft: raw.scrollLeft, scrollTop: raw.scrollTop };
+  return {
+    viewport: { ...viewport, scale: Math.min(viewport.maxZoom as number, Math.max(viewport.minZoom as number, viewport.scale as number)) } as unknown as ViewportState,
+    scrollLeft: Math.max(0, raw.scrollLeft), scrollTop: Math.max(0, raw.scrollTop)
+  };
 }
 
 function parseSessionWarnings(raw: unknown): OpenWarningsReport | undefined {
@@ -130,13 +134,38 @@ export function buildDocumentSessionEnvelope(
   };
 }
 
-/** Structural validation of a loaded envelope; anything unexpected restores nothing (the blank
- *  document stands) rather than throwing at startup. */
+// Keep the original envelope even when optional display metadata was normalized by the parser.
+const rawSessionTabs = new WeakMap<DocumentSessionEnvelope, unknown>();
+export function rawDocumentSessionTab(tab: DocumentSessionEnvelope): unknown {
+  return rawSessionTabs.get(tab) ?? tab;
+}
+
+/** Validate each tab independently, retaining unreadable envelopes for the next autosave. */
 export function parseDocumentSessionEnvelope(raw: unknown, nested = false): DocumentSessionEnvelope | undefined {
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
   const candidate = raw as Record<string, unknown>;
+  if (candidate.tabs !== undefined) {
+    if (nested || candidate.version !== DOCUMENT_SESSION_VERSION || !Array.isArray(candidate.tabs) ||
+        candidate.tabs.length === 0 || !Number.isInteger(candidate.activeTabIndex) ||
+        typeof candidate.activeTabIndex !== "number" || candidate.activeTabIndex < 0 ||
+        candidate.activeTabIndex >= candidate.tabs.length ||
+        (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs))) return undefined;
+    const tabs: DocumentSessionEnvelope[] = [];
+    const unrestoredTabs: unknown[] = [...(candidate.unrestoredTabs as unknown[] ?? [])];
+    let activeTabIndex = 0;
+    candidate.tabs.forEach((rawTab, index) => {
+      const tab = parseDocumentSessionEnvelope(rawTab, true);
+      if (tab) {
+        if (index === candidate.activeTabIndex) activeTabIndex = tabs.length;
+        tabs.push(tab);
+      } else unrestoredTabs.push(rawTab);
+    });
+    if (!tabs.length) return undefined;
+    return { ...buildDocumentTabsSession(tabs, activeTabIndex),
+      ...(unrestoredTabs.length ? { unrestoredTabs } : {}) };
+  }
   if (
     candidate.version !== DOCUMENT_SESSION_VERSION ||
     typeof candidate.contents !== "string" ||
@@ -152,21 +181,9 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Docu
   }
   const view = candidate.view === undefined ? undefined : parseSessionView(candidate.view);
   const warnings = candidate.openWarnings === undefined ? undefined : parseSessionWarnings(candidate.openWarnings);
-  if ((candidate.view !== undefined && !view) || (candidate.openWarnings !== undefined && !warnings) ||
-      (candidate.pristine !== undefined && typeof candidate.pristine !== "boolean")) return undefined;
-  let tabs: DocumentSessionEnvelope[] | undefined;
-  if (candidate.tabs !== undefined) {
-    if (nested || !Array.isArray(candidate.tabs) || candidate.tabs.length === 0 ||
-        !Number.isInteger(candidate.activeTabIndex) || typeof candidate.activeTabIndex !== "number" ||
-        candidate.activeTabIndex < 0 || candidate.activeTabIndex >= candidate.tabs.length) return undefined;
-    tabs = [];
-    for (const rawTab of candidate.tabs) {
-      const tab = parseDocumentSessionEnvelope(rawTab, true);
-      if (!tab) return undefined;
-      tabs.push(tab);
-    }
-  }
-  return {
+  if (candidate.pristine !== undefined && typeof candidate.pristine !== "boolean") return undefined;
+  if (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs)) return undefined;
+  const parsed: DocumentSessionEnvelope = {
     version: DOCUMENT_SESSION_VERSION,
     contents: candidate.contents,
     payloadHash: candidate.payloadHash,
@@ -175,19 +192,22 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Docu
     displayName: candidate.displayName,
     dirty: candidate.dirty,
     savedAt: candidate.savedAt,
-    ...(tabs ? { tabs, activeTabIndex: candidate.activeTabIndex as number } : {}),
+    ...(Array.isArray(candidate.unrestoredTabs) ? { unrestoredTabs: candidate.unrestoredTabs } : {}),
     ...(typeof candidate.pristine === "boolean" ? { pristine: candidate.pristine } : {}),
     ...(view ? { view } : {}),
     ...(warnings ? { openWarnings: warnings } : {})
   };
+  rawSessionTabs.set(parsed, raw);
+  return parsed;
 }
 
 /** An old single-document empty canvas restores nothing — otherwise every fresh launch would announce
  *  "Restored last session" over the identical blank it starts with anyway. A blank canvas still
  *  restores when it IS a file (reopen it) or carries unsaved edits (e.g. the user erased
- *  everything and that erasure is the unsaved state). Explicit tab lists keep pristine Untitled tabs. */
+ *  everything and that erasure is the unsaved state). Multiple tabs keep pristine Untitled tabs. */
 export function shouldRestoreDocumentSession(envelope: DocumentSessionEnvelope): boolean {
-  return envelope.tabs !== undefined || envelope.path !== undefined || envelope.dirty || !envelope.blank;
+  return (envelope.tabs?.length ?? 0) > 1 || (envelope.unrestoredTabs?.length ?? 0) > 0 ||
+    envelope.path !== undefined || envelope.dirty || !envelope.blank || envelope.pristine === false;
 }
 
 /**

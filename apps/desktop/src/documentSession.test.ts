@@ -1,3 +1,4 @@
+import { createViewportState } from "@chemdraft/viewport-engine";
 import { describe, expect, it } from "vitest";
 import {
   DOCUMENT_SESSION_VERSION,
@@ -113,13 +114,37 @@ describe("multi-document session extension", () => {
     expect(shouldRestoreDocumentSession(buildDocumentTabsSession([blank, blank], 0))).toBe(true);
   });
 
-  it("rejects an invalid tab or active index instead of restoring a subset of the session", () => {
+  it("defaults malformed cosmetic metadata and clamps scale and negative scroll without losing tabs", () => {
+    const viewport = createViewportState();
+    const parsed = parseDocumentSessionEnvelope(buildDocumentTabsSession([
+      { ...blank, view: { viewport: { ...viewport, scale: viewport.maxZoom + 0.001 }, scrollLeft: -2, scrollTop: -3 } },
+      { ...blank, view: { viewport: { ...viewport, scale: viewport.minZoom - 0.001 }, scrollLeft: 0, scrollTop: 0 } },
+      { ...blank, view: {} as never, openWarnings: { warnings: 7 } as never }
+    ], 0))!;
+    expect(parsed.tabs).toHaveLength(3);
+    expect(parsed.tabs![0]!.view).toEqual({ viewport: { ...viewport, scale: viewport.maxZoom }, scrollLeft: 0, scrollTop: 0 });
+    expect(parsed.tabs![1]!.view!.viewport.scale).toBe(viewport.minZoom);
+    expect(parsed.tabs![2]!.view).toBeUndefined();
+    expect(parsed.tabs![2]!.openWarnings).toBeUndefined();
+  });
+
+  it("does not restore a sole pristine blank Untitled tab", () => {
+    expect(shouldRestoreDocumentSession(buildDocumentTabsSession([{ ...blank, pristine: true }], 0))).toBe(false);
+    expect(shouldRestoreDocumentSession(buildDocumentTabsSession([{ ...blank, pristine: false }], 0))).toBe(true);
+  });
+
+  it("rejects invalid session structure, but retains invalid tabs while restoring readable siblings", () => {
     expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 3 })).toBeUndefined();
     expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: -1 })).toBeUndefined();
     expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0.5 })).toBeUndefined();
     expect(parseDocumentSessionEnvelope({ ...session, tabs: [] })).toBeUndefined();
-    expect(parseDocumentSessionEnvelope({ ...session, tabs: [blank, { ...blank, contents: "" }] })).toBeUndefined();
-    expect(parseDocumentSessionEnvelope({ ...session, tabs: [session] })).toBeUndefined();
+    const corrupt = { ...blank, contents: "", futureField: { recoverMe: true } };
+    const recovered = parseDocumentSessionEnvelope({ ...session, activeTabIndex: 1, tabs: [blank, corrupt, { ...blank, dirty: true }] })!;
+    expect(recovered.tabs).toEqual([blank, { ...blank, dirty: true }]);
+    expect(recovered.unrestoredTabs).toEqual([corrupt]);
+    expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(recovered)))!.unrestoredTabs).toEqual([corrupt]);
+    expect(parseDocumentSessionEnvelope({ ...session, tabs: [corrupt] })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0, tabs: [session] })).toBeUndefined();
   });
 });
 

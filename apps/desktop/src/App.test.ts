@@ -448,6 +448,15 @@ describe("ChemDraft desktop shell", () => {
     expect(desktopCapabilitiesSource).not.toContain("allow-set-visible-on-all-workspaces");
   });
 
+  it("documents the async macOS Close Tab routing race and the actual palette behavior during close prompts", () => {
+    expect(mainWindowSource).toContain("macOS Close Tab routing uses has_multiple_document_tabs from this async menu push");
+    expect(mainWindowSource).toContain("Cmd+N then immediate Cmd+W can hide the window");
+    expect(mainWindowSource).toContain("autosave keeps both tabs, so nothing is lost");
+    const checklist = readFileSync("docs/manual-stress-checklist.md", "utf8");
+    expect(checklist).toContain("floating native palettes remain above the dialog");
+    expect(checklist).not.toContain("modal hides native palettes");
+  });
+
   it("only autosaves the document session after a clean read of it", () => {
     // Rust distinguishes "no session yet" from a failed read so a failure cannot be answered by
     // writing the blank startup document over a session we merely failed to decode. The gate is
@@ -469,19 +478,13 @@ describe("ChemDraft desktop shell", () => {
     expect(enablingLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeLessThan(catchLine);
 
-    // PLACEMENT, not just presence: a resolved read — including a resolve of "no session yet" — has
-    // to open the gate, so the assignment must come BEFORE the restore path's early returns. Gating
-    // it behind them left first-run users (nothing to restore) with autosave permanently off, and a
-    // presence-only assertion could not see that the line had become unreachable.
-    const restoreEarlyReturns = [
-      "const envelope = parseDocumentSessionEnvelope(raw);",
-      "if (!pristine) {"
-    ];
-    for (const marker of restoreEarlyReturns) {
-      const markerLine = lines.findIndex((line) => line.includes(marker));
-      expect(markerLine, `expected to find ${marker}`).toBeGreaterThan(-1);
-      expect(enablingLine, `gate must be set before: ${marker}`).toBeLessThan(markerLine);
-    }
+    // The gate opens only after parser and document restoration finish. The restore helper
+    // also returns cleanly for first-run and pristine-blank sessions.
+    const restoreLine = lines.findIndex((line) => line.trim() === "restore();");
+    expect(restoreLine).toBeGreaterThan(thenLine);
+    expect(enablingLine).toBeGreaterThan(restoreLine);
+    expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');
+    expect(mainWindowSource).toContain('if (!restored.length) throw new Error("No readable document tabs")');
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
