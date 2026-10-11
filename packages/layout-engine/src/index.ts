@@ -5695,7 +5695,8 @@ export function atomDisplayLabelPlacement(
   const labelCharge = atom.formalCharge - (atom.markCharge ?? 0);
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
-    return nonElementAtomLabelPlacement(atom, heavyAtomNeighbors(atom.id, resolution), drawingStyle, recordedLabelBondSide(atom, resolution))!;
+    const neighbors = heavyAtomNeighbors(atom.id, resolution);
+    return nonElementAtomLabelPlacement(atom, neighbors, drawingStyle, recordedLabelBondSide(atom, neighbors.map((neighbor) => neighbor.id)))!;
   }
   // Aromatic bonds count at their Kekulé orders, resolved once per molecule — the same bonds the
   // formula and the valence check count, so the drawn H count and the formula agree. A molecule
@@ -5928,13 +5929,11 @@ function groupLabelDisplaySide(
  * with its bond on the left and later drawn with it on the right is then drawn turned ("NC"), not
  * as the other isomer.
  */
-function recordedLabelBondSide(atom: MoleculeAtom, resolution: NativeBondOrderResolution): "left" | "right" | undefined {
+export function recordedLabelBondSide(atom: MoleculeAtom, neighborIds: readonly string[]): "left" | "right" | undefined {
   const record = atom.labelBondSide;
   if (!record) return undefined;
-  const neighbourIds = new Set((resolution.bondsByAtom.get(atom.id) ?? []).map((bond) =>
-    bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId
-  ));
-  return neighbourIds.size === 1 && neighbourIds.has(record.atomId) ? record.side : undefined;
+  const uniqueNeighborIds = new Set(neighborIds);
+  return uniqueNeighborIds.size === 1 && uniqueNeighborIds.has(record.atomId) ? record.side : undefined;
 }
 
 /** The atom's bonded neighbours that are not hydrogen, each once. */

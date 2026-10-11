@@ -319,4 +319,38 @@ describe("Spin 3D session state", () => {
       });
     }
   });
+
+  it("keeps a recorded CN reading in the spin overlay and matches the flat drawing", async () => {
+    const document = createSelectedMoleculeDocument();
+    const page = document.pages[0]!;
+    const molecule = page.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const left = [...molecule.atoms].sort((first, second) => first.x - second.x)[0]!;
+    const neighbor = molecule.atoms.find((atom) => atom.id !== left.id)!;
+    const recorded: ChemDraftDocument = {
+      ...document,
+      pages: document.pages.map((currentPage) => ({
+        ...currentPage,
+        objects: currentPage.objects.map((object) => object.id !== molecule.id || object.type !== "molecule" ? object : {
+          ...object,
+          atoms: object.atoms.map((atom) => atom.id === left.id
+            ? { ...atom, element: "CN", labelLiteral: true, labelBondSide: { side: "left" as const, atomId: neighbor.id } }
+            : atom)
+        })
+      }))
+    };
+    const { bridge, container, root } = await renderMainWindow(recorded);
+    try {
+      const flatLabels = [...container.querySelectorAll('[data-atom-label="NC"]')]
+        .filter((element) => !element.closest('[data-spin3d-overlay="true"]'));
+      expect(flatLabels).toHaveLength(1);
+      await startSpinSession(bridge);
+      const overlay = container.querySelector('[data-spin3d-overlay="true"]');
+      expect(overlay?.querySelectorAll('[data-atom-label="NC"]')).toHaveLength(1);
+      expect(overlay?.querySelector('[data-atom-label="CN"]')).toBeNull();
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
 });

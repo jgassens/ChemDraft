@@ -179,6 +179,7 @@ import {
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
+  recordedLabelBondSide,
   planPageSvgRender,
   planNativeArtVisual,
   placementAimDegrees,
@@ -21317,7 +21318,8 @@ function SpinOverlay({
               const neighbour = projectedByIndex.get(index);
               return neighbour ? [{ x: neighbour.sx, y: neighbour.sy }] : [];
             }),
-            labelStyle
+            labelStyle,
+            recordedLabelBondSide(groupAtom, heavyNeighbourIndices[atom.index]?.map((index) => state.atoms[index]?.id).filter((id): id is string => id !== undefined) ?? [])
           )
         : undefined;
       const label = placement?.label ?? drawnLabel;
