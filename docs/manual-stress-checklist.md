@@ -165,3 +165,7 @@ molecule or atom with the Select tool; tool shortcuts work straight after any cl
 the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
 always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
 scrolls in a small window at 125% and 150% display scale.
+
+Status row: at the 900×640 minimum window, open a file with warnings under a long name; the status text ends
+in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
+in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.
