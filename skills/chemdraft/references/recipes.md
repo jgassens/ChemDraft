@@ -276,9 +276,11 @@ makes.
    the ring), in bold italic serif at 20 px, shrinking only to fit.
 4. **Letter colour.** Ring letters are white on a dark fill and near-black
    on a light one, chosen by the fill's relative luminance as drawn (white
-   below 0.34). Atom labels keep their normal molecule colour: a fill is
-   notched around every label on or in it, with no box, halo or label
-   background added.
+   below 0.34). A fill is notched only around labels of that ring's own
+   outline atoms, which keep their normal molecule colour and default
+   background. A non-ring substituent label left inside a fill keeps the
+   fill under it, has white or near-black text by that fill's luminance,
+   and uses a transparent per-atom background (no halo).
 5. **Fill colours.** Twelve saturated colours in letter order, so each
    ring gets its own; beyond twelve, a greedy colouring over ring
    adjacency keeps rings that share an atom apart.
@@ -361,7 +363,7 @@ makes.
    | Oversized wedge or hash | a wedge or hash is longer than 1.3 times the median bond length |
    | Shrunk letter | a ring letter had to shrink below 14 px (set at 20 px), or found no room at all |
    | Hidden ring | more than 40% of a lettered ring's area lies under another lettered ring's fill |
-   | Fill under a label | an emitted ring-fill path covers part of an atom-label box |
+   | Fill under a label | an emitted ring-fill path covers part of a label box for that ring's own atom on the outline |
    | Dropped fusion H | a fusion CH stereocentre (rule 6) is left without its H, for want of room, a touch or an `UNDONE` |
 
    Either command then prints `Figure checks FAILED` with one line per
@@ -488,9 +490,10 @@ Open each PNG at full size and check: every letter sits in the ring the
 convention names and reads on its fill; the colours are loud and no two
 touching rings match; every wedge and hash is where it was, including on
 each new H; no label is clipped or sits on another label or a letter. Ring
-fills are notched around atom labels, so each such label sits on the page
-background without a white box; the figure check verifies that no fill
-remains under one.
+fills are notched around labels of their own outline atoms, so those labels
+sit on the page background without a white box; a non-ring substituent label
+inside a fill keeps it underneath with luminance-contrast text and no halo.
+The figure check verifies that no fill remains under a ring-atom label.
 
 - **`STILL ON A FILL`.** Read the reason. "Enclosed by filled rings"
   means every direction from the attachment atom lies on a fill: the atom

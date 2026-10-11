@@ -26,7 +26,7 @@ interface RingStyle {
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
-  fillsUnderLabels(svg: string, tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
+  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -237,7 +237,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     }
   }, 60_000);
 
-  it("letters paclitaxel by the taxane convention and keeps labels left on a fill in their normal colour", () => {
+  it("letters paclitaxel by the taxane convention and gives non-ring labels on a fill contrast without a halo", () => {
     const { build, doc } = fixture("paclitaxel");
     const { carbon, picture, report } = ringStyle.style(structuredClone(doc), build, { convention: "taxane" });
     const ring = (L: string) => report.letters.find((l: Json) => l.letter === L);
@@ -249,21 +249,31 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     // The three phenyls are pendant, not core: plain.
     expect(report.unlettered).toHaveLength(3);
     expect(report.unlettered.every((r: string) => /aromatic/.test(r))).toBe(true);
-    // C15's gem-dimethyl cannot leave ring B's fill. Its labels keep the molecule's normal
-    // colour; rendering cuts rounded notches out of the fill instead of recolouring or boxing them.
+    // C15's gem-dimethyl cannot leave ring B's fill. These are non-ring labels, so they retain
+    // that fill under them and get its luminance contrast with a transparent per-atom background.
     expect(report.layout.stuck).toHaveLength(2);
+    const fillB = ring("B").fill;
     const originalBackground = molecule(doc).style.atomLabelBackgroundColor;
+    const ringAtomIds = new Set(build.rings.flatMap((r: Json) => r.atomIds));
     for (const [copy, list] of [[carbon, report.labelsOnFills.carbon], [picture, report.labelsOnFills.picture]] as const) {
       const stuck = report.layout.stuck.map((x: Json) => x.group.split(" ")[0]);
       expect(list.map((l: Json) => l.atom).sort()).toEqual(stuck.sort());
       const style = molecule(copy).style;
       for (const l of list) {
         expect(l.on).toBe("B");
-        expect(l.colour).toBeUndefined();
+        expect(ringAtomIds.has(l.atom)).toBe(false);
+        expect(l.colour).toBe(ringStyle.letterColour(fillB, 0.9));
+        expect(style.atomLabelColors[l.atom]).toBe(l.colour);
+        expect(style.atomLabelBackgroundColors[l.atom]).toBe("transparent");
       }
-      expect(style.atomLabelColors).toBeUndefined();
+      expect(Object.keys(style.atomLabelColors).sort()).toEqual(stuck.sort());
       expect(style.atomLabelBackgroundColor).toBe(originalBackground);
-      expect(style.atomLabelBackgroundColors).toBeUndefined();
+      expect(Object.keys(style.atomLabelBackgroundColors).sort()).toEqual(stuck.sort());
+      // Ring-atom labels remain at the molecule's normal colour and default background.
+      for (const id of ringAtomIds) {
+        expect(style.atomLabelColors[id]).toBeUndefined();
+        expect(style.atomLabelBackgroundColors[id]).toBeUndefined();
+      }
     }
     expect(report.labelsOnFills.picture.map((l: Json) => l.label)).toEqual(["Me", "Me"]);
   });
@@ -305,10 +315,11 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(found.map((c) => [c.kind, [c.a.text, c.b.text].sort().join("/")])).toEqual([["label-label", "CH3/H"]]);
   });
 
-  it("fails a ring fill under an atom label and accepts its even-odd notch", () => {
-    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-fails.svg"))))
+  it("fails a ring fill under its own atom label and accepts a non-ring label on the fill", () => {
+    const ringAtoms = new Map([["ring-a", new Set(["a-ring"])] ]);
+    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-fails.svg")), ringAtoms))
       .toEqual([{ label: "O", ring: "ring-a", x: 5.5, y: 5 }]);
-    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-passes.svg")))).toEqual([]);
+    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-passes.svg")), ringAtoms)).toEqual([]);
   });
 
   it("makes check fail loudly for the emitted fill-under-label fixture", async () => {
@@ -317,18 +328,24 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       const { build, doc } = fixture("phenyldecalin");
       const styled = ringStyle.style(structuredClone(doc), build, { fusionH: false });
       const document = join(dir, "phenyldecalin-carbon.json");
+      const ring = build.rings[0];
+      const emittedSvg = join(dir, "fill-under-label-fails.svg");
+      // The fixture's fill and label identify a real ring atom in this emitted document.
+      writeFileSync(emittedSvg, read(join(fixtures, "fill-under-label-fails.svg"))
+        .replace('data-ring-key="ring-a"', `data-ring-key="${ring.ringKey}"`)
+        .replace('data-atom-id="a-ring"', `data-atom-id="${ring.atomIds[0]}"`));
       writeFileSync(document, JSON.stringify(styled.carbon));
       writeFileSync(join(dir, "phenyldecalin-build.jsonl"), JSON.stringify({ name: "phenyldecalin", ok: true, molecules: [build] }) + "\n");
       writeFileSync(join(dir, "phenyldecalin-style.json"), JSON.stringify(styled.report));
       writeFileSync(join(dir, "phenyldecalin-pubchem.json"), JSON.stringify({ CID: 1, Title: "fixture", InChIKey: "fixture-key" }));
       writeFileSync(join(dir, "phenyldecalin-render.jsonl"), JSON.stringify({ name: "render", ok: true, document,
-        files: [join(fixtures, "fill-under-label-fails.svg")], molecules: [{ canonicalSmiles: "C", stereoCenters: 0, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] }) + "\n");
+        files: [emittedSvg], molecules: [{ canonicalSmiles: "C", stereoCenters: 0, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] }) + "\n");
       writeFileSync(join(dir, "phenyldecalin-identity.jsonl"), JSON.stringify({ name: "1-render", summary: { inchiKey: { value: "fixture-key" } } }) + "\n");
 
       const result = await runScript("check", dir, "phenyldecalin");
       expect(result.status).toBe(1);
       expect(result.stdout).toMatch(/^Figure checks FAILED \(1\):$/m);
-      expect(result.stdout).toMatch(/^ {2}FAILED fill under a label: ring ring-a covers atom label O near \(5\.5, 5\)/m);
+      expect(result.stdout).toMatch(new RegExp(`^ {2}FAILED fill under a label: ring ${ring.ringKey} covers atom label O near \\(5\\.5, 5\\)`, "m"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

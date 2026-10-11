@@ -39,9 +39,9 @@
 //                 SMILES; with explicit H, the standard InChIKey) with the same specified and
 //                 unspecified stereocentre counts as the build's own drawing; a change that does
 //                 not is undone and reported. What cannot be cleared is reported by name, and a
-//                 atom labels that remain on a fill keep their normal label colour: ChemDraft
-//                 notches the emitted fill around them. Ring letters still use their fill's
-//                 luminance for contrast.
+//                 non-ring atom labels that remain on a fill are white or near-black by that
+//                 fill's luminance, with no label halo. Fills are notched only around labels of
+//                 their own atoms on the ring outline. Ring letters use the same luminance rule.
 //   relayout      rewrites <name>-job.json with the canonical SMILES in <name>-build.jsonl:
 //                 the same molecule in another atom order, which `document` lays out anew.
 //   identity-jobs reads <name>-render.jsonl (every `render-document` stdout line);
@@ -57,8 +57,8 @@
 // regular polygon of its size and mean side (area ratio >= 0.75, smallest interior angle >= 0.6 of
 // the regular angle, outline not crossing itself); no plain bond over 1.3x and no wedge or hash over
 // 1.3x the median bond length; no ring letter under 14 px or missing; no lettered ring more than 40%
-// under another lettered ring's fill; no emitted ring fill under an atom label; no fusion CH
-// stereocentre left without its H.
+// under another lettered ring's fill; no emitted ring fill under a label of that ring's own atom;
+// no fusion CH stereocentre left without its H.
 //
 // Options (all optional), a JSON object; with none, the options file may be omitted:
 //   convention  "walk" (default), "taxane", "steroid" or "morphinan"
@@ -622,20 +622,24 @@ function verifyFusionH(m, added, verify, warnings, undone) {
   return kept;
 }
 
-/** Labels that stay on a filled ring that is not their own (a substituent the fill rule could not
- * clear). They retain the molecule's normal label colour: the renderer cuts a rounded notch out of
- * every overlapping ring fill. Returns {atom, label, on} for reporting only. */
-function labelsOnFills(cm, letters, meIds, carbonLabels) {
+/** Non-ring labels that stay on a filled ring (a substituent the fill rule could not clear) use
+ * the fill's contrast colour and no halo. Ring-atom labels keep the molecule's normal colour and
+ * default background because the renderer notches their own ring fill at the outline. */
+function colourLabelsOnFills(cm, letters, colours, opacity, meIds, carbonLabels) {
   const size = cm.mol.style?.atomLabelFontSizePx ?? 15;
-  const fills = fillsOf(cm, letters), out = [];
+  const fills = fillsOf(cm, letters), ringAtoms = new Set(fills.flatMap((f) => [...f.atoms])), out = [];
   for (const a of cm.mol.atoms) {
+    if (ringAtoms.has(a.id)) continue;
     const box = labelBox(cm, a, meIds, carbonLabels, size);
     if (!box) continue;
     const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
     const on = fills.filter((f) => !f.atoms.has(a.id) && (depth(a, f.poly) > TOL || boxInFill(box, f.poly)))
       .sort((f, g) => depth(centre, g.poly) - depth(centre, f.poly))[0];
     if (!on) continue;
-    out.push({ atom: a.id, label: meIds.has(a.id) ? "Me" : carbonLabels.has(a.id) ? "CH3" : a.element, on: on.L });
+    const colour = letterColour(colours.get(on.r), opacity);
+    cm.mol.style.atomLabelColors = { ...(cm.mol.style.atomLabelColors ?? {}), [a.id]: colour };
+    cm.mol.style.atomLabelBackgroundColors = { ...(cm.mol.style.atomLabelBackgroundColors ?? {}), [a.id]: "transparent" };
+    out.push({ atom: a.id, label: meIds.has(a.id) ? "Me" : carbonLabels.has(a.id) ? "CH3" : a.element, on: on.L, colour });
   }
   return out;
 }
@@ -1372,7 +1376,7 @@ export function style(doc, buildMol, options = {}, tools = {}) {
         x: p.x - w / 2, y: p.y - 0.64 * p.size, width: w, height: 1.25 * p.size,
         style: { fontSizePx: p.size, fontWeight: 700, fontStyle: "italic", textAlign: "center", fontFamily: opts.letterFont, color: letterColour(fill, opts.fillOpacity) } });
     }
-    const labels = labelsOnFills(model(cmol, buildMol), letters, meIds, carbon);
+    const labels = colourLabelsOnFills(model(cmol, buildMol), letters, colours, opts.fillOpacity, meIds, carbon);
     for (const a of cmol.atoms) if (meIds.has(a.id)) a.element = "Me";
     return { copy, placed, labels };
   };
@@ -1433,7 +1437,7 @@ export function svgGeometry(svg) {
       box.x0 = Math.min(box.x0, x0); box.x1 = Math.max(box.x1, x0 + w);
       box.y0 = Math.min(box.y0, base - 0.72 * fs_); box.y1 = Math.max(box.y1, base + 0.02 * fs_);
     }
-    if (box.x0 < Infinity) labels.push({ text: atomLabel, x: ox, y: oy, box });
+    if (box.x0 < Infinity) labels.push({ atom: attr(open, "data-atom-id"), text: atomLabel, x: ox, y: oy, box });
   }
   // Text objects (ring letters, captions): <text data-object-type="text" x y font-size text-anchor>.
   for (const t of svg.matchAll(/<text\s((?:[^>"]|"[^"]*")*data-object-type="text"(?:[^>"]|"[^"]*")*)>([\s\S]*?)<\/text>/g)) {
@@ -1521,10 +1525,11 @@ function inEvenOddFill(point, faces) {
   return inside;
 }
 
-/** Ring fills that visibly cover an atom-label box. Sample at 0.5 px after a 0.5 px inset: this
- * catches a fill under text while allowing antialiased edges. The fill's own even-odd subpaths are
- * used, so rounded notch holes count as page background. */
-export function fillsUnderLabels(svg, tolerancePx = 0.5) {
+/** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. Sample
+ * at 0.5 px after a 0.5 px inset: this catches a fill under an outline label while allowing
+ * antialiased edges. Non-ring substituent labels intentionally remain on the fill. The fill's own
+ * even-odd subpaths are used, so rounded notch holes count as page background. */
+export function fillsUnderLabels(svg, ringAtomsByKey, tolerancePx = 0.5) {
   const fills = [];
   for (const p of svg.matchAll(/<path\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
     const tag = " " + p[1];
@@ -1534,6 +1539,7 @@ export function fillsUnderLabels(svg, tolerancePx = 0.5) {
   }
   const hits = [];
   for (const label of svgGeometry(svg).labels) for (const fill of fills) {
+    if (!ringAtomsByKey.get(fill.ring)?.has(label.atom)) continue;
     let hit = null;
     for (let x = label.box.x0 + tolerancePx; x <= label.box.x1 - tolerancePx && !hit; x += tolerancePx) {
       for (let y = label.box.y0 + tolerancePx; y <= label.box.y1 - tolerancePx; y += tolerancePx) {
@@ -1543,6 +1549,10 @@ export function fillsUnderLabels(svg, tolerancePx = 0.5) {
     if (hit) hits.push({ label: label.text, ring: fill.ring, x: Number(hit.x.toFixed(1)), y: Number(hit.y.toFixed(1)) });
   }
   return hits;
+}
+
+function ringAtomsByKey(buildMol) {
+  return new Map((buildMol.rings ?? []).map((ring) => [ring.ringKey, new Set(ring.atomIds)]));
 }
 
 /** Label pairs that nearly touch, text objects that sit on a label or a bond, and, given
@@ -1708,7 +1718,7 @@ function runStyle(dir, name, optionsFile, checkout) {
     const { carbon, picture, report } = style(doc, buildMol, options, { sources, verify });
     report.layout.reference = reference;
     for (const [kind, drawing] of [["carbon", carbon], ["picture", picture]]) {
-      for (const hit of fillsUnderLabels(cli.renderSvg(drawing))) {
+      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol))) {
         report.quality.failures.push(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y}) (${kind})`);
       }
     }
@@ -1728,7 +1738,7 @@ function runStyle(dir, name, optionsFile, checkout) {
     if (report.unlettered.length) console.log(`Not lettered or filled: ${report.unlettered.length} ring(s) outside the core`);
     console.log(`Fusion H added: ${report.fusionHydrogens.length}; ring methyls (Me in the picture, CH3 in -carbon): ${report.methyls.length}`);
     for (const [copy, list] of Object.entries(report.labelsOnFills)) for (const l of list) {
-      console.log(`Label ${l.label} ${l.atom} stays on ring ${l.on}'s fill (${copy}): keeps the normal label colour; the rendered fill is notched around it`);
+      console.log(`Label ${l.label} ${l.atom} stays on ring ${l.on}'s fill (${copy}): drawn ${l.colour === WHITE ? "white" : "near-black"} for legibility, with no label halo`);
     }
     for (const n of [...report.notes, ...report.warnings]) console.log(n);
     console.log(`Wrote ${name}-carbon.json, ${name}-nicolaou.json and ${name}-style.json`);
@@ -1749,7 +1759,7 @@ function printFigureVerdict(failures) {
 }
 const figureChecksText = () => `no sliver ring (area >= ${LIMITS.ringArea} of regular, smallest angle >= ${LIMITS.ringAngle} of regular), ` +
   `no bond over ${LIMITS.bondStretch}x or wedge over ${LIMITS.wedgeStretch}x the median, letters >= ${LIMITS.letterPx} px, ` +
-  `no ring more than ${Math.round(LIMITS.hiddenRing * 100)}% under another fill, no fill under an atom label, every fusion H drawn`;
+  `no ring more than ${Math.round(LIMITS.hiddenRing * 100)}% under another fill, no fill under a label of its ring's own atom, every fusion H drawn`;
 
 function relayout(dir, name) {
   const lines = readLines(path.join(dir, `${name}-build.jsonl`));
@@ -1815,7 +1825,7 @@ function documentFaults(dir, name, renders) {
     for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));
     for (const render of renders.filter((line) => line.document === file)) for (const svg of (render.files ?? []).filter((entry) => entry.toLowerCase().endsWith(".svg"))) {
       if (!fs.existsSync(svg)) { add(`${path.basename(svg)} is missing`, path.basename(file)); continue; }
-      for (const hit of fillsUnderLabels(readText(svg))) {
+      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol))) {
         add(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y})`, path.basename(file));
       }
     }
