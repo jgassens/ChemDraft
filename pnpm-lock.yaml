@@ -220,6 +220,9 @@ importers:
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
+      '@chemdraft/template-library':
+        specifier: workspace:*
+        version: link:../template-library
       fast-xml-parser:
         specifier: ^5.8.0
         version: 5.8.0
