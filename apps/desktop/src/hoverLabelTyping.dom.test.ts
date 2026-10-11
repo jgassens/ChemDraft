@@ -181,6 +181,113 @@ describe("hover label typing", () => {
     expect(editor()).toBeNull();
   });
 
+  // A bond of `atomIndex` and a point along it, `fraction` of the way from that atom to the other end.
+  async function hoverBond(atomIndex: number, fraction: number) {
+    const current = molecule();
+    const atom = current.atoms[atomIndex]!;
+    const bond = current.bonds.find((candidate) => candidate.fromAtomId === atom.id || candidate.toAtomId === atom.id)!;
+    const other = current.atoms.find((candidate) => candidate.id === (bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId))!;
+    const page = container.querySelector<HTMLElement>(".page")!;
+    const point = { x: atom.x + (other.x - atom.x) * fraction, y: atom.y + (other.y - atom.y) * fraction };
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      page.dispatchEvent(event);
+    });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    return { bond, near: atom, far: other };
+  }
+
+  it("types a label over a bond onto the bond's nearer atom, not into tool shortcuts", async () => {
+    const { bond, near, far } = await hoverBond(0, 0.4);
+    await press("O");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)!.element).toBe("O");
+    await press("M");
+    await press("e");
+    expectIntact();
+    await press("Enter");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("C");
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
+    expectIntact();
+  });
+
+  it("labels the end of the bond nearer the pointer", async () => {
+    const { near, far } = await hoverBond(0, 0.6);
+    await press("N");
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("N");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)!.element).toBe("C");
+    expectIntact();
+  });
+
+  it("keeps a label going when the pointer drifts onto the labelled atom's own bond", async () => {
+    await hover(0);
+    await press("O");
+    const { bond } = await hoverBond(0, 0.45);
+    await press("M");
+    expect(editor()?.value).toBe("OM");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
+    expectIntact();
+  });
+
+  it("keeps a digit in the label, not the bond order, when drifting onto the atom's own bond", async () => {
+    await hover(0);
+    await press("N");
+    const { bond } = await hoverBond(0, 0.45);
+    await press("2");
+    expect(editor()?.value).toBe("N2");
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
+    expectIntact();
+  });
+
+  it("hovers the bond again once a label typed over it commits, so Delete acts on the bond", async () => {
+    const { bond, near } = await hoverBond(0, 0.4);
+    await press("O");
+    await press("M");
+    await press("e");
+    await press("Enter");
+    expect(molecule().atoms.find((atom) => atom.id === near.id)).toMatchObject({ element: "OMe" });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    // Delete over the bond removes the bond. Were the hover still on the atom, it would strip "OMe".
+    await press("Delete");
+    expect(molecule().bonds.some((candidate) => candidate.id === bond.id)).toBe(false);
+    expect(molecule().atoms.find((atom) => atom.id === near.id)).toMatchObject({ element: "OMe" });
+  });
+
+  it("hovers the bond again when the next key does not continue the label, so Delete acts on the bond", async () => {
+    const { bond, far } = await hoverBond(0, 0.6);
+    await press("N");
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("N");
+    // Delete does not continue a label, so the hover returns to the bond under the pointer first.
+    await press("Delete");
+    expect(molecule().bonds.some((candidate) => candidate.id === bond.id)).toBe(false);
+    expect(molecule().atoms.find((atom) => atom.id === far.id)!.element).toBe("N");
+  });
+
+  it("ends a label continuation when the tool changes, by menu command as well as by palette", async () => {
+    await hover(0);
+    await press("O");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.select"); });
+    await press("M");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms[0]!.element).toBe("O");
+    expect(molecule().atoms).toHaveLength(6);
+  });
+
+  it("over a bond, a bare non-element letter keeps its tool shortcut and a digit its bond order", async () => {
+    const { bond } = await hoverBond(0, 0.5);
+    await press("2");
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe("double");
+    expect(editor()).toBeNull();
+    await hoverBond(0, 0.5);
+    await press("e");
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+    expect(molecule().atoms).toHaveLength(6);
+  });
+
   it("does not continue after the pointer leaves and returns to the same atom", async () => {
     await hover(0);
     await press("N");

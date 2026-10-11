@@ -362,7 +362,9 @@ describe("user feedback app stress", () => {
     report(`D continuation ${p}`, started, "characters=30 deletionKeys=2 deletedObjects=0");
   }, 120000);
 
-  it.each(["macos", "windows"] as const)("D: records O → bond drift → M → e (%s)", async p => {
+  // The pointer drifting off the atom onto its own bond mid-label used to fall through to tool
+  // shortcuts (M = Single Bond, e = Eraser). The label now continues on the atom.
+  it.each(["macos", "windows"] as const)("D: O → bond drift → M → e continues OMe rather than arming the Eraser (%s)", async p => {
     platform(p); const doc = insertNativeTemplateMolecule(createPhase4Document("Drift"), { x: 300, y: 300 }, "cyclohexane");
     await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
     const mol = molecules(current())[0], a = mol.atoms[0], b = mol.atoms[1], started = performance.now();
@@ -370,22 +372,11 @@ describe("user feedback app stress", () => {
     await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
     await key("M"); await key("e");
-    const label = molecules(current())[0].atoms[0].element;
     const deleted = doc.pages[0].objects.length - current().pages[0].objects.length;
-    console.info(`[stress D drift ${p}] keys=3 label=${label} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)} known-main-bond-hotkey-bug`);
-    expect(label).toBe("O"); expect(editor()).toBeNull(); expect(deleted).toBe(0);
-  });
-
-  // Known pre-existing main bug: 'e' over a hovered bond switches to the Eraser after label drift.
-  it.fails("D bug: bond drift should continue OMe rather than arming Eraser", async () => {
-    const doc = insertNativeTemplateMolecule(createPhase4Document("Drift bug"), { x: 300, y: 300 }, "cyclohexane");
-    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
-    const [a, b] = molecules(current())[0].atoms;
-    await pointer("pointermove", a); await key("O");
-    await pointer("pointermove", { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-    await key("M"); await key("e");
-    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    console.info(`[stress D drift ${p}] keys=3 editor=${editor()?.value} tool=${snapshot().activeToolCommandId} deletedObjects=${deleted} ms=${(performance.now() - started).toFixed(1)}`);
     expect(editor()?.value).toBe("OMe");
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(deleted).toBe(0);
   });
 
   it.each(["macos", "windows"] as const)("F: 50 rapid Text placements/commits have atomic conversion or label undo and leave no stray text (%s)", async p => {

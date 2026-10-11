@@ -134,3 +134,12 @@ arrowhead sizing, stretching, measurement angles, and wheel zoom, with result me
 held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
+
+Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
+`invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
+one-warning file) after its text moves on; clicking it lists every warning with its message, what it
+names (Whole file, a molecule by its CDXML fragment, or "Atom * in …"), and its code; Show selects that
+molecule or atom with the Select tool; tool shortcuts work straight after any click there; Esc closes
+the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
+always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
+scrolls in a small window at 125% and 150% display scale.
