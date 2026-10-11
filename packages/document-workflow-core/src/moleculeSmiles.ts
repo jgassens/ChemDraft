@@ -6,6 +6,7 @@ import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chem
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 
+import { expandNativeMoleculeLabelGroups } from "./atoms";
 import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./smiles";
 
 export type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
@@ -42,15 +43,26 @@ export async function moleculeSmiles(
       objectId: molecule.id
     });
   }
+  // Both routes write a valid group label as the atoms it stands for; say which ones, once each.
+  const expanded = expandNativeMoleculeLabelGroups(molecule);
+  for (const label of [...new Set(expanded.expansions.map((expansion) => expansion.label))]) {
+    warnings.push({
+      code: "export.smiles_abbreviation_expanded",
+      message: `Abbreviation "${label}" was written out as the atoms it stands for.`,
+      severity: "info",
+      objectId: molecule.id
+    });
+  }
   if (computeStructureIdentifiers) {
     try {
       const writerWarnings: string[] = [];
       const identifiers = await computeStructureIdentifiers(
-        molfile ?? moleculeToMolfileV2000(molecule, {
+        molfile ?? moleculeToMolfileV2000(expanded.molecule, {
           unknownBondOrders: "refuse",
           fromDocFrame: true,
           warnings: writerWarnings,
-          kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders
+          kekuleBondOrders: nativeBondOrderResolution(expanded.molecule.atoms, expanded.molecule.bonds).kekuleOrders,
+          placeholderAtoms: expanded.placeholderAtoms
         }).contents
       );
       if (identifiers?.smiles) {
@@ -77,7 +89,19 @@ export async function moleculeSmiles(
     });
   }
   warnings.push(...bondOrders.warnings.aromatic.map(bondOrderWarning));
-  if (molecule.structureFormat === "smiles" && molecule.structure) return molecule.structure;
+  // The stored string is trusted only when every atom writes as itself: no group expanded, and no
+  // label written as a dummy atom — a placeholder ("R"), unrecognized text ("Ome"), a flagged group,
+  // a bonded "Ar". Otherwise it may say something else entirely (a stored "CO" for a C–R drawing,
+  // "[Ar]O" for aryl alcohol) while the warnings above promise [*]; write the current graph instead.
+  if (
+    expanded.expansions.length === 0 &&
+    expanded.placeholderAtoms.size === 0 &&
+    nativeMoleculeUnspellableLabels(molecule).length === 0 &&
+    molecule.structureFormat === "smiles" &&
+    molecule.structure
+  ) {
+    return molecule.structure;
+  }
   return nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
 }
 

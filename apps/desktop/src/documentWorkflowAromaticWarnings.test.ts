@@ -139,7 +139,7 @@ describe("Spin 3D speculative structure reliability", () => {
       height: 100, rotation: 0, style: {}, structureFormat: "molfile-v2000", structure: "",
       superatoms: [], rGroups: [], ...testMoleculeFromSmiles("c1cncn1") };
     expect(spin3dHydrogenWarnings(molecule)).toHaveLength(2);
-    expect(spin3dHydrogenWarnings(molecule).every((warning) => warning.includes("hydrogen count was guessed"))).toBe(true);
+    expect(spin3dHydrogenWarnings(molecule).every((warning) => warning.includes("hydrogen count guessed"))).toBe(true);
   });
 
   it("still prefetches an abbreviation serialized as a dummy atom", () => {
@@ -190,10 +190,11 @@ describe("aromatic warning marker explanations", () => {
       container.remove();
     }
   });
+  // The tooltip shows the short status-line reason; the long form with the atom id is for logs.
   it.each([
-    ["guessed tautomer", "Cc1cncn1", "hydrogen count was guessed"],
-    ["unresolved ring", "c1cccc1", "could not be resolved"],
-    ["impossible stated H", "c1cc[nH2]c1", "states 2 hydrogens"]
+    ["guessed tautomer", "Cc1cncn1", "hydrogen count guessed"],
+    ["unresolved ring", "c1cccc1", "don&#x27;t resolve into single and double bonds"],
+    ["impossible stated H", "c1cc[nH2]c1", "states 2 H"]
   ])("shows the existing %s reason in the valence marker tooltip", (_name, smiles, reason) => {
     const molecule: MoleculeObject = {
       id: "warning-molecule", type: "molecule", x: 0, y: 0, width: 100, height: 100,
@@ -209,8 +210,12 @@ describe("aromatic warning marker explanations", () => {
     const warnings = nativeMoleculeInvalidAtomStates(molecule);
     expect(markers).toHaveLength(warnings.length);
     expect(markers.some((marker) => marker[1]!.includes(reason))).toBe(true);
+    // renderToStaticMarkup escapes text the way the DOM serializes it ("don't" → "don&#x27;t").
+    const escaped = (text: string) => text
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
     for (const [index, warning] of warnings.entries()) {
-      expect(markers[index]![1]).toContain(`<title>${warning.invalidReason}</title>`);
+      expect(markers[index]![1]).toContain(`<title>${escaped(warning.invalidReason!)}</title>`);
       expect(markers[index]![0]).not.toContain("pointer-events:all");
     }
   });

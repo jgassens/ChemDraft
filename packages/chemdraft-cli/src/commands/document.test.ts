@@ -193,15 +193,53 @@ describe("native document agent commands", () => {
     expect(result.result.molecules[0].canonicalSmiles).toBe("CCN");
   });
 
-  it("reports one molfile-loss warning per Me display label", async () => {
+  it("reads a Me display label as its atoms and an unrecognized label as one warned placeholder", async () => {
     const built = structuredClone(await buildSmilesDocument("CC"));
     (built.document.pages[0]!.objects[0] as MoleculeObject).atoms[0]!.element = "Me";
     const input = join(directory, "me-label.json");
     await writeFile(input, JSON.stringify(built.document));
     const result = await run(["render-document", "--document", input, "--out", join(directory, "me-label.svg")]);
     expect(result.code).toBe(0);
-    expect(result.result.molecules[0].canonicalSmiles).toContain("*");
-    expect(result.result.exportWarnings.filter((warning: { code: string }) => warning.code === "export.molfile_loss")).toHaveLength(1);
+    // The label replaces the drawn atom, so C–Me is ethane, written out with no placeholder and no loss.
+    expect(result.result.molecules[0].canonicalSmiles).toBe("CC");
+    expect(result.result.exportWarnings.filter((warning: { code: string }) => warning.code === "export.molfile_loss")).toHaveLength(0);
+
+    // Case matters: "ME" is no abbreviation, so it stays a dummy atom with exactly one loss warning.
+    (built.document.pages[0]!.objects[0] as MoleculeObject).atoms[0]!.element = "ME";
+    const unknownInput = join(directory, "me-upper-label.json");
+    await writeFile(unknownInput, JSON.stringify(built.document));
+    const unknown = await run(["render-document", "--document", unknownInput, "--out", join(directory, "me-upper-label.svg")]);
+    expect(unknown.code).toBe(0);
+    expect(unknown.result.molecules[0].canonicalSmiles).toContain("*");
+    expect(unknown.result.exportWarnings.filter((warning: { code: string }) => warning.code === "export.molfile_loss")).toHaveLength(1);
+  });
+
+  it("reads a cyano label by its recorded bond side, or the drawing's when none is recorded", async () => {
+    const built = structuredClone(await buildSmilesDocument("CC"));
+    const molecule = built.document.pages[0]!.objects[0] as MoleculeObject;
+    const [label, carbon] = molecule.atoms as [MoleculeObject["atoms"][number], MoleculeObject["atoms"][number]];
+    label.element = "SCN";
+    const smilesOf = async (name: string) => {
+      const input = join(directory, `${name}.json`);
+      await writeFile(input, JSON.stringify(built.document));
+      const result = await run(["render-document", "--document", input, "--out", join(directory, `${name}.svg`)]);
+      expect(result.code).toBe(0);
+      return result.result.molecules[0].canonicalSmiles as string;
+    };
+    // Written with the bond on its left: methyl thiocyanate, wherever the atoms now sit.
+    label.labelBondSide = { side: "left", atomId: carbon.id };
+    expect(await smilesOf("scn-left")).toBe("CSC#N");
+    // Written with the bond on its right: an isothiocyanate the table lacks, so a placeholder, never cyano.
+    label.labelBondSide = { side: "right", atomId: carbon.id };
+    const right = await smilesOf("scn-right");
+    expect(right).toContain("*");
+    expect(right).not.toContain("#");
+    // No record (a file from before it existed): the side the drawing shows when the CLI opens it.
+    delete label.labelBondSide;
+    label.x = carbon.x + 30;
+    expect(await smilesOf("scn-drawn-left")).toBe("CSC#N");
+    label.x = carbon.x - 30;
+    expect(await smilesOf("scn-drawn-right")).not.toContain("#");
   });
 
   it("warns that SVG uses only the first page but preserves all pages in ChemDraft", async () => {
