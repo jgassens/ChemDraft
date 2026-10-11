@@ -117,8 +117,109 @@ const QUIT_FLUSH_REQUEST_EVENT: &str = "chemdraft://flush-before-quit";
 /// How long a quit waits for the document window's flush before quitting anyway.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 const QUIT_FLUSH_GRACE: Duration = Duration::from_secs(3);
-/// Set once a quit has been requested, so repeated close clicks don't re-request it.
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// How long the event loop gets to end the app once a quit is decided, before the process ends
+/// itself (Windows; see `QuitHost::force_exit`).
+const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
+
+/// The app's quit flow. Tests run their own `QuitFlow` with a fake host and short timings.
+static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+
+/// A quit's state and timings. Nothing ever clears `requested` or `quitting`: no quit is
+/// cancelled once asked for. The app never prompts to save, a relaunch is a new process, and the
+/// Windows updater's `install()` ends the process itself.
+struct QuitFlow {
+    /// Set once a quit has been requested, so repeated close clicks don't re-request it.
+    requested: AtomicBool,
+    /// Set once the quit is decided (`quit_now`); the app's is `APP_QUITTING`.
+    quitting: &'static AtomicBool,
+    /// Set once the exit watchdog is running, so it is started at most once.
+    watchdog_armed: AtomicBool,
+    // Read only by request_quit_with, which macOS never reaches (see request_quit).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    flush_grace: Duration,
+    exit_watchdog: Duration,
+}
+
+impl QuitFlow {
+    const fn new(
+        quitting: &'static AtomicBool,
+        flush_grace: Duration,
+        exit_watchdog: Duration,
+    ) -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            quitting,
+            watchdog_armed: AtomicBool::new(false),
+            flush_grace,
+            exit_watchdog,
+        }
+    }
+}
+
+/// What the quit flow does to the app. A fake stands in for it in the tests.
+trait QuitHost: Clone + Send + 'static {
+    /// Asks the document window to flush its session; false when there is none to ask.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn ask_document_to_flush(&self) -> bool;
+    /// Asks the event loop, on the main thread, to end the app.
+    fn exit(&self);
+    /// Ends the process now, from the watchdog thread.
+    fn force_exit(&self, waited: Duration);
+}
+
+impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
+    fn ask_document_to_flush(&self) -> bool {
+        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
+            && self
+                .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
+                .is_ok()
+    }
+
+    fn exit(&self) {
+        tauri::AppHandle::exit(self, 0);
+    }
+
+    /// Windows: `exit` only asks the event loop to stop, and the event loop runs on the main thread,
+    /// which a window build can hold for many seconds: each WebView2 is built there, and on a busy
+    /// machine one build took 12 s. A document-window close then saved the session at once but did
+    /// not quit for 10 s to 2 min, and the next launch handed itself to the dying process through
+    /// the single-instance lock. The session is written (or its grace has run out) before a quit is
+    /// decided, and nothing else waits for exit: updates install when accepted, frames and plugin
+    /// storage are written as they change, there is no log to flush. Only the OCSR engine's
+    /// children outlive a process (their own process group, no job object), so they are killed
+    /// first; interactive 3D sidecars end with their stdin, as they do at a normal exit.
+    #[cfg(windows)]
+    fn force_exit(&self, waited: Duration) {
+        eprintln!(
+            "ChemDraft: the app had not exited {:.1} s after quitting (the main thread was busy); ending the process",
+            waited.as_secs_f64()
+        );
+        self.state::<ocsr_engine::OcsrEngineState>()
+            .kill_for_forced_exit();
+        // TerminateProcess, not std::process::exit: ExitProcess runs every DLL's detach, and
+        // WebView2's spent about 3 s tearing down there (once raising a dialog), so a forced exit
+        // took flush + 5 s. The session is written, the OCSR children are killed, and stderr is
+        // unbuffered: nothing is left for a detach to do.
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: GetCurrentProcess returns a pseudo-handle that needs no closing, and terminating
+        // this process is the intent; the call does not return when it succeeds.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+        std::process::exit(0);
+    }
+
+    /// macOS never decides a quit here: closing the document window hides it, and Quit is the
+    /// application menu's, through NSApplication termination (which Sparkle relies on). Linux is
+    /// not shipped. Should a quit ever reach this, the event loop is left to end the app.
+    #[cfg(not(windows))]
+    fn force_exit(&self, waited: Duration) {
+        eprintln!(
+            "ChemDraft: the app had not exited {:.1} s after quitting; leaving it to the event loop",
+            waited.as_secs_f64()
+        );
+    }
+}
 
 /// Quit off macOS without losing the last edits. The session autosave is an 800 ms debounce in the
 /// webview and the app never prompts to save, so exiting straight away dropped anything edited in
@@ -126,34 +227,50 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// and a grace timer quits regardless if the webview can't answer.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
+    request_quit_with(&QUIT, app);
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    if flow.requested.swap(true, Ordering::SeqCst) {
         return;
     }
-    let asked = app.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-        && app
-            .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
-            .is_ok();
-    if !asked {
-        quit_now(app);
+    if !host.ask_document_to_flush() {
+        quit_now_with(flow, host);
         return;
     }
-    let app = app.clone();
+    let host = host.clone();
     thread::spawn(move || {
-        thread::sleep(QUIT_FLUSH_GRACE);
-        quit_now(&app);
+        thread::sleep(flow.flush_grace);
+        quit_now_with(flow, &host);
     });
 }
 
-fn quit_now<R: Runtime>(app: &tauri::AppHandle<R>) {
+/// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
+/// armed here and nowhere else, so it can never end a process whose session has not been flushed
+/// or given its grace.
+fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
     // Raised first so the palette teardown that follows isn't recorded as user closes.
-    APP_QUITTING.store(true, Ordering::SeqCst);
-    app.exit(0);
+    flow.quitting.store(true, Ordering::SeqCst);
+    if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
+        let host = host.clone();
+        let wait = flow.exit_watchdog;
+        thread::spawn(move || {
+            thread::sleep(wait);
+            host.force_exit(wait);
+        });
+    }
+    host.exit();
 }
 
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
+/// `async`, so it runs on a worker: a sync command runs on the main thread, and when a window build
+/// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
+/// 3 s grace ran out. Deciding here touches atomics, starts the watchdog and posts the exit request,
+/// none of which needs the main thread.
 #[tauri::command]
-fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now(&app);
+async fn quit_after_flush(app: tauri::AppHandle) {
+    quit_now_with(&QUIT, &app);
 }
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -1066,10 +1183,29 @@ struct ToolsetWindowGeometry {
 //   holding it across `build()` (which waits on the main thread) cannot deadlock.
 static WINDOW_CREATION: Mutex<()> = Mutex::new(());
 
-fn lock_window_creation() -> std::sync::MutexGuard<'static, ()> {
-    WINDOW_CREATION
+/// What a window request gets once the app is quitting.
+const QUITTING_WINDOW_REFUSAL: &str = "ChemDraft is quitting; no new windows";
+
+/// Whether a quit has begun: off macOS a document-window close requests one, and the exit itself
+/// raises `APP_QUITTING` everywhere.
+fn quit_in_progress() -> bool {
+    QUIT.requested.load(Ordering::SeqCst) || APP_QUITTING.load(Ordering::SeqCst)
+}
+
+/// Takes the window-creation lock, and refuses once a quit has begun. A window built during a quit
+/// only delays it: each WebView2 is built on the main thread, and the quit's flush, its grace timer
+/// and the exit itself all wait behind that build. A close made while the palettes were still
+/// prewarming their popovers and tooltip on a busy machine took 10 s to 2 min to exit, as each queued
+/// build ran in turn. The flag is read after the lock, so a request queued behind a build in
+/// progress is refused too.
+fn lock_window_creation() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    let guard = WINDOW_CREATION
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if quit_in_progress() {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    Ok(guard)
 }
 
 #[tauri::command]
@@ -1078,7 +1214,7 @@ async fn open_toolset_window(
     toolset_id: String,
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
@@ -1594,7 +1730,7 @@ async fn open_plugin_panel_window(
     }
 
     let label = plugin_panel_window_label(&request.panel_id);
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(&label) {
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
@@ -2032,7 +2168,7 @@ async fn open_toolset_popover(
     y: f64,
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(&label) {
         // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
         // right after this call, and the popover webview reveals itself once that content has
@@ -2061,7 +2197,7 @@ async fn open_toolset_popover(
 #[tauri::command]
 async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
@@ -2076,7 +2212,7 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
 /// show/hide already no-op while it doesn't exist. Every palette asks; the first ask builds it.
 #[tauri::command]
 async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     build_toolset_tooltip_window(&app)
 }
 
@@ -2879,7 +3015,7 @@ fn write_clipboard_text_items_impl(
 
 #[tauri::command]
 async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), String> {
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(SPIN3D_DEBUGGER_WINDOW_LABEL) {
         if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
@@ -3022,7 +3158,7 @@ fn spin3d_debugger_window_route() -> &'static str {
 
 #[tauri::command]
 async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
-    let _creation = lock_window_creation();
+    let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         if toggle_should_hide(&window) {
             return window.hide().map_err(|error| error.to_string());
@@ -5820,6 +5956,184 @@ mod tests {
             classify_toolbars_menu_update(&previous, &renamed, view),
             ToolbarsMenuUpdate::Rebuild
         );
+    }
+
+    /// The quit flow's host, where the event loop never manages to end the app (a stuck main
+    /// thread): `exit` is recorded and nothing else happens, so the watchdog is what ends it.
+    #[derive(Clone)]
+    struct StuckAppHost {
+        has_document: bool,
+        calls: std::sync::Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl StuckAppHost {
+        fn new(has_document: bool) -> Self {
+            Self {
+                has_document,
+                calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        /// Polls (generously, so a loaded machine does not fail it) until `calls` has `count` entries.
+        fn wait_for_calls(&self, count: usize) -> Vec<&'static str> {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while self.calls().len() < count && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            self.calls()
+        }
+    }
+
+    impl QuitHost for StuckAppHost {
+        fn ask_document_to_flush(&self) -> bool {
+            self.calls.lock().unwrap().push("ask to flush");
+            self.has_document
+        }
+
+        fn exit(&self) {
+            self.calls.lock().unwrap().push("exit");
+        }
+
+        fn force_exit(&self, _waited: Duration) {
+            self.calls.lock().unwrap().push("force exit");
+        }
+    }
+
+    /// A quit flow of its own, so the app's `QUIT` and `APP_QUITTING` are untouched.
+    fn test_quit_flow(flush_grace: Duration, exit_watchdog: Duration) -> &'static QuitFlow {
+        let quitting: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        Box::leak(Box::new(QuitFlow::new(
+            quitting,
+            flush_grace,
+            exit_watchdog,
+        )))
+    }
+
+    const NEVER: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host);
+        thread::sleep(Duration::from_millis(300));
+        // Nothing is decided and no watchdog runs while the document has not answered.
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_confirmed_flush_quits_and_the_watchdog_ends_an_app_that_does_not_exit() {
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host);
+        quit_now_with(flow, &host); // quit_after_flush: the session is written
+        assert!(flow.quitting.load(Ordering::SeqCst));
+        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn an_unanswered_flush_quits_after_its_grace() {
+        let flow = test_quit_flow(Duration::from_millis(30), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn with_no_document_window_to_ask_the_quit_is_decided_at_once() {
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(false);
+        request_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "exit"]);
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn repeated_closes_and_confirmations_ask_once_and_arm_one_watchdog() {
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host);
+        request_quit_with(flow, &host);
+        quit_now_with(flow, &host);
+        quit_now_with(flow, &host);
+        // Asked once, two exits (each confirmation asks the event loop again), one forced exit.
+        let calls = host.wait_for_calls(4);
+        thread::sleep(Duration::from_millis(200));
+        let calls_later = host.calls();
+        assert_eq!(calls, calls_later);
+        assert_eq!(
+            calls.iter().filter(|call| **call == "ask to flush").count(),
+            1
+        );
+        assert_eq!(
+            calls.iter().filter(|call| **call == "force exit").count(),
+            1
+        );
+        // A quit is never cancelled: the flow stays requested and quitting.
+        assert!(flow.requested.load(Ordering::SeqCst));
+        assert!(flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_quit_decided_on_a_worker_needs_nothing_from_the_busy_main_thread() {
+        // quit_after_flush is async and runs on a worker. The "main thread" here is busy for the whole
+        // test: it holds a lock that the host would need to process anything on it. The decision,
+        // the watchdog and the forced exit all happen without it, as they must while a window build
+        // holds the real main thread.
+        let main_thread = std::sync::Arc::new(Mutex::new(()));
+        let busy = main_thread.lock().unwrap();
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let worker = {
+            let host = host.clone();
+            thread::spawn(move || quit_now_with(flow, &host))
+        };
+        worker.join().unwrap();
+        assert!(flow.quitting.load(Ordering::SeqCst));
+        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(host.wait_for_calls(2), ["exit", "force exit"]);
+        // The main thread never had to run anything.
+        assert!(main_thread.try_lock().is_err());
+        drop(busy);
+    }
+
+    #[test]
+    fn everything_the_quit_decision_touches_is_thread_safe() {
+        // Checked at compile time: the flow's state, the handle that posts the exit request and that
+        // the watchdog's force_exit reads state through, and the OCSR state it kills.
+        fn send_sync<T: Send + Sync + 'static>() {}
+        send_sync::<QuitFlow>();
+        send_sync::<tauri::AppHandle<tauri::Wry>>();
+        send_sync::<ocsr_engine::OcsrEngineState>();
+    }
+
+    #[test]
+    fn window_creation_is_refused_once_a_quit_is_requested() {
+        // Raises only the app's QUIT.requested, and puts it back (test-only: nothing in the app
+        // clears it): no other test reads either quit flag.
+        assert!(lock_window_creation().is_ok());
+        QUIT.requested.store(true, Ordering::SeqCst);
+        let refused = lock_window_creation().map(|_| ());
+        QUIT.requested.store(false, Ordering::SeqCst);
+        assert_eq!(refused, Err(QUITTING_WINDOW_REFUSAL.to_string()));
+        assert!(lock_window_creation().is_ok());
     }
 
     #[test]
