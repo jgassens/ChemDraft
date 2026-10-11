@@ -542,8 +542,18 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
   });
   it("ordinary NMe relabel has the same one Undo entry as the split", async () => {
     await mount(); const before = molecule(); await edit(0, "NMe"); check(6, 6);
-    expect(molecule().atoms[0]!.element).toBe("NMe"); const after = molecule();
+    expect(molecule().atoms[0]!.element).toBe("NMe");
+    expect(status()).toBe("Labeled atom NMe");
+    expect(status()).not.toContain("Editing atom label");
+    const after = molecule();
     await history(); expect(molecule()).toEqual(before); await history(true); expect(molecule()).toEqual(after);
+  });
+  it("clears status when the edited atom is retyped with its existing label", async () => {
+    await mount();
+    await edit(0, "NMe");
+    expect(status()).toBe("Labeled atom NMe");
+    await edit(0, "NMe");
+    expect(status()).toBe("");
   });
   it("guard fallback relabels rather than adding a fifth bond and explains why", async () => {
     let d = ring(); const m = d.pages[0].objects.find((o): o is MoleculeObject => o.type === "molecule")!;

@@ -9686,7 +9686,8 @@ export function MainWindow({
         replacePresentDocument(baseline);
       }
       if (changed && "message" in result && result.message) setStatus(result.message);
-      else if (!changed) setStatus("");
+      else if (changed) setStatus(`Labeled atom ${normalizeNativeAtomElementLabel(previous.draft)}`);
+      else setStatus("");
       if (kept && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
       if (activeAtomLabelEdit) {
         // A direct click into another editor captured its baseline before this close effect.
