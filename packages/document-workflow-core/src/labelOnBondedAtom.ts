@@ -25,7 +25,9 @@ export function labelOnBondedAtom(
 ): LabelOnBondedAtomDecision {
   const bondCount = molecule.bonds.filter(b => b.fromAtomId === atom.id || b.toAtomId === atom.id).length;
   const external = nativeAtomExternalValence(molecule, atom);
-  const context = { bonded: bondCount > 0 };
+  // The typed reading: the label as written, bond on its left. A substituent keeps it whichever
+  // side it lands on (its side is recorded so), so a cyano label's free valence is the cyano group's.
+  const context = { bonded: bondCount > 0, bondSide: "left" as const };
   const reading = nativeAtomLabelReading(label, context).kind;
   // An attached label is a new neutral atom; the source retains its own charge.
   const freeValence = nativeAtomLabelFreeValence(label, 0, context);

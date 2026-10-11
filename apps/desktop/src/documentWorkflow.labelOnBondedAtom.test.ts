@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Molecule } from "openchemlib";
 import { applyPatches, nativeDrawingStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { nativeAtomLabelReading, nativeBondOrderResolution } from "@chemdraft/document-workflow-core";
+import { nativeAtomLabelReading, nativeAtomValidationState, nativeBondOrderResolution, nativeLabelBondSide } from "@chemdraft/document-workflow-core";
+import { atomDisplayLabelPlacement } from "@chemdraft/layout-engine";
 import {
   commitNativeAtomLabelTarget, convertNativeTextObjectToAtomLabel, createPhase4Document,
   insertNativeTemplateMolecule, insertNativeTextObject
@@ -201,5 +202,62 @@ describe("commitNativeAtomLabelTarget", () => {
     expect(result.document.pages[0].objects).toHaveLength(1);
     expect(molecule(result.document).atoms.slice(0, 6)).toEqual(m.atoms);
     expect(result.target).toMatchObject({ atomId: molecule(result.document).atoms[6]!.id });
+  });
+});
+
+// The reviewer's probe: benzene atoms 5 and 6 open to the left, so a substituent lands left of its
+// ring atom with its bond on the label's right; atoms 2 and 3 are their mirror. A cyano label keeps
+// the reading it was typed with (bond on its left) on either side, and is drawn turned on the left.
+describe("a cyano substituent keeps its typed reading on either side of the ring", () => {
+  const groups = [["CN", "C(#N)", "NC"], ["SCN", "S(C(#N))", "NCS"], ["OCN", "O(C(#N))", "NCO"]] as const;
+  const atoms = [[4, "left"], [5, "left"], [1, "right"], [2, "right"]] as const;
+  it.each(groups.flatMap(([label, smiles, turned]) => atoms.map(([index, facing]) => [label, smiles, turned, index, facing] as const)))(
+    "%s stays its group %s (turned %s) on benzene atom index %i, facing %s",
+    (label, smiles, turned, index, facing) => {
+      const { document, m } = setup("benzene");
+      const source = m.atoms[index]!;
+      const result = commitNativeAtomLabelTarget(document, { objectId: m.id, kind: "atom", atomId: source.id, distanceToPointer: 0 }, label, { literal: true });
+      const after = molecule(result.document), added = after.atoms[6]!;
+      expect(Math.sign(added.x - source.x)).toBe(facing === "left" ? -1 : 1);
+      expect(result.message).toBe(`Attached ${label} as a substituent: ${label} takes one bond and this atom already has 2`);
+      expect(after.structure).toContain(smiles);
+      expect(after.structure).not.toContain("*");
+      expect(added.labelBondSide).toEqual({ side: "left", atomId: source.id });
+      const addedBonds = after.bonds.filter(b => b.fromAtomId === added.id || b.toAtomId === added.id);
+      const side = nativeLabelBondSide(added, addedBonds, after.atoms);
+      expect(side).toBe("left");
+      expect(nativeAtomLabelReading(added.element, { bonded: true, typed: true, bondSide: side! }).kind).toBe("group");
+      expect(nativeAtomValidationState(added, after.bonds, added.formalCharge, after.atoms).valid).toBe(true);
+      expect(atomDisplayLabelPlacement(added, after.bonds, nativeDrawingStyleFromObjectStyle(after.style), after.atoms)).toEqual(
+        facing === "left" ? { label: turned, anchor: { side: "end", length: 1 } } : { label, anchor: { side: "start", length: 1 } }
+      );
+    }
+  );
+  it.each([4, 5])("OMe on left-facing benzene atom %i still reads OMe, drawn MeO, with no recorded side", index => {
+    const { document, m } = setup("benzene");
+    const source = m.atoms[index]!;
+    const result = commitNativeAtomLabelTarget(document, { objectId: m.id, kind: "atom", atomId: source.id, distanceToPointer: 0 }, "OMe", { literal: true });
+    const after = molecule(result.document), added = after.atoms[6]!;
+    expect(added).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(added.labelBondSide).toBeUndefined();
+    expect(after.structure).toContain("O(C)"); expect(after.structure).not.toContain("*");
+    expect(nativeAtomValidationState(added, after.bonds, added.formalCharge, after.atoms).valid).toBe(true);
+    expect(atomDisplayLabelPlacement(added, after.bonds, nativeDrawingStyleFromObjectStyle(after.style), after.atoms)).toEqual({
+      label: "MeO", anchor: { side: "end", length: 1 }
+    });
+    expect(result.message).toBe("Attached OMe as a substituent: OMe takes one bond and this atom already has 2");
+  });
+  it("refuses CH2CN where it cannot be drawn turned, relabelling with a specific status, and attaches it facing right", () => {
+    const { document, m } = setup("benzene");
+    const left = commitNativeAtomLabelTarget(document, { objectId: m.id, kind: "atom", atomId: m.atoms[4]!.id, distanceToPointer: 0 }, "CH2CN", { literal: true });
+    expect(molecule(left.document).atoms).toHaveLength(6);
+    expect(molecule(left.document).atoms[4]).toMatchObject({ element: "CH2CN" });
+    expect(left.target).toMatchObject({ kind: "atom", atomId: m.atoms[4]!.id });
+    expect(left.message).toBe(
+      "Relabeled CH2CN: the open position puts the bond on the label's right, and CH2CN cannot be drawn turned to meet it there without reading as the N-bonded isomer"
+    );
+    const right = commitNativeAtomLabelTarget(document, { objectId: m.id, kind: "atom", atomId: m.atoms[1]!.id, distanceToPointer: 0 }, "CH2CN", { literal: true });
+    expect(molecule(right.document).atoms[6]).toMatchObject({ element: "CH2CN", labelBondSide: { side: "left", atomId: m.atoms[1]!.id } });
+    expect(molecule(right.document).structure).toContain("C(C(#N))");
   });
 });

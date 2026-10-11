@@ -16,6 +16,7 @@ import {
 } from "@chemdraft/chem-core";
 
 import {
+  atomDisplayLabelPlacement,
   atomLabelLayout,
   nativeGroupLabelDisplay,
   planBondExtension,
@@ -271,5 +272,43 @@ describe("label anchoring stress: OMe, CO2Me, NHBoc, Ph and TMS at four bond dir
     expect(bondEnd).toBeLessThanOrEqual(
       Math.max(centredReach, drawingStyle.atomLabelBondClearancePx, drawingStyle.bondMarginWidthPx) + 0.001
     );
+  });
+});
+
+describe("a cyano label recorded with its bond on the left, drawn with it on the right", () => {
+  it.each([
+    // [label, drawn text]: the C (or the head carrying it) meets the bond at the label's right end.
+    ["CN", "NC"],
+    ["SCN", "NCS"],
+    ["OCN", "NCO"]
+  ] as const)("%s is drawn %s, its attachment on the atom", (label, text) => {
+    expect(nativeGroupLabelDisplay(label, "right", "left")).toEqual({ text, anchor: { side: "end", length: 1 } });
+  });
+
+  it.each(["CH2CN", "NMeCN"])("%s has no unambiguous turned text, so it is not drawn as a group", label => {
+    expect(nativeGroupLabelDisplay(label, "right", "left")).toBeUndefined();
+  });
+
+  it("reads with the drawn side when no reading side is given, as before", () => {
+    expect(nativeGroupLabelDisplay("CN", "right")).toBeUndefined();
+    expect(nativeGroupLabelDisplay("CN", "left", "left")).toEqual({ text: "CN", anchor: { side: "start", length: 1 } });
+  });
+
+  const atoms = (record?: MoleculeAtom["labelBondSide"]): MoleculeAtom[] => [
+    { id: "label", element: "CN", x: 0, y: 0, formalCharge: 0, labelLiteral: true, ...(record ? { labelBondSide: record } : {}) },
+    { id: "ring", element: "C", x: 30, y: 0, formalCharge: 0 }
+  ];
+  const bonds = [{ id: "b", fromAtomId: "ring", toAtomId: "label", order: "single" as const }];
+
+  it("draws a recorded-left CN whose bond lies on its right as NC", () => {
+    const molecule = atoms({ side: "left", atomId: "ring" });
+    expect(atomDisplayLabelPlacement(molecule[0]!, bonds, undefined, molecule)).toEqual({
+      label: "NC", anchor: { side: "end", length: 1 }
+    });
+  });
+
+  it("ignores a record for another atom and reads the drawn side, as the chemistry does", () => {
+    const molecule = atoms({ side: "left", atomId: "elsewhere" });
+    expect(atomDisplayLabelPlacement(molecule[0]!, bonds, undefined, molecule)).toEqual({ label: "CN" });
   });
 });

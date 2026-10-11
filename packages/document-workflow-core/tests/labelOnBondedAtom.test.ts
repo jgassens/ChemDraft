@@ -62,4 +62,13 @@ describe("labelOnBondedAtom", () => {
     expect(labelOnBondedAtom("OMe", m.atoms[0]!, m)).toMatchObject({ kind: "relabel", reason: "source-valence" });
   });
 
+  it.each(["CN", "SCN", "OCN"])("reads %s with its typed reading on a ring carbon facing either way: the cyano group's one bond", label => {
+    for (const x of [60, 140]) {
+      const m = graph();
+      m.atoms = m.atoms.map(a => a.id === "a" ? a : { ...a, x, y: a.id === "n0" ? 80 : 120 });
+      expect(labelOnBondedAtom(label, m.atoms[0]!, m)).toMatchObject({
+        kind: "substituent", reading: "group", freeValence: 1, reason: "one-bond"
+      });
+    }
+  });
 });

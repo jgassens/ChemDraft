@@ -5695,7 +5695,7 @@ export function atomDisplayLabelPlacement(
   const labelCharge = atom.formalCharge - (atom.markCharge ?? 0);
   const element = nativeElementFromAtomLabel(atom.element);
   if (!element) {
-    return nonElementAtomLabelPlacement(atom, heavyAtomNeighbors(atom.id, resolution), drawingStyle)!;
+    return nonElementAtomLabelPlacement(atom, heavyAtomNeighbors(atom.id, resolution), drawingStyle, recordedLabelBondSide(atom, resolution))!;
   }
   // Aromatic bonds count at their Kekulé orders, resolved once per molecule — the same bonds the
   // formula and the valence check count, so the drawn H count and the formula agree. A molecule
@@ -5876,12 +5876,15 @@ function heavyAtomNeighborCount(
  * text (turned round for a bond on its right when it reads the same, `nativeGroupLabelDisplay`)
  * and the characters that sit on the atom, under automatic alignment. What `atomDisplayLabelPlacement`
  * returns for such an atom; exported so the 3D spin overlay places a label by its projected bonds
- * by the same rule. Undefined for an element label.
+ * by the same rule. `readingSide` is the side the label's chemistry was recorded with, when it
+ * differs from the drawn side (`recordedLabelBondSide`); unset, the drawn side. Undefined for an
+ * element label.
  */
 export function nonElementAtomLabelPlacement(
   atom: MoleculeAtom,
   neighbors: readonly { x: number; y: number }[],
-  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle
+  drawingStyle: NativeDrawingStyle = DefaultNativeDrawingStyle,
+  readingSide?: "left" | "right"
 ): AtomDisplayLabelPlacement | undefined {
   if (nativeElementFromAtomLabel(atom.element)) {
     return undefined;
@@ -5889,7 +5892,7 @@ export function nonElementAtomLabelPlacement(
   const charge = chargeLabelSuffix(atom.formalCharge - (atom.markCharge ?? 0));
   const symbol = atom.element.trim() || "C";
   const side = drawingStyle.atomLabelAlignment === "automatic" ? groupLabelDisplaySide(atom, symbol, neighbors) : undefined;
-  const group = side ? nativeGroupLabelDisplay(symbol, side) : undefined;
+  const group = side ? nativeGroupLabelDisplay(symbol, side, readingSide ?? side) : undefined;
   return group ? { label: `${group.text}${charge}`, anchor: group.anchor } : { label: `${symbol}${charge}` };
 }
 
@@ -5916,6 +5919,22 @@ function groupLabelDisplaySide(
   }
   // As typed: the side whose reading leaves the label unturned ("MeO" keeps its O at the end).
   return nativeGroupLabelDisplay(label, "left")?.text === label ? "left" : "right";
+}
+
+/**
+ * The side an atom's label was recorded as read with (`MoleculeAtom.labelBondSide`), while its one
+ * bonded atom is still the recorded one — document-workflow-core's `nativeLabelBondSide` without
+ * its geometric fallback, which is the drawn side the caller already has. A cyano label written
+ * with its bond on the left and later drawn with it on the right is then drawn turned ("NC"), not
+ * as the other isomer.
+ */
+function recordedLabelBondSide(atom: MoleculeAtom, resolution: NativeBondOrderResolution): "left" | "right" | undefined {
+  const record = atom.labelBondSide;
+  if (!record) return undefined;
+  const neighbourIds = new Set((resolution.bondsByAtom.get(atom.id) ?? []).map((bond) =>
+    bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId
+  ));
+  return neighbourIds.size === 1 && neighbourIds.has(record.atomId) ? record.side : undefined;
 }
 
 /** The atom's bonded neighbours that are not hydrogen, each once. */

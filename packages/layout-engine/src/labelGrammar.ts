@@ -394,7 +394,9 @@ export interface AtomLabelAnchor {
 
 /**
  * How a group label is drawn when its bond comes from `bondSide` (the side test that draws a hydroxyl
- * as "HO"): the text, and which of its characters sit on the atom.
+ * as "HO"): the text, and which of its characters sit on the atom. The label is read with
+ * `readingSide`, the side its chemistry was recorded with (`MoleculeAtom.labelBondSide`), which is
+ * `bondSide` unless the drawing has since put its bond on the other side.
  *
  * The atom the group's bonds reach (`nativeLabelGroupAttachment`) sits on the atom when the label
  * spells it at the end its bond comes from: the O of "OMe", the C of "CO2Me", the N of "NHBoc". A
@@ -409,12 +411,17 @@ export interface AtomLabelAnchor {
  */
 export function nativeGroupLabelDisplay(
   label: string,
-  bondSide: "left" | "right"
+  bondSide: "left" | "right",
+  readingSide: "left" | "right" = bondSide
 ): { text: string; anchor: AtomLabelAnchor } | undefined {
-  const reading = nativeAtomLabelReading(label, { bonded: true, bondSide });
+  const reading = nativeAtomLabelReading(label, { bonded: true, bondSide: readingSide });
   if (reading.kind !== "group") return undefined;
   const wanted = bondSide === "right" ? "end" : "start";
   const symbol = nativeLabelGroupAttachment(reading.group).element;
+  if (readingSide === "left" && bondSide === "right" && nativeLabelReadingDependsOnBondSide(label)) {
+    const turned = turnedCyanoLabel(label, reading.group);
+    return turned === undefined ? undefined : { text: turned, anchor: { side: wanted, length: symbol.length } };
+  }
   const spelledAt = spelledAttachmentEnd(label, symbol);
   if (spelledAt === wanted) {
     return { text: label, anchor: { side: wanted, length: symbol.length } };
@@ -427,6 +434,20 @@ export function nativeGroupLabelDisplay(
   }
   const bondEnd = wanted === "start" ? label.slice(0, 1) : label.slice(-1);
   return /^[A-Za-z]$/.test(bondEnd) ? { text: label, anchor: { side: wanted, length: 1 } } : undefined;
+}
+
+/**
+ * A cyano label read with its bond on the left, turned for a bond on its right so its C still faces
+ * that bond: "CN" is drawn "NC", and a head carrying nothing but the cyano group ("SCN", "OCN") is
+ * drawn "NCS", "NCO" — the way chemists write thiocyanates and cyanates bonded from the right.
+ * Undefined for anything else ("CH2CN", "NMeCN"), whose turned text would not read unambiguously:
+ * a caller placing such a label there declines instead.
+ */
+function turnedCyanoLabel(label: string, group: NativeLabelGroup): string | undefined {
+  if (group.kind === "abbreviation") return label === "CN" ? "NC" : undefined;
+  const read = readCompositeLabel(label, "left");
+  if (read?.group.kind !== "composite" || read.group.hydrogens !== 0 || read.tokens.length !== 2 || read.tokens[1] !== "CN") return undefined;
+  return `NC${read.tokens[0]}`;
 }
 
 /** Which end of a label spells `symbol` as a whole token: "C" starts "CO2Me" but not "Cl". */

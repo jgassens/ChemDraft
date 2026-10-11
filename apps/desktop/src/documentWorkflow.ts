@@ -135,6 +135,7 @@ import {
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
   nativeBondOrderResolution,
+  nativeGroupLabelDisplay,
   resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
 import {
@@ -169,6 +170,8 @@ import {
   nativeAtomBondOrderUsage,
   nativeAtomExternalValence,
   labelOnBondedAtom,
+  nativeAtomLabelFreeValence,
+  type LabelOnBondedAtomDecision,
   nativeAtomChargeSupportsValence,
   nativeAtomFormalChargeForValence,
   nativeAtomValence,
@@ -8853,10 +8856,17 @@ export function commitNativeAtomLabelTarget(
   if (!placement || pageMolecules.some(m => m.atoms.some(a => Math.hypot(a.x - placement.newAtomPoint.x, a.y - placement.newAtomPoint.y) < style.bondLengthPx * 0.5))) {
     return { document: relabel(), target, message: `Relabeled ${normalized}: no clear substituent position on the page` };
   }
-  const newAtom = nativeAtomWithElement({
-    id: nextIndexedIds("atom", pageMolecules.flatMap(m => m.atoms.map(a => a.id)), 1)[0]!,
-    element: "C", formalCharge: 0, ...placement.newAtomPoint
-  }, normalized, false, options.literal === true);
+  // The substituent keeps the reading the user typed — the label as written, bond on its left — on
+  // whichever side the open position puts its bond: a cyano label ("CN", "SCN") placed to the
+  // left of its ring atom is still cyano, recorded so, and drawn turned ("NC", "NCS").
+  const typedSide = nativeLabelReadingDependsOnBondSide(normalized) ? { atomId: atom.id, side: "left" as const } : undefined;
+  const newAtom: MoleculeAtom = {
+    ...nativeAtomWithElement({
+      id: nextIndexedIds("atom", pageMolecules.flatMap(m => m.atoms.map(a => a.id)), 1)[0]!,
+      element: "C", formalCharge: 0, ...placement.newAtomPoint
+    }, normalized, false, options.literal === true),
+    ...(typedSide ? { labelBondSide: typedSide } : {})
+  };
   const bond: MoleculeBond = {
     id: nextIndexedIds("bond", pageMolecules.flatMap(m => m.bonds.map(b => b.id)), 1)[0]!,
     fromAtomId: atom.id, toAtomId: newAtom.id, order: "single"
@@ -8872,11 +8882,44 @@ export function commitNativeAtomLabelTarget(
     }
   }
   const nextMolecule = refreshNativeSingleBondGraph({ ...molecule, style: nextStyle }, [...atoms, newAtom], [...molecule.bonds, bond]);
+  const declined = substituentLosesTypedReading(nextMolecule, newAtom.id, source, decision);
+  if (declined) {
+    return { document: relabel(), target, message: `Relabeled ${normalized}: ${declined}` };
+  }
   return {
     document: applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: nextMolecule }, { now: phase4Timestamp }),
     target: { ...target, kind: "atom", atomId: newAtom.id },
     message: `Attached ${normalized} as a substituent: ${normalized} ${decision.reason === "generic" ? "is a one-bond placeholder" : "takes one bond"} and this atom already has ${decision.bondCount}`
   };
+}
+
+/**
+ * Why a placed substituent would not mean what was typed, or undefined when it does. Its label is
+ * read back as every output reads it — with its recorded bond side (`nativeLabelBondSide`) — and
+ * must keep the typed reading and free valence; a side-dependent label must also be drawable with
+ * its attachment meeting the bond on the side it landed (`nativeGroupLabelDisplay`), so the drawing
+ * never shows the other isomer. Either failure declines the attachment (AGENTS.md §7).
+ */
+function substituentLosesTypedReading(
+  molecule: MoleculeObject,
+  atomId: string,
+  source: MoleculeAtom,
+  decision: LabelOnBondedAtomDecision
+): string | undefined {
+  const placed = molecule.atoms.find(a => a.id === atomId);
+  if (!placed) return "the substituent could not be placed";
+  const placedBonds = molecule.bonds.filter(b => b.fromAtomId === atomId || b.toAtomId === atomId);
+  const side = nativeLabelBondSide(placed, placedBonds, molecule.atoms);
+  const context = { bonded: true, typed: placed.labelLiteral === true, ...(side ? { bondSide: side } : {}) };
+  const drawnSide = drawnLabelBondSide(placed, [source]);
+  const reading = nativeAtomLabelReading(placed.element, context);
+  if (reading.kind !== decision.reading || nativeAtomLabelFreeValence(placed.element, 0, context) !== decision.freeValence) {
+    return `as a substituent here, with its bond on the label's ${drawnSide ?? "left"}, it would not read as typed`;
+  }
+  if (side && drawnSide && side !== drawnSide && !nativeGroupLabelDisplay(placed.element, drawnSide, side)) {
+    return `the open position puts the bond on the label's ${drawnSide}, and ${placed.element} cannot be drawn turned to meet it there without reading as the N-bonded isomer`;
+  }
+  return undefined;
 }
 
 export function previewNativeMoleculeBondGrowth(
