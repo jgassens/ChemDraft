@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
@@ -26,6 +27,7 @@ import {
   findNearestAtomHit,
   nativeMoleculeRings,
   nativeMoleculeRingAtPoint,
+  NativeAtomLabelStyleMapKeys,
   planBondExtension,
   planNativeArtVisual,
   planPageSvgRender,
@@ -1802,6 +1804,67 @@ describe("layout-engine page SVG planner", () => {
     expect(haloRuns).toHaveLength(1); // N has no halo copy at all
     expect(labelGroups.every((fragment) => fragment.attrs["paint-order"] === undefined)).toBe(true);
     expect(fragments.filter((fragment) => fragment.attrs.class === "native-atom-label-background")).toHaveLength(0);
+  });
+
+  it("keeps the atom-label style key list aligned with the resolver and its rendered output", () => {
+    // Static guard: every object.style.atomLabel* map the resolver reads must be copied when a
+    // label becomes an attached atom. The resolver is intentionally private; render plans below
+    // prove each listed map has an observable per-atom effect.
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const resolverStart = source.indexOf("function nativeMoleculeAtomLabelColor(");
+    const resolverEnd = source.indexOf("function nativeMoleculeStrokeOpacity(", resolverStart);
+    expect(resolverStart).toBeGreaterThanOrEqual(0);
+    expect(resolverEnd).toBeGreaterThan(resolverStart);
+    const resolverMapKeys = [...source.slice(resolverStart, resolverEnd).matchAll(/object\.style\.(atomLabel\w+)/g)]
+      .map((match) => match[1]!)
+      .filter((key, index, keys) => keys.indexOf(key) === index)
+      .sort();
+    expect(resolverMapKeys).toEqual([...NativeAtomLabelStyleMapKeys].sort());
+
+    const targetId = "atom_target";
+    const base = moleculeObject({
+      atoms: [
+        { id: targetId, element: "O", x: 120, y: 160, formalCharge: 0 },
+        { id: "atom_neighbor", element: "C", x: 180, y: 160, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_target", fromAtomId: targetId, toAtomId: "atom_neighbor", order: "single" }],
+      style: {
+        ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+        atomLabelShowTerminalCarbons: true,
+        atomLabelHideImplicitHydrogens: false
+      }
+    });
+    const values: Record<(typeof NativeAtomLabelStyleMapKeys)[number], unknown> = {
+      atomLabelFontFamilies: "Georgia",
+      atomLabelFontSizes: 24,
+      atomLabelFontWeights: 700,
+      atomLabelFontStyles: "italic",
+      atomLabelColors: "#123456",
+      atomLabelBackgroundColors: "#abcdef",
+      atomLabelPaddings: 8,
+      atomLabelBondClearances: 18,
+      atomLabelAlignments: "left",
+      atomLabelPlacements: "above",
+      atomLabelShowTerminalCarbonsByAtomId: false,
+      atomLabelHideImplicitHydrogensByAtomId: true
+    };
+
+    for (const key of NativeAtomLabelStyleMapKeys) {
+      const target = key === "atomLabelShowTerminalCarbonsByAtomId"
+        ? { ...base, atoms: [{ ...base.atoms[0]!, element: "C" }, base.atoms[1]!] }
+        : base;
+      const styled = {
+        ...target,
+        style: { ...target.style, [key]: { [targetId]: values[key] } }
+      } as MoleculeObject;
+      if (key === "atomLabelBondClearances") {
+        expect(planPageSvgRender(pageWithObjects([styled]))).not.toEqual(planPageSvgRender(pageWithObjects([target])));
+      } else {
+        const styledPlan = planMoleculeAtomLabels(styled).find((plan) => plan.atom.id === targetId);
+        const unstyledPlan = planMoleculeAtomLabels(target).find((plan) => plan.atom.id === targetId);
+        expect(styledPlan).not.toEqual(unstyledPlan);
+      }
+    }
   });
 
   it("keeps explicit atom label offsets and chemically required labels ahead of molecule defaults", () => {

@@ -129,6 +129,7 @@ import {
   planFreeformBondExtension,
   nativeMultipleBondGapPx,
   nativeMoleculeBondDrawingStyle,
+  NativeAtomLabelStyleMapKeys,
   isDefaultCenteredDoubleBond,
   defaultMechanismArrowControls,
   mechanismArrowGeometry,
@@ -8752,12 +8753,7 @@ export function commitNativeAtomLabelTarget(
   // These maps are consumed by layout-engine's per-atom label style resolver. The
   // attachment is the user's label moved to a new atom, so it keeps that typography.
   const nextStyle = { ...molecule.style };
-  for (const key of [
-    "atomLabelFontFamilies", "atomLabelFontSizes", "atomLabelFontWeights", "atomLabelFontStyles",
-    "atomLabelColors", "atomLabelBackgroundColors", "atomLabelPaddings", "atomLabelBondClearances",
-    "atomLabelAlignments", "atomLabelPlacements", "atomLabelShowTerminalCarbonsByAtomId",
-    "atomLabelHideImplicitHydrogensByAtomId"
-  ]) {
+  for (const key of NativeAtomLabelStyleMapKeys) {
     const entries = molecule.style[key];
     if (entries && typeof entries === "object" && !Array.isArray(entries) && Object.hasOwn(entries, atom.id)) {
       const map = entries as Record<string, unknown>;

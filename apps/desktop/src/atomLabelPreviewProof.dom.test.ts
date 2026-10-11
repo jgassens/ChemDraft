@@ -132,6 +132,35 @@ describe.each(["macos", "windows"] as const)("label preview proofs (%s)", platfo
     return preview;
   }
 
+  it("keeps a bold piperidine nitrogen and its typed OMe attachment bold", async () => {
+    const initial = ring();
+    const original = initial.pages[0].objects[0] as MoleculeObject;
+    const nitrogen = { ...original.atoms[0]!, element: "N" };
+    const styled = applyPatches(initial, [{
+      op: "updateObject",
+      objectId: original.id,
+      changes: {
+        atoms: original.atoms.map((atom) => atom.id === nitrogen.id ? nitrogen : atom),
+        style: { ...original.style, atomLabelFontWeights: { [nitrogen.id]: 700 } }
+      }
+    }]);
+    await mount(styled);
+
+    await pointer("pointerdown", nitrogen, container.querySelector(`[data-object-id="${original.id}"]`)!);
+    for (const character of "OMe") await key(character);
+    expect(editor().style.fontWeight).toBe("700");
+
+    await key("Enter");
+    const after = molecule();
+    const ringNitrogen = after.atoms.find((atom) => atom.id === nitrogen.id)!;
+    const attachment = after.atoms.find((atom) => atom.id !== nitrogen.id && atom.element === "OMe")!;
+    const nitrogenBonds = after.bonds.filter((bond) => bond.fromAtomId === nitrogen.id || bond.toAtomId === nitrogen.id);
+    expect(ringNitrogen).toEqual(nitrogen);
+    expect(nitrogenBonds).toHaveLength(3);
+    expect(nitrogenBonds.filter((bond) => bond.fromAtomId === attachment.id || bond.toAtomId === attachment.id)).toHaveLength(1);
+    expect(after.style.atomLabelFontWeights).toEqual({ [nitrogen.id]: 700, [attachment.id]: 700 });
+  });
+
   it("keeps double-bond preview geometry in SVG without changing object-view bond metadata or selection", async () => {
     await mount(ring("benzene"), "tool.bond");
     const before = observation.objects.get(molecule().id)!;

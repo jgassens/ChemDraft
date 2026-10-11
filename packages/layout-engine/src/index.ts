@@ -6823,6 +6823,22 @@ function hexChannel(value: number): string {
   return Math.round(clamp(value, 0, 255)).toString(16).padStart(2, "0");
 }
 
+/** Per-atom molecule-style maps consumed by the native atom-label style resolver. */
+export const NativeAtomLabelStyleMapKeys = [
+  "atomLabelFontFamilies",
+  "atomLabelFontSizes",
+  "atomLabelFontWeights",
+  "atomLabelFontStyles",
+  "atomLabelColors",
+  "atomLabelBackgroundColors",
+  "atomLabelPaddings",
+  "atomLabelBondClearances",
+  "atomLabelAlignments",
+  "atomLabelPlacements",
+  "atomLabelShowTerminalCarbonsByAtomId",
+  "atomLabelHideImplicitHydrogensByAtomId"
+] as const satisfies readonly (keyof MoleculeObject["style"])[];
+
 function nativeMoleculeAtomLabelColor(
   object: MoleculeObject,
   atomId: string,

@@ -70,6 +70,30 @@ describe("commitNativeAtomLabelTarget", () => {
     }
     expect(after.atoms[0]).toEqual(molecule(styled).atoms[0]);
   });
+  it("keeps a bold piperidine nitrogen and gives its typed OMe attachment the same weight", () => {
+    const { document, m, target } = setup();
+    const nitrogen = { ...m.atoms[0]!, element: "N" };
+    const styled = applyPatches(document, [{
+      op: "updateObject",
+      objectId: m.id,
+      changes: {
+        atoms: m.atoms.map((atom) => atom.id === nitrogen.id ? nitrogen : atom),
+        style: { ...m.style, atomLabelFontWeights: { [nitrogen.id]: 700 } }
+      }
+    }]);
+
+    const result = commitNativeAtomLabelTarget(styled, target, "OMe", { literal: true });
+    const after = molecule(result.document);
+    const ringNitrogen = after.atoms.find((atom) => atom.id === nitrogen.id)!;
+    const attachment = after.atoms.find((atom) => atom.id !== nitrogen.id && atom.element === "OMe")!;
+
+    expect(ringNitrogen).toEqual(nitrogen);
+    expect(after.bonds.filter((bond) => bond.fromAtomId === nitrogen.id || bond.toAtomId === nitrogen.id)).toHaveLength(3);
+    expect(after.bonds.filter((bond) => bond.fromAtomId === nitrogen.id || bond.toAtomId === nitrogen.id).filter((bond) =>
+      bond.fromAtomId === attachment.id || bond.toAtomId === attachment.id
+    )).toHaveLength(1);
+    expect(after.style.atomLabelFontWeights).toEqual({ [nitrogen.id]: 700, [attachment.id]: 700 });
+  });
   it("relabels with a specific warning when all attachment positions are crowded", () => {
     const { document, m, target } = setup();
     const source = m.atoms[0]!, length = nativeDrawingStyleFromObjectStyle(m.style).bondLengthPx;
