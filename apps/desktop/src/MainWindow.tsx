@@ -1722,6 +1722,12 @@ export interface MainWindowProps {
   initialCrosshairsVisible?: boolean;
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
+  /**
+   * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
+   * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
+   * on off the desktop runtime, as DOM tests do to exercise native-mode code, runs native mode with no
+   * window manager: no palette windows are reconciled, and no in-window palettes appear either.
+   */
   nativePalette?: boolean;
 }
 
