@@ -2,13 +2,41 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPatches, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type Point } from "@chemdraft/chem-core";
-import { createNativeTextObject, nativeAtomExternalValence, nativeAtomChargeSupportsValence, nativeAtomLabelReading, nativeLabelGroupVerdict, normalizeNativeMoleculeGeometry } from "@chemdraft/document-workflow-core";
+import { applyPatches, moleculeToMolfileV2000, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type Point } from "@chemdraft/chem-core";
+import { createNativeTextObject, nativeAtomExternalValence, nativeAtomChargeSupportsValence, nativeAtomLabelReading, nativeBondOrderResolution, nativeLabelGroupVerdict, normalizeNativeMoleculeGeometry } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { nativeNicknameLabels } from "./commands";
 import { loadKeybindingSettings, saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+
+const externalWrite = vi.hoisted(() => ({ object: undefined as MoleculeObject | undefined, pageId: "" }));
+// Use the same runtime registration path as the plugin DOM fixtures, with real permission-gated writes.
+vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
+  const actual = await importOriginal<typeof import("./plugins/registerBundledPlugins")>();
+  const { PluginManifestSchema } = await import("@chemdraft/plugin-api");
+  return {
+    ...actual,
+    registerBundledPlugins(runtime: DesktopPluginRuntime, disabledIds?: ReadonlySet<string>) {
+      const descriptors = [...actual.registerBundledPlugins(runtime, disabledIds), {
+        manifest: PluginManifestSchema.parse({
+          id: "org.chemdraft.test.labelHistory", name: "Label History Test", version: "1.0.0",
+          apiVersion: "^0.1.6", entry: "test:label-history", permissions: ["document.write"],
+          contributes: { commands: [{ id: "plugin.labelHistory.insert", title: "Insert other molecule", requiredPermissions: ["document.write"], enabled: true }] }
+        }),
+        options: { commandHandlers: {
+          "plugin.labelHistory.insert": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => context.documents.applyPatch!({
+            reason: "Insert other molecule",
+            patch: { op: "addObject", pageId: externalWrite.pageId, object: externalWrite.object! }
+          })
+        } }
+      }];
+      actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
+      return descriptors;
+    }
+  };
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
@@ -61,6 +89,20 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
   const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const page = () => container.querySelector<HTMLElement>(".page")!;
+  async function insertOtherMolecule() {
+    const seed = insertNativeTemplateMolecule(createPhase4Document(), { x: 550, y: 400 }, "cyclohexane");
+    const other = seed.pages[0].objects[0] as MoleculeObject;
+    externalWrite.object = {
+      ...other, id: "external_molecule",
+      atoms: other.atoms.map(a => ({ ...a, id: `external_${a.id}` })),
+      bonds: other.bonds.map(b => ({ ...b, id: `external_${b.id}`, fromAtomId: `external_${b.fromAtomId}`, toAtomId: `external_${b.toAtomId}` }))
+    };
+    externalWrite.pageId = current().pages[0].id;
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("plugin.labelHistory.insert"); });
+    const inserted = current().pages[0].objects.find(o => o.id === "external_molecule");
+    expect(inserted).toEqual(externalWrite.object);
+    return inserted;
+  }
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
@@ -134,6 +176,136 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
   it("Escape adds nothing, restores carbon, and creates no history", async () => {
     await mount(); const before = molecule(); await edit(0, "OMe", "Escape");
     expect(molecule()).toEqual(before); check(6, 6); await history(); expect(molecule()).toEqual(before);
+  });
+  it.each(["CH3", "NH2"])("a no-op hover %s first key owns exactly one named entry and preserves the earlier entry", async label => {
+    const d = ring(), original = d.pages[0].objects[0] as MoleculeObject;
+    const source = { ...original.atoms[0]!, element: label[0]!, ...(label === "CH3" ? { labelVisible: true } : {}) };
+    await mount(applyPatches(d, [{ op: "updateObject", objectId: original.id, changes: { atoms: original.atoms.map(a => a.id === source.id ? source : a) } }]), "tool.bond");
+    const before = molecule();
+    const other = await insertOtherMolecule();
+    const priorStatus = status();
+    await history();
+    const priorUndoStatus = status();
+    expect(priorUndoStatus).toBe("Undid Label History Test: Insert other molecule");
+    expect(current().pages[0].objects).toHaveLength(1);
+    await history(true);
+    expect(current().pages[0].objects[1]).toEqual(other);
+    expect(priorStatus).toContain("inserted structure");
+    await pointer("pointermove", source);
+    await key(label[0]!);
+    expect(molecule()).toEqual(before); // The instant key really is a no-op.
+    for (const char of label.slice(1)) await key(char);
+    await key("Enter");
+    expect(molecule().atoms[6]).toMatchObject({ element: label });
+    await history();
+    expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects[1]).toEqual(other);
+    expect(status()).toBe(`Undid Add ${label} substituent`);
+    await history();
+    expect(current().pages[0].objects).toHaveLength(1);
+    expect(molecule()).toEqual(before);
+    expect(status()).toBe(priorUndoStatus);
+  });
+  it.each(["Escape", "Enter"])("%s preserves an external plugin insertion and never records the live draft", async finish => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    const other = await insertOtherMolecule();
+    expect(editor()?.value).toBe("OMe");
+    await key(finish);
+    expect(current().pages[0].objects[1]).toEqual(other);
+    if (finish === "Enter") {
+      expect(molecule().atoms[6]).toMatchObject({ element: "OMe" });
+      await history();
+      expect(current().pages[0].objects[1]).toEqual(other);
+      expect(status()).toBe("Undid Add OMe substituent");
+    }
+    expect(molecule()).toEqual(before);
+    await history();
+    expect(current().pages[0].objects).toHaveLength(1);
+    expect(molecule()).toEqual(before);
+    await history(true);
+    expect(molecule()).toEqual(before); // Redo of the plugin entry contains no half-typed OMe.
+    expect(current().pages[0].objects[1]).toEqual(other);
+  });
+  it.each(["Enter", "click"])("an empty draft closed by %s restores the exact atom and adds no entry", async finish => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    await input(editor()!, "");
+    if (finish === "click") {
+      await pointer("pointerdown", { x: 50, y: 50 });
+      const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await act(async () => { page().tabIndex = -1; page().focus(); }); focused.mockRestore();
+    }
+    else await key(finish);
+    expect(editor()).toBeNull(); expect(molecule()).toEqual(before);
+    await command("edit.undo"); expect(status()).toBe("Nothing to undo");
+  });
+  it.each(["N", "F"])("retyping existing %s restores its flags without a status or an undo entry", async label => {
+    const d = ring(), m = d.pages[0].objects[0] as MoleculeObject;
+    await mount(applyPatches(d, [{ op: "updateObject", objectId: m.id, changes: { atoms: m.atoms.map((a, i) => i === 0 ? { ...a, element: label, warningSuppressed: true } : a) } }]));
+    const before = molecule(); await edit(0, label);
+    expect(molecule()).toEqual(before); expect(status()).toBe("");
+    await command("edit.undo"); expect(status()).toBe("Nothing to undo");
+  });
+  it.each(["Escape", "empty", "Enter"])("%s restores imported hydrogen hints, atom flags and molecule data while preserving another commit", async finish => {
+    const d = ring("benzene"), m = d.pages[0].objects[0] as MoleculeObject;
+    const imported: MoleculeObject = {
+      ...m, structureFormat: "molfile-v2000",
+      structure: moleculeToMolfileV2000(m, { kekuleBondOrders: nativeBondOrderResolution(m.atoms, m.bonds).kekuleOrders }).contents,
+      atoms: m.atoms.map((a, i) => i === 0 ? { ...a, hydrogenCount: 1, labelVisible: true, warningSuppressed: true } : a),
+      bonds: m.bonds.map(b => ({ ...b, order: "aromatic" }))
+    };
+    // Admit an imported fixture directly: a chemistry update patch would intentionally clear H hints.
+    await mount({ ...d, pages: d.pages.map(p => ({ ...p, objects: p.objects.map(o => o.id === m.id ? imported : o) })) });
+    const before = molecule();
+    expect(before.atoms[0]!.hydrogenCount).toBe(1);
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    expect(molecule().atoms[0]!.hydrogenCount).toBeUndefined();
+    expect(molecule().structureFormat).toBe("smiles");
+    const other = await insertOtherMolecule();
+    if (finish === "empty") await input(editor()!, "");
+    await key(finish === "Escape" ? "Escape" : "Enter");
+    if (finish === "Enter") {
+      expect(molecule().atoms[6]).toMatchObject({ element: "OMe" });
+      await history();
+    }
+    expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects[1]).toEqual(other);
+    await history(); expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects).toHaveLength(1);
+    await history(true); expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects[1]).toEqual(other);
+  });
+  it("Undo during a live draft and its Redo never revive the half-typed label", async () => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    const other = await insertOtherMolecule();
+    await command("edit.undo:forceDocumentHistory");
+    expect(editor()).toBeNull(); expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects).toHaveLength(1);
+    await history(true); expect(molecule()).toEqual(before);
+    expect(current().pages[0].objects[1]).toEqual(other);
+  });
+  it("a changed hover key stays before an intervening plugin commit and the final label entry", async () => {
+    await mount(ring(), "tool.bond"); const before = molecule();
+    await pointer("pointermove", before.atoms[0]!); await key("O");
+    const firstKey = molecule(); await key("M"); await key("e");
+    const other = await insertOtherMolecule(); await key("Enter");
+    expect(molecule().atoms[6]).toMatchObject({ element: "OMe" });
+    await history(); expect(molecule()).toEqual(firstKey);
+    expect(current().pages[0].objects[1]).toEqual(other);
+    expect(status()).toBe("Undid Add OMe substituent");
+    await history(); expect(molecule()).toEqual(firstKey);
+    expect(current().pages[0].objects).toHaveLength(1);
+    expect(status()).toBe("Undid Label History Test: Insert other molecule");
+    await history(); expect(molecule()).toEqual(before);
+    await history(true); expect(molecule()).toEqual(firstKey);
+    await history(true); expect(molecule()).toEqual(firstKey);
+    expect(current().pages[0].objects[1]).toEqual(other);
   });
   it("previews the same attachment without adding draft atoms to history", async () => {
     await mount(); const source = molecule().atoms[0]!;

@@ -107,6 +107,19 @@ describe("commitNativeAtomLabelTarget", () => {
     expect(molecule(result.document).atoms[0]!.element).toBe("OMe");
     expect(result.message).toBe("Relabeled OMe: no clear substituent position on the page");
   });
+  it("declines an attachment blocked only by an atom in another molecule", () => {
+    const { document, m, target } = setup();
+    const clear = commitNativeAtomLabelTarget(document, target, "OMe", { literal: true });
+    const point = molecule(clear.document).atoms[6]!;
+    const other: MoleculeObject = { ...m, id: "blocking_molecule", atoms: [{ ...point, id: "blocking_atom", element: "C" }], bonds: [] };
+    const blocked = applyPatches(document, [{ op: "addObject", pageId: document.pages[0].id, object: other }]);
+    const result = commitNativeAtomLabelTarget(blocked, target, "OMe", { literal: true });
+    expect(molecule(result.document).atoms).toHaveLength(6);
+    expect(molecule(result.document).atoms[0]!.element).toBe("OMe");
+    expect(result.target).toBe(target);
+    expect(result.message).toBe("Relabeled OMe: no clear substituent position on the page");
+    expect(result.document.pages[0].objects[1]).toEqual(other);
+  });
   it.each([1, 13])("clamps an outward attachment at an edge with %s px remaining, falling back if too short", remaining => {
     const { document, m, target } = setup();
     const source = m.atoms[0]!;

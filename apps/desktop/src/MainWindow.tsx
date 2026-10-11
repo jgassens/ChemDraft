@@ -1245,8 +1245,11 @@ type AtomLabelEditState = {
   atomId: string;
   beforeAtom: MoleculeAtom;
   beforeMolecule: MoleculeObject;
-  beforeDocument: ChemDraftDocument;
+  /** The inline draft starts after the first hover key's immediate commit, if any. */
+  draftBeforeAtom: MoleculeAtom;
+  draftBeforeMolecule: MoleculeObject;
   continuesHotkey: boolean;
+  hotkeyUndoDocument?: ChemDraftDocument;
   /** Render-only attachment target; keyboard ownership remains on atomId. */
   previewAtomId?: string;
   draft: string;
@@ -1269,7 +1272,34 @@ type AtomLabelEditOptions = {
   draft?: string;
   beforeAtom?: MoleculeAtom;
   beforeMolecule?: MoleculeObject;
+  hotkeyChanged?: boolean;
 };
+
+/** Roll back a live preview without running chemistry patches (which would clear H hints again). */
+function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): ChemDraftDocument {
+  const pages = document.pages.map(page => ({
+    ...page,
+    objects: page.objects.map(object => {
+      if (object.id !== state.objectId || object.type !== "molecule" || !object.atoms.some(a => a.id === state.atomId)) return object;
+      const before = state.draftBeforeMolecule;
+      const restored = {
+        ...object,
+        atoms: object.atoms.map(a => a.id === state.atomId ? state.draftBeforeAtom : a),
+        structure: before.structure, structureFormat: before.structureFormat, chemistry: before.chemistry,
+        x: before.x, y: before.y, width: before.width, height: before.height
+      };
+      return JSON.stringify(restored) === JSON.stringify(object) ? object : restored;
+    })
+  }));
+  return pages.every((page, i) => page.objects.every((object, j) => object === document.pages[i]!.objects[j]))
+    ? document : { ...document, pages };
+}
+
+function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
+  const object = findDocumentObject(document, state.objectId);
+  const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
+  return atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft));
+}
 
 /** A native palette/popover deactivates the document; that blur does not finish an inline edit. */
 function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
@@ -2212,7 +2242,7 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
-  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string; beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject } | undefined>(undefined);
+  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string; beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject; hotkeyChanged: boolean } | undefined>(undefined);
   // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
   // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
@@ -2721,12 +2751,21 @@ export function MainWindow({
       return false;
     }
 
-    installDocumentHistory({
-      ...currentHistory,
-      present: reconcileNativeChargeMarks(nextDocument)
-    });
+    const present = reconcileNativeChargeMarks(nextDocument);
+    const undoLabel = documentUndoLabelsRef.current.get(currentHistory.present);
+    if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
+    installDocumentHistory({ ...currentHistory, present });
     return true;
   }, [installDocumentHistory]);
+  // Live keystrokes may remain in present for rendering, but never become an undo/redo snapshot.
+  const atomLabelHistorySnapshot = useCallback((current: ChemDraftDocument): ChemDraftDocument => {
+    const edit = activeAtomLabelEditRef.current;
+    if (!edit || !documentHasAtomLabelDraft(current, edit)) return current;
+    const clean = restoreAtomLabelDraft(current, edit);
+    const label = documentUndoLabelsRef.current.get(current);
+    if (label) documentUndoLabelsRef.current.set(clean, label);
+    return clean;
+  }, []);
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string
@@ -2744,7 +2783,7 @@ export function MainWindow({
       documentUndoLabelsRef.current.set(present, undoLabel);
     }
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, currentHistory.present], present),
+      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
       present,
       future: []
     });
@@ -2754,7 +2793,7 @@ export function MainWindow({
       return nextFileState;
     });
     return true;
-  }, [installDocumentHistory]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory]);
   /** Drag-session commits install their history entry directly so undo lands on the pre-drag
    *  document — `commitDocumentChange` would record the last preview frame instead. This is that
    *  shared install plus the unsaved-changes bookkeeping every document mutation owes. */
@@ -2769,7 +2808,7 @@ export function MainWindow({
       documentUndoLabelsRef.current.set(present, undoLabel);
     }
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, startDocument], present),
+      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], present),
       present,
       future: []
     });
@@ -2778,7 +2817,7 @@ export function MainWindow({
       fileStateRef.current = nextFileState;
       return nextFileState;
     });
-  }, [installDocumentHistory]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory]);
   const applyArtTransformQaScene = useCallback(() => {
     const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
     if (changed) {
@@ -2838,13 +2877,13 @@ export function MainWindow({
     }
 
     installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, startDocument], currentHistory.present),
+      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], currentHistory.present),
       present: currentHistory.present,
       future: []
     });
     markDocumentDirty();
     return true;
-  }, [installDocumentHistory, markDocumentDirty]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory, markDocumentDirty]);
 
   useEffect(() => {
     if (!bondToolActive) {
@@ -5404,8 +5443,10 @@ export function MainWindow({
       atomId: target.atomId,
       beforeAtom: options.beforeAtom ?? atom,
       beforeMolecule: options.beforeMolecule ?? object,
-      beforeDocument: currentDocument,
-      continuesHotkey: options.beforeAtom !== undefined,
+      draftBeforeAtom: atom,
+      draftBeforeMolecule: object,
+      continuesHotkey: options.hotkeyChanged === true,
+      hotkeyUndoDocument: options.hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
     };
@@ -5453,7 +5494,7 @@ export function MainWindow({
     }
     // This is a preview rollback, not a chemical edit: keep imported hydrogen hints and all
     // original flags, which an updateObject relabel patch intentionally clears when chemistry changes.
-    replacePresentDocument((current) => ({ ...state.beforeDocument, selection: current.selection }));
+    replacePresentDocument((current) => restoreAtomLabelDraft(current, state));
     atomLabelEditKeepsSelectionRef.current = state;
     cancelledAtomLabelEditRef.current = state;
     setActiveAtomLabelEdit(undefined);
@@ -7409,7 +7450,7 @@ export function MainWindow({
       return;
     }
 
-    const currentHistory = documentHistoryRef.current;
+    const currentHistory = { ...documentHistoryRef.current, present: atomLabelHistorySnapshot(documentHistoryRef.current.present) };
     const nextHistory = direction === "undo"
       ? undoDocumentHistory(currentHistory)
       : redoDocumentHistory(currentHistory);
@@ -7447,7 +7488,7 @@ export function MainWindow({
           ? "Undid last document change"
           : "Redid document change"
     );
-  }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession, installDocumentHistory]);
+  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
@@ -9633,33 +9674,47 @@ export function MainWindow({
     const kept = atomLabelEditKeepsSelectionRef.current;
     atomLabelEditKeepsSelectionRef.current = undefined;
     const target = { objectId: previous.objectId, kind: "atom" as const, atomId: previous.atomId, distanceToPointer: 0 };
-    const object = findDocumentObject(documentRef.current, previous.objectId);
-    const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === previous.atomId) : undefined;
     // Undo/document replacement owns its new state. Only finalize a draft still on this atom.
-    if (!cancelled && object?.type === "molecule" && atom?.labelLiteral === true && atom.element === normalizeNativeAtomElementLabel(previous.draft)) {
-      const result = commitNativeAtomLabelTarget(documentRef.current, target, previous.draft, {
+    if (!cancelled && documentHasAtomLabelDraft(documentRef.current, previous)) {
+      const baseline = restoreAtomLabelDraft(documentRef.current, previous);
+      // Retyping the same label is a no-op, including its original literal/visibility/H hints.
+      const unchanged = !previous.draft.trim() || normalizeNativeAtomElementLabel(previous.draft) === previous.draftBeforeAtom.element;
+      const result = unchanged ? { document: baseline, target } : commitNativeAtomLabelTarget(baseline, target, previous.draft, {
         literal: true, beforeAtom: previous.beforeAtom, beforeMolecule: previous.beforeMolecule
       });
-      if (previous.continuesHotkey) {
+      const changed = result.document !== baseline;
+      const currentLabel = documentUndoLabelsRef.current.get(documentRef.current);
+      if (currentLabel) documentUndoLabelsRef.current.set(baseline, currentLabel);
+      // Coalesce only with the first key's own entry. A later external commit stays separate.
+      if (changed && previous.continuesHotkey && documentHistoryRef.current.past.at(-1) === previous.hotkeyUndoDocument) {
         replacePresentDocument(result.document);
         documentUndoLabelsRef.current.set(
           documentRef.current,
-          atomLabelUndoLabel(previous.beforeDocument, result.target, previous.draft)
+          atomLabelUndoLabel(baseline, result.target, previous.draft)
         );
-      } else if (JSON.stringify(previous.beforeMolecule.atoms) !== JSON.stringify(object.atoms) || result.document !== documentRef.current) {
+      } else if (changed) {
         commitDocumentHistoryFrom(
-          previous.beforeDocument,
+          baseline,
           result.document,
-          atomLabelUndoLabel(previous.beforeDocument, result.target, previous.draft)
+          atomLabelUndoLabel(baseline, result.target, previous.draft)
         );
+      } else {
+        replacePresentDocument(baseline);
       }
-      if (result.message) setStatus(result.message);
+      if (changed && "message" in result && result.message) setStatus(result.message);
+      else if (!changed) setStatus("");
       if (kept && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
       if (activeAtomLabelEdit) {
         // A direct click into another editor captured its baseline before this close effect.
         // Its Undo/Escape baseline must include the first edit's completed attachment.
         const beforeDocument = documentRef.current;
-        setActiveAtomLabelEdit(current => current ? { ...current, beforeDocument } : current);
+        setActiveAtomLabelEdit(current => {
+          if (!current) return current;
+          const beforeMolecule = findDocumentObject(beforeDocument, current.objectId);
+          const beforeAtom = beforeMolecule?.type === "molecule" ? beforeMolecule.atoms.find(a => a.id === current.atomId) : undefined;
+          return beforeAtom && beforeMolecule?.type === "molecule"
+            ? { ...current, beforeAtom, beforeMolecule, draftBeforeAtom: beforeAtom, draftBeforeMolecule: beforeMolecule } : current;
+        });
       }
     }
     if (kept && kept.objectId === previous.objectId && kept.atomId === previous.atomId) {
@@ -10414,7 +10469,7 @@ export function MainWindow({
           const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
           const draft = `${assignment.label}${event.key}`;
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
-            draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule
+            draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule, hotkeyChanged: assignment.hotkeyChanged
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -10433,6 +10488,7 @@ export function MainWindow({
           const beforeObject = hoveredTarget ? findDocumentObject(documentRef.current, hoveredTarget.objectId) : undefined;
           const beforeAtom = beforeObject?.type === "molecule" && hoveredTarget?.kind === "atom"
             ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
+          const beforeHotkeyDocument = documentRef.current;
           invokeCommandRef.current(hoveredTargetCommandId);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
@@ -10444,7 +10500,7 @@ export function MainWindow({
             const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
             const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
             if (atom?.element === assignedElement && beforeAtom && beforeObject?.type === "molecule") {
-              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element, beforeAtom, beforeMolecule: beforeObject };
+              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element, beforeAtom, beforeMolecule: beforeObject, hotkeyChanged: documentRef.current !== beforeHotkeyDocument };
             }
           }
           return;

@@ -8738,14 +8738,14 @@ export function commitNativeAtomLabelTarget(
     maxBondsPerAtom: nativeAtomInvalidGrowthLimit, targetBondAngleDegrees: style.chainAngleDegrees,
     pageBounds: { x: 0, y: 0, width: page.width, height: page.height }
   });
-  if (!placement || atoms.some(a => Math.hypot(a.x - placement.newAtomPoint.x, a.y - placement.newAtomPoint.y) < style.bondLengthPx * 0.5)) {
+  const pageMolecules = page.objects.filter((o): o is MoleculeObject => o.type === "molecule");
+  if (!placement || pageMolecules.some(m => m.atoms.some(a => Math.hypot(a.x - placement.newAtomPoint.x, a.y - placement.newAtomPoint.y) < style.bondLengthPx * 0.5))) {
     return { document: relabel(), target, message: `Relabeled ${normalized}: no clear substituent position on the page` };
   }
-  const pageMolecules = page.objects.filter((o): o is MoleculeObject => o.type === "molecule");
   const newAtom = nativeAtomWithElement({
     id: nextIndexedIds("atom", pageMolecules.flatMap(m => m.atoms.map(a => a.id)), 1)[0]!,
     element: "C", formalCharge: 0, ...placement.newAtomPoint
-  }, normalized, normalized === "C", options.literal === true);
+  }, normalized, false, options.literal === true);
   const bond: MoleculeBond = {
     id: nextIndexedIds("bond", pageMolecules.flatMap(m => m.bonds.map(b => b.id)), 1)[0]!,
     fromAtomId: atom.id, toAtomId: newAtom.id, order: "single"
