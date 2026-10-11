@@ -700,6 +700,36 @@ describe("atom label editor focus", () => {
       expect(molecule()).toEqual(document.pages[0].objects[0]);
     });
 
+    it.each(["macos", "windows"] as const)("a delayed focus retry cannot reroute a canvas undo to text (%s)", async platform => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      setShortcutPlatform(platform);
+      const documentBefore = turnedThiocyanate(true);
+      const ethaneId = documentBefore.pages[0].objects[1]!.id;
+      await renderMainWindow(selectDocumentObjects(documentBefore, documentBefore.pages[0].id, [ethaneId]));
+      await pressOnCanvas({ key: "Delete" });
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+      await retypeSameLabel();
+      const editor = labelEditor()!;
+      await loseFocusToAnotherWindow();
+      expect(document.activeElement).not.toBe(editor);
+      // Under load the editor's startup retry can run between blur and the canvas key. Force
+      // that ordering rather than relying on real time: the event target still owns the key.
+      await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+      expect(document.activeElement).toBe(editor);
+      const undo = await pressOnCanvas({ key: "z", [platform === "macos" ? "metaKey" : "ctrlKey"]: true });
+      expect(undo.defaultPrevented).toBe(true);
+      expect(labelEditor()).toBeNull();
+      expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
+      expect(molecule()).toEqual(documentBefore.pages[0].objects[0]);
+      // Later focus/resume work must not reopen the ended session or modify the restored state.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(labelEditor()).toBeNull();
+      expect(molecule()).toEqual(documentBefore.pages[0].objects[0]);
+    });
+
     it("closed by switching to a new document: nothing is written into it", async () => {
       await renderMainWindow(turnedThiocyanate());
       await retypeSameLabel();

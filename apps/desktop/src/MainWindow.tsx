@@ -706,6 +706,7 @@ import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
 import {
   editHistoryDirection,
+  forceDocumentHistoryCommandId,
   isForcedDocumentHistoryCommandId,
   performTextFieldHistory,
   resolveEditHistoryRoute,
@@ -10674,7 +10675,10 @@ export function MainWindow({
       }
 
       event.preventDefault();
-      invokeCommandRef.current(commandId);
+      // This key already passed the event-target text-field guard. A delayed inline-editor
+      // focus retry can make activeElement disagree with that target; preserve the canvas
+      // routing decision rather than reclassifying Undo/Redo as text history in invoke.
+      invokeCommandRef.current(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId);
     };
 
     window.addEventListener("keydown", handleKeyDown);

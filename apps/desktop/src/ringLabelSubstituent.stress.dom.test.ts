@@ -232,6 +232,52 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     if (finish === "Enter" || finish === "Tab") expect(snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: molecule().atoms[6]!.id });
     const after = molecule(); await history(); expect(molecule()).toEqual(before); await history(true); expect(molecule()).toEqual(after);
   });
+  it.each(["right", "left"] as const)("an OMe substituent on the %s of cyclohexane anchors its O and extends away from the ring", async side => {
+    await mount();
+    const before = molecule();
+    const index = before.atoms.reduce((best, atom, i) =>
+      (side === "right" ? atom.x > before.atoms[best]!.x : atom.x < before.atoms[best]!.x) ? i : best, 0);
+    const source = before.atoms[index]!;
+    await edit(index, "OMe", "Enter");
+    expect(editor()).toBeNull();
+    const after = molecule(), substituent = after.atoms[6]!;
+    expect(after.atoms.slice(0, 6)).toEqual(before.atoms);
+    expect(after.bonds.slice(0, 6)).toEqual(before.bonds);
+    expect(substituent).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(after.atoms).toHaveLength(7);
+    expect(after.bonds).toHaveLength(7);
+    expect(after.bonds[6]).toMatchObject({ fromAtomId: source.id, toAtomId: substituent.id, order: "single" });
+    const direction = side === "right" ? 1 : -1;
+    expect((substituent.x - source.x) * direction).toBeGreaterThan(0);
+
+    const text = side === "right" ? "OMe" : "MeO";
+    const labels = container.querySelectorAll<SVGGElement>(`.native-atom-label[data-atom-label="${text}"]`);
+    expect(labels).toHaveLength(1);
+    const label = labels[0]!;
+    const runs = label.querySelectorAll<SVGTextElement>(".native-atom-label-run");
+    expect(Array.from(runs, run => run.textContent).join("")).toBe(text);
+    expect(runs).toHaveLength(1);
+    const run = runs[0]!;
+    expect(run.getAttribute("text-anchor")).toBe(side === "right" ? "start" : "end");
+    const glyph = nativeDrawingStyleFromObjectStyle(after.style).atomLabelFontSizePx * 0.62;
+    const x = Number(run.getAttribute("x"));
+    // O is the first/last glyph, spanning the new atom, with Me extending outwards.
+    const oxygenLeft = side === "right" ? x : x - glyph;
+    expect(oxygenLeft).toBeLessThanOrEqual(0);
+    expect(oxygenLeft + glyph).toBeGreaterThanOrEqual(0);
+    const textLeft = side === "right" ? x : x - text.length * glyph;
+    const textRight = textLeft + text.length * glyph;
+    expect(side === "right" ? textRight : -textLeft).toBeGreaterThan(glyph * 2);
+    expect(label.getAttribute("transform")).toBe(`translate(${Number(substituent.x.toFixed(3))} ${Number(substituent.y.toFixed(3))})`);
+    const bond = container.querySelector<SVGLineElement>(`.native-bond-line[data-bond-id="${after.bonds[6]!.id}"]`)!;
+    expect(bond).not.toBeNull();
+    const endX = Number(bond.getAttribute("x2"));
+    // The new single bond approaches the O from the ring side, stopping before its glyph.
+    expect((substituent.x - endX) * direction).toBeGreaterThanOrEqual(glyph / 2);
+    expect((endX - source.x) * direction).toBeGreaterThan(0);
+    await history(); expect(molecule()).toEqual(before);
+    await history(true); expect(molecule()).toEqual(after);
+  });
   it("Escape adds nothing, restores carbon, and creates no history", async () => {
     await mount(); const before = molecule(); await edit(0, "OMe", "Escape");
     expect(molecule()).toEqual(before); check(6, 6); await history(); expect(molecule()).toEqual(before);

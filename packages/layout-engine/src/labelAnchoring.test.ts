@@ -18,6 +18,7 @@ import {
 import {
   atomLabelLayout,
   nativeGroupLabelDisplay,
+  planBondExtension,
   planMoleculeAtomLabels,
   planPageSvgRender
 } from "./index";
@@ -91,6 +92,49 @@ describe("a group label on a ring vertex points out of the ring", () => {
   }
   const planAt = (molecule: MoleculeObject, at: number) =>
     planMoleculeAtomLabels(molecule).find((plan) => plan.atom.id === `v${at}`)!;
+
+  it.each([[0, "OMe", "start"], [3, "MeO", "end"]] as const)(
+    "an OMe substituent grown from cyclohexane vertex %d draws %s with its O on the attachment",
+    (at, text, anchorSide) => {
+      const original = ring("flat-topped", at, "C", false);
+      const source = original.atoms[at]!;
+      const drawingStyle = nativeDrawingStyleFromObjectStyle(original.style);
+      const extension = planBondExtension({ atoms: original.atoms, bonds: original.bonds,
+        clickPoint: source, preferredAtomId: source.id, bondLength: drawingStyle.bondLengthPx,
+        hitRadius: 8, targetBondAngleDegrees: drawingStyle.chainAngleDegrees,
+        pageBounds: { x: 0, y: 0, width: 792, height: 612 } });
+      expect(extension).toBeDefined();
+      const direction = at === 0 ? 1 : -1;
+      const substituent: MoleculeAtom = { id: "OMe", element: "OMe", labelLiteral: true,
+        formalCharge: 0, ...extension!.newAtomPoint };
+      expect((substituent.x - source.x) * direction).toBeGreaterThan(0);
+      const molecule: MoleculeObject = { ...original,
+        atoms: [...original.atoms, substituent],
+        bonds: [...original.bonds, { id: "attachment", fromAtomId: source.id, toAtomId: substituent.id, order: "single" }] };
+      const plan = planMoleculeAtomLabels(molecule).find(candidate => candidate.atom.id === substituent.id)!;
+      expect(molecule.atoms.slice(0, 6)).toEqual(original.atoms);
+      expect(molecule.bonds.slice(0, 6)).toEqual(original.bonds);
+      expect(plan.atom).toBe(substituent);
+      expect(plan.label).toBe(text);
+      expect(plan.labelAnchor).toEqual({ side: anchorSide, length: 1 });
+      expect(plan.anchor).toEqual({ x: substituent.x, y: substituent.y });
+      const run = plan.layout.runs[0]!;
+      expect(run.text).toBe(text);
+      expect(run.textAnchor).toBe(anchorSide);
+      const glyph = drawingStyle.atomLabelFontSizePx * 0.62;
+      const oxygenLeft = anchorSide === "start" ? run.x : run.x - glyph;
+      expect(oxygenLeft).toBeLessThanOrEqual(0);
+      expect(oxygenLeft + glyph).toBeGreaterThanOrEqual(0);
+      const box = plan.layout.bounds;
+      expect(at === 0 ? box.x + box.width : -box.x).toBeGreaterThan(glyph * 2);
+      const line = planPageSvgRender({ ...createEmptyDocument().pages[0]!, objects: [molecule] })
+        .fragments.flatMap(elementFragments)
+        .find(fragment => String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "attachment")!;
+      const endX = Number(line.attrs.x2);
+      expect((substituent.x - endX) * direction).toBeGreaterThanOrEqual(glyph / 2);
+      expect((endX - source.x) * direction).toBeGreaterThan(0);
+    }
+  );
 
   // The side each vertex's bonds pull to; "tie" for the top and bottom of a vertical-sided ring.
   const sides = {
