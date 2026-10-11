@@ -226,7 +226,7 @@ row says so.
 | `plugin-host` | Validation, permission enforcement, commands, loading, storage scoping, lifecycle, patch review | Grant undeclared permissions, run native code or download models without approval |
 | `cdx-compat` | CDXML read/write, best-effort CDX read, unknown-object preservation | Become the native model, depend on GPL code, claim perfect compatibility |
 | `clipboard-adapter` | Clipboard format detection and conversion, with warnings | Silent lossy conversion |
-| `layout-engine` | Align, rotate, snap, bond-length normalization, **all molecule rendering math** (§9) | Change chemical identity |
+| `layout-engine` | Align, rotate, snap, bond-length normalization, **all molecule rendering math** (§9), and the pure atom-label grammar (what a label's text means) | Change chemical identity |
 | `art-engine` | Art visual plans: strokes, markers, arrow geometry, boolean ops | Touch molecules, own documents, copy molecule rendering math |
 | `export-engine` | SVG, PDF, CDXML writers with warnings | Report a format done that `isExportFormatImplemented` denies; diverge from the canvas |
 | `shortcut-engine`, `toolset-registry` | Shortcut registry and conflicts; toolset schemas, overrides, menu models, command-ID validation | Bind actions only in click handlers; chemistry, permissions, windows |

@@ -93,6 +93,16 @@ second; OMe with a − charge (methoxide) unbadged; R, X, ? and a bonded Ar neve
 C7H8O; Copy As SMILES, MOL V2000 and V3000 of Ph–OMe pasted into another program as anisole; save and
 reopen, CDXML export and reopen, and undo/redo of a relabel, all keeping the label "OMe".
 
+Label anchoring surfaces added since: OMe typed on the left and right ends of a horizontal bond and
+on a ring carbon, with the bond meeting the O each time and the label drawn "MeO" with its bond on the
+right; the same for CO2Me (MeO2C), NHBoc (BocHN), and for Ph and TMS (the letter nearest the bond on
+the atom), with the bond going up and down as well; SCN never drawn "CNS"; a label moved, rotated or
+flipped redrawing the right way round while its formula and Copy As SMILES stay the same; Spin 3D on
+a chain of three or more atoms ending in OMe, the label reading toward its bond as the overlay draws
+it and turning as the bond swings to its other side (the overlay opens on the conformer's own view,
+not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
+centred on the atom.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
@@ -127,3 +137,12 @@ hashed, dashed, and wedge bonds showing no line through the hashes.
 
 On macOS and Windows, type OMe on all six atoms of benzene/cyclohexane, exercise nickname hotkeys and text conversion, then Enter/Tab/click-away/tool-change/Escape and Undo/Redo: check restored ring carbons, preview/commit placement, new-atom selection, valence guards, and specific status messages.
 Save with an OMe draft open (the saved file has the attachment; the editor stays open), retype a ring SCN to its starting text (no split or Undo entry), place Text during an open OMe edit (Undo removes text, then the attachment), and Escape after another atom was recoloured (the recolour remains).
+
+Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
+`invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
+one-warning file) after its text moves on; clicking it lists every warning with its message, what it
+names (Whole file, a molecule by its CDXML fragment, or "Atom * in …"), and its code; Show selects that
+molecule or atom with the Select tool; tool shortcuts work straight after any click there; Esc closes
+the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
+always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
+scrolls in a small window at 125% and 150% display scale.
