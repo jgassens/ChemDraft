@@ -728,6 +728,66 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+.workspace-with-tabs {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.document-tab-strip {
+  display: flex;
+  gap: 2px;
+  padding: 3px 8px 0;
+  overflow-x: auto;
+  background: var(--cd-bg-panel);
+  border-bottom: 1px solid var(--cd-border);
+}
+
+.document-tab {
+  display: flex;
+  flex: 0 0 auto;
+  max-width: 240px;
+  align-items: center;
+  border-bottom: 2px solid transparent;
+}
+
+.document-tab[data-active="true"] {
+  border-bottom-color: var(--cd-text-primary);
+  background: var(--cd-bg-control);
+}
+
+.document-tab button {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--cd-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.document-tab [role="tab"] > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-tab .document-tab-close {
+  flex: 0 0 auto;
+  padding: 5px;
+}
+
+.document-tab-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.document-tab button:focus-visible {
+  outline: 2px solid var(--cd-text-primary);
+  outline-offset: -2px;
+}
+
 .web-floating-palette {
   position: fixed;
   z-index: 20;

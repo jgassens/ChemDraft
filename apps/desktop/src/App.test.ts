@@ -2091,7 +2091,7 @@ describe("ChemDraft desktop shell", () => {
     expect(effect).toContain("bundleStamp: __BUILD_STAMP__");
     // Both listeners are removed with the effect.
     expect(effect).toContain('window.removeEventListener("focus", onFocus)');
-    expect(effect).toContain('hot?.off("vite:afterUpdate", onHotUpdate)');
+    expect(effect).toContain('hot?.off?.("vite:afterUpdate", onHotUpdate)');
   });
 
   it("stops Spin 3D and Interactive 3D on a metal instead of returning a made-up shape", () => {
@@ -2566,8 +2566,9 @@ describe("ChemDraft desktop shell", () => {
     // command or merge cannot leave a cyano label unrecorded for a later rotation to re-read. Its
     // behaviour is tested in abbreviationChemistry.test.ts; this guards the wiring. The sixth call
     // is the flush (documentForFlush), which writes the document as an open label edit's close
-    // would leave it. History snapshots now strip live drafts before a seventh normalization.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(7);
+    // would leave it. History snapshots strip live drafts before a seventh normalization;
+    // restoring each document tab normalizes it through the same funnel once more.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(8);
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,

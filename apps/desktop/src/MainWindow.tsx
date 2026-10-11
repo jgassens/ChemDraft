@@ -1,7 +1,8 @@
+import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
-import { listenTauriEvent } from "./window-manager/tauriEvents";
+import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   activeOpenWarnings,
@@ -119,6 +120,7 @@ import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
 import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
+  buildDocumentTabsSession,
   documentIsBlank,
   parseDocumentSessionEnvelope,
   shouldRestoreDocumentSession,
@@ -329,6 +331,8 @@ import {
   toggleDrawnStructureSettingsCommandId,
   moleculeStructureNumberRanges,
   allShellCommands,
+  activateDocumentTabCommandId,
+  closeDocumentTabCommandId,
   type CommandSpec
 } from "./commands";
 import {
@@ -1567,7 +1571,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.12.10-opus";
+const CURRENT_BUILD_STAMP = "10.11.14.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2047,6 +2051,35 @@ export function MainWindow({
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
   const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
+  const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
+  const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
+  const documentTabsRef = useRef(documentTabs);
+  documentTabsRef.current = documentTabs;
+  const activeDocumentTabIdRef = useRef("initial");
+  // Refs carry synchronous command snapshots; activation and strip membership are React state.
+  const browserFileKeysRef = useRef(new Map<string, string>());
+  const nonPristineTabsRef = useRef(new Set<string>());
+  const pendingDocumentOpensRef = useRef<Array<{
+    contents: string; displayName: string; path?: string;
+    options?: { dirty?: boolean; statusOverride?: string };
+  }>>([]);
+  const documentTabSnapshotsRef = useRef(new Map<string, {
+    history: DocumentHistory;
+    file: NativeFileState;
+    viewport: ViewportState;
+    scrollLeft: number;
+    scrollTop: number;
+    parts: NativeMoleculeSelectionPart[];
+    warnings?: OpenWarningsReport;
+    status: string;
+    pageFit?: ImportedPageFitPromptState;
+  }>());
+  const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
+  const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const [closeTabSaving, setCloseTabSaving] = useState(false);
+  const [closeTabSaveMessage, setCloseTabSaveMessage] = useState<string>();
+  const closeTabPromptRef = useRef(closeTabPrompt);
+  closeTabPromptRef.current = closeTabPrompt;
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
@@ -2230,10 +2263,14 @@ export function MainWindow({
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
   const openWarnings = activeOpenWarnings(openWarningsReport);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
+  const tabWarningsRef = useRef(openWarningsReport);
+  tabWarningsRef.current = openWarningsReport;
+  const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
   const openWarningsRef = useRef(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
+  tabPageFitRef.current = pageFitPrompt;
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
   const [moleculeStyleOverridePrompt, setMoleculeStyleOverridePrompt] =
     useState<MoleculeStyleOverridePromptState | undefined>();
@@ -2647,15 +2684,19 @@ export function MainWindow({
     return next;
   }, [plannedDisplayPage]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
+  if (fileState.dirty || fileState.path || documentHistory.past.length || documentHistory.future.length || !documentIsBlank(document)) {
+    nonPristineTabsRef.current.add(activeDocumentTabId);
+  }
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
   const quickActions = useMemo(
     () => createQuickActions(document, selectedMolecule, {
       canUndo,
       canRedo,
+      hasMultipleTabs: documentTabs.length > 1,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
     }),
-    [canRedo, canUndo, document, selectedMolecule, selectedNativeMoleculeParts]
+    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
   const pageCssVars = useMemo(
@@ -2722,12 +2763,12 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
-        availability: { canUndo, canRedo, hasOpenWarnings: openWarnings !== undefined },
+        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry]
+    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -2797,10 +2838,12 @@ export function MainWindow({
       textRange
     };
   }, [selectedNativeMoleculePart]);
-  const installDocumentHistory = useCallback((history: DocumentHistory) => {
+  const installDocumentHistory = useCallback((history: DocumentHistory, switchingTabs = false) => {
     documentHistoryRef.current = history;
     documentRef.current = history.present;
-    updateToolbarStyleTargetSnapshot(history.present);
+    // A switch restores its own selection below; the previous tab's inline text range and fragment
+    // must not be captured as style targets for a document whose object ids may happen to match.
+    if (!switchingTabs) updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
   }, [updateToolbarStyleTargetSnapshot]);
   // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
@@ -2817,6 +2860,7 @@ export function MainWindow({
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
+    tabWarningsRef.current = undefined;
     setOpenWarningsReport(undefined);
     setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
@@ -3420,7 +3464,7 @@ export function MainWindow({
   // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
   // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
   useEffect(() => {
-    if (!nativePalette) {
+    if (!nativePalette && !isDesktopRuntime()) {
       return;
     }
     const entries = toolsetRegistry.listToolsets().map((toolset) => ({
@@ -3428,8 +3472,8 @@ export function MainWindow({
       title: toolset.title,
       visible: visibleToolsetIds.has(toolset.id)
     }));
-    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible).catch(() => undefined);
-  }, [crosshairsVisible, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -7682,6 +7726,134 @@ export function MainWindow({
     setLastAnalysis(null);
   }, [assignHoveredNativeDeleteTarget, cancelSpin3dSession]);
 
+  const tabEditFinishersRef = useRef({ finalizeAtomLabelDraft, finishActiveNativeTextEdit });
+  tabEditFinishersRef.current = { finalizeAtomLabelDraft, finishActiveNativeTextEdit };
+  const snapshotDocumentTab = useCallback((finishDrafts = true) => {
+    // A switch is an edit-ending gesture. Finish drafts while their document is still active.
+    const labelEdit = activeAtomLabelEditRef.current;
+    if (finishDrafts && labelEdit) {
+      tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
+      activeAtomLabelEditRef.current = undefined;
+    }
+    const textEdit = activeTextEditObjectIdRef.current;
+    if (finishDrafts && textEdit) {
+      tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
+      activeTextEditObjectIdRef.current = undefined;
+    }
+    const canvas = canvasRegionRef.current;
+    const history = documentHistoryRef.current;
+    const file = fileStateRef.current;
+    if (file.dirty || file.path || history.past.length || history.future.length || !documentIsBlank(history.present)) {
+      nonPristineTabsRef.current.add(activeDocumentTabIdRef.current);
+    }
+    documentTabSnapshotsRef.current.set(activeDocumentTabIdRef.current, {
+      history, file, viewport: viewportRef.current,
+      scrollLeft: canvas?.scrollLeft ?? 0, scrollTop: canvas?.scrollTop ?? 0,
+      parts: selectedNativeMoleculePartsRef.current,
+      warnings: tabWarningsRef.current, status: statusRef.current, pageFit: tabPageFitRef.current
+    });
+  }, []);
+
+  const installDocumentTab = useCallback((id: string) => {
+    const snapshot = documentTabSnapshotsRef.current.get(id);
+    if (!snapshot) return;
+    clearDocumentInteractionState({ clearSpin3dModelCache: true });
+    documentIdentityRef.current += 1;
+    activeDocumentTabIdRef.current = id;
+    setActiveDocumentTabId(id);
+    toolbarStyleTargetRef.current = undefined;
+    activeTextSelectionRef.current = undefined;
+    installDocumentHistory(snapshot.history, true);
+    fileStateRef.current = snapshot.file;
+    setFileState(snapshot.file);
+    viewportRef.current = snapshot.viewport;
+    setViewport(snapshot.viewport);
+    pendingTabScrollRef.current = { left: snapshot.scrollLeft, top: snapshot.scrollTop };
+    selectedNativeMoleculePartsRef.current = snapshot.parts;
+    selectedNativeMoleculePartRef.current = snapshot.parts.at(-1);
+    setSelectedNativeMoleculeParts(snapshot.parts);
+    tabWarningsRef.current = snapshot.warnings;
+    openWarningsRef.current = activeOpenWarnings(snapshot.warnings);
+    setOpenWarningsReport(snapshot.warnings);
+    setOpenWarningsListOpen(false);
+    tabPageFitRef.current = snapshot.pageFit;
+    setPageFitPrompt(snapshot.pageFit);
+    setExportDialog(undefined);
+    setAnalysisReport(undefined);
+    setObjectContextMenu(undefined);
+    setArrowEditTargetId(undefined);
+    setStatus(snapshot.status);
+  }, [clearDocumentInteractionState, installDocumentHistory]);
+
+  const activateDocumentTab = useCallback((id: string) => {
+    if (id === activeDocumentTabIdRef.current || closeTabPrompt) return;
+    snapshotDocumentTab();
+    installDocumentTab(id);
+  }, [closeTabPrompt, installDocumentTab, snapshotDocumentTab]);
+
+  const addDocumentTab = useCallback((title: string) => {
+    snapshotDocumentTab();
+    const id = crypto.randomUUID();
+    const tabs = [...documentTabsRef.current, { id, title }];
+    documentTabsRef.current = tabs;
+    setDocumentTabs(tabs);
+    activeDocumentTabIdRef.current = id;
+    setActiveDocumentTabId(id);
+    const nextViewport = createViewportState();
+    viewportRef.current = nextViewport;
+    setViewport(nextViewport);
+    pendingTabScrollRef.current = { left: 0, top: 0 };
+  }, [snapshotDocumentTab]);
+
+  const removeDocumentTab = useCallback((id: string) => {
+    const tabs = documentTabsRef.current;
+    if (tabs.length < 2) return;
+    const index = tabs.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+    const remaining = tabs.filter((tab) => tab.id !== id);
+    if (id === activeDocumentTabIdRef.current) {
+      snapshotDocumentTab();
+      installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
+    }
+    documentTabSnapshotsRef.current.delete(id);
+    nonPristineTabsRef.current.delete(id);
+    browserFileKeysRef.current.delete(id);
+    documentTabsRef.current = remaining;
+    setDocumentTabs(remaining);
+    setCloseTabPrompt(undefined);
+  }, [installDocumentTab, snapshotDocumentTab]);
+
+  const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
+    if (documentTabsRef.current.length < 2 || closeTabPrompt) return;
+    if (!documentTabsRef.current.some((tab) => tab.id === id)) return;
+    if (id !== activeDocumentTabIdRef.current && !documentTabSnapshotsRef.current.get(id)?.file.dirty) {
+      removeDocumentTab(id);
+      return;
+    }
+    activateDocumentTab(id);
+    snapshotDocumentTab();
+    setCloseTabSaveMessage(undefined);
+    if (fileStateRef.current.dirty) setCloseTabPrompt(id);
+    else removeDocumentTab(id);
+  }, [activateDocumentTab, closeTabPrompt, removeDocumentTab, snapshotDocumentTab]);
+
+  const cycleDocumentTab = useCallback((direction: 1 | -1) => {
+    const tabs = documentTabsRef.current;
+    const index = tabs.findIndex((tab) => tab.id === activeDocumentTabIdRef.current);
+    activateDocumentTab(tabs[(index + direction + tabs.length) % tabs.length]!.id);
+  }, [activateDocumentTab]);
+
+  useLayoutEffect(() => {
+    const scroll = pendingTabScrollRef.current;
+    const canvas = canvasRegionRef.current;
+    if (scroll && canvas) {
+      canvas.scrollLeft = scroll.left;
+      canvas.scrollTop = scroll.top;
+      pendingTabScrollRef.current = undefined;
+      updateRulerFrame();
+    }
+  }, [activeDocumentTabId, document, updateRulerFrame]);
+
   const openDocumentContents = useCallback((
     contents: string,
     displayName: string,
@@ -7693,6 +7865,22 @@ export function MainWindow({
       statusOverride?: string;
     }
   ) => {
+    if (isDesktopRuntime() && !documentSessionHydratedRef.current) {
+      // Read the old session before an OS open-with can replace its startup blank and discard tabs.
+      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+      return;
+    }
+    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
+    const existing = documentTabsRef.current.find((tab) =>
+      path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
+        documentTabSnapshotsRef.current.get(tab.id)?.file.path) !== undefined &&
+        documentTabPathKey((tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
+          documentTabSnapshotsRef.current.get(tab.id)?.file.path)!) === documentTabPathKey(path) :
+        browserFileKeysRef.current.get(tab.id) === browserKey);
+    if (existing) {
+      activateDocumentTab(existing.id);
+      return;
+    }
     const opened = openNativeDocument(contents);
     const resolvedOpen = resolveOpenResultDocument(opened);
     if (!resolvedOpen) {
@@ -7702,17 +7890,31 @@ export function MainWindow({
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
     const dirty = options?.dirty ?? false;
+    snapshotDocumentTab();
+    if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)) addDocumentTab(displayName);
+    const id = activeDocumentTabIdRef.current;
+    const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
+    documentTabsRef.current = tabs;
+    setDocumentTabs(tabs);
+    nonPristineTabsRef.current.add(id);
+    if (browserKey) browserFileKeysRef.current.set(id, browserKey);
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    setPageFitPrompt(fitRecommendation ? { ...fitRecommendation, displayName } : undefined);
+    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
+    setPageFitPrompt(tabPageFitRef.current);
     const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
-    setOpenWarningsReport({ displayName, sourceLabel, warnings: opened.warnings });
+    const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
+    tabWarningsRef.current = warningsReport;
+    setOpenWarningsReport(warningsReport);
     const openStatus = options?.statusOverride
       ?? formatOpenStatus(displayName, sourceLabel, opened.warnings);
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
-  }, [clearDocumentInteractionState, resetDocumentHistory]);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+
+  const openDocumentContentsRef = useRef(openDocumentContents);
+  openDocumentContentsRef.current = openDocumentContents;
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -7748,6 +7950,29 @@ export function MainWindow({
     setCustomPageSizeDialog(undefined);
     setStatus(`Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`);
   }, [commitDocumentChange]);
+
+  const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
+    for (const path of paths) {
+      try {
+        openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
+      } catch (error) {
+        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }, [openDocumentContents]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return undefined;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenCurrentWindowEvent<{ paths: string[] }>("tauri://drag-drop", (event) => {
+      if (!disposed && !closeTabPromptRef.current) void openDroppedDocumentPaths(event.payload.paths);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); };
+  }, [openDroppedDocumentPaths]);
 
   const openDocumentFromNativePicker = useCallback(async () => {
     if (!isDesktopRuntime()) {
@@ -7807,8 +8032,7 @@ export function MainWindow({
       const last = lastNativeOpenPayloadKeyRef.current;
       // A single OS open is delivered via both the Tauri event and the pending-document
       // poll, so coalesce identical payloads that arrive close together. Use a time window
-      // rather than a permanent key so re-opening the same file later (e.g. to discard
-      // in-app edits) still works.
+      // rather than a permanent key so a later request still activates its already-open tab.
       if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
         return;
       }
@@ -7856,9 +8080,9 @@ export function MainWindow({
     };
   }, [openDocumentContents]);
 
-  // Restore the last edited document at startup (see documentSession.ts). Anything that landed
-  // first wins: an OS "open with" or an early edit leaves the canvas non-pristine, and the restore
-  // backs off. A corrupt/future envelope restores nothing — the blank document stands.
+  // Restore every tab before processing startup file opens (see documentSession.ts). If a user
+  // already started editing while the read was pending, keep that work active and append the restored
+  // tabs. A corrupt/future envelope restores nothing; a rejected read keeps autosave closed.
   useEffect(() => {
     if (documentSessionHydratedRef.current) {
       return undefined;
@@ -7885,19 +8109,48 @@ export function MainWindow({
         if (!envelope || !shouldRestoreDocumentSession(envelope)) {
           return;
         }
-        const pristine = !fileStateRef.current.path
+        const pristine = documentTabsRef.current.length === 1
+          && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+          && !fileStateRef.current.path
           && !fileStateRef.current.dirty
           && documentIsBlank(documentRef.current);
-        if (!pristine) {
-          return;
-        }
         const shellOpenFailure = shellOpenFailureRef.current;
         shellOpenFailureRef.current = undefined;
         try {
-          openDocumentContents(envelope.contents, envelope.displayName, envelope.path, {
-            dirty: envelope.dirty,
-            statusOverride: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${envelope.displayName}${envelope.dirty ? " (unsaved changes)" : ""}`
+          const sessions = envelope.tabs ?? [envelope];
+          // Parse all documents before replacing any state: one bad tab must not partially restore.
+          const restored = sessions.map((session) => {
+            const opened = openNativeDocument(session.contents);
+            const resolved = resolveOpenResultDocument(opened);
+            if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+            return { session, opened, resolved, id: crypto.randomUUID() };
           });
+          const restoredTabs = restored.map(({ id, session }) => ({ id, title: session.displayName }));
+          let tabs: Array<{ id: string; title: string }> = restoredTabs;
+          if (!pristine) {
+            snapshotDocumentTab(false);
+            tabs = [...documentTabsRef.current, ...restoredTabs];
+          } else {
+            documentTabSnapshotsRef.current.clear();
+            nonPristineTabsRef.current.clear();
+          }
+          for (const { id, session, resolved, opened } of restored) {
+            const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
+            if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
+            documentTabSnapshotsRef.current.set(id, {
+              history, file: { path: session.path, dirty: session.dirty },
+              viewport: session.view?.viewport ?? createViewportState(),
+              scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
+              warnings: session.openWarnings ?? {
+                displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
+                warnings: opened.warnings
+              },
+              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}`
+            });
+          }
+          documentTabsRef.current = tabs;
+          setDocumentTabs(tabs);
+          if (pristine) installDocumentTab(restoredTabs[envelope.activeTabIndex ?? 0]!.id);
         } catch {
           // Never block startup on a bad autosave; the next edit overwrites it.
         }
@@ -7911,13 +8164,21 @@ export function MainWindow({
       .finally(() => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          const opens = pendingDocumentOpensRef.current.splice(0);
+          for (const request of opens) {
+            try {
+              openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+            } catch (error) {
+              setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
         }
       });
 
     return () => {
       active = false;
     };
-  }, [openDocumentContents]);
+  }, [installDocumentTab, snapshotDocumentTab]);
 
   // What every flush writes — the session autosave, the quit and window-close flush (macOS and
   // Windows), Save and export: the working document as it would be if an open label edit closed
@@ -7949,13 +8210,16 @@ export function MainWindow({
   // still running, nothing is written, and resolving would let the installer discard the drawing.
   const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean }) => {
     if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
+      snapshotDocumentTab(false);
       const refusal = options?.strict
-        ? strictSessionFlushRefusal({
-            hydrated: documentSessionHydratedRef.current,
-            saveEnabled: documentSessionSaveEnabledRef.current,
-            blank: documentIsBlank(documentRef.current),
-            fileState: fileStateRef.current
-          })
+        ? documentTabsRef.current.map((tab) => {
+            const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
+            return strictSessionFlushRefusal({
+              hydrated: documentSessionHydratedRef.current,
+              saveEnabled: documentSessionSaveEnabledRef.current,
+              blank: documentIsBlank(snapshot.history.present), fileState: snapshot.file
+            });
+          }).find((reason) => reason !== undefined)
         : undefined;
       if (refusal) {
         throw new Error(refusal);
@@ -7963,15 +8227,22 @@ export function MainWindow({
       return;
     }
     try {
+      snapshotDocumentTab(false);
       const flushed = documentForFlush();
-      const payload = createNativeSavePayload(flushed);
-      const path = fileStateRef.current.path;
-      const envelope = buildDocumentSessionEnvelope(
-        payload,
-        fileStateRef.current,
-        path ? nativePathBasename(path) : payload.filename,
-        documentIsBlank(flushed)
-      );
+      const tabs = documentTabsRef.current.map((tab) => {
+        const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
+        const tabDocument = tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present;
+        const payload = createNativeSavePayload(tabDocument);
+        return {
+          ...buildDocumentSessionEnvelope(payload, snapshot.file,
+            snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
+          pristine: !nonPristineTabsRef.current.has(tab.id),
+          view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
+          openWarnings: snapshot.warnings
+        };
+      });
+      const envelope = buildDocumentTabsSession(tabs,
+        documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
       await saveDocumentSession(envelope, { strict: options?.strict });
     } catch (error) {
       if (options?.strict) {
@@ -7980,7 +8251,7 @@ export function MainWindow({
       // Serialization or the write must never break editing (or block a quit); the previous
       // autosave stays.
     }
-  }, [documentForFlush]);
+  }, [documentForFlush, snapshotDocumentTab]);
 
   // Autosave (debounced) so a relaunch — or a crash — resumes the last edited state with no
   // explicit save.
@@ -7992,7 +8263,7 @@ export function MainWindow({
       void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
   // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
   // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
@@ -8118,46 +8389,72 @@ export function MainWindow({
     });
   }, []);
 
-  const saveCurrentDocument = useCallback(async (forceSaveAs: boolean) => {
+  const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
+    const savingTabId = activeDocumentTabIdRef.current;
+    const savingDocument = documentRef.current;
+    const savingFileState = fileStateRef.current;
     const payload = createNativeSavePayload(documentForFlush());
-
-    if (!isDesktopRuntime()) {
-      downloadText(payload.filename, payload.contents, payload.mimeType);
-      setFileState((current) => {
-        const nextFileState = {
-          ...current,
-          dirty: false
-        };
+    const finishSave = (path?: string) => {
+      nonPristineTabsRef.current.add(savingTabId);
+      const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
+        documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
+      const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument };
+      if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
-        return nextFileState;
-      });
-      setStatus(formatSaveStatus(payload.filename, payload.warnings));
-      return;
-    }
-
-    let path = forceSaveAs ? undefined : fileStateRef.current.path;
-    if (!path) {
-      path = await pickNativeSavePath(fileStateRef.current.path ?? payload.filename);
-    }
-    if (!path) {
-      setStatus("Save canceled");
-      return;
-    }
-
-    const finalPath = ensureChemDraftFileExtension(path);
+        setFileState(nextFileState);
+        setStatus(formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings));
+      } else {
+        const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
+        if (snapshot) documentTabSnapshotsRef.current.set(savingTabId, {
+          ...snapshot, file: nextFileState,
+          status: formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings)
+        });
+      }
+      const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
+        ? { ...tab, title: path ? nativePathBasename(path) : tab.title } : tab);
+      documentTabsRef.current = tabs;
+      setDocumentTabs(tabs);
+    };
     try {
+      if (!isDesktopRuntime()) {
+        downloadText(payload.filename, payload.contents, payload.mimeType);
+        finishSave();
+        return true;
+      }
+      let path = forceSaveAs ? undefined : savingFileState.path;
+      if (!path) path = await pickNativeSavePath(savingFileState.path ?? payload.filename);
+      if (!path) {
+        if (savingTabId === activeDocumentTabIdRef.current) setStatus("Save canceled");
+        if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage("Save canceled. The tab is still open.");
+        return false;
+      }
+      const finalPath = ensureChemDraftFileExtension(path);
       await writeNativeTextFile(finalPath, payload.contents);
-      const nextFileState = {
-        path: finalPath,
-        dirty: false
-      };
-      fileStateRef.current = nextFileState;
-      setFileState(nextFileState);
-      setStatus(formatSaveStatus(nativePathBasename(finalPath), payload.warnings));
+      finishSave(finalPath);
+      return true;
     } catch (error) {
-      setStatus(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `Save failed: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message);
+      if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage(message);
+      return false;
     }
   }, [documentForFlush]);
+
+  const saveAndCloseDocumentTab = useCallback(async () => {
+    const id = closeTabPromptRef.current;
+    if (!id || closeTabSaving) return;
+    setCloseTabSaving(true);
+    try {
+      if (await saveCurrentDocument(false)) {
+        const file = id === activeDocumentTabIdRef.current ? fileStateRef.current :
+          documentTabSnapshotsRef.current.get(id)?.file;
+        if (file && !file.dirty) removeDocumentTab(id);
+        else setCloseTabSaveMessage("The document changed while saving. Save again to close this tab.");
+      }
+    } finally {
+      setCloseTabSaving(false);
+    }
+  }, [closeTabSaving, removeDocumentTab, saveCurrentDocument]);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -8372,6 +8669,12 @@ export function MainWindow({
       );
     }
 
+    documentTabs.forEach((tab) => {
+      register({ id: activateDocumentTabCommandId(tab.id), title: `Activate ${tab.title}`, icon: "open", source: "core" },
+        () => activateDocumentTab(tab.id));
+      register({ id: closeDocumentTabCommandId(tab.id), title: `Close ${tab.title}`, icon: "close", source: "core" },
+        () => requestCloseDocumentTab(tab.id));
+    });
     quickActions.forEach((action) => {
       register(action, async () => {
         if (action.id === convertTextToAtomLabelCommandId) {
@@ -8394,9 +8697,14 @@ export function MainWindow({
           if (result.message) setStatus(result.message);
           return;
         }
+        if (action.id === "document.closeTab") requestCloseDocumentTab();
+        if (action.id === "document.nextTab") cycleDocumentTab(1);
+        if (action.id === "document.previousTab") cycleDocumentTab(-1);
         if (action.id === "document.new") {
+          addDocumentTab("Untitled");
           resetDocumentHistory(createPhase4Document());
           clearDocumentInteractionState({ clearSpin3dModelCache: true });
+          tabPageFitRef.current = undefined;
           setPageFitPrompt(undefined);
           setStatus("Blank native document");
         }
@@ -8961,6 +9269,11 @@ export function MainWindow({
 
     return bindings;
   }, [
+    activateDocumentTab,
+    addDocumentTab,
+    cycleDocumentTab,
+    documentTabs,
+    requestCloseDocumentTab,
     openWarnings,
     activeToolState,
     analysisBusy,
@@ -9555,6 +9868,7 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
       if (disabledReason) {
@@ -9980,7 +10294,7 @@ export function MainWindow({
     hot?.on("vite:afterUpdate", onHotUpdate);
     return () => {
       window.removeEventListener("focus", onFocus);
-      hot?.off("vite:afterUpdate", onHotUpdate);
+      hot?.off?.("vite:afterUpdate", onHotUpdate);
     };
   }, []);
 
@@ -10505,6 +10819,19 @@ export function MainWindow({
       // continuation, so the next canvas key is not appended to the old label.
       if (isBlockedByModalDialog(event.target)) {
         hoverLabelAssignmentRef.current = undefined;
+        return;
+      }
+      // Tab navigation ends an inline edit, so it also works while that editor owns focus.
+      // Resolve through the same shortcut engine, omitting only its text-field target filter.
+      const tabCommand = shortcutRegistry.resolve({
+        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        altKey: event.altKey, shiftKey: event.shiftKey
+      });
+      if (!event.defaultPrevented && tabCommand &&
+          ["document.closeTab", "document.nextTab", "document.previousTab"].includes(tabCommand)) {
+        event.preventDefault();
+        hoverLabelAssignmentRef.current = undefined;
+        void invoke(tabCommand);
         return;
       }
       if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
@@ -11378,8 +11705,10 @@ export function MainWindow({
   // following this later React update, so the Tauri page-load hook separately reasserts the same
   // baked label on the native NSWindow title bar. See AGENTS.md.
   useEffect(() => {
-    window.document.title = __WORKTREE_LABEL__ ? `ChemDraft — ${__WORKTREE_LABEL__}` : "ChemDraft";
-  }, []);
+    const tab = documentTabs.find((candidate) => candidate.id === activeDocumentTabId);
+    const name = fileState.path ? nativePathBasename(fileState.path) : tab?.title ?? document.title;
+    window.document.title = `${name}${fileState.dirty ? " •" : ""} — ChemDraft${__WORKTREE_LABEL__ ? ` — ${__WORKTREE_LABEL__}` : ""}`;
+  }, [activeDocumentTabId, document.title, documentTabs, fileState]);
 
   const handleOpenFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -17904,11 +18233,71 @@ export function MainWindow({
           })
         : null}
 
-      <section className="workspace">
+      {closeTabPrompt ? (
+        <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !closeTabSaving) {
+              event.preventDefault();
+              setCloseTabPrompt(undefined);
+            }
+            if (event.key === "Tab") {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+              const next = buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length];
+              event.preventDefault();
+              next?.focus();
+            }
+          }}>
+          <section style={exportDialogPanelStyle}>
+            <h2 style={exportDialogTitleStyle}>Save changes before closing?</h2>
+            <p style={exportDialogHintStyle}>Save the changes to {documentTabs.find((tab) => tab.id === closeTabPrompt)?.title}?</p>
+            {closeTabSaveMessage ? <p role="status" style={exportDialogWarningStyle}>{closeTabSaveMessage}</p> : null}
+            <div style={exportDialogFooterStyle}>
+              <button type="button" autoFocus disabled={closeTabSaving} onClick={() => setCloseTabPrompt(undefined)}>Cancel</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => removeDocumentTab(closeTabPrompt)}>Discard</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => void saveAndCloseDocumentTab()}>Save</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      <section className={documentTabs.length > 1 ? "workspace workspace-with-tabs" : "workspace"}>
+        {documentTabs.length > 1 ? (
+          <div className="document-tab-strip" role="tablist" aria-label="Open documents">
+            {documentTabs.map((tab) => {
+              const active = tab.id === activeDocumentTabId;
+              const file = active ? fileState : documentTabSnapshotsRef.current.get(tab.id)?.file;
+              const title = file?.path ? nativePathBasename(file.path) : tab.title;
+              return (
+                <div className="document-tab" key={tab.id} data-active={active}>
+                  <button type="button" role="tab" aria-selected={active}
+                    title={title} onClick={() => void invoke(activateDocumentTabCommandId(tab.id))}>
+                    <span>{title}</span>{file?.dirty ? <span aria-label="Unsaved changes"> •</span> : null}
+                  </button>
+                  <button type="button" className="document-tab-close" aria-label={`Close ${title}`}
+                    onClick={() => void invoke(closeDocumentTabCommandId(tab.id))}><Icon name="close" /></button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <section
           ref={canvasRegionRef}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            if (closeTabPromptRef.current) return;
+            const files = Array.from(event.dataTransfer.files);
+            void (async () => {
+              for (const file of files) {
+                try { openDocumentContents(await file.text(), file.name); }
+                catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
+              }
+            })();
+          }}
           data-zoom-surface="document"
           // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
           // centers only become selectable while the Rings toolbar is open.
@@ -29161,6 +29550,11 @@ function ensureExportFileExtension(path: string, extensions: readonly string[]):
   const escapedExtensions = extensions.map((extension) => extension.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const extensionPattern = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
   return extensionPattern.test(path) ? path : `${path}.${extensions[0]}`;
+}
+
+export function documentTabPathKey(path: string, platform = detectDesktopShortcutPlatform()): string {
+  const key = path.replace(/\\/g, "/");
+  return platform === "windows" ? key.toLowerCase() : key;
 }
 
 export function nativePathBasename(path: string): string {

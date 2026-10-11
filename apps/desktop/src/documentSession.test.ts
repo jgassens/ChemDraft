@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DOCUMENT_SESSION_VERSION,
   buildDocumentSessionEnvelope,
+  buildDocumentTabsSession,
   documentIsBlank,
   parseDocumentSessionEnvelope,
   shouldRestoreDocumentSession,
@@ -99,6 +100,26 @@ describe("shouldRestoreDocumentSession", () => {
 
   it("restores any non-blank document", () => {
     expect(shouldRestoreDocumentSession(base)).toBe(true);
+  });
+});
+
+describe("multi-document session extension", () => {
+  const blank = buildDocumentSessionEnvelope(payload, { dirty: false }, "Untitled", true);
+  const session = buildDocumentTabsSession([blank, { ...blank, dirty: true }, blank], 1);
+
+  it("retains blank tabs and the active index while preserving the version-1 active envelope", () => {
+    expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(session)))).toEqual(session);
+    expect(session.contents).toBe(session.tabs![1]!.contents);
+    expect(shouldRestoreDocumentSession(buildDocumentTabsSession([blank, blank], 0))).toBe(true);
+  });
+
+  it("rejects an invalid tab or active index instead of restoring a subset of the session", () => {
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 3 })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: -1 })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0.5 })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, tabs: [] })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, tabs: [blank, { ...blank, contents: "" }] })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, tabs: [session] })).toBeUndefined();
   });
 });
 

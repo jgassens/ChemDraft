@@ -172,3 +172,20 @@ scrolls in a small window at 125% and 150% display scale.
 Status row: at the 900×640 minimum window, open a file with warnings under a long name; the status text ends
 in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
 in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.
+
+1. **Document tabs, on macOS and Windows:** start with one document and confirm there is no tab strip.
+   File ▸ New adds an Untitled tab inside the same document window; with two or more tabs the strip
+   stays below the toolbar and above the canvas rulers, clear of the status row at minimum window
+   size and 125%/150% display scale. Open, file drop and OS open-with reuse a never-edited,
+   never-saved Untitled; otherwise they add a tab, and reopening a file activates its existing tab
+   without replacing edits. Give three tabs different drawings, selections (including atom/bond
+   fragments), undo/redo histories, warnings, zoom and scroll; switch by click and Ctrl+Tab /
+   Ctrl+Shift+Tab and verify every state follows its tab. Check inspector/style controls, native
+   palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
+   by their button and CmdOrCtrl+W: the Save/Discard/Cancel modal hides native palettes, Cancel keeps
+   the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
+   inactive tab too. With one tab, CmdOrCtrl+W and the window close retain their existing behavior.
+   Quit immediately after an edit with three tabs (one untitled and dirty, one pristine Untitled),
+   then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
+   prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after
+   switching tabs; both must use the active document. Keep the worktree label visible throughout.

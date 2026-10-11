@@ -71,8 +71,9 @@ const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 #[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
-/// The two Close Window items (File and Window menus). Native-only: handled in Rust, never routed to
-/// the webview. Two ids because muda item ids are meant to be unique.
+/// The two Close Window / Close Tab items (File and Window menus). Native window closes stay
+/// native; with multiple document tabs the main window routes document.closeTab to the webview.
+/// Two ids because muda item ids are meant to be unique.
 #[cfg(target_os = "macos")]
 const CLOSE_WINDOW_FILE_MENU_ID: &str = "app.closeWindow.file";
 #[cfg(target_os = "macos")]
@@ -1442,12 +1443,14 @@ fn set_toolbars_menu(
     entries: Vec<ToolbarMenuEntry>,
     rulers_visible: bool,
     crosshairs_visible: bool,
+    has_multiple_document_tabs: Option<bool>,
 ) -> Result<(), String> {
     // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
     // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
     let view_state = ViewMenuState {
         rulers_visible,
         crosshairs_visible,
+        has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
     };
     // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
     // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
@@ -4082,6 +4085,7 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 struct ViewMenuState {
     rulers_visible: bool,
     crosshairs_visible: bool,
+    has_multiple_document_tabs: bool,
 }
 
 impl Default for ViewMenuState {
@@ -4089,6 +4093,7 @@ impl Default for ViewMenuState {
         Self {
             rulers_visible: true,
             crosshairs_visible: true,
+            has_multiple_document_tabs: false,
         }
     }
 }
@@ -4137,7 +4142,9 @@ fn classify_toolbars_menu_update(
             .iter()
             .zip(next_entries)
             .all(|(old, new)| old.toolset_id == new.toolset_id && old.title == new.title);
-    if !same_rows {
+    let tab_close_changed = cfg!(target_os = "macos")
+        && previous_view.has_multiple_document_tabs != next_view.has_multiple_document_tabs;
+    if !same_rows || tab_close_changed {
         ToolbarsMenuUpdate::Rebuild
     } else if previous_entries.as_slice() == next_entries && *previous_view == next_view {
         ToolbarsMenuUpdate::Unchanged
@@ -4369,7 +4376,11 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     #[cfg(any(target_os = "macos", windows))]
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(target_os = "macos")]
-                    &close_window_menu_item(app, CLOSE_WINDOW_FILE_MENU_ID)?,
+                    &close_window_menu_item(
+                        app,
+                        CLOSE_WINDOW_FILE_MENU_ID,
+                        view_state.has_multiple_document_tabs,
+                    )?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
                     // A routed item, not PredefinedMenuItem::quit: on Windows muda's predefined Quit
@@ -4508,7 +4519,11 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::maximize(app, None)?,
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(target_os = "macos")]
-                    &close_window_menu_item(app, CLOSE_WINDOW_WINDOW_MENU_ID)?,
+                    &close_window_menu_item(
+                        app,
+                        CLOSE_WINDOW_WINDOW_MENU_ID,
+                        view_state.has_multiple_document_tabs,
+                    )?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
                 ],
@@ -4538,8 +4553,48 @@ fn create_app_menu_for_toolsets<R: Runtime>(
 fn close_window_menu_item<R: Runtime>(
     app: &tauri::AppHandle<R>,
     id: &str,
+    has_multiple_document_tabs: bool,
 ) -> tauri::Result<MenuItem<R>> {
-    MenuItem::with_id(app, id, "Close Window", true, Some("CmdOrCtrl+W"))
+    MenuItem::with_id(
+        app,
+        id,
+        if has_multiple_document_tabs {
+            "Close Tab"
+        } else {
+            "Close Window"
+        },
+        true,
+        Some("CmdOrCtrl+W"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    menu_closes_document_tab(
+        label,
+        current_toolbars_menu_model(app)
+            .1
+            .has_multiple_document_tabs,
+    )
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn menu_closes_document_tab(label: &str, has_multiple_document_tabs: bool) -> bool {
+    label == MAIN_WINDOW_LABEL && has_multiple_document_tabs
+}
+
+#[cfg(test)]
+mod document_tab_menu_tests {
+    use super::{menu_closes_document_tab, MAIN_WINDOW_LABEL};
+
+    #[test]
+    fn close_menu_routes_only_a_main_window_with_multiple_tabs() {
+        assert!(menu_closes_document_tab(MAIN_WINDOW_LABEL, true));
+        assert!(!menu_closes_document_tab(MAIN_WINDOW_LABEL, false));
+        for label in ["preferences", "toolset-core-main", "plugin-panel-example"] {
+            assert!(!menu_closes_document_tab(label, true));
+        }
+    }
 }
 
 /// How Close Window closes the key window.
@@ -4577,6 +4632,15 @@ fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
             .ns_window()
             .is_ok_and(|pointer| pointer.cast_const() == key_ptr)
     });
+    if tauri_window
+        .as_ref()
+        .is_some_and(|window| main_menu_closes_tab(app, window.label()))
+    {
+        if let Err(error) = emit_command_to_main(app, "document.closeTab") {
+            eprintln!("Could not close the active document tab: {error}");
+        }
+        return;
+    }
     match (
         close_window_route(tauri_window.as_ref().map(|window| window.label())),
         tauri_window,
@@ -6022,6 +6086,21 @@ mod tests {
         assert_eq!(
             classify_toolbars_menu_update(&previous, &[entry("core.main", true)], view),
             ToolbarsMenuUpdate::Rebuild
+        );
+        assert_eq!(
+            classify_toolbars_menu_update(
+                &previous,
+                &previous.0,
+                ViewMenuState {
+                    has_multiple_document_tabs: true,
+                    ..view
+                }
+            ),
+            if cfg!(target_os = "macos") {
+                ToolbarsMenuUpdate::Rebuild
+            } else {
+                ToolbarsMenuUpdate::ChecksOnly
+            }
         );
         let mut renamed = previous.0.clone();
         renamed[1].title = "Art (renamed)".to_string();

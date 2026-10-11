@@ -1,6 +1,9 @@
 import type { SVGProps } from "react";
 
 export type IconName =
+  | "close"
+  | "nextTab"
+  | "previousTab"
   | "align"
   | "atom"
   | "bond"
@@ -47,6 +50,12 @@ export function Icon({ name, ...props }: IconProps) {
   };
 
   switch (name) {
+    case "close":
+      return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /></svg>;
+    case "nextTab":
+      return <svg {...common}><path d="M4 5h16v14H4zM10 8l4 4-4 4" /></svg>;
+    case "previousTab":
+      return <svg {...common}><path d="M4 5h16v14H4zM14 8l-4 4 4 4" /></svg>;
     case "align":
       return (
         <svg {...common}>
