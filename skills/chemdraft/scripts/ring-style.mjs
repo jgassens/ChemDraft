@@ -1678,7 +1678,8 @@ function identityJobs(dir, name) {
   for (const l of renderLines(dir, name)) {
     if (!l.ok) fail(`render-document failed for ${l.document}: ${JSON.stringify(l.error ?? l.warnings)}`);
     l.molecules.forEach((mol, k) => jobs.push({ name: `${l.job}${l.molecules.length > 1 ? "-" + k : ""}`,
-      // In the picture each Me is a placeholder atom (*); put the carbon back to compare.
+      // The picture's Me labels read as the methyls they stand for, so its SMILES normally has no
+      // placeholder; any `*` that is there (a label read as no group) is put back as carbon to compare.
       smiles: l.picture ? mol.canonicalSmiles.replace(/\[\*\]|\*/g, "C") : mol.canonicalSmiles }));
   }
   writeJson(path.join(dir, `${name}-identity-jobs.json`), jobs);

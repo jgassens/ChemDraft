@@ -5509,6 +5509,128 @@ textarea:focus-visible,
   gap: 8px;
 }
 
+/* The warnings a file open reported: a count in the status line, and a list above it. The list
+   fits the window it is in and scrolls, so a small window at a high display scale still shows it. */
+.open-warnings-button {
+  pointer-events: auto;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--cd-text-warning, #8a5a00);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.open-warnings-button:focus-visible {
+  outline: 2px solid var(--cd-accent);
+  outline-offset: 2px;
+}
+
+.open-warnings-list {
+  position: absolute;
+  bottom: 28px;
+  left: 8px;
+  z-index: var(--cd-z-floating-panel);
+  box-sizing: border-box;
+  width: min(520px, calc(100% - 16px));
+  max-height: min(360px, calc(100% - 44px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cd-border);
+  border-radius: 8px;
+  background: var(--cd-bg-panel-raised);
+  color: var(--cd-text-primary);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+  font-size: 12px;
+}
+
+.open-warnings-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 8px 6px 10px;
+  border-bottom: 1px solid var(--cd-border-subtle);
+}
+
+.open-warnings-heading {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.open-warnings-close,
+.open-warnings-show {
+  border: 1px solid var(--cd-border-control);
+  border-radius: 4px;
+  background: var(--cd-bg-control);
+  color: var(--cd-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.open-warnings-close {
+  padding: 0 6px;
+  line-height: 18px;
+}
+
+.open-warnings-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+  user-select: text;
+}
+
+.open-warnings-item {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--cd-border-subtle);
+}
+
+.open-warnings-item:last-child {
+  border-bottom: 0;
+}
+
+.open-warnings-message {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.open-warnings-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
+.open-warnings-target.missing {
+  color: var(--cd-text-muted);
+  font-style: italic;
+}
+
+.open-warnings-code {
+  color: var(--cd-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.open-warnings-show {
+  margin-left: auto;
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+.open-warnings-close:hover,
+.open-warnings-show:hover {
+  background: var(--cd-bg-hover);
+}
+
 .patch-review-item {
   border-bottom: 1px solid var(--cd-border, #e4e1d8);
   padding-bottom: 8px;
