@@ -26,7 +26,8 @@ vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
           apiVersion: "^0.1.6", entry: "test:label-history", permissions: ["document.write", "document.read", "document.proposePatch"],
           contributes: { commands: [
             { id: "plugin.labelHistory.insert", title: "Insert other molecule", requiredPermissions: ["document.write"], enabled: true },
-            { id: "plugin.labelHistory.move", title: "Move another atom", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true }
+            { id: "plugin.labelHistory.move", title: "Move another atom", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true },
+            { id: "plugin.labelHistory.moveMolecule", title: "Move whole molecule", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true }
           ] }
         }),
         options: { commandHandlers: {
@@ -41,6 +42,18 @@ vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
             const moved = moveNativeMoleculeParts(document, { objectId: molecule.id, kind: "atom", atomId: molecule.atoms[2]!.id }, { x: 120, y: 60 });
             const next = moved.pages[0].objects.find((object): object is MoleculeObject => object.id === molecule.id && object.type === "molecule")!;
             const receipt = await context.documents.proposePatch({ reason: "Move another atom",
+              patch: { op: "updateObject", objectId: molecule.id, changes: {
+                atoms: next.atoms, x: next.x, y: next.y, width: next.width, height: next.height
+              } } });
+            externalWrite.proposalId = receipt.id;
+          },
+          "plugin.labelHistory.moveMolecule": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => {
+            const document = (await context.documents.getActiveDocument())!;
+            const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+            const { moveDocumentObjects } = await import("./documentWorkflow");
+            const moved = moveDocumentObjects(document, [molecule.id], 120, 60);
+            const next = moved.pages[0].objects.find((object): object is MoleculeObject => object.id === molecule.id && object.type === "molecule")!;
+            const receipt = await context.documents.proposePatch({ reason: "Move whole molecule",
               patch: { op: "updateObject", objectId: molecule.id, changes: {
                 atoms: next.atoms, x: next.x, y: next.y, width: next.width, height: next.height
               } } });
@@ -375,11 +388,54 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await history(true); expect(molecule()).toEqual(before);
     expect(current().pages[0].objects[1]).toEqual(other);
   });
-  it("a changed hover key stays before an intervening plugin commit and the final label entry", async () => {
+  it.each(["Escape", "Enter"])("%s keeps every atom at its mid-edit whole-molecule move", async finish => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("plugin.labelHistory.moveMolecule"); });
+    await act(async () => { window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
+      detail: { kind: "acceptPluginProposal", proposalId: externalWrite.proposalId }
+    })); });
+    expect(editor()).not.toBeNull();
+    const moved = molecule();
+    for (const [i, atom] of before.atoms.entries()) {
+      expect(moved.atoms[i]).toMatchObject({ id: atom.id, x: atom.x + 120, y: atom.y + 60 });
+    }
+    await key(finish);
+    expect(editor()).toBeNull();
+    const result = molecule();
+    for (const [i, atom] of before.atoms.entries()) {
+      expect(result.atoms[i]).toEqual({ ...atom, x: moved.atoms[i]!.x, y: moved.atoms[i]!.y });
+    }
+    expectFreshDerivedFields(result);
+    if (finish === "Enter") {
+      check(7, 7);
+      const substituent = result.atoms[6]!;
+      expect(substituent).toMatchObject({ element: "OMe", labelLiteral: true });
+      expect(result.bonds[6]).toMatchObject({ fromAtomId: before.atoms[0]!.id, toAtomId: substituent.id });
+      expect(Math.hypot(substituent.x - moved.atoms[0]!.x, substituent.y - moved.atoms[0]!.y))
+        .toBeCloseTo(nativeDrawingStyleFromObjectStyle(result.style).bondLengthPx);
+      await history();
+      expect(status()).toBe("Undid Add OMe substituent");
+      expect(molecule().atoms).toEqual(result.atoms.slice(0, 6));
+      expectFreshDerivedFields(molecule());
+    } else check(6, 6);
+    await history(); expect(molecule()).toEqual(before);
+    await history(true);
+    expect(molecule().atoms).toEqual(result.atoms.slice(0, 6));
+    expectFreshDerivedFields(molecule());
+    if (finish === "Enter") { await history(true); expect(molecule()).toEqual(result); }
+  });
+  it.each(["before editor", "during editor"])("a changed hover key keeps a plugin commit %s separate from the final label entry", async timing => {
     await mount(ring(), "tool.bond"); const before = molecule();
     await pointer("pointermove", before.atoms[0]!); await key("O");
-    const firstKey = molecule(); await key("M"); await key("e");
-    const other = await insertOtherMolecule(); await key("Enter");
+    const firstKey = molecule();
+    let other;
+    if (timing === "before editor") other = await insertOtherMolecule();
+    await key("M"); await key("e");
+    expect(editor()?.value).toBe("OMe");
+    if (timing === "during editor") other = await insertOtherMolecule();
+    await key("Enter");
     expect(molecule().atoms[6]).toMatchObject({ element: "OMe" });
     await history(); expect(molecule()).toEqual(firstKey);
     expect(current().pages[0].objects[1]).toEqual(other);

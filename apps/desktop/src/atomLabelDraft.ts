@@ -71,6 +71,20 @@ function moleculeDraftPayload(molecule: MoleculeObject): string {
     chemistry: undefined, x: undefined, y: undefined, width: undefined, height: undefined });
 }
 
+/** Fields written by nativeAtomWithElement and relabel's import-H cleanup. Charge is unchanged. */
+function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom): MoleculeAtom {
+  const restored = { ...atom };
+  for (const key of ["element", "labelVisible", "labelLiteral", "warningSuppressed", "hydrogenCount"] as const) {
+    if (Object.hasOwn(before, key)) Object.assign(restored, { [key]: before[key] });
+    else delete restored[key];
+  }
+  // Keep the original record (including optional-field ordering) for an exact untouched rollback.
+  const keys = Object.keys(restored) as Array<keyof MoleculeAtom>;
+  return keys.length === Object.keys(before).length &&
+    keys.every(key => Object.hasOwn(before, key) && JSON.stringify(restored[key]) === JSON.stringify(before[key]))
+    ? before : restored;
+}
+
 /** Roll back preview data directly: a chemistry patch would clear imported H hints again. */
 export function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelDraftState): ChemDraftDocument {
   const pages = document.pages.map(page => ({
@@ -83,7 +97,7 @@ export function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLa
       const currentData = atomData(object);
       const previewData = atomData(rollback.preview);
       const atoms = object.atoms.map(atom => {
-        if (atom.id === state.atomId) return state.draftBeforeAtom;
+        if (atom.id === state.atomId) return restoreAtomLabelFields(atom, state.draftBeforeAtom);
         // Relabel patches can drop orphaned import hints on other atoms. Restore those atoms only
         // if neither an external atom/style edit nor an incident-bond edit superseded the preview.
         return rollback.clearedAtomIds.has(atom.id) && !rollback.changedAtomIds.has(atom.id) &&

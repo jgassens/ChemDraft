@@ -1269,6 +1269,7 @@ type AtomLabelEditOptions = {
   beforeAtom?: MoleculeAtom;
   beforeMolecule?: MoleculeObject;
   hotkeyChanged?: boolean;
+  hotkeyUndoDocument?: ChemDraftDocument;
 };
 
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
@@ -2218,7 +2219,7 @@ export function MainWindow({
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
   const hoveredNativeDeleteTargetRef = useRef<NativeMoleculeDeleteTarget | undefined>(undefined);
-  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string; beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject; hotkeyChanged: boolean } | undefined>(undefined);
+  const hoverLabelAssignmentRef = useRef<{ objectId: string; atomId: string; label: string; beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject; hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument } | undefined>(undefined);
   // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
   // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
@@ -5423,7 +5424,7 @@ export function MainWindow({
       draftBeforeMolecule: object,
       draftRollback: createAtomLabelDraftRollback(object),
       continuesHotkey: options.hotkeyChanged === true,
-      hotkeyUndoDocument: options.hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
+      hotkeyUndoDocument: options.hotkeyUndoDocument,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
     };
@@ -10453,7 +10454,8 @@ export function MainWindow({
           const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
           const draft = `${assignment.label}${event.key}`;
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
-            draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule, hotkeyChanged: assignment.hotkeyChanged
+            draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
+            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -10484,7 +10486,10 @@ export function MainWindow({
             const object = findDocumentObject(documentRef.current, hoveredTarget.objectId);
             const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === hoveredTarget.atomId) : undefined;
             if (atom?.element === assignedElement && beforeAtom && beforeObject?.type === "molecule") {
-              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element, beforeAtom, beforeMolecule: beforeObject, hotkeyChanged: documentRef.current !== beforeHotkeyDocument };
+              const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
+              hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
+                beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
+                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined };
             }
           }
           return;

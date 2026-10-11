@@ -66,6 +66,18 @@ describe("atom-label draft rollback", () => {
     expectDerivedFromGraph(restored);
   });
 
+  it("restores only label fields on the edited atom, preserving its current move, charge and display data", () => {
+    const { document, before, state } = fixture();
+    const preview = draft(document, state);
+    const current = molecule(preview);
+    const edited = { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, x: atom.x + 120, y: atom.y + 60, formalCharge: 1, labelOffset: { x: 10, y: 20 } } : atom) };
+    const restored = molecule(restoreAtomLabelDraft(replaceMolecule(preview, edited), state));
+    expect(restored.atoms[0]).toEqual({ ...before.atoms[0], x: edited.atoms[0]!.x, y: edited.atoms[0]!.y,
+      formalCharge: 1, labelOffset: { x: 10, y: 20 } });
+    expectDerivedFromGraph(restored);
+  });
+
   it("does not adopt an external edit as draft cleanup when more keys follow it", () => {
     const { document, before, state } = fixture();
     let preview = draft(document, state, "O");
