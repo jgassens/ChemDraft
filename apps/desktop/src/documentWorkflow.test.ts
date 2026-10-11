@@ -291,6 +291,7 @@ import {
   updateNativeGraphicPathHandle,
   updateNativeGraphicRadialGradientHandle,
   nativeSingleBondGraphSmiles,
+  nativeAtomLabelContextInMolecule,
   type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
 import * as OCL from "openchemlib";
@@ -17351,6 +17352,76 @@ describe("ring placement valence guard", () => {
     expect(fused?.fallbackReason).toBeUndefined();
     expect(fused!.molecule.bonds.filter((bond) => bond.fromAtomId === "g" || bond.toAtomId === "g")).toHaveLength(2);
     expect(valenceUse(fused!.molecule, "g")).toBe(2);
+  });
+
+  // "SCN" reads by its bond side (#83): thiocyanate with the bond on its left, a bare formula with
+  // it on the right. labelledChain puts the neighbour to the label's right; this mirror puts it on
+  // the left. A recorded labelBondSide overrides the geometry either way.
+  function mirroredLabelledChain(label: string) {
+    return guardDocument([
+      ["g", label, 300, 300], ["c1", "C", 300 - L, 300], ["c2", "C", 300 - L * 1.5, 300 + L * Math.sqrt(3) / 2]
+    ], [["g", "c1"], ["c1", "c2"]]);
+  }
+  function withRecordedSide(chain: { document: ChemDraftDocument; molecule: MoleculeObject }, side: "left" | "right") {
+    const atoms = chain.molecule.atoms.map((atom) => atom.id === "g" ? { ...atom, labelBondSide: { side, atomId: "c1" } } : atom);
+    const document = applyPatches(chain.document, [{ op: "updateObject", objectId: chain.molecule.id, changes: { atoms } }]);
+    return { document, molecule: moleculeById(document, chain.molecule.id) };
+  }
+  const scnLeft = () => [mirroredLabelledChain("SCN"), withRecordedSide(labelledChain("SCN"), "left")];
+  const scnRight = () => [labelledChain("SCN"), withRecordedSide(mirroredLabelledChain("SCN"), "right")];
+
+  it("judges a thiocyanate SCN with its bond on the left full", () => {
+    for (const { document, molecule } of scnLeft()) {
+      expect(nativeAtomLabelContextInMolecule(molecule.atoms.find((atom) => atom.id === "g")!, molecule, true).bondSide).toBe("left");
+      expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+      expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane")).toEqual({
+        document, refusal: "bond-atom-no-free-valence"
+      });
+    }
+  });
+
+  it("reads an SCN with its bond on the right as a bare formula, but refuses a fusion that gives it two bonds", () => {
+    for (const { document, molecule } of scnRight()) {
+      const atom = molecule.atoms.find((candidate) => candidate.id === "g")!;
+      const context = nativeAtomLabelContextInMolecule(atom, molecule, true);
+      expect(context.bondSide).toBe("right");
+      expect(workflowCore.nativeAtomLabelReading("SCN", context).kind).not.toBe("group");
+      expect(workflowCore.nativeAtomLabelFreeValence("SCN", 0, context)).toBeUndefined();
+      // The guard judges the result: with two bonds the label has no side, reads as thiocyanate
+      // and is badged over-full, so the fusion is still refused (not for the one-bond reading).
+      expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+    }
+  });
+
+  it("reads OMe, NMe, Ph, R and both SCN sides the same in the drawing tools and the ring guard", () => {
+    const cases = [
+      ...["OMe", "NMe", "Ph", "R"].map((label) => ({ label, chain: labelledChain(label) })),
+      ...scnLeft().map((chain) => ({ label: "SCN left", chain })),
+      ...scnRight().map((chain) => ({ label: "SCN right", chain }))
+    ];
+    const verdicts = cases.map(({ label, chain: { document, molecule } }) => {
+      const atom = molecule.atoms.find((candidate) => candidate.id === "g")!;
+      const freeValence = workflowCore.nativeAtomLabelFreeValence(
+        atom.element, atom.formalCharge, nativeAtomLabelContextInMolecule(atom, molecule, true)
+      );
+      const availableBonds = findNativeMoleculeAtomHit(molecule, atom)?.availableBonds ?? 0;
+      const refused = bondPlan(document, molecule, "gb1", "cyclohexane")?.fallbackReason === "bond-atom-no-free-valence";
+      // A label with a free valence: the tools fill exactly what is left, and the guard refuses
+      // exactly when nothing is. Without one, the tools add no bonds; the guard skips R, and refuses
+      // a right-bond SCN only because the fused result reads it, with two bonds, as thiocyanate.
+      if (freeValence !== undefined) {
+        expect(availableBonds, label).toBe(freeValence - 1);
+        expect(refused, label).toBe(availableBonds === 0);
+      } else {
+        expect(availableBonds, label).toBe(0);
+      }
+      return [label, freeValence, availableBonds, refused];
+    });
+    expect(verdicts).toEqual([
+      ["OMe", 1, 0, true], ["NMe", 2, 1, false], ["Ph", 1, 0, true], ["R", undefined, 0, false],
+      ["SCN left", 1, 0, true], ["SCN left", 1, 0, true],
+      ["SCN right", undefined, 0, true], ["SCN right", undefined, 0, true]
+    ]);
   });
 
   it("still skips a generic R placeholder", () => {

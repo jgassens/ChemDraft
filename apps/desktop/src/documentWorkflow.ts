@@ -180,6 +180,7 @@ import {
   nativeLabelGroupVerdict,
   nativeAtomLabelReading,
   nativeAtomLabelFreeValence,
+  type NativeAtomLabelContext,
   nativeLabelBondSide,
   nativeLabelReadingDependsOnBondSide,
   withNativeDocumentLabelBondSides,
@@ -3050,15 +3051,17 @@ function nativeRingTargetFailureValenceReason(
  * Whether the atom admits this valence use at its formal charge. A group or spelled label (#83:
  * "OMe", "NMe") is judged by its free valence, so a one-bond "OMe" is full; an element
  * label by its element; a label with no free valence (generic R, a bare formula, unrecognized
- * text) passes, as every valence check skips it.
+ * text) passes, as every valence check skips it. The label is read with the drawing tools' context
+ * (`nativeAtomLabelContextInMolecule`), so an "SCN" with its bond on the right is a bare formula here too.
  */
 function nativeAtomSupportsValenceUsage(molecule: MoleculeObject, atom: MoleculeAtom, usage: number): boolean {
   const bonded = molecule.bonds.some((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
-  const freeValence = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, { bonded });
+  const context = nativeAtomLabelContextInMolecule(atom, molecule, bonded);
+  const freeValence = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, context);
   if (freeValence !== undefined) {
     return usage <= freeValence;
   }
-  if (nativeAtomLabelReading(atom.element, { bonded }).kind === "generic") {
+  if (nativeAtomLabelReading(atom.element, context).kind === "generic") {
     return true;
   }
   const element = nativeElementFromAtomLabel(atom.element);
@@ -19529,13 +19532,18 @@ function reorderMoleculeBonds(
   return reordered;
 }
 
-function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
-  // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
-  // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
-  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
-  // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
-  // and takes bonds like one. A cyano label ("SCN") with its bond on the right is a bare formula,
-  // read with the same bond side as the badge and the formula.
+/**
+ * The context an atom's label is read with in its molecule: `bonded` as the caller counts it,
+ * `typed` from the atom's `labelLiteral`, and the bond side its label records
+ * (`nativeLabelBondSide`) unless the label is an element. The drawing tools
+ * (`nativeAtomAvailableBondCount`) and the ring guard (`nativeAtomSupportsValenceUsage`) both read
+ * labels through it, so they never disagree about what a label means.
+ */
+export function nativeAtomLabelContextInMolecule(
+  atom: MoleculeAtom,
+  molecule: MoleculeObject,
+  bonded: boolean
+): NativeAtomLabelContext {
   const bondSide = nativeElementFromAtomLabel(atom.element)
     ? undefined
     : nativeLabelBondSide(
@@ -19543,11 +19551,21 @@ function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, m
       molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
       molecule.atoms
     );
-  const reading = nativeAtomLabelReading(atom.element, {
-    bonded: valenceUsed > 0,
+  return {
+    bonded,
     typed: atom.labelLiteral === true,
     ...(bondSide ? { bondSide } : {})
-  });
+  };
+}
+
+function nativeAtomAvailableBondCount(atom: MoleculeAtom, valenceUsed: number, molecule: MoleculeObject): number {
+  // A group label ("OMe", "NMe2") has a known free valence: the bond tool may fill it — a lone
+  // "OMe" takes its one bond — but never past it. Any other label (a placeholder, a bare formula,
+  // unrecognized text) has none to fill and takes no bonds from the drawing tools. A typed "Ac",
+  // "Pr" or "Ts" on a bond is such a group too; unbonded, or from a structure file, it is an element
+  // and takes bonds like one. A cyano label ("SCN") with its bond on the right is a bare formula,
+  // read with the same bond side as the badge and the formula.
+  const reading = nativeAtomLabelReading(atom.element, nativeAtomLabelContextInMolecule(atom, molecule, valenceUsed > 0));
   if (reading.kind === "element") {
     return Math.max(0, nativeAtomInvalidGrowthLimit - valenceUsed);
   }
