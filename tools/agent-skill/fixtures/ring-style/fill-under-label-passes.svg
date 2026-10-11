@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30">
+  <path data-molecule-fill-ring="true" data-ring-key="ring-a" fill-rule="evenodd" d="M 0 0 L 20 0 L 20 20 L 0 20 Z M 4 4 L 16 4 L 16 16 L 4 16 Z" fill="#e53935" />
+  <g data-atom-label="O" transform="translate(10 10)" font-size="15">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
+  </g>
+</svg>

@@ -26,6 +26,7 @@ interface RingStyle {
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
+  fillsUnderLabels(svg: string, tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -236,7 +237,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     }
   }, 60_000);
 
-  it("letters paclitaxel by the taxane convention and keeps labels left on a fill legible", () => {
+  it("letters paclitaxel by the taxane convention and keeps labels left on a fill in their normal colour", () => {
     const { build, doc } = fixture("paclitaxel");
     const { carbon, picture, report } = ringStyle.style(structuredClone(doc), build, { convention: "taxane" });
     const ring = (L: string) => report.letters.find((l: Json) => l.letter === L);
@@ -248,23 +249,21 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     // The three phenyls are pendant, not core: plain.
     expect(report.unlettered).toHaveLength(3);
     expect(report.unlettered.every((r: string) => /aromatic/.test(r))).toBe(true);
-    // C15's gem-dimethyl cannot leave ring B's fill; its labels take B's letter colour, and no
-    // box, halo or label background is added for them.
+    // C15's gem-dimethyl cannot leave ring B's fill. Its labels keep the molecule's normal
+    // colour; rendering cuts rounded notches out of the fill instead of recolouring or boxing them.
     expect(report.layout.stuck).toHaveLength(2);
-    const fillB = ring("B").fill;
+    const originalBackground = molecule(doc).style.atomLabelBackgroundColor;
     for (const [copy, list] of [[carbon, report.labelsOnFills.carbon], [picture, report.labelsOnFills.picture]] as const) {
       const stuck = report.layout.stuck.map((x: Json) => x.group.split(" ")[0]);
       expect(list.map((l: Json) => l.atom).sort()).toEqual(stuck.sort());
       const style = molecule(copy).style;
       for (const l of list) {
         expect(l.on).toBe("B");
-        expect(l.colour).toBe(ringStyle.letterColour(fillB, 0.9));
-        expect(style.atomLabelColors[l.atom]).toBe(l.colour);
+        expect(l.colour).toBeUndefined();
       }
-      expect(style.atomLabelBackgroundColor).toBe("transparent");
+      expect(style.atomLabelColors).toBeUndefined();
+      expect(style.atomLabelBackgroundColor).toBe(originalBackground);
       expect(style.atomLabelBackgroundColors).toBeUndefined();
-      // Labels off the fills keep the default colour.
-      expect(Object.keys(style.atomLabelColors)).toHaveLength(list.length);
     }
     expect(report.labelsOnFills.picture.map((l: Json) => l.label)).toEqual(["Me", "Me"]);
   });
@@ -304,6 +303,35 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     // Rendered by ChemDraft from cholesterol before its C19 methyl was turned (molfile attributes stripped).
     const found = ringStyle.collisions(read(join(fixtures, "cholesterol-unrotated-carbon.svg")));
     expect(found.map((c) => [c.kind, [c.a.text, c.b.text].sort().join("/")])).toEqual([["label-label", "CH3/H"]]);
+  });
+
+  it("fails a ring fill under an atom label and accepts its even-odd notch", () => {
+    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-fails.svg"))))
+      .toEqual([{ label: "O", ring: "ring-a", x: 5.5, y: 5 }]);
+    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-passes.svg")))).toEqual([]);
+  });
+
+  it("makes check fail loudly for the emitted fill-under-label fixture", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ring-style-fill-check-"));
+    try {
+      const { build, doc } = fixture("phenyldecalin");
+      const styled = ringStyle.style(structuredClone(doc), build, { fusionH: false });
+      const document = join(dir, "phenyldecalin-carbon.json");
+      writeFileSync(document, JSON.stringify(styled.carbon));
+      writeFileSync(join(dir, "phenyldecalin-build.jsonl"), JSON.stringify({ name: "phenyldecalin", ok: true, molecules: [build] }) + "\n");
+      writeFileSync(join(dir, "phenyldecalin-style.json"), JSON.stringify(styled.report));
+      writeFileSync(join(dir, "phenyldecalin-pubchem.json"), JSON.stringify({ CID: 1, Title: "fixture", InChIKey: "fixture-key" }));
+      writeFileSync(join(dir, "phenyldecalin-render.jsonl"), JSON.stringify({ name: "render", ok: true, document,
+        files: [join(fixtures, "fill-under-label-fails.svg")], molecules: [{ canonicalSmiles: "C", stereoCenters: 0, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] }) + "\n");
+      writeFileSync(join(dir, "phenyldecalin-identity.jsonl"), JSON.stringify({ name: "1-render", summary: { inchiKey: { value: "fixture-key" } } }) + "\n");
+
+      const result = await runScript("check", dir, "phenyldecalin");
+      expect(result.status).toBe(1);
+      expect(result.stdout).toMatch(/^Figure checks FAILED \(1\):$/m);
+      expect(result.stdout).toMatch(/^ {2}FAILED fill under a label: ring ring-a covers atom label O near \(5\.5, 5\)/m);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("chooses letter colours by luminance and reads UTF-16 and BOM files", () => {

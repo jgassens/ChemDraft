@@ -274,13 +274,11 @@ makes.
 3. **Where the letter goes.** At the most open point inside its ring,
    clear of atoms, bonds and labels (such as a gem-dimethyl pointing into
    the ring), in bold italic serif at 20 px, shrinking only to fit.
-4. **Letter and label colour.** White on a dark fill, near-black on a
-   light one, chosen by the fill's relative luminance as drawn (white
-   below 0.34). An atom label that stays on a fill not its own (a
-   substituent reported `STILL ON A FILL`, such as paclitaxel's C15 Me
-   labels in ring B) gets the same choice for that fill, so it stays
-   legible. Only the text colour changes: no box, halo or label
-   background is added.
+4. **Letter colour.** Ring letters are white on a dark fill and near-black
+   on a light one, chosen by the fill's relative luminance as drawn (white
+   below 0.34). Atom labels keep their normal molecule colour: a fill is
+   notched around every label on or in it, with no box, halo or label
+   background added.
 5. **Fill colours.** Twelve saturated colours in letter order, so each
    ring gets its own; beyond twelve, a greedy colouring over ring
    adjacency keeps rings that share an atom apart.
@@ -363,6 +361,7 @@ makes.
    | Oversized wedge or hash | a wedge or hash is longer than 1.3 times the median bond length |
    | Shrunk letter | a ring letter had to shrink below 14 px (set at 20 px), or found no room at all |
    | Hidden ring | more than 40% of a lettered ring's area lies under another lettered ring's fill |
+   | Fill under a label | an emitted ring-fill path covers part of an atom-label box |
    | Dropped fusion H | a fusion CH stereocentre (rule 6) is left without its H, for want of room, a touch or an `UNDONE` |
 
    Either command then prints `Figure checks FAILED` with one line per
@@ -468,7 +467,7 @@ When `style` or `check` prints `Figure checks FAILED`, do not deliver the
 coloured figure as finished, and do not describe it as clean. Tell the
 user exactly what failed, in the script's words (which ring is a sliver,
 which bond or wedge is stretched and by how much, which letter shrank,
-which ring is hidden, which fusion H is missing). Then offer either the
+which ring is hidden, whether a fill is under a label, which fusion H is missing). Then offer either the
 plain drawing (no fills: the same document without `ringStyles` and
 letters, or ChemDraft's ordinary render of the SMILES), or the coloured
 figure with those failures named beside it. First try the forced layouts
@@ -488,10 +487,10 @@ rather than deliver the figure as finished.
 Open each PNG at full size and check: every letter sits in the ring the
 convention names and reads on its fill; the colours are loud and no two
 touching rings match; every wedge and hash is where it was, including on
-each new H; no label is clipped or sits on another label or a letter. A
-ring fill also runs under a ring heteroatom's label to the atom centre,
-so a coloured point pokes into the O (paclitaxel's oxetane, morphine's
-furan): look for it, and see [art](art.md), Known limits.
+each new H; no label is clipped or sits on another label or a letter. Ring
+fills are notched around atom labels, so each such label sits on the page
+background without a white box; the figure check verifies that no fill
+remains under one.
 
 - **`STILL ON A FILL`.** Read the reason. "Enclosed by filled rings"
   means every direction from the attachment atom lies on a fill: the atom

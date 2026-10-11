@@ -181,19 +181,18 @@ rings.forEach((r, i) => page.objects.push({ id: `ring-${i}`, type: "text", text:
 ```
 
 Verified on gonane: four filled rings (solid and linear gradient fills,
-one glowing) with letters A–D centred, SMILES unchanged. On coloured
-fills, set `mol.style.atomLabelBackgroundColor = "transparent"` so
-heteroatom labels do not sit on white patches.
+one glowing) with letters A–D centred, SMILES unchanged. Ring fills are
+notched around atom labels on or inside them, so those labels sit on the
+page background without white label boxes.
 
 For a vivid look (Nicolaou style), use saturated colours at
 `fillOpacity` about 0.9, never two alike side by side, and pick each
 ring letter's colour for its fill by luminance: white on red, green,
 blue, purple or magenta; near-black on yellow, orange, cyan or light
 green. `scripts/ring-style.mjs` (pattern 7) does all of this with a
-twelve-colour palette. A per-atom white
-`atomLabelBackgroundColors` patch on ring O atoms looked worse (a speck
-of fill shows inside the O); black O labels on the transparent default
-stayed readable at the ring corners.
+twelve-colour palette. This luminance rule is for ring letters only;
+atom labels retain the molecule's normal label colour inside their
+notches.
 
 ### 2. Explicit H at a ring fusion, bold fusion bond, CH3 or Me
 
@@ -362,12 +361,13 @@ that applies patterns 1 and 2 to any molecule. Recipe 11 in
   each turn the options' `rotate` asks for, each fusion H) must read in
   the checkout's `render-document` as the same molecule and stereo
   counts, or it is undone and reported `UNDONE`; what cannot be cleared
-  is named, and a label left on a fill gets white or near-black text by
-  that fill's luminance (no box or halo). `"layout"` in the options
+  is named, and a label left on a fill keeps its normal label colour: the
+  renderer notches the emitted fill around it (no box or halo). `"layout"` in the options
   forces `"build"`, `"canonical"` or `"pubchem"`. Last, it runs the
   figure checks and exits 1 with a `FAILED` list when a lettered ring is
   a sliver, a bond or wedge is stretched, a letter shrank below 14 px, a
-  ring lies mostly under another's fill, or a fusion H was dropped
+  ring lies mostly under another's fill, a fill remains under an atom label,
+  or a fusion H was dropped
   (limits in recipe 11, rule 14). A figure that fails is not delivered as
   finished.
 - `relayout <dir> <name>` rewrites the job with ChemDraft's canonical
@@ -411,11 +411,9 @@ style step cannot repair).
   fonts were replaced; `render-document --format pdf` of the same aspirin
   document shows the same fault. View every PDF before
   delivering it, and prefer SVG or PNG until this is fixed.
-- **A ring fill runs under a ring heteroatom's label to the atom centre.**
-  With `atomLabelBackgroundColor` transparent (needed on coloured fills),
-  the fill polygon's corner shows inside the label, so a coloured point
-  pokes into the O of an oxetane or furan. Look for it at full size; it
-  cannot be hidden from the document today.
+- **Ring fills notch around atom labels.** A label on or inside a filled
+  ring sits on the page background in a rounded bite out of the fill; the
+  renderer does not paint a rectangular white label box there.
 - **Ring fills are painted in a fixed order the document cannot change.**
   Where a bridged ring's outline takes in part of another ring, the
   larger fill can cover the smaller one. `scripts/ring-style.mjs` then
