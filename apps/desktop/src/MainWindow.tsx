@@ -1519,7 +1519,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.09.05-opus";
+const CURRENT_BUILD_STAMP = "10.11.09.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1755,6 +1755,12 @@ export interface MainWindowProps {
   initialCrosshairsVisible?: boolean;
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
+  /**
+   * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
+   * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
+   * on off the desktop runtime, as DOM tests do to exercise native-mode code, runs native mode with no
+   * window manager: no palette windows are reconciled, and no in-window palettes appear either.
+   */
   nativePalette?: boolean;
 }
 
@@ -10824,6 +10830,13 @@ export function MainWindow({
   // never left with no toolbars.
   useEffect(() => {
     if (!effectiveNativePalette) {
+      return;
+    }
+    // Native palette windows exist only in the desktop runtime, which is also the only place native
+    // palettes are on by default. Off it (a caller forcing `nativePalette`, as DOM tests do) there is
+    // no window manager to reconcile with: retrying would only end, about 0.4 s later, in the
+    // fallback below, posting its status over whatever the status line said at that moment.
+    if (!isDesktopRuntime()) {
       return;
     }
 
