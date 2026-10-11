@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-export",
+  "description": "Allow only the document window to outline SVG text for PDF export.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-outline-svg-text"
+  ]
+}

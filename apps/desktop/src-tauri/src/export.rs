@@ -9,6 +9,31 @@ const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 
+/// Export SVGs may embed data URLs, but must never read files from the host.
+fn export_svg_options() -> usvg::Options<'static> {
+    usvg::Options {
+        fontdb: shared_fontdb(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
+
+/// PDF's built-in fonts cannot encode scientific Unicode. Shape text with the
+/// same system font database as raster export, then retain it as vector paths.
+#[tauri::command]
+pub(crate) fn outline_svg_text(svg: String) -> Result<String, String> {
+    let options = export_svg_options();
+    let tree = usvg::Tree::from_data(svg.as_bytes(), &options)
+        .map_err(|error| format!("Could not parse SVG for PDF export: {error}"))?;
+    Ok(tree.to_string(&usvg::WriteOptions {
+        preserve_text: false,
+        ..Default::default()
+    }))
+}
+
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RasterExportFormat {
@@ -59,10 +84,7 @@ pub(crate) fn rasterize_svg(request: RasterExportRequest) -> Result<RasterExport
 }
 
 fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
-    let options = usvg::Options {
-        fontdb: shared_fontdb(),
-        ..Default::default()
-    };
+    let options = export_svg_options();
 
     let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
@@ -387,6 +409,62 @@ fn warning(code: &'static str, message: String) -> RasterExportWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_text_is_shaped_into_vector_paths() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="80"><text x="10" y="30" font-family="Arial" font-size="20">[Zr₆(μ₃-O)₄(μ₃-OH)₄(BDC)₆]ₙ</text><text x="10" y="60" font-family="Arial" font-weight="bold">BDC²⁻ · Zr₆ cluster node</text></svg>"#;
+        let outlined = outline_svg_text(svg.to_string()).expect("PDF text should be outlined");
+        assert!(!outlined.contains("<text"));
+        assert!(outlined.contains("<path"));
+        assert!(outline_svg_text("invalid SVG".to_string()).is_err());
+    }
+
+    #[test]
+    fn export_images_accept_only_data_urls() {
+        let directory =
+            std::env::temp_dir().join(format!("chemdraft-export-images-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create image fixture directory");
+        let image_path = directory.join("fixture.svg");
+        std::fs::write(&image_path, r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#)
+            .expect("write real image fixture");
+        let mut options = export_svg_options();
+        options.resources_dir = Some(directory.clone());
+        let absolute = image_path.to_string_lossy().replace('\\', "/");
+        for href in [
+            format!("file:///{absolute}"),
+            "fixture.svg".to_string(),
+            absolute,
+        ] {
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="{href}" width="8" height="8"/></svg>"#
+            );
+            let tree = usvg::Tree::from_data(svg.as_bytes(), &options).expect("parse SVG");
+            assert!(tree.root().children().is_empty(), "must not load {href}");
+            let outlined = outline_svg_text(svg.clone()).expect("outline SVG");
+            assert!(
+                !outlined.contains("<image"),
+                "outlined SVG must not load {href}"
+            );
+            let response = rasterize_svg_impl(RasterExportRequest {
+                svg,
+                background: Some("transparent".to_string()),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect("rasterize SVG");
+            let pixels = image::load_from_memory(&response.bytes)
+                .expect("decode PNG")
+                .to_rgba8();
+            assert!(
+                pixels.pixels().all(|pixel| pixel[3] == 0),
+                "raster must not load {href}"
+            );
+        }
+        let embedded = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='red'/%3E%3C/svg%3E" width="8" height="8"/></svg>"#;
+        let tree =
+            usvg::Tree::from_data(embedded.as_bytes(), &options).expect("parse embedded SVG");
+        assert!(!tree.root().children().is_empty(), "data URL must load");
+        std::fs::remove_dir_all(&directory).expect("remove fixture directory");
+    }
 
     const SIMPLE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32" viewBox="0 0 64 32"><rect width="64" height="32" fill="#ffffff"/><circle cx="16" cy="16" r="8" fill="#111111"/></svg>"##;
 

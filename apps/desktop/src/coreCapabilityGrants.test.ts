@@ -79,3 +79,20 @@ describe("core capability grants", () => {
     expect(capabilities).toContain('"core:window:allow-show"');
   });
 });
+
+it("grants PDF text outlining only to the document window", () => {
+  const directory = fileURLToPath(new URL("../src-tauri/capabilities", import.meta.url));
+  const grants = readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as {
+      windows?: string[];
+      webviews?: string[];
+      permissions: Array<string | { identifier: string }>;
+    })
+    .filter((capability) => capability.permissions.some((permission) =>
+      (typeof permission === "string" ? permission : permission.identifier) === "allow-outline-svg-text"
+    ));
+  expect(grants).toHaveLength(1);
+  expect(grants[0].windows).toEqual(["main"]);
+  expect(grants[0].webviews).toBeUndefined();
+});
