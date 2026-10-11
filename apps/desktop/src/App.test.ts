@@ -6125,8 +6125,22 @@ describe("ChemDraft desktop shell", () => {
     expect(backObjectIndex).toBeLessThan(frontObjectIndex);
     expect(markup).toContain('data-object-id="mol_bond_002" data-layer-index="0"');
     expect(markup).toContain('data-object-id="mol_bond_001" data-layer-index="1"');
-    expect(markup).toContain("z-index:1");
-    expect(markup).toContain("z-index:2");
+    const layerZIndex = (objectId: string, layerIndex: number) => {
+      const marker = `data-object-id="${objectId}" data-layer-index="${layerIndex}"`;
+      const markerIndex = markup.indexOf(marker);
+      const openingTagStart = markup.lastIndexOf("<", markerIndex);
+      const openingTagEnd = markup.indexOf(">", markerIndex);
+      const openingTag = markup.slice(openingTagStart, openingTagEnd + 1);
+      const style = openingTag.match(/\bstyle="([^"]*)"/)?.[1] ?? "";
+      const zIndex = style.match(/(?:^|;)\s*z-index:\s*(\d+)(?:;|$)/)?.[1];
+      return Number(zIndex);
+    };
+    const backZIndex = layerZIndex("mol_bond_002", 0);
+    const frontZIndex = layerZIndex("mol_bond_001", 1);
+
+    expect(backZIndex).toBe(20);
+    expect(frontZIndex).toBe(21);
+    expect(backZIndex).toBeLessThan(frontZIndex);
 
     expect(markup).not.toContain("native-bond-knockout");
   });
