@@ -3,15 +3,16 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, moleculeToMolfileV2000, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject, type Point } from "@chemdraft/chem-core";
-import { createNativeTextObject, nativeAtomExternalValence, nativeAtomChargeSupportsValence, nativeAtomLabelReading, nativeBondOrderResolution, nativeLabelGroupVerdict, normalizeNativeMoleculeGeometry } from "@chemdraft/document-workflow-core";
+import { createNativeTextObject, nativeAtomExternalValence, nativeAtomChargeSupportsValence, nativeAtomLabelReading, nativeBondOrderResolution, nativeLabelGroupVerdict, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { nativeNicknameLabels } from "./commands";
 import { loadKeybindingSettings, saveKeybindingSettings } from "./keybindingSettings";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+import { ANALYSIS_WINDOW_ACTION_EVENT } from "./plugins/panelBridge";
 
-const externalWrite = vi.hoisted(() => ({ object: undefined as MoleculeObject | undefined, pageId: "" }));
+const externalWrite = vi.hoisted(() => ({ object: undefined as MoleculeObject | undefined, pageId: "", proposalId: "" }));
 // Use the same runtime registration path as the plugin DOM fixtures, with real permission-gated writes.
 vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
   const actual = await importOriginal<typeof import("./plugins/registerBundledPlugins")>();
@@ -22,14 +23,29 @@ vi.mock("./plugins/registerBundledPlugins", async importOriginal => {
       const descriptors = [...actual.registerBundledPlugins(runtime, disabledIds), {
         manifest: PluginManifestSchema.parse({
           id: "org.chemdraft.test.labelHistory", name: "Label History Test", version: "1.0.0",
-          apiVersion: "^0.1.6", entry: "test:label-history", permissions: ["document.write"],
-          contributes: { commands: [{ id: "plugin.labelHistory.insert", title: "Insert other molecule", requiredPermissions: ["document.write"], enabled: true }] }
+          apiVersion: "^0.1.6", entry: "test:label-history", permissions: ["document.write", "document.read", "document.proposePatch"],
+          contributes: { commands: [
+            { id: "plugin.labelHistory.insert", title: "Insert other molecule", requiredPermissions: ["document.write"], enabled: true },
+            { id: "plugin.labelHistory.move", title: "Move another atom", requiredPermissions: ["document.read", "document.proposePatch"], enabled: true }
+          ] }
         }),
         options: { commandHandlers: {
           "plugin.labelHistory.insert": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => context.documents.applyPatch!({
             reason: "Insert other molecule",
             patch: { op: "addObject", pageId: externalWrite.pageId, object: externalWrite.object! }
-          })
+          }),
+          "plugin.labelHistory.move": async (context: import("@chemdraft/plugin-api").PluginCommandContext) => {
+            const document = (await context.documents.getActiveDocument())!;
+            const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+            const { moveNativeMoleculeParts } = await import("./documentWorkflow");
+            const moved = moveNativeMoleculeParts(document, { objectId: molecule.id, kind: "atom", atomId: molecule.atoms[2]!.id }, { x: 120, y: 60 });
+            const next = moved.pages[0].objects.find((object): object is MoleculeObject => object.id === molecule.id && object.type === "molecule")!;
+            const receipt = await context.documents.proposePatch({ reason: "Move another atom",
+              patch: { op: "updateObject", objectId: molecule.id, changes: {
+                atoms: next.atoms, x: next.x, y: next.y, width: next.width, height: next.height
+              } } });
+            externalWrite.proposalId = receipt.id;
+          }
         } }
       }];
       actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
@@ -105,6 +121,25 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
   }
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
+  }
+  async function moveOtherAtom() {
+    const before = molecule().atoms[2]!;
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("plugin.labelHistory.move"); });
+    await act(async () => { window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
+      detail: { kind: "acceptPluginProposal", proposalId: externalWrite.proposalId }
+    })); });
+    const moved = molecule().atoms[2]!;
+    expect(moved).toMatchObject({ id: before.id, x: before.x + 120, y: before.y + 60 });
+    expect(editor()).not.toBeNull();
+    return moved;
+  }
+  function expectFreshDerivedFields(object: MoleculeObject) {
+    const smiles = tryNativeSingleBondGraphSmiles(object.atoms, object.bonds);
+    expect(object.structureFormat).toBe("smiles");
+    expect(object.structure).toBe("smiles" in smiles ? smiles.smiles : "");
+    expect(object.chemistry).toEqual(nativeSingleBondGraphMetadata(object.atoms, object.bonds));
+    const geometry = normalizeNativeMoleculeGeometry(object);
+    for (const key of ["x", "y", "width", "height"] as const) expect(object[key]).toBe(geometry[key]);
   }
   async function pointer(type: string, point: Point, target: Element = page()) {
     await act(async () => {
@@ -278,6 +313,56 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     expect(current().pages[0].objects).toHaveLength(1);
     await history(true); expect(molecule()).toEqual(before);
     expect(current().pages[0].objects[1]).toEqual(other);
+  });
+  it.each(["Escape", "empty", "same-label"])("%s without another edit restores hints and flags on every atom exactly", async finish => {
+    const d = ring(), original = d.pages[0].objects[0] as MoleculeObject;
+    const imported: MoleculeObject = { ...original, structureFormat: "molfile-v2000",
+      structure: moleculeToMolfileV2000(original, { kekuleBondOrders: nativeBondOrderResolution(original.atoms, original.bonds).kekuleOrders }).contents,
+      atoms: original.atoms.map(atom => ({ ...atom, hydrogenCount: 2, labelVisible: true,
+        warningSuppressed: true, labelOffset: { x: 1, y: 2 } })) };
+    await mount({ ...d, pages: d.pages.map(p => ({ ...p, objects: [imported] })) });
+    const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    expect(molecule().atoms.every(atom => atom.hydrogenCount === undefined)).toBe(true);
+    if (finish !== "Escape") await input(editor()!, finish === "empty" ? "" : "C");
+    await key(finish === "Escape" ? "Escape" : "Enter");
+    expect(editor()).toBeNull();
+    expect(molecule()).toEqual(before);
+    await command("edit.undo"); expect(status()).toBe("Nothing to undo");
+  });
+  it.each(["Escape", "Enter"])("%s keeps a mid-edit move on the same molecule with fresh derived data and clean history", async finish => {
+    await mount(); const before = molecule();
+    await pointer("pointerdown", before.atoms[0]!, container.querySelector(`[data-object-id="${before.id}"]`)!);
+    for (const char of "OMe") await key(char);
+    const moved = await moveOtherAtom();
+    // A further key must not claim the move as part of the preview's rollback.
+    await input(editor()!, "OM"); await key("e");
+    await key(finish);
+    expect(editor()).toBeNull();
+    const result = molecule();
+    expect(result.atoms[2]).toEqual(moved);
+    expect(result.width).toBeGreaterThan(before.width);
+    expectFreshDerivedFields(result);
+    if (finish === "Enter") {
+      expect(result.atoms).toHaveLength(7); expect(result.bonds).toHaveLength(7);
+      expect(result.atoms[6]).toMatchObject({ element: "OMe", labelLiteral: true });
+      await history();
+      expect(molecule().atoms[2]).toEqual(moved);
+      expect(molecule().atoms).toHaveLength(6);
+      expectFreshDerivedFields(molecule());
+    } else {
+      expect(result.atoms).toHaveLength(6); expect(result.bonds).toEqual(before.bonds);
+      expect(result.atoms[0]).toEqual(before.atoms[0]);
+    }
+    await history(); expect(molecule()).toEqual(before);
+    await history(true);
+    expect(molecule().atoms[2]).toEqual(moved);
+    expect(molecule().atoms[0]).toEqual(before.atoms[0]);
+    expectFreshDerivedFields(molecule());
+    if (finish === "Enter") {
+      await history(true); expect(molecule()).toEqual(result);
+    }
   });
   it("Undo during a live draft and its Redo never revive the half-typed label", async () => {
     await mount(); const before = molecule();

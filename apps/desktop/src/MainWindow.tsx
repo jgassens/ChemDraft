@@ -68,6 +68,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
   createToolsetToggleCommandId,
@@ -1240,14 +1241,9 @@ export type NativeMoleculeSelectionDragIntent =
   | { kind: "whole-object" }
   | { kind: "native-part"; target: NativeMoleculeTransformableSelectionPart }
   | { kind: "none" };
-type AtomLabelEditState = {
-  objectId: string;
-  atomId: string;
+type AtomLabelEditState = AtomLabelDraftState & {
   beforeAtom: MoleculeAtom;
   beforeMolecule: MoleculeObject;
-  /** The inline draft starts after the first hover key's immediate commit, if any. */
-  draftBeforeAtom: MoleculeAtom;
-  draftBeforeMolecule: MoleculeObject;
   continuesHotkey: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
   /** Render-only attachment target; keyboard ownership remains on atomId. */
@@ -1274,26 +1270,6 @@ type AtomLabelEditOptions = {
   beforeMolecule?: MoleculeObject;
   hotkeyChanged?: boolean;
 };
-
-/** Roll back a live preview without running chemistry patches (which would clear H hints again). */
-function restoreAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): ChemDraftDocument {
-  const pages = document.pages.map(page => ({
-    ...page,
-    objects: page.objects.map(object => {
-      if (object.id !== state.objectId || object.type !== "molecule" || !object.atoms.some(a => a.id === state.atomId)) return object;
-      const before = state.draftBeforeMolecule;
-      const restored = {
-        ...object,
-        atoms: object.atoms.map(a => a.id === state.atomId ? state.draftBeforeAtom : a),
-        structure: before.structure, structureFormat: before.structureFormat, chemistry: before.chemistry,
-        x: before.x, y: before.y, width: before.width, height: before.height
-      };
-      return JSON.stringify(restored) === JSON.stringify(object) ? object : restored;
-    })
-  }));
-  return pages.every((page, i) => page.objects.every((object, j) => object === document.pages[i]!.objects[j]))
-    ? document : { ...document, pages };
-}
 
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
   const object = findDocumentObject(document, state.objectId);
@@ -5445,6 +5421,7 @@ export function MainWindow({
       beforeMolecule: options.beforeMolecule ?? object,
       draftBeforeAtom: atom,
       draftBeforeMolecule: object,
+      draftRollback: createAtomLabelDraftRollback(object),
       continuesHotkey: options.hotkeyChanged === true,
       hotkeyUndoDocument: options.hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
@@ -5472,16 +5449,22 @@ export function MainWindow({
       return;
     }
 
-    replacePresentDocument((current) =>
+    replacePresentDocument((current) => {
       // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
       // hydrogens, and are valence-checked without them.
-      applyNativeAtomElementTarget(current, {
+      const next = applyNativeAtomElementTarget(current, {
         objectId: state.objectId,
         kind: "atom",
         atomId: state.atomId,
         distanceToPointer: 0
-      }, draft, { literal: true })
-    );
+      }, draft, { literal: true });
+      const molecule = findDocumentObject(current, state.objectId);
+      const preview = findDocumentObject(next, state.objectId);
+      if (molecule?.type === "molecule" && preview?.type === "molecule") {
+        recordAtomLabelDraftRollback(state, molecule, preview);
+      }
+      return next;
+    });
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
@@ -9713,7 +9696,8 @@ export function MainWindow({
           const beforeMolecule = findDocumentObject(beforeDocument, current.objectId);
           const beforeAtom = beforeMolecule?.type === "molecule" ? beforeMolecule.atoms.find(a => a.id === current.atomId) : undefined;
           return beforeAtom && beforeMolecule?.type === "molecule"
-            ? { ...current, beforeAtom, beforeMolecule, draftBeforeAtom: beforeAtom, draftBeforeMolecule: beforeMolecule } : current;
+            ? { ...current, beforeAtom, beforeMolecule, draftBeforeAtom: beforeAtom, draftBeforeMolecule: beforeMolecule,
+              draftRollback: createAtomLabelDraftRollback(beforeMolecule) } : current;
         });
       }
     }
