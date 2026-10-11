@@ -116,3 +116,7 @@ arrowhead sizing, stretching, measurement angles, and wheel zoom, with result me
 held keys cleared on window blur, no focus stealing, hints hidden during inline text/label edits,
 and macOS glyphs versus Windows key names (check all of these on both platforms); and sketch-style
 hashed, dashed, and wedge bonds showing no line through the hashes.
+
+Cold launch on Windows: launch and quit ChemDraft ten times in a row, with its palettes open (on a busy
+machine as well as an idle one); no "ChemDraft ran into an error" dialog appears at launch, and tool
+shortcuts, palette commands, popovers and tooltips all respond afterwards.

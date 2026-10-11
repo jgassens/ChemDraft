@@ -1,5 +1,6 @@
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { listenTauriEvent } from "./window-manager/tauriEvents";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import {
   createElement,
@@ -1486,7 +1487,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.18.50-codex";
+const CURRENT_BUILD_STAMP = "10.10.21.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10848,6 +10849,13 @@ export function MainWindow({
   // Apply in-place customize edit ops from the Main palette against the authoritative layout state.
   // Ops (not full state) so a stale palette snapshot can't clobber; the resulting commit re-broadcasts
   // and the palette repaints. `exitCustomize` is a mode signal, not a layout edit.
+  // The listener reads both callbacks through refs and subscribes once. With them as deps it
+  // re-subscribed whenever native-palette mode settled after startup, so every cold launch unlistened
+  // a listener the moment it attached: the gap Tauri 2.11's unlisten cannot survive (tauriEvents.ts).
+  const commitToolbarLayoutRef = useRef(commitToolbarLayout);
+  commitToolbarLayoutRef.current = commitToolbarLayout;
+  const setCustomizeModeRef = useRef(setCustomizeMode);
+  setCustomizeModeRef.current = setCustomizeMode;
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
@@ -10856,7 +10864,7 @@ export function MainWindow({
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
-        setCustomizeMode(false);
+        setCustomizeModeRef.current(false);
         return;
       }
       const registry = toolsetRegistryRef.current;
@@ -10879,7 +10887,7 @@ export function MainWindow({
         gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
       });
       if (next !== current) {
-        commitToolbarLayout(next, false);
+        commitToolbarLayoutRef.current(next, false);
       }
     })
       .then((cleanup) => {
@@ -10894,7 +10902,7 @@ export function MainWindow({
       active = false;
       unlisten?.();
     };
-  }, [commitToolbarLayout, setCustomizeMode]);
+  }, []);
 
   // Answer a late-joining palette's request for the current customize-mode state (mirrors the
   // layout-state responder above).
@@ -28538,8 +28546,7 @@ async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayloa
 async function listenForNativeOpenDocuments(
   handler: (payload: NativeOpenDocumentPayload) => void
 ): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
-  return listen<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
+  return listenTauriEvent<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
     if (isNativeOpenDocumentPayload(event.payload)) {
       handler(event.payload);
     }
