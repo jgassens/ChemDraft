@@ -500,7 +500,7 @@ describe("atom label editor focus", () => {
     expect(atomElement(atom.id)).toBe("OMe");
     expect(bridge().snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "atom", atomId: atom.id });
     await paletteCommand("edit.undo");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Edit Atom Label");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Convert Text to Atom Label");
     expect(atomElement(atom.id)).toBe("C");
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(2);
     await paletteCommand("edit.undo");

@@ -6113,7 +6113,12 @@ export function MainWindow({
       if (labelResult.document !== currentDocument) {
         commitDocumentChange(
           labelResult.document,
-          atomLabelUndoLabel(currentDocument, labelResult.target, nativeTextObjectLabel(currentDocument, objectId))
+          atomLabelUndoLabel(
+            currentDocument,
+            labelResult.target,
+            nativeTextObjectLabel(currentDocument, objectId),
+            "Convert Text to Atom Label"
+          )
         );
         setSelectedNativeMoleculePart(labelResult.target);
       }
@@ -8136,7 +8141,12 @@ export function MainWindow({
           }
           commitDocumentChange(
             result.document,
-            atomLabelUndoLabel(documentRef.current, result.target, selectedNativeTextObjectLabel(documentRef.current))
+            atomLabelUndoLabel(
+              documentRef.current,
+              result.target,
+              selectedNativeTextObjectLabel(documentRef.current),
+              "Convert Text to Atom Label"
+            )
           );
           setActiveTextEditObjectId(undefined);
           setSelectedNativeMoleculePart(result.target);
@@ -28736,7 +28746,8 @@ function findDocumentObject(document: ChemDraftDocument, objectId: string): Docu
 function atomLabelUndoLabel(
   sourceDocument: ChemDraftDocument,
   resultTarget: NativeMoleculeDeleteTarget | undefined,
-  label: string
+  label: string,
+  relabelUndoLabel = "Edit Atom Label"
 ): string {
   const sourceObject = resultTarget?.kind === "atom"
     ? findDocumentObject(sourceDocument, resultTarget.objectId)
@@ -28745,7 +28756,7 @@ function atomLabelUndoLabel(
     !sourceObject.atoms.some((atom) => atom.id === resultTarget.atomId);
   return attachedSubstituent
     ? `Add ${normalizeNativeAtomElementLabel(label)} substituent`
-    : "Edit Atom Label";
+    : relabelUndoLabel;
 }
 
 function nativeTextObjectLabel(document: ChemDraftDocument, objectId: string): string {
