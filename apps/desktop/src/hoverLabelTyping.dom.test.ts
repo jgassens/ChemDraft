@@ -279,6 +279,39 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
+  // A drift straight after the first instant letter, then a capital element letter: the continuing
+  // key was re-judged against the labelled atom it had just moved the hover back to, read as a new
+  // label there, and CF3 silently became F3.
+  it("keeps CF3 when the pointer drifts onto empty page right after the first letter", async () => {
+    await hover(0);
+    await press("C");
+    await hoverPoint({ x: 40, y: 40 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await press("F");
+    expect(editor()?.value).toBe("CF");
+    await press("3");
+    expect(editor()?.value).toBe("CF3");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "CF3", labelLiteral: true });
+    expectIntact();
+  });
+
+  it("starts a new label on the neighbouring atom for a capital element letter typed right after the first letter", async () => {
+    await hover(0);
+    await press("C");
+    await hover(1);
+    await press("F");
+    expect(molecule().atoms[0]!.element).toBe("C");
+    expect(molecule().atoms[1]!.element).toBe("F");
+    expect(editor()).toBeNull();
+    await press("3");
+    expect(editor()?.value).toBe("F3");
+    await press("Enter");
+    expect(molecule().atoms[0]!.element).toBe("C");
+    expect(molecule().atoms[1]).toMatchObject({ element: "F3" });
+    expectIntact();
+  });
+
   it("keeps a label going over another atom's bond, for a key that cannot start a label", async () => {
     await hover(0);
     await press("O");

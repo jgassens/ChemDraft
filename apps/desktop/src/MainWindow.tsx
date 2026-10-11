@@ -1519,7 +1519,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.09.45-opus";
+const CURRENT_BUILD_STAMP = "10.11.11.43-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10535,6 +10535,7 @@ export function MainWindow({
 
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const assignment = hoverLabelAssignmentRef.current;
+        let labelContinues = false;
         // A label key belongs to an atom. Mid-label, a key that continues the label goes to the atom
         // being labelled wherever the pointer has drifted (its bond, a neighbour, empty canvas); with
         // the pointer resting on a bond (easy on a zigzag chain, whose bond zones crowd the atoms),
@@ -10551,6 +10552,11 @@ export function MainWindow({
             hoverRetargetedForLabelRef.current = false;
             rederiveNativeCanvasHoverRef.current?.(documentRef.current);
           }
+          // Decided once, against what the pointer is over. Re-deciding after the hover moves onto the
+          // labelled atom would read a capital element letter typed after a drift (C, drift, F) as a
+          // new label on that atom, and CF3 would silently become F3.
+          labelContinues = assignment !== undefined &&
+            hoverLabelContinuesForKey(documentRef.current, hoveredNativeDeleteTargetRef.current, assignment, event.key);
           const labelAtom = hoverLabelAtomTargetForKey(
             documentRef.current,
             hoveredNativeDeleteTargetRef.current,
@@ -10570,7 +10576,7 @@ export function MainWindow({
         if (
           assignment && hoveredTarget?.kind === "atom" &&
           hoveredTarget.objectId === assignment.objectId && hoveredTarget.atomId === assignment.atomId &&
-          hoverLabelContinuesForKey(documentRef.current, hoveredTarget, assignment, event.key)
+          labelContinues
         ) {
           const object = findDocumentObject(documentRef.current, assignment.objectId);
           const atom = object?.type === "molecule" ? object.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
