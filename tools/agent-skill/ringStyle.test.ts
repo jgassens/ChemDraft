@@ -26,7 +26,7 @@ interface RingStyle {
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
-  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
+  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): { label: string; ring: string; x: number; y: number }[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
   readText(file: string): string;
@@ -81,6 +81,13 @@ const fixture = (name: string) => {
 };
 const molecule = (doc: Json) => doc.pages[0].objects.find((o: Json) => o.type === "molecule");
 const letterObjects = (doc: Json) => doc.pages[0].objects.filter((o: Json) => o.type === "text" && /^ring-letter-/.test(o.id));
+function ringAtomsFromDocument(mol: Json): Map<string, Set<string>> {
+  return new Map(Object.keys(mol.style.ringStyles).map((ringKey) => {
+    const bonds = new Set(ringKey.split("|"));
+    return [ringKey, new Set(mol.bonds.filter((bond: Json) => bonds.has(bond.id))
+      .flatMap((bond: Json) => [bond.fromAtomId, bond.toAtomId]))];
+  }));
+}
 function inside(point: { x: number; y: number }, poly: { x: number; y: number }[]): boolean {
   let hit = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -315,40 +322,53 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(found.map((c) => [c.kind, [c.a.text, c.b.text].sort().join("/")])).toEqual([["label-label", "CH3/H"]]);
   });
 
-  it("fails a ring fill under its own atom label and accepts a non-ring label on the fill", () => {
-    const ringAtoms = new Map([["ring-a", new Set(["a-ring"])] ]);
-    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-fails.svg")), ringAtoms))
-      .toEqual([{ label: "O", ring: "ring-a", x: 5.5, y: 5 }]);
-    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "fill-under-label-passes.svg")), ringAtoms)).toEqual([]);
+  it("finds the oxetane O under its own real pre-notch fill, and accepts the real notched render", () => {
+    const doc = JSON.parse(read(join(fixtures, "paclitaxel-doc.json")));
+    const mol = molecule(doc), ringAtoms = ringAtomsFromDocument(mol);
+    const preNotch = read(join(fixtures, "paclitaxel-prenotch.svg"));
+    // Real renderer output has an anchor and label text, but intentionally no atom id on this group.
+    const oxygenGroup = [...preNotch.matchAll(/<g\s[^>]*data-atom-label="O"[^>]*>[\s\S]*?<\/g>/g)]
+      .find((group) => group[0].includes("translate(561.689 571.538)"));
+    expect(oxygenGroup).toBeDefined();
+    expect(oxygenGroup).not.toContain("data-atom-id");
+
+    const oxetane = "b49|b50|b64|b9";
+    expect(ringStyle.fillsUnderLabels(preNotch, ringAtoms, mol.atoms))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ label: "O", ring: oxetane })]));
+    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "paclitaxel-notched.svg")), ringAtoms, mol.atoms)).toEqual([]);
   });
 
-  it("makes check fail loudly for the emitted fill-under-label fixture", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ring-style-fill-check-"));
-    try {
-      const { build, doc } = fixture("phenyldecalin");
-      const styled = ringStyle.style(structuredClone(doc), build, { fusionH: false });
-      const document = join(dir, "phenyldecalin-carbon.json");
-      const ring = build.rings[0];
-      const emittedSvg = join(dir, "fill-under-label-fails.svg");
-      // The fixture's fill and label identify a real ring atom in this emitted document.
-      writeFileSync(emittedSvg, read(join(fixtures, "fill-under-label-fails.svg"))
-        .replace('data-ring-key="ring-a"', `data-ring-key="${ring.ringKey}"`)
-        .replace('data-atom-id="a-ring"', `data-atom-id="${ring.atomIds[0]}"`));
-      writeFileSync(document, JSON.stringify(styled.carbon));
-      writeFileSync(join(dir, "phenyldecalin-build.jsonl"), JSON.stringify({ name: "phenyldecalin", ok: true, molecules: [build] }) + "\n");
-      writeFileSync(join(dir, "phenyldecalin-style.json"), JSON.stringify(styled.report));
-      writeFileSync(join(dir, "phenyldecalin-pubchem.json"), JSON.stringify({ CID: 1, Title: "fixture", InChIKey: "fixture-key" }));
-      writeFileSync(join(dir, "phenyldecalin-render.jsonl"), JSON.stringify({ name: "render", ok: true, document,
-        files: [emittedSvg], molecules: [{ canonicalSmiles: "C", stereoCenters: 0, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }] }) + "\n");
-      writeFileSync(join(dir, "phenyldecalin-identity.jsonl"), JSON.stringify({ name: "1-render", summary: { inchiKey: { value: "fixture-key" } } }) + "\n");
-
-      const result = await runScript("check", dir, "phenyldecalin");
-      expect(result.status).toBe(1);
-      expect(result.stdout).toMatch(/^Figure checks FAILED \(1\):$/m);
-      expect(result.stdout).toMatch(new RegExp(`^ {2}FAILED fill under a label: ring ${ring.ringKey} covers atom label O near \\(5\\.5, 5\\)`, "m"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+  it("uses contrast without a halo for a ring atom enclosed only by another bridged ring's fill", () => {
+    const atoms = [
+      { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a1", element: "C", x: 20, y: 0, formalCharge: 0 },
+      { id: "a2", element: "O", x: 10, y: 5, formalCharge: 0 },
+      { id: "a3", element: "C", x: 10, y: 30, formalCharge: 0 }
+    ];
+    const bonds = [
+      { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single" },
+      { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+      { id: "b2", fromAtomId: "a2", toAtomId: "a0", order: "single" },
+      { id: "b3", fromAtomId: "a1", toAtomId: "a3", order: "single" },
+      { id: "b4", fromAtomId: "a3", toAtomId: "a0", order: "single" }
+    ];
+    const innerKey = "b0|b1|b2", outerKey = "b0|b3|b4";
+    const build = { objectId: "bridged", atoms: atoms.map((atom, inputAtomIndex) => ({ ...atom, inputAtomIndex })), bonds, rings: [
+      { ringKey: innerKey, atomIds: ["a0", "a1", "a2"], bondIds: ["b0", "b1", "b2"], size: 3 },
+      { ringKey: outerKey, atomIds: ["a0", "a1", "a3"], bondIds: ["b0", "b3", "b4"], size: 3 }
+    ] };
+    const doc = { pages: [{ objects: [{ id: "bridged", type: "molecule", atoms, bonds,
+      style: { bondLengthPx: 20, atomLabelFontSizePx: 15 } }] }] };
+    const styled = ringStyle.style(structuredClone(doc), build, { fusionH: false, declutter: false });
+    const outer = styled.report.letters.find((letter: Json) => letter.ringKey === outerKey);
+    for (const copy of [styled.carbon, styled.picture]) {
+      const mol = molecule(copy);
+      expect(mol.style.atomLabelColors.a2).toBe(outer.letterColour);
+      expect(mol.style.atomLabelBackgroundColors.a2).toBe("transparent");
     }
+    expect(styled.report.labelsOnFills.carbon).toEqual(expect.arrayContaining([
+      expect.objectContaining({ atom: "a2", on: outer.letter, colour: outer.letterColour })
+    ]));
   });
 
   it("chooses letter colours by luminance and reads UTF-16 and BOM files", () => {

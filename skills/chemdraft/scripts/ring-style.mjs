@@ -622,14 +622,14 @@ function verifyFusionH(m, added, verify, warnings, undone) {
   return kept;
 }
 
-/** Non-ring labels that stay on a filled ring (a substituent the fill rule could not clear) use
- * the fill's contrast colour and no halo. Ring-atom labels keep the molecule's normal colour and
- * default background because the renderer notches their own ring fill at the outline. */
+/** Labels that stay on a filled ring (a substituent the fill rule could not clear, or an atom in
+ * another ring enclosed by a bridged ring) use the fill's contrast colour and no halo. A ring atom
+ * is skipped only for a fill belonging to that same ring: the renderer notches that fill at its
+ * outline. */
 function colourLabelsOnFills(cm, letters, colours, opacity, meIds, carbonLabels) {
   const size = cm.mol.style?.atomLabelFontSizePx ?? 15;
-  const fills = fillsOf(cm, letters), ringAtoms = new Set(fills.flatMap((f) => [...f.atoms])), out = [];
+  const fills = fillsOf(cm, letters), out = [];
   for (const a of cm.mol.atoms) {
-    if (ringAtoms.has(a.id)) continue;
     const box = labelBox(cm, a, meIds, carbonLabels, size);
     if (!box) continue;
     const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
@@ -1525,11 +1525,18 @@ function inEvenOddFill(point, faces) {
   return inside;
 }
 
-/** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. Sample
- * at 0.5 px after a 0.5 px inset: this catches a fill under an outline label while allowing
- * antialiased edges. Non-ring substituent labels intentionally remain on the fill. The fill's own
- * even-odd subpaths are used, so rounded notch holes count as page background. */
-export function fillsUnderLabels(svg, ringAtomsByKey, tolerancePx = 0.5) {
+/** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. The SVG
+ * renderer gives atom-label groups a translated anchor, but intentionally does not emit atom ids
+ * on those groups. Associate that anchor with the nearest document atom instead. Sample at 0.5 px
+ * after a 0.5 px inset: this catches a fill under an outline label while allowing antialiased
+ * edges. Non-ring substituent labels intentionally remain on the fill. The fill's own even-odd
+ * subpaths are used, so rounded notch holes count as page background. */
+export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 0.5) {
+  const anchorTolerancePx = 1.5;
+  const atomAt = (label) => atoms
+    .map((atom) => ({ atom, distance: Math.hypot(atom.x - label.x, atom.y - label.y) }))
+    .filter((match) => match.distance <= anchorTolerancePx)
+    .sort((a, b) => a.distance - b.distance || a.atom.id.localeCompare(b.atom.id))[0]?.atom;
   const fills = [];
   for (const p of svg.matchAll(/<path\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
     const tag = " " + p[1];
@@ -1538,15 +1545,19 @@ export function fillsUnderLabels(svg, ringAtomsByKey, tolerancePx = 0.5) {
     if (d) fills.push({ ring: attr(tag, "data-ring-key") ?? "unknown ring", faces: polygonPathFaces(d) });
   }
   const hits = [];
-  for (const label of svgGeometry(svg).labels) for (const fill of fills) {
-    if (!ringAtomsByKey.get(fill.ring)?.has(label.atom)) continue;
-    let hit = null;
-    for (let x = label.box.x0 + tolerancePx; x <= label.box.x1 - tolerancePx && !hit; x += tolerancePx) {
-      for (let y = label.box.y0 + tolerancePx; y <= label.box.y1 - tolerancePx; y += tolerancePx) {
-        if (inEvenOddFill({ x, y }, fill.faces)) { hit = { x, y }; break; }
+  for (const label of svgGeometry(svg).labels) {
+    const atom = atomAt(label);
+    if (!atom) continue;
+    for (const fill of fills) {
+      if (!ringAtomsByKey.get(fill.ring)?.has(atom.id)) continue;
+      let hit = null;
+      for (let x = label.box.x0 + tolerancePx; x <= label.box.x1 - tolerancePx && !hit; x += tolerancePx) {
+        for (let y = label.box.y0 + tolerancePx; y <= label.box.y1 - tolerancePx; y += tolerancePx) {
+          if (inEvenOddFill({ x, y }, fill.faces)) { hit = { x, y }; break; }
+        }
       }
+      if (hit) hits.push({ label: label.text, ring: fill.ring, x: Number(hit.x.toFixed(1)), y: Number(hit.y.toFixed(1)) });
     }
-    if (hit) hits.push({ label: label.text, ring: fill.ring, x: Number(hit.x.toFixed(1)), y: Number(hit.y.toFixed(1)) });
   }
   return hits;
 }
@@ -1718,7 +1729,9 @@ function runStyle(dir, name, optionsFile, checkout) {
     const { carbon, picture, report } = style(doc, buildMol, options, { sources, verify });
     report.layout.reference = reference;
     for (const [kind, drawing] of [["carbon", carbon], ["picture", picture]]) {
-      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol))) {
+      const drawingMol = drawing.pages.flatMap((page) => page.objects).find((object) => object.id === buildMol.objectId) ??
+        drawing.pages.flatMap((page) => page.objects).find((object) => object.type === "molecule");
+      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol), drawingMol?.atoms ?? [])) {
         report.quality.failures.push(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y}) (${kind})`);
       }
     }
@@ -1825,7 +1838,7 @@ function documentFaults(dir, name, renders) {
     for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));
     for (const render of renders.filter((line) => line.document === file)) for (const svg of (render.files ?? []).filter((entry) => entry.toLowerCase().endsWith(".svg"))) {
       if (!fs.existsSync(svg)) { add(`${path.basename(svg)} is missing`, path.basename(file)); continue; }
-      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol))) {
+      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol), mol.atoms)) {
         add(`fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y})`, path.basename(file));
       }
     }
