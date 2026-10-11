@@ -67,6 +67,9 @@ export function notchedRingPath(
     return cached;
   }
   const result = subtractPolygonPaths(points, clearances.map(atomLabelRingClearancePolygon));
+  // A transient invalid ring or library failure must not poison a later render.
+  // No overlaps on failure makes the caller retain the exact original ring path.
+  if (result.failed) return result;
   notchCache.set(key, result);
   if (notchCache.size > notchCacheLimit) notchCache.delete(notchCache.keys().next().value!);
   return result;

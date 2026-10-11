@@ -3574,14 +3574,29 @@ function nativeArtBooleanPolygonFromPoints(points: readonly NativeArtPoint[]): F
  * Difference of a simple polygon and simple polygon cutouts, in the input coordinate space.
  * The plain SVG path includes every surviving face (including holes); draw with evenodd.
  * Overlap indices refer to the original subject, even when earlier cutouts consumed it.
+ * Invalid geometry or a boolean-library failure returns failed with no partial difference.
+ * Callers can then retain their original path; an empty successful difference is distinct.
  * Callers own the meaning and construction of their polygons.
  */
 export function subtractPolygonPaths(
   subjectPoints: readonly NativeArtPoint[],
   cutouts: readonly (readonly NativeArtPoint[])[]
+): { pathD: string; overlappingCutoutIndices: number[]; failed?: true } {
+  try {
+    return computePolygonPathDifference(subjectPoints, cutouts);
+  } catch {
+    // Validation, subtraction (including boundary conflicts), and face serialization
+    // must all fail atomically: never expose a partially notched path or overlap list.
+    return { pathD: "", overlappingCutoutIndices: [], failed: true };
+  }
+}
+
+function computePolygonPathDifference(
+  subjectPoints: readonly NativeArtPoint[],
+  cutouts: readonly (readonly NativeArtPoint[])[]
 ): { pathD: string; overlappingCutoutIndices: number[] } {
   const subject = nativeArtBooleanPolygonFromPoints(subjectPoints);
-  if (!subject) {
+  if (!subject || cleanNativeArtBooleanRingPoints(subjectPoints).length !== subjectPoints.length) {
     throw new Error("Polygon difference requires a valid subject polygon.");
   }
   if (subject.orientation() === Flatten.ORIENTATION.CW) subject.reverse();
@@ -3592,7 +3607,7 @@ export function subtractPolygonPaths(
   let remainingArea = subjectArea;
   cutouts.forEach((points, index) => {
     const cutout = nativeArtBooleanPolygonFromPoints(points);
-    if (!cutout) {
+    if (!cutout || cleanNativeArtBooleanRingPoints(points).length !== points.length) {
       throw new Error(`Polygon difference requires a valid cutout polygon at index ${index}.`);
     }
     if (cutout.orientation() === Flatten.ORIENTATION.CW) cutout.reverse();

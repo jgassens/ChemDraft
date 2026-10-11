@@ -1,6 +1,13 @@
 import Flatten from "@flatten-js/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { subtractPolygonPaths } from "./index";
+
+// flatten-js exposes subtraction as a non-configurable getter. Copy that namespace
+// so the failure test can inject a boundary conflict while other tests use real math.
+vi.mock("@flatten-js/core", async (importOriginal) => {
+  const actual = await importOriginal<{ default: typeof Flatten }>();
+  return { ...actual, default: { ...actual.default, BooleanOperations: { ...actual.default.BooleanOperations } } };
+});
 
 const rectangle = (x: number, y: number, width: number, height: number) => [
   { x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }
@@ -8,6 +15,41 @@ const rectangle = (x: number, y: number, width: number, height: number) => [
 const subject = rectangle(10, 20, 100, 80);
 
 describe("generic polygon path difference", () => {
+  it.each([
+    ["bowtie", [[100, 100], [180, 180], [180, 100], [100, 180]]],
+    ["collinear", [[100, 100], [120, 120], [140, 140], [160, 160]]],
+    ["all coincident", [[100, 100], [100, 100], [100, 100], [100, 100]]],
+    ["edge-on projection", [[100, 140], [120, 140], [160, 140], [180, 140], [160, 140], [120, 140]]],
+    ["mid-drag coincident vertex", [[100, 100], [100, 100], [180, 180], [100, 180]]]
+  ] as const)("never throws for a %s subject", (_name, coordinates) => {
+    const points = coordinates.map(([x, y]) => ({ x, y }));
+    let result: ReturnType<typeof subtractPolygonPaths> | undefined;
+    expect(() => { result = subtractPolygonPaths(points, [rectangle(90, 90, 20, 20)]); }).not.toThrow();
+    expect(result).toEqual({ failed: true, pathD: "", overlappingCutoutIndices: [] });
+  });
+
+  it("returns no partial difference when subtraction throws after a successful cut", () => {
+    const originalSubtract = Flatten.BooleanOperations.subtract;
+    const subtract = vi.spyOn(Flatten.BooleanOperations, "subtract")
+      .mockImplementationOnce(originalSubtract)
+      .mockImplementationOnce(() => { throw new Error("Boundary conflict"); });
+    try {
+      let result: ReturnType<typeof subtractPolygonPaths> | undefined;
+      expect(() => {
+        result = subtractPolygonPaths(subject, [rectangle(30, 40, 10, 10), rectangle(60, 40, 10, 10)]);
+      }).not.toThrow();
+      expect(subtract).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ failed: true, pathD: "", overlappingCutoutIndices: [] });
+    } finally {
+      subtract.mockRestore();
+    }
+  });
+
+  it("never throws for an invalid cutout", () => {
+    expect(subtractPolygonPaths(subject, [[{ x: 30, y: 40 }]]))
+      .toEqual({ failed: true, pathD: "", overlappingCutoutIndices: [] });
+  });
+
   it("reports a duplicate clearance already removed by an earlier cut", () => {
     const cutout = rectangle(30, 40, 20, 10);
     const single = subtractPolygonPaths(subject, [cutout]);

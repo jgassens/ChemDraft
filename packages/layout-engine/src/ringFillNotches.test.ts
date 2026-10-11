@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { visualEffectPlansForStyle } from "@chemdraft/art-engine";
+import { describe, expect, it, vi } from "vitest";
+import * as artEngine from "@chemdraft/art-engine";
+import { createEmptyDocument } from "@chemdraft/chem-core";
 import {
-  atomLabelHaloWidthPx, averageDefinedDepthWeights, depthCuedLabelScale, nativeMoleculeRings, planMoleculeAtomLabels,
+  atomLabelHaloWidthPx, averageDefinedDepthWeights, depthCuedLabelScale, nativeMoleculeRings, planMoleculeAtomLabels, planPageSvgRender,
   type AtomLabelPlan, type LayoutBounds
 } from "./index";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./ringFillNotches.fixture";
 import { sketchRegressionMolecule } from "./sketchRegression.fixture";
 import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
+import { elementFragments } from "./testing";
 
 function labelBox(plan: AtomLabelPlan, scale = 1): LayoutBounds {
   return {
@@ -20,6 +22,68 @@ function labelBox(plan: AtomLabelPlan, scale = 1): LayoutBounds {
 }
 
 describe("ring fill label notches", () => {
+  it.each([
+    ["bowtie", [[100, 100], [180, 180], [180, 100], [100, 180]]],
+    ["collinear", [[100, 100], [120, 120], [140, 140], [160, 160]]],
+    ["all coincident", [[100, 100], [100, 100], [100, 100], [100, 100]]],
+    // Screen coordinates of a planar hexagon viewed edge-on. Projection helpers
+    // live in the desktop app; layout-engine tests construct the projected points.
+    ["edge-on Spin 3D projection", [[100, 140], [120, 140], [160, 140], [180, 140], [160, 140], [120, 140]]],
+    ["mid-drag coincident vertex", [[100, 100], [100, 100], [180, 180], [100, 180]]]
+  ] as const)("renders a %s ring un-notched while still notching other rings", (_name, coordinates) => {
+    const bad = filledRingFixture();
+    bad.id = "degenerate-ring";
+    bad.atoms = coordinates.map(([x, y], index) => ({
+      id: `a${index}`, element: index === 0 ? "O" : "C", x, y, formalCharge: 0
+    }));
+    bad.bonds = bad.atoms.map((atom, index) => ({
+      id: `b${index}`, fromAtomId: atom.id, toAtomId: bad.atoms[(index + 1) % bad.atoms.length]!.id, order: "single"
+    }));
+    const good = filledRingFixture();
+    good.atoms[0]!.element = "O";
+    good.atoms.forEach((atom) => { atom.x += 200; });
+    const page = { ...createEmptyDocument().pages[0]!, objects: [bad, good] };
+    let plan: ReturnType<typeof planPageSvgRender> | undefined;
+    expect(() => { plan = planPageSvgRender(page); }).not.toThrow();
+    const fills = plan!.fragments.flatMap(elementFragments)
+      .filter((fragment) => fragment.attrs["data-molecule-fill-ring"] === "true");
+    expect(fills).toHaveLength(2);
+    expect(fills[0]!.attrs.d).toBe(nativeMoleculeRings(bad)[0]!.pathD);
+    expect(fills[0]!.attrs["fill-rule"]).toBeUndefined();
+    expect(fills[1]!.attrs.d).not.toBe(nativeMoleculeRings(good)[0]!.pathD);
+    expect(fills[1]!.attrs["fill-rule"]).toBe("evenodd");
+    expect(fillAreaInsideBox(String(fills[1]!.attrs.d), labelBox(planMoleculeAtomLabels(good)[0]!))).toBeLessThan(0.001);
+    // The same molecule and ring IDs become valid after projection/drag ends.
+    const restored = filledRingFixture();
+    bad.atoms = restored.atoms;
+    bad.bonds = restored.bonds;
+    bad.atoms[0]!.element = "O";
+    const recovered = planPageSvgRender(structuredClone(page)).fragments.flatMap(elementFragments)
+      .find((fragment) => fragment.key.startsWith("molecule-fill-underlay-degenerate-ring-"))!;
+    expect(recovered.attrs.d).not.toBe(nativeMoleculeRings(bad)[0]!.pathD);
+    expect(recovered.attrs["fill-rule"]).toBe("evenodd");
+  });
+
+  it("retries the same full geometry after a transient boolean failure", () => {
+    const object = filledRingFixture();
+    object.atoms[0]!.element = "O";
+    object.atoms.forEach((atom) => { atom.x += 0.123; });
+    const ring = nativeMoleculeRings(object)[0]!;
+    const clearances = planMoleculeAtomLabels(object).map((plan) => atomLabelRingClearance(plan, 1));
+    const subtract = vi.spyOn(artEngine, "subtractPolygonPaths")
+      .mockReturnValueOnce({ failed: true, pathD: "", overlappingCutoutIndices: [] });
+    try {
+      expect(notchedRingPath(ring.points, clearances).failed).toBe(true);
+      const retried = notchedRingPath(ring.points, clearances);
+      expect(subtract).toHaveBeenCalledTimes(2);
+      expect(retried.failed).toBeUndefined();
+      expect(retried.overlappingCutoutIndices).toEqual([0]);
+      expect(retried.pathD).not.toBe(ring.pathD);
+    } finally {
+      subtract.mockRestore();
+    }
+  });
+
   it("reuses a geometry-keyed result across fresh copies, missing on label or ring movement", () => {
     const object = filledRingFixture();
     object.atoms[0]!.element = "O";
@@ -169,17 +233,37 @@ describe("ring fill label notches", () => {
       { kind: "shadow" as const }, { kind: "glow" as const }
     ] };
     object.style.ringStyles = { [key]: style };
-    const fragments = ringFixtureFragments(object);
-    const fill = ringFixtureFills(object)[0]!;
-    expect(fill.attrs.filter).toBe(`url(#molecule-ring-effects-notched-ring-${key.replaceAll("|", "_")})`);
-    const expectedSketch = visualEffectPlansForStyle({
-      objectId: `notched-ring-${key.replaceAll("|", "_")}`, style,
-      sketchBasePathD: String(fill.attrs.d), sketchStrokeWidthPx: 1.5
-    }).find((effect) => effect.kind === "sketch")!;
-    expect(expectedSketch).toMatchObject({ seed: 73, roughness: 1.7, bowing: 0.9, strokeWidth: 2.3 });
-    const sketch = fragments.filter((fragment) => fragment.attrs.class === "native-molecule-ring-sketch");
-    expect(sketch.map((fragment) => fragment.attrs.d)).toEqual(expectedSketch.paths.map((path) => path.d));
-    expect(fragments.some((fragment) => fragment.tag === "feGaussianBlur")).toBe(true);
+    const effects = vi.spyOn(artEngine, "visualEffectPlansForStyle");
+    try {
+      const fragments = ringFixtureFragments(object);
+      const fill = fragments.find((fragment) => fragment.attrs["data-molecule-fill-ring"] === "true")!;
+      expect(fill.attrs.filter).toBe(`url(#molecule-ring-effects-notched-ring-${key.replaceAll("|", "_")})`);
+      const objectId = `notched-ring-${key.replaceAll("|", "_")}`;
+      const callIndex = effects.mock.calls.findIndex(([input]) => input.objectId === objectId);
+      const input = effects.mock.calls[callIndex]![0];
+      expect(input.style.visualEffects).toEqual(style.visualEffects);
+      expect(input.sketchBasePathD).toBe(fill.attrs.d);
+      expect(input.sketchBasePathD).not.toBe(nativeMoleculeRings(object)[0]!.pathD);
+      // Independent geometry assertion: the source has extra notch vertices and
+      // clears the label box, unlike the four-vertex un-notched ring outline.
+      expect(polygonPathFaces(input.sketchBasePathD!)[0]!.length).toBeGreaterThan(4);
+      const box = labelBox(planMoleculeAtomLabels(object)[0]!);
+      expect(fillAreaInsideBox(input.sketchBasePathD!, box)).toBeLessThan(0.001);
+      expect(fillAreaInsideBox(nativeMoleculeRings(object)[0]!.pathD, box)).toBeGreaterThan(1);
+      expect(effects.mock.results[callIndex]!.value.find((effect: artEngine.NativeArtEffectPlan) => effect.kind === "sketch"))
+        .toMatchObject({ seed: 73, roughness: 1.7, bowing: 0.9, strokeWidth: 2.3 });
+      expect(fragments.some((fragment) => fragment.attrs.class === "native-molecule-ring-sketch")).toBe(true);
+      expect(fragments.some((fragment) => fragment.tag === "feGaussianBlur")).toBe(true);
+
+      effects.mockClear();
+      object.atoms[0]!.element = "C";
+      ringFixtureFragments(object);
+      const unlabelledInput = effects.mock.calls.find(([input]) => input.objectId === objectId)![0];
+      expect(unlabelledInput.sketchBasePathD).toBe(nativeMoleculeRings(object)[0]!.pathD);
+      expect(unlabelledInput.style.visualEffects).toEqual(style.visualEffects);
+    } finally {
+      effects.mockRestore();
+    }
   });
 
   for (const kind of ["paclitaxel-like", "cholesterol-like"] as const) {
