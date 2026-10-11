@@ -10281,10 +10281,21 @@ function gradientStopsWithPrimaryColor(
   const baseColor = [...normalizedStopColors].reverse().find((stopColor) =>
     stopColor !== undefined && stopColor !== "#ffffff"
   );
+  if (baseColor && normalizeWorkflowHexColor(color) === baseColor) {
+    return stops;
+  }
   const channels = (hex: string): number[] => [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16));
   const lightness = (rgb: number[]): number => (Math.max(...rgb) + Math.min(...rgb)) / 2;
   const baseLightness = baseColor ? lightness(channels(baseColor)) : 0;
   const nextChannels = channels(color);
+  const saturation = (rgb: number[]): number => {
+    const range = Math.max(...rgb) - Math.min(...rgb);
+    const denominator = 255 - Math.abs(2 * lightness(rgb) - 255);
+    return denominator > 0 ? range / denominator : 0;
+  };
+  const baseSaturation = baseColor ? saturation(channels(baseColor)) : 0;
+  const nextLightness = lightness(nextChannels);
+  const nextRange = Math.max(...nextChannels) - Math.min(...nextChannels);
   return stops.map((stop, index) => {
     const normalizedStopColor = normalizedStopColors[index];
     if (!baseColor) {
@@ -10298,8 +10309,17 @@ function gradientStopsWithPrimaryColor(
     const amount = stopLightness > baseLightness
       ? (stopLightness - baseLightness) / (255 - baseLightness)
       : baseLightness > 0 ? (stopLightness - baseLightness) / baseLightness : 0;
+    const recoloredLightness = amount > 0
+      ? nextLightness + (255 - nextLightness) * amount
+      : nextLightness * (1 + amount);
+    // Preserve saturation relative to the base so changing hue and back retains highlights.
+    const stopSaturation = saturation(channels(normalizedStopColor));
+    const recoloredSaturation = baseSaturation > 0
+      ? Math.min(1, saturation(nextChannels) * stopSaturation / baseSaturation)
+      : saturation(nextChannels);
+    const recoloredRange = (255 - Math.abs(2 * recoloredLightness - 255)) * recoloredSaturation;
     const recolored = nextChannels.map((channel) => Math.round(
-      amount > 0 ? channel + (255 - channel) * amount : channel * (1 + amount)
+      recoloredLightness + (nextRange > 0 ? (channel - nextLightness) / nextRange * recoloredRange : 0)
     ).toString(16).padStart(2, "0")).join("");
     return { ...stop, color: `#${recolored}` };
   });

@@ -8750,12 +8750,77 @@ describe("Phase 4 document workflow", () => {
     expect(graphicById(recolored, objectId).style.fillPaint).toEqual({
       ...paint,
       stops: [
-        { offset: 0, color: "#e0afaf", opacity: 0.8 },
-        { offset: 0.5, color: "#b94a4a" },
+        { offset: 0, color: "#eca2a2", opacity: 0.8 },
+        { offset: 0.5, color: "#d52e2e" },
         { offset: 1, color: "#aa2222" }
       ]
     });
     expect(graphicById(recolored, objectId).style.fillColor).toBe("#aa2222");
+  });
+
+  it("leaves radial sphere stops unchanged when recoloring with its base color", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Recolor Radial Sphere"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0]!;
+    const paint = {
+      kind: "radial-gradient" as const,
+      units: "object" as const,
+      cx: 0.5, cy: 0.5, r: 0.72, fx: 0.32, fy: 0.28,
+      stops: [
+        { offset: 0, color: "#99bbdd", opacity: 0.8 },
+        { offset: 0.5, color: "#336699" },
+        { offset: 1, color: "#224466" }
+      ]
+    };
+    const painted = applyPatches(document, [{
+      op: "updateObject", objectId,
+      changes: { style: { fillPaint: paint, fillColor: "#224466" } }
+    }]);
+    const recolored = applyGraphicObjectColorToSelection(painted, "fill", "#224466");
+    expect(graphicById(recolored, objectId).style.fillPaint).toEqual(paint);
+  });
+
+  it("restores the radial sphere highlight after blue to red to blue recoloring", () => {
+    const document = insertNativeArtGraphicObject(
+      createPhase4Document("Recolor Radial Sphere"),
+      { x: 220, y: 180 },
+      "tool.art.rect"
+    );
+    const objectId = document.selection.objectIds[0]!;
+    const paint = {
+      kind: "radial-gradient" as const,
+      units: "object" as const,
+      cx: 0.5, cy: 0.5, r: 0.72, fx: 0.32, fy: 0.28,
+      stops: [
+        { offset: 0, color: "#99bbdd", opacity: 0.8 },
+        { offset: 0.5, color: "#336699" },
+        { offset: 1, color: "#224466" }
+      ]
+    };
+    const painted = applyPatches(document, [{
+      op: "updateObject", objectId,
+      changes: { style: { fillPaint: paint, fillColor: "#224466" } }
+    }]);
+    let recolored = painted;
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      recolored = applyGraphicObjectColorToSelection(recolored, "fill", "#aa2222");
+      recolored = applyGraphicObjectColorToSelection(recolored, "fill", "#224466");
+      const restoredPaint = graphicById(recolored, objectId).style.fillPaint;
+      expect(restoredPaint?.kind).toBe("radial-gradient");
+      if (restoredPaint?.kind !== "radial-gradient") throw new Error("Expected radial gradient");
+      const highlight = restoredPaint.stops[0]!;
+      expect(highlight.offset).toBe(paint.stops[0]!.offset);
+      expect(highlight.opacity).toBe(paint.stops[0]!.opacity);
+      for (const channel of [1, 3, 5]) {
+        expect(Math.abs(
+          parseInt(highlight.color.slice(channel, channel + 2), 16)
+          - parseInt(paint.stops[0]!.color.slice(channel, channel + 2), 16)
+        )).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
   it("flips native graphic gradient coordinates with the art object", () => {
