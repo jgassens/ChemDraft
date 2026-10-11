@@ -1486,7 +1486,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.10.18.50-codex";
+const CURRENT_BUILD_STAMP = "10.10.21.21-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10618,6 +10618,13 @@ export function MainWindow({
   // never left with no toolbars.
   useEffect(() => {
     if (!effectiveNativePalette) {
+      return;
+    }
+    // Native palette windows exist only in the desktop runtime, which is also the only place native
+    // palettes are on by default. Off it (a caller forcing `nativePalette`, as DOM tests do) there is
+    // no window manager to reconcile with: retrying would only end, about 0.4 s later, in the
+    // fallback below, posting its status over whatever the status line said at that moment.
+    if (!isDesktopRuntime()) {
       return;
     }
 
