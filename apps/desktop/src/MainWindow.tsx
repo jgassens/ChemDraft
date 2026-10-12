@@ -1218,7 +1218,10 @@ type ObjectTransformPreviewState = {
   /** Move existing paint/hit/chrome nodes without entering React's render path. */
   retainedMove?: boolean;
   arrowPreviewFragments?: ReadonlyMap<string, readonly PageSvgElementFragment[]>;
-  arrowPreviewObjects?: ReadonlyMap<string, Extract<DocumentObject, { type: "mechanism-arrow" }>>;
+  arrowPreviewObjects?: ReadonlyMap<string, {
+    object: Extract<DocumentObject, { type: "mechanism-arrow" }>;
+    interactionBounds: ReturnType<typeof documentObjectInteractionBounds>;
+  }>;
 };
 type ArtTransformDragPreviewProxy = {
   kind: "svg-image" | "bounds";
@@ -12999,8 +13002,13 @@ export function MainWindow({
         // No molecule SVG or bond crossing plan is built on this path.
         const page = objectDragDocument(drag, point).pages[0];
         const arrowIds = new Set(drag.movePreviewArrowIds);
+        // Resolve the frame against the same moved anchors as the SVG. Keep the stored
+        // object (and its rotation pivot) intact; frame-local controls subtract this
+        // resolved origin once, just as they do after the move is committed.
         arrowPreviewObjects = new Map(page.objects.flatMap(object =>
-          object.type === "mechanism-arrow" && arrowIds.has(object.id) ? [[object.id, object] as const] : []));
+          object.type === "mechanism-arrow" && arrowIds.has(object.id) ? [[object.id, {
+            object, interactionBounds: documentObjectInteractionBounds(object, page.objects)
+          }] as const] : []));
         const arrowPlan = planPageSvgRender({
           ...page, objects: page.objects.filter(object => arrowIds.has(object.id))
         }, { anchorResolutionPage: page });
@@ -19145,10 +19153,11 @@ export function MainWindow({
                     <DocumentObjectView
                       key={objectRenderKey}
                       {...objectViewHandlers}
-                      object={moveArrowPreviewObjects?.get(object.id) ?? object}
-                      interactionBounds={object.type === "mechanism-arrow" && !moveArrowPreviewObjects?.has(object.id)
-                        ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
-                        : undefined}
+                      object={moveArrowPreviewObjects?.get(object.id)?.object ?? object}
+                      interactionBounds={moveArrowPreviewObjects?.get(object.id)?.interactionBounds ??
+                        (object.type === "mechanism-arrow"
+                          ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
+                          : undefined)}
                       layerIndex={layerIndex}
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
