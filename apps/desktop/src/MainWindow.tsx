@@ -7758,10 +7758,6 @@ export function MainWindow({
     cancelMoleculeInspectorPreview();
     cancelSpin3dSession(undefined, { clearModelCache: true });
     // Releasing captures before clearing refs makes late pointer-up/cancel events harmless.
-    for (const [pointerId, owner] of pointerCaptureOwnersRef.current) {
-      if (owner.hasPointerCapture(pointerId)) owner.releasePointerCapture(pointerId);
-    }
-    pointerCaptureOwnersRef.current.clear();
     const pointerSessions = [nativeBondDragRef, nativePlacementDragRef, nativeBondEditDragRef,
       nativePartDragRef, objectDragRef, graphicCornerRadiusDragRef, graphicPathEditDragRef,
       graphicMarkerDragRef, graphicGradientDragRef, freehandArtDragRef, tapeMeasureDragRef,
@@ -7771,6 +7767,7 @@ export function MainWindow({
     for (const ref of pointerSessions) {
       const pointerId = ref.current?.pointerId;
       if (pointerId !== undefined) {
+        releaseGesturePointer(pointerId);
         for (const target of [pageRef.current, canvasRegionRef.current]) {
           if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
         }
@@ -7813,7 +7810,7 @@ export function MainWindow({
     resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
     selectionClipboardPasteStateRef.current = undefined;
   }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
-    replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
+    releaseGesturePointer, replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
