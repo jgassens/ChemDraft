@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { createNativeSavePayload, createPhase4Document, openNativeDocument } from "./documentWorkflow";
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
@@ -15,7 +15,7 @@ import {
   broadcastAnalysisWindowSnapshot, respondToProposalDecision
 } from "./plugins/panelBridge";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { createDocumentTabActions } from "./commands";
+import { createDocumentTabActions, createUnrestoredTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
 
 const native = vi.hoisted(() => ({
@@ -28,12 +28,13 @@ const native = vi.hoisted(() => ({
   events: new Map<string, (payload: unknown) => void>(),
   picker: vi.fn<() => Promise<string | null>>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
+  confirm: vi.fn<() => Promise<boolean>>(),
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>()
 }));
 vi.mock("./documentWorkflow", async (original) => {
   const actual = await original<typeof import("./documentWorkflow")>();
-  return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload) };
+  return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload), openNativeDocument: vi.fn(actual.openNativeDocument) };
 });
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./window-manager", async (original) => ({
@@ -60,7 +61,7 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(null)
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker, confirm: native.confirm }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
   ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeFile
 }));
@@ -91,6 +92,7 @@ describe("documents in one window", () => {
     native.load.mockImplementation(async () => native.session);
     native.saveSession.mockImplementation(async (value) => { native.session = JSON.parse(JSON.stringify(value)); });
     native.savePicker.mockResolvedValue(null);
+    native.confirm.mockResolvedValue(false);
     native.writeFile.mockResolvedValue();
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     vi.spyOn(window, "focus").mockImplementation(() => {});
@@ -344,16 +346,16 @@ describe("documents in one window", () => {
   });
 
   it("keeps native Close Window / Close Tab menu routing tied to the document count", async () => {
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
     await command("document.new");
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
   });
 
   it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
@@ -690,6 +692,155 @@ describe("documents in one window", () => {
     })), 1);
   }
 
+  function sessionWithUnrestoredTabs(names = ["First.chemdraft", "Second.cdxml", "Third.chemdraft"]) {
+    const session = threeTabSession();
+    session.unrestoredTabs = names.map((displayName, index) => ({
+      ...session.tabs![index % 3]!, displayName, contents: `unreadable raw document ${index}`,
+      extraRecoveryData: { original: index }
+    }));
+    return session;
+  }
+
+  async function restoreAfterMount(session: unknown) {
+    let finishRead!: (value: unknown) => void;
+    native.load.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    await remount();
+    await act(async () => finishRead(session));
+  }
+
+  it("retries carried tabs at each launch and restores ones now readable", async () => {
+    const session = threeTabSession();
+    const recovered = { ...session.tabs![0]!, displayName: "Recovered.chemdraft", contents: fileContents("Recovered") };
+    session.unrestoredTabs = [recovered];
+    native.session = session;
+    await remount();
+    expect(openNativeDocument).toHaveBeenCalledWith(recovered.contents);
+    expect(tabs()).toHaveLength(4);
+    expect(active()).toBe(1);
+    await activate(3);
+    expect(bridge().snapshot().document.title).toBe("Recovered");
+    const saved = await flush();
+    expect(saved.unrestoredTabs).toBeUndefined();
+    expect(saved.tabs).toHaveLength(4);
+    await remount();
+    expect(tabs()).toHaveLength(4);
+  });
+
+  it("retries still-failing carried tabs each launch, retaining their raw data and naming both commands", async () => {
+    const session = sessionWithUnrestoredTabs(["Still unreadable.chemdraft"]);
+    native.session = session;
+    for (let launch = 0; launch < 2; launch += 1) {
+      vi.mocked(openNativeDocument).mockClear();
+      await restoreAfterMount(native.session);
+      expect(openNativeDocument).toHaveBeenCalledWith("unreadable raw document 0");
+      expect(tabs()).toHaveLength(3);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("1 tab could not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)");
+      await command("view.zoomIn");
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, true);
+    }
+  });
+
+  it("saves raw documents with individual native prompts and removes only successful writes", async () => {
+    const session = sessionWithUnrestoredTabs();
+    native.session = session;
+    await remount();
+    native.writeFile.mockClear();
+    native.savePicker.mockResolvedValueOnce("C:\\rescued\\First.chemdraft")
+      .mockResolvedValueOnce("C:\\rescued\\Second.cdxml").mockResolvedValueOnce("C:\\rescued\\Third.chemdraft");
+    native.writeFile.mockResolvedValueOnce().mockRejectedValueOnce(new Error("disk full")).mockResolvedValueOnce();
+    await command("document.saveUnrestoredTabs");
+    expect(native.savePicker).toHaveBeenNthCalledWith(1, {
+      title: "Save Unrestored Tab — First.chemdraft", defaultPath: "First.chemdraft",
+      filters: [{ name: "Saved document", extensions: ["chemdraft"] }]
+    });
+    expect(native.savePicker).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      defaultPath: "Second.cdxml", filters: [{ name: "Saved document", extensions: ["cdxml"] }]
+    }));
+    expect(native.writeFile).toHaveBeenNthCalledWith(1, "C:\\rescued\\First.chemdraft", "unreadable raw document 0");
+    expect(native.writeFile).toHaveBeenNthCalledWith(2, "C:\\rescued\\Second.cdxml", "unreadable raw document 1");
+    expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Second.cdxml: disk full");
+    await remount();
+    expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
+  });
+
+  it("keeps a tab carried while its native write is pending, and retains canceled and unattempted tabs", async () => {
+    const session = sessionWithUnrestoredTabs();
+    native.session = session;
+    await remount();
+    native.writeFile.mockClear();
+    let finishWrite!: () => void;
+    native.savePicker.mockResolvedValueOnce("/tmp/rescued.chemdraft").mockResolvedValueOnce(null);
+    native.writeFile.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+    await command("document.saveUnrestoredTabs");
+    expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    await act(async () => finishWrite());
+    expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs!.slice(1));
+    expect(native.writeFile).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Saved 1 unrestored tab; 2 remain in the session (save canceled)");
+  });
+
+  it("saves an unsupported envelope's exact text, uses the chosen path unchanged, and disables commands afterward", async () => {
+    const session = sessionWithUnrestoredTabs(["Recovered.chemdraft"]);
+    session.unrestoredTabs = [{ version: 99, displayName: "Recovered.chemdraft", contents: "future saved format" }];
+    await restoreAfterMount(session);
+    native.writeFile.mockClear();
+    native.savePicker.mockResolvedValueOnce("/tmp/chosen-name");
+    await command("document.saveUnrestoredTabs");
+    expect(native.writeFile).toHaveBeenCalledExactlyOnceWith("/tmp/chosen-name", "future saved format");
+    expect((await flush()).unrestoredTabs).toBeUndefined();
+    await activate(2);
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("could not be restored");
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, false);
+    await command("document.saveUnrestoredTabs");
+    await command("document.discardUnrestoredTabs");
+    expect(native.savePicker).toHaveBeenCalledOnce();
+    expect(native.confirm).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("discard lists the count and names, and removes data only after confirmation (%s)", async (confirmed) => {
+    const session = sessionWithUnrestoredTabs(["Alpha.chemdraft", "Beta.chemdraft"]);
+    native.session = session;
+    await restoreAfterMount(session);
+    native.confirm.mockResolvedValueOnce(confirmed);
+    await command("document.discardUnrestoredTabs");
+    expect(native.confirm).toHaveBeenCalledWith(
+      "Discard 2 unrestored tabs?\n\nAlpha.chemdraft\nBeta.chemdraft\n\nTheir saved document data will be removed from the session. This cannot be undone.",
+      { title: "Discard Unrestored Tabs", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" }
+    );
+    expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
+    if (confirmed) {
+      await activate(2);
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("could not be restored");
+    }
+    await remount();
+    expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, !confirmed);
+  });
+
+  it("retains unrestored tabs if persisting a confirmed discard fails", async () => {
+    const session = sessionWithUnrestoredTabs();
+    native.session = session;
+    await remount();
+    native.confirm.mockResolvedValueOnce(true);
+    native.saveSession.mockRejectedValueOnce(new Error("session write refused"));
+    await command("document.discardUnrestoredTabs");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Discard failed; unrestored tabs remain in the session: session write refused");
+    expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+  });
+
+  it("registers both recovery commands but disables them with a reason when there are no unrestored tabs", async () => {
+    for (const spec of createUnrestoredTabActions(false)) {
+      expect(spec).toMatchObject({ enabled: false, disabledReason: "No unrestored tabs" });
+      expect(runtime().host.commands.has(spec.id)).toBe(true);
+      await command(spec.id);
+    }
+    expect(native.savePicker).not.toHaveBeenCalled();
+    expect(native.confirm).not.toHaveBeenCalled();
+    expect(createUnrestoredTabActions(true).every((spec) => spec.enabled && !spec.disabledReason)).toBe(true);
+  });
+
   it("restores all three tabs despite negative scroll or malformed cosmetic data", async () => {
     const session = threeTabSession();
     session.tabs![1]!.view!.scrollTop = -3;
@@ -723,9 +874,8 @@ describe("documents in one window", () => {
     expect((await flush()).unrestoredTabs).toEqual([corrupt]);
   });
 
-  it.each(["envelope", "contents"])("never overwrites a wholly unreadable session (%s)", async (failure) => {
-    const raw = failure === "envelope" ? { version: 99, recoverMe: true } :
-      { ...threeTabSession(), tabs: threeTabSession().tabs!.map((tab) => ({ ...tab, contents: "corrupt" })) };
+  it("never overwrites a wholly unreadable session envelope", async () => {
+    const raw = { version: 99, recoverMe: true };
     native.session = raw;
     await remount();
     native.saveSession.mockClear();
@@ -734,6 +884,19 @@ describe("documents in one window", () => {
     await flush();
     expect(native.saveSession).not.toHaveBeenCalled();
     expect(native.session).toEqual(raw);
+  });
+
+  it("carries every raw tab when all document payloads fail and allows recovery", async () => {
+    const raw = { ...threeTabSession(), tabs: threeTabSession().tabs!.map((tab) => ({ ...tab, contents: "corrupt" })) };
+    native.session = raw;
+    await restoreAfterMount(raw);
+    expect(tabs()).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("3 tabs could not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)");
+    await paste("Drawing after failed restore");
+    expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+    native.confirm.mockResolvedValueOnce(true);
+    await command("document.discardUnrestoredTabs");
+    expect((await flush()).unrestoredTabs).toBeUndefined();
   });
 
   it("neither restores nor announces a sole pristine blank Untitled tab", async () => {

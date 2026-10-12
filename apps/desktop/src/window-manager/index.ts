@@ -605,14 +605,15 @@ export async function setToolbarsMenu(
   // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
   rulersVisible: boolean,
   crosshairsVisible: boolean,
-  hasMultipleDocumentTabs = false
+  hasMultipleDocumentTabs = false,
+  hasUnrestoredTabs = false
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs, hasUnrestoredTabs }).catch(() => undefined);
 }
 
 /**

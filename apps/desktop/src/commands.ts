@@ -44,6 +44,7 @@ export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
   hasMultipleTabs?: boolean;
+  hasUnrestoredTabs?: boolean;
   /**
    * A lasso/marquee fragment is selected. Such a selection lives outside
    * `document.selection.objectIds` (it names atoms and bonds, not objects), so Cut/Copy have to
@@ -87,6 +88,17 @@ export function createDocumentTabActions(hasMultipleTabs: boolean): CommandSpec[
   ];
 }
 
+export function createUnrestoredTabActions(hasUnrestoredTabs: boolean): CommandSpec[] {
+  const availability = {
+    enabled: hasUnrestoredTabs,
+    disabledReason: hasUnrestoredTabs ? undefined : "No unrestored tabs"
+  };
+  return [
+    { id: "document.saveUnrestoredTabs", title: "Save Unrestored Tabs…", icon: "save", source: "core", ...availability },
+    { id: "document.discardUnrestoredTabs", title: "Discard Unrestored Tabs…", icon: "close", source: "core", ...availability }
+  ];
+}
+
 export function createQuickActions(
   document: ChemDraftDocument,
   selectedMolecule: MoleculeObject | undefined,
@@ -101,6 +113,7 @@ export function createQuickActions(
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
     { id: "document.save", title: "Save Native Document", icon: "save", shortcut: "Cmd+S", source: "core" },
     { id: "document.saveAs", title: "Save Native Document As", icon: "save", shortcut: "Shift+Cmd+S", source: "core" },
+    ...createUnrestoredTabActions(availability.hasUnrestoredTabs === true),
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "Cmd+Z", source: "core", enabled: availability.canUndo === true },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "Shift+Cmd+Z", source: "core", enabled: availability.canRedo === true },
     { id: "edit.selectAll", title: "Select All", icon: "select", shortcut: "Cmd+A", source: "core" },

@@ -54,6 +54,20 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("exposes both unrestored-tab commands in File and disables them only when none remain", () => {
+    for (const hasUnrestoredTabs of [false, true]) {
+      const file = buildAppMenuModel({ ...EMPTY_CONTEXT, hasUnrestoredTabs }).find((section) => section.id === "file")!;
+      const commands = flattenAppMenuCommands([file]);
+      for (const [commandId, label] of [
+        ["document.saveUnrestoredTabs", "Save Unrestored Tabs…"],
+        ["document.discardUnrestoredTabs", "Discard Unrestored Tabs…"]
+      ]) {
+        expect(commands.find((command) => command.commandId === commandId)).toMatchObject({
+          label, enabled: hasUnrestoredTabs, disabledReason: hasUnrestoredTabs ? undefined : "No unrestored tabs"
+        });
+      }
+    }
+  });
   it("stays in sync with the native menu's routed command ids (lib.rs MENU_COMMAND_IDS)", () => {
     const nativeIds = parseNativeMenuCommandIds();
     const webIds = nativeRoutedCommandIds(buildAppMenuModel(EMPTY_CONTEXT));
