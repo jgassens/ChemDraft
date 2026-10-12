@@ -53,6 +53,8 @@ export interface MolfileWriteOptions {
   fromDocFrame?: boolean;
   /** Optional legacy collector. Warnings are also ALWAYS returned in MolfileWriteResult. */
   warnings?: string[];
+  /** User-facing output format when this writer is an internal conversion step. */
+  messageFormat?: "SMILES";
   /**
    * How an atom whose label is not an element symbol ("Ph", "CH3", "CO2H") is written.
    *
@@ -199,8 +201,12 @@ function warnUnresolvedAromaticBonds(
     const ids = [...system].sort();
     const literal = ids.filter((id) => literalIds.has(id));
     options.warnings?.push(
-      `Aromatic bonds at atoms ${ids.join(", ")} have no resolved Kekulé order; preserved as type 4 (aromatic).` +
-      (literal.length > 0 ? ` Literal atoms ${literal.join(", ")} are written without a valence field, so a reader may add hydrogens.` : "")
+      (options.messageFormat
+        ? `Aromatic bonds at atoms ${ids.join(", ")} have no resolved Kekulé order; the structure engine interpreted them for ${options.messageFormat}.`
+        : `Aromatic bonds at atoms ${ids.join(", ")} have no resolved Kekulé order; preserved as type 4 (aromatic).`) +
+      (literal.length > 0 ? (options.messageFormat
+        ? ` Hydrogen counts at literal atoms ${literal.join(", ")} could not be specified; the structure engine may add hydrogens.`
+        : ` Literal atoms ${literal.join(", ")} are written without a valence field, so a reader may add hydrogens.`) : "")
     );
   }
 }
@@ -226,7 +232,9 @@ function warnUnsupportedDashedBondStyles(bonds: readonly MoleculeBond[], options
       const emittedOrder = code === 1 ? "single" : code === 2 ? "double" : code === 3 ? "triple" : code === 8 ? "any" : "aromatic";
       const article = bond.order === "aromatic" || bond.order === "unknown" ? "an" : "a";
       options.warnings?.push(
-        `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written as bond type ${code} (${emittedOrder}), dashed style not preserved.`
+        options.messageFormat
+          ? `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written to ${options.messageFormat} as ${emittedOrder}, dashed style not preserved.`
+          : `Dashed display on ${article} ${bond.order} bond is not a coordination bond; written as bond type ${code} (${emittedOrder}), dashed style not preserved.`
       );
     }
   }
@@ -275,7 +283,8 @@ function literalAtomValences(
   warnings: string[] | undefined,
   kekuleBondOrders: ReadonlyMap<string, number>,
   spelledHydrogens: ReadonlyMap<string, number> = new Map(),
-  placeholderAtoms: ReadonlyMap<string, string> = new Map()
+  placeholderAtoms: ReadonlyMap<string, string> = new Map(),
+  messageFormat?: MolfileWriteOptions["messageFormat"]
 ): Map<string, number> {
   const valences = new Map(atoms
     .filter((atom) =>
@@ -325,7 +334,9 @@ function literalAtomValences(
     if (!Number.isInteger(valence) || valence > MAX_EXPLICIT_VALENCE) {
       const atom = atomById.get(id)!;
       warnings?.push(
-        `Literal atom "${atom.element}" has a bond-order sum of ${valence}, which the ${format} valence field cannot hold; written without it, so a reader may add hydrogens.`
+        messageFormat
+          ? `Literal atom "${atom.element}" has a bond-order sum of ${valence}, which the structure engine cannot receive exactly for ${messageFormat}; the engine may add hydrogens.`
+          : `Literal atom "${atom.element}" has a bond-order sum of ${valence}, which the ${format} valence field cannot hold; written without it, so a reader may add hydrogens.`
       );
       valences.delete(id);
     }
@@ -435,12 +446,12 @@ function molfileAtomSymbols(
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
       options.warnings?.push(
-        `${what}; written as R-group placeholder R${rgroup} — the label's group is not represented in the molfile.`
+        `${what}; written as R-group placeholder R${rgroup} — the label's group is not represented in ${options.messageFormat ?? "the molfile"}.`
       );
       return "R#";
     }
     options.warnings?.push(
-      `${what}; written as a dummy atom (*) — the label's group is not represented in the molfile.`
+      `${what}; written as a dummy atom (*) — the label's group is not represented in ${options.messageFormat ?? "the molfile"}.`
     );
     return "*";
   });
@@ -529,7 +540,8 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
-  if (dativeBondCount > 0) {
+  // moleculeSmiles already reports this loss; retain the export warning only for MOL callers.
+  if (dativeBondCount > 0 && options.messageFormat !== "SMILES") {
     options.warnings?.push(
       `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
     );
@@ -540,7 +552,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V2000", options);
   const literalValences = literalAtomValences(
-    atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms
+    atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms, options.messageFormat
   );
   atoms.forEach((atom, index) => {
     const x = f10_4(atom.x);
@@ -644,7 +656,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
 
   const { symbols, rgroups, spelledHydrogens } = molfileAtomSymbols(atoms, writableBonds, "V3000", options);
   const literalValences = literalAtomValences(
-    atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms
+    atoms, writableBonds, "V3000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms, options.messageFormat
   );
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
