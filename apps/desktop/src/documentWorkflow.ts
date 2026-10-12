@@ -18040,10 +18040,13 @@ function importedContentFitDelta(min: number, size: number, extent: number): num
  */
 export function copyAsScopeObjects(document: ChemDraftDocument): readonly DocumentObject[] {
   const page = firstPage(document);
-  const selectedIds = new Set(document.selection.objectIds);
-  if (selectedIds.size === 0 || !page.objects.some((object) => selectedIds.has(object.id))) {
-    return page.objects;
+  const selectionIds = new Set(document.selection.objectIds);
+  if (selectionIds.size === 0 || !page.objects.some((object) => selectionIds.has(object.id))) {
+    return page.objects.filter((object) => object.type !== "group");
   }
+  // Groups are invisible wrappers. Resolve their leaves before collecting anchored artwork,
+  // preserving page paint order in the final filter and avoiding wrapper frames in the crop.
+  const selectedIds = new Set(resolveGroupedDocumentObjectIds(page.objects, [...selectionIds]));
 
   const isArrowObject = (object: DocumentObject): object is MechanismArrowObject | ArrowObject =>
     object.type === "mechanism-arrow" || object.type === "reaction-arrow";
