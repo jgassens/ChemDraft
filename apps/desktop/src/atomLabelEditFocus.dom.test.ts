@@ -948,6 +948,125 @@ describe("atom label editor focus", () => {
     expect(molecule().atoms.find((atom) => atom.id === atomId)?.element).not.toBe("C");
   });
 
+  describe.each(["macos", "windows"] as const)("text placeholder (%s)", (platform) => {
+    beforeEach(() => {
+      // Existing objects need the same controlled startup retries as freshly placed text.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+
+    async function insertTextEditor() {
+      setShortcutPlatform(platform);
+      await renderMainWindow(ringDocument(), "tool.text");
+      return await startInlineEdit("text") as HTMLTextAreaElement;
+    }
+
+    // jsdom skips keyboard default actions. Apply the browser's replacement at the actual DOM
+    // selection after keydown, then dispatch input; assigning the whole intended word would hide
+    // a spurious select-all between keystrokes.
+    async function typeCharacters(editor: HTMLTextAreaElement, text: string) {
+      for (const key of text) {
+        await act(async () => {
+          const allowed = editor.dispatchEvent(new KeyboardEvent("keydown", {
+            key, bubbles: true, cancelable: true
+          }));
+          expect(allowed).toBe(true);
+          const start = editor.selectionStart;
+          const nextValue = editor.value.slice(0, start) + key + editor.value.slice(editor.selectionEnd);
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, nextValue);
+          editor.setSelectionRange(start + 1, start + 1);
+          editor.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await act(async () => { vi.advanceTimersByTime(100); });
+      }
+    }
+
+    async function refocusAfterNativeBlur(editor: HTMLTextAreaElement) {
+      // Opening the editor schedules DOM focus at 0/16/80 ms. Exhaust those retries before
+      // testing a later native blur, so none can race act() and refocus before the assertion.
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      await act(async () => { editor.blur(); });
+      expect(document.activeElement).not.toBe(editor);
+      // Time passing in an unfocused document must leave the editor blurred until window focus.
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).not.toBe(editor);
+      hasFocus.mockRestore();
+      await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
+      expect(document.activeElement).toBe(editor);
+    }
+
+    it("keeps every character when typing Text on top", async () => {
+      const editor = await insertTextEditor();
+      await typeCharacters(editor, "Text on top");
+      expect(editor.value).toBe("Text on top");
+      expect(bridge().snapshot().document.pages[0].objects.find((object) => object.type === "text"))
+        .toMatchObject({ text: "Text on top" });
+    });
+
+    it("replaces a fresh placeholder with the first key", async () => {
+      const editor = await insertTextEditor();
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([0, 4]);
+      await typeCharacters(editor, "Z");
+      expect(editor.value).toBe("Z");
+    });
+
+    it("does not select typed Text again on blur and refocus", async () => {
+      const editor = await insertTextEditor();
+      await typeCharacters(editor, "Text");
+      await refocusAfterNativeBlur(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([4, 4]);
+      await typeCharacters(editor, " on top");
+      expect(editor.value).toBe("Text on top");
+    });
+
+    it("treats pasted Text as user content even when its value matches the placeholder", async () => {
+      const editor = await insertTextEditor();
+      await act(async () => {
+        const paste = new Event("paste", { bubbles: true, cancelable: true });
+        Object.defineProperty(paste, "clipboardData", { value: { getData: () => "Text" } });
+        editor.dispatchEvent(paste);
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      });
+      await act(async () => { vi.advanceTimersByTime(100); });
+      await refocusAfterNativeBlur(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([4, 4]);
+      await typeCharacters(editor, " on top");
+      expect(editor.value).toBe("Text on top");
+    });
+
+    it("opens an existing Text object with an ordinary caret", async () => {
+      setShortcutPlatform(platform);
+      const initial = insertNativeTextObject(ringDocument(), { x: 200, y: 200 }, "Text");
+      const textId = initial.selection.objectIds[0]!;
+      await renderMainWindow(initial, "tool.text");
+      await pointerPress(container.querySelector(`[data-object-id="${textId}"]`)!, { x: 210, y: 210 });
+      const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+      expect(editor).not.toBeNull();
+      expect(editor.selectionStart).toBe(editor.selectionEnd);
+      const caret = editor.selectionStart;
+      await refocusAfterNativeBlur(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([caret, caret]);
+    });
+
+    it.each(["keyboard", "mouse"] as const)("ends placeholder selection after a %s caret move", async (input) => {
+      const editor = await insertTextEditor();
+      await act(async () => {
+        editor.dispatchEvent(input === "keyboard"
+          ? new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })
+          : new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+        // The browser's default caret movement, which synthetic DOM events omit.
+        editor.setSelectionRange(4, 4);
+        editor.dispatchEvent(new Event("select", { bubbles: true }));
+      });
+      await act(async () => { vi.advanceTimersByTime(100); });
+      await refocusAfterNativeBlur(editor);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([4, 4]);
+      await typeCharacters(editor, " on top");
+      expect(editor.value).toBe("Text on top");
+    });
+  });
+
   it("keeps a text-box edit open across native window blur and resumes on window focus", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const initialDocument = insertNativeTextObject(ringDocument(), { x: 200, y: 200 }, "Substituent");
