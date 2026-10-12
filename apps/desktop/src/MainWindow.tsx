@@ -980,8 +980,9 @@ type ObjectDragState = {
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
-  documentPreview?: { dx: number; dy: number; document: ChemDraftDocument };
   moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
+  movePreviewObjectIds?: readonly string[];
+  movePreviewArrowIds?: readonly string[];
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1217,6 +1218,13 @@ type ObjectTransformPreviewState = {
   scaleX: number;
   scaleY: number;
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+  /** Move existing paint/hit/chrome nodes without entering React's render path. */
+  retainedMove?: boolean;
+  arrowPreviewFragments?: ReadonlyMap<string, readonly PageSvgElementFragment[]>;
+  arrowPreviewObjects?: ReadonlyMap<string, {
+    object: Extract<DocumentObject, { type: "mechanism-arrow" }>;
+    interactionBounds: ReturnType<typeof documentObjectInteractionBounds>;
+  }>;
 };
 type ArtTransformDragPreviewProxy = {
   kind: "svg-image" | "bounds";
@@ -1935,6 +1943,10 @@ export function MainWindow({
   const bezierArtNodeDragRef = useRef<BezierArtNodeDragState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
   const objectTransformPreviewRafRef = useRef<number | undefined>(undefined);
+  const retainedObjectMoveRef = useRef<{
+    pointerId: number;
+    targets: RetainedObjectMoveTarget[];
+  } | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -2111,6 +2123,9 @@ export function MainWindow({
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
+  const [moveArrowPreviewFragments, setMoveArrowPreviewFragments] = useState<
+    ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>();
+  const [moveArrowPreviewObjects, setMoveArrowPreviewObjects] = useState<ObjectTransformPreviewState["arrowPreviewObjects"]>();
   const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
@@ -2753,11 +2768,12 @@ export function MainWindow({
   const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
     [labelDisplayPage, nativeDoubleBondSidePreview]);
   // One full-page plan supplies both the native overlays and the ordered SVG runs.
-  // Transform previews do not change this memo: dragging art changes only its display transform.
+  // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
+  // their start geometry until the real document is rendered once on release.
   const pageSvgRenderPlan = useMemo(() =>
     markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage)), [plannedDisplayPage]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
-  const objectOverlayFragments = useMemo(() => {
+  const baseObjectOverlayFragments = useMemo(() => {
     const next = reuseUnchangedFragments(
       previousOverlayFragmentsRef.current,
       objectOverlayFragmentsByObjectId(pageSvgRenderPlan)
@@ -2765,6 +2781,9 @@ export function MainWindow({
     previousOverlayFragmentsRef.current = next;
     return next;
   }, [pageSvgRenderPlan]);
+  const objectOverlayFragments = useMemo(() => moveArrowPreviewFragments
+    ? new Map([...baseObjectOverlayFragments, ...moveArrowPreviewFragments])
+    : baseObjectOverlayFragments, [baseObjectOverlayFragments, moveArrowPreviewFragments]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   if (fileState.dirty || fileState.path || documentHistory.past.length || documentHistory.future.length || !documentIsBlank(document)) {
     nonPristineTabsRef.current.add(activeDocumentTabId);
@@ -2920,14 +2939,57 @@ export function MainWindow({
       textRange
     };
   }, [selectedNativeMoleculePart]);
+  const clearObjectTransformPreview = useCallback((pointerId?: number) => {
+    const retained = retainedObjectMoveRef.current;
+    if (retained && (pointerId === undefined || retained.pointerId === pointerId)) {
+      restoreRetainedObjectMoveTargets(retained.targets);
+      retainedObjectMoveRef.current = undefined;
+    }
+    if (!retained || pointerId === undefined || retained.pointerId === pointerId) {
+      setMoveArrowPreviewFragments(undefined);
+      setMoveArrowPreviewObjects(undefined);
+    }
+    const pendingPreview = pendingObjectTransformPreviewRef.current;
+    if (!pendingPreview || pointerId === undefined || pendingPreview.pointerId === pointerId) {
+      pendingObjectTransformPreviewRef.current = undefined;
+    }
+
+    if (objectTransformPreviewRafRef.current !== undefined) {
+      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+      objectTransformPreviewRafRef.current = undefined;
+    }
+
+    setObjectTransformPreview((current) => {
+      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
+        return current;
+      }
+      return undefined;
+    });
+  }, []);
+
   const installDocumentHistory = useCallback((history: DocumentHistory, switchingTabs = false) => {
+    // Retained moves never install preview documents. Any install while one is active
+    // replaces its source geometry, so disarm it before React updates the paint/chrome.
+    const drag = objectDragRef.current;
+    if (drag && !graphicObjectIdsForCssDragPreview(drag)) {
+      objectDragRef.current = null;
+      objectDragMachineRef.current = initialInteractionState();
+      clearObjectTransformPreview(drag.pointerId);
+      releaseGesturePointer(drag.pointerId);
+      setHoveredNativeAtom(undefined);
+      setShiftHoveredArrowId(undefined);
+      shiftHoveredArrowIdRef.current = undefined;
+      hoveredArrowIdRef.current = undefined;
+      hoverPagePointRef.current = undefined;
+      setArrowEditTargetId(undefined);
+    }
     documentHistoryRef.current = history;
     documentRef.current = history.present;
     // A switch restores its own selection below; the previous tab's inline text range and fragment
     // must not be captured as style targets for a document whose object ids may happen to match.
     if (!switchingTabs) updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
-  }, [updateToolbarStyleTargetSnapshot]);
+  }, [clearObjectTransformPreview, releaseGesturePointer, updateToolbarStyleTargetSnapshot]);
   // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
   // holds (an opened file's parse, or a newly created document), so the engine admits it without the
   // copy-and-reparse `toEngineDocument` would make — 150–200 ms per open of a 5,000-molecule file.
@@ -7873,6 +7935,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
+    clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
     const preview = rotationInputRef.current ?? objectResizeInputRef.current ??
       artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current ??
@@ -7939,7 +8002,7 @@ export function MainWindow({
     hoverPagePointRef.current = undefined;
     resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
     selectionClipboardPasteStateRef.current = undefined;
-  }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
+  }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession, clearObjectTransformPreview,
     releaseGesturePointer, replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
@@ -11180,32 +11243,34 @@ export function MainWindow({
 
     objectTransformPreviewRafRef.current = window.requestAnimationFrame(() => {
       objectTransformPreviewRafRef.current = undefined;
-      setObjectTransformPreview(pendingObjectTransformPreviewRef.current);
-    });
-  }, []);
-
-  const clearObjectTransformPreview = useCallback((pointerId?: number) => {
-    const pendingPreview = pendingObjectTransformPreviewRef.current;
-    if (!pendingPreview || pointerId === undefined || pendingPreview.pointerId === pointerId) {
-      pendingObjectTransformPreviewRef.current = undefined;
-    }
-
-    if (objectTransformPreviewRafRef.current !== undefined) {
-      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
-      objectTransformPreviewRafRef.current = undefined;
-    }
-
-    setObjectTransformPreview((current) => {
-      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
-        return current;
+      const preview = pendingObjectTransformPreviewRef.current;
+      if (preview?.retainedMove) {
+        const cached = retainedObjectMoveRef.current;
+        if (cached && (cached.pointerId !== preview.pointerId || cached.targets.some(target => !target.element.isConnected))) {
+          restoreRetainedObjectMoveTargets(cached.targets);
+          retainedObjectMoveRef.current = undefined;
+        }
+        retainedObjectMoveRef.current ??= {
+          pointerId: preview.pointerId,
+          targets: retainedObjectMoveTargets(pageRef.current, preview.objectIds, preview.arrowPreviewFragments)
+        };
+        translateRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets, preview.translateX, preview.translateY);
+        if (preview.arrowPreviewFragments) {
+          setMoveArrowPreviewFragments(preview.arrowPreviewFragments);
+          setMoveArrowPreviewObjects(preview.arrowPreviewObjects);
+        }
+      } else {
+        setObjectTransformPreview(preview);
       }
-      return undefined;
     });
   }, []);
 
   useEffect(() => () => {
     if (objectTransformPreviewRafRef.current !== undefined) {
       window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+    }
+    if (retainedObjectMoveRef.current) {
+      restoreRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets);
     }
   }, []);
 
@@ -13041,33 +13106,53 @@ export function MainWindow({
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
-      if (previewObjectIds) {
-        scheduleObjectTransformPreview({
-          pointerId: drag.pointerId,
-          objectIds: previewObjectIds,
-          mode: "move",
-          origin: drag.startPoint,
-          translateX: point.x - drag.startPoint.x,
-          translateY: point.y - drag.startPoint.y,
-          rotationDegrees: 0,
-          scaleX: 1,
-          scaleY: 1,
-          artPreviewProxies: drag.artPreviewProxies
+      const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
+        : objectDragDelta(drag, point);
+      drag.movePreviewObjectIds ??= objectIdsForRetainedMovePreview(drag);
+      drag.movePreviewArrowIds ??= mechanismArrowIdsForMovePreview(drag.startDocument.pages[0], drag.movePreviewObjectIds);
+      let arrowPreviewFragments: ObjectTransformPreviewState["arrowPreviewFragments"];
+      let arrowPreviewObjects: ObjectTransformPreviewState["arrowPreviewObjects"];
+      if (!previewObjectIds && drag.movePreviewArrowIds.length) {
+        // Anchored endpoints can change shape rather than translate rigidly. Replan only
+        // these arrows, resolving anchors against the unchanged movement implementation.
+        // No molecule SVG or bond crossing plan is built on this path.
+        const page = objectDragDocument(drag, point).pages[0];
+        const arrowIds = new Set(drag.movePreviewArrowIds);
+        // Resolve the frame against the same moved anchors as the SVG. Keep the stored
+        // object (and its rotation pivot) intact; frame-local controls subtract this
+        // resolved origin once, just as they do after the move is committed.
+        arrowPreviewObjects = new Map(page.objects.flatMap(object =>
+          object.type === "mechanism-arrow" && arrowIds.has(object.id) ? [[object.id, {
+            object, interactionBounds: documentObjectInteractionBounds(object, page.objects)
+          }] as const] : []));
+        const arrowPlan = planPageSvgRender({
+          ...page, objects: page.objects.filter(object => arrowIds.has(object.id))
+        }, { anchorResolutionPage: page });
+        const layers = new Map(page.objects.map((object, index) => [object.id, index]));
+        arrowPreviewFragments = objectOverlayFragmentsByObjectId({ ...arrowPlan,
+          fragments: arrowPlan.fragments.map(fragment => fragment.kind === "element"
+            ? { ...fragment, attrs: { ...fragment.attrs,
+                "data-layer-index": layers.get(String(fragment.attrs["data-object-id"])) } }
+            : fragment)
         });
-        return;
       }
-
-      clearObjectTransformPreview(drag.pointerId);
-      const previewDocument = objectDragDocument(drag, point);
-      replacePresentDocument(previewDocument);
-      const delta = objectDragDelta(drag, point);
-      drag.documentPreview = {
-        dx: delta.x,
-        dy: delta.y,
-        document: documentRef.current
-      };
+      scheduleObjectTransformPreview({
+        pointerId: drag.pointerId,
+        objectIds: previewObjectIds ?? drag.movePreviewObjectIds,
+        mode: "move",
+        origin: drag.startPoint,
+        translateX: delta.x,
+        translateY: delta.y,
+        rotationDegrees: 0,
+        scaleX: 1,
+        scaleY: 1,
+        artPreviewProxies: drag.artPreviewProxies,
+        retainedMove: !previewObjectIds,
+        arrowPreviewFragments,
+        arrowPreviewObjects
+      });
     });
-  }, [clearObjectTransformPreview, objectDragDelta, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
+  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -13399,11 +13484,7 @@ export function MainWindow({
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const preview = drag.documentPreview;
-    const delta = preview ? objectDragDelta(drag, point) : undefined;
-    const moved = preview && delta && preview.dx === delta.x && preview.dy === delta.y
-      ? preview.document
-      : objectDragDocument(drag, point);
+    const moved = objectDragDocument(drag, point);
     clearObjectTransformPreview(drag.pointerId);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
@@ -13412,7 +13493,7 @@ export function MainWindow({
 
     commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -19161,10 +19242,11 @@ export function MainWindow({
                     <DocumentObjectView
                       key={objectRenderKey}
                       {...objectViewHandlers}
-                      object={object}
-                      interactionBounds={object.type === "mechanism-arrow"
-                        ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
-                        : undefined}
+                      object={moveArrowPreviewObjects?.get(object.id)?.object ?? object}
+                      interactionBounds={moveArrowPreviewObjects?.get(object.id)?.interactionBounds ??
+                        (object.type === "mechanism-arrow"
+                          ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
+                          : undefined)}
                       layerIndex={layerIndex}
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
@@ -20711,6 +20793,79 @@ function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | un
   return objectIds.every((objectId) => findDocumentObject(drag.startDocument, objectId)?.type === "graphic")
     ? objectIds
     : undefined;
+}
+
+/** Include group descendants and the atom-anchored marks carried by the move commit. */
+function objectIdsForRetainedMovePreview(drag: ObjectDragState): string[] {
+  const objects = drag.startDocument.pages[0].objects;
+  const ids = new Set(resolveGroupedDocumentObjectIds(objects, drag.groupObjectIds ?? [drag.objectId]));
+  const atomsByMolecule = new Map(objects.flatMap(object => object.type === "molecule" && ids.has(object.id)
+    ? [[object.id, new Set(object.atoms.map(atom => atom.id))] as const] : []));
+  for (const object of objects) {
+    if (object.type === "electron-mark" && object.anchor.kind === "atom" &&
+      object.anchor.objectId && object.anchor.atomId &&
+      atomsByMolecule.get(object.anchor.objectId)?.has(object.anchor.atomId)) ids.add(object.id);
+  }
+  return [...ids];
+}
+
+function mechanismArrowIdsForMovePreview(page: DocumentPage, movedObjectIds: readonly string[]): string[] {
+  const moved = new Set(movedObjectIds);
+  return page.objects.flatMap(object => object.type === "mechanism-arrow" &&
+    (moved.has(object.id) || [object.source, object.target].some(anchor =>
+      anchor.kind !== "point" && anchor.objectId !== undefined && moved.has(anchor.objectId))) ? [object.id] : []);
+}
+
+type RetainedObjectMoveTarget = {
+  element: HTMLElement | SVGElement;
+  svg: boolean;
+  transform: string | null;
+  translate: string;
+};
+
+function retainedObjectMoveTargets(
+  page: HTMLElement | null,
+  objectIds: readonly string[],
+  arrowFragments?: ReadonlyMap<string, readonly PageSvgElementFragment[]>
+): RetainedObjectMoveTarget[] {
+  if (!page) return [];
+  const ids = new Set(objectIds);
+  // Collect once per gesture, scoped to this page. Descendant bond/atom catchers ride
+  // with their paint wrapper; translating them individually would apply the delta twice.
+  return [...page.querySelectorAll<HTMLElement | SVGElement>(
+    ".document-object[data-object-id], [data-object-controls], [data-page-svg-object-visual], [data-group-selection]"
+  )].filter(element => !arrowFragments?.has(element.getAttribute("data-page-svg-object-visual") ??
+    element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-id") ?? "") &&
+    (ids.has(element.getAttribute("data-object-id") ??
+    element.getAttribute("data-object-controls") ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
+    (objectIds.length > 1 && element.hasAttribute("data-group-selection"))))
+    .map(element => ({ element, svg: element.hasAttribute("data-page-svg-object-visual"),
+      transform: element.getAttribute("transform"), translate: element.style.translate }));
+}
+
+function translateRetainedObjectMoveTargets(targets: readonly RetainedObjectMoveTarget[], dx: number, dy: number): void {
+  for (const { element, svg, transform } of targets) {
+    element.setAttribute("data-object-move-preview", "true");
+    if (svg) {
+      element.setAttribute("transform", `translate(${formatSvgNumber(dx)} ${formatSvgNumber(dy)})${transform ? ` ${transform}` : ""}`);
+    } else {
+      // The individual translate property precedes the committed rotation/projection.
+      // It moves both paint and hit targets in page space, even for a tilted molecule.
+      element.style.translate = `${pageScaledCssPx(dx)} ${pageScaledCssPx(dy)}`;
+    }
+  }
+}
+
+function restoreRetainedObjectMoveTargets(targets: readonly RetainedObjectMoveTarget[]): void {
+  for (const { element, svg, transform, translate } of targets) {
+    element.removeAttribute("data-object-move-preview");
+    if (svg) {
+      if (transform === null) element.removeAttribute("transform");
+      else element.setAttribute("transform", transform);
+    } else {
+      element.style.translate = translate;
+    }
+  }
 }
 
 function createArtTransformDragPreviewProxies(

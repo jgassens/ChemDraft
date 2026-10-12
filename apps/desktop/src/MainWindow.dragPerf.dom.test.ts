@@ -87,32 +87,33 @@ describe("MainWindow drag and modal performance", () => {
     return { start: dragStart, molecule, point, target, preview: snapshot() };
   }
 
-  it.each([1, 2])("reuses the final preview for %i molecule(s), with identical movement, undo and redo", async (n) => {
+  // Molecule previews now retain paint rather than replacing the present document each frame.
+  // Release runs the same movement function once; movement/history assertions stay intact.
+  it.each([1, 2])("commits a retained preview once for %i molecule(s), with identical movement, undo and redo", async (n) => {
     await mount(rings(n));
     const drag = await previewDrag(30, 20);
     const ids = drag.start.selection.objectIds;
     const expected = workflow.normalizeCommittedDocument(n > 1
       ? workflow.moveDocumentObjects(drag.start, ids, 30, 20)
       : workflow.moveDocumentObject(drag.start, drag.molecule.id, { x: drag.molecule.x + 30, y: drag.molecule.y + 20 }));
-    expect(drag.preview).toEqual(expected);
+    expect(drag.preview).toBe(drag.start);
     const move = vi.spyOn(workflow, n > 1 ? "moveDocumentObjects" : "moveDocumentObject");
     await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 30, y: drag.point.y + 20 }));
-    expect(move).not.toHaveBeenCalled();
-    expect(snapshot()).toBe(drag.preview);
+    expect(move).toHaveBeenCalledTimes(1);
     expect(snapshot()).toEqual(expected);
+    const committed = snapshot();
     await act(async () => key("z", true));
     expect(snapshot()).toEqual(drag.start);
     await act(async () => key("z", true, true));
-    expect(snapshot()).toBe(drag.preview);
+    expect(snapshot()).toBe(committed);
   });
 
-  it.each([1, 2])("reuses a page-clamped preview for %i molecule(s) when release moves farther beyond the edge", async (n) => {
+  it.each([1, 2])("commits a page-clamped preview for %i molecule(s) when release moves farther beyond the edge", async (n) => {
     await mount(rings(n));
     const drag = await previewDrag(1000, 1000);
     const move = vi.spyOn(workflow, n > 1 ? "moveDocumentObjects" : "moveDocumentObject");
     await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 2000, y: drag.point.y + 2000 }));
-    expect(move).not.toHaveBeenCalled();
-    expect(snapshot()).toBe(drag.preview);
+    expect(move).toHaveBeenCalledTimes(1);
     move.mockRestore();
     const expected = n > 1 ? workflow.moveDocumentObjects(drag.start, drag.start.selection.objectIds, 2000, 2000)
       : workflow.moveDocumentObject(drag.start, drag.molecule.id, { x: drag.molecule.x + 2000, y: drag.molecule.y + 2000 });
@@ -139,7 +140,7 @@ describe("MainWindow drag and modal performance", () => {
     expect(preview).toBe(drag.start);
     const move = vi.spyOn(workflow, "moveDocumentObjects");
     await act(async () => pointer(drag.target, "pointerup", drag.point));
-    expect(move).not.toHaveBeenCalled();
+    expect(move).toHaveBeenCalledTimes(1);
     expect(snapshot()).toBe(preview);
     expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
   });
@@ -218,7 +219,7 @@ describe("MainWindow drag and modal performance", () => {
     } finally { modal.remove(); }
   });
 
-  it("preserves anchored charge marks and chemistry when reusing a clamped group preview", async () => {
+  it("preserves anchored charge marks and chemistry when committing a clamped group preview", async () => {
     const initial = rings(2);
     const molecule = initial.pages[0].objects[0] as MoleculeObject;
     const charged = workflow.normalizeCommittedDocument(workflow.applyChargeToolAtNativeAtom(initial, 1,
@@ -229,8 +230,7 @@ describe("MainWindow drag and modal performance", () => {
     const expected = workflow.normalizeCommittedDocument(workflow.moveDocumentObjects(drag.start, drag.start.selection.objectIds, -2000, -2000));
     const move = vi.spyOn(workflow, "moveDocumentObjects");
     await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x - 2000, y: drag.point.y - 2000 }));
-    expect(move).not.toHaveBeenCalled();
-    expect(snapshot()).toBe(drag.preview);
+    expect(move).toHaveBeenCalledTimes(1);
     expect(snapshot()).toEqual(expected);
   });
 });
