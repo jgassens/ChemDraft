@@ -1575,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.22.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -6259,7 +6259,11 @@ export function MainWindow({
     switch (commandId) {
       case "clipboard.copyAs.smiles": {
         const warnings: string[] = [];
-        await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
+        try {
+          await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
+        } catch (error) {
+          setStatus(`Copy as SMILES failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
         return;
       }
       case "clipboard.copyAs.mol": {
