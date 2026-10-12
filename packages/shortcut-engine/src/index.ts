@@ -199,6 +199,76 @@ export function shortcutChord(shortcut: NormalizedShortcut): string {
  */
 export const OPEN_MODAL_DIALOG_SELECTOR = '[aria-modal="true"]:not([hidden])';
 
+type ModalDialogState = {
+  read(): boolean;
+  listeners: Set<() => void>;
+};
+
+// Each document window has its own observer. Only dialog membership is retained, never canvas
+// objects. Draining pending records on read also covers an open/close followed by a key or clipboard
+// event in the same turn, before MutationObserver's callback has had a chance to run.
+const modalDialogStates = new WeakMap<ParentNode, ModalDialogState>();
+
+function modalDialogState(root: ParentNode): ModalDialogState {
+  const cached = modalDialogStates.get(root);
+  if (cached) return cached;
+  const node = root as Node;
+  const ownerDocument = node.nodeType === 9 ? root as Document : node.ownerDocument;
+  const Observer = ownerDocument?.defaultView?.MutationObserver;
+  const listeners = new Set<() => void>();
+  if (!Observer) return { read: () => root.querySelector(OPEN_MODAL_DIALOG_SELECTOR) !== null, listeners };
+
+  const dialogs = new Set(root.querySelectorAll<Element>(OPEN_MODAL_DIALOG_SELECTOR));
+  let open = dialogs.size > 0;
+  const consider = (element: Element) => {
+    if (element !== root && node.contains(element) &&
+        element.getAttribute("aria-modal") === "true" && !element.hasAttribute("hidden")) {
+      dialogs.add(element);
+    } else {
+      dialogs.delete(element);
+    }
+  };
+  const process = (records: MutationRecord[]) => {
+    if (records.length === 0) return;
+    for (const record of records) {
+      if (record.type === "attributes") {
+        consider(record.target as Element);
+      } else {
+        // Read only newly inserted subtrees, using attribute checks rather than running a selector
+        // over the entire (potentially very large) drawing. Removal needs only the small dialog set.
+        const pending = Array.from(record.addedNodes);
+        while (pending.length > 0) {
+          const added = pending.pop()!;
+          if (added.nodeType !== 1) continue;
+          const element = added as Element;
+          consider(element);
+          for (const child of element.children) pending.push(child);
+        }
+      }
+    }
+    for (const dialog of dialogs) {
+      if (!node.contains(dialog)) dialogs.delete(dialog);
+    }
+    const nextOpen = dialogs.size > 0;
+    if (nextOpen !== open) {
+      open = nextOpen;
+      for (const listener of listeners) listener();
+    }
+  };
+  const observer = new Observer(process);
+  observer.observe(node, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-modal", "hidden"] });
+  const state = { read: () => { process(observer.takeRecords()); return open; }, listeners };
+  modalDialogStates.set(root, state);
+  return state;
+}
+
+/** Listen to modal lifecycle changes, for UI hints that have no keyboard event to trigger them. */
+export function subscribeToModalDialogChanges(listener: () => void, root: ParentNode = globalThis.document): () => void {
+  const state = modalDialogState(root);
+  state.listeners.add(listener);
+  return () => { state.listeners.delete(listener); };
+}
+
 /** True when `target` sits inside an open modal dialog, which owns every key typed there. */
 export function isInsideModalDialog(target: EventTarget | null): boolean {
   if (!target || typeof Element === "undefined" || !(target instanceof Element)) {
@@ -213,7 +283,7 @@ export function isInsideModalDialog(target: EventTarget | null): boolean {
  * where the event landed, or a key pressed with focus on `<body>` reaches the document behind the modal.
  */
 export function hasOpenModalDialog(root: ParentNode | undefined = globalThis.document): boolean {
-  return root?.querySelector(OPEN_MODAL_DIALOG_SELECTOR) != null;
+  return root ? modalDialogState(root).read() : false;
 }
 
 /**

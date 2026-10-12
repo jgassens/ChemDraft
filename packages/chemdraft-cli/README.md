@@ -16,6 +16,12 @@ Batch files are JSON arrays of named jobs. Names are trimmed and must match
 at most 500 jobs. Empty input is rejected; chemical input is limited to 5000 characters and 500
 heavy atoms. PNG output is limited to a width of 16–4000 pixels.
 
+User text files (batches, native documents, and the plugin trust file) accept UTF-8 with or
+without a leading byte-order mark (BOM), and BOM-marked UTF-16LE or UTF-16BE. LF and Windows
+CRLF line endings are accepted. This includes files saved by Windows PowerShell 5.1.
+Malformed UTF-16 is refused with an encoding-specific error; save as UTF-8 with
+`Set-Content -Encoding UTF8` to convert it. Document input limits count bytes before decoding.
+
 Every chemical file export is checked so that the canonical SMILES written equals the input's; if it
 does not, the job fails.
 Query bonds (for example `C~CO`, or MOL bond type 8) are refused before MOL identity verification:
