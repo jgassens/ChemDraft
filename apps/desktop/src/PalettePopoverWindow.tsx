@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ColorPickerPopoverBody, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
+import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
@@ -346,6 +346,10 @@ export function PalettePopoverWindow({
               onClick={() => chooseFlyoutCommand(command)}
             >
               {(() => {
+                const symbolGlyph = symbolToolGlyph(command.id);
+                if (symbolGlyph) {
+                  return <span className="symbol-tool-glyph" aria-hidden="true">{symbolGlyph}</span>;
+                }
                 // Flyout snapshots arrive over IPC, so assetName is an untrusted raw string — an
                 // unknown key makes toolbarAsset() return undefined and renders a broken <img>.
                 // Resolve first, fall through to the named icon when it doesn't resolve.
@@ -357,7 +361,7 @@ export function PalettePopoverWindow({
                 }
                 return command.icon ? <Icon name={command.icon as IconName} /> : null;
               })()}
-              <span>{command.title}</span>
+              <span className="toolbar-command-label">{command.title}</span>
             </button>
           ))}
         </div>

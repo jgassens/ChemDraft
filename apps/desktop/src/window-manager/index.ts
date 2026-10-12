@@ -604,14 +604,15 @@ export async function setToolbarsMenu(
   // Rust rebuilds the whole menu bar here, which recreates the Show Rulers / Show Crosshairs check
   // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
   rulersVisible: boolean,
-  crosshairsVisible: boolean
+  crosshairsVisible: boolean,
+  hasMultipleDocumentTabs = false
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
 }
 
 /**

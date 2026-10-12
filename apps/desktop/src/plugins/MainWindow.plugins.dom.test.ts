@@ -228,7 +228,7 @@ describe("MainWindow bundled plugin integration", () => {
       await Promise.resolve();
     });
 
-    expect(document.title).toBe("ChemDraft — test");
+    expect(document.title).toBe("Untitled — ChemDraft — test");
 
     // The plugin's Analyze contribution is present in the (web) menu bar.
     const analyzeButton = container.querySelector<HTMLButtonElement>('button[data-menu-section="analyze"]');

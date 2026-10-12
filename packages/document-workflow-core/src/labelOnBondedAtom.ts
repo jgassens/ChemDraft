@@ -1,7 +1,7 @@
 import type { MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import {
   nativeAtomBondOrderUsage, nativeAtomChargeSupportsValence, nativeAtomLabelFreeValence,
-  nativeAtomLabelReading, nativeLabelBondSide, type NativeAtomLabelReading
+  nativeAtomLabelContextInMolecule, nativeAtomLabelReading, type NativeAtomLabelReading
 } from "./atoms";
 
 /** The validation/ring-template admission measure, including Kekulé orders and radicals. */
@@ -40,9 +40,7 @@ export function labelOnBondedAtom(
 
   // #83 distinguishes an imported element (Ac/Pr/Ts/Ar) from the typed group spelling,
   // and a cyano label's recorded bond side from the side its current geometry suggests.
-  const sourceBonds = molecule.bonds.filter(b => b.fromAtomId === atom.id || b.toAtomId === atom.id);
-  const bondSide = nativeLabelBondSide(atom, sourceBonds, molecule.atoms);
-  const sourceContext = { bonded: true, typed: atom.labelLiteral === true, ...(bondSide ? { bondSide } : {}) };
+  const sourceContext = nativeAtomLabelContextInMolecule(atom, molecule, true);
   const source = nativeAtomLabelReading(atom.element, sourceContext);
   const sourceFree = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, sourceContext);
   const supports = source.kind === "element"

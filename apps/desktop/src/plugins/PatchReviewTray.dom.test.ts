@@ -62,6 +62,17 @@ function nonRecognitionProposal(overrides: Partial<PluginProposalReviewItem> = {
 }
 
 describe("PatchReviewList experimental recognition notice", () => {
+  it("names each proposal's document when the desktop supplies tab labels", () => {
+    render([
+      recognitionProposal({ documentName: "Source.chemdraft" }),
+      nonRecognitionProposal({ documentName: "Other.chemdraft" })
+    ]);
+    expect(document.querySelector('[data-proposal-id="proposal-1"] .patch-review-document')?.textContent)
+      .toBe("Document: Source.chemdraft");
+    expect(document.querySelector('[data-proposal-id="proposal-2"] .patch-review-document')?.textContent)
+      .toBe("Document: Other.chemdraft");
+  });
+
   it("shows the experimental notice on a recognition proposal", () => {
     render([recognitionProposal()]);
     const item = document.querySelector('[data-proposal-id="proposal-1"]');
