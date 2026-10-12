@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildAppMenuModel,
@@ -54,18 +54,19 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
-  it("exposes both unrestored-tab commands in File and disables them only when none remain", () => {
-    for (const hasUnrestoredTabs of [false, true]) {
-      const file = buildAppMenuModel({ ...EMPTY_CONTEXT, hasUnrestoredTabs }).find((section) => section.id === "file")!;
-      const commands = flattenAppMenuCommands([file]);
-      for (const [commandId, label] of [
-        ["document.saveUnrestoredTabs", "Save Unrestored Tabs…"],
-        ["document.discardUnrestoredTabs", "Discard Unrestored Tabs…"]
-      ]) {
-        expect(commands.find((command) => command.commandId === commandId)).toMatchObject({
-          label, enabled: hasUnrestoredTabs, disabledReason: hasUnrestoredTabs ? undefined : "No unrestored tabs"
-        });
+  it.each(["MacIntel", "Win32"])("omits kept-drawing actions from the menu on %s", (platform) => {
+    vi.stubGlobal("navigator", { platform });
+    try {
+      const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
+      for (const id of ["document.saveUnrestoredTabs", "document.discardUnrestoredTabs"]) {
+        expect(commands.some(command => command.commandId === id)).toBe(false);
+        expect(parseNativeMenuCommandIds()).not.toContain(id);
       }
+      const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+      expect(source).not.toContain('"Save Unrestored Tabs…"');
+      expect(source).not.toContain('"Discard Unrestored Tabs…"');
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
   it("stays in sync with the native menu's routed command ids (lib.rs MENU_COMMAND_IDS)", () => {

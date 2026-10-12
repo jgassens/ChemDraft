@@ -1578,7 +1578,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.23.30-opus";
+const CURRENT_BUILD_STAMP = "10.12.08.20-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2083,10 +2083,23 @@ export function MainWindow({
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
-  const [discardUnrestoredTabsPrompt, setDiscardUnrestoredTabsPrompt] = useState<{
-    text: string;
-    decide: (discard: boolean) => void;
-  }>();
+  const [keptDrawingsPrompt, setKeptDrawingsPrompt] = useState<"notice" | "delete">();
+  const keptDrawingsPromptRef = useRef(keptDrawingsPrompt);
+  keptDrawingsPromptRef.current = keptDrawingsPrompt;
+  const [keptDrawingsBusy, setKeptDrawingsBusy] = useState(false);
+  const [keptDrawingsMessage, setKeptDrawingsMessage] = useState<string>();
+  const keptDrawingsDefaultButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!keptDrawingsBusy) keptDrawingsDefaultButtonRef.current?.focus();
+  }, [keptDrawingsPrompt, keptDrawingsBusy]);
+  const keptDrawingsOpen = keptDrawingsPrompt !== undefined;
+  useLayoutEffect(() => {
+    if (!keptDrawingsOpen) return;
+    const previousFocus = globalThis.document.activeElement;
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [keptDrawingsOpen]);
   const [closeTabSaving, setCloseTabSaving] = useState(false);
   const [closeTabSaveMessage, setCloseTabSaveMessage] = useState<string>();
   const closeTabPromptRef = useRef(closeTabPrompt);
@@ -2709,10 +2722,9 @@ export function MainWindow({
       canUndo,
       canRedo,
       hasMultipleTabs: documentTabs.length > 1,
-      hasUnrestoredTabs: unrestoredSessionTabCount > 0,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
     }),
-    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts, unrestoredSessionTabCount]
+    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
   const pageCssVars = useMemo(
@@ -3491,9 +3503,8 @@ export function MainWindow({
     // macOS Close Tab routing uses has_multiple_document_tabs from this async menu push.
     // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
     // autosave keeps both tabs, so nothing is lost.
-    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1,
-      unrestoredSessionTabCount > 0).catch(() => undefined);
-  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds, unrestoredSessionTabCount]);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -8299,6 +8310,7 @@ export function MainWindow({
       .finally(() => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (unrestoredSessionTabsRef.current.length) setKeptDrawingsPrompt("notice");
           const opens = pendingDocumentOpensRef.current.splice(0);
           for (const request of opens) {
             try {
@@ -8542,6 +8554,8 @@ export function MainWindow({
   const saveUnrestoredTabs = useCallback(async () => {
     if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
     unrestoredTabFlowRunningRef.current = true;
+    setKeptDrawingsBusy(true);
+    setKeptDrawingsMessage(undefined);
     let saved = 0;
     let canceled = false;
     const failures: string[] = [];
@@ -8552,11 +8566,11 @@ export function MainWindow({
         try {
           const contents = unrestoredTabContents(rawTab);
           let filename = nativePathBasename(name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "");
-          if (!filename) filename = `Unrestored tab ${index + 1}`;
+          if (!filename) filename = `Kept drawing ${index + 1}`;
           if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) filename = `_${filename}`;
           const extension = filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? "chemdraft";
           if (!/\.[a-z0-9]+$/i.test(filename)) filename += `.${extension}`;
-          const path = await pickNativeSavePath(filename, { title: `Save Unrestored Tab — ${name}`, extension });
+          const path = await pickNativeSavePath(filename, { title: `Save Drawing — ${name}`, extension });
           if (!path) {
             canceled = true;
             break;
@@ -8575,40 +8589,39 @@ export function MainWindow({
           failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      setStatus(`Saved ${saved} unrestored ${saved === 1 ? "tab" : "tabs"}; ${unrestoredSessionTabsRef.current.length} remain in the session${canceled ? " (save canceled)" : ""}${failures.length ? `. Save failed: ${failures.join("; ")}` : ""}`);
+      const message = `Saved ${saved} ${saved === 1 ? "drawing" : "drawings"}; ${unrestoredSessionTabsRef.current.length} kept for later${canceled ? " (save canceled)" : ""}${failures.length ? `. Save failed: ${failures.join("; ")}` : ""}`;
+      setStatus(message);
+      setKeptDrawingsMessage(message);
+      if (!unrestoredSessionTabsRef.current.length) setKeptDrawingsPrompt(undefined);
     } finally {
       unrestoredTabFlowRunningRef.current = false;
+      setKeptDrawingsBusy(false);
     }
   }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
 
   const discardUnrestoredTabs = useCallback(async () => {
     if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
     unrestoredTabFlowRunningRef.current = true;
+    setKeptDrawingsBusy(true);
+    setKeptDrawingsMessage(undefined);
     const carried = [...unrestoredSessionTabsRef.current];
     try {
-      const text = `Discard ${carried.length} unrestored ${carried.length === 1 ? "tab" : "tabs"}?\n\n${carried.map(unrestoredTabDisplayName).join("\n")}\n\nTheir saved document data will be removed from the session. This cannot be undone.`;
-      const confirmed = await new Promise<boolean>((resolve) => {
-        setDiscardUnrestoredTabsPrompt({ text, decide: (discard) => {
-          setDiscardUnrestoredTabsPrompt(undefined);
-          resolve(discard);
-        } });
-      });
-      if (!confirmed) {
-        setStatus("Discard canceled; unrestored tabs remain in the session");
-        return;
-      }
       unrestoredSessionTabsRef.current = [];
       setUnrestoredSessionTabCount(0);
       await writeDocumentSessionNow({ strict: true });
       updateUnrestoredTabNotices(carried.length);
-      setStatus(`Discarded ${carried.length} unrestored ${carried.length === 1 ? "tab" : "tabs"}`);
+      setStatus(`Deleted ${carried.length} kept ${carried.length === 1 ? "drawing" : "drawings"}`);
+      setKeptDrawingsPrompt(undefined);
     } catch (error) {
       // A failed session write is not a completed discard. Keep the data available to retry.
       unrestoredSessionTabsRef.current = carried;
       setUnrestoredSessionTabCount(carried.length);
-      setStatus(`Discard failed; unrestored tabs remain in the session: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `Delete failed; the drawings are kept for later: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message);
+      setKeptDrawingsMessage(message);
     } finally {
       unrestoredTabFlowRunningRef.current = false;
+      setKeptDrawingsBusy(false);
     }
   }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
 
@@ -8950,8 +8963,6 @@ export function MainWindow({
         if (action.id === "document.saveAs") {
           await saveCurrentDocument(true);
         }
-        if (action.id === "document.saveUnrestoredTabs") await saveUnrestoredTabs();
-        if (action.id === "document.discardUnrestoredTabs") await discardUnrestoredTabs();
         if (action.id === "clipboard.paste") {
           await pasteClipboard();
         }
@@ -9536,8 +9547,6 @@ export function MainWindow({
     restoreToolAfterEyedropper,
     runMolecularProperties,
     saveCurrentDocument,
-    saveUnrestoredTabs,
-    discardUnrestoredTabs,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
     setHoveredNativeAtomElement,
@@ -10112,6 +10121,7 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (keptDrawingsPromptRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
@@ -18154,7 +18164,6 @@ export function MainWindow({
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
-        hasUnrestoredTabs: unrestoredSessionTabCount > 0,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
         keybindingScheme
@@ -18166,7 +18175,6 @@ export function MainWindow({
       canRedo,
       document.selection.objectIds.length,
       quickActions,
-      unrestoredSessionTabCount,
       keybindingScheme,
       selectedMolecule,
       visibleToolsetIds,
@@ -18490,23 +18498,25 @@ export function MainWindow({
           })
         : null}
 
-      {discardUnrestoredTabsPrompt ? (
-        <div role="dialog" aria-modal="true" aria-label="Discard Unrestored Tabs" style={exportDialogBackdropStyle}
+      {keptDrawingsPrompt ? (
+        <div role="dialog" aria-modal="true" aria-labelledby="kept-drawings-title"
+          aria-describedby="kept-drawings-description" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
             event.stopPropagation();
             if (event.key === "Escape") {
               event.preventDefault();
-              discardUnrestoredTabsPrompt.decide(false);
+              if (!keptDrawingsBusy) {
+                if (keptDrawingsPrompt === "delete") setKeptDrawingsPrompt("notice");
+                else setKeptDrawingsPrompt(undefined);
+              }
             }
             if (event.key === "Enter") {
               event.preventDefault();
-              // Only an explicitly focused button may discard; the initial focus is Cancel.
               const focused = globalThis.document.activeElement;
               if (focused instanceof HTMLButtonElement && event.currentTarget.contains(focused)) focused.click();
-              else discardUnrestoredTabsPrompt.decide(false);
             }
             if (event.key === "Tab") {
-              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
               const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
               const next = buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length];
               event.preventDefault();
@@ -18514,11 +18524,40 @@ export function MainWindow({
             }
           }}>
           <section style={exportDialogPanelStyle}>
-            <h2 style={exportDialogTitleStyle}>Discard Unrestored Tabs</h2>
-            <p style={{ ...exportDialogHintStyle, whiteSpace: "pre-wrap" }}>{discardUnrestoredTabsPrompt.text}</p>
+            <h2 id="kept-drawings-title" style={exportDialogTitleStyle}>
+              {keptDrawingsPrompt === "delete" ? "Delete the kept drawing?" :
+                `${unrestoredSessionTabCount} ${unrestoredSessionTabCount === 1 ? "tab didn't" : "tabs didn't"} open`}
+            </h2>
+            <p id="kept-drawings-description" style={exportDialogHintStyle}>
+              {keptDrawingsPrompt === "delete" ? "Delete the kept drawing? This cannot be undone." :
+                `${unrestoredSessionTabCount === 1 ? "Its drawing is" : "Their drawings are"} kept, but this version of ChemDraft can't show ${unrestoredSessionTabCount === 1 ? "it" : "them"}. It may have been saved by a newer ChemDraft, or the data may be damaged.`}
+            </p>
+            <ul style={{ ...exportDialogHintStyle, overflowWrap: "anywhere" }}>
+              {unrestoredSessionTabsRef.current.map((raw, index) => (
+                <li key={index}>{unrestoredTabDisplayName(raw, index)}</li>
+              ))}
+            </ul>
+            {keptDrawingsMessage ? <p role="alert" style={exportDialogHintStyle}>{keptDrawingsMessage}</p> : null}
             <div style={exportDialogFooterStyle}>
-              <button type="button" autoFocus onClick={() => discardUnrestoredTabsPrompt.decide(false)}>Cancel</button>
-              <button type="button" onClick={() => discardUnrestoredTabsPrompt.decide(true)}>Discard</button>
+              {keptDrawingsPrompt === "delete" ? (
+                <>
+                  <button type="button" disabled={keptDrawingsBusy}
+                    onClick={() => { void discardUnrestoredTabs(); }}>Delete</button>
+                  <button key="cancel" type="button" ref={keptDrawingsDefaultButtonRef} disabled={keptDrawingsBusy}
+                    onClick={() => setKeptDrawingsPrompt("notice")}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" disabled={keptDrawingsBusy}
+                    onClick={() => { void saveUnrestoredTabs(); }}>
+                    {unrestoredSessionTabCount === 1 ? "Save Drawing…" : "Save Drawings…"}
+                  </button>
+                  <button type="button" disabled={keptDrawingsBusy}
+                    onClick={() => setKeptDrawingsPrompt("delete")}>Delete</button>
+                  <button key="keep" type="button" ref={keptDrawingsDefaultButtonRef} disabled={keptDrawingsBusy}
+                    onClick={() => setKeptDrawingsPrompt(undefined)}>Keep for Later</button>
+                </>
+              )}
             </div>
           </section>
         </div>

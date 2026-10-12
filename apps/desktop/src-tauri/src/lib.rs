@@ -324,8 +324,6 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "document.open",
     "document.save",
     "document.saveAs",
-    "document.saveUnrestoredTabs",
-    "document.discardUnrestoredTabs",
     "export.open",
     "page.setSize.letter",
     "page.setSize.legal",
@@ -1446,7 +1444,6 @@ fn set_toolbars_menu(
     rulers_visible: bool,
     crosshairs_visible: bool,
     has_multiple_document_tabs: Option<bool>,
-    has_unrestored_tabs: Option<bool>,
 ) -> Result<(), String> {
     // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
     // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
@@ -1454,7 +1451,6 @@ fn set_toolbars_menu(
         rulers_visible,
         crosshairs_visible,
         has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
-        has_unrestored_tabs: has_unrestored_tabs.unwrap_or(false),
     };
     // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
     // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
@@ -4090,7 +4086,6 @@ struct ViewMenuState {
     rulers_visible: bool,
     crosshairs_visible: bool,
     has_multiple_document_tabs: bool,
-    has_unrestored_tabs: bool,
 }
 
 impl Default for ViewMenuState {
@@ -4099,7 +4094,6 @@ impl Default for ViewMenuState {
             rulers_visible: true,
             crosshairs_visible: true,
             has_multiple_document_tabs: false,
-            has_unrestored_tabs: false,
         }
     }
 }
@@ -4150,10 +4144,7 @@ fn classify_toolbars_menu_update(
             .all(|(old, new)| old.toolset_id == new.toolset_id && old.title == new.title);
     let tab_close_changed = cfg!(target_os = "macos")
         && previous_view.has_multiple_document_tabs != next_view.has_multiple_document_tabs;
-    if !same_rows
-        || tab_close_changed
-        || previous_view.has_unrestored_tabs != next_view.has_unrestored_tabs
-    {
+    if !same_rows || tab_close_changed {
         ToolbarsMenuUpdate::Rebuild
     } else if previous_entries.as_slice() == next_entries && *previous_view == next_view {
         ToolbarsMenuUpdate::Unchanged
@@ -4352,21 +4343,6 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "Save As...",
                         true,
                         Some("CmdOrCtrl+Shift+S"),
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "document.saveUnrestoredTabs",
-                        "Save Unrestored Tabs…",
-                        view_state.has_unrestored_tabs,
-                        None::<&str>,
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "document.discardUnrestoredTabs",
-                        "Discard Unrestored Tabs…",
-                        view_state.has_unrestored_tabs,
-                        None::<&str>,
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
@@ -4612,9 +4588,9 @@ mod document_tab_menu_tests {
     use super::{is_routed_menu_command, menu_closes_document_tab, MAIN_WINDOW_LABEL};
 
     #[test]
-    fn unrestored_tab_commands_route_on_both_platforms() {
-        assert!(is_routed_menu_command("document.saveUnrestoredTabs"));
-        assert!(is_routed_menu_command("document.discardUnrestoredTabs"));
+    fn kept_drawing_actions_are_not_native_menu_commands() {
+        assert!(!is_routed_menu_command("document.saveUnrestoredTabs"));
+        assert!(!is_routed_menu_command("document.discardUnrestoredTabs"));
     }
 
     #[test]
@@ -6086,7 +6062,6 @@ mod tests {
             visible,
         };
         let view = ViewMenuState::default();
-        assert!(!view.has_unrestored_tabs);
         let previous = (
             vec![entry("core.main", true), entry("core.art", false)],
             view,
@@ -6094,20 +6069,6 @@ mod tests {
         assert_eq!(
             classify_toolbars_menu_update(&previous, &previous.0, view),
             ToolbarsMenuUpdate::Unchanged
-        );
-        // Both platforms rebuild the File items with their new enabled state, and retain that
-        // state in the stored model for later plugin-menu rebuilds.
-        let recovery_view = ViewMenuState {
-            has_unrestored_tabs: true,
-            ..view
-        };
-        assert_eq!(
-            classify_toolbars_menu_update(&previous, &previous.0, recovery_view),
-            ToolbarsMenuUpdate::Rebuild
-        );
-        assert_eq!(
-            classify_toolbars_menu_update(&(previous.0.clone(), recovery_view), &previous.0, view),
-            ToolbarsMenuUpdate::Rebuild
         );
         assert_eq!(
             classify_toolbars_menu_update(

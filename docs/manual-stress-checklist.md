@@ -201,3 +201,23 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
    Accept must explain that its document was closed and keep the proposal pending; Reject must work
    from any tab.
+
+
+Kept drawings at launch: with ChemDraft quit, back up the dev build's
+`document-session.json`, then change one saved tab's document schema in its
+`contents` to `chemdraft.document.v999` (leave the session envelope version unchanged).
+For a CDXML native payload, change the Value of the `org.chemdraft/schema-version` objecttag;
+for legacy JSON contents, change `schema`.
+Relaunch: readable tabs open; the app shows “1 tab didn't open”, explains the drawing is kept,
+and lists its name. Repeat with several tabs to check the plural title and “Save Drawings…”.
+Focus starts on “Keep for Later”; Tab and Shift+Tab cycle only the dialog buttons; Escape or
+Enter on the default keeps the drawings. Document shortcuts and palette/menu commands must
+not edit the document behind it. Keep for Later and relaunch must ask again. Save Drawing(s)…
+suggests each tab's name and writes its exact saved text; canceling keeps that drawing and
+the remaining ones, and a failed write shows its reason without losing the drawing. A successful
+write removes only that tab from the session. Delete first shows “Delete the kept drawing?
+This cannot be undone.” in the same dialog, with Cancel focused; Cancel/Escape returns to the
+first view, and a second Delete removes the kept drawings. Check the File menu has neither
+of the former recovery items on both platforms. Restore the original supported document version
+in a kept tab and relaunch: it opens normally and needs no dialog. Floating native palettes may
+remain above this in-app modal; their document commands must be blocked while it is open.

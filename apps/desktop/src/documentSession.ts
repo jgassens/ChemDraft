@@ -147,12 +147,12 @@ export function documentSessionRestoreCandidates(envelope: DocumentSessionEnvelo
 
 export function unrestoredTabDisplayName(raw: unknown, index: number): string {
   return record(raw) && typeof raw.displayName === "string" && raw.displayName.trim()
-    ? raw.displayName : `Unrestored tab ${index + 1}`;
+    ? raw.displayName : `Kept drawing ${index + 1}`;
 }
 
 export function unrestoredTabsNotice(count: number): string {
   return count
-    ? `; ${count} ${count === 1 ? "tab could" : "tabs could"} not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)`
+    ? `; ${count} ${count === 1 ? "drawing is" : "drawings are"} kept for later`
     : "";
 }
 

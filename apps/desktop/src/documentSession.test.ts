@@ -9,6 +9,7 @@ import {
   parseDocumentSessionEnvelope,
   unrestoredTabContents,
   unrestoredTabDisplayName,
+  unrestoredTabsNotice,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal
 } from "./documentSession";
@@ -20,6 +21,12 @@ const payload = {
 };
 
 describe("documentIsBlank", () => {
+  it("describes kept drawings without referring to retired menu items", () => {
+    expect(unrestoredTabsNotice(0)).toBe("");
+    expect(unrestoredTabsNotice(1)).toBe("; 1 drawing is kept for later");
+    expect(unrestoredTabsNotice(3)).toBe("; 3 drawings are kept for later");
+  });
+
   it("is true only when every page has zero objects", () => {
     expect(documentIsBlank({ pages: [{ objects: [] }] })).toBe(true);
     expect(documentIsBlank({ pages: [{ objects: [] }, { objects: [] }] })).toBe(true);
@@ -126,8 +133,8 @@ describe("multi-document session extension", () => {
     const raw = { displayName: "Old format.cdxml", contents: "exact original text", version: 99 };
     expect(unrestoredTabContents(raw)).toBe("exact original text");
     expect(unrestoredTabDisplayName(raw, 0)).toBe("Old format.cdxml");
-    expect(unrestoredTabDisplayName(null, 2)).toBe("Unrestored tab 3");
-    expect(unrestoredTabDisplayName({ displayName: " " }, 0)).toBe("Unrestored tab 1");
+    expect(unrestoredTabDisplayName(null, 2)).toBe("Kept drawing 3");
+    expect(unrestoredTabDisplayName({ displayName: " " }, 0)).toBe("Kept drawing 1");
     expect(() => unrestoredTabContents({ contents: 4 })).toThrow("remains in the session");
   });
 

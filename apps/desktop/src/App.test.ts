@@ -486,6 +486,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');
     expect(mainWindowSource).toContain("unrestoredSessionTabsRef.current = skipped");
     expect(mainWindowSource).toContain("documentSessionRestoreCandidates(envelope)");
+    expect(mainWindowSource).toContain('if (unrestoredSessionTabsRef.current.length) setKeptDrawingsPrompt("notice")');
+    expect(mainWindowSource).not.toContain('action.id === "document.saveUnrestoredTabs"');
+    expect(mainWindowSource).not.toContain('action.id === "document.discardUnrestoredTabs"');
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {

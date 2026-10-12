@@ -97,7 +97,6 @@ export interface AppMenuContext {
   hasSelectedMolecule: boolean;
   /** Frontend text-label command availability; supplied by the document window. */
   canConvertTextToAtomLabel?: boolean;
-  hasUnrestoredTabs?: boolean;
   /** Dynamic View ▸ Toolbars entries, e.g. from `getToolbarsMenuModel(visibleToolsetIds, registry)`. */
   toolbars: readonly AppMenuToolbarToggle[];
   /**
@@ -236,15 +235,6 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         command("document.open", "Open…", { accelerator: "Cmd+O" }),
         command("document.save", "Save", { accelerator: "Cmd+S" }),
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
-        separator(),
-        command("document.saveUnrestoredTabs", "Save Unrestored Tabs…", {
-          enabled: context.hasUnrestoredTabs === true,
-          disabledReason: context.hasUnrestoredTabs ? undefined : "No unrestored tabs"
-        }),
-        command("document.discardUnrestoredTabs", "Discard Unrestored Tabs…", {
-          enabled: context.hasUnrestoredTabs === true,
-          disabledReason: context.hasUnrestoredTabs ? undefined : "No unrestored tabs"
-        }),
         separator(),
         buildPageSetupSubmenu(),
         separator(),

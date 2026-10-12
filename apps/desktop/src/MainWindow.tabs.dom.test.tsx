@@ -15,7 +15,7 @@ import {
   broadcastAnalysisWindowSnapshot, respondToProposalDecision
 } from "./plugins/panelBridge";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { createDocumentTabActions, createUnrestoredTabActions } from "./commands";
+import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
 
 const native = vi.hoisted(() => ({
@@ -346,16 +346,16 @@ describe("documents in one window", () => {
   });
 
   it("keeps native Close Window / Close Tab menu routing tied to the document count", async () => {
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
     await command("document.new");
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true);
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
   });
 
   it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
@@ -717,6 +717,7 @@ describe("documents in one window", () => {
     expect(openNativeDocument).toHaveBeenCalledWith(recovered.contents);
     expect(tabs()).toHaveLength(4);
     expect(active()).toBe(1);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     await activate(3);
     expect(bridge().snapshot().document.title).toBe("Recovered");
     const saved = await flush();
@@ -726,7 +727,37 @@ describe("documents in one window", () => {
     expect(tabs()).toHaveLength(4);
   });
 
-  it("retries still-failing carried tabs each launch, retaining their raw data and naming both commands", async () => {
+  it("shows the launch dialog for a newer document schema and opens the kept tab when it becomes readable", async () => {
+    const drawing = createPhase4Document("Future drawing");
+    const futureContents = JSON.stringify({ ...drawing, schema: "chemdraft.document.v999" });
+    const session = threeTabSession();
+    session.tabs![1] = { ...session.tabs![1]!, displayName: "Future.chemdraft", contents: futureContents };
+    native.session = session;
+    await remount();
+    expect(tabs()).toHaveLength(2);
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector("h2")?.textContent).toBe("1 tab didn't open");
+    expect(dialog.textContent).toContain("Future.chemdraft");
+    expect(dialog.textContent).toContain("saved by a newer ChemDraft");
+    const saved = await flush();
+    expect(saved.unrestoredTabs).toEqual([session.tabs![1]]);
+    saved.unrestoredTabs = [{ ...session.tabs![1]!, contents: JSON.stringify(drawing) }];
+    native.session = saved;
+    await remount();
+    expect(tabs()).toHaveLength(3);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await activate(2);
+    expect(bridge().snapshot().document.title).toBe("Future drawing");
+    expect((await flush()).unrestoredTabs).toBeUndefined();
+  });
+
+  async function pressDialogKey(key: string, shiftKey = false) {
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true }));
+    });
+  }
+
+  it.each(["Keep for Later", "Escape", "Enter"])("keeps unreadable drawings and asks again on next launch (%s)", async (action) => {
     const session = sessionWithUnrestoredTabs(["Still unreadable.chemdraft"]);
     native.session = session;
     for (let launch = 0; launch < 2; launch += 1) {
@@ -734,14 +765,61 @@ describe("documents in one window", () => {
       await restoreAfterMount(native.session);
       expect(openNativeDocument).toHaveBeenCalledWith("unreadable raw document 0");
       expect(tabs()).toHaveLength(3);
-      expect(container.querySelector('[role="status"]')?.textContent).toContain("1 tab could not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)");
+      const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.getAttribute("aria-modal")).toBe("true");
+      expect(dialog.querySelector("h2")?.textContent).toBe("1 tab didn't open");
+      expect(dialog.querySelector("p")?.textContent).toContain("Its drawing is kept, but this version of ChemDraft can't show it.");
+      expect(dialog.textContent).toContain("Still unreadable.chemdraft");
+      expect(document.activeElement?.textContent).toBe("Keep for Later");
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("File >");
+      if (action === "Keep for Later") await modalButton(action);
+      else await pressDialogKey(action);
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
       await command("view.zoomIn");
       expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
-      expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, true);
+      expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true);
     }
   });
 
-  it("saves raw documents with individual native prompts and removes only successful writes", async () => {
+  it("cycles focus inside the dialog and blocks keyboard, clipboard and native document commands", async () => {
+    native.session = sessionWithUnrestoredTabs();
+    await remount();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.querySelector("h2")?.textContent).toBe("3 tabs didn't open");
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    await pressDialogKey("Tab");
+    expect(document.activeElement?.textContent).toBe("Save Drawings…");
+    await pressDialogKey("Tab");
+    expect(document.activeElement?.textContent).toBe("Delete");
+    await pressDialogKey("Tab");
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    await pressDialogKey("Tab", true);
+    expect(document.activeElement?.textContent).toBe("Delete");
+    await pressDialogKey("Tab", true);
+    expect(document.activeElement?.textContent).toBe("Save Drawings…");
+    await pressDialogKey("Tab", true);
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    for (const platform of ["macos", "windows"] as const) {
+      for (const key of ["n", "s", "z", "w"]) {
+        await act(async () => {
+          document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", {
+            key, metaKey: platform === "macos", ctrlKey: platform === "windows", bubbles: true, cancelable: true
+          }));
+        });
+      }
+    }
+    await key();
+    await command("document.new");
+    await command("document.closeTab");
+    await paste("Should not change the document");
+    expect(tabs()).toHaveLength(3);
+    expect(drawnText()).not.toContain("Should not change");
+    expect(native.savePicker).not.toHaveBeenCalled();
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+  });
+
+  it("saves raw drawings with individual native prompts and removes only successful writes", async () => {
     const session = sessionWithUnrestoredTabs();
     native.session = session;
     await remount();
@@ -749,9 +827,9 @@ describe("documents in one window", () => {
     native.savePicker.mockResolvedValueOnce("C:\\rescued\\First.chemdraft")
       .mockResolvedValueOnce("C:\\rescued\\Second.cdxml").mockResolvedValueOnce("C:\\rescued\\Third.chemdraft");
     native.writeFile.mockResolvedValueOnce().mockRejectedValueOnce(new Error("disk full")).mockResolvedValueOnce();
-    await command("document.saveUnrestoredTabs");
+    await modalButton("Save Drawings…");
     expect(native.savePicker).toHaveBeenNthCalledWith(1, {
-      title: "Save Unrestored Tab — First.chemdraft", defaultPath: "First.chemdraft",
+      title: "Save Drawing — First.chemdraft", defaultPath: "First.chemdraft",
       filters: [{ name: "Saved document", extensions: ["chemdraft"] }]
     });
     expect(native.savePicker).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -760,12 +838,16 @@ describe("documents in one window", () => {
     expect(native.writeFile).toHaveBeenNthCalledWith(1, "C:\\rescued\\First.chemdraft", "unreadable raw document 0");
     expect(native.writeFile).toHaveBeenNthCalledWith(2, "C:\\rescued\\Second.cdxml", "unreadable raw document 1");
     expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Second.cdxml: disk full");
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.querySelector("h2")?.textContent).toBe("1 tab didn't open");
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Second.cdxml: disk full");
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
     await remount();
     expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
-  it("keeps a tab carried while its native write is pending, and retains canceled and unattempted tabs", async () => {
+  it("keeps tabs while a write is pending and retains canceled and unattempted tabs", async () => {
     const session = sessionWithUnrestoredTabs();
     native.session = session;
     await remount();
@@ -773,93 +855,103 @@ describe("documents in one window", () => {
     let finishWrite!: () => void;
     native.savePicker.mockResolvedValueOnce("/tmp/rescued.chemdraft").mockResolvedValueOnce(null);
     native.writeFile.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
-    await command("document.saveUnrestoredTabs");
+    await modalButton("Save Drawings…");
     expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    expect(Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).every(button => button.disabled)).toBe(true);
+    await command("document.new");
+    expect(tabs()).toHaveLength(3);
     await act(async () => finishWrite());
     expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs!.slice(1));
     expect(native.writeFile).toHaveBeenCalledOnce();
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Saved 1 unrestored tab; 2 remain in the session (save canceled)");
+    expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("Saved 1 drawing; 2 kept for later (save canceled)");
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
   });
 
-  it("saves an unsupported envelope's exact text, uses the chosen path unchanged, and disables commands afterward", async () => {
+  it("canceling the first save keeps every drawing", async () => {
+    const session = sessionWithUnrestoredTabs();
+    native.session = session;
+    await remount();
+    native.writeFile.mockClear();
+    await modalButton("Save Drawings…");
+    expect(native.writeFile).not.toHaveBeenCalled();
+    expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("saves an unsupported envelope's exact text and uses the chosen path unchanged", async () => {
     const session = sessionWithUnrestoredTabs(["Recovered.chemdraft"]);
     session.unrestoredTabs = [{ version: 99, displayName: "Recovered.chemdraft", contents: "future saved format" }];
     await restoreAfterMount(session);
     native.writeFile.mockClear();
     native.savePicker.mockResolvedValueOnce("/tmp/chosen-name");
-    await command("document.saveUnrestoredTabs");
+    await modalButton("Save Drawing…");
     expect(native.writeFile).toHaveBeenCalledExactlyOnceWith("/tmp/chosen-name", "future saved format");
     expect((await flush()).unrestoredTabs).toBeUndefined();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     await activate(2);
-    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("could not be restored");
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, false);
-    await command("document.saveUnrestoredTabs");
-    await command("document.discardUnrestoredTabs");
-    expect(native.savePicker).toHaveBeenCalledOnce();
-    expect(native.confirm).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("kept for later");
+    await remount();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it.each(["Cancel", "Enter", "Escape", "Discard", "Tab-then-Enter"])("discard lists the count and names, and requires explicit action (%s)", async (action) => {
+  it.each(["Cancel", "Enter", "Escape", "Delete", "Shift-Tab-then-Enter"])("Delete requires a second confirmation (%s)", async (action) => {
     const session = sessionWithUnrestoredTabs(["Alpha.chemdraft", "Beta.chemdraft"]);
     native.session = session;
     await restoreAfterMount(session);
-    await command("document.discardUnrestoredTabs");
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
-    expect(dialog.getAttribute("aria-label")).toBe("Discard Unrestored Tabs");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(dialog.querySelector("p")?.textContent).toBe(
-      "Discard 2 unrestored tabs?\n\nAlpha.chemdraft\nBeta.chemdraft\n\nTheir saved document data will be removed from the session. This cannot be undone."
-    );
-    expect(document.activeElement).toBe(dialog.querySelector("button"));
+    await modalButton("Delete");
+    expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(dialog.querySelector("p")?.textContent).toBe("Delete the kept drawing? This cannot be undone.");
+    expect(dialog.textContent).toContain("Alpha.chemdraft");
+    expect(dialog.textContent).toContain("Beta.chemdraft");
     expect(document.activeElement?.textContent).toBe("Cancel");
     expect(native.confirm).not.toHaveBeenCalled();
     expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
-    const press = async (key: string) => {
-      await act(async () => {
-        document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
-      });
-    };
-    if (action === "Tab-then-Enter") {
-      await press("Tab");
-      expect(document.activeElement?.textContent).toBe("Discard");
-      await press("Enter");
+    if (action === "Shift-Tab-then-Enter") {
+      await pressDialogKey("Tab", true);
+      expect(document.activeElement?.textContent).toBe("Delete");
+      await pressDialogKey("Enter");
     } else if (action === "Enter" || action === "Escape") {
-      await press(action);
+      await pressDialogKey(action);
     } else {
       await modalButton(action);
     }
-    const confirmed = action === "Discard" || action === "Tab-then-Enter";
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const confirmed = action === "Delete" || action === "Shift-Tab-then-Enter";
     expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
     if (confirmed) {
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
       await activate(2);
-      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("could not be restored");
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("kept for later");
+    } else {
+      expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+      expect(dialog.querySelector("h2")?.textContent).toBe("2 tabs didn't open");
+      expect(document.activeElement?.textContent).toBe("Keep for Later");
+      await modalButton("Keep for Later");
     }
     await remount();
     expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, !confirmed);
+    expect(container.querySelector('[role="dialog"]') === null).toBe(confirmed);
   });
 
-  it("retains unrestored tabs if persisting a confirmed discard fails", async () => {
+  it("retains kept drawings if persisting a confirmed deletion fails", async () => {
     const session = sessionWithUnrestoredTabs();
     native.session = session;
     await remount();
-    await command("document.discardUnrestoredTabs");
+    await modalButton("Delete");
     native.saveSession.mockRejectedValueOnce(new Error("session write refused"));
-    await modalButton("Discard");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Discard failed; unrestored tabs remain in the session: session write refused");
+    await modalButton("Delete");
+    expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain("Delete failed; the drawings are kept for later: session write refused");
     expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    expect(document.activeElement?.textContent).toBe("Cancel");
   });
 
-  it("registers both recovery commands but disables them with a reason when there are no unrestored tabs", async () => {
-    for (const spec of createUnrestoredTabActions(false)) {
-      expect(spec).toMatchObject({ enabled: false, disabledReason: "No unrestored tabs" });
-      expect(runtime().host.commands.has(spec.id)).toBe(true);
-      await command(spec.id);
+  it("does not register the retired menu commands or show a dialog on a clean launch", async () => {
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    for (const id of ["document.saveUnrestoredTabs", "document.discardUnrestoredTabs"]) {
+      expect(runtime().host.commands.has(id)).toBe(false);
     }
     expect(native.savePicker).not.toHaveBeenCalled();
     expect(native.confirm).not.toHaveBeenCalled();
-    expect(createUnrestoredTabActions(true).every((spec) => spec.enabled && !spec.disabledReason)).toBe(true);
   });
 
   it("restores all three tabs despite negative scroll or malformed cosmetic data", async () => {
@@ -885,7 +977,7 @@ describe("documents in one window", () => {
     await act(async () => finishRead(session));
     expect(tabs()).toHaveLength(2);
     expect(bridge().snapshot().document.title).toBe("First");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("1 tab could not be restored");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("1 drawing is kept for later");
     const saved = await flush();
     expect(saved.unrestoredTabs).toEqual([corrupt]);
     expect(saved.tabs!.map((tab) => tab.displayName)).toEqual(["First.chemdraft", "Third.chemdraft"]);
@@ -912,11 +1004,11 @@ describe("documents in one window", () => {
     native.session = raw;
     await restoreAfterMount(raw);
     expect(tabs()).toHaveLength(1);
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("3 tabs could not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)");
-    await paste("Drawing after failed restore");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("3 drawings are kept for later");
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe("3 tabs didn't open");
     expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
-    await command("document.discardUnrestoredTabs");
-    await modalButton("Discard");
+    await modalButton("Delete");
+    await modalButton("Delete");
     expect((await flush()).unrestoredTabs).toBeUndefined();
   });
 
