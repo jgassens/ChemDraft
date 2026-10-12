@@ -1019,6 +1019,97 @@ describe("layout-engine page SVG planner", () => {
     expect(frontMoleculeLines).toHaveLength(2);
   });
 
+  it.each([false, true])("warns exactly once only when three crossing bonds form a depth cycle (cyclic=%s)", (cyclic) => {
+    const objects = [
+      [[140, 180], [220, 180]],
+      [[180, 140], [180, 220]],
+      [[140, 140], [220, 220]]
+    ].map((ends, index) => moleculeObject({
+      id: `mol_depth_${index}`,
+      atoms: ends.map(([x, y], atomIndex) => ({
+        id: `atom_00${atomIndex + 1}`, element: "C", x, y, formalCharge: 0
+      }))
+    }));
+    const page = pageWithObjects(objects);
+    if (cyclic) {
+      // Default: 2 > 1 > 0. Flip only 0/2, closing 0 > 2 > 1 > 0.
+      const front = { objectId: objects[0].id, bondId: "bond_001" };
+      page.crossings = [{
+        bonds: [front, { objectId: objects[2].id, bondId: "bond_001" }],
+        front
+      }];
+    }
+
+    const plan = planPageSvgRender(page);
+    expect(plan.crossings).toHaveLength(3);
+    expect(plan.warnings).toEqual(cyclic ? [{
+      code: "crossing.depth_cycle",
+      message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
+    }] : []);
+  });
+
+  it("preserves the absence of a depth warning for a four-edge cycle without a three-edge cycle", () => {
+    const objects = [
+      [[140, 160], [220, 160]],
+      [[160, 140], [160, 220]],
+      [[140, 200], [220, 200]],
+      [[200, 140], [200, 220]]
+    ].map((ends, index) => moleculeObject({
+      id: `mol_four_cycle_${index}`,
+      atoms: ends.map(([x, y], atomIndex) => ({
+        id: `atom_00${atomIndex + 1}`, element: "C", x, y, formalCharge: 0
+      }))
+    }));
+    const refs = objects.map((object) => ({ objectId: object.id, bondId: "bond_001" }));
+    const page = pageWithObjects(objects);
+    page.crossings = refs.map((front, index) => ({
+      bonds: [front, refs[(index + 1) % refs.length]],
+      front
+    }));
+
+    const plan = planPageSvgRender(page);
+    expect(plan.crossings).toHaveLength(4);
+    expect(plan.crossings.map(({ front, back }) => [front.objectId, back.objectId])).toEqual([
+      [objects[0].id, objects[1].id],
+      [objects[3].id, objects[0].id],
+      [objects[1].id, objects[2].id],
+      [objects[2].id, objects[3].id]
+    ]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("plans 256 overlapping benzene rings offset by 24 px in under three seconds", () => {
+    const base = benzeneMolecule();
+    const benzene = benzeneMolecule({
+      x: 120, y: 90, width: 180, height: 180,
+      atoms: base.atoms.map((atom, index) => ({
+        ...atom,
+        x: 210 + 90 * Math.cos(index * Math.PI / 3),
+        y: 180 + 90 * Math.sin(index * Math.PI / 3)
+      }))
+    });
+    const page = pageWithObjects(Array.from({ length: 256 }, (_, index) => {
+      const dx = (index % 16) * 24;
+      const dy = Math.floor(index / 16) * 24;
+      return {
+        ...benzene,
+        id: `mol_perf_benzene_${index}`,
+        x: benzene.x + dx,
+        y: benzene.y + dy,
+        atoms: benzene.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+      };
+    }));
+
+    const start = performance.now();
+    const plan = planPageSvgRender(page);
+    const elapsedMs = performance.now() - start;
+
+    // Guard the workload too: a sparse fixture would not catch the old cubic cycle check.
+    expect(plan.crossings.length).toBeGreaterThan(20_000);
+    expect(plan.warnings).toEqual([]);
+    expect(elapsedMs).toBeLessThan(3000);
+  }, 10_000);
+
   it("ignores endpoint touches instead of creating spurious crossing gaps", () => {
     const horizontal = moleculeObject({
       id: "mol_horizontal",
