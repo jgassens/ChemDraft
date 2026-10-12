@@ -108,16 +108,13 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// open-palette set that the next launch restores.
 static APP_QUITTING: AtomicBool = AtomicBool::new(false);
 
-/// File ▸ Exit off macOS (macOS quits from the application menu).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// Application-menu Quit on macOS, File ▸ Exit elsewhere.
 const APP_QUIT_COMMAND_ID: &str = "app.quit";
 /// Sent to the document window when the app is about to quit; it flushes its pending session
 /// autosave and answers with `quit_after_flush`. Mirrors `QUIT_FLUSH_REQUEST_EVENT` in
 /// apps/desktop/src/window-manager/index.ts.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 const QUIT_FLUSH_REQUEST_EVENT: &str = "chemdraft://flush-before-quit";
 /// How long a quit waits for the document window's flush before quitting anyway.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 const QUIT_FLUSH_GRACE: Duration = Duration::from_secs(3);
 /// How long the event loop gets to end the app once a quit is decided, before the process ends
 /// itself (Windows; see `QuitHost::force_exit`).
@@ -136,8 +133,6 @@ struct QuitFlow {
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
-    // Read only by request_quit_with, which macOS never reaches (see request_quit).
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -163,14 +158,13 @@ impl QuitFlow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuitReason {
     /// The document window confirmed its session flush (`quit_after_flush`).
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     FlushConfirmed,
     /// The document window did not answer within the flush grace.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     GraceExpired,
     /// There was no document window to ask.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     NoDocument,
+    /// The user asked again while the macOS quit was waiting for its flush.
+    RepeatedRequest,
 }
 
 impl QuitReason {
@@ -179,6 +173,7 @@ impl QuitReason {
             Self::FlushConfirmed => "after the session flush was confirmed",
             Self::GraceExpired => "after the flush grace expired (session flush not confirmed)",
             Self::NoDocument => "with no document window to flush",
+            Self::RepeatedRequest => "after a repeated quit request (session flush not confirmed)",
         }
     }
 }
@@ -196,7 +191,6 @@ fn forced_exit_message(reason: QuitReason, waited: Duration) -> String {
 /// What the quit flow does to the app. A fake stands in for it in the tests.
 trait QuitHost: Clone + Send + 'static {
     /// Asks the document window to flush its session; false when there is none to ask.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn ask_document_to_flush(&self) -> bool;
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
@@ -243,9 +237,8 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
         std::process::exit(0);
     }
 
-    /// macOS never decides a quit here: closing the document window hides it, and Quit is the
-    /// application menu's, through NSApplication termination (which Sparkle relies on). Linux is
-    /// not shipped. Should a quit ever reach this, the event loop is left to end the app.
+    /// Only Windows needs a forced process exit for stuck WebView2 teardown. On macOS and
+    /// Linux, leave teardown to the event loop after the bounded flush wait.
     #[cfg(not(windows))]
     fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!(
@@ -256,18 +249,20 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 }
 
-/// Quit off macOS without losing the last edits. The session autosave is an 800 ms debounce in the
+/// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
 /// webview and the app never prompts to save, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    request_quit_with(&QUIT, app);
+    request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
     if flow.requested.swap(true, Ordering::SeqCst) {
+        // A second Cmd+Q bypasses the wait. Keep repeated Windows closes idempotent.
+        if force_repeated_quit {
+            quit_now_with(flow, host, QuitReason::RepeatedRequest);
+        }
         return;
     }
     if !host.ask_document_to_flush() {
@@ -686,7 +681,6 @@ pub fn run() {
                 }
                 return;
             }
-            #[cfg(not(target_os = "macos"))]
             if command_id == APP_QUIT_COMMAND_ID {
                 request_quit(app);
                 return;
@@ -946,10 +940,28 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
-            // Cmd+Q on macOS ends the event loop without ExitRequested and only Exit arrives, so
-            // both shut the engine down (shutdown is idempotent); otherwise a quit during an
-            // install would leave uv running and writing into the staging tree.
-            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+            RunEvent::ExitRequested { code, api, .. } => {
+                if should_flush_exit_request(
+                    cfg!(target_os = "macos"),
+                    code,
+                    APP_QUITTING.load(Ordering::SeqCst),
+                ) {
+                    // AppHandle::exit and last-window destruction are preventable. The exit
+                    // posted by quit_now is allowed through because APP_QUITTING is then true.
+                    api.prevent_exit();
+                    request_quit(app);
+                } else {
+                    APP_QUITTING.store(true, Ordering::SeqCst);
+                    app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                }
+            }
+            RunEvent::Exit => {
+                // tao 0.35.3's AppDelegate has applicationWillTerminate: but no
+                // applicationShouldTerminate:. AppKit termination (Dock Quit, logout/restart,
+                // AppleScript quit, Sparkle) therefore delivers only Exit via AppState::exit ->
+                // LoopDestroyed in tauri-runtime-wry 2.11.2. It is too late to await a webview
+                // flush here; retain the existing idempotent cleanup. Menu Quit uses our custom
+                // item instead of muda's terminate: selector, so it avoids this bypass.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
@@ -3982,6 +3994,32 @@ fn take_pending_open_document(
     Ok(pending.take())
 }
 
+/// Tauri restart cannot be prevented (ExitRequestApi::prevent_exit ignores RESTART_EXIT_CODE).
+/// Keep updater/relaunch behavior and the existing Windows exit handling unchanged.
+fn should_flush_exit_request(is_macos: bool, code: Option<i32>, quitting: bool) -> bool {
+    is_macos && !quitting && code != Some(tauri::RESTART_EXIT_CODE)
+}
+
+struct QuitMenuItem {
+    command_id: &'static str,
+    label: &'static str,
+    accelerator: Option<&'static str>,
+}
+
+fn quit_menu_item_spec(is_macos: bool) -> QuitMenuItem {
+    QuitMenuItem {
+        command_id: APP_QUIT_COMMAND_ID,
+        label: if is_macos { "Quit ChemDraft" } else { "Exit" },
+        accelerator: if is_macos { Some("CmdOrCtrl+Q") } else { None },
+    }
+}
+
+/// Custom on both platforms: predefined Quit ends the loop before the webview can flush.
+fn quit_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
+    let item = quit_menu_item_spec(cfg!(target_os = "macos"));
+    MenuItem::with_id(app, item.command_id, item.label, true, item.accelerator)
+}
+
 /// A routed Edit-menu history item: command id, label, and accelerator.
 struct EditHistoryMenuItem {
     command_id: &'static str,
@@ -4583,7 +4621,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     // is a bare PostQuitMessage, which ends the event loop before the document
                     // window can flush its pending session autosave (see request_quit).
                     #[cfg(not(target_os = "macos"))]
-                    &MenuItem::with_id(app, APP_QUIT_COMMAND_ID, "Exit", true, None::<&str>)?,
+                    &quit_menu_item(app)?,
                 ],
             )?,
             &Submenu::with_items(
@@ -4885,7 +4923,8 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            // Same position and Cmd+Q, but route through the session flush before exit.
+            &quit_menu_item(app)?,
         ],
     )
 }
@@ -6398,7 +6437,7 @@ mod tests {
     fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host);
+        request_quit_with(flow, &host, false);
         thread::sleep(Duration::from_millis(300));
         // Nothing is decided and no watchdog runs while the document has not answered.
         assert_eq!(host.calls(), ["ask to flush"]);
@@ -6410,7 +6449,7 @@ mod tests {
     fn a_confirmed_flush_quits_and_the_watchdog_ends_an_app_that_does_not_exit() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host);
+        request_quit_with(flow, &host, false);
         // quit_after_flush: the session is written
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         assert!(flow.quitting.load(Ordering::SeqCst));
@@ -6428,7 +6467,7 @@ mod tests {
         // run out first.
         let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host);
+        request_quit_with(flow, &host, false);
         assert_eq!(host.calls(), ["ask to flush"]);
         assert_eq!(
             host.wait_for_calls(3),
@@ -6441,7 +6480,7 @@ mod tests {
     fn with_no_document_window_to_ask_the_quit_is_decided_at_once() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(false);
-        request_quit_with(flow, &host);
+        request_quit_with(flow, &host, false);
         assert_eq!(host.calls(), ["ask to flush", "exit"]);
         assert_eq!(
             host.wait_for_calls(3),
@@ -6454,8 +6493,8 @@ mod tests {
     fn repeated_closes_and_confirmations_ask_once_and_arm_one_watchdog() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host);
-        request_quit_with(flow, &host);
+        request_quit_with(flow, &host, false);
+        request_quit_with(flow, &host, false);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         quit_now_with(flow, &host, QuitReason::FlushConfirmed);
         // Asked once, two exits (each confirmation asks the event loop again), one forced exit.
@@ -6474,6 +6513,39 @@ mod tests {
         // A quit is never cancelled: the flow stays requested and quitting.
         assert!(flow.requested.load(Ordering::SeqCst));
         assert!(flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_second_mac_quit_bypasses_the_flush_wait_without_asking_again() {
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, true);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        request_quit_with(flow, &host, true);
+        assert!(flow.quitting.load(Ordering::SeqCst));
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+        assert_eq!(host.forced_reason(), Some(QuitReason::RepeatedRequest));
+    }
+
+    #[test]
+    fn mac_exit_requests_flush_until_quitting_but_do_not_intercept_restart() {
+        for code in [None, Some(0)] {
+            assert!(should_flush_exit_request(true, code, false));
+            // The exit posted by quit_now must pass without requesting another flush.
+            assert!(!should_flush_exit_request(true, code, true));
+            // Windows keeps its existing exit handling, regardless of quit state.
+            assert!(!should_flush_exit_request(false, code, false));
+            assert!(!should_flush_exit_request(false, code, true));
+        }
+        assert!(!should_flush_exit_request(
+            true,
+            Some(tauri::RESTART_EXIT_CODE),
+            false
+        ));
     }
 
     #[test]
@@ -6912,6 +6984,44 @@ mod tests {
     #[test]
     fn plugin_manager_menu_command_is_routed() {
         expect_true(is_routed_menu_command("plugins.manage"));
+    }
+
+    #[test]
+    fn quit_menu_preserves_each_platforms_label_and_accelerator() {
+        let mac = quit_menu_item_spec(true);
+        assert_eq!(mac.command_id, APP_QUIT_COMMAND_ID);
+        assert_eq!(mac.label, "Quit ChemDraft");
+        assert_eq!(mac.accelerator, Some("CmdOrCtrl+Q"));
+        let windows = quit_menu_item_spec(false);
+        assert_eq!(windows.command_id, APP_QUIT_COMMAND_ID);
+        assert_eq!(windows.label, "Exit");
+        assert_eq!(windows.accelerator, None);
+    }
+
+    #[test]
+    fn mac_quit_menu_is_custom_and_routes_to_the_native_flush_command() {
+        // Native menus require AppKit's main thread; check the construction and dispatch here,
+        // with the platform-independent spec above checking the item's public contract.
+        let source = include_str!("lib.rs");
+        let menu = source
+            .split("fn create_native_app_menu<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("fn create_page_setup_menu<R: Runtime>")
+            .next()
+            .unwrap();
+        assert!(menu.contains("&quit_menu_item(app)?"));
+        assert!(!menu.contains("PredefinedMenuItem::quit"));
+        let dispatch = source
+            .split(".on_menu_event(|app, event| {")
+            .nth(1)
+            .unwrap()
+            .split(".on_window_event(")
+            .next()
+            .unwrap();
+        assert!(dispatch.contains(
+            "if command_id == APP_QUIT_COMMAND_ID {\n                request_quit(app);\n                return;"
+        ));
     }
 
     /// Edit ▸ Undo/Redo must reach the drawing's history. AppKit's predefined items send undo: to
