@@ -298,8 +298,10 @@ describe("open warnings list", () => {
 
     await press("Escape");
     expect(editor()).toBeNull();
-    expect(molecules()[0].atoms.find((atom) => atom.id === star.id)?.element).toBe("O");
+    // Escape cancels the whole typed label, first letter included.
+    expect(molecules()[0].atoms.find((atom) => atom.id === star.id)?.element).toBe("*");
     expect(list()).not.toBeNull();
+    expect(row("cdxml.atom_element_unknown").querySelector("[data-open-warning-target]")?.textContent).toBe(`Atom * in Molecule (CDXML fragment ${molecules()[0].compatibility?.originalId})`);
 
     await press("Escape");
     expect(list()).toBeNull();
