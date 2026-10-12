@@ -1277,6 +1277,8 @@ type AtomLabelEditState = AtomLabelDraftState & {
   /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
   startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  /** Pre-first-letter history and dirty state; Escape discards the hotkey without adding Redo. */
+  hotkeyUndoState?: { history: DocumentHistory; file: NativeFileState };
   /** Render-only attachment target; keyboard ownership remains on atomId. */
   previewAtomId?: string;
   objectId: string;
@@ -1319,6 +1321,7 @@ type AtomLabelEditOptions = {
   hotkeyChanged?: boolean;
   startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
@@ -1575,7 +1578,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.20.40-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -5627,6 +5630,7 @@ export function MainWindow({
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
       startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
+      hotkeyUndoState: continuing?.hotkeyUndoState ?? options.hotkeyUndoState,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
       ...(continuing
@@ -5686,13 +5690,36 @@ export function MainWindow({
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
       return;
     }
-    // One targeted rollback: label fields (including recorded side), with current positions kept.
-    replacePresentDocument((current) => restoreAtomLabelDraft(current, state));
+    // The inline draft starts AFTER the first hover letter's immediate element hotkey. Cancel
+    // both stages, while keeping the draft-only baseline used by commit and external history.
+    replacePresentDocument((current) => {
+      const restored = restoreAtomLabelDraft(current, state);
+      if (!state.startedFromHover) return restored;
+      const hotkeyRollback: AtomLabelDraftState = {
+        objectId: state.objectId, atomId: state.atomId,
+        draftBeforeAtom: state.beforeAtom, draftBeforeMolecule: state.beforeMolecule,
+        draftRollback: createAtomLabelDraftRollback(state.beforeMolecule)
+      };
+      recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, state.draftBeforeMolecule);
+      return restoreAtomLabelDraft(restored, hotkeyRollback);
+    });
+    // Remove our own first-letter entry rather than undoing it into Redo. A subsequent external
+    // commit owns its history; only the unchanged hotkey history line can be restored wholesale.
+    const history = documentHistoryRef.current;
+    if (state.continuesHotkey && state.hotkeyUndoState && history.past.at(-1) === state.hotkeyUndoDocument) {
+      const present = history.present;
+      documentUndoLabelsRef.current.delete(present);
+      const previousLabel = documentUndoLabelsRef.current.get(state.hotkeyUndoState.history.present);
+      if (previousLabel) documentUndoLabelsRef.current.set(present, previousLabel);
+      installDocumentHistory({ ...state.hotkeyUndoState.history, present });
+      fileStateRef.current = state.hotkeyUndoState.file;
+      setFileState(state.hotkeyUndoState.file);
+    }
     atomLabelEditKeepsSelectionRef.current = state;
     cancelledAtomLabelEditRef.current = state;
     setActiveAtomLabelEdit(undefined);
     setStatus("Atom label unchanged");
-  }, [replacePresentDocument]);
+  }, [installDocumentHistory, replacePresentDocument]);
 
   const finishAtomLabelEdit = useCallback((state: AtomLabelEditState, reason: AtomLabelFinishReason) => {
     // Keystrokes only write a draft; the close applies the decision once. A late blur (the input
@@ -11167,7 +11194,8 @@ export function MainWindow({
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
-            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument
+            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
+            hotkeyUndoState: assignment.hotkeyUndoState
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -11187,6 +11215,7 @@ export function MainWindow({
           const beforeAtom = beforeObject?.type === "molecule" && hoveredTarget?.kind === "atom"
             ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
           const beforeHotkeyDocument = documentRef.current;
+          const hotkeyUndoState = { history: documentHistoryRef.current, file: fileStateRef.current };
           invokeCommandRef.current(hoveredTargetCommandId);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
@@ -11201,7 +11230,8 @@ export function MainWindow({
               const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
               hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
                 beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
-                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined };
+                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
+                hotkeyUndoState: hotkeyChanged ? hotkeyUndoState : undefined };
             }
           }
           return;
@@ -21275,6 +21305,7 @@ type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
   beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject;
   hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 /**
