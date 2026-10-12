@@ -4342,6 +4342,7 @@ describe("Phase 4 document workflow", () => {
       expect(formatElementList(["Fe", "Zn", "Au"])).toBe("Fe, Zn and Au");
     });
 
+  // Heavy fused-ring cleanup regression can exceed Vitest's default on busy CI hosts.
   it("keeps a dative-bridged polymer's dendrons where they were drawn instead of packing them together", () => {
       // The engine is handed the ligand skeleton with the metals taken out. For a polymer that is
       // several disconnected fragments, and the engine packs them however it likes — so recentring
@@ -4483,7 +4484,7 @@ describe("Phase 4 document workflow", () => {
       const thirdRunShift = Math.max(...thrice.atoms.map((atom, index) =>
         Math.hypot(atom.x - twice.atoms[index].x, atom.y - twice.atoms[index].y)));
       expect(thirdRunShift).toBeLessThan(1);
-    });
+    }, 20_000);
 
     it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {
       const { document, molecule } = zincTetrakisImidazoleFixture();

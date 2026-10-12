@@ -1,9 +1,15 @@
+import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
+import {
+  projectGraphicVisualPagePoint,
+  rotatedGraphicLocalBounds,
+  unrotateGraphicVisualPagePoint
+} from "./graphicHandleGeometry";
 import {
   activeOpenWarnings,
   NO_OPEN_WARNINGS_REASON,
@@ -524,6 +530,7 @@ import {
   snapNativeMoleculePartDragDelta,
   snapNativeMoleculePartRotationDegrees,
   nativeGraphicCornerRadiusEditPoint,
+  nativeGraphicCornerRadiusHandlePoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
@@ -1251,6 +1258,12 @@ type ResolvedOpenDocument = {
   document: ChemDraftDocument;
   source: ReturnType<typeof openNativeDocument>["source"];
   statusSourceLabel?: string;
+};
+type OpenDocumentContentsOptions = {
+  /** Restore-session path: the contents hold edits never written to `path`. */
+  dirty?: boolean;
+  /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
+  statusOverride?: string;
 };
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
@@ -8082,16 +8095,11 @@ export function MainWindow({
     }
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
-  const openDocumentContents = useCallback((
+  const openDocumentContentsNow = useCallback(async (
     contents: string,
     displayName: string,
     path?: string,
-    options?: {
-      /** Restore-session path: the contents hold edits never written to `path`. */
-      dirty?: boolean;
-      /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
-      statusOverride?: string;
-    }
+    options?: OpenDocumentContentsOptions
   ) => {
     if (closeTabPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for Save/Discard/Cancel and the startup restore before activating an OS open-with.
@@ -8110,7 +8118,7 @@ export function MainWindow({
       return;
     }
     const opened = openNativeDocument(contents);
-    const resolvedOpen = resolveOpenResultDocument(opened);
+    const resolvedOpen = await resolveOpenResultDocument(opened);
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -8140,6 +8148,23 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+  const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
+  openDocumentContentsNowRef.current = openDocumentContentsNow;
+  const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
+  // file must wait and then find the tab the first one made, not add a second tab for one path.
+  const openDocumentContents = useCallback((
+    contents: string,
+    displayName: string,
+    path?: string,
+    options?: OpenDocumentContentsOptions
+  ): Promise<void> => {
+    const run = documentOpenQueueRef.current.then(() =>
+      openDocumentContentsNowRef.current(contents, displayName, path, options));
+    documentOpenQueueRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
 
   const openDocumentContentsRef = useRef(openDocumentContents);
   openDocumentContentsRef.current = openDocumentContents;
@@ -8147,13 +8172,15 @@ export function MainWindow({
   useEffect(() => {
     if (closeTabPrompt || !documentSessionHydratedRef.current) return;
     const opens = pendingDocumentOpensRef.current.splice(0);
-    for (const request of opens) {
-      try {
-        openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-      } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+    void (async () => {
+      for (const request of opens) {
+        try {
+          await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+        } catch (error) {
+          setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
-    }
+    })();
   }, [closeTabPrompt]);
 
   const acceptPageFitRecommendation = useCallback(() => {
@@ -8194,7 +8221,7 @@ export function MainWindow({
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     for (const path of paths) {
       try {
-        openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
+        await openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -8228,7 +8255,7 @@ export function MainWindow({
 
     try {
       const contents = await readNativeTextFile(path);
-      openDocumentContents(contents, nativePathBasename(path), path);
+      await openDocumentContents(contents, nativePathBasename(path), path);
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -8239,14 +8266,14 @@ export function MainWindow({
       return undefined;
     }
 
-    const openPayloadFromHash = () => {
+    const openPayloadFromHash = async () => {
       const payload = agentBridgeDocumentPayloadFromHash();
       if (!payload) {
         return;
       }
 
       try {
-        openDocumentContents(payload.contents, payload.displayName, payload.path);
+        await openDocumentContents(payload.contents, payload.displayName, payload.path);
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -8266,7 +8293,7 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    const openNativePayload = (payload: NativeOpenDocumentPayload) => {
+    const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
       const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
       const now = Date.now();
       const last = lastNativeOpenPayloadKeyRef.current;
@@ -8278,7 +8305,7 @@ export function MainWindow({
       }
       lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
       try {
-        openDocumentContents(payload.contents, payload.displayName, payload.path);
+        await openDocumentContents(payload.contents, payload.displayName, payload.path);
       } catch (error) {
         const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
         setStatus(failure);
@@ -8334,40 +8361,41 @@ export function MainWindow({
 
     let active = true;
     void loadDocumentSession()
-      .then((raw) => {
+      .then(async (raw) => {
         if (!active) {
           return;
         }
         // Only a completed restore (or an absent/pristine session) is a clean read.
         // A parser or document-open failure must leave autosave closed.
-        const restore = () => {
+        const restore = async () => {
           const envelope = parseDocumentSessionEnvelope(raw);
           if (!envelope) {
             if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope");
             return;
           }
           if (!shouldRestoreDocumentSession(envelope)) return;
+          const shellOpenFailure = shellOpenFailureRef.current;
+          shellOpenFailureRef.current = undefined;
+          const sessions = envelope.tabs ?? [envelope];
+          const skipped = [...(envelope.unrestoredTabs ?? [])];
+          const restored = [];
+          for (const session of sessions) {
+            try {
+              const opened = openNativeDocument(session.contents);
+              const resolved = await resolveOpenResultDocument(opened);
+              if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+              const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
+              restored.push({ session, opened, resolved, history, id: crypto.randomUUID() });
+            } catch {
+              skipped.push(rawDocumentSessionTab(session));
+            }
+          }
+          if (!active) return;
           const pristine = documentTabsRef.current.length === 1
             && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
             && !fileStateRef.current.path
             && !fileStateRef.current.dirty
             && documentIsBlank(documentRef.current);
-          const shellOpenFailure = shellOpenFailureRef.current;
-          shellOpenFailureRef.current = undefined;
-          const sessions = envelope.tabs ?? [envelope];
-          const skipped = [...(envelope.unrestoredTabs ?? [])];
-          const restored = sessions.flatMap((session) => {
-            try {
-              const opened = openNativeDocument(session.contents);
-              const resolved = resolveOpenResultDocument(opened);
-              if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
-              const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              return [{ session, opened, resolved, history, id: crypto.randomUUID() }];
-            } catch {
-              skipped.push(rawDocumentSessionTab(session));
-              return [];
-            }
-          });
           if (!restored.length) throw new Error("No readable document tabs");
           unrestoredSessionTabsRef.current = skipped;
           const restoreNotice = skipped.length
@@ -8401,7 +8429,8 @@ export function MainWindow({
             installDocumentTab(selected.id);
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
         };
-        restore();
+        await restore();
+        if (!active) return;
         documentSessionSaveEnabledRef.current = true;
       })
       .catch(() => {
@@ -8410,13 +8439,13 @@ export function MainWindow({
         // document. Editing is unaffected; only the session file is left alone.
         setStatus("Could not read the last session; this session will not be autosaved");
       })
-      .finally(() => {
+      .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
           const opens = pendingDocumentOpensRef.current.splice(0);
           for (const request of opens) {
             try {
-              openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+              await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
             } catch (error) {
               setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
             }
@@ -8697,19 +8726,39 @@ export function MainWindow({
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
-    if (!id || closeTabSaving) return;
+    if (!id || closeTabSaving) return false;
     setCloseTabSaving(true);
     try {
       if (await saveCurrentDocument(false)) {
         const file = id === activeDocumentTabIdRef.current ? fileStateRef.current :
           documentTabSnapshotsRef.current.get(id)?.file;
-        if (file && !file.dirty) removeDocumentTab(id);
+        if (file && !file.dirty) { removeDocumentTab(id); return true; }
         else setCloseTabSaveMessage("The document changed while saving. Save again to close this tab.");
       }
     } finally {
       setCloseTabSaving(false);
     }
+    return false;
   }, [closeTabSaving, removeDocumentTab, saveCurrentDocument]);
+
+  const closePrompt = useNativePrompt({
+    title: "Save changes before closing?",
+    message: `Save the changes to ${documentTabs.find((tab) => tab.id === closeTabPrompt)?.title}?${closeTabSaveMessage ? `\n\n${closeTabSaveMessage}` : ""}`,
+    kind: "warning",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async (choice) => {
+    const id = closeTabPromptRef.current;
+    if (!id) return;
+    if (choice === "cancel") setCloseTabPrompt(undefined);
+    else if (choice === "discard") removeDocumentTab(id);
+    else {
+      return await saveAndCloseDocumentTab() ? undefined : false;
+    }
+  }, closeTabPrompt, true);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -12060,7 +12109,7 @@ export function MainWindow({
     void file
       .text()
       .then((contents) => {
-        openDocumentContents(contents, file.name);
+        return openDocumentContents(contents, file.name);
       })
       .catch((error: unknown) => {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -12839,12 +12888,18 @@ export function MainWindow({
     });
   }, [clearObjectTransformPreview, objectDragDelta, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
-  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicCornerRadius(
-      drag.startDocument,
-      drag.objectId,
-      nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
-    ), []);
+  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type !== "graphic") {
+      return drag.startDocument;
+    }
+    const start = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, drag.startPoint);
+    const current = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
+    return updateNativeGraphicCornerRadius(drag.startDocument, drag.objectId, {
+      x: graphicCornerRadiusReadoutValue(object) + current.x - start.x,
+      y: 0
+    });
+  }, []);
 
   const previewGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -18612,12 +18667,12 @@ export function MainWindow({
           })
         : null}
 
-      {closeTabPrompt ? (
+      {closeTabPrompt && closePrompt.visible ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
             if (event.key === "Escape" && !closeTabSaving) {
               event.preventDefault();
-              setCloseTabPrompt(undefined);
+              closePrompt.choose("cancel");
             }
             if (event.key === "Tab") {
               const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
@@ -18632,9 +18687,9 @@ export function MainWindow({
             <p style={exportDialogHintStyle}>Save the changes to {documentTabs.find((tab) => tab.id === closeTabPrompt)?.title}?</p>
             {closeTabSaveMessage ? <p role="status" style={exportDialogWarningStyle}>{closeTabSaveMessage}</p> : null}
             <div style={exportDialogFooterStyle}>
-              <button type="button" autoFocus disabled={closeTabSaving} onClick={() => setCloseTabPrompt(undefined)}>Cancel</button>
-              <button type="button" disabled={closeTabSaving} onClick={() => removeDocumentTab(closeTabPrompt)}>Discard</button>
-              <button type="button" disabled={closeTabSaving} onClick={() => void saveAndCloseDocumentTab()}>Save</button>
+              <button type="button" autoFocus disabled={closeTabSaving} onClick={() => closePrompt.choose("cancel")}>Cancel</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => closePrompt.choose("discard")}>Don't Save</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => closePrompt.choose("save")}>Save</button>
             </div>
           </section>
         </div>
@@ -18674,7 +18729,7 @@ export function MainWindow({
             const files = Array.from(event.dataTransfer.files);
             void (async () => {
               for (const file of files) {
-                try { openDocumentContents(await file.text(), file.name); }
+                try { await openDocumentContents(await file.text(), file.name); }
                 catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
               }
             })();
@@ -18907,6 +18962,9 @@ export function MainWindow({
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
+                      pageScale={selected && !inGroupSelection && object.type === "graphic" &&
+                        nativeGraphicCornerRadiusEditPoint(object) !== undefined
+                        ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
@@ -19497,12 +19555,29 @@ function MoleculeStyleOverridePrompt({
   onCancel
 }: MoleculeStyleOverridePromptProps) {
   const moleculeLabel = objectCount === 1 ? "This molecule has" : "These molecules have";
+  const prompt = useNativePrompt({
+    title: "Per-Ring Attributes",
+    message: `${moleculeLabel} per-ring attributes from the Molecule Inspector. Whole-molecule appearance changes can either keep those ring overrides or clear them for a uniform molecule.\n\nClearing per-ring attributes removes them from the whole selected molecule. Use Undo to restore them.`,
+    kind: "warning",
+    choices: [
+      { id: "keep", label: "Keep Overrides" },
+      { id: "clear", label: "Clear Overrides", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, (choice) => {
+    if (choice === "keep") onKeep();
+    else if (choice === "clear") onClear();
+    else onCancel();
+  }, "ring-overrides");
+  if (!prompt.visible) return null;
+
   return (
     <div
       aria-label="Per-ring appearance attributes"
       aria-modal="true"
       role="dialog"
       style={exportDialogBackdropStyle}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); prompt.choose("cancel"); } }}
     >
       <section style={exportDialogPanelStyle}>
         <div style={exportDialogHeaderStyle}>
@@ -19515,13 +19590,13 @@ function MoleculeStyleOverridePrompt({
           Clearing per-ring attributes removes them from the whole selected molecule. Use Undo to restore them.
         </p>
         <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+          <button autoFocus type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("cancel")}>
             Cancel
           </button>
-          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
+          <button type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("keep")}>
             Keep Overrides
           </button>
-          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onClear}>
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={() => prompt.choose("clear")}>
             Clear Overrides
           </button>
         </div>
@@ -19546,12 +19621,24 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
     recommendation.overflowBottomPx > 0 ? `${Math.ceil(recommendation.overflowBottomPx)} px taller` : undefined
   ].filter(Boolean).join(" and ");
 
+  const prompt = useNativePrompt({
+    title: "Imported Content Exceeds Page",
+    message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
+    kind: "warning",
+    choices: [
+      { id: "resize", label: `Use ${recommendedLabel} Page` },
+      { id: "keep", label: "Cancel", cancel: true }
+    ]
+  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.displayName);
+  if (!prompt.visible) return null;
+
   return (
     <div
       aria-label="Imported content page size"
       aria-modal="true"
       role="dialog"
       style={exportDialogBackdropStyle}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); prompt.choose("keep"); } }}
     >
       <section style={exportDialogPanelStyle}>
         <div style={exportDialogHeaderStyle}>
@@ -19561,14 +19648,14 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
           {recommendation.displayName} extends beyond {currentLabel}{overflow ? ` by about ${overflow}` : ""}.
         </p>
         <p style={exportDialogHintStyle}>
-          Resize the page to {recommendedLabel} and place the import on the page, or keep the current page size and leave the overflow unchanged.
+          Change the page to {recommendedLabel} to fit the imported content?
         </p>
         <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
-            Keep Current Page
+          <button autoFocus type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("keep")}>
+            Cancel
           </button>
-          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onResize}>
-            Use {recommendedLabel}
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={() => prompt.choose("resize")}>
+            Use {recommendedLabel} Page
           </button>
         </div>
       </section>
@@ -25154,6 +25241,7 @@ function DocumentObjectViewContent({
   layerIndex,
   pageWidth,
   pageHeight,
+  pageScale,
   spinning = false,
   selected,
   inGroupSelection,
@@ -25229,6 +25317,7 @@ function DocumentObjectViewContent({
   layerIndex: number;
   pageWidth: number;
   pageHeight: number;
+  pageScale?: number;
   spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
@@ -26298,6 +26387,9 @@ function DocumentObjectViewContent({
     const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
       <GraphicCornerRadiusHandle
         object={object}
+        pageScale={pageScale ?? 1}
+        pageWidth={pageWidth}
+        pageHeight={pageHeight}
         readout={graphicCornerRadiusReadout}
         counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
@@ -27345,24 +27437,36 @@ function graphicGradientHandleStatusName(
 
 function GraphicCornerRadiusHandle({
   object,
+  pageScale,
+  pageWidth,
+  pageHeight,
   readout,
   counterRotationDegrees,
   onPointerDown,
   onDoubleClick
 }: {
   object: GraphicObject;
+  pageScale: number;
+  pageWidth: number;
+  pageHeight: number;
   readout?: GraphicCornerRadiusReadoutState;
   counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusEditPoint(object);
+  // The placement search projects many candidate spots; repeat it only when
+  // the shape, zoom or page changes, not on every render of the selection.
+  const point = useMemo(
+    () => nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight }),
+    [object, pageScale, pageWidth, pageHeight]
+  );
   if (!point) {
     return null;
   }
 
   const radius = readout?.radius ?? graphicCornerRadiusReadoutValue(object);
   const projectedPoint = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const projectedReadoutPoint = projectGraphicObjectPoint(object, nativeGraphicCornerRadiusEditPoint(object)!, { coordinateSpace: "local" });
   const label = `Radius: ${Math.round(radius)} px`;
 
   return (
@@ -27385,8 +27489,8 @@ function GraphicCornerRadiusHandle({
         className="graphic-corner-radius-readout"
         data-graphic-corner-radius-readout="true"
         style={{
-          left: pageScaledCssPx(projectedPoint.x),
-          top: pageScaledCssPx(projectedPoint.y),
+          left: pageScaledCssPx(projectedReadoutPoint.x),
+          top: pageScaledCssPx(projectedReadoutPoint.y),
           transform: graphicSystemReadoutTransform(counterRotationDegrees, "corner-radius")
         }}
       >
@@ -28217,88 +28321,6 @@ function documentObjectArtTransformFrameStyle(
     top: pageScaledCssPx(bounds.y),
     width: pageScaledCssPx(bounds.width),
     height: pageScaledCssPx(bounds.height)
-  };
-}
-
-function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: { x: number; y: number; width: number; height: number },
-  rotationDegrees: number
-): { x: number; y: number; width: number; height: number } {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = {
-    x: Math.max(object.width, 1) / 2,
-    y: Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(rotationDegrees);
-  const cos = Math.cos(rotationRad);
-  const sin = Math.sin(rotationRad);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
-
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
-  };
-}
-
-function unrotateGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  if (Math.abs(object.rotation) < 0.001) {
-    return point;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(-object.rotation);
-  return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function projectGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  const projected = projectGraphicObjectPoint(object, point);
-  if (Math.abs(object.rotation) < 0.001) {
-    return projected;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(object.rotation);
-  return rotatePointAroundCenter(projected, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function rotatePointAroundCenter(
-  point: { x: number; y: number },
-  center: { x: number; y: number },
-  cos: number,
-  sin: number
-): { x: number; y: number } {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  return {
-    x: center.x + dx * cos - dy * sin,
-    y: center.y + dx * sin + dy * cos
   };
 }
 
@@ -29555,7 +29577,7 @@ function NativeFreeformBondPreview({
   );
 }
 
-function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): ResolvedOpenDocument | undefined {
+async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): Promise<ResolvedOpenDocument | undefined> {
   if (result.document) {
     return { document: result.document, source: result.source };
   }
@@ -29564,9 +29586,17 @@ function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>
   }
 
   if (result.conflict.visibleDocument) {
-    const importVisible = window.confirm(
-      "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset? Choose Cancel to restore the embedded ChemDraft document instead."
-    );
+    const importVisible = await nativePrompt({
+      title: "Modified visible CDXML",
+      message: "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset, or restore the embedded ChemDraft document instead?",
+      kind: "warning",
+      // Cancel keeps the outcome a dismissal always had: the embedded document.
+      choices: [
+        { id: "visible", label: "Import Visible CDXML" },
+        { id: "embedded", label: "Restore Embedded" },
+        { id: "cancel", label: "Cancel", cancel: true }
+      ]
+    }) === "visible";
     return importVisible
       ? {
           document: result.conflict.visibleDocument,
@@ -29580,9 +29610,12 @@ function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>
         };
   }
 
-  const restoreEmbedded = window.confirm(
-    "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?"
-  );
+  const restoreEmbedded = await nativePrompt({
+    title: "Restore embedded document?",
+    message: "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?",
+    kind: "warning",
+    choices: [{ id: "restore", label: "Restore Embedded" }, { id: "cancel", label: "Cancel", cancel: true }]
+  }) === "restore";
   return restoreEmbedded
     ? {
         document: result.conflict.embeddedDocument,
@@ -29895,11 +29928,11 @@ async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
 
-type TauriDialogModule = typeof import("@tauri-apps/plugin-dialog");
+type TauriDialogModule = typeof import("./nativeFileDialog");
 let tauriDialogModulePromise: Promise<TauriDialogModule> | undefined;
 
 function loadTauriDialogModule(): Promise<TauriDialogModule> {
-  tauriDialogModulePromise ??= import("@tauri-apps/plugin-dialog");
+  tauriDialogModulePromise ??= import("./nativeFileDialog");
   return tauriDialogModulePromise;
 }
 
@@ -29908,7 +29941,7 @@ function prewarmNativeDialogModule(): void {
     return;
   }
 
-  void loadTauriDialogModule().catch(() => {
+  void loadTauriDialogModule().then((dialogs) => dialogs.prewarmNativeFileDialogs()).catch(() => {
     tauriDialogModulePromise = undefined;
   });
 }

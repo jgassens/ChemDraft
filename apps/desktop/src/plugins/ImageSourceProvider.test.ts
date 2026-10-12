@@ -1,7 +1,7 @@
 import { PluginImageMaxBytes, PluginImageMaxDimension } from "@chemdraft/plugin-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ readFile: vi.fn(), stat: vi.fn() }));
 vi.mock("./pluginStagingFs", () => ({ isTauriHost: () => true }));
