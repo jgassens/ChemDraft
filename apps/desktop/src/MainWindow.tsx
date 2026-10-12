@@ -6557,18 +6557,11 @@ export function MainWindow({
     setStatus("Editing text");
   }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
 
-  const handleTextDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target instanceof Element ? event.target : undefined;
-    if (target?.closest("textarea, input, button") ||
-        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) {
+  const handleTextDoubleClick = useCallback((objectId: string, event: ObjectMouseEvent) => {
+    if (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text") {
       return;
     }
-    // Paint and interaction chrome can live in different layers. Route from the glyph (or
-    // overlay) that was actually hit to its owner, rather than relying on their stacking.
-    const objectId = target?.closest("[data-object-id]")?.getAttribute("data-object-id");
-    if (!objectId || findDocumentObject(documentRef.current, objectId)?.type !== "text") {
-      return;
-    }
+    // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
     startTextObjectEdit(objectId);
@@ -18315,6 +18308,7 @@ export function MainWindow({
     onPointerUp: handleObjectPointerUp,
     onPointerCancel: handleObjectPointerCancel,
     onPointerLeave: handleObjectPointerLeave,
+    onTextDoubleClick: handleTextDoubleClick,
     onRotatePointerDown: handleObjectRotatePointerDown,
     onRotateDoubleClick: handleObjectRotateDoubleClick,
     onProjectedPlaneTiltPointerDown: handleProjectedPlaneTiltPointerDown,
@@ -18715,7 +18709,6 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
-                onDoubleClick={handleTextDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -24917,6 +24910,7 @@ function PageSvgSurfaceContent({
   onPointerCancel(event: ObjectPointerEvent): void;
   onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
+  onTextDoubleClick(objectId: string, event: ObjectMouseEvent): void;
 }) {
   const visualLayers = useMemo(() => {
     const layers: { layerIndex: number; objects: DocumentObject[] }[] = [];
@@ -24976,6 +24970,7 @@ function PageSvgSurfaceContent({
                 onPointerCancel={handlers.onPointerCancel}
                 onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
                 onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
               >
                 {object.type === "graphic" ? (
                   // Keep the existing art renderer and its generous stroke/fill catchers.
@@ -25570,6 +25565,7 @@ function DocumentObjectViewContent({
           ? "selected" : ""].filter(Boolean).join(" ")}
       style={{ ...style, ...extraStyle, zIndex: 1 }}
       data-object-controls={object.id}
+      data-object-id={object.type === "text" ? object.id : undefined}
       onPointerLeave={handleObjectPointerLeave}
     >
       {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (

@@ -66,9 +66,10 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
   const editor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor");
   function glyph() {
-    // The painted SVG glyph is above the pointer-transparent HTML overlay. Do not dispatch
-    // to the overlay: elementFromPoint on the visible text returns this text/tspan subtree.
-    const text = container.querySelector<SVGElement>(`.page-svg-surface text[data-object-id="${objectId}"], .page-svg-surface [data-object-id="${objectId}"] text`)!;
+    // Document-order SVG layers paint the glyph; the HTML overlay and top interaction chrome
+    // are pointer-transparent. Before editing, elementFromPoint on the visible text hits this
+    // text/tspan subtree, whose owning group enables pointer events. Never dispatch to the overlay.
+    const text = container.querySelector<SVGElement>(`.page-svg-visual-layer [data-page-svg-object-visual="${objectId}"] text`)!;
     expect(text).not.toBeNull();
     const target = text.querySelector<SVGElement>("tspan") ?? text;
     target.setAttribute("tabindex", "-1");
