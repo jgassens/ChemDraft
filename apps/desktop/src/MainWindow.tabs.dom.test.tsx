@@ -21,6 +21,7 @@ import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
 import * as atomLabelDraft from "./atomLabelDraft";
+import * as nativePaletteReconciliation from "./toolbars/reconcileNativePalettes";
 
 const native = vi.hoisted(() => ({
   desktop: true,
@@ -30,6 +31,7 @@ const native = vi.hoisted(() => ({
   toolsetWindows: new Map<string, boolean>(),
   suspendedToolsets: [] as string[],
   loadToolsetLayout: vi.fn<() => Promise<unknown>>(),
+  listToolsets: vi.fn<() => Promise<ToolsetWindowState[]>>(),
   openToolset: vi.fn<(id: string) => Promise<ToolsetWindowState>>(),
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
@@ -54,7 +56,7 @@ vi.mock("./window-manager", async (original) => ({
   saveDocumentSession: native.saveSession,
   loadToolsetLayoutState: native.loadToolsetLayout,
   openToolsetWindow: native.openToolset,
-  listToolsetWindowStates: async () => [...native.toolsetWindows].map(([toolsetId, open]) => ({ toolsetId, open, focused: false })),
+  listToolsetWindowStates: native.listToolsets,
   closeToolsetWindow: async (toolsetId: string) => {
     native.toolsetWindows.set(toolsetId, false);
     return { toolsetId, open: false, focused: false };
@@ -133,6 +135,8 @@ describe("documents in one window", () => {
     native.toolsetWindows.clear();
     native.suspendedToolsets = [];
     native.loadToolsetLayout.mockResolvedValue(undefined);
+    native.listToolsets.mockImplementation(async () => [...native.toolsetWindows]
+      .map(([toolsetId, open]) => ({ toolsetId, open, focused: false })));
     native.openToolset.mockImplementation(async (toolsetId) => {
       // Match Rust: suspension refuses even creation of a window that does not yet exist.
       if (!native.suspensionDepth) native.toolsetWindows.set(toolsetId, true);
@@ -160,6 +164,7 @@ describe("documents in one window", () => {
     window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   async function mount(initialDocument = createPhase4Document("Untitled")) {
@@ -1110,6 +1115,7 @@ describe("documents in one window", () => {
     };
 
     it("waits for saved toolbar layout and native window creation before suspending for the launch box", async () => {
+      vi.useFakeTimers();
       native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
       let finishLayout!: (value: unknown) => void;
       native.loadToolsetLayout.mockImplementationOnce(() => new Promise(resolve => { finishLayout = resolve; }));
@@ -1125,12 +1131,14 @@ describe("documents in one window", () => {
       expect(native.openToolset).not.toHaveBeenCalled();
       expect(pendingPrompt).toBeUndefined();
       expect(native.visibilityChanges).toEqual([]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
 
       await act(async () => finishLayout(startupLayout));
       expect(native.openToolset).toHaveBeenCalledWith("core.main", expect.anything());
       expect(native.openToolset).toHaveBeenCalledWith("core.art", expect.anything());
       expect(pendingPrompt).toBeUndefined();
       expect(native.suspensionDepth).toBe(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
 
       await act(async () => finishArt());
       expect(native.openToolset).toHaveBeenCalledWith("core.structure", expect.anything());
@@ -1151,7 +1159,7 @@ describe("documents in one window", () => {
         entry: "dist/plugin.js", permissions: [], contributes: { commands: [] }
       }));
       // Keeping the box open beyond the old retry window must never activate the web fallback.
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
       expect(native.openToolset).not.toHaveBeenCalled();
       expect(container.querySelector(".native-shell")).not.toBeNull();
       expect(container.querySelector('[role="status"]')?.textContent).not.toContain("unavailable");
@@ -1164,6 +1172,7 @@ describe("documents in one window", () => {
     });
 
     it("still falls back on genuine creation failure before showing the launch box", async () => {
+      vi.useFakeTimers();
       native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
       native.loadToolsetLayout.mockResolvedValue(startupLayout);
       native.openToolset.mockRejectedValue(new Error("native window creation failed"));
@@ -1173,7 +1182,7 @@ describe("documents in one window", () => {
       expect(native.suspensionDepth).toBe(0);
       // Each retry uses the real reconciler, including its delay and failure verdict.
       for (let attempt = 0; attempt < 3; attempt++) {
-        await act(async () => { await new Promise(resolve => setTimeout(resolve, 220)); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(220); });
       }
       expect(native.openToolset.mock.calls.filter(([id]) => id === "core.main")).toHaveLength(3);
       expect(container.querySelector(".web-shell")).not.toBeNull();
@@ -1182,6 +1191,96 @@ describe("documents in one window", () => {
       expectSuspended();
       await modalButton("Cancel");
       expectReleased();
+    });
+
+    it.each(["layout", "list", "open"])("bounds a never-resolving %s load/IPC without blocking commands or queued opens", async (stalled) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      if (stalled === "layout") native.loadToolsetLayout.mockImplementationOnce(() => new Promise(() => {}));
+      if (stalled === "list") native.listToolsets.mockImplementation(() => new Promise(() => {}));
+      if (stalled === "open") native.openToolset.mockImplementation(() => new Promise(() => {}));
+      await remount();
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/incoming.chemdraft", displayName: "incoming.chemdraft", contents: fileContents("Incoming drawing")
+      }));
+      await command("document.new");
+      expect(tabs()).toHaveLength(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      // Timeout alone cannot establish that native windows are genuinely unavailable.
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      await modalButton("Cancel");
+      expectReleased();
+      expect(tabs()).toHaveLength(4);
+      expect(bridge().snapshot().document.title).toBe("Incoming drawing");
+      await command("document.new");
+      expect(tabs()).toHaveLength(5);
+    });
+
+    it.each(["layout", "list", "reconciliation"])("opens the box and applies fallback when %s rejects", async (rejected) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      if (rejected === "layout") native.loadToolsetLayout.mockRejectedValueOnce(new Error("layout read failed"));
+      else if (rejected === "list") native.listToolsets.mockRejectedValue(new Error("list IPC failed"));
+      else vi.spyOn(nativePaletteReconciliation, "reconcileNativePaletteWindows")
+        .mockRejectedValueOnce(new Error("reconciliation failed"));
+      await remount();
+      // IPC rejections take the existing three-attempt path; a layout rejection settles directly.
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+      expect(container.querySelector(".web-shell")).not.toBeNull();
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+      await command("document.new");
+      expect(tabs()).toHaveLength(4);
+    });
+
+    it.each([
+      ["layout", false], ["open", false], ["layout", true], ["open", true]
+    ] as const)("handles late %s completion without a second box or false fallback (dismissed: %s)", async (late, dismissed) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      let finish!: () => void;
+      if (late === "layout") {
+        native.loadToolsetLayout.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(startupLayout); }));
+      } else {
+        const openNormally = native.openToolset.getMockImplementation()!;
+        native.openToolset.mockImplementationOnce(async (id) => {
+          await new Promise<void>(resolve => { finish = resolve; });
+          return openNormally(id);
+        });
+      }
+      await remount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      const firstPrompt = pendingPrompt;
+      expect(firstPrompt).toBeDefined();
+      expectSuspended();
+      if (dismissed) await modalButton("Cancel");
+      native.openToolset.mockClear();
+      await act(async () => finish());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      if (!dismissed) {
+        // Finishing under suspension must defer the rest of creation until the box is dismissed.
+        expect(pendingPrompt).toBe(firstPrompt);
+        expect(native.openToolset).not.toHaveBeenCalled();
+        await modalButton("Cancel");
+      }
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      expectReleased();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.get(toolsetId)).toBe(true);
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(pendingPrompt).toBeUndefined();
+      expect(container.querySelector(".native-shell")).not.toBeNull();
     });
 
     function unsupportedChildrenSession() {

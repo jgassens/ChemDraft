@@ -1616,7 +1616,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.12.17.55-opus";
+const CURRENT_BUILD_STAMP = "10.12.18.00-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2236,7 +2236,9 @@ export function MainWindow({
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [nativeToolsetLayoutReady, setNativeToolsetLayoutReady] = useState(false);
   const [nativeToolsetStartupReady, setNativeToolsetStartupReady] = useState(false);
-  const nativeToolsetsSuspendedForLaunchPrompt = nativeToolsetStartupReady && keptDrawingsPrompt !== undefined;
+  const [keptDrawingsStartupWaitExpired, setKeptDrawingsStartupWaitExpired] = useState(false);
+  const nativeToolsetsSuspendedForLaunchPrompt =
+    (nativeToolsetStartupReady || keptDrawingsStartupWaitExpired) && keptDrawingsPrompt !== undefined;
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -8778,7 +8780,15 @@ export function MainWindow({
   const keptDrawingNames = unrestoredSessionTabsRef.current.map(unrestoredTabDisplayName).join("\n");
   // Suspension makes open_toolset_window skip creation and report closed. Let startup reconcile
   // finish (or establish a genuine fallback) before the launch box can acquire that suspension.
-  const keptDrawingsPromptReady = !effectiveNativePalette || !isDesktopRuntime() || nativeToolsetStartupReady;
+  // Bound only the prompt's wait, not native setup: 1 s allows the reconciler's two 200 ms retry
+  // delays plus 600 ms for layout/IPC. A stalled IPC must not indefinitely lock commands and opens.
+  const keptDrawingsPromptReady = !effectiveNativePalette || !isDesktopRuntime()
+    || nativeToolsetStartupReady || keptDrawingsStartupWaitExpired;
+  useEffect(() => {
+    if (!keptDrawingsPrompt || keptDrawingsPromptReady) return;
+    const timer = window.setTimeout(() => setKeptDrawingsStartupWaitExpired(true), 1000);
+    return () => window.clearTimeout(timer);
+  }, [keptDrawingsPrompt, keptDrawingsPromptReady]);
   useNativePrompt({
     title: keptDrawingsTitle,
     message: [
@@ -11857,13 +11867,20 @@ export function MainWindow({
     if (!nativeToolsetLayoutReady) {
       return;
     }
-    // A plugin can refresh the registry while the box is open. Its hidden windows are healthy;
-    // defer reconciliation until the launch sequence releases them instead of counting failures.
+    // A plugin or a timed-out layout/IPC can finish while the box is open. Its hidden windows are
+    // healthy; cancel/defer reconciliation until the launch sequence releases them instead of
+    // counting suspension's refusal to create/reveal windows as genuine failures.
     if (nativeToolsetsSuspendedForLaunchPrompt) {
       return;
     }
 
     let cancelled = false;
+    const useFallback = () => {
+      if (cancelled) return;
+      setWebPaletteFallback(true);
+      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+      setStatus("Native toolset windows unavailable; using in-window toolbars");
+    };
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
       openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
@@ -11891,10 +11908,8 @@ export function MainWindow({
       // rather than leaving the app with no toolbars at all. (A transient startup miss no longer
       // lands here; reconcileNativePaletteWindows retries first so it can't permanently trap the
       // palettes in the viewport.)
-      setWebPaletteFallback(true);
-      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-      setStatus("Native toolset windows unavailable; using in-window toolbars");
-    });
+      useFallback();
+    }).catch(useFallback);
 
     return () => {
       cancelled = true;
