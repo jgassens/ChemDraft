@@ -21096,6 +21096,8 @@ export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal
       return "an atom on that bond has no free valence";
     case "closure-atom-no-free-valence":
       return "the ring would close onto an atom with no free valence";
+    case "connection-atom-no-free-valence":
+      return "the atom it would connect to has no free valence";
     case "double-bond-overfill":
       return "the ring's double bonds would overfill a neighbouring atom";
     case "atom-label-not-element":

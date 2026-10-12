@@ -82,16 +82,19 @@ describe("sprout refusal diagnostics", () => {
       .toBe("Cannot add a single bond to hovered atom: those atoms are already connected");
   });
 
-  it("a single-bond closure names a full closure atom without changing the document", () => {
+  it.each([true, false])("a single-bond connection names a full target atom (ring closure: %s) without changing the document", (ringClosure) => {
     const { document, molecule, target } = seed();
     const blocked = applyPatches(document, [{ op: "updateObject", objectId: molecule.id, changes: {
-      atoms: [...molecule.atoms, { id: "block", element: "OMe", formalCharge: 0, x: 300, y: 250 }],
-      bonds: [...molecule.bonds, { id: "blockb", fromAtomId: "block", toAtomId: molecule.atoms[0].id, order: "single" }]
+      atoms: [...molecule.atoms, { id: "block", element: "OMe", formalCharge: 0, x: 300, y: 250 },
+        ...(!ringClosure ? [{ id: "other", element: "C", formalCharge: 0, x: 250, y: 250 }] : [])],
+      bonds: [...molecule.bonds, { id: "blockb", fromAtomId: "block", toAtomId: ringClosure ? molecule.atoms[0].id : "other", order: "single" }]
     } }]);
     const result = nativeSingleBondHotkeyAtAtomTarget(blocked, target, {
       newAtomPoint: { x: 300, y: 250 }, direction: { x: 0, y: -1 }, targetAtomId: "block"
     });
-    expect(result).toEqual({ document: blocked, refusal: "closure-atom-no-free-valence" });
-    expect(nativeTemplateFallbackReasonText(result.refusal!)).toBe("the ring would close onto an atom with no free valence");
+    expect(result).toEqual({ document: blocked, refusal: ringClosure ? "closure-atom-no-free-valence" : "connection-atom-no-free-valence" });
+    expect(nativeTemplateFallbackReasonText(result.refusal!)).toBe(ringClosure
+      ? "the ring would close onto an atom with no free valence"
+      : "the atom it would connect to has no free valence");
   });
 });

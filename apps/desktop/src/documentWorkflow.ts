@@ -7783,6 +7783,7 @@ export type NativeAtomSproutRefusal = NativeRingHotkeyRefusal
   | "sprout-no-free-direction"
   | "sprout-needs-two-valences"
   | "methylidene-needs-neutral-carbon"
+  | "connection-atom-no-free-valence"
   | "closure-bond-exists";
 
 export type NativeAtomSproutHotkeyResult = {
@@ -7800,7 +7801,10 @@ function nativeSproutConnectionFailureReason(
 ): NativeAtomSproutRefusal {
   if (!molecule.atoms.some((atom) => atom.id === targetAtomId)) return "target-unavailable";
   if (sourceAtomId === targetAtomId || nativeBondExistsBetween(molecule, sourceAtomId, targetAtomId)) return "closure-bond-exists";
-  return canGrowNativeAtom(molecule, sourceAtomId) ? "closure-atom-no-free-valence" : "atom-no-free-valence";
+  if (!canGrowNativeAtom(molecule, sourceAtomId)) return "atom-no-free-valence";
+  const sameComponent = nativeComponents(molecule.atoms, nativeAdjacency(molecule.atoms, molecule.bonds))
+    .some((atomIds) => atomIds.includes(sourceAtomId) && atomIds.includes(targetAtomId));
+  return sameComponent ? "closure-atom-no-free-valence" : "connection-atom-no-free-valence";
 }
 
 function nativeSproutPatched(
