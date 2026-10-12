@@ -67,6 +67,49 @@ function ringLetterDocument(ringStyle: Record<string, unknown>) {
   };
 }
 
+// CSS fill on an HTML portal paints nothing. Count only sized border/outline
+// indicators or SVG shapes with geometry and visible paint, including ancestors.
+function paintedIndicators(root: Element): Element[] {
+  const positive = (value: string | null) => Number.parseFloat(value ?? "") > 0;
+  const visibleColor = (value: string) => value !== "" && value !== "none" &&
+    value !== "transparent" && !/rgba\([^)]*,\s*0\)/.test(value);
+  return [root, ...root.querySelectorAll("*")].filter(element => {
+    for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) {
+      const css = getComputedStyle(ancestor);
+      if (css.display === "none" || css.visibility === "hidden" || css.visibility === "collapse" ||
+        Number(css.opacity || 1) === 0 || ancestor.getAttribute("display") === "none" ||
+        ["hidden", "collapse"].includes(ancestor.getAttribute("visibility") ?? "") ||
+        Number(ancestor.getAttribute("opacity") ?? 1) === 0 ||
+        ["defs", "clipPath", "mask", "symbol", "marker", "pattern"].includes(ancestor.localName)) return false;
+    }
+    const css = getComputedStyle(element);
+    if (element instanceof SVGElement) {
+      const attr = (name: string) => element.getAttribute(name);
+      const geometry = element.localName === "circle" ? positive(attr("r"))
+        : element.localName === "ellipse" ? positive(attr("rx")) && positive(attr("ry"))
+          : element.localName === "rect" ? positive(attr("width")) && positive(attr("height"))
+            : element.localName === "line" ? attr("x1") !== attr("x2") || attr("y1") !== attr("y2")
+              : element.localName === "path" ? /[LlHhVvCcSsQqTtAa]/.test(attr("d") ?? "")
+                : ["polygon", "polyline"].includes(element.localName) ? (attr("points")?.match(/-?\d+(?:\.\d+)?/g)?.length ?? 0) >= 4
+                  : element.localName === "text" && Boolean(element.textContent?.trim());
+      if (!geometry) return false;
+      // jsdom does not include SVG presentation attributes in computed styles.
+      return (visibleColor(attr("stroke") ?? css.stroke) &&
+        positive(attr("stroke-width") ?? (css.strokeWidth || "1")) &&
+        Number(attr("stroke-opacity") ?? (css.strokeOpacity || 1)) > 0) ||
+        (!["line", "polyline"].includes(element.localName) &&
+          visibleColor(attr("fill") ?? (css.fill || "black")) &&
+          Number(attr("fill-opacity") ?? (css.fillOpacity || 1)) > 0);
+    }
+    const sized = Boolean(css.width && css.width !== "0px" && css.width !== "auto" &&
+      css.height && css.height !== "0px" && css.height !== "auto");
+    return sized && ((css.outline.includes("solid") && positive(css.outline) &&
+      !css.outline.includes("transparent")) ||
+      (["solid", "dashed", "dotted", "double"].includes(css.borderTopStyle) &&
+        positive(css.borderTopWidth) && visibleColor(css.borderTopColor)));
+  });
+}
+
 describe("canvas ring-fill layers", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -84,7 +127,12 @@ describe("canvas ring-fill layers", () => {
     }
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     stylesheet = document.createElement("style");
-    stylesheet.textContent = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
+    const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
+    const tokens = Object.fromEntries([...css.slice(0, css.indexOf("}")).matchAll(/(--cd-[\w-]+):\s*([^;]+);/g)]
+      .map(match => [match[1], match[2]]));
+    // jsdom cannot reliably resolve custom properties in border shorthands or
+    // currentColor. Substitute the actual root design tokens, never invented paint.
+    stylesheet.textContent = css.replace(/var\((--cd-[\w-]+)\)/g, (expression, name: string) => tokens[name] ?? expression);
     document.head.append(stylesheet);
     container = document.createElement("div");
     document.body.append(container);
@@ -180,8 +228,9 @@ describe("canvas ring-fill layers", () => {
     "generic-atom-label": true, "unknown-compatibility-object": true
   } satisfies Record<DocumentObject["type"], true>;
 
-  it.each([...Object.keys(selectableTypes), "fallback-molecule", "charge", "radical-dot", "unknown-electron-mark", "line-graphic"])(
-    "shows a visible interaction-layer selection indicator for %s", async kind => {
+  it.each([...Object.keys(selectableTypes), "fallback-molecule", "charge", "radical-dot", "unknown-electron-mark", "line-graphic"]
+    .flatMap(kind => ["selected", "unselected-hover"].map(state => ({ kind, state }))))(
+    "matches main's $state feedback for $kind", async ({ kind, state }) => {
       const fixture = rectangleFixture();
       const base = { id: "selected-object", x: 100, y: 100, width: 80, height: 40, rotation: 0, style: {} };
       const anchor = { kind: "point" as const, point: { x: 100, y: 120 } };
@@ -213,22 +262,80 @@ describe("canvas ring-fill layers", () => {
             : objects[kind as DocumentObject["type"]];
       // Groups select their children and use the shared group frame, rather than an object overlay.
       const pageObjects = kind === "group" ? [fixture.rectangle, fixture.text, object] : [object];
-      await renderDocument(documentWithObjects(fixture.document, pageObjects, [object.id]));
+      await renderDocument(documentWithObjects(fixture.document, pageObjects, state === "selected" ? [object.id] : []));
+      if (state === "unselected-hover") {
+        const target = container.querySelector(`[data-object-id='${kind === "group" ? fixture.rectangle.id : object.id}']`)!;
+        const point = object.type === "molecule" && object.atoms.length ? object.atoms[0]
+          : { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+        await pointer(target, "pointermove", point, 0);
+      }
       const chrome = container.querySelector<HTMLElement>(kind === "group"
         ? ".group-selection-frame" : `[data-object-controls='${object.id}']`);
-      expect(chrome).not.toBeNull();
-      expectInteractionAbovePaint(chrome!);
-      // Inspect actual paint styles: an empty portal or invisible handle is not an indicator.
-      const indicator = chrome!.querySelector(".native-selection-blob-atom, [data-art-transform-frame], .graphic-path-edit-handle") ?? chrome!;
-      const css = getComputedStyle(indicator);
-      expect(css.display).not.toBe("none");
-      expect(css.visibility).not.toBe("hidden");
-      expect(css.opacity).not.toBe("0");
-      expect(css.outline !== "none" && css.outline.includes("2px") ||
-        css.borderTopStyle !== "none" && Number.parseFloat(css.borderTopWidth) > 0 ||
-        css.fill !== "none" && css.fill !== "" && Number(css.fillOpacity || 1) > 0).toBe(true);
+      if (state === "selected") {
+        expect(chrome).not.toBeNull();
+        expectInteractionAbovePaint(chrome!);
+        expect(paintedIndicators(chrome!).length).toBeGreaterThan(0);
+      } else {
+        // 14459a46 has resolver halos on native molecules, but no Select-tool
+        // hover chrome or CSS :hover outline on any other selectable type.
+        const indicators = chrome ? paintedIndicators(chrome) : [];
+        const halo = container.querySelector(".native-atom-hover");
+        if (kind === "molecule") {
+          expect(halo).not.toBeNull();
+          expect(paintedIndicators(halo!).length).toBeGreaterThan(0);
+          if (container.querySelector("[data-page-interaction-layer]")) expectInteractionAbovePaint(halo!);
+        } else {
+          expect(indicators).toEqual([]);
+          expect(halo).toBeNull();
+        }
+      }
     }
   );
+
+  it("matches main's unselected-hover bond halo", async () => {
+    const fixture = rectangleFixture();
+    await renderDocument(documentWithObjects(fixture.document, [fixture.molecule]));
+    const bond = fixture.molecule.bonds[0];
+    const start = fixture.molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const end = fixture.molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+    await pointer(moleculeLayer(fixture.molecule.id), "pointermove",
+      { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }, 0);
+    const halo = container.querySelector(".native-bond-hover")!;
+    expect(halo).not.toBeNull();
+    expect(paintedIndicators(halo)).toHaveLength(1);
+    if (container.querySelector("[data-page-interaction-layer]")) expectInteractionAbovePaint(halo);
+  });
+
+  it("matches main's unselected-hover line handles under an arrow tool", async () => {
+    const withArrow = insertNativeArtGraphicObject(createPhase4Document("Arrow hover"),
+      { x: 100, y: 100 }, "tool.art.resonanceArrow");
+    const arrow = withArrow.pages[0].objects[0];
+    await renderDocument(documentWithObjects(withArrow, [arrow]), "tool.art.resonanceArrow");
+    const target = container.querySelector(`[data-object-id='${arrow.id}']`)!;
+    await pointer(target, "pointermove", { x: 140, y: 112 }, 0);
+    const handles = [...container.querySelectorAll(".graphic-path-edit-handle")];
+    expect(handles.length).toBeGreaterThan(0);
+    for (const handle of handles) {
+      expect(paintedIndicators(handle)).toHaveLength(1);
+      if (container.querySelector("[data-page-interaction-layer]")) expectInteractionAbovePaint(handle);
+    }
+  });
+
+  it("rejects empty portals, empty SVG geometry and hidden paint", () => {
+    const portal = document.createElement("div");
+    portal.style.fill = "red";
+    portal.innerHTML = `<svg><path d="" fill="red"/><path d="M 0 0" fill="red"/>
+      <rect width="0" height="10" fill="red"/><g style="display:none"><circle r="5" fill="red"/></g>
+      <circle r="5" fill="red" style="visibility:hidden"/><circle r="5" fill="red" opacity="0"/>
+      <circle r="5" fill="red" visibility="hidden"/><circle r="5" fill="red" display="none"/>
+      <defs><circle r="5" fill="red"/></defs>
+      <rect width="10" height="10" fill="none" stroke="none"/></svg>`;
+    container.append(portal);
+    expect(paintedIndicators(portal)).toEqual([]);
+    portal.querySelector("svg")!.insertAdjacentHTML("beforeend", '<circle r="5" fill="red"/>');
+    expect(paintedIndicators(portal)).toHaveLength(1);
+    portal.remove();
+  });
 
   function rectangleFixture() {
     const fixture = ringLetterDocument(fills[0].style);
