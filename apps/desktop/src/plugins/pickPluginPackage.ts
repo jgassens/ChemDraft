@@ -11,7 +11,7 @@
  * establishes authenticity, and nothing here is a trust gate.
  */
 
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../nativeFileDialog";
 import { readFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
 
 import { inspectPluginPackage, type PluginPackageInspection } from "./installPluginPackage";
