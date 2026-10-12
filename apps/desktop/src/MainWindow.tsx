@@ -16435,6 +16435,15 @@ export function MainWindow({
       return;
     }
 
+    // Non-text, non-molecule object targets consume presses before the page's Text fallback
+    // can run. Use the same placement path; handles have their own pointer handlers.
+    if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      applyTextDocumentAtPoint(point);
+      return;
+    }
+
     event.stopPropagation();
     if (!shouldActivateDocumentObject(object, activeToolState.activeKind)) {
       return;
@@ -16473,6 +16482,7 @@ export function MainWindow({
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
     applySymbolGlyphAtPoint,
+    applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,
