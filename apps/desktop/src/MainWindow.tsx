@@ -80,7 +80,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
-import { createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
@@ -1279,6 +1279,8 @@ type AtomLabelEditState = AtomLabelDraftState & {
   hotkeyUndoDocument?: ChemDraftDocument;
   /** Captured immediately after the hotkey, before any external edit can be mistaken for ours. */
   hotkeyAfterDocument?: ChemDraftDocument;
+  /** Shared between keys; never adopt an intervening write as part of our cancellable draft. */
+  cancellation: { document: ChemDraftDocument; intervened: boolean; superseded?: boolean };
   saveRevision: number;
   /** Pre-first-letter history and dirty state; Escape discards the hotkey without adding Redo. */
   hotkeyUndoState?: { history: DocumentHistory; file: NativeFileState };
@@ -5638,6 +5640,11 @@ export function MainWindow({
       startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
       hotkeyAfterDocument: continuing?.hotkeyAfterDocument ?? options.hotkeyAfterDocument,
+      cancellation: continuing?.cancellation ?? {
+        document: documentRef.current,
+        intervened: !!options.hotkeyAfterDocument &&
+          !atomLabelDraftDocumentUnchanged(currentDocument, options.hotkeyAfterDocument, target)
+      },
       saveRevision: continuing?.saveRevision ?? options.saveRevision ??
         documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
       hotkeyUndoState: continuing?.hotkeyUndoState ?? options.hotkeyUndoState,
@@ -5674,6 +5681,7 @@ export function MainWindow({
     }
 
     replacePresentDocument((current) => {
+      state.cancellation.intervened ||= !atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
       // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
       // hydrogens, and are valence-checked without them. A side-dependent label typed back to its
       // starting text is written as it started (applyNativeAtomLabelDraft).
@@ -5690,6 +5698,7 @@ export function MainWindow({
       }
       return next;
     });
+    state.cancellation.document = documentRef.current;
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
@@ -5706,12 +5715,16 @@ export function MainWindow({
     // Cancel both stages only if nothing else edited the post-hotkey document. Otherwise keep the
     // first letter and its history: an external change must never become part of our rollback.
     const changed = replacePresentDocument((current) => {
+      if (!documentOwnsAtomLabelDraft(current, state)) {
+        state.cancellation.superseded = true;
+        return current;
+      }
+      const unchanged = !state.cancellation.intervened &&
+        atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
       const restored = restoreAtomLabelDraft(current, state);
       const afterHotkey = state.hotkeyAfterDocument;
       if (!state.startedFromHover || !afterHotkey ||
-        (state.continuesHotkey && !ownsHotkeyHistory) ||
-        JSON.stringify({ ...restored, selection: undefined }) !==
-          JSON.stringify({ ...afterHotkey, selection: undefined })) return restored;
+        (state.continuesHotkey && !ownsHotkeyHistory) || !unchanged) return restored;
       const hotkeyMolecule = findDocumentObject(afterHotkey, state.objectId);
       if (hotkeyMolecule?.type !== "molecule") return restored;
       const hotkeyRollback: AtomLabelDraftState = {
@@ -10420,6 +10433,8 @@ export function MainWindow({
     // including any part of this molecule, while discarding selection introduced only by the editor.
     // With nothing selected beforehand, element keys over empty canvas have no atom to fall back to.
     const deliberateClose = kept?.objectId === previous.objectId && kept.atomId === previous.atomId;
+    // A same-atom external label wins wholesale, including its document selection.
+    if (cancelled?.cancellation.superseded) return;
     if (deliberateClose && !previous.startedFromHover) return;
     restoreSelectionAfterAtomLabelEdit(previous, deliberateClose && previous.startedFromHover);
   }, [activeAtomLabelEdit, finalizeAtomLabelDraft, restoreSelectionAfterAtomLabelEdit]);

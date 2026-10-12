@@ -19,6 +19,7 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
+import * as atomLabelDraft from "./atomLabelDraft";
 
 const native = vi.hoisted(() => ({
   desktop: true,
@@ -272,6 +273,43 @@ describe("documents in one window", () => {
     await command("edit.undo");
     expect(hoverMolecule().atoms[3]!.element).toBe("C");
     expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it.each(["O", "N"])("Escape preserves a same-atom proposal that supersedes the open draft with %s", async element => {
+    await mountHoverChain();
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    const beforeProposal = hoverMolecule();
+    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
+      atoms: beforeProposal.atoms.map((atom, index) => index === 1 ? { ...atom, element } : atom)
+    } });
+    await decide("acceptPluginProposal", proposal.id);
+    const accepted = bridge().snapshot().document;
+    expect(hoverMolecule().atoms[1]!.element).toBe(element);
+    expect(labelEditor()?.value).toBe("NMe");
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(accepted);
+    // Escape neither overwrites the accepted atom nor removes the proposal's history entry.
+    await command("edit.undo");
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it("Escape discards the first letter even when rollback constructs document keys in a different order", async () => {
+    await mountHoverChain();
+    const before = bridge().snapshot().document;
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    const restore = atomLabelDraft.restoreAtomLabelDraft;
+    vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
+      const restored = restore(document, state);
+      return Object.fromEntries(Object.entries(restored).reverse()) as typeof restored;
+    });
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
   });
 
   it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
