@@ -2,6 +2,13 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
+  OBJECT_RESIZE_HANDLE_OFFSET_PX,
+  OBJECT_RESIZE_HANDLE_SIZE_PX,
+  projectGraphicVisualLocalPoint,
+  rotatedGraphicLocalBounds as rotatedGraphicFrameBounds
+} from "./graphicHandleGeometry";
+import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
   clampGraphicShaftMarkSizePx,
@@ -13,6 +20,7 @@ import {
   createGraphicFreehandPathCache,
   defaultVisualEffectForKind,
   graphicCornerRadiusEditPoint,
+  projectGraphicObjectPoint,
   graphicObjectSupportsBooleanOperation,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
@@ -2359,6 +2367,139 @@ export function nativeGraphicCornerRadiusEditPoint(
   object: GraphicObject
 ): NativeGraphicCornerRadiusEditPoint | undefined {
   return graphicCornerRadiusEditPoint(object);
+}
+
+const GRAPHIC_HANDLE_GAP_PX = 2;
+const GRAPHIC_HANDLE_RAY_OVERSHOOT_PX = 64;
+
+/** Distance from a frame corner to the radius handle's centre that clears the resize target. */
+export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX =
+  (OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX) +
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 + GRAPHIC_HANDLE_GAP_PX;
+
+/**
+ * Local handle position; the true radius point stays unchanged for editing/readout.
+ *
+ * The handle must be visible (its centre on the page, so at least half of the
+ * target can be clicked) and clear of every resize target. Candidates, in
+ * order: inside along the top edge, past the controlled corner, past the
+ * opposite top corner; then the stretches those skipped (outside each top corner,
+ * then inside). If no candidate is clear, the visible spot with the most
+ * clearance wins; the middle of the top edge is used only when nothing visible
+ * was found.
+ */
+export function nativeGraphicCornerRadiusHandlePoint(
+  object: GraphicObject,
+  pageScale: number,
+  page: { width: number; height: number }
+): NativeArtPoint | undefined {
+  const point = nativeGraphicCornerRadiusEditPoint(object);
+  if (!point) {
+    return undefined;
+  }
+  const project = (x: number): NativeArtPoint => {
+    const p = projectGraphicVisualLocalPoint(object, { x, y: point.y });
+    return { x: (object.x + p.x) * pageScale, y: (object.y + p.y) * pageScale };
+  };
+  // Match documentObjectArtTransformFrameStyle: rotate the projected frame
+  // bounds, then place fixed-size, axis-aligned resize targets on its corners.
+  const frame = rotatedGraphicFrameBounds(
+    object,
+    planNativeArtVisual(object, { coordinateSpace: "local" }).frameBounds,
+    object.rotation
+  );
+  const left = (object.x + frame.x) * pageScale;
+  const top = (object.y + frame.y) * pageScale;
+  const right = left + frame.width * pageScale;
+  const bottom = top + frame.height * pageScale;
+  const outer = -OBJECT_RESIZE_HANDLE_OFFSET_PX;
+  const inner = OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX;
+  const resizeBoxes = [
+    { left: left - outer, right: left + inner, top: top - outer, bottom: top + inner },
+    { left: right - inner, right: right + outer, top: top - outer, bottom: top + inner },
+    { left: left - outer, right: left + inner, top: bottom - inner, bottom: bottom + outer },
+    { left: right - inner, right: right + outer, top: bottom - inner, bottom: bottom + outer }
+  ];
+  // The 9px button rotates with the visual shell, but is not plane-tilted.
+  const angle = object.rotation * Math.PI / 180;
+  const halfTarget = GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 * (Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle)));
+  const pageWidth = page.width * pageScale;
+  const pageHeight = page.height * pageScale;
+  const epsilon = 1e-6;
+  const visible = (p: NativeArtPoint): boolean =>
+    p.x >= -epsilon && p.x <= pageWidth + epsilon && p.y >= -epsilon && p.y <= pageHeight + epsilon;
+  // Smallest gap between the handle's box and any resize target (negative when overlapping).
+  const clearance = (p: NativeArtPoint): number => Math.min(...resizeBoxes.map((target) => Math.max(
+    target.left - (p.x + halfTarget),
+    (p.x - halfTarget) - target.right,
+    target.top - (p.y + halfTarget),
+    (p.y - halfTarget) - target.bottom
+  )));
+
+  let best: { x: number; clearance: number } | undefined;
+  const consider = (x: number, p: NativeArtPoint): boolean => {
+    if (!visible(p)) return false;
+    const gap = clearance(p);
+    if (gap >= GRAPHIC_HANDLE_GAP_PX - epsilon) return true;
+    if (!best || gap > best.clearance) best = { x, clearance: gap };
+    return false;
+  };
+
+  const corner = projectGraphicObjectPoint(object, { x: 0, y: 0 }, { coordinateSpace: "local" });
+  const unit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
+  const edgeScale = pageScale * Math.hypot(unit.x - corner.x, unit.y - corner.y);
+  if (edgeScale > 0.000001) {
+    const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / edgeScale;
+    // Advance by one screen pixel and check the actual projected boxes:
+    // distance alone does not guarantee clearance along a skewed edge. Each
+    // ray is bounded by the edge's screen length plus a fixed overshoot.
+    const step = 1 / edgeScale;
+    const maxSteps = Math.ceil(Math.max(object.width, 0) * edgeScale + GRAPHIC_HANDLE_RAY_OVERSHOOT_PX);
+    const rays = [
+      { start: Math.max(point.x, minimum), direction: 1, limit: object.width },
+      { start: -minimum, direction: -1, limit: -Infinity },
+      { start: object.width + minimum, direction: 1, limit: Infinity }
+    ];
+    for (const ray of rays) {
+      let p = project(ray.start);
+      for (let i = 0; i <= maxSteps; i++) {
+        const x = ray.start + ray.direction * i * step;
+        if (ray.direction > 0 && x > ray.limit) break;
+        if (consider(x, p)) return { x, y: point.y };
+        const next = project(x + ray.direction * step);
+        // Once the centre has left the page while travelling away from it, no
+        // later spot can be visible; move straight to the next ray.
+        if ((p.x < -epsilon && next.x <= p.x) ||
+          (p.x > pageWidth + epsilon && next.x >= p.x) ||
+          (p.y < -epsilon && next.y <= p.y) ||
+          (p.y > pageHeight + epsilon && next.y >= p.y)) break;
+        p = next;
+      }
+    }
+    // Nothing clear on the rays: score the stretches they skipped. First the
+    // outside gaps between each top corner and its ray start (walking from
+    // the ray start back toward the corner), then the inside stretch, then
+    // take the visible spot with the most clearance.
+    const outsideSteps = Math.ceil(minimum * edgeScale);
+    for (const stretch of [{ start: -minimum, direction: 1, corner: 0 }, { start: object.width + minimum, direction: -1, corner: object.width }]) {
+      for (let i = 1; i <= outsideSteps; i++) {
+        const x = stretch.start + stretch.direction * i * step;
+        if (stretch.direction > 0 ? x >= stretch.corner : x <= stretch.corner) break;
+        if (consider(x, project(x))) return { x, y: point.y };
+      }
+    }
+    const insideSteps = Math.min(maxSteps, Math.ceil(Math.max(object.width, 0) * edgeScale));
+    for (let i = 0; i <= insideSteps; i++) {
+      const x = Math.min(i * step, Math.max(object.width, 0));
+      if (consider(x, project(x))) return { x, y: point.y };
+    }
+  }
+  if (best) {
+    return { x: best.x, y: point.y };
+  }
+  // No spot on the page (e.g. a collapsed projection): fall back inside, as
+  // far from the corner as the shape allows.
+  return { x: object.width / 2, y: point.y };
 }
 
 export type NativeGraphicLinearGradientHandleId = "start" | "end";
