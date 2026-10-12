@@ -4,8 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativePrompt, nativePromptButtons, setNativePromptProvider, useNativePrompt, type NativePromptOptions } from "./nativePrompt";
 
-const plugin = vi.hoisted(() => ({ native: true, message: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => plugin.native }));
+const plugin = vi.hoisted(() => ({ native: true, message: vi.fn(), invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => plugin.native, invoke: plugin.invoke }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ message: plugin.message }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -17,9 +17,70 @@ const three: NativePromptOptions = {
     { id: "save", label: "Save" }
   ]
 };
-afterEach(() => { plugin.native = true; plugin.message.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
+afterEach(() => { plugin.native = true; plugin.message.mockReset(); plugin.invoke.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
 
 describe("nativePrompt", () => {
+  it.each([false, true])("suspends before the box and restores in finally (box throws: %s)", async (throws) => {
+    const calls: string[] = [];
+    plugin.invoke.mockImplementation(async (command, { suspended }) => {
+      expect(command).toBe("suspend_toolset_windows");
+      calls.push(suspended ? "suspend" : "restore");
+    });
+    plugin.message.mockImplementation(async () => {
+      calls.push("box");
+      if (throws) throw new Error("unavailable");
+      return "Save";
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fallback = vi.fn(async () => { calls.push("fallback"); return "cancel"; });
+    expect(await nativePrompt(three, fallback)).toBe(throws ? "cancel" : "save");
+    expect(calls).toEqual(throws ? ["suspend", "box", "restore", "fallback"] : ["suspend", "box", "restore"]);
+  });
+
+  it("refuses to open the native box when suspension fails", async () => {
+    plugin.invoke.mockRejectedValue(new Error("quitting"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await nativePrompt(three, async () => "cancel")).toBe("cancel");
+    expect(plugin.message).not.toHaveBeenCalled();
+    expect(plugin.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the native answer if restoration is refused during quit", async () => {
+    plugin.invoke.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("quitting"));
+    plugin.message.mockResolvedValue("Save");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fallback = vi.fn();
+    expect(await nativePrompt(three, fallback)).toBe("save");
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("releases an acquisition aborted while suspension was in flight without opening a box", async () => {
+    const controller = new AbortController();
+    plugin.invoke.mockImplementation(async (_command, { suspended }) => {
+      if (suspended) controller.abort();
+    });
+    expect(await nativePrompt(three, undefined, controller.signal)).toBe("cancel");
+    expect(plugin.message).not.toHaveBeenCalled();
+    expect(plugin.invoke.mock.calls).toEqual([
+      ["suspend_toolset_windows", { suspended: true }], ["suspend_toolset_windows", { suspended: false }]
+    ]);
+  });
+
+  it("balances every overlapping native prompt independently", async () => {
+    const resolve: ((result: string) => void)[] = [];
+    plugin.message.mockImplementation(() => new Promise<string>((done) => resolve.push(done)));
+    const first = nativePrompt(three);
+    const second = nativePrompt(three);
+    await vi.waitFor(() => expect(resolve).toHaveLength(2));
+    expect(plugin.invoke.mock.calls).toEqual([
+      ["suspend_toolset_windows", { suspended: true }], ["suspend_toolset_windows", { suspended: true }]
+    ]);
+    resolve[1]!("Cancel"); await second;
+    resolve[0]!("Save"); await first;
+    expect(plugin.invoke.mock.calls.slice(2)).toEqual([
+      ["suspend_toolset_windows", { suspended: false }], ["suspend_toolset_windows", { suspended: false }]
+    ]);
+  });
   it.each(three.choices)("maps the custom label $label back to its choice", async (choice) => {
     plugin.message.mockResolvedValue(choice.label);
     expect(await nativePrompt(three)).toBe(choice.id);

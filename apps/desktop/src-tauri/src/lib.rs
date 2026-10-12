@@ -5,6 +5,7 @@ mod ocsr_engine;
 mod opsin;
 mod problem_reports;
 mod screen_capture;
+mod utility_suspension;
 mod windows_clipboard;
 
 use std::{
@@ -782,6 +783,10 @@ pub fn run() {
                 return;
             };
 
+            if utility_windows_suspended() {
+                return;
+            }
+
             match event {
                 // Minimizing the document minimizes its owned palettes too, and Windows parks a
                 // minimized window far off-screen and reports that as a Moved. Persisting it saved
@@ -880,6 +885,7 @@ pub fn run() {
             problem_reports::take_pending_crash_report,
             open_toolset_window,
             close_toolset_window,
+            suspend_toolset_windows,
             list_toolset_window_states,
             load_toolset_customization_state,
             save_toolset_customization_state,
@@ -1221,6 +1227,169 @@ struct ToolsetWindowGeometry {
 //   check-then-build atomic. Only these async commands take it; the main thread never does, so
 //   holding it across `build()` (which waits on the main thread) cannot deadlock.
 static WINDOW_CREATION: Mutex<()> = Mutex::new(());
+static UTILITY_SUSPENSION: std::sync::LazyLock<Mutex<utility_suspension::UtilitySuspension>> =
+    std::sync::LazyLock::new(|| Mutex::new(utility_suspension::UtilitySuspension::default()));
+
+fn utility_windows_suspended() -> bool {
+    quit_in_progress()
+        || UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active()
+}
+
+fn is_suspended_utility_label(label: &str) -> bool {
+    // Plugin panels float above their owner too: Windows owned windows and macOS child windows.
+    label.starts_with("toolset-") || is_plugin_panel_window_label(label)
+}
+
+/// Async for the same reason as window creation: never take WINDOW_CREATION on the main thread.
+/// The actual hide/show transaction runs on the main thread, serializing it with late flyout and
+/// tooltip reveals. Future in-app dialogs should acquire/release this same counter.
+#[tauri::command]
+async fn suspend_toolset_windows(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    suspended: bool,
+) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the document window can suspend floating windows.".into());
+    }
+    let _creation = match lock_window_creation() {
+        Ok(guard) => guard,
+        Err(error) => {
+            if !suspended {
+                UTILITY_SUSPENSION
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .release(true);
+            }
+            return Err(error);
+        }
+    };
+    run_on_main_thread_blocking(&window, move || {
+        if suspended {
+            if quit_in_progress() {
+                return Err(QUITTING_WINDOW_REFUSAL.to_string());
+            }
+            let windows: Vec<_> = app
+                .webview_windows()
+                .into_values()
+                .filter(|window| is_suspended_utility_label(window.label()))
+                .collect();
+            let document_minimized = cfg!(windows)
+                && app
+                    .get_webview_window(MAIN_WINDOW_LABEL)
+                    .is_some_and(|main| main.is_minimized().unwrap_or(true));
+            let snapshot: Vec<_> = windows
+                .iter()
+                .map(|window| {
+                    (
+                        window.label().to_string(),
+                        window.is_visible().unwrap_or(false),
+                        document_minimized || window.is_minimized().unwrap_or(true),
+                    )
+                })
+                .collect();
+            if !UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .begin(snapshot)
+            {
+                return Ok(());
+            }
+            for window in windows {
+                if !window.is_visible().unwrap_or(false)
+                    || window.is_minimized().unwrap_or(true)
+                    || document_minimized
+                {
+                    continue;
+                }
+                if let Err(error) = window.hide() {
+                    // A failed acquisition must undo its own temporary hides; JS will not release
+                    // an acquisition that rejected and will use the in-app fallback instead.
+                    let _ = restore_suspended_utility_windows(&app);
+                    return Err(error.to_string());
+                }
+            }
+            Ok(())
+        } else {
+            restore_suspended_utility_windows(&app)
+        }
+    })?
+}
+
+fn restore_suspended_utility_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let labels = UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .release(quit_in_progress());
+    let Some(mut labels) = labels else {
+        return Ok(());
+    };
+    // Restore panels and toolbars first, then their flyouts, and the shared tooltip last.
+    labels.sort_by_key(|label| {
+        if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
+            3
+        } else if label.starts_with("toolset-popover-") {
+            2
+        } else if is_plugin_panel_window_label(label) {
+            0
+        } else {
+            1
+        }
+    });
+    let mut result = Ok(());
+    for label in labels {
+        if quit_in_progress() {
+            result = Err(QUITTING_WINDOW_REFUSAL.to_string());
+            break;
+        }
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        if window.is_minimized().unwrap_or(true)
+            || (cfg!(windows)
+                && app
+                    .get_webview_window(MAIN_WINDOW_LABEL)
+                    .is_some_and(|main| main.is_minimized().unwrap_or(true)))
+        {
+            continue;
+        }
+        if toolset_id_for_window_label(app, &label).is_some() {
+            recover_offscreen_toolset_window(app, &window);
+        }
+        let shown = restore_utility_window(&window);
+        if let Err(error) = shown {
+            result = Err(error);
+        }
+    }
+    UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .finish_restore();
+    result
+}
+
+fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if is_plugin_panel_window_label(window.label()) {
+            return configure_analysis_window_on_main_thread(window, false);
+        }
+        // Already on the main thread. Preserve each panel's traits (in particular the tooltip's
+        // click-through setting) and order it in without activating it.
+        let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let native = unsafe { pointer.as_ref() }
+            .ok_or_else(|| "Could not restore native ChemDraft utility window.".to_string())?;
+        native.orderFront(None);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.show().map_err(|error| error.to_string())
+    }
+}
 
 /// What a window request gets once the app is quitting.
 const QUITTING_WINDOW_REFUSAL: &str = "ChemDraft is quitting; no new windows";
@@ -1289,6 +1458,9 @@ async fn open_toolset_window(
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
     let _creation = lock_window_creation()?;
+    if utility_windows_suspended() {
+        return toolset_state(&app, &toolset_id);
+    }
     ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
@@ -1302,6 +1474,9 @@ fn close_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    if utility_windows_suspended() {
+        return toolset_state(&app, &toolset_id);
+    }
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
         if let Some(position) = current_toolset_window_position(window) {
@@ -1406,6 +1581,12 @@ fn save_toolset_customization_state(
     app: tauri::AppHandle,
     state: serde_json::Value,
 ) -> Result<(), String> {
+    let suspension = UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if suspension.active() {
+        return Ok(());
+    }
     let path = toolset_customization_state_path(&app)?;
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
@@ -1807,6 +1988,9 @@ async fn open_plugin_panel_window(
 
     let label = plugin_panel_window_label(&request.panel_id);
     let _creation = lock_window_creation()?;
+    if utility_windows_suspended() {
+        return Ok(());
+    }
     if let Some(window) = app.get_webview_window(&label) {
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
@@ -2245,6 +2429,9 @@ async fn open_toolset_popover(
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
     let _creation = lock_window_creation()?;
+    if utility_windows_suspended() {
+        return Ok(());
+    }
     if let Some(window) = app.get_webview_window(&label) {
         // Warm reuse: position it, but do NOT show yet — the palette pushes the requested content
         // right after this call, and the popover webview reveals itself once that content has
@@ -2426,6 +2613,9 @@ fn show_toolset_tooltip_window(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
+    if utility_windows_suspended() {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
         return Ok(());
     };
@@ -2488,6 +2678,9 @@ fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 /// made, so macOS behaves exactly as before.
 #[tauri::command]
 fn show_toolset_popover_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    if utility_windows_suspended() {
+        return Ok(());
+    }
     window.show().map_err(|error| error.to_string())?;
     raise_among_owned_windows(&window)
 }
@@ -2666,6 +2859,9 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
+    if utility_windows_suspended() {
+        return Ok(());
+    }
     let command_id = command_id.trim();
     if command_id.is_empty() {
         return Err("Toolset command id cannot be empty.".to_string());
@@ -4960,7 +5156,6 @@ fn ensure_toolset_window<R: Runtime>(
 /// window-creating commands are `async` (a tokio worker — required for WebView2 on Windows), so every
 /// raw NSWindow call they reach must be marshalled. Tauri runs the closure inline when already on the
 /// main thread, so this is also safe to call from there (the result is sent before `recv` blocks).
-#[cfg(target_os = "macos")]
 fn run_on_main_thread_blocking<R: Runtime, T: Send + 'static>(
     window: &tauri::WebviewWindow<R>,
     task: impl FnOnce() -> T + Send + 'static,
@@ -5238,7 +5433,11 @@ fn toolset_state<R: Runtime>(
 ) -> Result<ToolsetWindowState, String> {
     match app.get_webview_window(&toolset_window_label(toolset_id)) {
         Some(window) => {
-            let visible = window.is_visible().unwrap_or(false);
+            let actual_visible = window.is_visible().unwrap_or(false);
+            let visible = UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .visible(window.label(), actual_visible);
             Ok(ToolsetWindowState {
                 toolset_id: toolset_id.to_string(),
                 open: visible,
@@ -5653,6 +5852,12 @@ fn update_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut ToolsetLayoutState),
 ) -> Result<(), String> {
+    let suspension = UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if suspension.active() {
+        return Ok(());
+    }
     // Read-then-write, so a read failure must NOT become a write. This used to swallow every read
     // error as `default()`, and a transient failure during a window `Moved` event then wrote those
     // defaults over toolbar-state.json -- losing every saved position and visibility. Same trap the
@@ -6537,7 +6742,11 @@ mod tests {
     #[test]
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
-        let capability = include_str!("../capabilities/default.json");
+        let capability = format!(
+            "{}{}",
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/document-dialogs.json")
+        );
 
         let handler_start = lib_source
             .find("generate_handler![")

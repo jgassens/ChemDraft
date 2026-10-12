@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { message, type MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
 
 /**
@@ -79,7 +79,19 @@ export async function nativePrompt(
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    result = await message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+    await invoke("suspend_toolset_windows", { suspended: true });
+    try {
+      if (signal?.aborted) return cancel.id;
+      result = await message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+    } finally {
+      // Rust counts overlapping requests and refuses restoration once quit has begun.
+      // Restoration failure must not discard the user's answer or open a second prompt.
+      try {
+        await invoke("suspend_toolset_windows", { suspended: false });
+      } catch (error) {
+        console.error("Could not restore floating windows after native prompt", error);
+      }
+    }
   } catch (error) {
     console.error("Native prompt failed", error);
     return fallback(prompt);

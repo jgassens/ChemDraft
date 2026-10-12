@@ -212,6 +212,14 @@ and Art toolbars open, including at 125%/150% display scale:
   button that Return dismisses. No button appears twice. Enter must never choose a destructive
   action. Repeat in the web preview with `?agentBridge=1`:
   the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+- With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
+  open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:
+  nothing happens and the active drawing tool stays unchanged. Close the box: exactly the previously
+  visible windows return at their original positions; hidden or minimized windows stay that way.
+  Repeat with overlapping prompts: windows return only after the last box closes. Inspect
+  `toolbar-state.json` during the box: temporary hides and frames must not be saved. Disconnect the
+  monitor holding a toolbar while the box is open: closing it recovers that toolbar onto a visible
+  monitor. Quit while a box is open: dismissing it must not resurrect floating windows.
 - Close a dirty foreground or background tab: Save / Don’t Save / Cancel. Cancel retains drawing,
   selection, dirty state, and history; Don’t Save removes only that tab (or leaves a fresh Untitled
   when it was the last one). Save closes only after success. Cancel the save picker, simulate a write
