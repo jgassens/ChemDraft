@@ -360,7 +360,7 @@ M  END
     const engine = await exportStructureListSmi(document);
     expect(engine.warnings).toEqual([expect.objectContaining({
       code: "export.smiles_v2000_loss", objectId: molecule.id,
-      message: expect.stringContaining("no resolved Kekulé order; preserved as type 4")
+      message: expect.stringContaining("no resolved Kekulé order; the structure engine interpreted them for SMILES")
     })]);
   });
 

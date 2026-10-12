@@ -4,6 +4,7 @@ import { isAbsolute, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { validateTrustedPluginManifest } from "@chemdraft/plugin-host";
+import { decodeUserText } from "./textInput";
 
 /**
  * Trust gate for plugin code the headless CLI (and the MCP server, which runs the same commands in a
@@ -172,7 +173,7 @@ export function readTrustedPlugins(configPath: string = DEFAULT_TRUSTED_PLUGINS_
   }
   let raw: string;
   try {
-    raw = readFileSync(configPath, "utf8");
+    raw = decodeUserText(readFileSync(configPath));
   } catch (error) {
     throw new PluginTrustError(`Plugin trust file ${configPath} could not be read: ${(error as Error).message}`);
   }

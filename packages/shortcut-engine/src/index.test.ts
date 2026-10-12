@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // (jsdom: shouldIgnoreShortcutTarget tests need real Element/HTMLElement globals.)
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createShortcutRegistry,
   hasOpenModalDialog,
@@ -12,7 +12,8 @@ import {
   parseShortcutDisplay,
   shortcutChord,
   shortcutsFromCommands,
-  shouldIgnoreShortcutTarget
+  shouldIgnoreShortcutTarget,
+  subscribeToModalDialogChanges
 } from "./index";
 
 describe("shortcut-engine", () => {
@@ -223,6 +224,99 @@ describe("shouldIgnoreShortcutTarget", () => {
 });
 
 describe("modal dialogs own the keyboard", () => {
+  it("notifies only when the open state changes, including the last of multiple dialogs closing", async () => {
+    hasOpenModalDialog(document);
+    const changed = vi.fn();
+    const unsubscribe = subscribeToModalDialogChanges(changed);
+    const first = document.createElement("div");
+    const second = document.createElement("div");
+    first.setAttribute("aria-modal", "true");
+    second.setAttribute("aria-modal", "true");
+    try {
+      document.body.append(first, second);
+      await Promise.resolve();
+      expect(changed).toHaveBeenCalledTimes(1);
+      first.remove();
+      expect(hasOpenModalDialog(document)).toBe(true);
+      expect(changed).toHaveBeenCalledTimes(1);
+      second.remove();
+      expect(hasOpenModalDialog(document)).toBe(false);
+      expect(changed).toHaveBeenCalledTimes(2);
+      unsubscribe();
+      document.body.append(first);
+      expect(hasOpenModalDialog(document)).toBe(true);
+      expect(changed).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      first.remove();
+      second.remove();
+    }
+  });
+
+  it("tracks insertion, nested removal, hidden and aria-modal changes synchronously, scoped to each root", () => {
+    const first = document.createElement("div");
+    const second = document.createElement("div");
+    document.body.append(first, second);
+    try {
+      expect(hasOpenModalDialog(first)).toBe(false);
+      expect(hasOpenModalDialog(second)).toBe(false);
+      const wrapper = document.createElement("section");
+      wrapper.innerHTML = '<div aria-modal="true"><button>Install</button></div>';
+      first.append(wrapper);
+      const dialog = wrapper.firstElementChild as HTMLElement;
+      expect(isBlockedByModalDialog(document.body, first)).toBe(true);
+      expect(hasOpenModalDialog(second)).toBe(false);
+      dialog.hidden = true;
+      expect(hasOpenModalDialog(first)).toBe(false);
+      dialog.hidden = false;
+      expect(hasOpenModalDialog(first)).toBe(true);
+      dialog.setAttribute("aria-modal", "false");
+      expect(hasOpenModalDialog(first)).toBe(false);
+      dialog.setAttribute("aria-modal", "true");
+      expect(hasOpenModalDialog(first)).toBe(true);
+      // Move an open subtree between roots without yielding to the observer callback.
+      second.append(wrapper);
+      expect(hasOpenModalDialog(first)).toBe(false);
+      expect(hasOpenModalDialog(second)).toBe(true);
+      wrapper.remove();
+      expect(hasOpenModalDialog(second)).toBe(false);
+    } finally {
+      first.remove();
+      second.remove();
+    }
+  });
+
+  it("does not search the document again for repeated guards or canvas mutations", () => {
+    hasOpenModalDialog(document);
+    const query = vi.spyOn(document, "querySelector");
+    const queryAll = vi.spyOn(document, "querySelectorAll");
+    const canvas = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    try {
+      document.body.append(canvas);
+      for (let i = 0; i < 256; i++) {
+        const ring = document.createElementNS(canvas.namespaceURI, "g");
+        for (let j = 0; j < 6; j++) ring.append(document.createElementNS(canvas.namespaceURI, "path"));
+        canvas.append(ring);
+      }
+      expect(hasOpenModalDialog(document)).toBe(false);
+      const start = performance.now();
+      for (let i = 0; i < 1000; i++) expect(isBlockedByModalDialog(document.body)).toBe(false);
+      // Generous bound; the search-count assertions are the primary regression check.
+      expect(performance.now() - start).toBeLessThan(1000);
+      expect(query).not.toHaveBeenCalled();
+      expect(queryAll).not.toHaveBeenCalled();
+      // The cache follows SVG aria-modal too; it never assumes dialogs are HTML-only.
+      canvas.setAttribute("aria-modal", "true");
+      expect(hasOpenModalDialog(document)).toBe(true);
+      canvas.remove();
+      expect(hasOpenModalDialog(document)).toBe(false);
+    } finally {
+      canvas.remove();
+      query.mockRestore();
+      queryAll.mockRestore();
+    }
+  });
+
   function openModal(): { dialog: HTMLElement; button: HTMLButtonElement } {
     const dialog = window.document.createElement("div");
     dialog.setAttribute("role", "dialog");
