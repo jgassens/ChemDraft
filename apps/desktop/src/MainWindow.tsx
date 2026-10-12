@@ -1277,6 +1277,9 @@ type AtomLabelEditState = AtomLabelDraftState & {
   /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
   startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  /** Captured immediately after the hotkey, before any external edit can be mistaken for ours. */
+  hotkeyAfterDocument?: ChemDraftDocument;
+  saveRevision: number;
   /** Pre-first-letter history and dirty state; Escape discards the hotkey without adding Redo. */
   hotkeyUndoState?: { history: DocumentHistory; file: NativeFileState };
   /** Render-only attachment target; keyboard ownership remains on atomId. */
@@ -1321,6 +1324,8 @@ type AtomLabelEditOptions = {
   hotkeyChanged?: boolean;
   startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyAfterDocument?: ChemDraftDocument;
+  saveRevision?: number;
   hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
@@ -2299,6 +2304,8 @@ export function MainWindow({
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
+  // Successful explicit saves, per tab, including a save completed while its label editor is open.
+  const documentSaveRevisionsRef = useRef(new Map<string, number>());
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
@@ -5630,6 +5637,9 @@ export function MainWindow({
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
       startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
+      hotkeyAfterDocument: continuing?.hotkeyAfterDocument ?? options.hotkeyAfterDocument,
+      saveRevision: continuing?.saveRevision ?? options.saveRevision ??
+        documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
       hotkeyUndoState: continuing?.hotkeyUndoState ?? options.hotkeyUndoState,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
@@ -5690,30 +5700,48 @@ export function MainWindow({
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
       return;
     }
-    // The inline draft starts AFTER the first hover letter's immediate element hotkey. Cancel
-    // both stages, while keeping the draft-only baseline used by commit and external history.
-    replacePresentDocument((current) => {
+    const ownsHotkeyHistory = state.continuesHotkey && state.hotkeyUndoState &&
+      documentHistoryRef.current.past.at(-1) === state.hotkeyUndoDocument;
+    let cancelledHotkey = false;
+    // Cancel both stages only if nothing else edited the post-hotkey document. Otherwise keep the
+    // first letter and its history: an external change must never become part of our rollback.
+    const changed = replacePresentDocument((current) => {
       const restored = restoreAtomLabelDraft(current, state);
-      if (!state.startedFromHover) return restored;
+      const afterHotkey = state.hotkeyAfterDocument;
+      if (!state.startedFromHover || !afterHotkey ||
+        (state.continuesHotkey && !ownsHotkeyHistory) ||
+        JSON.stringify({ ...restored, selection: undefined }) !==
+          JSON.stringify({ ...afterHotkey, selection: undefined })) return restored;
+      const hotkeyMolecule = findDocumentObject(afterHotkey, state.objectId);
+      if (hotkeyMolecule?.type !== "molecule") return restored;
       const hotkeyRollback: AtomLabelDraftState = {
         objectId: state.objectId, atomId: state.atomId,
         draftBeforeAtom: state.beforeAtom, draftBeforeMolecule: state.beforeMolecule,
         draftRollback: createAtomLabelDraftRollback(state.beforeMolecule)
       };
-      recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, state.draftBeforeMolecule);
+      recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, hotkeyMolecule);
+      cancelledHotkey = true;
       return restoreAtomLabelDraft(restored, hotkeyRollback);
     });
     // Remove our own first-letter entry rather than undoing it into Redo. A subsequent external
     // commit owns its history; only the unchanged hotkey history line can be restored wholesale.
     const history = documentHistoryRef.current;
-    if (state.continuesHotkey && state.hotkeyUndoState && history.past.at(-1) === state.hotkeyUndoDocument) {
+    const discardedHotkeyHistory = cancelledHotkey && ownsHotkeyHistory && state.hotkeyUndoState;
+    if (discardedHotkeyHistory) {
       const present = history.present;
       documentUndoLabelsRef.current.delete(present);
-      const previousLabel = documentUndoLabelsRef.current.get(state.hotkeyUndoState.history.present);
+      const previousLabel = documentUndoLabelsRef.current.get(discardedHotkeyHistory.history.present);
       if (previousLabel) documentUndoLabelsRef.current.set(present, previousLabel);
-      installDocumentHistory({ ...state.hotkeyUndoState.history, present });
-      fileStateRef.current = state.hotkeyUndoState.file;
-      setFileState(state.hotkeyUndoState.file);
+      installDocumentHistory({ ...discardedHotkeyHistory.history, present });
+    }
+    const savedDuringEdit = (documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0) !== state.saveRevision;
+    if (discardedHotkeyHistory || (changed && savedDuringEdit)) {
+      // A save may have changed the path as well as the saved chemistry. Preserve today's file
+      // association; only an edit with no intervening save can recover its pre-letter clean state.
+      const file = { ...fileStateRef.current,
+        dirty: savedDuringEdit ? true : discardedHotkeyHistory ? discardedHotkeyHistory.file.dirty : true };
+      fileStateRef.current = file;
+      setFileState(file);
     }
     atomLabelEditKeepsSelectionRef.current = state;
     cancelledAtomLabelEditRef.current = state;
@@ -8547,6 +8575,7 @@ export function MainWindow({
     const savingFileState = fileStateRef.current;
     const payload = createNativeSavePayload(documentForFlush());
     const finishSave = (path?: string) => {
+      documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
@@ -11195,7 +11224,8 @@ export function MainWindow({
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
             hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
-            hotkeyUndoState: assignment.hotkeyUndoState
+            hotkeyUndoState: assignment.hotkeyUndoState,
+            hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -11216,6 +11246,7 @@ export function MainWindow({
             ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
           const beforeHotkeyDocument = documentRef.current;
           const hotkeyUndoState = { history: documentHistoryRef.current, file: fileStateRef.current };
+          const saveRevision = documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0;
           invokeCommandRef.current(hoveredTargetCommandId);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
@@ -11230,6 +11261,7 @@ export function MainWindow({
               const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
               hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
                 beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
+                hotkeyAfterDocument: documentRef.current, saveRevision,
                 hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
                 hotkeyUndoState: hotkeyChanged ? hotkeyUndoState : undefined };
             }
@@ -21305,6 +21337,8 @@ type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
   beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject;
   hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyAfterDocument?: ChemDraftDocument;
+  saveRevision: number;
   hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
