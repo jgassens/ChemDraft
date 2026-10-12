@@ -6559,6 +6559,23 @@ export function MainWindow({
     setStatus("Editing text");
   }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
 
+  const handleTextDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target instanceof Element ? event.target : undefined;
+    if (target?.closest("textarea, input, button") ||
+        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) {
+      return;
+    }
+    // Paint and interaction chrome can live in different layers. Route from the glyph (or
+    // overlay) that was actually hit to its owner, rather than relying on their stacking.
+    const objectId = target?.closest("[data-object-id]")?.getAttribute("data-object-id");
+    if (!objectId || findDocumentObject(documentRef.current, objectId)?.type !== "text") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startTextObjectEdit(objectId);
+  }, [activeToolState.activeCommandId, startTextObjectEdit]);
+
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     const currentDocument = documentRef.current;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
@@ -9547,6 +9564,8 @@ export function MainWindow({
     resetDocumentHistory,
     restoreDocumentHistory,
     restoreToolAfterEyedropper,
+    restoreToolAfterTextPlacement,
+    startTextObjectEdit,
     runMolecularProperties,
     saveCurrentDocument,
     selectAllCanvasObjects,
@@ -15753,16 +15772,21 @@ export function MainWindow({
     }
 
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
+      // The companion mousedown must not blur the newly mounted editor. Bridge events
+      // skip this browser default, so this needs the same guard as atom-label editing.
+      event.preventDefault();
       event.stopPropagation();
-      replacePresentDocument((current) => selectDocumentObject(current, objectId));
       restoreToolAfterTextPlacement();
-      setActiveEditorObjectId(undefined);
-      setActiveTextEditObjectId(objectId);
-      setActiveAtomLabelEdit(undefined);
-      setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
-      assignHoveredNativeDeleteTarget(undefined);
-      setFreeformNativeBond(undefined);
+      startTextObjectEdit(objectId);
+      return;
+    }
+
+    if (object?.type === "text" && activeTextEditObjectIdRef.current === objectId &&
+        activeToolState.activeCommandId === "tool.select") {
+      // A second press can still hit the SVG glyph after Text-tool placement restored
+      // Select. Keep the edit and its selection alive through the ensuing dblclick.
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -16340,6 +16364,7 @@ export function MainWindow({
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit,
+    startTextObjectEdit,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativeArtLineDrawOrDefault,
@@ -18303,7 +18328,6 @@ export function MainWindow({
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
     onTextChange: updateTextObjectContent,
-    onTextEditStart: startTextObjectEdit,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
     isTextPlaceholderPending,
@@ -18683,6 +18707,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
+                onDoubleClick={handleTextDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -25192,7 +25217,6 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel,
   onContextMenu,
   onTextChange,
-  onTextEditStart,
   onTextEditFinish,
   onTextSelectionChange,
   isTextPlaceholderPending,
@@ -25267,7 +25291,6 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
-  onTextEditStart(objectId: string): void;
   onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
@@ -25292,8 +25315,13 @@ function DocumentObjectViewContent({
     editor.focus();
     if (isTextPlaceholderPending(object.id)) {
       editor.select();
+    } else {
+      // SVG glyphs do not provide a textarea offset. Reopened text starts at the end;
+      // later focus retries leave the user's caret and selection alone.
+      const end = editor.value.length;
+      editor.setSelectionRange(end, end);
     }
-  }, [editingText, object, isTextPlaceholderPending]);
+  }, [editingText, object.id, isTextPlaceholderPending]);
 
   if (object.type === "group") {
     return null;
@@ -25421,15 +25449,6 @@ function DocumentObjectViewContent({
     // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
     // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
     // onPaste handler inserts clipboard text synchronously, without needing async-read permission.
-  };
-  const handleTextDoubleClick = (event: ObjectMouseEvent) => {
-    if (object.type !== "text") {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    onTextEditStart(object.id);
   };
   const handleTextResizeStart = (edge: TextResizeEdge) => (event: PointerEvent<HTMLButtonElement>) => {
     onTextResizeStart(object.id, edge, event);
@@ -25966,7 +25985,6 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-        onDoubleClick={handleTextDoubleClick}
       />
     );
   }
