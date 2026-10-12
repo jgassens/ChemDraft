@@ -373,7 +373,7 @@ async function readJobs(path: string): Promise<NmrJob[]> {
 }
 
 function molfileFormat(molfile: string): "molfile-v2000" | "molfile-v3000" {
-  return /V3000/.test(molfile.split("\n")[3] ?? "") ? "molfile-v3000" : "molfile-v2000";
+  return /V3000/.test(molfile.split(/\r?\n/)[3] ?? "") ? "molfile-v3000" : "molfile-v2000";
 }
 
 /** Element symbols from a V2000 atom block, in file order; undefined when the block is not V2000. */

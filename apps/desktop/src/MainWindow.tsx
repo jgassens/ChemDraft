@@ -167,7 +167,7 @@ import {
 } from "./plugins/panelBridge";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { isBlockedByModalDialog, shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -539,6 +539,7 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
   type ChemDraftSelectionClipboardPayload,
@@ -960,6 +961,8 @@ type ObjectDragState = {
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+  documentPreview?: { dx: number; dy: number; document: ChemDraftDocument };
+  moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1367,12 +1370,14 @@ function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
 }
 type SelectionMarqueeState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
 };
 type SelectionLassoState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   points: ClientPoint[];
   latestPoint: ClientPoint;
@@ -1585,7 +1590,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.40-opus";
+const CURRENT_BUILD_STAMP = "10.12.09.10-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1856,6 +1861,22 @@ export function MainWindow({
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  // Capture can belong to an object or a handle (even one later unmounted), not just the page.
+  const pointerCaptureOwnersRef = useRef(new Map<number, Element>());
+  const captureGesturePointer = useCallback((owner: Element | null | undefined, pointerId: number) => {
+    if (!owner) return;
+    // Drop owners whose browser capture already ended on pointerup/cancel.
+    for (const [id, previousOwner] of pointerCaptureOwnersRef.current) {
+      if (!previousOwner.hasPointerCapture(id)) pointerCaptureOwnersRef.current.delete(id);
+    }
+    owner.setPointerCapture(pointerId);
+    pointerCaptureOwnersRef.current.set(pointerId, owner);
+  }, []);
+  const releaseGesturePointer = useCallback((pointerId: number) => {
+    const owner = pointerCaptureOwnersRef.current.get(pointerId);
+    pointerCaptureOwnersRef.current.delete(pointerId);
+    if (owner?.hasPointerCapture(pointerId)) owner.releasePointerCapture(pointerId);
+  }, []);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const nativeBondDragRef = useRef<NativeBondDragState | null>(null);
   const nativePlacementDragRef = useRef<NativePlacementDragState | null>(null);
@@ -2407,6 +2428,7 @@ export function MainWindow({
   const hintHoverTargetRef = useRef<ModifierHintContext["hoverTarget"]>(undefined);
   const [statusModifierHint, setStatusModifierHint] = useState("");
   const refreshModifierHintRef = useRef<() => void>(() => undefined);
+  const modifierHintInputsRef = useRef<string | undefined>(undefined);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
@@ -4824,7 +4846,7 @@ export function MainWindow({
         const atomId = interactive3dAtomIdByIndexRef.current[bestIndex];
         if (atomId) {
           try {
-            event.currentTarget.setPointerCapture(event.pointerId);
+            captureGesturePointer(event.currentTarget, event.pointerId);
           } catch {
             /* best-effort */
           }
@@ -4859,7 +4881,7 @@ export function MainWindow({
     }
     // Inside the box: grab to rotate. Capture is best-effort.
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       /* ignore — pointer capture is an enhancement, not a requirement */
     }
@@ -7813,6 +7835,7 @@ export function MainWindow({
     for (const ref of pointerSessions) {
       const pointerId = ref.current?.pointerId;
       if (pointerId !== undefined) {
+        releaseGesturePointer(pointerId);
         for (const target of [pageRef.current, canvasRegionRef.current]) {
           if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
         }
@@ -7855,7 +7878,7 @@ export function MainWindow({
     resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
     selectionClipboardPasteStateRef.current = undefined;
   }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
-    replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
+    releaseGesturePointer, replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
@@ -10690,15 +10713,8 @@ export function MainWindow({
 
     freehandArtDragRef.current = null;
     clearFreehandArtPreview();
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, [clearFreehandArtPreview]);
+    releaseGesturePointer(drag.pointerId);
+  }, [clearFreehandArtPreview, releaseGesturePointer]);
 
   const syncPathArtPreview = useCallback((draw: PathArtDrawState | null) => {
     setPathArtPreview(draw
@@ -10714,9 +10730,11 @@ export function MainWindow({
 
   const clearNativePathArtDraw = useCallback(() => {
     pathArtDrawRef.current = null;
+    const drag = bezierArtNodeDragRef.current;
     bezierArtNodeDragRef.current = null;
+    if (drag) releaseGesturePointer(drag.pointerId);
     syncPathArtPreview(null);
-  }, [syncPathArtPreview]);
+  }, [releaseGesturePointer, syncPathArtPreview]);
 
   const activateSelectToolAfterArtCommit = useCallback(() => {
     const selectToolState = createActiveToolState("tool.select");
@@ -10803,7 +10821,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
-        options.currentTarget?.setPointerCapture(options.pointerId);
+        captureGesturePointer(options.currentTarget, options.pointerId);
       }
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -10843,7 +10861,7 @@ export function MainWindow({
         latestPoint: point,
         dragging: false
       };
-      options.currentTarget?.setPointerCapture(options.pointerId);
+      captureGesturePointer(options.currentTarget, options.pointerId);
     }
     syncPathArtPreview(current);
     setStatus(pathArtDrawStatusLabel(pathKind, current.nodes.length));
@@ -10898,15 +10916,8 @@ export function MainWindow({
     }
 
     bezierArtNodeDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   useEffect(() => {
     const draw = pathArtDrawRef.current;
@@ -10959,15 +10970,8 @@ export function MainWindow({
     }
 
     projectedPlaneTiltDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   /** Abandon an in-flight placement and restore the document it started from. Defined ahead of the
    *  keydown effect that calls it, so the effect's dependency list can name it. */
@@ -10977,11 +10981,9 @@ export function MainWindow({
       return;
     }
     nativePlacementDragRef.current = null;
-    // The capture lives on the page element, or on the object the press began on, and a key event
-    // can address neither. Dropping the ref is what matters: the pointerup then finds no drag and
-    // commits nothing, and the browser releases the capture with it.
+    releaseGesturePointer(drag.pointerId);
     replacePresentDocument(drag.startDocument);
-  }, [replacePresentDocument]);
+  }, [releaseGesturePointer, replacePresentDocument]);
 
   /** Abandon an in-flight electron-push-arrow drag before it commits. Defined ahead of the
    *  keydown effect that calls it, so the effect's dependency list can name it. */
@@ -10992,11 +10994,75 @@ export function MainWindow({
     }
     mechanismArrowDragRef.current = null;
     setMechanismArrowPreview(undefined);
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
+
+  // Snapshot previews enter history only on pointerup. Escape must also disarm the session
+  // and discard the deferred CSS preview used by graphics.
+  const cancelSelectionPointerGesture = useCallback((): string | undefined => {
+    const sessions = [
+      [objectDragRef, "Move"],
+      [nativePartDragRef, "Move"],
+      [objectResizeDragRef, "Resize"],
+      [textResizeRef, "Resize"],
+      [objectRotateDragRef, "Rotate"],
+      [groupTransformDragRef, "Transform"],
+      [graphicPathEditDragRef, "Path edit"],
+      [graphicMarkerDragRef, "Arrowhead edit"],
+      [graphicGradientDragRef, "Gradient edit"],
+      [mechanismHandleDragRef, "Electron push arrow edit"],
+      [nativeBondEditDragRef, "Bond edit"]
+    ] as const;
+    for (const [ref, label] of sessions) {
+      const drag = ref.current;
+      if (!drag) continue;
+      ref.current = null;
+      replacePresentDocument(drag.startDocument);
+      clearObjectTransformPreview(drag.pointerId);
+      objectDragMachineRef.current = initialInteractionState();
+      objectRotateMachineRef.current = initialInteractionState();
+      groupTransformMachineRef.current = initialInteractionState();
+      setObjectResizeReadout(undefined);
+      setObjectRotateReadout(undefined);
+      setProjectedPlaneTiltReadout(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      releaseGesturePointer(drag.pointerId);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setShiftHoveredArrowId(undefined);
+      shiftHoveredArrowIdRef.current = undefined;
+      hoveredArrowIdRef.current = undefined;
+      hoverPagePointRef.current = undefined;
+      setArrowEditTargetId(undefined);
+      return `${label} canceled`;
     }
-  }, []);
+    const region = selectionLassoRef.current ?? selectionMarqueeRef.current;
+    if (region) {
+      setSelectedNativeMoleculeParts(region.startNativeSelections);
+      selectionLassoRef.current = null;
+      selectionMarqueeRef.current = null;
+      lassoMachineRef.current = initialInteractionState();
+      marqueeMachineRef.current = initialInteractionState();
+      setSelectionLasso(undefined);
+      setSelectionMarquee(undefined);
+      setEraserSweepPreview(undefined);
+      releaseGesturePointer(region.pointerId);
+      assignHoveredNativeDeleteTarget(undefined);
+      setHoveredNativeAtom(undefined);
+      return "Selection canceled";
+    }
+    if (nativeBondDragRef.current) {
+      const pointerId = nativeBondDragRef.current.pointerId;
+      nativeBondDragRef.current = null;
+      releaseGesturePointer(pointerId);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setHoveredNativeAtom(undefined);
+      return "Bond canceled";
+    }
+    return undefined;
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, releaseGesturePointer, replacePresentDocument]);
 
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
@@ -11005,15 +11071,8 @@ export function MainWindow({
     }
 
     tapeMeasureDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -11067,16 +11126,20 @@ export function MainWindow({
         hoverLabelAssignmentRef.current = undefined;
       }
 
+      // A menu opened by keyboard during a drag owns this Escape, even if the canvas's
+      // window listener runs before the menu's listener. Leave the gesture armed.
+      if (event.key === "Escape" &&
+          window.document.querySelector('[role="menubar"] [aria-expanded="true"]')) {
+        return;
+      }
+
       if (event.key === "Escape" && graphicCornerRadiusDragRef.current) {
         const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
         event.preventDefault();
         replacePresentDocument(graphicCornerRadiusDrag.startDocument);
         graphicCornerRadiusDragRef.current = null;
         setGraphicCornerRadiusReadout(undefined);
-        const page = pageRef.current;
-        if (page?.hasPointerCapture(graphicCornerRadiusDrag.pointerId)) {
-          page.releasePointerCapture(graphicCornerRadiusDrag.pointerId);
-        }
+        releaseGesturePointer(graphicCornerRadiusDrag.pointerId);
         setStatus("Corner radius canceled");
         return;
       }
@@ -11174,6 +11237,15 @@ export function MainWindow({
         cancelMechanismArrowDrag();
         setStatus("Electron push arrow canceled");
         return;
+      }
+
+      if (event.key === "Escape") {
+        const canceled = cancelSelectionPointerGesture();
+        if (canceled) {
+          event.preventDefault();
+          setStatus(canceled);
+          return;
+        }
       }
 
       if (
@@ -11308,6 +11380,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
@@ -11451,8 +11524,10 @@ export function MainWindow({
     window.addEventListener("focusout", refreshAfterEvent, true);
     window.addEventListener("blur", clearModifiers);
     window.document.addEventListener("visibilitychange", onVisibility);
+    const unsubscribeModalChanges = subscribeToModalDialogChanges(refreshAfterEvent);
     return () => {
       mounted = false;
+      unsubscribeModalChanges();
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keyup", onKey, true);
       for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
@@ -11985,7 +12060,7 @@ export function MainWindow({
       startY: position.y
     };
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, [toolsetRegistry, webPalettePositions]);
 
   const moveWebPalette = useCallback((event: PointerEvent<HTMLElement>) => {
@@ -12139,7 +12214,7 @@ export function MainWindow({
     templatePreviewKeyRef.current = undefined;
     templatePreviewTargetKeyRef.current = undefined;
     templatePreviewPlanRef.current = undefined;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
@@ -12631,7 +12706,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
     setStatus(freehandArtStatusLabel(commandId));
   }, [assignHoveredNativeDeleteTarget, clearFreehandArtPreview]);
 
@@ -12688,6 +12763,11 @@ export function MainWindow({
         });
   }, []);
 
+  const objectDragDelta = useCallback((drag: ObjectDragState, point: ClientPoint): ClientPoint => {
+    drag.moveDeltaResolver ??= documentObjectMoveDeltaResolver(drag.startDocument, drag.objectId, drag.groupObjectIds);
+    return drag.moveDeltaResolver(point.x - drag.startPoint.x, point.y - drag.startPoint.y);
+  }, []);
+
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
@@ -12708,9 +12788,16 @@ export function MainWindow({
       }
 
       clearObjectTransformPreview(drag.pointerId);
-      replacePresentDocument(objectDragDocument(drag, point));
+      const previewDocument = objectDragDocument(drag, point);
+      replacePresentDocument(previewDocument);
+      const delta = objectDragDelta(drag, point);
+      drag.documentPreview = {
+        dx: delta.x,
+        dy: delta.y,
+        document: documentRef.current
+      };
     });
-  }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
+  }, [clearObjectTransformPreview, objectDragDelta, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicCornerRadius(
@@ -13036,7 +13123,11 @@ export function MainWindow({
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const moved = objectDragDocument(drag, point);
+    const preview = drag.documentPreview;
+    const delta = preview ? objectDragDelta(drag, point) : undefined;
+    const moved = preview && delta && preview.dx === delta.x && preview.dy === delta.y
+      ? preview.document
+      : objectDragDocument(drag, point);
     clearObjectTransformPreview(drag.pointerId);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
@@ -13045,7 +13136,7 @@ export function MainWindow({
 
     commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -13803,7 +13894,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    pageRef.current?.setPointerCapture(event.pointerId);
+    captureGesturePointer(pageRef.current, event.pointerId);
   }, [assignHoveredNativeDeleteTarget, pagePointFromPointerEvent]);
 
   const groupProjectedPlaneTiltFromDrag = useCallback((
@@ -13900,7 +13991,7 @@ export function MainWindow({
         ? "group-rotate"
         : mode === "projected-plane-tilt" ? "group-projected-plane-tilt" : "group-resize"
     });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       mode === "rotate"
         ? "Rotate selected group"
@@ -13936,7 +14027,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Measure: drag endpoint");
   }, [clearTransientInteractionChrome]);
 
@@ -13956,7 +14047,7 @@ export function MainWindow({
       latestPoint: sourcePoint
     };
     setMechanismArrowPreview({ arrowKind, sourcePoint, latestPoint: sourcePoint });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Electron push: release on an atom or charge");
   }, []);
 
@@ -13976,7 +14067,7 @@ export function MainWindow({
       controlIndex,
       startDocument: documentRef.current
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, []);
 
   const moveMechanismHandleDrag = useCallback((event: PointerEvent<HTMLButtonElement>) => {
@@ -14010,6 +14101,7 @@ export function MainWindow({
     event.stopPropagation();
     selectionLassoRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       points: [point],
       latestPoint: point,
@@ -14023,7 +14115,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Lasso selection");
   }, [clearTransientInteractionChrome]);
 
@@ -14031,6 +14123,7 @@ export function MainWindow({
     event.preventDefault();
     selectionMarqueeRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       latestPoint: point,
       dragging: false
@@ -14042,7 +14135,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, [clearTransientInteractionChrome]);
 
   const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
@@ -15488,7 +15581,7 @@ export function MainWindow({
         target: { kind: "object", objectId },
         dragKind: "object-move"
       });
-      captureElement.setPointerCapture(event.pointerId);
+      captureGesturePointer(captureElement, event.pointerId);
       return;
     }
 
@@ -15940,7 +16033,7 @@ export function MainWindow({
           artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
           dragging: false
         };
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
         return;
       }
 
@@ -15963,7 +16056,7 @@ export function MainWindow({
           dragging: false
         };
         objectDragMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-move" });
-        (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+        captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
         setStatus(dragIntent.target.kind === "atom"
           ? "Selected atom"
           : dragIntent.target.kind === "bond" ? "Selected bond" : "Selected molecule parts");
@@ -16109,7 +16202,7 @@ export function MainWindow({
           target: { kind: "object", objectId },
           dragKind: "object-move"
         });
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
       }
       return;
     }
@@ -16126,7 +16219,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
         return;
       }
     }
@@ -16156,7 +16249,7 @@ export function MainWindow({
         freeformUnlocked: false,
         altKey: event.altKey
       };
-      captureElement.setPointerCapture(event.pointerId);
+      captureGesturePointer(captureElement, event.pointerId);
       setHoveredNativeAtom({
         objectId,
         atomId: preview.atomId,
@@ -16374,7 +16467,7 @@ export function MainWindow({
         : undefined
     };
     objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       object.type === "text"
         ? "Rotate selected text box"
@@ -16575,7 +16668,7 @@ export function MainWindow({
       target: { kind: "object", objectId },
       dragKind: "projected-plane-tilt"
     });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(selectedFragmentTarget
       ? "3D rotate: drag to tilt/twist selected fragment"
       : object.type === "molecule" ? "3D rotate: drag to tilt/twist" : "X/Y rotate selected art object");
@@ -16657,7 +16750,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16696,7 +16789,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Adjust selected rectangle corner radius");
   }, [
     activeToolState.activeKind,
@@ -16755,7 +16848,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16827,7 +16920,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       nodeEditPoints
         ? "Move selected path node"
@@ -16861,7 +16954,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16899,7 +16992,7 @@ export function MainWindow({
       shiftKey: event.shiftKey,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(markerId === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size");
   }, [
     activeToolState.activeKind,
@@ -16922,7 +17015,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16969,7 +17062,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(`Move ${graphicGradientHandleStatusName(target, handle)}`);
   }, [
     activeToolState.activeKind,
@@ -17056,7 +17149,7 @@ export function MainWindow({
       stretching: event.shiftKey,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(selectedFragmentTarget
       ? "Resize selected molecule fragment"
       : object.type === "molecule" ? "Resize selected molecule" : "Resize selected art object");
@@ -18236,7 +18329,7 @@ export function MainWindow({
       : undefined;
     const data = markerObject?.type === "graphic" ? markerObject.data : undefined;
     const focusTarget = window.document.activeElement;
-    setStatusModifierHint(modifierHint({
+    const context: ModifierHintContext = {
       activeTool: activeToolState.activeCommandId,
       interaction,
       hoverTarget: shiftHoveredArrowId ? "arrow" : hintHoverTargetRef.current,
@@ -18247,7 +18340,13 @@ export function MainWindow({
       dualShaftArrow: data?.dualShaft === true,
       twoArrowheads: Boolean(data?.markerStart && data.markerStart.kind !== "none" && data.markerEnd && data.markerEnd.kind !== "none"),
       lassoSubtracting: selectionLassoRef.current?.subtracting
-    }, heldHintModifiersRef.current));
+    };
+    const held = heldHintModifiersRef.current;
+    const inputs = JSON.stringify([context, Boolean(held.shiftKey), Boolean(held.altKey), Boolean(held.metaKey), Boolean(held.ctrlKey)]);
+    if (inputs !== modifierHintInputsRef.current) {
+      modifierHintInputsRef.current = inputs;
+      setStatusModifierHint(modifierHint(context, held));
+    }
   };
   // Also refresh after command-driven tool/selection changes and interaction cancellation.
   useEffect(() => { refreshModifierHintRef.current(); });
