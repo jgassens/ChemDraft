@@ -2083,6 +2083,10 @@ export function MainWindow({
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const [discardUnrestoredTabsPrompt, setDiscardUnrestoredTabsPrompt] = useState<{
+    text: string;
+    decide: (discard: boolean) => void;
+  }>();
   const [closeTabSaving, setCloseTabSaving] = useState(false);
   const [closeTabSaveMessage, setCloseTabSaveMessage] = useState<string>();
   const closeTabPromptRef = useRef(closeTabPrompt);
@@ -8583,8 +8587,13 @@ export function MainWindow({
     const carried = [...unrestoredSessionTabsRef.current];
     try {
       const text = `Discard ${carried.length} unrestored ${carried.length === 1 ? "tab" : "tabs"}?\n\n${carried.map(unrestoredTabDisplayName).join("\n")}\n\nTheir saved document data will be removed from the session. This cannot be undone.`;
-      const { confirm } = await loadTauriDialogModule();
-      if (!await confirm(text, { title: "Discard Unrestored Tabs", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" })) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        setDiscardUnrestoredTabsPrompt({ text, decide: (discard) => {
+          setDiscardUnrestoredTabsPrompt(undefined);
+          resolve(discard);
+        } });
+      });
+      if (!confirmed) {
         setStatus("Discard canceled; unrestored tabs remain in the session");
         return;
       }
@@ -18481,6 +18490,39 @@ export function MainWindow({
           })
         : null}
 
+      {discardUnrestoredTabsPrompt ? (
+        <div role="dialog" aria-modal="true" aria-label="Discard Unrestored Tabs" style={exportDialogBackdropStyle}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              discardUnrestoredTabsPrompt.decide(false);
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              // Only an explicitly focused button may discard; the initial focus is Cancel.
+              const focused = globalThis.document.activeElement;
+              if (focused instanceof HTMLButtonElement && event.currentTarget.contains(focused)) focused.click();
+              else discardUnrestoredTabsPrompt.decide(false);
+            }
+            if (event.key === "Tab") {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+              const next = buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length];
+              event.preventDefault();
+              next?.focus();
+            }
+          }}>
+          <section style={exportDialogPanelStyle}>
+            <h2 style={exportDialogTitleStyle}>Discard Unrestored Tabs</h2>
+            <p style={{ ...exportDialogHintStyle, whiteSpace: "pre-wrap" }}>{discardUnrestoredTabsPrompt.text}</p>
+            <div style={exportDialogFooterStyle}>
+              <button type="button" autoFocus onClick={() => discardUnrestoredTabsPrompt.decide(false)}>Cancel</button>
+              <button type="button" onClick={() => discardUnrestoredTabsPrompt.decide(true)}>Discard</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {closeTabPrompt ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {

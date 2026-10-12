@@ -799,16 +799,37 @@ describe("documents in one window", () => {
     expect(native.confirm).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("discard lists the count and names, and removes data only after confirmation (%s)", async (confirmed) => {
+  it.each(["Cancel", "Enter", "Escape", "Discard", "Tab-then-Enter"])("discard lists the count and names, and requires explicit action (%s)", async (action) => {
     const session = sessionWithUnrestoredTabs(["Alpha.chemdraft", "Beta.chemdraft"]);
     native.session = session;
     await restoreAfterMount(session);
-    native.confirm.mockResolvedValueOnce(confirmed);
     await command("document.discardUnrestoredTabs");
-    expect(native.confirm).toHaveBeenCalledWith(
-      "Discard 2 unrestored tabs?\n\nAlpha.chemdraft\nBeta.chemdraft\n\nTheir saved document data will be removed from the session. This cannot be undone.",
-      { title: "Discard Unrestored Tabs", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" }
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.getAttribute("aria-label")).toBe("Discard Unrestored Tabs");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.querySelector("p")?.textContent).toBe(
+      "Discard 2 unrestored tabs?\n\nAlpha.chemdraft\nBeta.chemdraft\n\nTheir saved document data will be removed from the session. This cannot be undone."
     );
+    expect(document.activeElement).toBe(dialog.querySelector("button"));
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    expect(native.confirm).not.toHaveBeenCalled();
+    expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    const press = async (key: string) => {
+      await act(async () => {
+        document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      });
+    };
+    if (action === "Tab-then-Enter") {
+      await press("Tab");
+      expect(document.activeElement?.textContent).toBe("Discard");
+      await press("Enter");
+    } else if (action === "Enter" || action === "Escape") {
+      await press(action);
+    } else {
+      await modalButton(action);
+    }
+    const confirmed = action === "Discard" || action === "Tab-then-Enter";
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
     if (confirmed) {
       await activate(2);
@@ -823,9 +844,9 @@ describe("documents in one window", () => {
     const session = sessionWithUnrestoredTabs();
     native.session = session;
     await remount();
-    native.confirm.mockResolvedValueOnce(true);
-    native.saveSession.mockRejectedValueOnce(new Error("session write refused"));
     await command("document.discardUnrestoredTabs");
+    native.saveSession.mockRejectedValueOnce(new Error("session write refused"));
+    await modalButton("Discard");
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Discard failed; unrestored tabs remain in the session: session write refused");
     expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
   });
@@ -894,8 +915,8 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("3 tabs could not be restored (File > Save Unrestored Tabs… or Discard Unrestored Tabs…)");
     await paste("Drawing after failed restore");
     expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
-    native.confirm.mockResolvedValueOnce(true);
     await command("document.discardUnrestoredTabs");
+    await modalButton("Discard");
     expect((await flush()).unrestoredTabs).toBeUndefined();
   });
 
