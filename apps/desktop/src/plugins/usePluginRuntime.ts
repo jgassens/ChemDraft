@@ -62,7 +62,8 @@ export interface PluginRuntimeProviders {
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
    *  File > New in one session are indistinguishable to the write-binding check. */
   getActiveDocumentKey?: () => string | undefined;
-  getActiveDocumentTab?: () => ProposalDocumentTab;
+  getActiveDocumentTab?: () => Pick<ProposalDocumentTab, "id">;
+  getDocumentTabTitle?: (tabId: string) => string | undefined;
   /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
   getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
   /** The app's stable CommandRegistry: plugin commands register into the SAME registry core commands
@@ -154,6 +155,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       getActiveDocumentTab: providers.getActiveDocumentTab
         ? () => providersRef.current.getActiveDocumentTab!()
         : undefined,
+      getDocumentTabTitle: (tabId) => providersRef.current.getDocumentTabTitle?.(tabId),
       getSelection: (warnings) => providersRef.current.getSelection(warnings),
       // Read once at creation: the registry (and the other integration options) must be stable —
       // MainWindow creates the registry in a one-time memo, matching the runtime's lifetime.
