@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
+  DocumentPageSchema,
   createEmptyDocument,
   nativeDrawingStyleFromObjectStyle,
   stylePresetToObjectStyle,
@@ -19,7 +20,6 @@ import {
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
   bondRefKey,
-  compareBondDepth,
   crossingPairKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
@@ -626,13 +626,20 @@ function referencePageCrossings(page: DocumentPage): ResolvedBondCrossing[] {
       const point = { x: left.start.x + a.x * t, y: left.start.y + a.y * t };
       const angleSin = Math.abs(denominator) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y));
       if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(angleSin)) continue;
-      const depth = compareBondDepth(left, right, { overrides: page.crossings });
+      const key = crossingPairKey([left.ref, right.ref]);
+      const override = page.crossings.find((candidate) => crossingPairKey(candidate.bonds) === key);
+      const frontMatches = (candidate: typeof left) => override?.front.objectId === candidate.ref.objectId &&
+        override.front.bondId === candidate.ref.bondId;
+      // Independent depth oracle: first matching override, then layer, within-object bond
+      // index, then the composite key. An unrelated override front falls through to defaults.
+      const depth = frontMatches(left) ? 1 : frontMatches(right) ? -1
+        : left.objectLayerIndex !== right.objectLayerIndex ? left.objectLayerIndex - right.objectLayerIndex
+        : left.ref.objectId === right.ref.objectId && left.bondIndex !== right.bondIndex ? left.bondIndex - right.bondIndex
+        : bondRefKey(left.ref).localeCompare(bondRefKey(right.ref));
       const front = depth >= 0 ? left : right;
       const back = depth >= 0 ? right : left;
       const bonds: ResolvedBondCrossing["bonds"] = bondRefKey(left.ref).localeCompare(bondRefKey(right.ref)) <= 0
         ? [left.ref, right.ref] : [right.ref, left.ref];
-      const key = crossingPairKey(bonds);
-      const override = page.crossings.find((candidate) => crossingPairKey(candidate.bonds) === key);
       const gap = front.style.bondSpacingMode === "percent"
         ? Math.max(0.5, front.style.bondLengthPx * front.style.bondSpacingPercent / 100)
         : front.style.multipleBondGapPx;
@@ -648,13 +655,16 @@ function referencePageCrossings(page: DocumentPage): ResolvedBondCrossing[] {
       });
     }
   }
-  return crossings.sort((left, right) => left.key.localeCompare(right.key));
+  return publicCrossings(crossings);
 }
 
 function publicCrossings(crossings: readonly ResolvedBondCrossing[]): ResolvedBondCrossing[] {
+  // The sweep and all-pairs traversal can visit equal-key crossings in different orders.
+  // Compare every field of these crossings while normalizing only their tied ordering.
   return crossings.map(({ key, bonds, front, back, point, clearancePx, hasOverride }) => ({
     key, bonds, front, back, point, clearancePx, hasOverride
-  }));
+  })).sort((left, right) => left.key.localeCompare(right.key) ||
+    JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
 function referenceDepthWarnings(crossings: readonly ResolvedBondCrossing[]) {
@@ -1180,6 +1190,57 @@ describe("layout-engine page SVG planner", () => {
     expect(plan.warnings).toEqual([]);
   });
 
+  it.each([
+    { name: "duplicate object ids", refs: [
+      { objectId: "A", bondId: "b" }, { objectId: "B", bondId: "b" },
+      { objectId: "C", bondId: "b" }, { objectId: "A", bondId: "b" }
+    ] },
+    { name: "colliding composite bond keys", refs: [
+      { objectId: "x::y", bondId: "z" }, { objectId: "x", bondId: "y::z" }
+    ] }
+  ])("warns about default depth cycles with $name", ({ refs }) => {
+    const page = pageWithObjects(refs.map((ref, index) => {
+      const angle = index * Math.PI / 4;
+      const atoms = [-1, 1].map((sign, atomIndex) => ({
+        id: `a${index}_${atomIndex}`, element: "C", formalCharge: 0,
+        x: 180 + sign * 60 * Math.cos(angle), y: 180 + sign * 60 * Math.sin(angle)
+      }));
+      return moleculeObject({
+        id: ref.objectId, atoms,
+        bonds: [{ id: ref.bondId, fromAtomId: atoms[0]!.id, toAtomId: atoms[1]!.id, order: "single" }]
+      });
+    }));
+    expect(DocumentPageSchema.safeParse(page).success).toBe(true);
+    const expected = referencePageCrossings(page);
+    const warnings = [{
+      code: "crossing.depth_cycle",
+      message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
+    }];
+    expect(expected).toHaveLength(refs.length === 4 ? 6 : 1);
+    expect(referenceDepthWarnings(expected)).toEqual(warnings);
+    const actual = planPageSvgRender(page);
+    expect(publicCrossings(actual.crossings)).toEqual(expected);
+    expect(actual.warnings).toEqual(warnings);
+
+    // An unrelated overridden edge must not hide default cycles when keys are merged.
+    // Its nonmatching front preserves the default order.
+    page.objects.push(...["isolated_left", "isolated_right"].map((id, index) => moleculeObject({
+      id,
+      atoms: [
+        { id: "atom_001", element: "C", formalCharge: 0, x: 400, y: 400 + index * 80 },
+        { id: "atom_002", element: "C", formalCharge: 0, x: 480, y: 480 - index * 80 }
+      ]
+    })));
+    page.crossings.push({
+      bonds: [{ objectId: "isolated_left", bondId: "bond_001" }, { objectId: "isolated_right", bondId: "bond_001" }],
+      front: { objectId: "absent", bondId: "absent" }
+    });
+    const withOverride = referencePageCrossings(page);
+    expect(withOverride.filter((crossing) => crossing.hasOverride)).toHaveLength(1);
+    expect(publicCrossings(planPageSvgRender(page).crossings)).toEqual(withOverride);
+    expect(planPageSvgRender(page).warnings).toEqual(warnings);
+  });
+
   it("matches all-pairs crossing resolution and brute-force depth warnings on seeded random pages", () => {
     let seed = 0x123d3f;
     const random = () => {
@@ -1188,6 +1249,9 @@ describe("layout-engine page SVG planner", () => {
     };
     let cyclicPages = 0;
     let noncyclicOverridePages = 0;
+    let duplicateIdPages = 0;
+    let compositeCollisionPages = 0;
+    let nonmatchingFronts = 0;
     for (let sample = 0; sample < 240; sample += 1) {
       const forceCycle = sample % 6 === 5;
       const objects = Array.from({ length: 3 + Math.floor(random() * 3) }, (_, objectIndex) => {
@@ -1196,13 +1260,13 @@ describe("layout-engine page SVG planner", () => {
           const angle = objectIndex * Math.PI / 3;
           const sign = atomIndex === 0 ? -1 : 1;
           return {
-            id: `a${atomIndex}`, element: "C", formalCharge: 0,
+            id: `a${objectIndex}_${atomIndex}`, element: "C", formalCharge: 0,
             x: forceCycle && objectIndex < 3 && atomIndex < 2 ? 180 + sign * 60 * Math.cos(angle) : 100 + random() * 160,
             y: forceCycle && objectIndex < 3 && atomIndex < 2 ? 180 + sign * 60 * Math.sin(angle) : 100 + random() * 160
           };
         });
         const bonds = Array.from({ length: bondCount }, (_, bondIndex) => ({
-          id: `b${bondIndex}`, fromAtomId: `a${bondIndex * 2}`, toAtomId: `a${bondIndex * 2 + 1}`,
+          id: `b${bondIndex}`, fromAtomId: `a${objectIndex}_${bondIndex * 2}`, toAtomId: `a${objectIndex}_${bondIndex * 2 + 1}`,
           order: (["single", "double", "triple"] as const)[Math.floor(random() * 3)]!,
           display: { bondStyle: ([undefined, "bold", "wedge", "hashed"] as const)[Math.floor(random() * 4)] }
         }));
@@ -1211,6 +1275,16 @@ describe("layout-engine page SVG planner", () => {
           rotation: forceCycle ? 0 : Math.floor(random() * 4) * 30
         });
       });
+      if (sample % 6 === 0 || sample % 6 === 1) {
+        objects[objects.length - 1]!.id = objects[0]!.id;
+        duplicateIdPages += 1;
+      } else if (sample % 6 === 2 || sample % 6 === 3) {
+        objects[0]!.id = "x::y";
+        objects[0]!.bonds[0]!.id = "z";
+        objects[1]!.id = "x";
+        objects[1]!.bonds[0]!.id = "y::z";
+        compositeCollisionPages += 1;
+      }
       const page = pageWithObjects(objects);
       const refs = objects.flatMap((object) => object.bonds.map((bond) => ({ objectId: object.id, bondId: bond.id })));
       if (sample % 2 === 1) {
@@ -1219,7 +1293,9 @@ describe("layout-engine page SVG planner", () => {
           for (let j = i + 1; j < refs.length; j += 1) {
             if (random() > 0.25) continue;
             const bonds: ResolvedBondCrossing["bonds"] = random() < 0.5 ? [refs[i]!, refs[j]!] : [refs[j]!, refs[i]!];
-            const front = random() < 0.5 ? bonds[0] : bonds[1];
+            const front = random() < 0.2 ? { objectId: "absent", bondId: "absent" }
+              : random() < 0.5 ? bonds[0] : bonds[1];
+            if (front.objectId === "absent") nonmatchingFronts += 1;
             const clearancePx = random() < 0.5 ? undefined : random() * 45;
             page.crossings.push({ bonds, front, clearancePx });
             if (random() < 0.2) page.crossings.push({ bonds: [bonds[1], bonds[0]], front: bonds[0], clearancePx: 30 });
@@ -1246,6 +1322,9 @@ describe("layout-engine page SVG planner", () => {
     }
     expect(cyclicPages).toBeGreaterThanOrEqual(40);
     expect(noncyclicOverridePages).toBeGreaterThan(0);
+    expect(duplicateIdPages).toBe(80);
+    expect(compositeCollisionPages).toBe(80);
+    expect(nonmatchingFronts).toBeGreaterThan(0);
   });
 
   it("resolves the 256 overlapping benzene rings identically to the all-pairs reference", () => {
