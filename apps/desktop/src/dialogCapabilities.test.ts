@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 // including the deprecated aliases: in tauri-plugin-dialog 2.7 allow-ask and allow-confirm both
 // allow the message command, and dialog:default allows message, open and save.
 const DIALOG_WINDOWS = ["main"];
+const SUSPEND_TOOLSET_WINDOWS_PERMISSION = "allow-suspend-toolset-windows";
 const capabilitiesDir = new URL("../src-tauri/capabilities/", import.meta.url);
 
 type Capability = { identifier: string; windows?: string[]; webviews?: string[]; permissions: (string | { identifier: string })[] };
@@ -15,6 +16,8 @@ const capabilities = readdirSync(capabilitiesDir).filter((name) => name.endsWith
 const dialogPermissions = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier)
   .filter((identifier) => identifier === "dialog" || identifier.startsWith("dialog:"));
+const permissionIdentifiers = (capability: Capability) => capability.permissions
+  .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
   it("grant dialog permissions, aliases included, to the document window alone", () => {
@@ -31,5 +34,13 @@ describe("dialog capabilities", () => {
     const { capability } = capabilities.find(({ name }) => name === "document-dialogs.json")!;
     expect(dialogPermissions(capability).sort()).toEqual(["dialog:allow-message", "dialog:allow-open", "dialog:allow-save"]);
     expect((capability as { platforms?: unknown }).platforms).toBeUndefined();
+  });
+
+  it("grants native prompt toolset suspension to the document window alone", () => {
+    const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability)
+      .includes(SUSPEND_TOOLSET_WINDOWS_PERMISSION));
+    expect(granted.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
+    expect(granted[0]!.capability.windows).toEqual(DIALOG_WINDOWS);
+    expect(granted[0]!.capability.webviews).toBeUndefined();
   });
 });
