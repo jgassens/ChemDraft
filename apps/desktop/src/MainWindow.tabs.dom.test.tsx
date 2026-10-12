@@ -437,6 +437,8 @@ describe("documents in one window", () => {
     }
     await closeTab();
     const other = bridge().snapshot().document;
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Closed source.chemdraft (closed)");
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
     await decide("acceptPluginProposal", proposal.id);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("its document was closed (Closed source.chemdraft)");
@@ -450,6 +452,65 @@ describe("documents in one window", () => {
     await decide("rejectPluginProposal", proposal.id);
     expect(runtime().host.listProposedPatches("pending")).toEqual([]);
     expect(bridge().snapshot().document).toEqual(other);
+  });
+
+  it.each([false, true])("uses the Save As title for proposal labels and the Accept refusal (multiple: %s)", async (multiple) => {
+    await open("Original source");
+    const proposal = await propose({ op: "updatePageLayout", pageId: bridge().snapshot().document.pages[0]!.id,
+      layout: bridge().snapshot().document.pages[0]!.layout });
+    expect(reviewItems()[0]!.documentName).toBeUndefined();
+    if (multiple) {
+      await command("document.new");
+      expect(reviewItems()[0]!.documentName).toBe("Original source.chemdraft");
+      await activate(0);
+    }
+    native.savePicker.mockResolvedValueOnce("/tmp/Renamed source.chemdraft");
+    await command("document.saveAs");
+    expect(tabs()[0]!.textContent).toBe("Renamed source.chemdraft");
+    expect(reviewItems()[0]!.documentName).toBe(multiple ? "Renamed source.chemdraft" : undefined);
+    await closeTab();
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Renamed source.chemdraft (closed)");
+    await decide("acceptPluginProposal", proposal.id);
+    const message = "Could not accept the proposal: its document was closed (Renamed source.chemdraft). You can reject it.";
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+  });
+
+  it.each([false, true])("uses the Save As title when a running command proposes later (close before arrival: %s)", async (closeBeforeArrival) => {
+    await open("Original delayed source");
+    const source = bridge().snapshot().document;
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const commandId = registerProposal({ op: "updatePageLayout", pageId: source.pages[0]!.id,
+      layout: source.pages[0]!.layout }, wait);
+    let invocation!: Promise<unknown>;
+    await act(async () => { invocation = runtime().invokeCommand(commandId); });
+    native.savePicker.mockResolvedValueOnce("/tmp/Renamed delayed source.chemdraft");
+    await command("document.saveAs");
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    if (closeBeforeArrival) await closeTab();
+    await act(async () => { finish(); await invocation; });
+    const proposal = runtime().host.listProposedPatches("pending")[0]!;
+    if (!closeBeforeArrival) {
+      expect(reviewItems()[0]!.documentName).toBeUndefined();
+      await command("document.new");
+      expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft");
+      await activate(0);
+      await closeTab();
+    }
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft (closed)");
+    const other = bridge().snapshot().document;
+    await decide("acceptPluginProposal", proposal.id);
+    const message = "Could not accept the proposal: its document was closed (Renamed delayed source.chemdraft). You can reject it.";
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(bridge().snapshot().document).toEqual(other);
+    await decide("rejectPluginProposal", proposal.id);
+    expect(runtime().proposalDocumentTab(proposal.id)).toBeUndefined();
   });
 
   it("rejects a pending proposal from another open tab without switching or editing either document", async () => {
