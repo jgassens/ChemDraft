@@ -16,6 +16,54 @@ function svg(object: ArrowObject | BracketObject) {
 }
 
 describe("projected reaction arrows and brackets", () => {
+  function horizontalInkWidth(output: string, x: number, y: number) {
+    const scale = 8;
+    const crop = output.replace(/<svg\b[^>]*>/,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="4" viewBox="${x - 5} ${y - 2} 10 4">`);
+    const raster = new Resvg(crop, { background: "white", fitTo: { mode: "zoom", value: scale } }).render();
+    let coverage = 0;
+    for (let column = 0; column < raster.width; column++) {
+      // The authored ink is #172026 (red = 23), rather than pure black.
+      coverage += (255 - raster.pixels[(2 * scale * raster.width + column) * 4]!) / (255 - 23);
+    }
+    return coverage / scale;
+  }
+
+  it("keeps a tilted vertical bracket stroke at 1.5 units in the rendered export", () => {
+    expect(horizontalInkWidth(svg({ ...bracket, style: { tiltYDegrees: 60 } }), 130, 112)).toBeCloseTo(1.5, 1);
+  });
+
+  it.each(["square", "round", "curly", "polymer", "unknown"] as const)(
+    "projects %s bracket points without scaling the stroke", bracketKind => {
+      const output = svg({ ...bracket, bracketKind, rotation: 37, style: { tiltXDegrees: 30, tiltYDegrees: 60 } });
+      expect(output).not.toContain('transform="matrix(');
+      expect(output.match(/<path\b[^>]*>/)![0]).toContain('stroke-width="1.5"');
+    }
+  );
+
+  it.each(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"] as const)(
+    "keeps a rotated, tilted %s arrow shaft at 1.5 units in the rendered export", arrowKind => {
+      const object = { ...arrow, arrowKind, rotation: 90, style: { tiltYDegrees: 60 } };
+      const output = svg(object);
+      expect(output).not.toContain('transform="matrix(');
+      const shaftX = arrowKind === "equilibrium" ? 161.5 : arrowKind === "retrosynthesis" ? 161.25 : 160;
+      // Parallel arrows are sampled away from the neighboring shaft.
+      const isolatedShaft = output.replace(/<line\b[^>]*>/g, (line, offset) =>
+        offset === output.indexOf("<line") ? line : "").replace(/<polygon\b[^>]*\/>/g, "");
+      expect(horizontalInkWidth(isolatedShaft, shaftX, 112)).toBeCloseTo(1.5, 1);
+    }
+  );
+
+  it.each(["square", "round", "curly", "polymer", "unknown"] as const)(
+    "keeps untilted %s bracket serialization byte-identical", bracketKind => {
+      for (const rotation of [0, 90, 37]) {
+        expect(svg({ ...bracket, bracketKind, rotation })).toMatchSnapshot(`rotation ${rotation}`);
+        expect(svg({ ...bracket, bracketKind, rotation, style: { tiltXDegrees: 0, tiltYDegrees: 0 } }))
+          .toBe(svg({ ...bracket, bracketKind, rotation }));
+      }
+    }
+  );
+
   it.each(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"] as const)(
     "projects every shaft and head of a %s arrow while keeping the old canvas stroke width", arrowKind => {
       const output = svg({ ...arrow, arrowKind, style: { tiltYDegrees: 60 } });
@@ -43,7 +91,8 @@ describe("projected reaction arrows and brackets", () => {
   it.each(["square", "round", "curly", "polymer", "unknown"] as const)(
     "projects a %s bracket around its center", bracketKind => {
       const output = svg({ ...bracket, bracketKind, style: { tiltYDegrees: 60 } });
-      expect(output).toContain('transform="matrix(0.5 0 0 1 80 0) translate(100 100)"');
+      expect(output).not.toContain('transform="matrix(');
+      expect(output).toContain('d="M 189.5 100');
       const raster = new Resvg(output, { background: "white" }).render();
       const darkNear = (x: number, y: number) => {
         for (let row = y - 2; row <= y + 2; row++) {

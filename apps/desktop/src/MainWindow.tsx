@@ -25321,7 +25321,8 @@ function DocumentObjectViewContent({
   const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
     <div
       className={["document-object-chrome",
-        selected && object.type !== "graphic" && object.type !== "molecule" ? "selected" : ""].filter(Boolean).join(" ")}
+        selected && object.type !== "graphic" && (object.type !== "molecule" || !isNativeMoleculeGraph(object))
+          ? "selected" : ""].filter(Boolean).join(" ")}
       style={{ ...style, ...extraStyle, zIndex: 1 }}
       data-object-controls={object.id}
       onPointerLeave={handleObjectPointerLeave}
@@ -25854,7 +25855,9 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
         onDoubleClick={handleTextDoubleClick}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 
@@ -25913,7 +25916,9 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 

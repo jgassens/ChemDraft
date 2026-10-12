@@ -4640,38 +4640,50 @@ function arrowAnchorPointForObject(
 
 /** Shared bracket glyph outline for the canvas renderer and SVG export, in object-local
  *  coordinates. "round" is a single open curve, "curly" a brace with a center spur; "polymer" and
- *  "unknown" fall back to the square outline. */
+ *  "unknown" fall back to the square outline. An optional projection maps every path point,
+ *  including Bezier controls, without transforming the stroke. */
 export function bracketGlyphPathD(
   kind: BracketObject["bracketKind"],
   width: number,
-  height: number
+  height: number,
+  project?: (point: LayoutPoint) => LayoutPoint
 ): string {
+  // Project endpoints and Bezier controls, preserving a constant stroke in SVG/PDF.
+  // Keep raw number serialization for the original, untilted glyph.
+  const point = (x: number, y: number) => {
+    if (!project) return `${x} ${y}`;
+    const projected = project({ x, y });
+    return `${formatNumber(projected.x)} ${formatNumber(projected.y)}`;
+  };
   const right = Math.max(width - 1, 0);
   const bottom = Math.max(height - 1, 0);
   if (kind === "round") {
-    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+    return `M ${point(right, 0)} C ${point(width * 0.18, height * 0.16)}, ${point(width * 0.18, height * 0.84)}, ${point(right, bottom)}`;
   }
   if (kind === "curly") {
     return [
-      `M ${right} 0`,
-      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
-      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+      `M ${point(right, 0)}`,
+      `C ${point(width * 0.15, height * 0.1)}, ${point(width * 0.85, height * 0.38)}, ${point(width * 0.2, height * 0.5)}`,
+      `C ${point(width * 0.85, height * 0.62)}, ${point(width * 0.15, height * 0.9)}, ${point(right, bottom)}`
     ].join(" ");
   }
-  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+  return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
+  const projection = projectedPlaneMatrixForObject(object);
+  const project = projection ? (point: LayoutPoint) => projectPointInObjectPlane(object,
+    { x: object.x + point.x, y: object.y + point.y }, projection) : undefined;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-    transform: projectedPlaneSvgTransformForObject(object)
+    transform: projection ? undefined : rotationTransform(object)
   }), [
     elementFragment("path", `bracket-path-${object.id}`, {
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
-      transform: `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height),
+      transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      d: bracketGlyphPathD(object.bracketKind, width, height, project),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,

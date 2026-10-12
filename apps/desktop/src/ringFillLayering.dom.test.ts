@@ -172,6 +172,64 @@ describe("canvas ring-fill layers", () => {
     return { ...base, pages: [{ ...base.pages[0], objects }], selection: { ...base.selection, objectIds: selected } };
   }
 
+  // Exhaustive over the model union, with extra cases for branches within each type.
+  const selectableTypes = {
+    molecule: true, reaction: true, "reaction-arrow": true, "mechanism-arrow": true,
+    "electron-mark": true, text: true, bracket: true, graphic: true, plus: true,
+    group: true, annotation: true, superatom: true, "r-group-label": true,
+    "generic-atom-label": true, "unknown-compatibility-object": true
+  } satisfies Record<DocumentObject["type"], true>;
+
+  it.each([...Object.keys(selectableTypes), "fallback-molecule", "charge", "radical-dot", "unknown-electron-mark", "line-graphic"])(
+    "shows a visible interaction-layer selection indicator for %s", async kind => {
+      const fixture = rectangleFixture();
+      const base = { id: "selected-object", x: 100, y: 100, width: 80, height: 40, rotation: 0, style: {} };
+      const anchor = { kind: "point" as const, point: { x: 100, y: 120 } };
+      const objects: Record<DocumentObject["type"], DocumentObject> = {
+        molecule: fixture.molecule,
+        reaction: { ...base, type: "reaction", components: [], conditionsTextObjectIds: [], mappingState: "absent" },
+        "reaction-arrow": { ...base, type: "reaction-arrow", arrowKind: "forward", start: anchor,
+          end: { kind: "point", point: { x: 180, y: 120 } }, labels: [] },
+        "mechanism-arrow": { ...base, type: "mechanism-arrow", arrowKind: "full-headed", source: anchor,
+          target: { kind: "point", point: { x: 180, y: 120 } }, controlPoints: [], warnings: [] },
+        "electron-mark": { ...base, type: "electron-mark", markKind: "lone-pair", anchor },
+        text: fixture.text,
+        bracket: { ...base, type: "bracket", bracketKind: "square", containedObjectIds: [] },
+        graphic: fixture.rectangle,
+        plus: { ...base, type: "plus" },
+        group: { ...base, type: "group", childObjectIds: [fixture.rectangle.id, fixture.text.id] },
+        annotation: { ...base, type: "annotation", targetObjectIds: [], message: "Note" },
+        superatom: { ...base, type: "superatom", label: "Me", metadata: { label: "Me", attachmentPoints: [], warnings: [] } },
+        "r-group-label": { ...base, type: "r-group-label", label: "R", display: { label: "R", querySemantics: "display-only", attachmentPoints: [], warnings: [] } },
+        "generic-atom-label": { ...base, type: "generic-atom-label", label: "X", querySemantics: "display-only" },
+        "unknown-compatibility-object": { ...base, type: "unknown-compatibility-object", sourceFormat: "CDXML",
+          sourceObjectType: "unknown", warning: "Preserved object" }
+      };
+      const object: DocumentObject = kind === "fallback-molecule"
+        ? { ...fixture.molecule, atoms: [], bonds: [] }
+        : kind === "charge" || kind === "radical-dot" || kind === "unknown-electron-mark"
+          ? { ...base, type: "electron-mark", markKind: kind === "unknown-electron-mark" ? "unknown" : kind, anchor, charge: 1 }
+          : kind === "line-graphic" ? { ...fixture.rectangle, graphicKind: "line", data: {} }
+            : objects[kind as DocumentObject["type"]];
+      // Groups select their children and use the shared group frame, rather than an object overlay.
+      const pageObjects = kind === "group" ? [fixture.rectangle, fixture.text, object] : [object];
+      await renderDocument(documentWithObjects(fixture.document, pageObjects, [object.id]));
+      const chrome = container.querySelector<HTMLElement>(kind === "group"
+        ? ".group-selection-frame" : `[data-object-controls='${object.id}']`);
+      expect(chrome).not.toBeNull();
+      expectInteractionAbovePaint(chrome!);
+      // Inspect actual paint styles: an empty portal or invisible handle is not an indicator.
+      const indicator = chrome!.querySelector(".native-selection-blob-atom, [data-art-transform-frame], .graphic-path-edit-handle") ?? chrome!;
+      const css = getComputedStyle(indicator);
+      expect(css.display).not.toBe("none");
+      expect(css.visibility).not.toBe("hidden");
+      expect(css.opacity).not.toBe("0");
+      expect(css.outline !== "none" && css.outline.includes("2px") ||
+        css.borderTopStyle !== "none" && Number.parseFloat(css.borderTopWidth) > 0 ||
+        css.fill !== "none" && css.fill !== "" && Number(css.fillOpacity || 1) > 0).toBe(true);
+    }
+  );
+
   function rectangleFixture() {
     const fixture = ringLetterDocument(fills[0].style);
     const art = fixture.document.pages[0].objects[0];
@@ -721,8 +779,8 @@ describe("canvas ring-fill layers", () => {
       expect(visible.querySelector("line")!.getAttribute("x1")).toBe("130");
       expect(visible.querySelector("line")!.getAttribute("x2")).toBe("190");
     } else {
-      expect(visible.querySelector("path")!.getAttribute("transform"))
-        .toBe("matrix(0.5 0 0 1 80 0) translate(100 100)");
+      expect(visible.querySelector("path")!.getAttribute("transform")).toBeNull();
+      expect(visible.querySelector("path")!.getAttribute("d")).toBe("M 189.5 100 L 130 100 L 130 123 L 189.5 123");
     }
     const frame = container.querySelector<HTMLElement>("[data-art-transform-frame]")!;
     expect(frame.style.left).toBe("calc(30px * var(--page-scale))");
