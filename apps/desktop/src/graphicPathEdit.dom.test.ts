@@ -379,6 +379,7 @@ describe("graphic path direct editing interactions", () => {
     expect(canHistory("redo")).toBe(true);
     expect(container.textContent).toContain(status);
     expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+    expect(container.querySelector('[data-object-move-preview="true"]')).toBeNull();
     await act(async () => {
       dispatchPointer(target, "pointermove", { x: point.x + 30, y: point.y + 30 }, pointerId);
       dispatchPointer(target, "pointerup", point, pointerId);
@@ -388,6 +389,7 @@ describe("graphic path direct editing interactions", () => {
     expect(canHistory("undo")).toBe(true);
     expect(canHistory("redo")).toBe(true);
     expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+    expect(container.querySelector('[data-object-move-preview="true"]')).toBeNull();
     expect(await historyStacks()).toEqual(historyBefore);
   }
 
@@ -418,11 +420,13 @@ describe("graphic path direct editing interactions", () => {
       dispatchPointer(target, "pointermove", end, 81);
       await new Promise((resolve) => window.setTimeout(resolve, 10));
     });
+    expect(snapshotDocument()).toEqual(before);
     if (kind === "rectangle") {
-      expect(snapshotDocument()).toEqual(before);
       expect(container.querySelector('[data-art-transform-preview="true"]')).not.toBeNull();
     } else {
-      expect(snapshotDocument()).not.toEqual(before);
+      expect(target.getAttribute("data-object-move-preview")).toBe("true");
+      expect(target.style.translate).toContain("80px");
+      expect(target.style.translate).toContain("50px");
     }
     await escapeAndRelease(before, target, end, 81, "Move canceled");
   });
