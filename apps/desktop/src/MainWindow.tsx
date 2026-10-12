@@ -14,6 +14,7 @@ import {
   type OpenWarningsReport
 } from "./openWarnings";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
+import { localizeModifierHint } from "./modifierLabels";
 import {
   createElement,
   memo,
@@ -352,7 +353,7 @@ import type { Engine3DCoordinate } from "@chemdraft/engine3d-api";
 import {
   activateDrawingToolCommand,
   createActiveToolState,
-  drawingToolStatusLabel,
+  drawingToolStatusLabel as unlocalizedDrawingToolStatusLabel,
   isCompatOnlyArtVariantCommandId,
   isDrawingToolCommand,
   TRANSITIONAL_STUB_COMMAND_IDS,
@@ -1592,7 +1593,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.11.50-opus";
+const CURRENT_BUILD_STAMP = "10.12.16.25-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1679,6 +1680,10 @@ export function flattenWarningMessages(warnings: readonly FlattenWarning[]): str
   return warnings.filter((warning) => warning.code !== "perspective-cleanup").map((warning) => warning.message);
 }
 
+function drawingToolStatusLabel(commandId: string, title?: string): string {
+  return localizeModifierHint(unlocalizedDrawingToolStatusLabel(commandId, title));
+}
+
 function selectToolStatusLabel(): string {
   return drawingToolStatusLabel("tool.select", "Selection Tool");
 }
@@ -1700,7 +1705,7 @@ function scissorsStatusLabel(action = "click path to split"): string {
 
 function eyedropperStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: ${targetLabel} target selected; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+  return localizeModifierHint(`Eyedropper: ${targetLabel} target selected; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`);
 }
 
 function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): string {
@@ -1710,7 +1715,7 @@ function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): str
 
 function eyedropperSameTargetStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+  return localizeModifierHint(`Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`);
 }
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
