@@ -167,7 +167,7 @@ import {
 } from "./plugins/panelBridge";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { isBlockedByModalDialog, shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -539,6 +539,7 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
   type ChemDraftSelectionClipboardPayload,
@@ -960,6 +961,8 @@ type ObjectDragState = {
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+  documentPreview?: { dx: number; dy: number; document: ChemDraftDocument };
+  moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1577,7 +1580,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.01.40-opus";
+const CURRENT_BUILD_STAMP = "10.12.08.40-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2413,6 +2416,7 @@ export function MainWindow({
   const hintHoverTargetRef = useRef<ModifierHintContext["hoverTarget"]>(undefined);
   const [statusModifierHint, setStatusModifierHint] = useState("");
   const refreshModifierHintRef = useRef<() => void>(() => undefined);
+  const modifierHintInputsRef = useRef<string | undefined>(undefined);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
@@ -11442,8 +11446,10 @@ export function MainWindow({
     window.addEventListener("focusout", refreshAfterEvent, true);
     window.addEventListener("blur", clearModifiers);
     window.document.addEventListener("visibilitychange", onVisibility);
+    const unsubscribeModalChanges = subscribeToModalDialogChanges(refreshAfterEvent);
     return () => {
       mounted = false;
+      unsubscribeModalChanges();
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keyup", onKey, true);
       for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
@@ -12679,6 +12685,11 @@ export function MainWindow({
         });
   }, []);
 
+  const objectDragDelta = useCallback((drag: ObjectDragState, point: ClientPoint): ClientPoint => {
+    drag.moveDeltaResolver ??= documentObjectMoveDeltaResolver(drag.startDocument, drag.objectId, drag.groupObjectIds);
+    return drag.moveDeltaResolver(point.x - drag.startPoint.x, point.y - drag.startPoint.y);
+  }, []);
+
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
@@ -12699,9 +12710,16 @@ export function MainWindow({
       }
 
       clearObjectTransformPreview(drag.pointerId);
-      replacePresentDocument(objectDragDocument(drag, point));
+      const previewDocument = objectDragDocument(drag, point);
+      replacePresentDocument(previewDocument);
+      const delta = objectDragDelta(drag, point);
+      drag.documentPreview = {
+        dx: delta.x,
+        dy: delta.y,
+        document: documentRef.current
+      };
     });
-  }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
+  }, [clearObjectTransformPreview, objectDragDelta, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
     updateNativeGraphicCornerRadius(
@@ -13027,7 +13045,11 @@ export function MainWindow({
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const moved = objectDragDocument(drag, point);
+    const preview = drag.documentPreview;
+    const delta = preview ? objectDragDelta(drag, point) : undefined;
+    const moved = preview && delta && preview.dx === delta.x && preview.dy === delta.y
+      ? preview.document
+      : objectDragDocument(drag, point);
     clearObjectTransformPreview(drag.pointerId);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
@@ -13036,7 +13058,7 @@ export function MainWindow({
 
     commitDocumentHistoryFrom(drag.startDocument, moved);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
+  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -18229,7 +18251,7 @@ export function MainWindow({
       : undefined;
     const data = markerObject?.type === "graphic" ? markerObject.data : undefined;
     const focusTarget = window.document.activeElement;
-    setStatusModifierHint(modifierHint({
+    const context: ModifierHintContext = {
       activeTool: activeToolState.activeCommandId,
       interaction,
       hoverTarget: shiftHoveredArrowId ? "arrow" : hintHoverTargetRef.current,
@@ -18240,7 +18262,13 @@ export function MainWindow({
       dualShaftArrow: data?.dualShaft === true,
       twoArrowheads: Boolean(data?.markerStart && data.markerStart.kind !== "none" && data.markerEnd && data.markerEnd.kind !== "none"),
       lassoSubtracting: selectionLassoRef.current?.subtracting
-    }, heldHintModifiersRef.current));
+    };
+    const held = heldHintModifiersRef.current;
+    const inputs = JSON.stringify([context, Boolean(held.shiftKey), Boolean(held.altKey), Boolean(held.metaKey), Boolean(held.ctrlKey)]);
+    if (inputs !== modifierHintInputsRef.current) {
+      modifierHintInputsRef.current = inputs;
+      setStatusModifierHint(modifierHint(context, held));
+    }
   };
   // Also refresh after command-driven tool/selection changes and interaction cancellation.
   useEffect(() => { refreshModifierHintRef.current(); });

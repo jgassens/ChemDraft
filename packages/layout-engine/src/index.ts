@@ -1063,7 +1063,7 @@ function resolvePageBondCrossings(
   forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
     const left = candidates[leftIndex];
     const right = candidates[rightIndex];
-    if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
+    if (!left || !right || crossingCandidatesShareAtom(left, right)) {
       return;
     }
     const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
@@ -1098,32 +1098,33 @@ function resolvePageBondCrossings(
  * Visit every candidate pair whose bond segments overlap in x, as `(lower index, higher index)` —
  * the order the all-pairs loop used, which decides depth ties. Sweep and prune: sorted by left edge,
  * a pair is visited while the next segment starts no further right than this one ends (inclusive,
- * matching `segmentBoxesOverlap`). Every pair the old O(n²) loop kept overlaps in x, so the result is
- * identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
- * Segments with non-finite ends are left out — `shouldSkipCrossingCandidatePair` skips them anyway,
- * and NaN cannot be sorted.
+ * matching the inclusive bounding-box test). Every pair the old O(n²) loop kept overlaps in x, so
+ * the result is identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
+ * Invalid or zero-length segments are rejected once here rather than for every overlapping pair;
+ * NaN cannot be sorted. The sweep also checks y bounds before visiting a pair, so the visitor need
+ * only reject shared-atom junctions before the intersection test.
  */
 function forEachCandidatePairOverlappingInX(
   candidates: readonly PageNativeBondCandidate[],
   visit: (leftIndex: number, rightIndex: number) => void
 ): void {
   const spans = candidates.flatMap((candidate, index) => {
+    if (!finiteSegment(candidate.start, candidate.end)) {
+      return [];
+    }
     const minX = Math.min(candidate.start.x, candidate.end.x);
     const maxX = Math.max(candidate.start.x, candidate.end.x);
     const minY = Math.min(candidate.start.y, candidate.end.y);
     const maxY = Math.max(candidate.start.y, candidate.end.y);
-    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)
-      ? [{ index, minX, maxX, minY, maxY }]
-      : [];
+    return [{ index, minX, maxX, minY, maxY }];
   });
   spans.sort((left, right) => left.minX - right.minX || left.index - right.index);
   for (let i = 0; i < spans.length; i += 1) {
     const current = spans[i]!;
     for (let j = i + 1; j < spans.length && spans[j]!.minX <= current.maxX; j += 1) {
       const other = spans[j]!;
-      // Disjoint in y too: `shouldSkipCrossingCandidatePair` would skip the pair on the same test,
-      // so rejecting it here changes nothing but the cost. On a tall page most x-overlapping pairs
-      // are rows apart.
+      // On a tall page most x-overlapping pairs are rows apart. Check the precomputed bounds here
+      // rather than recomputing both bounding boxes in the visitor.
       if (other.minY > current.maxY || other.maxY < current.minY) {
         continue;
       }
@@ -1162,22 +1163,13 @@ function nativeBondCandidates(object: MoleculeObject, objectLayerIndex: number):
   });
 }
 
-function shouldSkipCrossingCandidatePair(left: PageNativeBondCandidate, right: PageNativeBondCandidate): boolean {
-  if (left.ref.objectId === right.ref.objectId) {
-    const sharedAtom = left.bond.fromAtomId === right.bond.fromAtomId ||
-      left.bond.fromAtomId === right.bond.toAtomId ||
-      left.bond.toAtomId === right.bond.fromAtomId ||
-      left.bond.toAtomId === right.bond.toAtomId;
-    if (sharedAtom) {
-      return true;
-    }
-  }
-
-  if (!finiteSegment(left.start, left.end) || !finiteSegment(right.start, right.end)) {
-    return true;
-  }
-
-  return !segmentBoxesOverlap(left.start, left.end, right.start, right.end);
+function crossingCandidatesShareAtom(left: PageNativeBondCandidate, right: PageNativeBondCandidate): boolean {
+  return left.ref.objectId === right.ref.objectId && (
+    left.bond.fromAtomId === right.bond.fromAtomId ||
+    left.bond.fromAtomId === right.bond.toAtomId ||
+    left.bond.toAtomId === right.bond.fromAtomId ||
+    left.bond.toAtomId === right.bond.toAtomId
+  );
 }
 
 function finiteSegment(start: LayoutPoint, end: LayoutPoint): boolean {
@@ -1186,22 +1178,6 @@ function finiteSegment(start: LayoutPoint, end: LayoutPoint): boolean {
     Number.isFinite(end.x) &&
     Number.isFinite(end.y) &&
     distance(start, end) > crossingIntersectionEpsilon;
-}
-
-function segmentBoxesOverlap(leftStart: LayoutPoint, leftEnd: LayoutPoint, rightStart: LayoutPoint, rightEnd: LayoutPoint): boolean {
-  const leftMinX = Math.min(leftStart.x, leftEnd.x);
-  const leftMaxX = Math.max(leftStart.x, leftEnd.x);
-  const leftMinY = Math.min(leftStart.y, leftEnd.y);
-  const leftMaxY = Math.max(leftStart.y, leftEnd.y);
-  const rightMinX = Math.min(rightStart.x, rightEnd.x);
-  const rightMaxX = Math.max(rightStart.x, rightEnd.x);
-  const rightMinY = Math.min(rightStart.y, rightEnd.y);
-  const rightMaxY = Math.max(rightStart.y, rightEnd.y);
-
-  return leftMinX <= rightMaxX &&
-    leftMaxX >= rightMinX &&
-    leftMinY <= rightMaxY &&
-    leftMaxY >= rightMinY;
 }
 
 function segmentIntersection(
@@ -1283,14 +1259,22 @@ function warnForDepthCycles(
     from: bondRefKey(crossing.front),
     to: bondRefKey(crossing.back)
   }));
+  // Prefix the source length so ids containing "->" cannot alias a different edge.
+  const edgeKey = (from: string, to: string) => `${from.length}:${from}->${to}`;
+  const edgeKeys = new Set<string>();
+  const adjacency = new Map<string, string[]>();
+  for (const { from, to } of edges) {
+    edgeKeys.add(edgeKey(from, to));
+    const targets = adjacency.get(from) ?? [];
+    targets.push(to);
+    adjacency.set(from, targets);
+  }
 
+  // Keep the existing three-edge-cycle semantics: only visit actual two-edge paths, and look up
+  // their closing edge in constant time instead of scanning all crossings for both steps.
   for (const first of edges) {
-    for (const second of edges) {
-      if (second.from !== first.to) {
-        continue;
-      }
-      const closing = edges.find((candidate) => candidate.from === second.to && candidate.to === first.from);
-      if (closing) {
+    for (const target of adjacency.get(first.to) ?? []) {
+      if (edgeKeys.has(edgeKey(target, first.from))) {
         warnings.push({
           code: "crossing.depth_cycle",
           message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
