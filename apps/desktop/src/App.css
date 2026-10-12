@@ -3466,7 +3466,8 @@ textarea:focus-visible,
   pointer-events: auto;
 }
 
-.page-svg-surface {
+.page-svg-surface,
+.page-svg-visual-layer {
   position: absolute;
   inset: 0;
   z-index: 2;
@@ -7439,4 +7440,30 @@ textarea:focus-visible,
   color: var(--cd-text-muted, #6b665c);
   font-size: 10px;
   line-height: 1.35;
+}
+
+/* Paint and ordinary hits live in the ordered SVG runs. These copies retain the
+   existing edit/preview DOM contract; editor and handle siblings stay interactive. */
+.document-object-overlay .graphic-glyph-shell,
+.document-object-overlay .art-transform-drag-preview,
+.document-object-overlay > .reaction-arrow-glyph,
+.document-object-overlay > .bracket-glyph {
+  opacity: 0;
+}
+.document-object-overlay .graphic-glyph-shell *,
+.reaction-arrow-object.document-object-overlay,
+.bracket-object.document-object-overlay {
+  pointer-events: none !important;
+}
+.molecule-object.document-object-overlay:not(.native-molecule-object) {
+  border-color: transparent;
+  background: transparent;
+}
+
+.generic-object.document-object-overlay {
+  border-color: transparent;
+  background: transparent;
+}
+.text-object-edit-preview {
+  opacity: 0;
 }

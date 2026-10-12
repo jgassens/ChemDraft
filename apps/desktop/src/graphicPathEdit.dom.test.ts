@@ -50,9 +50,9 @@ describe("graphic path direct editing interactions", () => {
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 0);
     globalThis.cancelAnimationFrame = (handle: number) => window.clearTimeout(handle);
-    HTMLElement.prototype.setPointerCapture = () => {};
-    HTMLElement.prototype.releasePointerCapture = () => {};
-    HTMLElement.prototype.hasPointerCapture = () => false;
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.releasePointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
     window.history.replaceState(null, "", "/?agentBridge=1&artStyleQa=0");
 
     container = document.createElement("div");
