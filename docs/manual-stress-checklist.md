@@ -220,6 +220,9 @@ and Art toolbars open, including at 125%/150% display scale:
   `toolbar-state.json` during the box: temporary hides and frames must not be saved. Disconnect the
   monitor holding a toolbar while the box is open: closing it recovers that toolbar onto a visible
   monitor. Quit while a box is open: dismissing it must not resurrect floating windows.
+  Open/save panels (including Save As, exports, template, image and plugin pickers) keep toolbars,
+  popovers, the tooltip and plugin panels hidden until the last box/panel closes. A close prompt →
+  Save panel → canceled-save re-ask keeps them hidden throughout, then restores them on every ending.
 - Close a dirty foreground or background tab: Save / Don’t Save / Cancel. Cancel retains drawing,
   selection, dirty state, and history; Don’t Save removes only that tab (or leaves a fresh Untitled
   when it was the last one). Save closes only after success. Cancel the save picker, simulate a write

@@ -1880,7 +1880,8 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps native template dialogs on the fast path", () => {
     expect(mainWindowSource).toContain("prewarmNativeDialogModule()");
-    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"@tauri-apps/plugin-dialog\")");
+    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"./nativeFileDialog\")");
+    expect(mainWindowSource).toContain("dialogs.prewarmNativeFileDialogs()");
     expect(mainWindowSource).toContain("const { open } = await loadTauriDialogModule();");
     expect(mainWindowSource).toContain("const { save } = await loadTauriDialogModule();");
 

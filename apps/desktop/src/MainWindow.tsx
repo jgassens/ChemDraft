@@ -1597,7 +1597,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.11.00-opus";
+const CURRENT_BUILD_STAMP = "10.12.11.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8732,7 +8732,7 @@ export function MainWindow({
     else {
       return await saveAndCloseDocumentTab() ? undefined : false;
     }
-  }, closeTabPrompt);
+  }, closeTabPrompt, true);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -29936,11 +29936,11 @@ async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
 
-type TauriDialogModule = typeof import("@tauri-apps/plugin-dialog");
+type TauriDialogModule = typeof import("./nativeFileDialog");
 let tauriDialogModulePromise: Promise<TauriDialogModule> | undefined;
 
 function loadTauriDialogModule(): Promise<TauriDialogModule> {
-  tauriDialogModulePromise ??= import("@tauri-apps/plugin-dialog");
+  tauriDialogModulePromise ??= import("./nativeFileDialog");
   return tauriDialogModulePromise;
 }
 
@@ -29949,7 +29949,7 @@ function prewarmNativeDialogModule(): void {
     return;
   }
 
-  void loadTauriDialogModule().catch(() => {
+  void loadTauriDialogModule().then((dialogs) => dialogs.prewarmNativeFileDialogs()).catch(() => {
     tauriDialogModulePromise = undefined;
   });
 }

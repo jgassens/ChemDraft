@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { act, createElement, StrictMode } from "react";
+import { act, createElement, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativePrompt, nativePromptButtons, setNativePromptProvider, useNativePrompt, type NativePromptOptions } from "./nativePrompt";
+import { save } from "./nativeFileDialog";
 
-const plugin = vi.hoisted(() => ({ native: true, message: vi.fn(), invoke: vi.fn() }));
+const plugin = vi.hoisted(() => ({ native: true, message: vi.fn(), invoke: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => plugin.native, invoke: plugin.invoke }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ message: plugin.message }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ message: plugin.message, save: plugin.save }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const three: NativePromptOptions = {
@@ -17,9 +18,59 @@ const three: NativePromptOptions = {
     { id: "save", label: "Save" }
   ]
 };
-afterEach(() => { plugin.native = true; plugin.message.mockReset(); plugin.invoke.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
+afterEach(() => { plugin.native = true; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
 
 describe("nativePrompt", () => {
+  it.each(["saved", "discard", "cancel", "panel cancelled then cancel", "panel throws then cancel"])(
+    "keeps utilities hidden across the complete close chain and releases on ending: %s", async (ending) => {
+      let depth = 0;
+      const calls: string[] = [];
+      plugin.invoke.mockImplementation(async (_command, { suspended }) => {
+        if (suspended) { if (depth++ === 0) calls.push("hide"); }
+        else { expect(depth).toBeGreaterThan(0); if (--depth === 0) calls.push("restore"); }
+      });
+      const answers = ending === "discard" ? ["Don't Save"] : ending === "cancel" ? ["Cancel"] :
+        ending === "saved" ? ["Save"] : ["Save", "Cancel"];
+      plugin.message.mockImplementation(async () => {
+        expect(depth).toBeGreaterThan(0);
+        expect(calls).not.toContain("restore");
+        calls.push("box");
+        return answers.shift();
+      });
+      plugin.save.mockImplementation(async () => {
+        expect(depth).toBeGreaterThan(0);
+        expect(calls).not.toContain("restore");
+        calls.push("panel");
+        if (ending === "panel throws then cancel") throw new Error("Panel failed");
+        return ending === "saved" ? "drawing.chemdraft" : null;
+      });
+      const onChoice = vi.fn(async (id: string) => {
+        if (id !== "save") return;
+        try { if (await save({})) return; } catch { /* The close flow re-asks after a save failure. */ }
+        return false;
+      });
+      function Prompt() {
+        const [detail, setDetail] = useState("");
+        useNativePrompt({ ...three, message: three.message + detail }, async (id) => {
+          const repeat = await onChoice(id);
+          if (repeat === false) setDetail(" Save canceled. The tab is still open.");
+          return repeat;
+        }, "close-request", true);
+        return null;
+      }
+      const container = document.createElement("div"); document.body.append(container);
+      const root = createRoot(container);
+      try {
+        await act(async () => root.render(createElement(StrictMode, null, createElement(Prompt))));
+        await act(async () => { await vi.waitFor(() => expect(calls.at(-1)).toBe("restore")); });
+        expect(depth).toBe(0);
+        expect(calls).toEqual(ending === "saved" ? ["hide", "box", "panel", "restore"] :
+          ending.startsWith("panel") ? ["hide", "box", "panel", "box", "restore"] : ["hide", "box", "restore"]);
+        if (ending.startsWith("panel")) expect(plugin.message.mock.calls[1]![0]).toContain("Save canceled");
+      } finally { await act(async () => root.unmount()); }
+      expect(depth).toBe(0);
+    }
+  );
   it.each([false, true])("suspends before the box and restores in finally (box throws: %s)", async (throws) => {
     const calls: string[] = [];
     plugin.invoke.mockImplementation(async (command, { suspended }) => {

@@ -24,6 +24,9 @@ import * as atomLabelDraft from "./atomLabelDraft";
 
 const native = vi.hoisted(() => ({
   desktop: true,
+  suspendUtilities: false,
+  suspensionDepth: 0,
+  visibilityChanges: [] as string[],
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
@@ -62,7 +65,15 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
     listenTauriEvent: listen, listenCurrentWindowEvent: listen };
 });
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(null)
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  isTauri: () => native.suspendUtilities,
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+    if (command === "suspend_toolset_windows") {
+      if (options?.suspended) { if (native.suspensionDepth++ === 0) native.visibilityChanges.push("hide"); }
+      else if (--native.suspensionDepth === 0) native.visibilityChanges.push("restore");
+    }
+    return null;
+  })
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
@@ -97,6 +108,9 @@ describe("documents in one window", () => {
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
+    native.suspendUtilities = false;
+    native.suspensionDepth = 0;
+    native.visibilityChanges = [];
     native.session = undefined;
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
@@ -762,6 +776,59 @@ describe("documents in one window", () => {
     expect(native.writeFile).toHaveBeenLastCalledWith("/tmp/saved.chemdraft", expect.any(String));
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
+
+  it.each(["document.open", "document.save", "document.saveAs"])(
+    "%s suspends the standalone document file panel until cancellation", async (commandId) => {
+      native.suspendUtilities = true;
+      await paste("Standalone panel suspension");
+      const picker = commandId === "document.open" ? native.picker : native.savePicker;
+      let finishPanel!: (path: string | null) => void;
+      picker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
+      await command(commandId);
+      await vi.waitFor(() => expect(finishPanel).toBeDefined());
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      await act(async () => finishPanel(null));
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
+
+  it.each(["saved", "Don't Save", "Cancel", "panel cancelled then Cancel", "panel throws then Cancel"])(
+    "balances suspension through the real tab-close flow: %s", async (ending) => {
+      native.suspendUtilities = true;
+      await paste("Close-chain suspension");
+      await closeTab();
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      if (ending === "Cancel" || ending === "Don't Save") {
+        await modalButton(ending);
+      } else {
+        let finishPanel!: (path: string | null) => void;
+        let failPanel!: (error: Error) => void;
+        native.savePicker.mockImplementationOnce(() => new Promise((resolve, reject) => {
+          finishPanel = resolve; failPanel = reject;
+        }));
+        const saving = modalButton("Save");
+        await vi.waitFor(() => expect(native.savePicker).toHaveBeenCalled());
+        expect(native.suspensionDepth).toBe(2);
+        expect(native.visibilityChanges).toEqual(["hide"]);
+        await act(async () => {
+          if (ending === "panel throws then Cancel") failPanel(new Error("panel unavailable"));
+          else finishPanel(ending === "saved" ? "/tmp/suspended-save.chemdraft" : null);
+        });
+        await saving;
+        if (ending !== "saved") {
+          expect(pendingPrompt?.prompt.message).toContain(ending.startsWith("panel throws") ? "panel unavailable" : "Save canceled");
+          expect(native.suspensionDepth).toBe(1);
+          expect(native.visibilityChanges).toEqual(["hide"]);
+          await modalButton("Cancel");
+        }
+      }
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
 
   it.each([false, true])("the only clean tab x leaves a pristine Untitled without prompting (saved: %s)", async (saved) => {
     if (saved) await open("Clean saved drawing");

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
 import { message, type MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
+import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./nativeUtilitySuspension";
 
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
@@ -79,19 +80,10 @@ export async function nativePrompt(
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    await invoke("suspend_toolset_windows", { suspended: true });
-    try {
-      if (signal?.aborted) return cancel.id;
-      result = await message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
-    } finally {
-      // Rust counts overlapping requests and refuses restoration once quit has begun.
-      // Restoration failure must not discard the user's answer or open a second prompt.
-      try {
-        await invoke("suspend_toolset_windows", { suspended: false });
-      } catch (error) {
-        console.error("Could not restore floating windows after native prompt", error);
-      }
-    }
+    result = await withNativeUtilitySuspension(async () => {
+      if (signal?.aborted) return cancel.label;
+      return message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+    });
   } catch (error) {
     console.error("Native prompt failed", error);
     return fallback(prompt);
@@ -101,21 +93,41 @@ export async function nativePrompt(
   return prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
 }
 
-/** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise. */
+/** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise.
+ * `suspendSequence` keeps a close flow hidden through its choice callback and any re-asks. */
 export function useNativePrompt(
   prompt: NativePromptOptions,
   onChoice: (id: string) => void | boolean | Promise<void | boolean>,
-  requestKey: string | number | undefined
+  requestKey: string | number | undefined,
+  suspendSequence = false
 ): { visible: boolean; choose: (id: string) => void } {
   const current = useRef({ prompt, onChoice });
   current.current = { prompt, onChoice };
   const resolve = useRef<((id: string) => void) | undefined>(undefined);
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const suspension = useRef<Promise<(() => Promise<void>) | undefined>>(undefined);
+  useEffect(() => {
+    if (requestKey === undefined || !suspendSequence) { suspension.current = undefined; return; }
+    let disposed = false;
+    // One outer acquisition survives retries and the choice callback's Save panel. Each box and
+    // panel also acquires independently, so unmounting while one is open cannot reveal utilities.
+    const acquisition = Promise.resolve().then(() => disposed ? undefined : acquireNativeUtilitySuspension())
+      .catch((error) => {
+        console.error("Could not suspend floating windows for prompt sequence", error);
+        return undefined;
+      });
+    suspension.current = acquisition;
+    return () => {
+      disposed = true;
+      void acquisition.then((release) => release?.());
+    };
+  }, [requestKey, suspendSequence]);
   useEffect(() => {
     if (requestKey === undefined) { setVisible(false); return; }
     let disposed = false;
     const controller = new AbortController();
+    const acquisition = suspension.current;
     const fallback: NativePromptFallback = () => new Promise((done) => {
       if (disposed) { done(current.current.prompt.choices.find((choice) => choice.cancel)!.id); return; }
       resolve.current = done;
@@ -128,7 +140,13 @@ export function useNativePrompt(
       const repeat = await current.current.onChoice(id) === false;
       if (disposed) return;
       if (repeat) setAttempt((value) => value + 1);
-      else setVisible(false);
+      else {
+        setVisible(false);
+        await acquisition?.then((release) => release?.());
+      }
+    }).catch(async (error) => {
+      console.error("Native prompt choice failed", error);
+      await acquisition?.then((release) => release?.());
     });
     return () => {
       disposed = true;
