@@ -539,6 +539,7 @@ describe("canvas ring-fill layers", () => {
       await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
       expect(objectVisual(fixture.rectangle.id)!.getAttribute("transform")).toContain(`translate(${offset} 10)`);
       expect(objectVisual(fixture.rectangle.id)!.querySelector("image[data-art-transform-drag-preview='image']")).not.toBeNull();
+      expectInteractionAbovePaint(container.querySelector(`[data-object-controls='${fixture.rectangle.id}'] [data-art-transform-drag-preview]`)!);
       expect(objectVisual(fixture.text.id)!.getAttribute("transform")).toBeNull();
     }
     expect(plan).not.toHaveBeenCalled();
@@ -598,6 +599,147 @@ describe("canvas ring-fill layers", () => {
     await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(container.querySelector("[data-spin3d-overlay]")).toBeNull();
     expect(moleculeLayer(fixture.molecule.id).querySelector<SVGElement>(".native-molecule-overlay")!.style.opacity).toBe("");
+  });
+
+  function expectInteractionAbovePaint(element: Element) {
+    // Compare the stacking contexts at their common page parent, not the local handle z-index.
+    const interaction = element.closest("[data-page-interaction-layer]");
+    expect(interaction).not.toBeNull();
+    const paint = container.querySelector("[data-page-object-stack]")!;
+    expect(paint).not.toBeNull();
+    expect(interaction!.parentElement).toBe(paint.parentElement);
+    expect(layer(interaction!)).toBeGreaterThan(layer(paint));
+    for (const run of container.querySelectorAll("[data-page-svg-visual-layer], .native-molecule-object")) {
+      expect(run.closest("[data-page-object-stack]")).toBe(paint);
+    }
+  }
+
+  it("retains arrow hover ownership from paint to marker, endpoint and catcher, then clears outside", async () => {
+    const withArrow = insertNativeArtGraphicObject(createPhase4Document("Arrow ownership"),
+      { x: 100, y: 100 }, "tool.art.resonanceArrow");
+    const arrow = withArrow.pages[0].objects[0];
+    await renderDocument(documentWithObjects(withArrow, [arrow]), "tool.art.resonanceArrow");
+    const painted = objectVisual(arrow.id)!;
+    await pointer(painted, "pointermove", { x: 140, y: 112 }, 0);
+    const marker = container.querySelector("[data-graphic-marker-handle]")!;
+    expect(marker).not.toBeNull();
+    async function moveBetween(from: Element, to: Element) {
+      await act(async () => {
+        from.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: to }));
+        to.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: from }));
+      });
+    }
+    await moveBetween(painted, marker);
+    expect(container.querySelector("[data-graphic-marker-handle]")).toBe(marker);
+    const endpoint = container.querySelector("[data-graphic-path-handle='end']")!;
+    await moveBetween(marker, endpoint);
+    expect(endpoint.isConnected).toBe(true);
+    const catcher = painted.querySelector(".graphic-glyph-hit-target")!;
+    await moveBetween(endpoint, catcher);
+    expect(marker.isConnected).toBe(true);
+    await moveBetween(catcher, container.querySelector(".page")!);
+    expect(container.querySelector("[data-graphic-marker-handle]")).toBeNull();
+  });
+
+  it.each(["shape", "400 labels"])("keeps molecule handles, hover rings and label editor above a later %s", async front => {
+    const fixture = rectangleFixture();
+    const labels = Array.from({ length: 400 }, (_, index) => ({ ...fixture.text, x: 600, y: 500, id: `chrome-label-${index}` }));
+    const objects = front === "shape" ? [fixture.molecule, { ...fixture.rectangle, x: 600, y: 500 }]
+      : [...labels.slice(0, 200), fixture.molecule, ...labels.slice(200)];
+    await renderDocument(documentWithObjects(fixture.document, objects, [fixture.molecule.id]));
+    expectInteractionAbovePaint(container.querySelector("[data-object-resize-corner]")!);
+    // The atom is unobscured, while the same molecule's controls can overhang later objects.
+    await pointer(moleculeLayer(fixture.molecule.id), "pointermove", fixture.molecule.atoms[0], 0);
+    expectInteractionAbovePaint(container.querySelector(".native-atom-hover")!);
+    await command("tool.atom");
+    await pointer(moleculeLayer(fixture.molecule.id), "pointerdown", fixture.molecule.atoms[0]);
+    const editor = container.querySelector<HTMLInputElement>("[data-atom-label-editor]")!;
+    expect(editor).not.toBeNull();
+    expectInteractionAbovePaint(editor);
+    expect(getComputedStyle(editor).pointerEvents).not.toBe("none");
+  });
+
+  it.each(["lasso", "marquee", "spin"])("keeps %s above both SVG runs of a 400-label page", async kind => {
+    const fixture = rectangleFixture();
+    const labels = Array.from({ length: 400 }, (_, index) => ({ ...fixture.text, id: `gesture-label-${index}` }));
+    const model = buildSpin3dModel({ molecule: fixture.molecule,
+      coords3d: fixture.molecule.atoms.flatMap(atom => [atom.x, -atom.y, 0]),
+      orientation: { x: 0, y: 0, z: 0, w: 1 } });
+    const nativeDocument = attachSpin3dModel(documentWithObjects(fixture.document,
+      [...labels.slice(0, 200), fixture.molecule, ...labels.slice(200)], [fixture.molecule.id]), fixture.molecule.id, model);
+    await renderDocument(nativeDocument, kind === "lasso" ? "tool.lasso" : "tool.select");
+    if (kind === "spin") await command("structure.spin3d");
+    else {
+      const page = container.querySelector(".page")!;
+      await pointer(page, "pointerdown", { x: 50, y: 50 });
+      await pointer(page, "pointermove", { x: 80, y: 80 });
+    }
+    const overlay = container.querySelector(kind === "spin" ? "[data-spin3d-overlay]"
+      : kind === "lasso" ? ".selection-lasso-surface" : ".selection-marquee")!;
+    expect(overlay).not.toBeNull();
+    expectInteractionAbovePaint(overlay);
+    if (kind === "spin") {
+      const ghost = container.querySelector<SVGElement>("[data-spin3d-ghost]")!;
+      expectInteractionAbovePaint(ghost);
+      expect(ghost.style.opacity).toBe("0.1");
+      expect(getComputedStyle(overlay).pointerEvents).toBe("auto");
+    }
+  });
+
+  function projectedArtFixture(type: "reaction-arrow" | "bracket", rotation: number, tiltYDegrees: number): DocumentObject {
+    const base = { id: `projected-${type}`, x: 100, y: 100, width: 120, height: 24,
+      rotation, style: { tiltYDegrees } };
+    return type === "reaction-arrow" ? { ...base, type, arrowKind: "forward", labels: [],
+      start: { kind: "point", point: { x: 100, y: 112 } },
+      end: { kind: "point", point: { x: 220, y: 112 } } }
+      : { ...base, type, bracketKind: "square", containedObjectIds: [] };
+  }
+
+  it.each([
+    ["reaction-arrow", 0], ["reaction-arrow", 60], ["bracket", 0], ["bracket", 60]
+  ] as const)("rotates and projects the %s catcher with its paint (Y tilt %s)", async (type, tilt) => {
+    const object = projectedArtFixture(type, 90, tilt);
+    await renderDocument(documentWithObjects(createPhase4Document("Projected catcher"), [object]));
+    const rect = objectVisual(object.id)!.querySelector("rect")!;
+    expect(rect.getAttribute("transform")).toBe(tilt ? "matrix(0 1 -0.5 0 216 -48)" : "rotate(90 160 112)");
+    // Rasterize just the catcher as opaque ink to test its actual transformed footprint.
+    const copy = rect.cloneNode(true) as Element;
+    copy.setAttribute("fill", "black");
+    const raster = new Resvg(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">${copy.outerHTML}</svg>`,
+      { background: "white" }).render();
+    const at = (x: number, y: number) => raster.pixels[(y * raster.width + x) * 4];
+    expect(at(110, 110)).toBe(255); // formerly invisible, unrotated hit area
+    expect(at(160, 70)).toBe(0); // projected shaft/outline area
+  });
+
+  it.each(["reaction-arrow", "bracket"] as const)("paints the tilted %s in the same projection as its controls and export", async type => {
+    const object = projectedArtFixture(type, 0, 60);
+    const nativeDocument = documentWithObjects(createPhase4Document("Projected paint"), [object], [object.id]);
+    await renderDocument(nativeDocument);
+    const visible = objectVisual(object.id)!;
+    if (type === "reaction-arrow") {
+      expect(visible.querySelector("line")!.getAttribute("x1")).toBe("130");
+      expect(visible.querySelector("line")!.getAttribute("x2")).toBe("190");
+    } else {
+      expect(visible.querySelector("path")!.getAttribute("transform"))
+        .toBe("matrix(0.5 0 0 1 80 0) translate(100 100)");
+    }
+    const frame = container.querySelector<HTMLElement>("[data-art-transform-frame]")!;
+    expect(frame.style.left).toBe("calc(30px * var(--page-scale))");
+    expect(frame.style.width).toBe("calc(60px * var(--page-scale))");
+    const exported = new DOMParser().parseFromString(exportDocumentToSvg(nativeDocument).contents, "image/svg+xml");
+    for (const selector of ["line", "polygon", "path"]) {
+      const canvas = visible.querySelector(selector);
+      if (!canvas) continue;
+      const output = exported.querySelector(`${selector}[data-object-id='${object.id}']`)!;
+      for (const attr of ["x1", "y1", "x2", "y2", "points", "d", "transform"]) {
+        const value = canvas.getAttribute(attr);
+        const exportedValue = output.getAttribute(attr);
+        if (value !== null && exportedValue !== null && ["x1", "y1", "x2", "y2"].includes(attr)) {
+          expect(Number(value)).toBeCloseTo(Number(exportedValue), 3);
+        } else expect(value).toBe(exportedValue);
+      }
+    }
   });
 
 });

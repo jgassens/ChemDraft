@@ -30,8 +30,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type RefObject,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
@@ -196,6 +198,8 @@ import {
   type PageSvgRenderPlan,
   bracketGlyphPathD,
   planReactionArrowGeometry,
+  projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
+  projectedPlaneSvgTransformForObject,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -1844,6 +1848,7 @@ export function MainWindow({
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const nativeBondDragRef = useRef<NativeBondDragState | null>(null);
   const nativePlacementDragRef = useRef<NativePlacementDragState | null>(null);
@@ -5846,7 +5851,7 @@ export function MainWindow({
 
   const focusTextObjectEditorDom = useCallback((objectId: string) => {
     const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-      `[data-object-id="${objectId}"] .text-object-editor`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
     );
     if (!editor) {
       return;
@@ -5860,7 +5865,7 @@ export function MainWindow({
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
-      `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
     );
     // Already focused: leave it, so a retry never moves the caret the user is typing at.
     if (!editor || editor.ownerDocument.activeElement === editor) {
@@ -17823,7 +17828,10 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
-  const handleObjectPointerLeave = useCallback((objectId: string) => {
+  const handleObjectPointerLeave = useCallback((objectId: string, event: ObjectPointerEvent) => {
+    // Paint, generous catchers and HTML edit controls are separate DOM surfaces. Leaving
+    // one for another surface owned by this object is still an object hover.
+    if (objectHoverOwner(event.relatedTarget) === objectId) return;
     if (
       nativeBondDragRef.current?.objectId === objectId ||
       nativeBondEditDragRef.current?.objectId === objectId ||
@@ -18481,7 +18489,9 @@ export function MainWindow({
                     verticalTicks={verticalCrosshairTicks}
                   />
                 ) : null}
+                <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  {...objectViewHandlers}
                   ariaLabel={document.title}
                   pageHeight={activePage.height}
                   pageWidth={activePage.width}
@@ -18490,13 +18500,8 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
-                  onContextMenu={handleObjectContextMenu}
-                  onPointerCancel={handleObjectPointerCancel}
-                  onPointerDown={handleObjectPointerDown}
-                  onPointerLeave={handleObjectPointerLeave}
-                  onPointerMove={handleObjectPointerMove}
-                  onPointerUp={handleObjectPointerUp}
                 />
+                <PageInteractionPortal target={interactionLayer}>
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -18607,6 +18612,7 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                 {(() => {
                   const resolvedSelectionObjectIds = resolveGroupedDocumentObjectIds(
                     document.pages[0].objects,
@@ -18674,6 +18680,7 @@ export function MainWindow({
                       {...objectViewHandlers}
                       object={object}
                       layerIndex={layerIndex}
+                      interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
                       spinning={spinning}
@@ -18735,6 +18742,7 @@ export function MainWindow({
                     />
                   );
                 })}
+                <PageInteractionPortal target={interactionLayer}>
                 {groupSelectionBounds ? (
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
@@ -18774,9 +18782,12 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                   </>
                   );
                 })()}
+                </div>
+                <div className="page-interaction-layer" data-page-interaction-layer="true" ref={setInteractionLayer} />
                 {artTransformQaEnabled ? (
                   <ArtTransformQaLayer
                     draft={artTransformQaDraft}
@@ -22096,7 +22107,7 @@ function SpinOverlay({
       aria-hidden="true"
       data-spin3d-overlay="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
-      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, cursor: "grab", touchAction: "none" }}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, pointerEvents: "auto", cursor: "grab", touchAction: "none" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -24618,7 +24629,22 @@ function selectionStatusLabel(selection: {
   return "No selection";
 }
 
-function PageSvgSurface({
+function objectHoverOwner(target: EventTarget | null): string | undefined {
+  if (!(target instanceof Element)) return undefined;
+  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-id]");
+  return owner?.getAttribute("data-page-svg-object-visual") ?? owner?.getAttribute("data-object-controls") ??
+    owner?.getAttribute("data-object-id") ?? undefined;
+}
+
+function PageInteractionPortal({ target, children }: { target: HTMLDivElement | null; children: ReactNode }) {
+  // Static rendering has no mounted DOM target. Keep its affordance markup available.
+  return target ? createPortal(children, target) : <>{children}</>;
+}
+
+// Object paint does not change on hover. Its handlers use the same stable wrappers as the views.
+const PageSvgSurface = memo(PageSvgSurfaceContent);
+
+function PageSvgSurfaceContent({
   ariaLabel,
   pageHeight,
   pageWidth,
@@ -24642,7 +24668,7 @@ function PageSvgSurface({
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
 }) {
   const visualLayers = useMemo(() => {
@@ -24662,6 +24688,7 @@ function PageSvgSurface({
     });
     return layers;
   }, [page, objectOverlayFragments]);
+  const previewIds = useMemo(() => new Set(objectTransformPreview?.objectIds ?? []), [objectTransformPreview?.objectIds]);
 
   return (
     <>
@@ -24685,7 +24712,7 @@ function PageSvgSurface({
           style={{ zIndex: layerIndex + DOCUMENT_OBJECT_LAYER_OFFSET, pointerEvents: "none" }}
         >
           {objects.map(object => {
-            const preview = objectTransformPreview?.objectIds.includes(object.id) ? objectTransformPreview : undefined;
+            const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
             return (
               <g
@@ -24700,7 +24727,7 @@ function PageSvgSurface({
                 onPointerMove={event => handlers.onPointerMove(object.id, event)}
                 onPointerUp={event => handlers.onPointerUp(object.id, event)}
                 onPointerCancel={handlers.onPointerCancel}
-                onPointerLeave={() => handlers.onPointerLeave(object.id)}
+                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
                 onContextMenu={event => handlers.onContextMenu(object.id, event)}
               >
                 {object.type === "graphic" ? (
@@ -24718,6 +24745,7 @@ function PageSvgSurface({
                   <>
                     {object.type === "bracket" || object.type === "reaction-arrow" ? (
                       <rect x={object.x} y={object.y} width={object.width} height={object.height}
+                        transform={projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
                     {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
@@ -24821,7 +24849,7 @@ function renderPageSvgFragment(
     onPointerMove(objectId: string, event: ObjectPointerEvent): void;
     onPointerUp(objectId: string, event: ObjectPointerEvent): void;
     onPointerCancel(event: ObjectPointerEvent): void;
-    onPointerLeave(objectId: string): void;
+    onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
     onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   }
 ): ReturnType<typeof createElement> | string {
@@ -24838,7 +24866,7 @@ function renderPageSvgFragment(
       onContextMenu: (event: ObjectMouseEvent) => handlers.onContextMenu(objectId, event),
       onPointerCancel: (event: ObjectPointerEvent) => handlers.onPointerCancel(event),
       onPointerDown: (event: ObjectPointerEvent) => handlers.onPointerDown(objectId, event),
-      onPointerLeave: () => handlers.onPointerLeave(objectId),
+      onPointerLeave: (event: ObjectPointerEvent) => handlers.onPointerLeave(objectId, event),
       onPointerMove: (event: ObjectPointerEvent) => handlers.onPointerMove(objectId, event),
       onPointerUp: (event: ObjectPointerEvent) => handlers.onPointerUp(objectId, event)
     });
@@ -24960,6 +24988,7 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 function DocumentObjectViewContent({
   object,
   layerIndex,
+  interactionLayer,
   pageWidth,
   pageHeight,
   spinning = false,
@@ -25033,6 +25062,7 @@ function DocumentObjectViewContent({
 }: {
   object: DocumentObject;
   layerIndex: number;
+  interactionLayer: HTMLDivElement | null;
   pageWidth: number;
   pageHeight: number;
   spinning?: boolean;
@@ -25074,7 +25104,7 @@ function DocumentObjectViewContent({
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onRotateDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
@@ -25138,8 +25168,8 @@ function DocumentObjectViewContent({
   const handleObjectPointerCancel = (event: ObjectPointerEvent) => {
     onPointerCancel(event);
   };
-  const handleObjectPointerLeave = () => {
-    onPointerLeave(object.id);
+  const handleObjectPointerLeave = (event: ObjectPointerEvent) => {
+    onPointerLeave(object.id, event);
   };
   const handleObjectContextMenu = (event: ObjectMouseEvent) => {
     onContextMenu(object.id, event);
@@ -25276,6 +25306,27 @@ function DocumentObjectViewContent({
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
     transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
+  // The positioned copy carries only edit/preview chrome. Its own z-index is bounded
+  // inside the page's interaction layer, independent of the object's paint index.
+  const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
+    <div
+      className={["document-object-chrome",
+        selected && object.type !== "graphic" && object.type !== "molecule" ? "selected" : ""].filter(Boolean).join(" ")}
+      style={{ ...style, ...extraStyle, zIndex: 1 }}
+      data-object-controls={object.id}
+      onPointerLeave={handleObjectPointerLeave}
+    >
+      {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
+        <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
+          data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
+          <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
+            {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
+          </g>
+        </svg>
+      ) : null}
+      {children}
+    </div>, interactionLayer
+  ) : <>{children}</>;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
@@ -25557,6 +25608,8 @@ function DocumentObjectViewContent({
                 className="native-molecule-overlay-visual"
                 data-native-molecule-overlay-visual="true"
                 transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
+                // The 10% spin ghost lives above the paint stack in the chrome layer.
+                style={spinning ? { visibility: "hidden" } : undefined}
               >
                 {(editingAtomLabel
                   ? nativeMoleculeSvgFragments
@@ -25566,6 +25619,14 @@ function DocumentObjectViewContent({
                 ).map((fragment) => renderStaticPageSvgFragment(fragment))}
               </g>
             ) : null}
+          </svg>
+          {chrome(<>
+          <svg
+            className="native-molecule-overlay native-molecule-interaction-overlay"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            aria-hidden="true"
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
             {selectionBlob}
             {selectedRingBlobs}
             {object.atoms
@@ -25765,6 +25826,7 @@ function DocumentObjectViewContent({
                 />
               );
             }) : null}
+          </>)}
         </div>
       );
     }
@@ -25798,7 +25860,7 @@ function DocumentObjectViewContent({
         data-layer-index={layerIndex}
         data-mechanism-arrow-kind={object.arrowKind}
       >
-        {mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
+        {chrome(mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
           <button
             type="button"
             className="mechanism-arrow-handle"
@@ -25814,7 +25876,7 @@ function DocumentObjectViewContent({
             onPointerUp={onMechanismHandlePointerUp}
             onPointerCancel={onMechanismHandlePointerCancel}
           />
-        )) : null}
+        )) : null)}
       </div>
     );
   }
@@ -25886,6 +25948,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
+        {chrome(<>
         {(selected && !inGroupSelection) || editingText ? (
           <>
             <button
@@ -25971,6 +26034,7 @@ function DocumentObjectViewContent({
             />
           </>
         ) : null}
+        </>, textCss)}
       </div>
     );
   }
@@ -26032,7 +26096,7 @@ function DocumentObjectViewContent({
             />
           ))}
         </svg>
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26055,7 +26119,7 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26147,12 +26211,17 @@ function DocumentObjectViewContent({
             {artTransformProxy ? null : <GraphicGlyph object={object} />}
           </div>
           {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
-          {graphicCornerRadiusHandle}
-          {graphicGradientHandles}
-          {graphicPathEditHandles}
         </div>
-        {graphicEyedropperTargetOverlay}
-        {artObjectTransformFrame}
+        {chrome(<>
+          <div className="graphic-visual-shell" style={graphicVisualStyle}>
+            {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
+            {graphicCornerRadiusHandle}
+            {graphicGradientHandles}
+            {graphicPathEditHandles}
+          </div>
+          {graphicEyedropperTargetOverlay}
+          {artObjectTransformFrame}
+        </>)}
       </div>
     );
   }
@@ -26169,7 +26238,7 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {artObjectTransformFrame}
+      {chrome(artObjectTransformFrame)}
     </div>
   );
 }
@@ -28096,32 +28165,6 @@ function rotatePointAroundCenter(
   return {
     x: center.x + dx * cos - dy * sin,
     y: center.y + dx * sin + dy * cos
-  };
-}
-
-function documentObjectProjectedPlaneMatrix(
-  tiltXDegrees: number,
-  tiltYDegrees: number,
-  rotationDegrees: number
-): DocumentObjectProjectionMatrix {
-  const tiltXRad = degreesToRadians(tiltXDegrees);
-  const tiltYRad = degreesToRadians(tiltYDegrees);
-  const cx = Math.cos(tiltXRad);
-  const sx = Math.sin(tiltXRad);
-  const cy = Math.cos(tiltYRad);
-  const sy = Math.sin(tiltYRad);
-  const zRad = degreesToRadians(rotationDegrees);
-  const cz = Math.cos(zRad);
-  const sz = Math.sin(zRad);
-
-  // Same screen-space projected-plane basis used by native molecule X/Y tilt
-  // for local z=0 points, expressed as a 2D affine CSS matrix. The in-plane
-  // Z rotation is applied first, then the screen-space Y and X tilts.
-  return {
-    a: cy * cz,
-    b: cx * sz + sx * sy * cz,
-    c: -cy * sz,
-    d: cx * cz - sx * sy * sz
   };
 }
 

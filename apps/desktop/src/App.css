@@ -3367,6 +3367,47 @@ textarea:focus-visible,
   background-size: var(--ruler-unit) var(--ruler-unit);
 }
 
+/* Bound all document paint z-indices to one context. No number of object runs
+   can overtake edit chrome, live previews, Spin 3D or region-selection feedback. */
+.page-object-stack,
+.page-interaction-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.page-object-stack { z-index: 2; }
+.page-interaction-layer { z-index: 3; }
+
+.document-object-chrome {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.page-object-stack .document-object-overlay.selected { outline: none; }
+.document-object-chrome.selected {
+  outline: 2px solid var(--cd-accent);
+  outline-offset: 3px;
+}
+
+.document-object-chrome .native-atom-label-editor,
+.document-object-chrome .text-object-editor {
+  pointer-events: auto;
+}
+
+.object-transform-preview-visual {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.object-transform-preview-visual * { pointer-events: none !important; }
+.document-object-chrome .text-object-edit-preview { opacity: 1; }
+
 .crosshair-overlay {
   --crosshair-tick-minor-length: 4px;
   --crosshair-tick-quarter-length: 6px;

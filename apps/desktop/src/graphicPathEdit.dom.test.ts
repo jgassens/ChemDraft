@@ -121,6 +121,11 @@ describe("graphic path direct editing interactions", () => {
     return object;
   }
 
+  function objectControls(objectId: string): HTMLElement {
+    // Edit chrome is deliberately outside the object's paint stacking context.
+    return container.querySelector<HTMLElement>(`[data-object-controls="${objectId}"]`) ?? objectElement(objectId);
+  }
+
   function pathHandle(handle: "start" | "middle" | "end"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-graphic-path-handle="${handle}"]`);
     if (!button) {
@@ -447,7 +452,7 @@ describe("graphic path direct editing interactions", () => {
     const rectId = doc.selection.objectIds[0] ?? "";
     await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
 
-    const arrowCorners = () => container.querySelectorAll(`[data-object-id="${arrowId}"] [data-object-resize-corner]`).length;
+    const arrowCorners = () => objectControls(arrowId).querySelectorAll("[data-object-resize-corner]").length;
     await shiftHover(arrowId);
     expect(arrowCorners()).toBe(4);
 
@@ -481,7 +486,7 @@ describe("graphic path direct editing interactions", () => {
     await renderMainWindow(doc, { initialActiveToolCommandId: "tool.art.reactionArrow" });
 
     const cornersOn = (objectId: string) =>
-      container.querySelectorAll(`[data-object-id="${objectId}"] [data-object-resize-corner]`).length;
+      objectControls(objectId).querySelectorAll("[data-object-resize-corner]").length;
 
     await shiftHover(firstArrowId);
     expect(cornersOn(firstArrowId)).toBe(4);
@@ -857,9 +862,9 @@ describe("graphic path direct editing interactions", () => {
     });
 
     const status = container.querySelector('[role="status"]');
-    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
-    expect(objectElement(targetId).textContent).toContain("Fill target");
-    expect(objectElement(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
+    expect(objectControls(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
+    expect(objectControls(targetId).textContent).toContain("Fill target");
+    expect(objectControls(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
     expect(status?.textContent).toContain("Fill target");
     expect(status?.textContent).toContain("switch Fill/Stroke");
     expect(status?.textContent).toContain("⌥ click copies all");
@@ -873,8 +878,8 @@ describe("graphic path direct editing interactions", () => {
       strokeTargetButton.click();
     });
 
-    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="stroke"]')).not.toBeNull();
-    expect(objectElement(targetId).textContent).toContain("Stroke target");
+    expect(objectControls(targetId).querySelector('[data-graphic-eyedropper-target="stroke"]')).not.toBeNull();
+    expect(objectControls(targetId).textContent).toContain("Stroke target");
     expect(status?.textContent).toContain("Stroke target");
   });
 
@@ -919,8 +924,8 @@ describe("graphic path direct editing interactions", () => {
       }, 31);
     });
 
-    expect(objectElement(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
-    expect(objectElement(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
+    expect(objectControls(targetId).querySelector('[data-graphic-eyedropper-target="fill"]')).not.toBeNull();
+    expect(objectControls(sourceId).querySelector("[data-graphic-eyedropper-target]")).toBeNull();
     expect(container.querySelector('[data-art-target-cue="true"]')).not.toBeNull();
     expect(container.querySelector('[data-can-undo="false"]')).not.toBeNull();
     expect(status?.textContent).toContain("Fill target selected");
