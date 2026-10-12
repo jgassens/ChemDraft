@@ -6,7 +6,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createMechanismArrowBetween, createPhase4Document, insertNativeSingleBondMolecule, rotateDocumentObject } from "./documentWorkflow";
+import { createMechanismArrowBetween, createPhase4Document, insertNativeSingleBondMolecule, moveDocumentObject, rotateDocumentObject } from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -146,7 +146,17 @@ describe("anchored mechanism arrow interaction frame", () => {
     const end = { x: start.x, y: start.y + 200 };
     await act(async () => { pointer(sourceElement, "pointerdown", start, 1); });
     // The object owns pointer capture for a whole-molecule move.
-    await act(async () => { pointer(sourceElement, "pointermove", end, 1); });
+    await act(async () => {
+      pointer(sourceElement, "pointermove", end, 1);
+      // Drain the queued preview frame before asserting, while keeping automatic
+      // frames available for the agent bridge's undo/redo commands below.
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+    });
+    expect(snapshot()).toEqual(initial);
+    const preview = moveDocumentObject(initial, source.id, { x: source.x, y: source.y + 200 });
+    const previewBounds = boundsFromCurve(preview);
+    expectFrame(previewBounds);
+    const previewFrameStyle = frame().getAttribute("style");
     await act(async () => { pointer(sourceElement, "pointerup", end, 1); });
     const moved = snapshot();
     const movedSource = moved.pages[0].objects.find((object): object is MoleculeObject => object.id === source.id && object.type === "molecule")!;
@@ -155,6 +165,8 @@ describe("anchored mechanism arrow interaction frame", () => {
     expect(movedSource.chemistry).toEqual(source.chemistry);
     expect(moved.pages[0].objects.find((object) => object.id === arrow.id)).toEqual(arrow);
     const newBounds = boundsFromCurve(moved);
+    expect(newBounds).toEqual(previewBounds);
+    expect(frame().getAttribute("style")).toBe(previewFrameStyle);
     expect(newBounds).not.toEqual(oldBounds);
     expect(curve().getAttribute("d")).not.toBe(oldPath);
     expectFrame(newBounds);

@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, MechanismArrowObject, MoleculeObject } from "@chemdraft/chem-core";
 import * as layout from "@chemdraft/layout-engine";
 import type { PageSvgElementFragment, PageSvgFragment } from "@chemdraft/layout-engine";
 import { MainWindow, groupedDragObjectIdsForPointer } from "./MainWindow";
@@ -247,21 +247,54 @@ describe("object move retained SVG preview", () => {
     expect(paintedSvg()).toEqual(paint);
   });
 
-  it.each([false, true])("places replanned arrow controls at the committed geometry (all anchors moved: %s)", async allAnchorsMoved => {
-    await mount(anchoredArrowScenario(allAnchorsMoved));
+  it.each([
+    [false, 0], [true, 0], [false, 90], [true, 90]
+  ] as const)("places replanned arrow controls at the committed geometry (all anchors moved: %s, rotation: %s)", async (allAnchorsMoved, rotation) => {
+    let initial = anchoredArrowScenario(allAnchorsMoved);
+    const initialArrow = initial.pages[0].objects.find(object => object.type === "mechanism-arrow")!;
+    if (rotation) initial = workflow.rotateDocumentObject(initial, initialArrow.id, rotation);
+    await mount(initial);
     const arrow = snapshot().pages[0].objects.find(object => object.type === "mechanism-arrow")!;
     const controls = () => container.querySelector<HTMLElement>(`[data-object-controls="${arrow.id}"]`)!;
+    const frame = () => container.querySelector<HTMLElement>(`.mechanism-arrow-object[data-object-id="${arrow.id}"]`)!;
     const handles = () => [...controls().querySelectorAll<HTMLElement>(".mechanism-arrow-handle")]
       .map(element => element.getAttribute("style"));
-    const initialControls = controls().getAttribute("style");
-    const initialHandles = handles();
-    expect(initialHandles.length).toBeGreaterThan(0);
+    const expectGeometry = (expected: ChemDraftDocument) => {
+      const page = expected.pages[0];
+      const expectedArrow = page.objects.find(object => object.id === arrow.id) as MechanismArrowObject;
+      const geometry = layout.mechanismArrowGeometry(page, expectedArrow)!;
+      const points = [geometry.source, geometry.target, ...geometry.controls];
+      const x = Math.min(...points.map(point => point.x)) - 12;
+      const y = Math.min(...points.map(point => point.y)) - 12;
+      const width = Math.max(...points.map(point => point.x)) + 12 - x;
+      const height = Math.max(...points.map(point => point.y)) + 12 - y;
+      for (const element of [frame(), controls()]) {
+        expect(parseFloat(element.style.left)).toBeCloseTo(x / page.width * 100, 8);
+        expect(parseFloat(element.style.top)).toBeCloseTo(y / page.height * 100, 8);
+        expect(parseFloat(element.style.width)).toBeCloseTo(width / page.width * 100, 8);
+        expect(parseFloat(element.style.height)).toBeCloseTo(height / page.height * 100, 8);
+        expect(element.style.translate).toBe("");
+        expect(element.style.transformOrigin).toBe(
+          `calc(${expectedArrow.x + expectedArrow.width / 2 - x}px * var(--page-scale)) calc(${expectedArrow.y + expectedArrow.height / 2 - y}px * var(--page-scale))`
+        );
+      }
+      expect(handles()).toHaveLength(geometry.controls.length);
+      geometry.controls.forEach((control, index) => {
+        const handle = controls().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`)!;
+        expect(handle.style.left).toBe(`calc(${control.x - x}px * var(--page-scale))`);
+        expect(handle.style.top).toBe(`calc(${control.y - y}px * var(--page-scale))`);
+      });
+      expect(container.querySelector(`[data-page-svg-object-visual="${arrow.id}"] path`)!.getAttribute("d"))
+        .toBe(geometry.pathD);
+    };
+    expectGeometry(snapshot());
     const drag = await start();
-    await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
-    expect(controls().style.translate).toBe("");
-    if (!allAnchorsMoved) {
-      expect(controls().getAttribute("style")).toBe(initialControls);
-      expect(handles()).toEqual(initialHandles);
+    for (const [dx, dy] of [[20, 10], [40, 30]]) {
+      await move(drag.target, { x: drag.point.x + dx, y: drag.point.y + dy });
+      expect(snapshot()).toBe(drag.before);
+      // Fixed controls keep their page coordinates when only one anchor moves, but
+      // the resolved frame and the controls' frame-local offsets can still change.
+      expectGeometry(oldMove(drag.before, drag.molecule, dx, dy));
     }
     const previewControls = controls().getAttribute("style");
     const previewHandles = handles();
@@ -269,6 +302,7 @@ describe("object move retained SVG preview", () => {
     expect(controls().getAttribute("style")).toBe(previewControls);
     expect(handles()).toEqual(previewHandles);
     expect(snapshot()).toEqual(oldMove(drag.before, drag.molecule, 40, 30));
+    expectGeometry(snapshot());
   });
 
   it.each(["single", "molecules", "mixed", "rotated tilted", "grouped", "mixed grouped rotated tilted"])(
