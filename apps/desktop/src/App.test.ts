@@ -4012,16 +4012,15 @@ describe("ChemDraft desktop shell", () => {
     });
   });
 
-  it("lets the overlay own brackets and arrows so the editor does not paint them twice", () => {
-    // The overlay draws both types in full (BracketGlyph, the arrow geometry renderer). Including
-    // them in the editor surface too doubled every stroke in a second colour.
+  it("includes brackets and arrows in the ordered SVG paint runs", () => {
+    // Ordinary paint and hits share the ordered surface; overlays retain edit chrome only.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "bracket_001",
       type: "bracket",
       x: 10, y: 10, width: 16, height: 64, rotation: 0, style: {},
       bracketKind: "curly",
       containedObjectIds: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     expect(editorPageSvgSurfaceIncludesObject({
       id: "arrow_001",
       type: "reaction-arrow",
@@ -4030,7 +4029,7 @@ describe("ChemDraft desktop shell", () => {
       start: { kind: "point", point: { x: 10, y: 22 } },
       end: { kind: "point", point: { x: 130, y: 22 } },
       labels: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     // Text still comes from the surface.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "text_001",
@@ -4434,7 +4433,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("graphic-object");
     expect(markup).not.toContain("art-transform-qa-panel");
     expect(markup).toContain('data-graphic-kind="rect"');
-    expect(markup).not.toContain('data-object-type="graphic"');
+    expect(markup).toContain('data-object-type="graphic"');
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain('id="graphic-effects-');
@@ -4610,7 +4609,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain("const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object))");
+    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage)");
     expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
@@ -4636,7 +4635,7 @@ describe("ChemDraft desktop shell", () => {
     expect(rotatedMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
     expect(rotatedMarkup).not.toContain("graphic-glyph-projected-shape");
     expect(rotatedMarkup).toContain("graphic-glyph-shape");
-    expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
+    expect(rotatedMarkup).toContain('data-object-type="graphic"');
 
     const sphere = insertNativeArtGraphicObject(
       createPhase4Document("Sphere Rotation"),

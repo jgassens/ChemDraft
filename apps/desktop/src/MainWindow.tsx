@@ -7,6 +7,7 @@ import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tau
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   projectGraphicVisualPagePoint,
+  rotatePointAroundCenter,
   rotatedGraphicLocalBounds,
   unrotateGraphicVisualPagePoint
 } from "./graphicHandleGeometry";
@@ -37,8 +38,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type RefObject,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
@@ -203,6 +206,8 @@ import {
   type PageSvgRenderPlan,
   bracketGlyphPathD,
   planReactionArrowGeometry,
+  projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
+  projectedPlaneSvgTransformForObject,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -1606,7 +1611,8 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.17.00-opus";
+const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
+const CURRENT_BUILD_STAMP = "10.12.17.25-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1877,6 +1883,7 @@ export function MainWindow({
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
   // Capture can belong to an object or a handle (even one later unmounted), not just the page.
   const pointerCaptureOwnersRef = useRef(new Map<number, Element>());
   const captureGesturePointer = useCallback((owner: Element | null | undefined, pointerId: number) => {
@@ -2729,25 +2736,19 @@ export function MainWindow({
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
     [labelDisplayPage, nativeDoubleBondSidePreview]);
-  const editorSvgDisplayPage = useMemo(() => {
-    const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object));
-    if (svgObjects.length === plannedDisplayPage.objects.length) {
-      return plannedDisplayPage;
-    }
-
-    return { ...plannedDisplayPage, objects: svgObjects };
-  }, [plannedDisplayPage]);
+  // One full-page plan supplies both the native overlays and the ordered SVG runs.
+  // Transform previews do not change this memo: dragging art changes only its display transform.
   const pageSvgRenderPlan = useMemo(() =>
-    markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage, { anchorResolutionPage: plannedDisplayPage })), [editorSvgDisplayPage, plannedDisplayPage]);
+    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage)), [plannedDisplayPage]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
-  const nativeMoleculeOverlayFragments = useMemo(() => {
+  const objectOverlayFragments = useMemo(() => {
     const next = reuseUnchangedFragments(
       previousOverlayFragmentsRef.current,
-      markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage))
+      objectOverlayFragmentsByObjectId(pageSvgRenderPlan)
     );
     previousOverlayFragmentsRef.current = next;
     return next;
-  }, [plannedDisplayPage]);
+  }, [pageSvgRenderPlan]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   if (fileState.dirty || fileState.path || documentHistory.past.length || documentHistory.future.length || !documentIsBlank(document)) {
     nonPristineTabsRef.current.add(activeDocumentTabId);
@@ -5971,7 +5972,7 @@ export function MainWindow({
 
   const focusTextObjectEditorDom = useCallback((objectId: string) => {
     const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-      `[data-object-id="${objectId}"] .text-object-editor`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
     );
     if (!editor) {
       return;
@@ -5985,7 +5986,7 @@ export function MainWindow({
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
-      `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
     );
     // Already focused: leave it, so a retry never moves the caret the user is typing at.
     if (!editor || editor.ownerDocument.activeElement === editor) {
@@ -6573,18 +6574,11 @@ export function MainWindow({
     setStatus("Editing text");
   }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
 
-  const handleTextDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target instanceof Element ? event.target : undefined;
-    if (target?.closest("textarea, input, button") ||
-        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) {
+  const handleTextDoubleClick = useCallback((objectId: string, event: ObjectMouseEvent) => {
+    if (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text") {
       return;
     }
-    // Paint and interaction chrome can live in different layers. Route from the glyph (or
-    // overlay) that was actually hit to its owner, rather than relying on their stacking.
-    const objectId = target?.closest("[data-object-id]")?.getAttribute("data-object-id");
-    if (!objectId || findDocumentObject(documentRef.current, objectId)?.type !== "text") {
-      return;
-    }
+    // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
     startTextObjectEdit(objectId);
@@ -12463,10 +12457,18 @@ export function MainWindow({
       return;
     }
 
+    // A non-molecule glyph in front owns the pointer. Do not highlight or sprout a
+    // hidden atom beneath it; pointer hits and hover must describe the same drawing.
+    const ownerElement = eventTarget instanceof Element
+      ? eventTarget.closest("[data-page-svg-object-visual], [data-object-id]") : null;
+    const ownerId = ownerElement?.getAttribute("data-page-svg-object-visual") ?? ownerElement?.getAttribute("data-object-id");
+    const owner = ownerId ? findDocumentObject(sourceDocument, ownerId) : undefined;
+    const overNonMolecule = owner !== undefined && (owner.type !== "molecule" || !isNativeMoleculeGraph(owner));
+
     // Ring/template tools resolve the hover with the bond-preferring template resolver (purely
     // geometric) so the highlight matches what a click will fuse/attach. Every other tool keeps
     // the generic atom-first hover (with its DOM tiebreak) unchanged.
-    const target = activeNativeTemplateId
+    const target = overNonMolecule ? undefined : activeNativeTemplateId
       ? nativeMoleculeTemplateHoverTarget(
           sourceDocument,
           point,
@@ -12521,7 +12523,7 @@ export function MainWindow({
       setNativeDoubleBondSidePreview(undefined);
     }
 
-    if (bondToolActive) {
+    if (bondToolActive && !overNonMolecule) {
       updateBondGrowthPreview(sourceDocument, point);
       return;
     }
@@ -15534,7 +15536,8 @@ export function MainWindow({
     // and we move pointer capture to the resolved molecule's wrapper so every drag/up handler
     // (all keyed by objectId) stays consistent with the re-targeted object.
     let captureElement: Element = event.currentTarget;
-    if (point && findDocumentObject(document, objectId)?.type === "molecule") {
+    const pressedObject = findDocumentObject(document, objectId);
+    if (point && pressedObject?.type === "molecule" && isNativeMoleculeGraph(pressedObject)) {
       const resolved = nativeMoleculeCanvasHoverTarget(
         document,
         point,
@@ -15941,7 +15944,7 @@ export function MainWindow({
       event.stopPropagation();
       let nextDocument = document;
       let status = "Deleted object";
-      if (object.type === "molecule") {
+      if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
         if (!nativeMoleculeHit) {
           setStatus("No atom or bond under eraser");
           return;
@@ -16003,7 +16006,7 @@ export function MainWindow({
       }
     }
 
-    if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
+    if (activeToolState.activeKind === "selection" && object?.type === "molecule" && isNativeMoleculeGraph(object) && point) {
       event.preventDefault();
       const pressPartKey = nativeMoleculeHit
         ? `${nativeMoleculeHit.kind}:${nativeMoleculeHit.kind === "atom" ? nativeMoleculeHit.atomId : nativeMoleculeHit.bondId}`
@@ -16201,7 +16204,7 @@ export function MainWindow({
       return;
     }
 
-    if (object?.type === "molecule" && point && !nativeMoleculeHit) {
+    if (object?.type === "molecule" && isNativeMoleculeGraph(object) && point && !nativeMoleculeHit) {
       return;
     }
 
@@ -16364,6 +16367,23 @@ export function MainWindow({
       return;
     }
 
+    // Non-text, non-molecule object targets consume presses before the page's Text fallback
+    // can run. Use the same placement path; handles have their own pointer handlers.
+    if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      // A shape's hit target can cover the text glyphs. Resolve text geometrically in
+      // document order so this also works when each object's paint has its own layer.
+      const text = textObjectAtPoint(currentDocument.pages[0]?.objects ?? [], point);
+      if (text) {
+        restoreToolAfterTextPlacement();
+        startTextObjectEdit(text.id);
+      } else {
+        applyTextDocumentAtPoint(point);
+      }
+      return;
+    }
+
     event.stopPropagation();
     if (!shouldActivateDocumentObject(object, activeToolState.activeKind)) {
       return;
@@ -16402,6 +16422,7 @@ export function MainWindow({
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
     applySymbolGlyphAtPoint,
+    applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,
@@ -17283,9 +17304,11 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event);
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
 
+    const clickedObject = findDocumentObject(currentDocument, objectId);
+    const nativeContext = clickedObject?.type === "molecule" && isNativeMoleculeGraph(clickedObject);
     // Resolve by geometry before crossing actions, so a right-click at a weave still acts
     // on the atom/bond under the pointer. Crossing state is secondary menu context.
-    const resolvedNativeHit = point
+    const resolvedNativeHit = nativeContext && point
       ? nativeMoleculeCanvasHoverTarget(
           currentDocument,
           point,
@@ -17309,7 +17332,7 @@ export function MainWindow({
             toAtomId: resolvedNativeHit.toAtomId,
             distanceToPointer: resolvedNativeHit.distanceToPointer
           };
-    } else if (crossingHit) {
+    } else if (nativeContext && crossingHit) {
       objectId = crossingHit.front.objectId;
     }
     const object = findDocumentObject(currentDocument, objectId);
@@ -17349,7 +17372,7 @@ export function MainWindow({
       );
       nextSelectedNativePart = selectionResolution.selectedPart;
       targetKind = selectionResolution.targetKind;
-    } else if (!preserveMultiSelection && object?.type === "molecule" && !nativeMoleculeHit) {
+    } else if (!preserveMultiSelection && object?.type === "molecule" && isNativeMoleculeGraph(object) && !nativeMoleculeHit) {
       return;
     }
 
@@ -18101,7 +18124,10 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
-  const handleObjectPointerLeave = useCallback((objectId: string) => {
+  const handleObjectPointerLeave = useCallback((objectId: string, event: ObjectPointerEvent) => {
+    // Paint, generous catchers and HTML edit controls are separate DOM surfaces. Leaving
+    // one for another surface owned by this object is still an object hover.
+    if (objectHoverOwner(event.relatedTarget) === objectId) return;
     if (
       nativeBondDragRef.current?.objectId === objectId ||
       nativeBondEditDragRef.current?.objectId === objectId ||
@@ -18359,6 +18385,7 @@ export function MainWindow({
     onPointerUp: handleObjectPointerUp,
     onPointerCancel: handleObjectPointerCancel,
     onPointerLeave: handleObjectPointerLeave,
+    onTextDoubleClick: handleTextDoubleClick,
     onRotatePointerDown: handleObjectRotatePointerDown,
     onRotateDoubleClick: handleObjectRotateDoubleClick,
     onProjectedPlaneTiltPointerDown: handleProjectedPlaneTiltPointerDown,
@@ -18759,7 +18786,6 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
-                onDoubleClick={handleTextDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -18767,19 +18793,19 @@ export function MainWindow({
                     verticalTicks={verticalCrosshairTicks}
                   />
                 ) : null}
+                <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  {...objectViewHandlers}
                   ariaLabel={document.title}
                   pageHeight={activePage.height}
                   pageWidth={activePage.width}
                   plan={pageSvgRenderPlan}
+                  page={plannedDisplayPage}
+                  objectOverlayFragments={objectOverlayFragments}
+                  objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
-                  onContextMenu={handleObjectContextMenu}
-                  onPointerCancel={handleObjectPointerCancel}
-                  onPointerDown={handleObjectPointerDown}
-                  onPointerLeave={handleObjectPointerLeave}
-                  onPointerMove={handleObjectPointerMove}
-                  onPointerUp={handleObjectPointerUp}
                 />
+                <PageInteractionPortal target={interactionLayer}>
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -18890,6 +18916,7 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                 {(() => {
                   const resolvedSelectionObjectIds = resolveGroupedDocumentObjectIds(
                     document.pages[0].objects,
@@ -18960,6 +18987,7 @@ export function MainWindow({
                         ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
                         : undefined}
                       layerIndex={layerIndex}
+                      interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
                       pageScale={selected && !inGroupSelection && object.type === "graphic" &&
@@ -19006,7 +19034,7 @@ export function MainWindow({
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
-                      nativeMoleculeSvgFragments={nativeMoleculeOverlayFragments.get(object.id)}
+                      nativeMoleculeSvgFragments={objectOverlayFragments.get(object.id)}
                       rotateReadout={objectRotateReadout?.objectId === object.id ? objectRotateReadout : undefined}
                       projectedPlaneTiltReadout={
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
@@ -19024,6 +19052,7 @@ export function MainWindow({
                     />
                   );
                 })}
+                <PageInteractionPortal target={interactionLayer}>
                 {groupSelectionBounds ? (
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
@@ -19063,9 +19092,12 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                   </>
                   );
                 })()}
+                </div>
+                <div className="page-interaction-layer" data-page-interaction-layer="true" ref={setInteractionLayer} />
                 {artTransformQaEnabled ? (
                   <ArtTransformQaLayer
                     draft={artTransformQaDraft}
@@ -20896,8 +20928,9 @@ function previewGraphicObjectColorOnDom(
       continue;
     }
 
-    const element = artObjectPreviewElement(root, objectId);
-    if (!element) {
+    const elements = [artObjectPreviewElement(root, objectId),
+      root.querySelector(`[data-page-svg-object-visual="${cssEscapeIdentifier(objectId)}"]`)].filter((element): element is Element => element !== null);
+    if (elements.length === 0) {
       continue;
     }
 
@@ -20906,7 +20939,7 @@ function previewGraphicObjectColorOnDom(
     const selector = freehandPath || target === "fill"
       ? ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape"
       : ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape, .graphic-glyph-stroke";
-    for (const paintElement of Array.from(element.querySelectorAll<SVGElement>(selector))) {
+    for (const paintElement of elements.flatMap(element => Array.from(element.querySelectorAll<SVGElement>(selector)))) {
       if (paintElement.classList.contains("graphic-glyph-hit-target") || paintElement.classList.contains("graphic-glyph-shadow")) {
         continue;
       }
@@ -22426,7 +22459,7 @@ function SpinOverlay({
       aria-hidden="true"
       data-spin3d-overlay="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
-      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, cursor: "grab", touchAction: "none" }}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, pointerEvents: "auto", cursor: "grab", touchAction: "none" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -23750,6 +23783,31 @@ function pointInsideObjectBounds(
   );
 }
 
+function textObjectAtPoint(
+  objects: readonly DocumentObject[],
+  point: ClientPoint
+): TextObject | undefined {
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const object = objects[index];
+    if (object.type !== "text") {
+      continue;
+    }
+    // Text's CSS box (and selection frame) rotates around its center. Test in that
+    // local frame, rather than the unrotated box or a larger rotated bounding box.
+    const rotationRad = degreesToRadians(-object.rotation);
+    const localPoint = Math.abs(object.rotation) < 0.001 ? point : rotatePointAroundCenter(
+      point,
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 },
+      Math.cos(rotationRad),
+      Math.sin(rotationRad)
+    );
+    if (pointInRect(localPoint, documentObjectVisualBounds(object))) {
+      return object;
+    }
+  }
+  return undefined;
+}
+
 export function nativeMoleculeObjectAtPoint(
   objects: readonly DocumentObject[],
   point: ClientPoint
@@ -24946,93 +25004,160 @@ function selectionStatusLabel(selection: {
   return "No selection";
 }
 
-function PageSvgSurface({
+function objectHoverOwner(target: EventTarget | null): string | undefined {
+  if (!(target instanceof Element)) return undefined;
+  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-id]");
+  return owner?.getAttribute("data-page-svg-object-visual") ?? owner?.getAttribute("data-object-controls") ??
+    owner?.getAttribute("data-object-id") ?? undefined;
+}
+
+function PageInteractionPortal({ target, children }: { target: HTMLDivElement | null; children: ReactNode }) {
+  // Static rendering has no mounted DOM target. Keep its affordance markup available.
+  return target ? createPortal(children, target) : <>{children}</>;
+}
+
+// Object paint does not change on hover. Its handlers use the same stable wrappers as the views.
+const PageSvgSurface = memo(PageSvgSurfaceContent);
+
+function PageSvgSurfaceContent({
   ariaLabel,
   pageHeight,
   pageWidth,
   plan,
+  page,
+  objectOverlayFragments,
+  objectTransformPreview,
   spinningObjectId,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onPointerCancel,
-  onPointerLeave,
-  onContextMenu
+  ...handlers
 }: {
   ariaLabel: string;
   pageHeight: number;
   pageWidth: number;
   plan: PageSvgRenderPlan;
+  page: DocumentPage;
+  objectOverlayFragments: ReadonlyMap<string, readonly PageSvgElementFragment[]>;
+  objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
+  onTextDoubleClick(objectId: string, event: ObjectMouseEvent): void;
 }) {
+  const visualLayers = useMemo(() => {
+    const layers: { layerIndex: number; objects: DocumentObject[] }[] = [];
+    let current: typeof layers[number] | undefined;
+    page.objects.forEach((object, layerIndex) => {
+      if (!editorPageSvgSurfaceIncludesObject(object)) {
+        current = undefined;
+        return;
+      }
+      if (!objectOverlayFragments.get(object.id)?.length) return;
+      if (!current) {
+        current = { layerIndex, objects: [] };
+        layers.push(current);
+      }
+      current.objects.push(object);
+    });
+    return layers;
+  }, [page, objectOverlayFragments]);
+  const previewIds = useMemo(() => new Set(objectTransformPreview?.objectIds ?? []), [objectTransformPreview?.objectIds]);
+
   return (
-    <svg
-      aria-label={`${ariaLabel} page drawing`}
-      className="page-svg-surface"
-      data-page-svg-surface="true"
-      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
-    >
-      {plan.fragments.map((fragment) => {
-        const rendered = renderPageSvgFragment(fragment, {
-          onContextMenu,
-          onPointerCancel,
-          onPointerDown,
-          onPointerLeave,
-          onPointerMove,
-          onPointerUp
-        });
-        // The spun molecule's drawn structure fades to a faint ghost (the live 3D overlay
-        // paints on top); pointer events off so the overlay owns the drag.
-        const isSpinning = spinningObjectId !== undefined &&
-          fragment.attrs["data-object-id"] === spinningObjectId;
-        return isSpinning
-          ? <g key={`spin-${fragment.key}`} opacity={0.1} style={{ pointerEvents: "none" }}>{rendered}</g>
-          : rendered;
-      })}
-    </svg>
+    <>
+      <svg
+        aria-label={`${ariaLabel} page drawing`}
+        className="page-svg-surface"
+        data-page-svg-surface="true"
+        viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+      >
+        {/* Non-object page helpers, if any, stay below the object stack. Each object's
+            hits share its paint layer; no invisible lower copy can steal a front hit. */}
+        {plan.fragments.filter(fragment => fragment.attrs["data-object-id"] === undefined)
+          .map(fragment => renderPageSvgFragment(fragment, handlers))}
+      </svg>
+      {visualLayers.map(({ layerIndex, objects }) => (
+        <svg
+          key={objects[0]!.id}
+          className="page-svg-visual-layer"
+          data-page-svg-visual-layer={layerIndex}
+          viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+          style={{ zIndex: layerIndex + DOCUMENT_OBJECT_LAYER_OFFSET, pointerEvents: "none" }}
+        >
+          {objects.map(object => {
+            const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
+            const fragments = objectOverlayFragments.get(object.id)!;
+            return (
+              <g
+                key={object.id}
+                data-page-svg-object-visual={object.id}
+                data-object-type={object.type}
+                data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
+                opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
+                style={{ pointerEvents: object.id === spinningObjectId ? "none" : "auto" }}
+                onPointerDown={event => handlers.onPointerDown(object.id, event)}
+                onPointerMove={event => handlers.onPointerMove(object.id, event)}
+                onPointerUp={event => handlers.onPointerUp(object.id, event)}
+                onPointerCancel={handlers.onPointerCancel}
+                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
+                onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+              >
+                {object.type === "graphic" ? (
+                  // Keep the existing art renderer and its generous stroke/fill catchers.
+                  // It uses the same art-engine geometry as export, in local coordinates.
+                  <svg x={object.x} y={object.y} width={object.width} height={object.height}
+                    viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
+                    <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
+                      {preview?.artPreviewProxies?.[object.id]
+                        ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
+                        : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
+                    </g>
+                  </svg>
+                ) : (
+                  <>
+                    {object.type === "bracket" || object.type === "reaction-arrow" ? (
+                      <rect x={object.x} y={object.y} width={object.width} height={object.height}
+                        transform={projectedPlaneSvgTransformForObject(object)}
+                        fill="transparent" pointerEvents="all" />
+                    ) : null}
+                    {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
+                  </>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      ))}
+    </>
   );
 }
 
-export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
-  // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
-  // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
-  // #111111. Export is unaffected: it plans the page directly and never applies this filter.
-  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
-    return false;
-  }
+function objectTransformPreviewSvgTransform(preview: ObjectTransformPreviewState): string {
+  const { origin, translateX, translateY, rotationDegrees, scaleX, scaleY } = preview;
+  return `translate(${formatSvgNumber(translateX)} ${formatSvgNumber(translateY)}) ` +
+    `translate(${formatSvgNumber(origin.x)} ${formatSvgNumber(origin.y)}) ` +
+    `rotate(${formatSvgNumber(rotationDegrees)}) scale(${formatSvgNumber(scaleX)} ${formatSvgNumber(scaleY)}) ` +
+    `translate(${formatSvgNumber(-origin.x)} ${formatSvgNumber(-origin.y)})`;
+}
 
+export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
   return object.type !== "molecule" || !isNativeMoleculeGraph(object);
 }
 
-function nativeMoleculeOverlayFragmentsByObjectId(page: DocumentPage): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
-  const nativeMoleculeIds = new Set(page.objects
-    .filter((object): object is MoleculeObject => object.type === "molecule" && isNativeMoleculeGraph(object))
-    .map((object) => object.id));
-  if (nativeMoleculeIds.size === 0) {
-    return new Map();
-  }
-
+function objectOverlayFragmentsByObjectId(plan: PageSvgRenderPlan): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
   const byObjectId = new Map<string, PageSvgElementFragment[]>();
-  planPageSvgRender(page).fragments.forEach((fragment) => {
-    const objectId = typeof fragment.attrs["data-object-id"] === "string"
-      ? fragment.attrs["data-object-id"]
-      : undefined;
-    if (!objectId || !nativeMoleculeIds.has(objectId)) {
-      return;
-    }
-
+  for (const fragment of plan.fragments) {
+    const objectId = fragment.attrs["data-object-id"];
+    if (typeof objectId !== "string") continue;
     const fragments = byObjectId.get(objectId) ?? [];
     fragments.push(fragment);
     byObjectId.set(objectId, fragments);
-  });
-
+  }
   return byObjectId;
 }
 
@@ -25101,7 +25226,7 @@ function renderPageSvgFragment(
     onPointerMove(objectId: string, event: ObjectPointerEvent): void;
     onPointerUp(objectId: string, event: ObjectPointerEvent): void;
     onPointerCancel(event: ObjectPointerEvent): void;
-    onPointerLeave(objectId: string): void;
+    onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
     onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   }
 ): ReturnType<typeof createElement> | string {
@@ -25118,7 +25243,7 @@ function renderPageSvgFragment(
       onContextMenu: (event: ObjectMouseEvent) => handlers.onContextMenu(objectId, event),
       onPointerCancel: (event: ObjectPointerEvent) => handlers.onPointerCancel(event),
       onPointerDown: (event: ObjectPointerEvent) => handlers.onPointerDown(objectId, event),
-      onPointerLeave: () => handlers.onPointerLeave(objectId),
+      onPointerLeave: (event: ObjectPointerEvent) => handlers.onPointerLeave(objectId, event),
       onPointerMove: (event: ObjectPointerEvent) => handlers.onPointerMove(objectId, event),
       onPointerUp: (event: ObjectPointerEvent) => handlers.onPointerUp(objectId, event)
     });
@@ -25187,6 +25312,7 @@ function reactSvgAttributeName(name: string): string {
     "color-interpolation-filters": "colorInterpolationFilters",
     "dominant-baseline": "dominantBaseline",
     "fill-opacity": "fillOpacity",
+    "fill-rule": "fillRule",
     "flood-color": "floodColor",
     "flood-opacity": "floodOpacity",
     "font-family": "fontFamily",
@@ -25239,6 +25365,7 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 function DocumentObjectViewContent({
   object,
   layerIndex,
+  interactionLayer,
   pageWidth,
   pageHeight,
   pageScale,
@@ -25315,6 +25442,7 @@ function DocumentObjectViewContent({
 }: {
   object: DocumentObject;
   layerIndex: number;
+  interactionLayer: HTMLDivElement | null;
   pageWidth: number;
   pageHeight: number;
   pageScale?: number;
@@ -25358,7 +25486,7 @@ function DocumentObjectViewContent({
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onRotateDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
@@ -25428,8 +25556,8 @@ function DocumentObjectViewContent({
   const handleObjectPointerCancel = (event: ObjectPointerEvent) => {
     onPointerCancel(event);
   };
-  const handleObjectPointerLeave = () => {
-    onPointerLeave(object.id);
+  const handleObjectPointerLeave = (event: ObjectPointerEvent) => {
+    onPointerLeave(object.id, event);
   };
   const handleObjectContextMenu = (event: ObjectMouseEvent) => {
     onContextMenu(object.id, event);
@@ -25569,12 +25697,35 @@ function DocumentObjectViewContent({
     top: `${(frameBounds.y / pageHeight) * 100}%`,
     width: `${(frameBounds.width / pageWidth) * 100}%`,
     height: `${(frameBounds.height / pageHeight) * 100}%`,
-    zIndex: layerIndex + 20,
+    zIndex: layerIndex + DOCUMENT_OBJECT_LAYER_OFFSET,
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
     transformOrigin: mechanismRotationOrigin
       ? `${pageScaledCssPx(mechanismRotationOrigin.x)} ${pageScaledCssPx(mechanismRotationOrigin.y)}`
       : documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
+  // The positioned copy carries only edit/preview chrome. Its own z-index is bounded
+  // inside the page's interaction layer, independent of the object's paint index.
+  const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
+    <div
+      className={["document-object-chrome",
+        selected && object.type !== "graphic" && (object.type !== "molecule" || !isNativeMoleculeGraph(object))
+          ? "selected" : ""].filter(Boolean).join(" ")}
+      style={{ ...style, ...extraStyle, zIndex: 1 }}
+      data-object-controls={object.id}
+      data-object-id={object.type === "text" ? object.id : undefined}
+      onPointerLeave={handleObjectPointerLeave}
+    >
+      {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
+        <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
+          data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
+          <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
+            {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
+          </g>
+        </svg>
+      ) : null}
+      {children}
+    </div>, interactionLayer
+  ) : <>{children}</>;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
@@ -25858,6 +26009,8 @@ function DocumentObjectViewContent({
                 className="native-molecule-overlay-visual"
                 data-native-molecule-overlay-visual="true"
                 transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
+                // The 10% spin ghost lives above the paint stack in the chrome layer.
+                style={spinning ? { visibility: "hidden" } : undefined}
               >
                 {(editingAtomLabel
                   ? nativeMoleculeSvgFragments
@@ -25867,6 +26020,14 @@ function DocumentObjectViewContent({
                 ).map((fragment) => renderStaticPageSvgFragment(fragment))}
               </g>
             ) : null}
+          </svg>
+          {chrome(<>
+          <svg
+            className="native-molecule-overlay native-molecule-interaction-overlay"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            aria-hidden="true"
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
             {selectionBlob}
             {selectedRingBlobs}
             {object.atoms
@@ -26066,6 +26227,7 @@ function DocumentObjectViewContent({
                 />
               );
             }) : null}
+          </>)}
         </div>
       );
     }
@@ -26082,7 +26244,9 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 
@@ -26098,7 +26262,7 @@ function DocumentObjectViewContent({
         data-layer-index={layerIndex}
         data-mechanism-arrow-kind={object.arrowKind}
       >
-        {mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
+        {chrome(mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
           <button
             type="button"
             className="mechanism-arrow-handle"
@@ -26114,7 +26278,7 @@ function DocumentObjectViewContent({
             onPointerUp={onMechanismHandlePointerUp}
             onPointerCancel={onMechanismHandlePointerCancel}
           />
-        )) : null}
+        )) : null)}
       </div>
     );
   }
@@ -26141,7 +26305,9 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 
@@ -26186,6 +26352,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
+        {chrome(<>
         {(selected && !inGroupSelection) || editingText ? (
           <>
             <button
@@ -26274,6 +26441,7 @@ function DocumentObjectViewContent({
             />
           </>
         ) : null}
+        </>, textCss)}
       </div>
     );
   }
@@ -26335,7 +26503,7 @@ function DocumentObjectViewContent({
             />
           ))}
         </svg>
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26358,7 +26526,7 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26453,12 +26621,17 @@ function DocumentObjectViewContent({
             {artTransformProxy ? null : <GraphicGlyph object={object} />}
           </div>
           {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
-          {graphicCornerRadiusHandle}
-          {graphicGradientHandles}
-          {graphicPathEditHandles}
         </div>
-        {graphicEyedropperTargetOverlay}
-        {artObjectTransformFrame}
+        {chrome(<>
+          <div className="graphic-visual-shell" style={graphicVisualStyle}>
+            {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
+            {graphicCornerRadiusHandle}
+            {graphicGradientHandles}
+            {graphicPathEditHandles}
+          </div>
+          {graphicEyedropperTargetOverlay}
+          {artObjectTransformFrame}
+        </>)}
       </div>
     );
   }
@@ -26475,17 +26648,18 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {artObjectTransformFrame}
+      {chrome(artObjectTransformFrame)}
     </div>
   );
 }
 
-function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPreviewProxy }) {
+function ArtTransformDragPreviewProxy({ proxy, asSvg = false }: { proxy: ArtTransformDragPreviewProxy; asSvg?: boolean }) {
   const [rasterImageUrl, setRasterImageUrl] = useState<string | undefined>();
 
   useEffect(() => {
     setRasterImageUrl(undefined);
-    if (proxy.kind !== "svg-image" || !proxy.imageUrl) {
+    // The HTML copy is hidden edit chrome; only the ordered SVG image needs rasterizing.
+    if (!asSvg || proxy.kind !== "svg-image" || !proxy.imageUrl) {
       return;
     }
 
@@ -26499,10 +26673,15 @@ function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPrevie
     return () => {
       active = false;
     };
-  }, [proxy]);
+  }, [proxy, asSvg]);
 
   if (proxy.kind === "svg-image" && proxy.imageUrl) {
     const imageUrl = rasterImageUrl ?? proxy.imageUrl;
+    if (asSvg) {
+      return <image href={imageUrl} width={proxy.width} height={proxy.height} preserveAspectRatio="none"
+        data-art-transform-drag-preview="image" data-art-transform-drag-preview-source={rasterImageUrl ? "raster" : "svg"}
+        pointerEvents="none" />;
+    }
     return (
       <img
         alt=""
@@ -26515,6 +26694,11 @@ function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPrevie
         src={imageUrl}
       />
     );
+  }
+
+  if (asSvg) {
+    return <rect width={proxy.width} height={proxy.height} fill="rgb(29 127 104 / 10%)"
+      stroke="var(--cd-accent)" strokeWidth={1.5} data-art-transform-drag-preview="bounds" pointerEvents="none" />;
   }
 
   return (
@@ -27119,7 +27303,7 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
   ));
 }
 
-function GraphicGlyph({ object }: { object: GraphicObject }) {
+const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
   const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
@@ -27131,12 +27315,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const strokeDasharray = plan.stroke.dasharray;
   const cornerRadius = plan.cornerRadius;
   const fillMode = plan.fill.mode;
-  const gradientId = `graphic-gloss-${object.id}`;
-  const effectFilterId = `graphic-effects-${object.id}`;
-  const fillPaintId = `graphic-fill-${object.id}`;
-  const strokePaintId = `graphic-stroke-${object.id}`;
-  const markerStartId = `graphic-marker-start-${object.id}`;
-  const markerEndId = `graphic-marker-end-${object.id}`;
+  const gradientId = `${definitionPrefix}graphic-gloss-${object.id}`;
+  const effectFilterId = `${definitionPrefix}graphic-effects-${object.id}`;
+  const fillPaintId = `${definitionPrefix}graphic-fill-${object.id}`;
+  const strokePaintId = `${definitionPrefix}graphic-stroke-${object.id}`;
+  const markerStartId = `${definitionPrefix}graphic-marker-start-${object.id}`;
+  const markerEndId = `${definitionPrefix}graphic-marker-end-${object.id}`;
   const pathD = plan.pathD;
   const visiblePathD = plan.visiblePathD ?? pathD;
   const projectionTransform = plan.projectionTransform;
@@ -27393,7 +27577,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       )}
     </svg>
   );
-}
+});
 
 function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
   return object.graphicKind === "path" && object.data.artPathKind === "freehand";
@@ -28321,32 +28505,6 @@ function documentObjectArtTransformFrameStyle(
     top: pageScaledCssPx(bounds.y),
     width: pageScaledCssPx(bounds.width),
     height: pageScaledCssPx(bounds.height)
-  };
-}
-
-function documentObjectProjectedPlaneMatrix(
-  tiltXDegrees: number,
-  tiltYDegrees: number,
-  rotationDegrees: number
-): DocumentObjectProjectionMatrix {
-  const tiltXRad = degreesToRadians(tiltXDegrees);
-  const tiltYRad = degreesToRadians(tiltYDegrees);
-  const cx = Math.cos(tiltXRad);
-  const sx = Math.sin(tiltXRad);
-  const cy = Math.cos(tiltYRad);
-  const sy = Math.sin(tiltYRad);
-  const zRad = degreesToRadians(rotationDegrees);
-  const cz = Math.cos(zRad);
-  const sz = Math.sin(zRad);
-
-  // Same screen-space projected-plane basis used by native molecule X/Y tilt
-  // for local z=0 points, expressed as a 2D affine CSS matrix. The in-plane
-  // Z rotation is applied first, then the screen-space Y and X tilts.
-  return {
-    a: cy * cz,
-    b: cx * sz + sx * sy * cz,
-    c: -cy * sz,
-    d: cx * cz - sx * sy * sz
   };
 }
 

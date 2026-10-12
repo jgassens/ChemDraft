@@ -273,11 +273,13 @@ describe("MainWindow agent bridge integration", () => {
 });
 
 describe("dispatchAgentPointerEvent", () => {
-  it("dispatches through the DOM and keeps the pointerdown target for move/up", () => {
+  it.each([false, true])("keeps object capture and labels through glyph replacement (ordered SVG: %s)", orderedSvg => {
     const page = document.createElement("div");
     page.className = "page";
-    const object = document.createElement("div");
-    object.dataset.objectId = "mol_agent";
+    const object = orderedSvg ? document.createElementNS("http://www.w3.org/2000/svg", "g") : document.createElement("div");
+    object.setAttribute(orderedSvg ? "data-page-svg-object-visual" : "data-object-id", "mol_agent");
+    const glyph = orderedSvg ? document.createElementNS("http://www.w3.org/2000/svg", "path") : document.createElement("span");
+    object.append(glyph);
     page.append(object);
     document.body.append(page);
     const activePointerTargets = new Map<number, EventTarget>();
@@ -286,7 +288,7 @@ describe("dispatchAgentPointerEvent", () => {
     object.addEventListener("pointermove", () => received.push("object:move"));
     object.addEventListener("pointerup", () => received.push("object:up"));
     const elementFromPoint = vi.fn()
-      .mockReturnValueOnce(object)
+      .mockReturnValueOnce(glyph)
       .mockReturnValue(page);
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
@@ -308,6 +310,7 @@ describe("dispatchAgentPointerEvent", () => {
       type: "pointerdown",
       options: { pointerId: 11 }
     })).toMatchObject({ targetLabel: "mol_agent" });
+    glyph.remove(); // A re-planned glyph must not lose capture on its stable owner.
     dispatchAgentPointerEvent({
       activePointerTargets,
       ownerDocument: document,

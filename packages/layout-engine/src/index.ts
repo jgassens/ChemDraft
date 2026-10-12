@@ -4605,27 +4605,34 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
+  const projection = projectedPlaneMatrixForObject(object);
+  // The canvas historically projected arrow points, keeping strokes at 1.5 px. Do the
+  // same in the shared plan, rather than scaling strokes with an SVG group matrix.
+  const project = (point: LayoutPoint) => projection ? projectPointInObjectPlane(object, point, projection) : point;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-    transform: rotationTransform(object)
+    transform: projection ? undefined : rotationTransform(object)
   }), [
-    ...geometry.lines.map((line, index) =>
-      elementFragment("line", `reaction-arrow-line-${object.id}-${index}`, {
+    ...geometry.lines.map((line, index) => {
+      const start = project(line.start);
+      const end = project(line.end);
+      return elementFragment("line", `reaction-arrow-line-${object.id}-${index}`, {
         class: "reaction-arrow-line",
         "data-arrow-kind": object.arrowKind,
-        x1: line.start.x,
-        y1: line.start.y,
-        x2: line.end.x,
-        y2: line.end.y,
+        x1: start.x,
+        y1: start.y,
+        x2: end.x,
+        y2: end.y,
         stroke: "#172026",
         "stroke-width": 1.5,
         "stroke-linecap": "round"
-      })
-    ),
+      });
+    }),
     ...geometry.heads.map((head, index) =>
       elementFragment("polygon", `reaction-arrow-head-${object.id}-${index}`, {
         class: "reaction-arrow-head",
         "data-arrow-kind": object.arrowKind,
         points: head.points
+          .map(project)
           .map((point) => `${formatNumber(point.x)},${formatNumber(point.y)}`)
           .join(" "),
         fill: head.filled ? "#172026" : "none",
@@ -4650,38 +4657,50 @@ function arrowAnchorPointForObject(
 
 /** Shared bracket glyph outline for the canvas renderer and SVG export, in object-local
  *  coordinates. "round" is a single open curve, "curly" a brace with a center spur; "polymer" and
- *  "unknown" fall back to the square outline. */
+ *  "unknown" fall back to the square outline. An optional projection maps every path point,
+ *  including Bezier controls, without transforming the stroke. */
 export function bracketGlyphPathD(
   kind: BracketObject["bracketKind"],
   width: number,
-  height: number
+  height: number,
+  project?: (point: LayoutPoint) => LayoutPoint
 ): string {
+  // Project endpoints and Bezier controls, preserving a constant stroke in SVG/PDF.
+  // Keep raw number serialization for the original, untilted glyph.
+  const point = (x: number, y: number) => {
+    if (!project) return `${x} ${y}`;
+    const projected = project({ x, y });
+    return `${formatNumber(projected.x)} ${formatNumber(projected.y)}`;
+  };
   const right = Math.max(width - 1, 0);
   const bottom = Math.max(height - 1, 0);
   if (kind === "round") {
-    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+    return `M ${point(right, 0)} C ${point(width * 0.18, height * 0.16)}, ${point(width * 0.18, height * 0.84)}, ${point(right, bottom)}`;
   }
   if (kind === "curly") {
     return [
-      `M ${right} 0`,
-      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
-      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+      `M ${point(right, 0)}`,
+      `C ${point(width * 0.15, height * 0.1)}, ${point(width * 0.85, height * 0.38)}, ${point(width * 0.2, height * 0.5)}`,
+      `C ${point(width * 0.85, height * 0.62)}, ${point(width * 0.15, height * 0.9)}, ${point(right, bottom)}`
     ].join(" ");
   }
-  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+  return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
+  const projection = projectedPlaneMatrixForObject(object);
+  const project = projection ? (point: LayoutPoint) => projectPointInObjectPlane(object,
+    { x: object.x + point.x, y: object.y + point.y }, projection) : undefined;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-    transform: rotationTransform(object)
+    transform: projection ? undefined : rotationTransform(object)
   }), [
     elementFragment("path", `bracket-path-${object.id}`, {
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
-      transform: `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height),
+      transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      d: bracketGlyphPathD(object.bracketKind, width, height, project),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,
@@ -7398,6 +7417,57 @@ function metadataNumber(value: unknown): number | undefined {
 
 function metadataFontStyle(value: unknown): string | undefined {
   return value === "italic" || value === "normal" ? value : undefined;
+}
+
+export interface ProjectedPlaneMatrix {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+}
+
+/** Screen-space projection of local z=0 points: in-plane Z rotation, then Y and X tilt.
+ * Shared by the arrow/bracket render plans and their canvas controls and catchers. */
+export function projectedPlaneMatrix(
+  tiltXDegrees: number,
+  tiltYDegrees: number,
+  rotationDegrees: number
+): ProjectedPlaneMatrix {
+  const cx = Math.cos(degreesToRadians(tiltXDegrees));
+  const sx = Math.sin(degreesToRadians(tiltXDegrees));
+  const cy = Math.cos(degreesToRadians(tiltYDegrees));
+  const sy = Math.sin(degreesToRadians(tiltYDegrees));
+  const cz = Math.cos(degreesToRadians(rotationDegrees));
+  const sz = Math.sin(degreesToRadians(rotationDegrees));
+  return { a: cy * cz, b: cx * sz + sx * sy * cz, c: -cy * sz, d: cx * cz - sx * sy * sz };
+}
+
+function projectedPlaneMatrixForObject(object: DocumentObject): ProjectedPlaneMatrix | undefined {
+  const tiltX = metadataNumber(object.style.tiltXDegrees) ?? 0;
+  const tiltY = metadataNumber(object.style.tiltYDegrees) ?? 0;
+  if (Math.abs(tiltX) < 0.001 && Math.abs(tiltY) < 0.001) return undefined;
+  return projectedPlaneMatrix(tiltX, tiltY, object.rotation);
+}
+
+function projectPointInObjectPlane(object: DocumentObject, point: LayoutPoint, matrix: ProjectedPlaneMatrix): LayoutPoint {
+  const cx = object.x + Math.max(object.width, 1) / 2;
+  const cy = object.y + Math.max(object.height, 1) / 2;
+  return {
+    x: cx + matrix.a * (point.x - cx) + matrix.c * (point.y - cy),
+    y: cy + matrix.b * (point.x - cx) + matrix.d * (point.y - cy)
+  };
+}
+
+/** Page-coordinate affine transform for arrow/bracket paths and hit rectangles.
+ * Keep the existing rotation syntax for untilted objects, preserving their exported SVG. */
+export function projectedPlaneSvgTransformForObject(object: ArrowObject | BracketObject): string | undefined {
+  const matrix = projectedPlaneMatrixForObject(object);
+  if (!matrix) return rotationTransform(object);
+  const cx = object.x + Math.max(object.width, 1) / 2;
+  const cy = object.y + Math.max(object.height, 1) / 2;
+  const values = [matrix.a, matrix.b, matrix.c, matrix.d,
+    cx - matrix.a * cx - matrix.c * cy, cy - matrix.b * cx - matrix.d * cy];
+  return `matrix(${values.map(formatNumber).join(" ")})`;
 }
 
 function rotationTransform(object: DocumentObject): string | undefined {
