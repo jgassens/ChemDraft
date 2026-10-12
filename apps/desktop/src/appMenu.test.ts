@@ -63,6 +63,17 @@ describe("app menu model", () => {
     expect([...webIds].sort()).toEqual([...nativeIds].sort());
   });
 
+  it("routes About ChemDraft after Report a Bug and a separator, matching native Help order", () => {
+    const model = buildAppMenuModel(EMPTY_CONTEXT);
+    const help = model.find((section) => section.id === "help")!;
+    expect(help.items.map((item) => item.kind === "command" ? item.commandId : item.kind))
+      .toEqual(["help.reportBug", "separator", "help.about"]);
+    const about = help.items[2] as AppMenuCommand;
+    expect(about).toMatchObject({ label: "About ChemDraft", enabled: true });
+    expect(about.nativePredefined).toBeFalsy();
+    expect(nativeRoutedCommandIds(model)).toContain("help.about");
+  });
+
   it("exposes the OS-predefined clipboard commands as web commands but excludes them from the native set", () => {
     const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
     const predefined = commands.filter((command) => command.nativePredefined).map((command) => command.commandId);

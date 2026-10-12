@@ -17,10 +17,10 @@ import { formatShortcutLabel } from "./toolsets";
  * be reflected in the other.
  *
  * Deliberately omitted from the web bar (they are OS-level, not in-document actions): the macOS
- * application menu (About/Services/Hide/Quit), the Window menu (minimize/maximize), and File ▸
+ * application menu (Services/Hide/Quit), the Window menu (minimize/maximize), and File ▸
  * Close Window / Quit. File ▸ Check for Updates is also native-only because Sparkle owns its UI and
- * lifecycle rather than the frontend command registry. Help ▸ About is OS-level too; Help ▸ Report a
- * Bug… is routed like any other command.
+ * lifecycle rather than the frontend command registry. About ChemDraft and Report a Bug… are routed
+ * commands; macOS places About in its application menu, while Windows places it in Help.
  */
 
 /** A leaf item that invokes a registry command when clicked. */
@@ -330,7 +330,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     {
       id: "help",
       label: "Help",
-      items: [command(REPORT_BUG_COMMAND_ID, "Report a Bug…")]
+      items: [
+        command(REPORT_BUG_COMMAND_ID, "Report a Bug…"),
+        separator(),
+        command("help.about", "About ChemDraft")
+      ]
     }
   ];
 
