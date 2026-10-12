@@ -466,6 +466,7 @@ import {
   conformerGraphSignature,
   deleteNativeGraphicPathNode,
   documentObjectVisualBounds,
+  documentObjectInteractionBounds,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
@@ -1575,7 +1576,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.00.10-opus";
+const CURRENT_BUILD_STAMP = "10.12.05.20-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -18674,6 +18675,9 @@ export function MainWindow({
                       key={objectRenderKey}
                       {...objectViewHandlers}
                       object={object}
+                      interactionBounds={object.type === "mechanism-arrow"
+                        ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
+                        : undefined}
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
@@ -22266,7 +22270,7 @@ export function EraserSweepPreviewOverlay({
         if (!object) {
           return null;
         }
-        const bounds = documentObjectVisualBounds(object);
+        const bounds = documentObjectVisualBounds(object, objects);
         return (
           <rect
             className="eraser-sweep-object"
@@ -22999,7 +23003,7 @@ export function selectionInSelectionRect(
       continue;
     }
 
-    if (rectangleContainsRect(rect, objectBounds(object))) {
+    if (rectangleContainsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23050,7 +23054,7 @@ export function eraserSweepInSelectionRect(
       continue;
     }
 
-    if (rectangleIntersectsRect(rect, objectBounds(object))) {
+    if (rectangleIntersectsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23173,7 +23177,7 @@ export function selectionInSelectionLasso(
       continue;
     }
 
-    if (polygonIntersectsRect(points, objectBounds(object))) {
+    if (polygonIntersectsRect(points, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23244,7 +23248,7 @@ export function selectionInSelectionPolygon(
       continue;
     }
 
-    if (polygonContainsRect(polygon, objectBounds(object))) {
+    if (polygonContainsRect(polygon, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23297,13 +23301,11 @@ function rectangleIntersectsRect(
   );
 }
 
-function objectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
-  return {
-    x: object.x,
-    y: object.y,
-    width: object.width,
-    height: object.height
-  };
+function objectBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[] = [object]
+): { x: number; y: number; width: number; height: number } {
+  return documentObjectInteractionBounds(object, objects);
 }
 
 function parentGroupForDocumentObject(
@@ -23355,7 +23357,7 @@ export function visualSelectionBounds(
       continue;
     }
 
-    const bounds = documentObjectVisualBounds(object);
+    const bounds = documentObjectVisualBounds(object, objects);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -24934,6 +24936,7 @@ function DocumentObjectViewContent({
   hoverDestructive,
   freeformPreview,
   mechanismHandlesVisible,
+  interactionBounds,
   onMechanismHandlePointerDown,
   onMechanismHandlePointerMove,
   onMechanismHandlePointerUp,
@@ -25007,6 +25010,7 @@ function DocumentObjectViewContent({
   hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
   mechanismHandlesVisible?: boolean;
+  interactionBounds?: { x: number; y: number; width: number; height: number };
   onMechanismHandlePointerDown(objectId: string, controlIndex: number, event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerMove(event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerUp(event: PointerEvent<HTMLButtonElement>): void;
@@ -25218,11 +25222,12 @@ function DocumentObjectViewContent({
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
+  const frameBounds = interactionBounds ?? object;
   const style = {
-    left: `${(object.x / pageWidth) * 100}%`,
-    top: `${(object.y / pageHeight) * 100}%`,
-    width: `${(object.width / pageWidth) * 100}%`,
-    height: `${(object.height / pageHeight) * 100}%`,
+    left: `${(frameBounds.x / pageWidth) * 100}%`,
+    top: `${(frameBounds.y / pageHeight) * 100}%`,
+    width: `${(frameBounds.width / pageWidth) * 100}%`,
+    height: `${(frameBounds.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
     transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
@@ -25757,8 +25762,8 @@ function DocumentObjectViewContent({
             aria-label={`Electron push arrow handle ${controlIndex + 1}`}
             data-mechanism-handle-index={controlIndex}
             style={{
-              left: `calc(${control.x - object.x}px * var(--page-scale))`,
-              top: `calc(${control.y - object.y}px * var(--page-scale))`
+              left: `calc(${control.x - frameBounds.x}px * var(--page-scale))`,
+              top: `calc(${control.y - frameBounds.y}px * var(--page-scale))`
             }}
             onPointerDown={(event) => onMechanismHandlePointerDown(object.id, controlIndex, event)}
             onPointerMove={onMechanismHandlePointerMove}

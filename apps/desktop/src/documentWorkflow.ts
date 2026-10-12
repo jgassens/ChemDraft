@@ -12529,6 +12529,31 @@ interface ObjectBounds {
   height: number;
 }
 
+// Anchor resolution only uses objects; retain valid page metadata for array-based callers.
+const mechanismBoundsPage = createPhase4Document().pages[0];
+const mechanismBoundsPages = new WeakMap<readonly DocumentObject[], DocumentPage>();
+
+/** Live interaction frame; anchored arrows have no independent stored position. */
+export function documentObjectInteractionBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[]
+): ObjectBounds {
+  if (object.type === "mechanism-arrow") {
+    let page = mechanismBoundsPages.get(objects);
+    if (!page) {
+      page = { ...mechanismBoundsPage, objects: [...objects] };
+      mechanismBoundsPages.set(objects, page);
+    }
+    const geometry = mechanismArrowGeometry(page, object);
+    if (geometry) {
+      // Use the creation/handle-edit frame convention, with room for the head and handles,
+      // but resolve endpoints against the current atoms, just as the page renderer does.
+      return mechanismArrowBounds([geometry.source, geometry.target, ...geometry.controls]);
+    }
+  }
+  return { x: object.x, y: object.y, width: object.width, height: object.height };
+}
+
 /** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
 export function selectionBounds(
   objects: readonly DocumentObject[],
@@ -12546,10 +12571,11 @@ export function selectionBounds(
     if (!object) {
       continue;
     }
-    minX = Math.min(minX, object.x);
-    minY = Math.min(minY, object.y);
-    maxX = Math.max(maxX, object.x + object.width);
-    maxY = Math.max(maxY, object.y + object.height);
+    const bounds = documentObjectInteractionBounds(object, objects);
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.width);
+    maxY = Math.max(maxY, bounds.y + bounds.height);
     count += 1;
   }
   if (count === 0) {
@@ -12791,14 +12817,12 @@ export function ungroupSelectedDocumentObjects(document: ChemDraftDocument): Che
   );
 }
 
-export function documentObjectVisualBounds(object: DocumentObject): ObjectBounds {
+export function documentObjectVisualBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[] = [object]
+): ObjectBounds {
   if (object.type !== "graphic") {
-    return {
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height
-    };
+    return documentObjectInteractionBounds(object, objects);
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
@@ -13273,7 +13297,7 @@ function layoutItemVisualBounds(
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     }
   }
-  return documentObjectVisualBounds(object);
+  return documentObjectVisualBounds(object, pageObjects);
 }
 
 export function distributeSelectedDocumentObjects(
