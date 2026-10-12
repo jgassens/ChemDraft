@@ -137,6 +137,7 @@ import {
 } from "./plugins/applyPluginDocumentPatch";
 import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNotice";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
+import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
@@ -1575,7 +1576,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.21.45-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2059,6 +2060,7 @@ export function MainWindow({
   const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
+  const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const activeDocumentTabIdRef = useRef("initial");
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
@@ -8538,6 +8540,8 @@ export function MainWindow({
       const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
         ? { ...tab, title: path ? nativePathBasename(path) : tab.title } : tab);
       documentTabsRef.current = tabs;
+      const savedTab = tabs.find((tab) => tab.id === savingTabId);
+      if (savedTab) pluginRuntimeRef.current?.updateProposalDocumentTabTitle(savedTab.id, savedTab.title);
       setDocumentTabs(tabs);
     };
     try {
@@ -9580,6 +9584,7 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  pluginRuntimeRef.current = pluginRuntime.runtime;
 
   // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
   // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
@@ -9870,10 +9875,11 @@ export function MainWindow({
   // reopens the window after the user closes it with proposals still waiting.
   const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
   const proposalDocumentName = useCallback((proposal: QueuedProposedPatch): string | undefined => {
-    if (documentTabs.length < 2) return undefined;
     const owner = pluginRuntime.runtime.proposalDocumentTab(proposal.id);
     if (!owner) return "Unavailable document";
-    return documentTabs.find((tab) => tab.id === owner.id)?.title ?? `${owner.title} (closed)`;
+    const tab = documentTabs.find((tab) => tab.id === owner.id);
+    if (!tab) return `${owner.title} (closed)`;
+    return documentTabs.length < 2 ? undefined : tab.title;
   }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
     (open: boolean, focus: boolean): Promise<boolean> => {

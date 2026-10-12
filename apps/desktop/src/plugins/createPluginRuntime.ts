@@ -158,6 +158,8 @@ export interface DesktopPluginRuntime {
   images: PluginImageRequestController;
   recognition: StructureRecognitionController;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
+  /** Keep pending proposals' owner titles current before a renamed tab can close. */
+  updateProposalDocumentTabTitle(tabId: string, title: string): void;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -321,6 +323,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     images,
     recognition,
     proposalDocumentTab: (proposalId) => proposalTabs.get(proposalId),
+    updateProposalDocumentTabTitle(tabId, title) {
+      for (const owner of proposalTabs.values()) {
+        if (owner.id === tabId) owner.title = title;
+      }
+    },
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered
