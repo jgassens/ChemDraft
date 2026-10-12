@@ -140,6 +140,30 @@ export function rawDocumentSessionTab(tab: DocumentSessionEnvelope): unknown {
   return rawSessionTabs.get(tab) ?? tab;
 }
 
+/** Retry carried envelopes through the current parser without normalizing away recovery data. */
+export function documentSessionRestoreCandidates(envelope: DocumentSessionEnvelope): unknown[] {
+  return [...(envelope.tabs ?? [envelope]).map(rawDocumentSessionTab), ...(envelope.unrestoredTabs ?? [])];
+}
+
+export function unrestoredTabDisplayName(raw: unknown, index: number): string {
+  return record(raw) && typeof raw.displayName === "string" && raw.displayName.trim()
+    ? raw.displayName : `Kept drawing ${index + 1}`;
+}
+
+export function unrestoredTabsNotice(count: number): string {
+  return count
+    ? `; ${count} ${count === 1 ? "drawing is" : "drawings are"} kept for later`
+    : "";
+}
+
+/** Saved bytes need not be readable by this version in order to rescue them. */
+export function unrestoredTabContents(raw: unknown): string {
+  if (!record(raw) || typeof raw.contents !== "string") {
+    throw new Error("The saved tab has no document text; it remains in the session");
+  }
+  return raw.contents;
+}
+
 /** Validate each tab independently, retaining unreadable envelopes for the next autosave. */
 export function parseDocumentSessionEnvelope(raw: unknown, nested = false): DocumentSessionEnvelope | undefined {
   if (typeof raw !== "object" || raw === null) {

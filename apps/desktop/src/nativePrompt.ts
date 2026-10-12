@@ -54,9 +54,12 @@ export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogC
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
   // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
-  // must be a safe action. A lone destructive action needs a safe alternative beside Cancel.
+  // must be a safe action. For a destructive confirmation, Cancel itself occupies the default.
+  // rfd's Windows custom cancel button has a distinct ID from IDCANCEL: Escape returns the
+  // literal "Cancel", while clicking the second button returns its custom label. AppKit finds
+  // Escape's button by the literal title "Cancel". Both therefore cancel this reversed pair.
   const safe = actions.find((choice) => !choice.destructive);
-  if (!safe) throw new Error("A destructive action is never the default button; offer a safe action too.");
+  if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
   if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
@@ -94,12 +97,14 @@ export async function nativePrompt(
 }
 
 /** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise.
- * `suspendSequence` keeps a close flow hidden through its choice callback and any re-asks. */
+ * `suspendSequence` keeps utilities hidden through the choice callback and any re-asks.
+ * A native-only flow can supply a safe fallback instead of rendering a React dialog. */
 export function useNativePrompt(
   prompt: NativePromptOptions,
   onChoice: (id: string) => void | boolean | Promise<void | boolean>,
   requestKey: string | number | undefined,
-  suspendSequence = false
+  suspendSequence = false,
+  promptFallback?: NativePromptFallback
 ): { visible: boolean; choose: (id: string) => void } {
   const current = useRef({ prompt, onChoice });
   current.current = { prompt, onChoice };
@@ -133,7 +138,7 @@ export function useNativePrompt(
       resolve.current = done;
       setVisible(true);
     });
-    void nativePrompt(current.current.prompt, fallback, controller.signal).then(async (id) => {
+    void nativePrompt(current.current.prompt, promptFallback ?? fallback, controller.signal).then(async (id) => {
       if (disposed) return;
       resolve.current = undefined;
       // Wait for React to publish Save's status before asking again with its failure detail.

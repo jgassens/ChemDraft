@@ -203,6 +203,26 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    from any tab.
 
 
+Kept drawings at launch — run on **macOS and Windows**: with ChemDraft quit, back up the dev
+build's `document-session.json`, then change one saved tab's document schema in its `contents`
+to `chemdraft.document.v999` (leave the session envelope version unchanged). For a CDXML native
+payload, change the Value of the `org.chemdraft/schema-version` objecttag; for legacy JSON,
+change `schema`.
+Relaunch: readable tabs open and one native summary box says “1 drawing didn't open”, explains
+why the drawing is kept, and lists its name. Repeat with several tabs: one summary box lists all
+names and offers exactly Save Drawing…, Delete and Cancel. Its message says “Cancel keeps the
+drawings for the next launch.” Cancel, Escape (including macOS) and closing the box keep all
+drawings; relaunch asks again and retries their contents. Save Drawing… opens a native save panel
+for each drawing, suggesting its name and extension, and writes its exact saved text to the path
+chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
+box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
+box without losing the drawing. Delete opens a second native confirmation saying “Delete the
+kept drawing? This cannot be undone.” Its default button and Escape are Cancel. Cancel returns
+to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
+hidden through the entire sequence, including save panels, failed saves and both confirmation
+boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
+Restore a kept drawing's supported schema and relaunch: it opens normally without a prompt.
+
 Native simple prompts — run every item on **macOS and Windows** with the floating Drawing, Rings,
 and Art toolbars open, including at 125%/150% display scale:
 

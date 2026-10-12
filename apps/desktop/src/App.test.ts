@@ -483,13 +483,16 @@ describe("ChemDraft desktop shell", () => {
     expect(enablingLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeLessThan(catchLine);
 
-    // The gate opens only after parser and document restoration finish. The restore helper
-    // also returns cleanly for first-run and pristine-blank sessions.
+    // Unreadable payloads are kept for recovery; an unreadable outer envelope closes autosave.
     const restoreLine = lines.findIndex((line) => line.trim() === "await restore();");
     expect(restoreLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeGreaterThan(restoreLine);
     expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');
-    expect(mainWindowSource).toContain('if (!restored.length) throw new Error("No readable document tabs")');
+    expect(mainWindowSource).toContain("unrestoredSessionTabsRef.current = skipped");
+    expect(mainWindowSource).toContain("documentSessionRestoreCandidates(envelope)");
+    expect(mainWindowSource).toContain('setKeptDrawingsPrompt("notice")');
+    expect(mainWindowSource).not.toContain('action.id === "document.saveUnrestoredTabs"');
+    expect(mainWindowSource).not.toContain('action.id === "document.discardUnrestoredTabs"');
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {

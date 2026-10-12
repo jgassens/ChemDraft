@@ -176,13 +176,27 @@ describe("nativePrompt", () => {
     ] })).toEqual({ yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" });
   });
 
-  it("shows each button once: a lone destructive action is refused, not paired with a duplicated safe button", () => {
-    expect(() => nativePromptButtons({ ...three, choices: [
+  it("defaults a destructive confirmation to Cancel without duplicating buttons", () => {
+    expect(nativePromptButtons({ ...three, choices: [
       { id: "remove", label: "Remove", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
-    ] })).toThrow(/never the default/);
+    ] })).toEqual({ ok: "Cancel", cancel: "Remove" });
     for (const prompt of [three, { ...three, choices: [{ id: "a", label: "Use A3 Page" }, { id: "c", label: "Cancel" as const, cancel: true as const }] }]) {
       const labels = Object.values(nativePromptButtons(prompt));
       expect(new Set(labels).size).toBe(labels.length);
+    }
+  });
+
+  it.each(["MacIntel", "Win32"])("maps confirmation clicks and Escape safely on %s", async (platform) => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+    const prompt: NativePromptOptions = { ...three, choices: [
+      { id: "delete", label: "Delete", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
+    ] };
+    for (const [result, id] of [["Delete", "delete"], ["Cancel", "cancel"], ["", "cancel"]]) {
+      plugin.message.mockResolvedValue(result);
+      expect(await nativePrompt(prompt)).toBe(id);
+      expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({
+        buttons: { ok: "Cancel", cancel: "Delete" }
+      }));
     }
   });
 
