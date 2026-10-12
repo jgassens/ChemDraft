@@ -57,6 +57,7 @@
     "allow-toggle-preferences-window",
     "allow-agent-bridge-status",
     "allow-window-logical-position",
+    "allow-can-persist-toolset-size",
     "allow-take-pending-open-document",
     "allow-engine3d-sidecar-status",
     "allow-engine3d-sidecar-start-session",

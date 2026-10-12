@@ -23,7 +23,8 @@ import {
 
 vi.mock("./window-manager", async (importOriginal) => ({
   ...await importOriginal<typeof import("./window-manager")>(),
-  setCurrentWindowLogicalSize: vi.fn(async () => undefined)
+  setCurrentWindowLogicalSize: vi.fn(async () => undefined),
+  canPersistCurrentToolsetSize: vi.fn(async () => true)
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,6 +43,7 @@ describe("PaletteWindow customize mode bridge", () => {
       clear: () => storage.clear()
     });
     vi.clearAllMocks();
+
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -94,8 +96,38 @@ describe("PaletteWindow customize mode bridge", () => {
     const { setCurrentWindowLogicalSize } = await import("./window-manager");
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 280, height: 112 } as DOMRect);
     await renderMainPalette();
-    expect(setCurrentWindowLogicalSize).toHaveBeenCalledWith({ width: 280, height: 100 });
+    expect(setCurrentWindowLogicalSize).toHaveBeenCalledWith({ width: 280, height: 112 });
     expect(localStorage.getItem("chemdraft.palette.size.core.main")).toBeNull();
+  });
+
+  it("refuses transient resize frames reported by the native owner/quit gate", async () => {
+    const manager = await import("./window-manager");
+    vi.mocked(manager.canPersistCurrentToolsetSize).mockResolvedValue(false);
+    await renderMainPalette();
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(380);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(260);
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(localStorage.getItem("chemdraft.palette.size.core.main")).toBeNull();
+    vi.mocked(manager.canPersistCurrentToolsetSize).mockResolvedValue(true);
+  });
+
+  it.each(["vertical", "horizontal"] as const)("honours saved %s orientation even in an opposite-shaped frame", async (orientation) => {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {} disconnect() {}
+    });
+    await renderMainPalette();
+    const state = applyToolsetLayoutEdit(emptyLayoutState(), { toolsetId: "core.main", edit: { kind: "setOrientation", orientation } }, {
+      presentItemIds: new Set(), commandTitle: () => undefined,
+      gridLayout: desktopToolsetRegistry.require("core.main").gridLayout
+    });
+    await act(async () => { await broadcastToolsetLayoutState(state); });
+    const viewport = container.querySelector<HTMLElement>(".palette-scroll-viewport")!;
+    Object.defineProperty(viewport, "clientWidth", { value: orientation === "vertical" ? 1000 : 100 });
+    Object.defineProperty(viewport, "clientHeight", { value: orientation === "vertical" ? 100 : 1000 });
+    await act(async () => { observers.forEach((callback) => callback()); });
+    expect(container.querySelector(`.tool-palette.${orientation}`)).not.toBeNull();
   });
 
   it("does not persist startup sizing as a user resize", async () => {

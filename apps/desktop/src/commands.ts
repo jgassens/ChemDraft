@@ -510,6 +510,7 @@ export const atomElementActions: CommandSpec[] = nativeHotkeyElements.map((eleme
 export const PREFERENCES_COMMAND_ID = "view.togglePreferences";
 
 export const viewActions: CommandSpec[] = [
+  { id: "help.about", title: "About ChemDraft", icon: "inspector", source: "core", category: "help", description: "Show ChemDraft version and credits" },
   {
     id: PREFERENCES_COMMAND_ID,
     title: "Preferences…",

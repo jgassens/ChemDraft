@@ -5,6 +5,7 @@
     "main"
   ],
   "permissions": [
-    "allow-suspend-toolset-windows"
+    "allow-suspend-toolset-windows",
+    "allow-show-about-dialog"
   ]
 }

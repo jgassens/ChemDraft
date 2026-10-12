@@ -1,3 +1,4 @@
+import { paletteSuspension, withToolsetWindowsSuspended } from "./window-manager/paletteSuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
@@ -659,7 +660,7 @@ import {
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
   dismissToolsetPopovers,
-  suspendToolsetWindows,
+  showAboutDialog,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -1576,7 +1577,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.21.15-codex";
+const CURRENT_BUILD_STAMP = "10.11.22.08-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2352,20 +2353,17 @@ export function MainWindow({
   // Suspend them for the lifetime of any modal without changing saved visibility.
   useEffect(() => {
     if (!effectiveNativePalette) return;
-    let previous: boolean | undefined;
-    let pending = Promise.resolve();
+
     const update = () => {
       const suspended = window.document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
-      if (suspended === previous) return;
-      previous = suspended;
-      pending = pending.then(() => suspendToolsetWindows(suspended)).catch(() => undefined);
+      paletteSuspension.setHtmlModal(suspended);
     };
     const observer = new MutationObserver(update);
     observer.observe(window.document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal"] });
     update();
     return () => {
       observer.disconnect();
-      void pending.then(() => suspendToolsetWindows(false)).catch(() => undefined);
+      paletteSuspension.setHtmlModal(false);
     };
   }, [effectiveNativePalette]);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
@@ -9327,6 +9325,10 @@ export function MainWindow({
 
     viewActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "help.about") {
+          void withToolsetWindowsSuspended(() => showAboutDialog()).catch(() => setStatus("About unavailable"));
+          return;
+        }
         if (action.id === PREFERENCES_COMMAND_ID) {
           if (!isDesktopRuntime()) {
             setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
@@ -9334,7 +9336,7 @@ export function MainWindow({
               : "Preferences pop-up blocked");
             return;
           }
-          void togglePreferencesWindow().catch(() => {
+          void withToolsetWindowsSuspended(() => togglePreferencesWindow()).catch(() => {
             setStatus("Preferences unavailable");
           });
           return;
@@ -29639,21 +29641,21 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 
 async function pickNativeOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await open({
+  const selected = await withToolsetWindowsSuspended(() => open({
     title: "Open ChemDraft or CDXML Document",
     multiple: false,
     fileAccessMode: "scoped"
-  });
+  }));
   return typeof selected === "string" ? selected : undefined;
 }
 
 async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: "Save ChemDraft Document",
     defaultPath,
     filters: [{ name: "ChemDraft", extensions: ["chemdraft"] }]
-  });
+  }));
   return selected ?? undefined;
 }
 
@@ -29663,17 +29665,17 @@ async function pickNativeExportPath(
   extensions: readonly string[]
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  });
+  }));
   return selected ? ensureExportFileExtension(selected, extensions) : undefined;
 }
 
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await open({
+  const selected = await withToolsetWindowsSuspended(() => open({
     title: "Import Drawn Structure Settings Template",
     multiple: false,
     fileAccessMode: "scoped",
@@ -29682,17 +29684,17 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
       { name: "ChemDraw Style Sheets", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
-  });
+  }));
   return typeof selected === "string" ? selected : undefined;
 }
 
 async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: "Export Drawn Structure Settings Template",
     defaultPath,
     filters: [{ name: "Drawn Structure Settings Template", extensions: ["template"] }]
-  });
+  }));
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
 

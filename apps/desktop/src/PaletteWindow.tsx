@@ -59,7 +59,7 @@ import {
   requestToolsetLayoutState,
   requestToolsetActiveTool,
   requestToolsetTextStyle,
-  isDesktopRuntime,
+  canPersistCurrentToolsetSize,
   sendToolsetLayoutEdit,
   setToolsetPopoverContent,
   sendPaletteCommand,
@@ -437,7 +437,7 @@ export function PaletteWindow({
     const preferred = toolset.preferredWindowSize ?? gridWindowSize ?? { width: 240, height: 400 };
     const rect = shellRef.current?.getBoundingClientRect();
     let hasSavedSize = false;
-    let size = { width: rect?.width ? Math.ceil(rect.width) : preferred.width, height: rect?.height ? Math.max(56, Math.ceil(rect.height) - 12) : preferred.height };
+    let size = { width: rect?.width ? Math.ceil(rect.width) : preferred.width, height: rect?.height ? Math.ceil(rect.height) : preferred.height };
     try {
       const saved = JSON.parse(localStorage.getItem(`chemdraft.palette.size.${toolset.id}`) ?? "null");
       if (saved && Number.isFinite(saved.width) && Number.isFinite(saved.height) && saved.width >= 96 && saved.height >= 56) {
@@ -460,10 +460,7 @@ export function PaletteWindow({
       const initial = initialSizeRef.current;
       initialSizeRef.current = undefined;
       if (width === initial?.width && height === initial?.height) return;
-      if (isDesktopRuntime()) {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        if (await getCurrentWindow().isMinimized()) return;
-      }
+      if (!await canPersistCurrentToolsetSize()) return;
       if (!active) return;
       try {
         localStorage.setItem(`chemdraft.palette.size.${toolset.id}`, JSON.stringify({ width, height }));

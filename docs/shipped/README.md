@@ -1091,4 +1091,6 @@ export font database. Durable schema and architecture notes live in
 
 ### Resizable floating palettes (2026-10-11)
 
-Adapted the floating toolbar resizing from `04309acc` to the current document-tab shell. Palettes reflow and scroll within user-sized frames, retain resized dimensions across restarts, and keep content-fit first-open sizes. Modal palette suspension is granted only to the document window; the standing manual checklist covers both platforms.
+Adapted the floating toolbar resizing from `04309acc` to the current document-tab shell. Palettes wrap and scroll within user-sized frames while honouring the saved orientation, retain resized dimensions across restarts, and keep the full measured content-fit first-open size, including the resize row. A native persistence gate refuses minimized palettes, minimized Windows document owners, and frames during quit.
+
+Native Open/Save dialogs, the Preferences window lifetime, About, and HTML modals share one document-owned suspension coordinator. Overlapping dialogs restore previously visible palettes only after the last closes, including cancellation and failure. Restore refuses after quit starts and recovers each palette from a detached monitor before showing it. Native tooltip and popover reveal paths refuse while suspended and dismiss pending transient content. Suspension and About permissions are document-only; the standing manual checklist covers both platforms.

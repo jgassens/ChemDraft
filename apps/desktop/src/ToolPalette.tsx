@@ -266,9 +266,7 @@ export function ToolPalette({
     observer.observe(viewport);
     return () => observer.disconnect();
   }, [responsive]);
-  const orientation = responsive && availableSize
-    ? (availableSize.width >= availableSize.height ? "horizontal" : "vertical")
-    : preferredOrientation;
+  const orientation = preferredOrientation;
   const sourceItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
   const effectiveItemGroups = responsive
     ? sourceItemGroups.map((group) => group

@@ -424,7 +424,15 @@ export async function togglePreferencesWindow(): Promise<void> {
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("toggle_preferences_window");
+  let closed!: () => void;
+  const finished = new Promise<void>((resolve) => { closed = resolve; });
+  const stop = await listenCurrentWindowEvent("chemdraft://preferences-closed", closed);
+  try {
+    const visible = await invoke<boolean>("toggle_preferences_window");
+    if (visible) await finished;
+  } finally {
+    stop();
+  }
 }
 
 /** Broadcast a settings change so the main document window updates live. localStorage is
@@ -740,6 +748,19 @@ export async function suspendToolsetWindows(suspended: boolean): Promise<void> {
   if (!isDesktopRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("suspend_toolset_windows", { suspended });
+}
+
+/** Native gate includes the palette, its Windows owner, and the quit lifecycle. */
+export async function canPersistCurrentToolsetSize(): Promise<boolean> {
+  if (!isDesktopRuntime()) return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("can_persist_toolset_size");
+}
+
+export async function showAboutDialog(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("show_about_dialog");
 }
 
 export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {
