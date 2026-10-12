@@ -1299,6 +1299,7 @@ async fn suspend_toolset_windows(
             return Err(error);
         }
     };
+    let restore_app = app.clone();
     run_on_main_thread_blocking(&window, move || {
         if suspended {
             if quit_in_progress() {
@@ -1347,7 +1348,8 @@ async fn suspend_toolset_windows(
         } else {
             restore_suspended_utility_windows(&app)
         }
-    })?
+    })??;
+    restore_deferred_plugin_panels(&restore_app)
 }
 
 fn restore_suspended_utility_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
@@ -1370,7 +1372,7 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
     let app = app.clone();
     // Serialize unminimize recovery with async panel creation just like prompt release. Taking
     // WINDOW_CREATION in the event callback would deadlock a build waiting on the main thread;
-    // restoring without it could clear the snapshot before a new hidden panel is enrolled.
+    // restoring without it could clear the snapshot before a queued panel is enrolled.
     tauri::async_runtime::spawn(async move {
         let Ok(_creation) = lock_window_creation() else {
             return;
@@ -1378,6 +1380,7 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
         let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
             return;
         };
+        let restore_app = app.clone();
         let result = run_on_main_thread_blocking(&main, move || {
             let labels = UTILITY_SUSPENSION
                 .lock()
@@ -1385,7 +1388,10 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
                 .pending_restore();
             restore_utility_labels(&app, labels)
         });
-        if let Err(error) = result.and_then(|result| result) {
+        if let Err(error) = result
+            .and_then(|result| result)
+            .and_then(|()| restore_deferred_plugin_panels(&restore_app))
+        {
             eprintln!("Could not restore ChemDraft floating windows: {error}");
         }
     });
@@ -1441,10 +1447,13 @@ fn restore_utility_labels<R: Runtime>(
             break;
         }
         let Some(window) = app.get_webview_window(&label) else {
-            UTILITY_SUSPENSION
+            let mut suspension = UTILITY_SUSPENSION
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .restored(&label);
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // A queued panel has no window until the creation worker resumes below.
+            if !suspension.has_deferred_panel(&label) {
+                suspension.restored(&label);
+            }
             continue;
         };
         if window.is_minimized().unwrap_or(true) {
@@ -1966,6 +1975,77 @@ mod plugin_panel_label_tests {
     };
 
     #[test]
+    fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
+        use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([]);
+        let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
+            "panelId": "panel.test", "title": "Analyze", "focus": true
+        }))
+        .unwrap();
+        for _ in 0..2 {
+            dispatch_plugin_panel_open(&state, request.clone(), false, |_| {
+                panic!("must not build or parent while suspended")
+            })
+            .unwrap();
+        }
+        assert!(state.lock().unwrap().release(false).is_none());
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("nested prompt still open"))
+            .unwrap();
+        let labels = state.lock().unwrap().release(false).unwrap();
+        assert_eq!(labels, vec![plugin_panel_window_label("panel.test")]);
+        state.lock().unwrap().start_restore();
+        resume_deferred_plugin_panels(
+            &state,
+            || false,
+            |_| panic!("restore transaction still running"),
+        )
+        .unwrap();
+        state.lock().unwrap().finish_restore();
+        let mut builds = 0;
+        resume_deferred_plugin_panels(
+            &state,
+            || false,
+            |request| {
+                assert!(!request.focus, "resume must not activate the panel");
+                assert_eq!(request.panel_id, "panel.test");
+                builds += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(builds, 1);
+        assert!(!state.lock().unwrap().active());
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("already built")).unwrap();
+    }
+
+    #[test]
+    fn quit_drops_new_and_previously_deferred_panel_requests() {
+        use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        state.lock().unwrap().begin([]);
+        let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
+            "panelId": "panel.test", "title": "Analyze"
+        }))
+        .unwrap();
+        assert!(
+            dispatch_plugin_panel_open(&state, request.clone(), true, |_| panic!("quitting"))
+                .is_err()
+        );
+        state.lock().unwrap().release(false);
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("quit request was queued"))
+            .unwrap();
+        state.lock().unwrap().begin([]);
+        dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
+        state.lock().unwrap().release(false);
+        resume_deferred_plugin_panels(&state, || true, |_| panic!("quitting")).unwrap();
+        assert!(!state.lock().unwrap().active());
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("quit discarded request"))
+            .unwrap();
+    }
+
+    #[test]
     fn open_requests_focus_only_when_the_app_asks() {
         let automatic: OpenPluginPanelRequest =
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals"}"#).unwrap();
@@ -2137,18 +2217,116 @@ async fn open_plugin_panel_window(
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
-    let label = plugin_panel_window_label(&request.panel_id);
     let _creation = lock_window_creation()?;
-    let deferred = utility_windows_suspended();
-    let presentation = request.presentation(deferred);
-    if let Some(window) = app.get_webview_window(&label) {
-        if deferred {
-            UTILITY_SUSPENSION
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .defer_show(label);
+    dispatch_plugin_panel_open(
+        &UTILITY_SUSPENSION,
+        request,
+        quit_in_progress(),
+        |request| build_or_show_plugin_panel(&app, request),
+    )
+}
+
+/// Even hidden macOS children are ordered onscreen by parent attachment. Keep the injectable
+/// builder behind this gate, and release the state lock before any native operations.
+fn dispatch_plugin_panel_open(
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+    request: OpenPluginPanelRequest,
+    quitting: bool,
+    builder: impl FnOnce(OpenPluginPanelRequest) -> Result<(), String>,
+) -> Result<(), String> {
+    if quitting {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    {
+        let mut state = suspension.lock().unwrap_or_else(|p| p.into_inner());
+        if state.active() {
+            state.defer_panel(plugin_panel_window_label(&request.panel_id), request);
             return Ok(());
         }
+    }
+    builder(request)
+}
+
+/// Worker-thread-only, with WINDOW_CREATION held. Prompt release and unminimize both come here
+/// after restoring existing windows on the main thread. Resume never steals keyboard focus.
+fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    if quit_in_progress() {
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .release(true);
+        return Ok(());
+    }
+    if app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_none_or(|main| main.is_minimized().unwrap_or(true))
+    {
+        return Ok(());
+    }
+    resume_deferred_plugin_panels(&UTILITY_SUSPENSION, quit_in_progress, |request| {
+        build_or_show_plugin_panel(app, request)
+    })
+}
+
+fn resume_deferred_plugin_panels(
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+    quitting: impl Fn() -> bool,
+    mut builder: impl FnMut(OpenPluginPanelRequest) -> Result<(), String>,
+) -> Result<(), String> {
+    if quitting() {
+        suspension
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .release(true);
+        return Ok(());
+    }
+    let Some(requests) = suspension
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take_deferred_panels()
+    else {
+        return Ok(());
+    };
+    let mut result = Ok(());
+    for (label, mut request) in requests {
+        if quitting() {
+            suspension
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .release(true);
+            return Ok(());
+        }
+        request.focus = false;
+        if let Err(error) = builder(request.clone()) {
+            suspension
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .defer_panel(label, request);
+            result = Err(error);
+        } else {
+            suspension
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restored(&label);
+        }
+    }
+    suspension
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .finish_restore();
+    result
+}
+
+fn build_or_show_plugin_panel<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: OpenPluginPanelRequest,
+) -> Result<(), String> {
+    if quit_in_progress() {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    let label = plugin_panel_window_label(&request.panel_id);
+    let presentation = request.presentation(false);
+    if let Some(window) = app.get_webview_window(&label) {
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -2161,11 +2339,11 @@ async fn open_plugin_panel_window(
 
     let width = request.width.unwrap_or(380.0);
     let height = request.height.unwrap_or(520.0);
-    let position = analysis_window_initial_position(&app, width, height);
+    let position = analysis_window_initial_position(app, width, height);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
-        &app,
+        app,
         &label,
         WebviewUrl::App(format!("/?window=pluginPanel&panelId={}", request.panel_id).into()),
     )
@@ -2190,16 +2368,7 @@ async fn open_plugin_panel_window(
     }
     let window = builder.build().map_err(|error| error.to_string())?;
 
-    if deferred {
-        // MainWindow can record this open as successful: the real (hidden) window is enrolled in
-        // restoration, even though it did not exist when the suspension snapshot was taken.
-        UTILITY_SUSPENSION
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .defer_show(label);
-    } else {
-        configure_analysis_window(&window, presentation.focus_after_show)?;
-    }
+    configure_analysis_window(&window, presentation.focus_after_show)?;
     Ok(())
 }
 

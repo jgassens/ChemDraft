@@ -10,6 +10,7 @@ pub(crate) struct UtilitySuspension {
     visibility: HashMap<String, bool>,
     restore: HashSet<String>,
     recovery_positions: HashMap<String, HashSet<(i32, i32)>>,
+    deferred_panels: HashMap<String, super::OpenPluginPanelRequest>,
 }
 
 impl UtilitySuspension {
@@ -39,7 +40,27 @@ impl UtilitySuspension {
         true
     }
 
-    /// A requested panel is built hidden while suspended, then shown with the original windows.
+    pub(crate) fn defer_panel(&mut self, label: String, request: super::OpenPluginPanelRequest) {
+        self.defer_show(label.clone());
+        self.deferred_panels.insert(label, request);
+    }
+
+    pub(crate) fn has_deferred_panel(&self, label: &str) -> bool {
+        self.deferred_panels.contains_key(label)
+    }
+
+    /// Drain on the creation worker after the main-thread restore transaction. Building on the
+    /// main thread deadlocks WebView2; building during a prompt orders macOS children onscreen.
+    pub(crate) fn take_deferred_panels(
+        &mut self,
+    ) -> Option<HashMap<String, super::OpenPluginPanelRequest>> {
+        if self.depth != 0 || self.restoring_windows {
+            return None;
+        }
+        Some(std::mem::take(&mut self.deferred_panels))
+    }
+
+    /// Enroll a requested reveal in restoration, without constructing or parenting a window.
     pub(crate) fn defer_show(&mut self, label: String) {
         self.visibility.insert(label.clone(), true);
         self.restore.insert(label);
@@ -54,6 +75,7 @@ impl UtilitySuspension {
             self.visibility.clear();
             self.restore.clear();
             self.recovery_positions.clear();
+            self.deferred_panels.clear();
             return None;
         }
         if self.depth == 0 {
