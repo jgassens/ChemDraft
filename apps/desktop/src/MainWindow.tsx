@@ -1578,7 +1578,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.08.20-opus";
+const CURRENT_BUILD_STAMP = "10.12.08.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2089,10 +2089,47 @@ export function MainWindow({
   const [keptDrawingsBusy, setKeptDrawingsBusy] = useState(false);
   const [keptDrawingsMessage, setKeptDrawingsMessage] = useState<string>();
   const keptDrawingsDefaultButtonRef = useRef<HTMLButtonElement>(null);
+  const keptDrawingsDialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!keptDrawingsBusy) keptDrawingsDefaultButtonRef.current?.focus();
   }, [keptDrawingsPrompt, keptDrawingsBusy]);
   const keptDrawingsOpen = keptDrawingsPrompt !== undefined;
+  useEffect(() => {
+    if (!keptDrawingsOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const dialog = keptDrawingsDialogRef.current;
+      if (!dialog) return;
+      // Own the keyboard even if a pointer interaction or native UI moved focus outside.
+      event.stopImmediatePropagation();
+      if (event.key === "F5" || event.key === "BrowserRefresh" ||
+          ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r")) {
+        event.preventDefault();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!keptDrawingsBusy) {
+          if (keptDrawingsPrompt === "delete") setKeptDrawingsPrompt("notice");
+          else setKeptDrawingsPrompt(undefined);
+        }
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const focused = globalThis.document.activeElement;
+        if (focused instanceof HTMLButtonElement && dialog.contains(focused)) focused.click();
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const buttons = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+        const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+        const nextIndex = index < 0 ? (event.shiftKey ? buttons.length - 1 : 0) :
+          (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+        (buttons[nextIndex] ?? dialog).focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [keptDrawingsOpen, keptDrawingsPrompt, keptDrawingsBusy]);
   useLayoutEffect(() => {
     if (!keptDrawingsOpen) return;
     const previousFocus = globalThis.document.activeElement;
@@ -18499,28 +18536,13 @@ export function MainWindow({
         : null}
 
       {keptDrawingsPrompt ? (
-        <div role="dialog" aria-modal="true" aria-labelledby="kept-drawings-title"
+        <div ref={keptDrawingsDialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="kept-drawings-title"
           aria-describedby="kept-drawings-description" style={exportDialogBackdropStyle}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === "Escape") {
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) {
               event.preventDefault();
-              if (!keptDrawingsBusy) {
-                if (keptDrawingsPrompt === "delete") setKeptDrawingsPrompt("notice");
-                else setKeptDrawingsPrompt(undefined);
-              }
-            }
-            if (event.key === "Enter") {
-              event.preventDefault();
-              const focused = globalThis.document.activeElement;
-              if (focused instanceof HTMLButtonElement && event.currentTarget.contains(focused)) focused.click();
-            }
-            if (event.key === "Tab") {
-              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
-              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
-              const next = buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length];
-              event.preventDefault();
-              next?.focus();
+              if (keptDrawingsBusy) event.currentTarget.focus();
+              else keptDrawingsDefaultButtonRef.current?.focus();
             }
           }}>
           <section style={exportDialogPanelStyle}>

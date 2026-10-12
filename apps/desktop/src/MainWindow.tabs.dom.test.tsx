@@ -757,6 +757,58 @@ describe("documents in one window", () => {
     });
   }
 
+  it.each([
+    { key: "F5" },
+    { key: "r", ctrlKey: true },
+    { key: "r", metaKey: true }
+  ])("prevents webview reload inside the launch dialog ($key, $ctrlKey, $metaKey)", async (chord) => {
+    native.session = sessionWithUnrestoredTabs();
+    await remount();
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    const event = new KeyboardEvent("keydown", { ...chord, bubbles: true, cancelable: true });
+    await act(async () => { document.activeElement!.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(container.querySelector('[role="dialog"]')).toBe(dialog);
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+  });
+
+  it.each(["Escape", "Tab", "Shift+Tab"])("contains focus after a backdrop click and handles escaped focus (%s)", async (key) => {
+    const session = sessionWithUnrestoredTabs();
+    native.session = session;
+    await remount();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+    await pressDialogKey("Tab");
+    expect(document.activeElement?.textContent).toBe("Save Drawings…");
+    // jsdom does not implement pointer defaults: cancellation prevents the browser's body focus.
+    const pointer = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    await act(async () => { dialog.dispatchEvent(pointer); dialog.click(); });
+    expect(pointer.defaultPrevented).toBe(true);
+    expect(document.activeElement?.textContent).toBe("Keep for Later");
+    await pressDialogKey(key === "Shift+Tab" ? "Tab" : key, key === "Shift+Tab");
+    if (key === "Escape") {
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      await remount();
+    } else {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement?.textContent).toBe(key === "Tab" ? "Save Drawings…" : "Delete");
+    }
+    // Also recover when focus has escaped for another reason (for example, native UI).
+    await act(async () => { (document.activeElement as HTMLElement).blur(); });
+    expect(document.activeElement).toBe(document.body);
+    await pressDialogKey(key === "Shift+Tab" ? "Tab" : key, key === "Shift+Tab");
+    if (key === "Escape") {
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+    } else {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement?.textContent).toBe(key === "Tab" ? "Save Drawings…" : "Keep for Later");
+      await pressDialogKey("Tab", key === "Shift+Tab");
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+  });
+
   it.each(["Keep for Later", "Escape", "Enter"])("keeps unreadable drawings and asks again on next launch (%s)", async (action) => {
     const session = sessionWithUnrestoredTabs(["Still unreadable.chemdraft"]);
     native.session = session;
