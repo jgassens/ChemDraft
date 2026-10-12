@@ -1,5 +1,10 @@
 # Names, exports and human editing
 
+CLI batch files, native document files (also MCP `documentPath`), and the plugin
+trust file accept UTF-8 with or without a leading BOM, plus BOM-marked UTF-16LE
+and UTF-16BE. LF and Windows CRLF are accepted. For malformed UTF-16, save the
+file as UTF-8 (`Set-Content -Encoding UTF8` in PowerShell).
+
 ## Chemical name to structure
 
 `name` and MCP `name_to_structure` use the bundled OPSIN 2.9.0 runtime.

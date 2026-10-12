@@ -1,3 +1,4 @@
+import { nativePrompt } from "./nativePrompt";
 /**
  * Windows app updates (macOS uses Sparkle; see docs/releasing/windows-updates.md).
  *
@@ -88,7 +89,8 @@ export interface AvailableUpdate {
 
 export interface UpdateFlowDeps {
   check(): Promise<AvailableUpdate | null>;
-  confirm(text: string, options: { title: string; okLabel: string; cancelLabel: string }): Promise<boolean>;
+  /** Asks with the action button labelled `okLabel` beside Cancel. */
+  confirm(text: string, options: { title: string; okLabel: string }): Promise<boolean>;
   message(text: string, options: { title: string; kind: "info" | "error" }): Promise<void>;
   setStatus(text: string): void;
   /** Write the document session to disk now. Rejects if it could not be saved. */
@@ -131,8 +133,7 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
   try {
     accepted = await deps.confirm(updatePromptText(update), {
       title: DIALOG_TITLE,
-      okLabel: "Install and Restart",
-      cancelLabel: "Later"
+      okLabel: "Install and Restart"
     });
   } catch (error) {
     // The prompt itself failed (dialog plugin error, window closing). Nothing was installed; release
@@ -228,12 +229,16 @@ export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flu
       return check();
     },
     confirm: async (text, options) => {
-      const { confirm } = await import("@tauri-apps/plugin-dialog");
-      return confirm(text, { ...options, kind: "info" });
+      return await nativePrompt({
+        title: options.title, message: text, kind: "info",
+        choices: [{ id: "update", label: options.okLabel }, { id: "cancel", label: "Cancel", cancel: true }]
+      }) === "update";
     },
     message: async (text, options) => {
-      const { message } = await import("@tauri-apps/plugin-dialog");
-      await message(text, options);
+      await nativePrompt({
+        title: options.title, message: text, kind: options.kind ?? "info",
+        choices: [{ id: "ok", label: "OK", cancel: true }]
+      });
     }
   };
 }

@@ -72,7 +72,7 @@ describe("MainWindow SMILES paste failure notices", () => {
       expect(status).toContain("pasted as text");
       expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
       expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-      expect(container.querySelector(".text-object")?.textContent).toContain("n1cccc1");
+      expect(container.querySelector("[data-object-controls] .text-object-content")?.textContent).toContain("n1cccc1");
     }
   );
 

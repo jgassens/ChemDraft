@@ -1028,6 +1028,14 @@ export function compareBondDepth(
 ): number {
   const crossingKey = crossingPairKey([left.ref, right.ref]);
   const override = context.overrides?.find((candidate) => crossingPairKey(candidate.bonds) === crossingKey);
+  return compareBondDepthWithOverride(left, right, override);
+}
+
+function compareBondDepthWithOverride(
+  left: BondDepthCandidate,
+  right: BondDepthCandidate,
+  override: CrossingOverride | undefined
+): number {
   if (override) {
     if (sameBondRef(override.front, left.ref)) {
       return 1;
@@ -1052,29 +1060,43 @@ function resolvePageBondCrossings(
   page: DocumentPage,
   warnings: PageSvgRenderWarning[]
 ): InternalResolvedBondCrossing[] {
+  const candidateKeys = new Set<string>();
+  let uniqueBondKeys = true;
   const candidates = page.objects.flatMap((object, objectLayerIndex) =>
     object.type === "molecule" && isNativeMoleculeGraph(object)
-      ? nativeBondCandidates(object, objectLayerIndex)
+      ? nativeBondCandidates(object, objectLayerIndex).map((candidate) => {
+          const key = bondRefKey(candidate.ref);
+          if (candidateKeys.has(key)) uniqueBondKeys = false;
+          candidateKeys.add(key);
+          return candidate;
+        })
       : []
   );
   const resolved: InternalResolvedBondCrossing[] = [];
-  const overrides = page.crossings;
+  const overrides = new Map<string, CrossingOverride>();
+  for (const override of page.crossings) {
+    const key = crossingPairKey(override.bonds);
+    // Preserve Array.find's first-match behavior even for duplicate pair overrides.
+    if (!overrides.has(key)) {
+      overrides.set(key, override);
+    }
+  }
 
   forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
     const left = candidates[leftIndex];
     const right = candidates[rightIndex];
-    if (!left || !right || shouldSkipCrossingCandidatePair(left, right)) {
+    if (!left || !right || crossingCandidatesShareAtom(left, right)) {
       return;
     }
     const intersection = segmentIntersection(left.start, left.end, right.start, right.end);
     if (!intersection) {
       return;
     }
-    const depth = compareBondDepth(left, right, { overrides });
+    const key = crossingPairKey([left.ref, right.ref]);
+    const override = overrides.get(key);
+    const depth = compareBondDepthWithOverride(left, right, override);
     const frontCandidate = depth >= 0 ? left : right;
     const backCandidate = depth >= 0 ? right : left;
-    const key = crossingPairKey([left.ref, right.ref]);
-    const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
     const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
     resolved.push({
       key,
@@ -1090,7 +1112,7 @@ function resolvePageBondCrossings(
     });
   });
 
-  warnForDepthCycles(resolved, warnings);
+  warnForDepthCycles(resolved, warnings, uniqueBondKeys);
   return resolved.sort((left, right) => left.key.localeCompare(right.key));
 }
 
@@ -1098,32 +1120,33 @@ function resolvePageBondCrossings(
  * Visit every candidate pair whose bond segments overlap in x, as `(lower index, higher index)` —
  * the order the all-pairs loop used, which decides depth ties. Sweep and prune: sorted by left edge,
  * a pair is visited while the next segment starts no further right than this one ends (inclusive,
- * matching `segmentBoxesOverlap`). Every pair the old O(n²) loop kept overlaps in x, so the result is
- * identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
- * Segments with non-finite ends are left out — `shouldSkipCrossingCandidatePair` skips them anyway,
- * and NaN cannot be sorted.
+ * matching the inclusive bounding-box test). Every pair the old O(n²) loop kept overlaps in x, so
+ * the result is identical; a page of a few thousand bonds no longer compares millions of far-apart pairs.
+ * Invalid or zero-length segments are rejected once here rather than for every overlapping pair;
+ * NaN cannot be sorted. The sweep also checks y bounds before visiting a pair, so the visitor need
+ * only reject shared-atom junctions before the intersection test.
  */
 function forEachCandidatePairOverlappingInX(
   candidates: readonly PageNativeBondCandidate[],
   visit: (leftIndex: number, rightIndex: number) => void
 ): void {
   const spans = candidates.flatMap((candidate, index) => {
+    if (!finiteSegment(candidate.start, candidate.end)) {
+      return [];
+    }
     const minX = Math.min(candidate.start.x, candidate.end.x);
     const maxX = Math.max(candidate.start.x, candidate.end.x);
     const minY = Math.min(candidate.start.y, candidate.end.y);
     const maxY = Math.max(candidate.start.y, candidate.end.y);
-    return Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)
-      ? [{ index, minX, maxX, minY, maxY }]
-      : [];
+    return [{ index, minX, maxX, minY, maxY }];
   });
   spans.sort((left, right) => left.minX - right.minX || left.index - right.index);
   for (let i = 0; i < spans.length; i += 1) {
     const current = spans[i]!;
     for (let j = i + 1; j < spans.length && spans[j]!.minX <= current.maxX; j += 1) {
       const other = spans[j]!;
-      // Disjoint in y too: `shouldSkipCrossingCandidatePair` would skip the pair on the same test,
-      // so rejecting it here changes nothing but the cost. On a tall page most x-overlapping pairs
-      // are rows apart.
+      // On a tall page most x-overlapping pairs are rows apart. Check the precomputed bounds here
+      // rather than recomputing both bounding boxes in the visitor.
       if (other.minY > current.maxY || other.maxY < current.minY) {
         continue;
       }
@@ -1162,22 +1185,13 @@ function nativeBondCandidates(object: MoleculeObject, objectLayerIndex: number):
   });
 }
 
-function shouldSkipCrossingCandidatePair(left: PageNativeBondCandidate, right: PageNativeBondCandidate): boolean {
-  if (left.ref.objectId === right.ref.objectId) {
-    const sharedAtom = left.bond.fromAtomId === right.bond.fromAtomId ||
-      left.bond.fromAtomId === right.bond.toAtomId ||
-      left.bond.toAtomId === right.bond.fromAtomId ||
-      left.bond.toAtomId === right.bond.toAtomId;
-    if (sharedAtom) {
-      return true;
-    }
-  }
-
-  if (!finiteSegment(left.start, left.end) || !finiteSegment(right.start, right.end)) {
-    return true;
-  }
-
-  return !segmentBoxesOverlap(left.start, left.end, right.start, right.end);
+function crossingCandidatesShareAtom(left: PageNativeBondCandidate, right: PageNativeBondCandidate): boolean {
+  return left.ref.objectId === right.ref.objectId && (
+    left.bond.fromAtomId === right.bond.fromAtomId ||
+    left.bond.fromAtomId === right.bond.toAtomId ||
+    left.bond.toAtomId === right.bond.fromAtomId ||
+    left.bond.toAtomId === right.bond.toAtomId
+  );
 }
 
 function finiteSegment(start: LayoutPoint, end: LayoutPoint): boolean {
@@ -1186,22 +1200,6 @@ function finiteSegment(start: LayoutPoint, end: LayoutPoint): boolean {
     Number.isFinite(end.x) &&
     Number.isFinite(end.y) &&
     distance(start, end) > crossingIntersectionEpsilon;
-}
-
-function segmentBoxesOverlap(leftStart: LayoutPoint, leftEnd: LayoutPoint, rightStart: LayoutPoint, rightEnd: LayoutPoint): boolean {
-  const leftMinX = Math.min(leftStart.x, leftEnd.x);
-  const leftMaxX = Math.max(leftStart.x, leftEnd.x);
-  const leftMinY = Math.min(leftStart.y, leftEnd.y);
-  const leftMaxY = Math.max(leftStart.y, leftEnd.y);
-  const rightMinX = Math.min(rightStart.x, rightEnd.x);
-  const rightMaxX = Math.max(rightStart.x, rightEnd.x);
-  const rightMinY = Math.min(rightStart.y, rightEnd.y);
-  const rightMaxY = Math.max(rightStart.y, rightEnd.y);
-
-  return leftMinX <= rightMaxX &&
-    leftMaxX >= rightMinX &&
-    leftMinY <= rightMaxY &&
-    leftMaxY >= rightMinY;
 }
 
 function segmentIntersection(
@@ -1277,20 +1275,39 @@ function nativeBondFootprintPx(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
 
 function warnForDepthCycles(
   crossings: readonly InternalResolvedBondCrossing[],
-  warnings: PageSvgRenderWarning[]
+  warnings: PageSvgRenderWarning[],
+  uniqueBondKeys: boolean
 ): void {
+  // Default depth strictly orders instances, but duplicate ids or composite-key collisions can
+  // merge them into one graph vertex. Only unique keys prove every cycle needs an override.
+  if (uniqueBondKeys && !crossings.some((crossing) => crossing.hasOverride)) {
+    return;
+  }
   const edges = crossings.map((crossing) => ({
     from: bondRefKey(crossing.front),
-    to: bondRefKey(crossing.back)
+    to: bondRefKey(crossing.back),
+    hasOverride: crossing.hasOverride
   }));
+  // Prefix the source length so ids containing "->" cannot alias a different edge.
+  const edgeKey = (from: string, to: string) => `${from.length}:${from}->${to}`;
+  const edgeKeys = new Set<string>();
+  const adjacency = new Map<string, string[]>();
+  for (const { from, to } of edges) {
+    edgeKeys.add(edgeKey(from, to));
+    const targets = adjacency.get(from) ?? [];
+    targets.push(to);
+    adjacency.set(from, targets);
+  }
 
+  // Keep the existing three-edge-cycle semantics: only visit actual two-edge paths, and look up
+  // their closing edge in constant time instead of scanning all crossings for both steps.
   for (const first of edges) {
-    for (const second of edges) {
-      if (second.from !== first.to) {
-        continue;
-      }
-      const closing = edges.find((candidate) => candidate.from === second.to && candidate.to === first.from);
-      if (closing) {
+    // A three-edge cycle can be rotated to start at any of its override edges.
+    if (uniqueBondKeys && !first.hasOverride) {
+      continue;
+    }
+    for (const target of adjacency.get(first.to) ?? []) {
+      if (edgeKeys.has(edgeKey(target, first.from))) {
         warnings.push({
           code: "crossing.depth_cycle",
           message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
@@ -4588,27 +4605,34 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
+  const projection = projectedPlaneMatrixForObject(object);
+  // The canvas historically projected arrow points, keeping strokes at 1.5 px. Do the
+  // same in the shared plan, rather than scaling strokes with an SVG group matrix.
+  const project = (point: LayoutPoint) => projection ? projectPointInObjectPlane(object, point, projection) : point;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-    transform: rotationTransform(object)
+    transform: projection ? undefined : rotationTransform(object)
   }), [
-    ...geometry.lines.map((line, index) =>
-      elementFragment("line", `reaction-arrow-line-${object.id}-${index}`, {
+    ...geometry.lines.map((line, index) => {
+      const start = project(line.start);
+      const end = project(line.end);
+      return elementFragment("line", `reaction-arrow-line-${object.id}-${index}`, {
         class: "reaction-arrow-line",
         "data-arrow-kind": object.arrowKind,
-        x1: line.start.x,
-        y1: line.start.y,
-        x2: line.end.x,
-        y2: line.end.y,
+        x1: start.x,
+        y1: start.y,
+        x2: end.x,
+        y2: end.y,
         stroke: "#172026",
         "stroke-width": 1.5,
         "stroke-linecap": "round"
-      })
-    ),
+      });
+    }),
     ...geometry.heads.map((head, index) =>
       elementFragment("polygon", `reaction-arrow-head-${object.id}-${index}`, {
         class: "reaction-arrow-head",
         "data-arrow-kind": object.arrowKind,
         points: head.points
+          .map(project)
           .map((point) => `${formatNumber(point.x)},${formatNumber(point.y)}`)
           .join(" "),
         fill: head.filled ? "#172026" : "none",
@@ -4633,38 +4657,50 @@ function arrowAnchorPointForObject(
 
 /** Shared bracket glyph outline for the canvas renderer and SVG export, in object-local
  *  coordinates. "round" is a single open curve, "curly" a brace with a center spur; "polymer" and
- *  "unknown" fall back to the square outline. */
+ *  "unknown" fall back to the square outline. An optional projection maps every path point,
+ *  including Bezier controls, without transforming the stroke. */
 export function bracketGlyphPathD(
   kind: BracketObject["bracketKind"],
   width: number,
-  height: number
+  height: number,
+  project?: (point: LayoutPoint) => LayoutPoint
 ): string {
+  // Project endpoints and Bezier controls, preserving a constant stroke in SVG/PDF.
+  // Keep raw number serialization for the original, untilted glyph.
+  const point = (x: number, y: number) => {
+    if (!project) return `${x} ${y}`;
+    const projected = project({ x, y });
+    return `${formatNumber(projected.x)} ${formatNumber(projected.y)}`;
+  };
   const right = Math.max(width - 1, 0);
   const bottom = Math.max(height - 1, 0);
   if (kind === "round") {
-    return `M ${right} 0 C ${width * 0.18} ${height * 0.16}, ${width * 0.18} ${height * 0.84}, ${right} ${bottom}`;
+    return `M ${point(right, 0)} C ${point(width * 0.18, height * 0.16)}, ${point(width * 0.18, height * 0.84)}, ${point(right, bottom)}`;
   }
   if (kind === "curly") {
     return [
-      `M ${right} 0`,
-      `C ${width * 0.15} ${height * 0.1}, ${width * 0.85} ${height * 0.38}, ${width * 0.2} ${height * 0.5}`,
-      `C ${width * 0.85} ${height * 0.62}, ${width * 0.15} ${height * 0.9}, ${right} ${bottom}`
+      `M ${point(right, 0)}`,
+      `C ${point(width * 0.15, height * 0.1)}, ${point(width * 0.85, height * 0.38)}, ${point(width * 0.2, height * 0.5)}`,
+      `C ${point(width * 0.85, height * 0.62)}, ${point(width * 0.15, height * 0.9)}, ${point(right, bottom)}`
     ].join(" ");
   }
-  return `M ${right} 0 L 0 0 L 0 ${bottom} L ${right} ${bottom}`;
+  return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
+  const projection = projectedPlaneMatrixForObject(object);
+  const project = projection ? (point: LayoutPoint) => projectPointInObjectPlane(object,
+    { x: object.x + point.x, y: object.y + point.y }, projection) : undefined;
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
-    transform: rotationTransform(object)
+    transform: projection ? undefined : rotationTransform(object)
   }), [
     elementFragment("path", `bracket-path-${object.id}`, {
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
-      transform: `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height),
+      transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      d: bracketGlyphPathD(object.bracketKind, width, height, project),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,
@@ -7381,6 +7417,57 @@ function metadataNumber(value: unknown): number | undefined {
 
 function metadataFontStyle(value: unknown): string | undefined {
   return value === "italic" || value === "normal" ? value : undefined;
+}
+
+export interface ProjectedPlaneMatrix {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+}
+
+/** Screen-space projection of local z=0 points: in-plane Z rotation, then Y and X tilt.
+ * Shared by the arrow/bracket render plans and their canvas controls and catchers. */
+export function projectedPlaneMatrix(
+  tiltXDegrees: number,
+  tiltYDegrees: number,
+  rotationDegrees: number
+): ProjectedPlaneMatrix {
+  const cx = Math.cos(degreesToRadians(tiltXDegrees));
+  const sx = Math.sin(degreesToRadians(tiltXDegrees));
+  const cy = Math.cos(degreesToRadians(tiltYDegrees));
+  const sy = Math.sin(degreesToRadians(tiltYDegrees));
+  const cz = Math.cos(degreesToRadians(rotationDegrees));
+  const sz = Math.sin(degreesToRadians(rotationDegrees));
+  return { a: cy * cz, b: cx * sz + sx * sy * cz, c: -cy * sz, d: cx * cz - sx * sy * sz };
+}
+
+function projectedPlaneMatrixForObject(object: DocumentObject): ProjectedPlaneMatrix | undefined {
+  const tiltX = metadataNumber(object.style.tiltXDegrees) ?? 0;
+  const tiltY = metadataNumber(object.style.tiltYDegrees) ?? 0;
+  if (Math.abs(tiltX) < 0.001 && Math.abs(tiltY) < 0.001) return undefined;
+  return projectedPlaneMatrix(tiltX, tiltY, object.rotation);
+}
+
+function projectPointInObjectPlane(object: DocumentObject, point: LayoutPoint, matrix: ProjectedPlaneMatrix): LayoutPoint {
+  const cx = object.x + Math.max(object.width, 1) / 2;
+  const cy = object.y + Math.max(object.height, 1) / 2;
+  return {
+    x: cx + matrix.a * (point.x - cx) + matrix.c * (point.y - cy),
+    y: cy + matrix.b * (point.x - cx) + matrix.d * (point.y - cy)
+  };
+}
+
+/** Page-coordinate affine transform for arrow/bracket paths and hit rectangles.
+ * Keep the existing rotation syntax for untilted objects, preserving their exported SVG. */
+export function projectedPlaneSvgTransformForObject(object: ArrowObject | BracketObject): string | undefined {
+  const matrix = projectedPlaneMatrixForObject(object);
+  if (!matrix) return rotationTransform(object);
+  const cx = object.x + Math.max(object.width, 1) / 2;
+  const cy = object.y + Math.max(object.height, 1) / 2;
+  const values = [matrix.a, matrix.b, matrix.c, matrix.d,
+    cx - matrix.a * cx - matrix.c * cy, cy - matrix.b * cx - matrix.d * cy];
+  return `matrix(${values.map(formatNumber).join(" ")})`;
 }
 
 function rotationTransform(object: DocumentObject): string | undefined {

@@ -5,6 +5,7 @@ import {
   coreDrawingToolDefinitions,
   createActiveToolState,
   drawingToolStatusLabel,
+  formatDrawingToolUsageHint,
   getDrawingToolCommandSpecs,
   getDrawingToolDefinition,
   isDrawingToolCommand,
@@ -197,6 +198,31 @@ describe("Phase 7 drawing tool activation", () => {
       expect(result.state.activeKind).toBe("selection");
       expect(command.enabled).toBe(true);
     }
+  });
+
+  it.each([
+    ["macos", "Option", "⌥"],
+    ["windows", "Alt", "Alt"]
+  ] as const)("builds Lasso and Eyedropper hints for %s", (platform, option, optionGlyph) => {
+    const lasso = getToolsetCommandSpecs().find((candidate) => candidate.id === "tool.lasso");
+    if (!lasso) {
+      throw new Error("Expected tool.lasso to be registered by the toolset manifest.");
+    }
+
+    expect(activateDrawingToolCommand(createActiveToolState(), lasso, platform).status)
+      .toBe(`Lasso: drag around objects; ${option} subtracts; Esc exits`);
+    expect(drawingToolStatusLabel("tool.art.eyedropper", "Eyedropper", platform))
+      .toBe(`Eyedropper: click source art; ${optionGlyph} copies full appearance; Esc exits`);
+  });
+
+  it("leaves supplied titles and ordinary hint text unchanged on Windows", () => {
+    expect(drawingToolStatusLabel("tool.lasso", "Options Tool", "windows"))
+      .toBe("Options: drag around objects; Alt subtracts; Esc exits");
+    expect(formatDrawingToolUsageHint({
+      action: "Optional action",
+      optionalActions: "Option menu",
+      endActions: "Options remain"
+    })).toBe("Optional action; Option menu; Options remain");
   });
 
   it("keeps unavailable tools from changing the active tool", () => {

@@ -78,4 +78,22 @@ describe("core capability grants", () => {
     // rename it out of the pattern above and quietly take the guard with it.
     expect(capabilities).toContain('"core:window:allow-show"');
   });
+
+  it("grants native-prompt toolset suspension only to the document window", () => {
+    const capabilityDirectory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(capabilityDirectory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => ({
+        name,
+        capability: JSON.parse(readFileSync(new URL(name, capabilityDirectory), "utf8")) as {
+          windows?: string[];
+          permissions: (string | { identifier: string })[];
+        }
+      }))
+      .filter(({ capability }) => capability.permissions.some((permission) =>
+        (typeof permission === "string" ? permission : permission.identifier) === "allow-suspend-toolset-windows"));
+
+    expect(grants.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
+    expect(grants[0]!.capability.windows).toEqual(["main"]);
+  });
 });

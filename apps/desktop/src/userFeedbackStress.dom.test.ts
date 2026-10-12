@@ -529,6 +529,116 @@ describe("user feedback app stress", () => {
     report("C hotkey reasons", started, "keys=2 abbreviation=1 geometry=1");
   }, 120000);
 
+  const sproutKeys = [
+    ["1", "Cannot add a single bond to hovered atom", "that atom has no free valence"],
+    ["2", "Cannot add C=O to hovered atom", "that atom has no free valence"],
+    ["4", "Cannot add wedge bond here", "that atom has no free valence"],
+    ["5", "Cannot add hashed bond here", "that atom has no free valence"],
+    ["8", "Cannot add methylidene here", "that atom needs two free valences for this sprout"],
+    ["9", "Cannot add gem-dimethyl here", "that atom needs two free valences for this sprout"],
+    ["0", "Cannot add cyclic bond here", "that atom has no free valence"]
+  ] as const;
+
+  it.each(["macos", "windows"] as const)("non-ring sprout keys name exhausted growth valence on %s", async (p) => {
+    platform(p);
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Full sprout"), { x: 300, y: 300 });
+    const original = molecules(seed)[0], atom = original.atoms[0], L = nativeBondLengthPx;
+    // A bonded OMe group has no attachment valence left. Unlike an eight-bond
+    // carbon, it is chemically valid, so a hover-validation warning cannot hide the status.
+    const fullGroup = applyNativeAtomElementTarget(seed, {
+      objectId: original.id, kind: "atom", atomId: atom.id, distanceToPointer: 0
+    }, "OMe");
+    const tips = Array.from({ length: 4 }, (_, i) => ({
+      id: `full${i}`, element: "C", formalCharge: 0,
+      x: atom.x + Math.cos(i * Math.PI / 2) * L, y: atom.y + Math.sin(i * Math.PI / 2) * L
+    }));
+    const fullCarbon = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
+      ...original, atoms: [atom, ...tips], bonds: tips.map((tip, i) => ({
+        id: `fullb${i}`, fromAtomId: atom.id, toAtomId: tip.id, order: "single" as const
+      }))
+    } }]);
+    for (const [press, prefix, reason] of sproutKeys) {
+      const full = press === "8" ? fullCarbon : fullGroup;
+      await mount(selectDocumentObjects(full, full.pages[0].id, []), "tool.bond");
+      await pointer("pointermove", atom);
+      expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+      const before = current();
+      await key(press);
+      expect(current()).toEqual(before);
+      expect(status()).toBe(`${prefix}: ${reason}`);
+    }
+  }, 120000);
+
+  it.each(["macos", "windows"] as const)("non-ring sprout keys name the unavailable growth direction on %s", async (p) => {
+    platform(p);
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Crowded sprout"), { x: 300, y: 300 });
+    const original = molecules(seed)[0], L = nativeBondLengthPx;
+    // Two bonds at +/-60 degrees leave the leftward bisector. It lands on a full OMe
+    // group, so the existing preview rejects the connection and supplies no growth plan.
+    const atoms = [
+      { id: "source", element: "C", formalCharge: 0, x: 300, y: 300 },
+      { id: "up", element: "C", formalCharge: 0, x: 300 + L / 2, y: 300 - L * Math.sqrt(3) / 2 },
+      { id: "down", element: "C", formalCharge: 0, x: 300 + L / 2, y: 300 + L * Math.sqrt(3) / 2 },
+      { id: "block", element: "OMe", formalCharge: 0, x: 300 - L, y: 300 },
+      { id: "outside", element: "C", formalCharge: 0, x: 300 - 2 * L, y: 300 }
+    ];
+    const crowded = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
+      ...original, atoms, bonds: [["source", "up"], ["source", "down"], ["block", "outside"]].map(([fromAtomId, toAtomId], i) => ({
+        id: `crowdb${i}`, fromAtomId, toAtomId, order: "single" as const
+      }))
+    } }]);
+    for (const [press, prefix] of sproutKeys) {
+      // Neutral carbon takes a direct C=O even here. Charge makes the existing C=O
+      // fallback try to sprout a new carbon, which needs the unavailable growth plan.
+      const doc = press === "2" ? applyPatches(crowded, [{ op: "updateObject", objectId: original.id,
+        changes: { atoms: atoms.map(atom => atom.id === "source" ? { ...atom, formalCharge: 1 } : atom) }
+      }]) : crowded;
+      await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
+      await pointer("pointermove", atoms[0]);
+      expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: "source" });
+      const before = current();
+      await key(press);
+      expect(current()).toEqual(before);
+      expect(status()).toBe(`${prefix}: there is no free direction to grow into without overlapping`);
+    }
+  }, 120000);
+
+  it("methylidene names its neutral-carbon requirement", async () => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Methylidene target"), { x: 300, y: 300 });
+    const mol = molecules(seed)[0], tip = mol.atoms[1];
+    const doc = applyNativeAtomElementTarget(seed, { objectId: mol.id, kind: "atom", atomId: tip.id, distanceToPointer: 0 }, "N");
+    await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", tip);
+    const before = current();
+    await key("8");
+    expect(current()).toEqual(before);
+    expect(status()).toBe("Cannot add methylidene here: methylidene needs a neutral carbon atom");
+  });
+
+  it.each([
+    ["1", "Added single bond to hovered atom", 1, 1],
+    ["2", "Added C=O to hovered carbon", 1, 1],
+    ["4", "Added wedge bond", 1, 1],
+    ["5", "Added hashed bond", 1, 1],
+    ["8", "Added methylidene", 1, 1],
+    ["9", "Added gem-dimethyl", 2, 2],
+    ["0", "Added cyclic bond", 1, 1]
+  ] as const)("successful sprout %s retains its placement and success status", async (press, text, atomCount, bondCount) => {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Successful sprout"), { x: 300, y: 300 });
+    const mol = molecules(seed)[0], tip = mol.atoms[1];
+    await mount(selectDocumentObjects(seed, seed.pages[0].id, []), "tool.bond");
+    await pointer("pointermove", tip);
+    await key(press);
+    const next = molecules(current())[0];
+    expect(status()).toBe(text);
+    expect(next.atoms.slice(0, mol.atoms.length)).toEqual(mol.atoms);
+    expect(next.bonds.slice(0, mol.bonds.length)).toEqual(mol.bonds);
+    expect(next.atoms).toHaveLength(mol.atoms.length + atomCount);
+    expect(next.bonds).toHaveLength(mol.bonds.length + bondCount);
+    expect(next.bonds.at(-1)?.order).toBe(press === "2" || press === "8" ? "double" : "single");
+    if (press === "4" || press === "5") expect(next.bonds.at(-1)?.display?.bondStyle).toBe(press === "4" ? "wedge" : "hashed");
+  });
+
   it("C: the cyclic-bond hotkey refuses a closure onto a saturated carbon and still closes an ordinary ring", async () => {
     // Four 0-presses grow a hexagon chain; the fifth closes it onto the first atom.
     let chain = insertNativeSingleBondMolecule(createPhase4Document("Cyclic closure"), { x: 300, y: 300 });

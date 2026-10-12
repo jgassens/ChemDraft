@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { applyNativeChainTool, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import { saveKeybindingSettings } from "./keybindingSettings";
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
-import type { DocumentPatch } from "@chemdraft/chem-core";
+import type { DocumentPatch, MoleculeObject } from "@chemdraft/chem-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowSnapshotPayload,
   broadcastAnalysisWindowSnapshot, respondToProposalDecision
@@ -17,9 +20,13 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
+import * as atomLabelDraft from "./atomLabelDraft";
 
 const native = vi.hoisted(() => ({
   desktop: true,
+  suspendUtilities: false,
+  suspensionDepth: 0,
+  visibilityChanges: [] as string[],
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
@@ -58,7 +65,15 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
     listenTauriEvent: listen, listenCurrentWindowEvent: listen };
 });
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(null)
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  isTauri: () => native.suspendUtilities,
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+    if (command === "suspend_toolset_windows") {
+      if (options?.suspended) { if (native.suspensionDepth++ === 0) native.visibilityChanges.push("hide"); }
+      else if (--native.suspensionDepth === 0) native.visibilityChanges.push("restore");
+    }
+    return null;
+  })
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
@@ -80,12 +95,22 @@ describe("documents in one window", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
 
+  let pendingPrompt: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+  let restorePromptProvider: () => void;
+
   beforeEach(async () => {
+    pendingPrompt = undefined;
+    restorePromptProvider = setNativePromptProvider((prompt) => new Promise((resolve) => {
+      pendingPrompt = { prompt, resolve };
+    }));
     vi.clearAllMocks();
     vi.mocked(setToolbarsMenu).mockResolvedValue(undefined);
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
+    native.suspendUtilities = false;
+    native.suspensionDepth = 0;
+    native.visibilityChanges = [];
     native.session = undefined;
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
@@ -101,6 +126,7 @@ describe("documents in one window", () => {
   });
 
   afterEach(() => {
+    restorePromptProvider();
     act(() => root?.unmount());
     root = undefined;
     container?.remove();
@@ -147,6 +173,7 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document.title).toBe(title);
     expect(bridge().snapshot().page.objectCount).toBe(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     const saved = await flush();
     expect(saved.tabs).toHaveLength(1);
     expect(saved.tabs![0]).toMatchObject({ pristine: true, blank: true, dirty: false });
@@ -169,9 +196,12 @@ describe("documents in one window", () => {
     return parseDocumentSessionEnvelope(native.session)!;
   }
   async function modalButton(label: string) {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-      .find((candidate) => candidate.textContent === label)!;
-    await act(async () => button.click());
+    expect(pendingPrompt).toBeDefined();
+    const { prompt, resolve } = pendingPrompt!;
+    const choice = prompt.choices.find((candidate) => candidate.label === label);
+    expect(choice).toBeDefined();
+    pendingPrompt = undefined;
+    await act(async () => resolve(choice!.id));
   }
   async function key(shiftKey = false) {
     const event = new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, shiftKey, bubbles: true, cancelable: true });
@@ -208,6 +238,132 @@ describe("documents in one window", () => {
     if (content.kind !== "patchReview") throw new Error("No proposal review snapshot");
     return content.proposals;
   };
+
+  async function mountHoverChain() {
+    act(() => root!.unmount());
+    container.innerHTML = "";
+    vi.mocked(createPluginRuntime).mockClear();
+    saveKeybindingSettings({ scheme: "chemdraft" });
+    const chain = applyNativeChainTool(createPhase4Document("Hover cancellation"), { x: 80, y: 300 }, { x: 700, y: 300 });
+    await mount(selectDocumentObjects(chain, chain.pages[0]!.id, []));
+    await command("tool.bond");
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      element.getBoundingClientRect = () => rect;
+    }
+  }
+  const hoverMolecule = () => bridge().snapshot().document.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+  const labelEditor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+  async function hoverChainAtom(index: number) {
+    const atom = hoverMolecule().atoms[index]!;
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
+    expect(bridge().snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+  }
+  async function labelKey(key: string) {
+    const target = document.activeElement ?? document.body;
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => { target.dispatchEvent(event); });
+    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+      const value = target.value + key;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.setSelectionRange(value.length, value.length);
+      });
+    }
+  }
+
+  it("Escape preserves an accepted chemistry proposal between the first hover letter and the draft", async () => {
+    await mountHoverChain();
+    await hoverChainAtom(1);
+    await labelKey("N");
+    const beforeProposal = hoverMolecule();
+    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
+      atoms: beforeProposal.atoms.map((atom, index) => index === 3 ? { ...atom, element: "O" } : atom)
+    } });
+    await decide("acceptPluginProposal", proposal.id);
+    const acceptedAtom = hoverMolecule().atoms[3]!;
+    expect(acceptedAtom.element).toBe("O");
+    await labelKey("M");
+    await labelKey("e");
+    expect(labelEditor()?.value).toBe("NMe");
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(hoverMolecule().atoms[3]).toEqual(acceptedAtom);
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    // The external proposal keeps its undo entry.
+    await command("edit.undo");
+    expect(hoverMolecule().atoms[3]!.element).toBe("C");
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it.each(["O", "N"])("Escape preserves a same-atom proposal that supersedes the open draft with %s", async element => {
+    await mountHoverChain();
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    const beforeProposal = hoverMolecule();
+    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
+      atoms: beforeProposal.atoms.map((atom, index) => index === 1 ? { ...atom, element } : atom)
+    } });
+    await decide("acceptPluginProposal", proposal.id);
+    const accepted = bridge().snapshot().document;
+    expect(hoverMolecule().atoms[1]!.element).toBe(element);
+    expect(labelEditor()?.value).toBe("NMe");
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(accepted);
+    // Escape neither overwrites the accepted atom nor removes the proposal's history entry.
+    await command("edit.undo");
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it("Escape discards the first letter even when rollback constructs document keys in a different order", async () => {
+    await mountHoverChain();
+    const before = bridge().snapshot().document;
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    const restore = atomLabelDraft.restoreAtomLabelDraft;
+    vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
+      const restored = restore(document, state);
+      return Object.fromEntries(Object.entries(restored).reverse()) as typeof restored;
+    });
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
+    await mountHoverChain();
+    native.savePicker.mockResolvedValueOnce("/tmp/chain.chemdraft");
+    await command("document.save");
+    expect(bridge().snapshot().file).toEqual({ path: "/tmp/chain.chemdraft", dirty: false });
+    const before = bridge().snapshot().document;
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    const savedPath = saveCommand === "document.saveAs" ? "/tmp/renamed-chain.chemdraft" : "/tmp/chain.chemdraft";
+    if (saveCommand === "document.saveAs") native.savePicker.mockResolvedValueOnce(savedPath);
+    await command(saveCommand);
+    expect(labelEditor()?.value).toBe("NMe");
+    const [path, contents] = native.writeFile.mock.calls.at(-1)!;
+    expect(path).toBe(savedPath);
+    const saved = openChemDraftPayload(contents).document!;
+    const savedMolecule = saved.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(savedMolecule.atoms[1]!.element).toBe("NMe");
+    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: false });
+    await labelKey("Escape");
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: true });
+    expect(document.title).toContain(`${savedPath.split("/").at(-1)} •`);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+  });
 
   it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {
     await open("Source");
@@ -411,6 +567,7 @@ describe("documents in one window", () => {
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
@@ -551,15 +708,101 @@ describe("documents in one window", () => {
     const invoke = vi.spyOn(runtime().host, "invokeCommand");
     await closeTab();
     expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./));
-    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    expect(pendingPrompt?.prompt).toMatchObject({
+      title: "Save changes before closing?", kind: "warning",
+      choices: [{ id: "save", label: "Save" }, { id: "discard", label: "Don't Save", destructive: true },
+        { id: "cancel", label: "Cancel", cancel: true }]
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeDefined();
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(drawnText()).toContain("Second dirty drawing");
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()).toHaveLength(1);
     expect(drawnText()).toContain("Keep the first drawing");
+  });
+
+  it.each(["Import Visible CDXML", "Restore Embedded", "Cancel"])("CDXML conflict %s opens only the chosen document", async (choice) => {
+    await paste("Original embedded note");
+    const original = bridge().snapshot().document;
+    const payload = createNativeSavePayload(original).contents;
+    expect(payload).toContain("Original embedded note");
+    const edited = payload.replace("Original embedded note", "Externally edited note");
+    expect(openNativeDocument(edited).conflict?.visibleDocument).toBeDefined();
+    native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+    await command("document.open");
+    expect(pendingPrompt?.prompt.title).toBe("Modified visible CDXML");
+    // Cancel keeps a dismissal's old outcome, the embedded document; Escape reaches it on macOS.
+    expect(pendingPrompt?.prompt.choices.map((candidate) => candidate.label))
+      .toEqual(["Import Visible CDXML", "Restore Embedded", "Cancel"]);
+    expect(bridge().snapshot().document).toEqual(original);
+    expect(tabs()).toHaveLength(1);
+    await modalButton(choice);
+    expect(tabs()).toHaveLength(2);
+    expect(drawnText()).toContain(choice === "Import Visible CDXML" ? "Externally edited note" : "Original embedded note");
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    await activate(0);
+    expect(bridge().snapshot().document).toEqual(original);
+  });
+
+  it("reopening a file whose CDXML choice is still pending gives one tab for the path", async () => {
+    await paste("Original embedded note");
+    const edited = createNativeSavePayload(bridge().snapshot().document).contents
+      .replace("Original embedded note", "Externally edited note");
+    const prompts: { prompt: NativePromptOptions; resolve: (id: string) => void }[] = [];
+    const restore = setNativePromptProvider((prompt) => new Promise((resolve) => { prompts.push({ prompt, resolve }); }));
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+        native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+        await command("document.open");
+      }
+      let shown = 0;
+      while (prompts.length) {
+        const { prompt, resolve } = prompts.shift()!;
+        expect(prompt.title).toBe("Modified visible CDXML");
+        shown += 1;
+        await act(async () => resolve("visible"));
+      }
+      expect(shown).toBe(1);
+    } finally { restore(); }
+    expect(tabs()).toHaveLength(2);
+    expect(active()).toBe(1);
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    expect(drawnText()).toContain("Externally edited note");
+    const saved = await flush();
+    expect(saved.tabs!.filter((tab) => tab.path === "/tmp/conflicted.chemdraft")).toHaveLength(1);
+  });
+
+  it("the web build keeps the original close dialog and Escape retains the drawing", async () => {
+    restorePromptProvider();
+    native.desktop = false;
+    await remount();
+    await paste("Web drawing stays editable");
+    const before = bridge().snapshot().document;
+    await closeTab();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Save changes before closing?"]')!;
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.textContent).toContain("Save the changes to Untitled?");
+    expect(Array.from(dialog.querySelectorAll("button")).map((button) => button.textContent))
+      .toEqual(["Cancel", "Don't Save", "Save"]);
+    await act(async () => dialog.querySelector("button")!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true
+    })));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    await closeTab();
+    const discard = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find((button) => button.textContent === "Don't Save")!;
+    await act(async () => discard.click());
+    expect(bridge().snapshot().page.objectCount).toBe(0);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    expect(tabs()).toHaveLength(1);
   });
 
   it("closing an inactive clean tab keeps the current drawing active", async () => {
@@ -569,6 +812,7 @@ describe("documents in one window", () => {
     const currentDocument = bridge().snapshot().document;
     await closeTab(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(bridge().snapshot().document).toEqual(currentDocument);
@@ -581,18 +825,71 @@ describe("documents in one window", () => {
     await closeTab();
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(pendingPrompt).toBeDefined();
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     native.writeFile.mockRejectedValueOnce(new Error("disk full"));
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("disk full");
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("disk full");
+    expect(pendingPrompt?.prompt.message).toContain("disk full");
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     await modalButton("Save");
     expect(native.writeFile).toHaveBeenLastCalledWith("/tmp/saved.chemdraft", expect.any(String));
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
+
+  it.each(["document.open", "document.save", "document.saveAs"])(
+    "%s suspends the standalone document file panel until cancellation", async (commandId) => {
+      native.suspendUtilities = true;
+      await paste("Standalone panel suspension");
+      const picker = commandId === "document.open" ? native.picker : native.savePicker;
+      let finishPanel!: (path: string | null) => void;
+      picker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
+      await command(commandId);
+      await vi.waitFor(() => expect(finishPanel).toBeDefined());
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      await act(async () => finishPanel(null));
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
+
+  it.each(["saved", "Don't Save", "Cancel", "panel cancelled then Cancel", "panel throws then Cancel"])(
+    "balances suspension through the real tab-close flow: %s", async (ending) => {
+      native.suspendUtilities = true;
+      await paste("Close-chain suspension");
+      await closeTab();
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      if (ending === "Cancel" || ending === "Don't Save") {
+        await modalButton(ending);
+      } else {
+        let finishPanel!: (path: string | null) => void;
+        let failPanel!: (error: Error) => void;
+        native.savePicker.mockImplementationOnce(() => new Promise((resolve, reject) => {
+          finishPanel = resolve; failPanel = reject;
+        }));
+        const saving = modalButton("Save");
+        await vi.waitFor(() => expect(native.savePicker).toHaveBeenCalled());
+        expect(native.suspensionDepth).toBe(2);
+        expect(native.visibilityChanges).toEqual(["hide"]);
+        await act(async () => {
+          if (ending === "panel throws then Cancel") failPanel(new Error("panel unavailable"));
+          else finishPanel(ending === "saved" ? "/tmp/suspended-save.chemdraft" : null);
+        });
+        await saving;
+        if (ending !== "saved") {
+          expect(pendingPrompt?.prompt.message).toContain(ending.startsWith("panel throws") ? "panel unavailable" : "Save canceled");
+          expect(native.suspensionDepth).toBe(1);
+          expect(native.visibilityChanges).toEqual(["hide"]);
+          await modalButton("Cancel");
+        }
+      }
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
 
   it.each([false, true])("the only clean tab x leaves a pristine Untitled without prompting (saved: %s)", async (saved) => {
     if (saved) await open("Clean saved drawing");
@@ -607,13 +904,13 @@ describe("documents in one window", () => {
     const before = bridge().snapshot().document;
     const closedTab = tabs()[0];
     await closeTab();
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Save the changes to Untitled?");
+    expect(pendingPrompt?.prompt.message).toContain("Save the changes to Untitled?");
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().document).toEqual(before);
     expect(bridge().snapshot().file.dirty).toBe(true);
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()[0]).not.toBe(closedTab);
     await expectPristineUntitled();
   });
@@ -629,6 +926,7 @@ describe("documents in one window", () => {
     }
     expect(invoke).not.toHaveBeenCalled();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(bridge().snapshot().document).toEqual(before);
     const saved = await flush();
     expect(native.quit).toHaveBeenCalledOnce();
@@ -739,6 +1037,7 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     await activate(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(reject).not.toHaveBeenCalled();
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
   });
@@ -883,6 +1182,7 @@ describe("documents in one window", () => {
     if (action === "switch") await key();
     else await closeTab();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(active()).toBe(action === "switch" ? 1 : 0);
     await pointer(page, "pointerup", 230, 180);
     expect(bridge().snapshot().document).toEqual(other);

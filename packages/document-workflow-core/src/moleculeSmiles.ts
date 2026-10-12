@@ -61,6 +61,7 @@ export async function moleculeSmiles(
           unknownBondOrders: "refuse",
           fromDocFrame: true,
           warnings: writerWarnings,
+          messageFormat: "SMILES",
           kekuleBondOrders: nativeBondOrderResolution(expanded.molecule.atoms, expanded.molecule.bonds).kekuleOrders,
           placeholderAtoms: expanded.placeholderAtoms
         }).contents

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
+import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import {
   ImageSourceError,
@@ -89,6 +90,20 @@ describe("PluginImageRequestDialog", () => {
 
     act(() => buttons[1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onAcquire).toHaveBeenCalledWith(1, "screenRegion");
+  });
+
+  it("uses the prompt provider for an unavailable image source and closes the original request", async () => {
+    let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+    onTestFinished(setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; })));
+    const { onCancel, onAcquire } = mount({
+      ...baseRequest, providers: [], unavailableReason: "No image source is available."
+    });
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(pending?.prompt.message).toContain("No image source is available.");
+    expect(pending?.prompt.choices).toEqual([{ id: "cancel", label: "OK", cancel: true }]);
+    await act(async () => pending!.resolve("cancel"));
+    expect(onCancel).toHaveBeenCalledExactlyOnceWith(baseRequest.id);
+    expect(onAcquire).not.toHaveBeenCalled();
   });
 
   it("cancels on Escape", () => {
