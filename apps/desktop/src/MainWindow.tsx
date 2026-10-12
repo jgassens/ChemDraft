@@ -1274,6 +1274,8 @@ type AtomLabelEditState = AtomLabelDraftState & {
   beforeAtom: MoleculeAtom;
   beforeMolecule: MoleculeObject;
   continuesHotkey: boolean;
+  /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
+  startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
   /** Render-only attachment target; keyboard ownership remains on atomId. */
   previewAtomId?: string;
@@ -1296,8 +1298,8 @@ type AtomLabelEditState = AtomLabelDraftState & {
   historyNavigation: number;
   draft: string;
   /**
-   * The selection in force before the edit selected the atom. A blur-ended edit restores it (minus
-   * the edited molecule), so the atom is not left behind as the target of single-key hotkeys.
+   * The selection in force before the edit selected the atom. A deliberate hover close restores
+   * it exactly; a blur-ended edit excludes the edited molecule to avoid stray single-key hotkeys.
    */
   selectionBefore: {
     objectIds: readonly string[];
@@ -1315,6 +1317,7 @@ type AtomLabelEditOptions = {
   beforeAtom?: MoleculeAtom;
   beforeMolecule?: MoleculeObject;
   hotkeyChanged?: boolean;
+  startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
 };
 
@@ -1572,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.05-opus";
+const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -5622,6 +5625,7 @@ export function MainWindow({
       draftBeforeMolecule: continuing?.draftBeforeMolecule ?? object,
       draftRollback: continuing?.draftRollback ?? createAtomLabelDraftRollback(object),
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
+      startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
@@ -5735,10 +5739,11 @@ export function MainWindow({
    * selected only so the editor could open on it; left selected after an edit that ended mid-word,
    * the rest of the word lands on it as hotkeys ("O" relabels it, Backspace strips it). Anything
    * that has since replaced the edit's selection (a click on another object, Select All) wins, and
-   * anything on the edited molecule is dropped from the restore, since that is exactly what stray
-   * keystrokes would hit.
+   * anything on the edited molecule is dropped from the blur restore, since that is exactly what
+   * stray keystrokes would hit. A deliberate hover close includes it: the user's selection predates
+   * the editor's temporary selection and must survive Enter or Escape.
    */
-  const restoreSelectionAfterAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
+  const restoreSelectionAfterAtomLabelEdit = useCallback((state: AtomLabelEditState, includeEditedMolecule = false) => {
     const parts = selectedNativeMoleculePartsRef.current;
     const stillEditSelection = parts.length === 1 &&
       parts[0]?.kind === "atom" &&
@@ -5765,12 +5770,12 @@ export function MainWindow({
       const existingIds = new Set(page.objects.map((object) => object.id));
       const editSelectedIds = new Set(current.selection.objectIds);
       const restoredIds = state.selectionBefore.objectIds.filter((objectId) =>
-        existingIds.has(objectId) && !editSelectedIds.has(objectId)
+        existingIds.has(objectId) && (includeEditedMolecule || !editSelectedIds.has(objectId))
       );
       return selectDocumentObjects(current, page.id, restoredIds);
     });
     setSelectedNativeMoleculeParts(
-      state.selectionBefore.nativeParts.filter((part) => part.objectId !== state.objectId)
+      state.selectionBefore.nativeParts.filter((part) => includeEditedMolecule || part.objectId !== state.objectId)
     );
   }, [replacePresentDocument]);
 
@@ -10332,7 +10337,7 @@ export function MainWindow({
     const kept = atomLabelEditKeepsSelectionRef.current;
     atomLabelEditKeepsSelectionRef.current = undefined;
     const result = !cancelled && !finalized ? finalizeAtomLabelDraft(previous) : undefined;
-    if (result && kept && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
+    if (result && kept && !previous.startedFromHover && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
     if (activeAtomLabelEdit) {
       if (result) {
         // The next editor was opened before the previous close ran. Its rollback baseline must
@@ -10355,8 +10360,12 @@ export function MainWindow({
       hoverRetargetedForLabelRef.current = false;
       rederiveNativeCanvasHoverRef.current?.(documentRef.current);
     }
-    if (kept && kept.objectId === previous.objectId && kept.atomId === previous.atomId) return;
-    restoreSelectionAfterAtomLabelEdit(previous);
+    // Enter/Escape keep label-tool targets. Hover typing restores the user's full pre-edit selection,
+    // including any part of this molecule, while discarding selection introduced only by the editor.
+    // With nothing selected beforehand, element keys over empty canvas have no atom to fall back to.
+    const deliberateClose = kept?.objectId === previous.objectId && kept.atomId === previous.atomId;
+    if (deliberateClose && !previous.startedFromHover) return;
+    restoreSelectionAfterAtomLabelEdit(previous, deliberateClose && previous.startedFromHover);
   }, [activeAtomLabelEdit, finalizeAtomLabelDraft, restoreSelectionAfterAtomLabelEdit]);
 
   useEffect(() => {
@@ -11157,6 +11166,7 @@ export function MainWindow({
           const draft = `${assignment.label}${event.key}`;
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
+            startedFromHover: true,
             hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument
           })) {
             event.preventDefault();
