@@ -605,6 +605,93 @@ describe("graphic path direct editing interactions", () => {
     await escapeAndRelease(before, pageElement(), end, 87, "Move canceled");
   });
 
+  it.each([
+    ["rectangle", "z"], ["bracket", "z"], ["reaction arrow", "z"],
+    ["rectangle", "xy"], ["bracket", "xy"], ["reaction arrow", "xy"]
+  ] as const)("applies and cancels typed rotation for a selected %s (%s)", async (kind, axis) => {
+    const drawing = createPhase4Document("Art Rotation Entry");
+    drawing.pages[0]!.objects = [kind === "rectangle" ? {
+      id: "art-entry", type: "graphic", graphicKind: "rect", x: 220, y: 180,
+      width: 80, height: 50, rotation: 0, style: {}, data: {}
+    } : {
+      id: "art-entry", type: "bracket", bracketKind: "square", x: 220, y: 180,
+      width: 80, height: 50, rotation: 0, style: {}, containedObjectIds: []
+    }];
+    drawing.selection.objectIds = ["art-entry"];
+    const initialDocument = kind === "reaction arrow"
+      ? insertNativeArtGraphicObject(createPhase4Document("Arrow Rotation Entry"), { x: 220, y: 180 }, "tool.art.reactionArrow")
+      : drawing;
+    const objectId = initialDocument.selection.objectIds[0]!;
+    await renderMainWindow(initialDocument);
+    if (kind === "reaction arrow") await shiftHover(objectId);
+    await holdShiftForRotationHandles();
+    const handleSelector = axis === "z" ? '[data-selection-rotate-handle="true"]' : '[data-selection-tilt3d-handle="true"]';
+    const handle = container.querySelector<HTMLButtonElement>(handleSelector)!;
+    expect(handle).not.toBeNull();
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", { x: 260, y: 150 }, 80, 1, { shiftKey: true });
+      dispatchPointer(pageElement(), "pointerup", { x: 260, y: 150 }, 80, 1, { shiftKey: true });
+    });
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", { x: 260, y: 150 }, 81, 2, { shiftKey: true });
+    });
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 260, y: 150 }, 81, 2, { shiftKey: true });
+      handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, shiftKey: true, detail: 2 }));
+    });
+    const form = container.querySelector<HTMLFormElement>('[aria-label="selected art object rotation entry"]');
+    expect(form).not.toBeNull();
+    const inputSelector = axis === "z" ? '[aria-label="Z rotation degrees"]' : '[aria-label="X rotation degrees"]';
+    const input = form!.querySelector<HTMLInputElement>(inputSelector)!;
+    expect(document.activeElement).toBe(input);
+    await releaseShiftForRotationHandles();
+    expect(container.contains(input)).toBe(true);
+    expect(document.activeElement).toBe(input);
+    const bridge = window.__CHEMDRAFT_AGENT__!;
+    const currentObject = () => bridge.snapshot().document.pages[0]!.objects.find((object) => object.id === objectId)!;
+    const setDegrees = async (field: HTMLInputElement, degrees: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, degrees);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setDegrees(input, "30");
+    if (axis === "xy") {
+      await setDegrees(form!.querySelector<HTMLInputElement>('[aria-label="Y rotation degrees"]')!, "15");
+    }
+    await act(async () => {
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      // jsdom does not perform the browser's implicit form submission for Enter.
+      if (input.dispatchEvent(enter)) form!.requestSubmit();
+    });
+    expect(container.querySelector('[data-rotation-input-popover]')).toBeNull();
+    expect(axis === "z" ? currentObject().rotation : currentObject().style.tiltXDegrees).toBeCloseTo(30, 5);
+    if (axis === "xy") expect(currentObject().style.tiltYDegrees).toBeCloseTo(15, 5);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Rotate art object");
+    expect(axis === "z" ? currentObject().rotation : currentObject().style.tiltXDegrees ?? 0).toBe(0);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+
+    if (kind === "reaction arrow") await shiftHover(objectId);
+    await holdShiftForRotationHandles();
+    await act(async () => {
+      container.querySelector(handleSelector)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, shiftKey: true }));
+    });
+    const cancelInput = container.querySelector<HTMLInputElement>(inputSelector)!;
+    expect(document.activeElement).toBe(cancelInput);
+    await releaseShiftForRotationHandles();
+    const beforeCancel = bridge.snapshot().document;
+    await setDegrees(cancelInput, "45");
+    await act(async () => {
+      cancelInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-rotation-input-popover]')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Rotation entry canceled");
+    expect(bridge.snapshot().document).toEqual(beforeCancel);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
   it("previews a line middle-handle drag below the object drag threshold", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Immediate Path Preview"),

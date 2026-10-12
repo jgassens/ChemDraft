@@ -13501,6 +13501,9 @@ export function MainWindow({
     }
 
     const changed = commitLiveInputPreview(session.startDocument);
+    if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+    }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
@@ -25484,6 +25487,8 @@ function DocumentObjectViewContent({
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive &&
+    // Keep the transform frame hosting typed Z/X/Y entry when Shift releases.
+    !rotationInput &&
     !showGraphicGradientHandles;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
