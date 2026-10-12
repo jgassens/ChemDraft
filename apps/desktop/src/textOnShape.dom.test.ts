@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, GraphicObject, MoleculeObject } from "@chemdraft/chem-core";
+import { DocumentObjectSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import {
   createPhase4Document,
@@ -74,14 +74,18 @@ describe("Text tool on shapes", () => {
     return element!;
   }
 
-  async function press(element: Element, point: { x: number; y: number }) {
+  function pointer(element: Element, type: string, point: { x: number; y: number }, shiftKey = false) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+      buttons: type === "pointerup" ? 0 : 1, clientX: point.x, clientY: point.y, shiftKey });
+    Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 7 },
+      pointerType: { value: "mouse" } });
+    element.dispatchEvent(event);
+  }
+
+  async function press(element: Element, point: { x: number; y: number }, shiftKey = false) {
     await act(async () => {
       for (const type of ["pointerdown", "pointerup"]) {
-        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
-          buttons: type === "pointerdown" ? 1 : 0, clientX: point.x, clientY: point.y });
-        Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 7 },
-          pointerType: { value: "mouse" } });
-        element.dispatchEvent(event);
+        pointer(element, type, point, shiftKey);
       }
     });
   }
@@ -100,15 +104,12 @@ describe("Text tool on shapes", () => {
     return selectDocumentObjects(doc, doc.pages[0].id, []);
   }
 
-  async function expectTextPlacement(filled: boolean) {
-    const initial = shapeDocument(filled);
-    const shape = initial.pages[0].objects[0] as GraphicObject;
-    const point = { x: shape.x + shape.width / 2, y: filled ? shape.y + shape.height / 2 : shape.y };
+  async function expectTextPlacementOnObject(initial: ChemDraftDocument, selector: string,
+    point: { x: number; y: number }, shiftKey = false) {
     await render(initial);
-    // jsdom has no SVG hit testing: dispatch to the actual interior catcher or visible stroke
-    // that the browser delivers to the object handler, rather than bypassing it via the page.
-    const hit = target(`[data-object-id="${shape.id}"] ${filled ? ".graphic-glyph-hit-target" : ".graphic-glyph-stroke"}`);
-    await press(hit, point);
+    // jsdom has no SVG hit testing: dispatch to an object target that the browser delivers
+    // to the object handler, rather than bypassing it via the page.
+    await press(target(selector), point, shiftKey);
     const texts = snapshot().pages[0].objects.filter((object) => object.type === "text");
     expect(texts).toHaveLength(1);
     expect(texts[0]).toMatchObject({ x: point.x, y: point.y });
@@ -123,6 +124,67 @@ describe("Text tool on shapes", () => {
     await command(forceDocumentHistoryCommandId("edit.redo"));
     expect(snapshot().pages[0].objects.filter((object) => object.type === "text")).toHaveLength(1);
   }
+
+  async function expectTextPlacement(filled: boolean, shiftKey = false) {
+    const initial = shapeDocument(filled);
+    const shape = initial.pages[0].objects[0] as GraphicObject;
+    const point = { x: shape.x + shape.width / 2, y: filled ? shape.y + shape.height / 2 : shape.y };
+    await expectTextPlacementOnObject(initial,
+      `[data-object-id="${shape.id}"] ${filled ? ".graphic-glyph-hit-target" : ".graphic-glyph-stroke"}`, point, shiftKey);
+  }
+
+  const anchor = { kind: "point", point: { x: 300, y: 300 } };
+  const objectCases = [
+    { type: "graphic", graphicKind: "image", data: { imageHref: "data:image/png;base64,iVBORw0KGgo=" } },
+    { type: "reaction", components: [] },
+    { type: "reaction-arrow", arrowKind: "forward", start: anchor,
+      end: { kind: "point", point: { x: 360, y: 300 } } },
+    { type: "mechanism-arrow", arrowKind: "full-headed", source: anchor,
+      target: { kind: "point", point: { x: 360, y: 300 } } },
+    { type: "electron-mark", markKind: "charge", anchor, charge: 1 },
+    { type: "bracket", bracketKind: "square" },
+    { type: "plus" },
+    { type: "annotation", message: "Note" },
+    { type: "superatom", label: "Me", metadata: { label: "Me" } },
+    { type: "r-group-label", label: "R", display: { label: "R" } },
+    { type: "generic-atom-label", label: "X" },
+    { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "test", warning: "Test fixture" }
+  ];
+
+  it.each(objectCases)("creates text on $type with one undo entry", async (fields) => {
+    const initial = createPhase4Document("Text on object");
+    const object = DocumentObjectSchema.parse({ id: "label-target", x: 300, y: 280,
+      width: 60, height: 40, ...fields });
+    initial.pages[0].objects = [object];
+    await expectTextPlacementOnObject(initial, `[data-object-id="${object.id}"]`, { x: 330, y: 300 });
+  });
+
+  it("keeps page Text placement semantics for Shift-click on a shape", async () => {
+    await expectTextPlacement(true, true);
+  });
+
+  it("keeps the Text tool's Shift-hover arrow resize handle in its own handler", async () => {
+    const initial = insertNativeArtGraphicObject(createPhase4Document("Text handle"),
+      { x: 300, y: 300 }, "tool.art.reactionArrow");
+    const shape = initial.pages[0].objects[0] as GraphicObject;
+    await render(initial);
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, buttons: 0,
+        clientX: 330, clientY: 300, shiftKey: true });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" } });
+      target(`[data-object-id="${shape.id}"]`).dispatchEvent(event);
+    });
+    const start = { x: shape.x + shape.width, y: shape.y + shape.height };
+    const end = { x: start.x + 30, y: start.y + 20 };
+    await act(async () => pointer(target('[data-object-resize-corner="bottom-right"]'), "pointerdown", start, true));
+    await act(async () => pointer(target(".page"), "pointermove", end, true));
+    await act(async () => pointer(target(".page"), "pointerup", end, true));
+    expect(snapshot().pages[0].objects).toHaveLength(1);
+    expect(snapshot().pages[0].objects[0]!.width).not.toBe(shape.width);
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    await command(forceDocumentHistoryCommandId("edit.undo"));
+    expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+  });
 
   it("creates focused text inside a filled rectangle with one labelled undo entry", async () => {
     await expectTextPlacement(true);

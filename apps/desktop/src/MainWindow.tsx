@@ -1575,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.03.40-opus";
+const CURRENT_BUILD_STAMP = "10.12.03.45-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -16091,9 +16091,9 @@ export function MainWindow({
       return;
     }
 
-    // Graphic hit targets consume both interior and stroke presses before the page's Text
-    // fallback can run. Use the same placement path; handles have their own pointer handlers.
-    if (activeToolState.activeCommandId === "tool.text" && object?.type === "graphic" && point) {
+    // Non-text, non-molecule object targets consume presses before the page's Text fallback
+    // can run. Use the same placement path; handles have their own pointer handlers.
+    if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
       event.preventDefault();
       event.stopPropagation();
       applyTextDocumentAtPoint(point);
