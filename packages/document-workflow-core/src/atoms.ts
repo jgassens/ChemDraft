@@ -539,6 +539,43 @@ export function nativeLabelBondSide(
   return nativeLabelBondSideFromGeometry(atom, atomBonds, atoms);
 }
 
+/** Builds an atom-label context from its atom, bonds and molecule atoms. */
+export function nativeAtomLabelContext(
+  atom: MoleculeAtom,
+  atomBonds: readonly MoleculeBond[],
+  atoms: readonly MoleculeAtom[],
+  bonded: boolean
+): NativeAtomLabelContext {
+  const bondSide = nativeElementFromAtomLabel(atom.element)
+    ? undefined
+    : nativeLabelBondSide(atom, atomBonds, atoms);
+  return {
+    bonded,
+    typed: atom.labelLiteral === true,
+    ...(bondSide ? { bondSide } : {})
+  };
+}
+
+/**
+ * The context an atom's label is read with in its molecule: `bonded` as the caller counts it,
+ * `typed` from the atom's `labelLiteral`, and the bond side its label records
+ * (`nativeLabelBondSide`) unless the label is an element. Drawing tools and ring guards read
+ * labels through it, so they never disagree about what a label means. This convenience wrapper
+ * finds the atom's bonds before delegating to {@link nativeAtomLabelContext}.
+ */
+export function nativeAtomLabelContextInMolecule(
+  atom: MoleculeAtom,
+  molecule: MoleculeObject,
+  bonded: boolean
+): NativeAtomLabelContext {
+  return nativeAtomLabelContext(
+    atom,
+    molecule.bonds.filter((bond) => bond.fromAtomId === atom.id || bond.toAtomId === atom.id),
+    molecule.atoms,
+    bonded
+  );
+}
+
 /**
  * The molecule with every label's bond side recorded as written (`labelBondSide`). A label whose
  * reading depends on its side, with one bond, keeps its record while that bond's atom is unchanged
@@ -731,12 +768,10 @@ export function nativeExpandableLabelGroups(
     // Bonded and typed, "Ac", "Pr" and "Ts" are groups too (`nativeAtomLabelReading`); a cyano label
     // with its bond on the right is not one, so it is never written out as the wrong isomer.
     const atomBonds = resolution.bondsByAtom.get(atom.id) ?? [];
-    const bondSide = nativeElementFromAtomLabel(atom.element) ? undefined : nativeLabelBondSide(atom, atomBonds, atoms);
-    const reading = nativeAtomLabelReading(atom.element, {
-      bonded: atomBonds.length > 0,
-      typed: atom.labelLiteral === true,
-      ...(bondSide ? { bondSide } : {})
-    });
+    const reading = nativeAtomLabelReading(
+      atom.element,
+      nativeAtomLabelContext(atom, atomBonds, atoms, atomBonds.length > 0)
+    );
     if (reading.kind !== "group" || resolution.unresolvedAtomIds.has(atom.id)) continue;
     const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
     if (nativeLabelGroupVerdict(reading.group, valenceUsed, atom.formalCharge).valid) {

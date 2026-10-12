@@ -34,6 +34,26 @@ the superseding entry says so — read the newest entry that touches a subsystem
 
 ---
 
+## Document tabs in one window (2026-10-11)
+
+Adapted the tab work from [nithishag20's PR #87](https://github.com/jgassens/ChemDraft/pull/87)
+onto the current document, plugin, status-row and quit flows. Multiple documents share one document
+window, with separate selection, history, file/dirty state, open warnings and viewport. Open reuses
+a pristine Untitled or activates an already-open file. The strip is always visible; its keyboard-accessible
++ button invokes the same registered command as File ▸ New and activates a fresh Untitled. Tabs scroll
+when space is tight while + stays visible. Every tab's × closes that document through the registered
+close path, using Save/Discard/Cancel for dirty documents; Save closes only on success. Closing the
+only document by × leaves a pristine Untitled. CmdOrCtrl+W closes the active tab with multiple tabs;
+with one tab it and the window close retain the window-close behavior without prompting and preserve
+the session. The macOS menu reads Close Window with one tab and Close Tab with multiple tabs.
+Registered Next Tab and Previous Tab commands provide Ctrl+Tab / Ctrl+Shift+Tab.
+Quitting still flushes the session without prompting.
+The additive session format restores every tab and the active index, and accepts old single-document
+sessions. Startup file opens wait for that read; early edits are kept alongside restored tabs.
+A sole pristine blank Untitled restores and announces nothing, with the strip still visible.
+The plugin runtime stays persistent across switches. Automated coverage lives in
+`MainWindow.tabs.dom.test.tsx`; the standing manual checklist includes the pass on both platforms.
+
 ## Ring placement never over-fills an atom (2026-10-10)
 
 Branch `agentctl/fusion-20261010/ring-fusion-valence`. A ring tool clicked on a bond whose endpoint

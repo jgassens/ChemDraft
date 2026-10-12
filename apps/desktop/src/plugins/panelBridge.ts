@@ -49,6 +49,8 @@ export interface PluginProposalReviewItem {
   id: string;
   pluginId: string;
   pluginName: string;
+  /** Desktop document label, shown when multiple tabs are open. */
+  documentName?: string;
   reason: string;
   warnings: readonly { code: string; message: string }[];
   recognition?: RecognitionProposalReview;
