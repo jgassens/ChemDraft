@@ -949,9 +949,13 @@ describe("atom label editor focus", () => {
   });
 
   describe.each(["macos", "windows"] as const)("text placeholder (%s)", (platform) => {
+    beforeEach(() => {
+      // Existing objects need the same controlled startup retries as freshly placed text.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+
     async function insertTextEditor() {
       setShortcutPlatform(platform);
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await renderMainWindow(ringDocument(), "tool.text");
       return await startInlineEdit("text") as HTMLTextAreaElement;
     }
@@ -977,10 +981,17 @@ describe("atom label editor focus", () => {
     }
 
     async function refocusAfterNativeBlur(editor: HTMLTextAreaElement) {
+      // Opening the editor schedules DOM focus at 0/16/80 ms. Exhaust those retries before
+      // testing a later native blur, so none can race act() and refocus before the assertion.
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).toBe(editor);
       const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
       await act(async () => { editor.blur(); });
-      hasFocus.mockRestore();
       expect(document.activeElement).not.toBe(editor);
+      // Time passing in an unfocused document must leave the editor blurred until window focus.
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(document.activeElement).not.toBe(editor);
+      hasFocus.mockRestore();
       await act(async () => { window.dispatchEvent(new FocusEvent("focus")); });
       expect(document.activeElement).toBe(editor);
     }
@@ -1033,8 +1044,9 @@ describe("atom label editor focus", () => {
       const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
       expect(editor).not.toBeNull();
       expect(editor.selectionStart).toBe(editor.selectionEnd);
+      const caret = editor.selectionStart;
       await refocusAfterNativeBlur(editor);
-      expect(editor.selectionStart).toBe(editor.selectionEnd);
+      expect([editor.selectionStart, editor.selectionEnd]).toEqual([caret, caret]);
     });
 
     it.each(["keyboard", "mouse"] as const)("ends placeholder selection after a %s caret move", async (input) => {
