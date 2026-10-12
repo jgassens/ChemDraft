@@ -2383,7 +2383,8 @@ export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX =
  * The handle must be visible (its centre on the page, so at least half of the
  * target can be clicked) and clear of every resize target. Candidates, in
  * order: inside along the top edge, past the controlled corner, past the
- * opposite top corner. If no candidate is clear, the visible spot with the most
+ * opposite top corner; then the stretches those skipped (outside each top corner,
+ * then inside). If no candidate is clear, the visible spot with the most
  * clearance wins; the middle of the top edge is used only when nothing visible
  * was found.
  */
@@ -2475,8 +2476,18 @@ export function nativeGraphicCornerRadiusHandlePoint(
         p = next;
       }
     }
-    // Nothing clear on the rays: score the inside stretch the first ray
-    // skipped as well, then take the visible spot with the most clearance.
+    // Nothing clear on the rays: score the stretches they skipped. First the
+    // outside gaps between each top corner and its ray start (walking from
+    // the ray start back toward the corner), then the inside stretch, then
+    // take the visible spot with the most clearance.
+    const outsideSteps = Math.ceil(minimum * edgeScale);
+    for (const stretch of [{ start: -minimum, direction: 1, corner: 0 }, { start: object.width + minimum, direction: -1, corner: object.width }]) {
+      for (let i = 1; i <= outsideSteps; i++) {
+        const x = stretch.start + stretch.direction * i * step;
+        if (stretch.direction > 0 ? x >= stretch.corner : x <= stretch.corner) break;
+        if (consider(x, project(x))) return { x, y: point.y };
+      }
+    }
     const insideSteps = Math.min(maxSteps, Math.ceil(Math.max(object.width, 0) * edgeScale));
     for (let i = 0; i <= insideSteps; i++) {
       const x = Math.min(i * step, Math.max(object.width, 0));

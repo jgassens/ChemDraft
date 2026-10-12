@@ -162,6 +162,32 @@ describe("corner radius handle placement", () => {
     }
   });
 
+  it("finds a clear spot in the outside gap between a top corner and its ray start", () => {
+    // Both outside rays start off this narrow page and the inside stretch
+    // overlaps both top resize targets, but just outside the left corner the
+    // centre is on the page and clear.
+    const narrowPage = { width: 40, height: 2000 };
+    const object = { ...rectangle(0, 10), x: 15, y: 0 };
+    const point = nativeGraphicCornerRadiusHandlePoint(object, 1, narrowPage)!;
+    const centre = object.x + point.x;
+    expect(point.y).toBe(0);
+    expect(point.x).toBeLessThan(0);
+    expect(point.x).toBeGreaterThan(-GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX);
+    expect(centre).toBeGreaterThanOrEqual(0);
+    expect(centre).toBeLessThanOrEqual(narrowPage.width);
+    expect(gap(object, point, 1)).toBeGreaterThanOrEqual(2 - 1e-8);
+  });
+
+  it("leaves ordinary placements on their ray starts", () => {
+    const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX;
+    expect(nativeGraphicCornerRadiusHandlePoint(rectangle(0, 1000), 1, page)!.x).toBeCloseTo(minimum);
+    expect(nativeGraphicCornerRadiusHandlePoint(rectangle(30), 1, page)).toEqual({ x: 30, y: 0 });
+    expect(nativeGraphicCornerRadiusHandlePoint(rectangle(0, 2), 1, page)!.x).toBeCloseTo(-minimum);
+    expect(nativeGraphicCornerRadiusHandlePoint({ ...rectangle(0, 10), x: page.width - 15 }, 1, page)!.x)
+      .toBeCloseTo(-minimum);
+    expect(nativeGraphicCornerRadiusHandlePoint({ ...rectangle(0, 10), x: 5 }, 1, page)!.x).toBeCloseTo(10 + minimum);
+  });
+
   it.each([0, 37, 90, 143])("clears every actual resize box with both tilts and rotation %s", (rotation) => {
     const object = { ...rectangle(), rotation, style: { ...rectangle().style, tiltXDegrees: 60, tiltYDegrees: 60 } };
     const scale = 2;
