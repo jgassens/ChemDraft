@@ -659,6 +659,7 @@ import {
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
   dismissToolsetPopovers,
+  suspendToolsetWindows,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -1572,7 +1573,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.17.52-opus";
+const CURRENT_BUILD_STAMP = "10.11.18.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2344,6 +2345,26 @@ export function MainWindow({
     setArrowEditTargetId(undefined);
   }, [activeToolState.activeCommandId]);
   const nativePaletteRef = useRef(nativePalette);
+  // Native owned palettes float above their document, including HTML dialogs.
+  // Suspend them for the lifetime of any modal without changing saved visibility.
+  useEffect(() => {
+    if (!effectiveNativePalette) return;
+    let previous: boolean | undefined;
+    let pending = Promise.resolve();
+    const update = () => {
+      const suspended = window.document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+      if (suspended === previous) return;
+      previous = suspended;
+      pending = pending.then(() => suspendToolsetWindows(suspended)).catch(() => undefined);
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(window.document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal"] });
+    update();
+    return () => {
+      observer.disconnect();
+      void pending.then(() => suspendToolsetWindows(false)).catch(() => undefined);
+    };
+  }, [effectiveNativePalette]);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
@@ -11692,7 +11713,7 @@ export function MainWindow({
     let active = true;
     let unlisten: (() => void) | undefined;
     void listenForToolsetLayoutEdits((payload) => {
-      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID && payload.edit.kind !== "setOrientation") {
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
@@ -11700,7 +11721,8 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      if (!registry.get(payload.toolsetId)) return;
+      const currentGroups = getToolsetPaletteGroups(payload.toolsetId, registry);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -11716,7 +11738,8 @@ export function MainWindow({
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
-        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+        gridRows: registry.get(payload.toolsetId)?.gridLayout?.rows,
+        gridLayout: registry.get(payload.toolsetId)?.gridLayout
       });
       if (next !== current) {
         commitToolbarLayoutRef.current(next, false);
@@ -18287,6 +18310,7 @@ export function MainWindow({
                 activeTool={activeTool}
                 currentDistributeMode={distributeMode}
                 mode="floating"
+                responsive
                 orientation={toolset.gridLayout?.orientation ?? "vertical"}
                 title={toolset.title}
                 onInvoke={invoke}
@@ -18346,7 +18370,9 @@ export function MainWindow({
                   onPointerCancel={stopWebPaletteDrag}
                 >
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
+
                 </div>
+                <div className="palette-scroll-viewport" data-orientation={toolset.gridLayout?.orientation ?? "vertical"} data-palette-control="true">
                 {customizingThis ? (
                   <ToolbarCustomizeController
                     toolsetId={toolset.id}
@@ -18371,6 +18397,44 @@ export function MainWindow({
                 ) : (
                   renderPalette(paletteGroups)
                 )}
+                </div>
+                <button
+                  type="button"
+                  className="palette-resize-handle"
+                  aria-label="Resize toolbar"
+                  title="Drag to resize toolbar"
+                  data-palette-control="true"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const handle = event.currentTarget;
+                    const palette = handle.closest<HTMLElement>(".web-floating-palette");
+                    if (!palette) return;
+                    const rect = palette.getBoundingClientRect();
+                    const originX = event.clientX;
+                    const originY = event.clientY;
+                    const pointerId = event.pointerId;
+                    handle.setPointerCapture(pointerId);
+                    const resize = (move: globalThis.PointerEvent) => {
+                      if (move.pointerId !== pointerId) return;
+                      palette.style.width = `${Math.max(96, rect.width + move.clientX - originX)}px`;
+                      palette.style.height = `${Math.max(56, rect.height + move.clientY - originY)}px`;
+                    };
+                    const stop = (up: globalThis.PointerEvent) => {
+                      if (up.pointerId !== pointerId) return;
+                      handle.removeEventListener("pointermove", resize);
+                      handle.removeEventListener("pointerup", stop);
+                      handle.removeEventListener("pointercancel", stop);
+                      handle.removeEventListener("lostpointercapture", stop);
+                      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+                    };
+                    handle.addEventListener("pointermove", resize);
+                    handle.addEventListener("pointerup", stop);
+                    handle.addEventListener("pointercancel", stop);
+                    handle.addEventListener("lostpointercapture", stop);
+                  }}
+                >◢</button>
               </section>
             );
           })

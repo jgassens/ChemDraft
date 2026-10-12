@@ -730,6 +730,18 @@ export async function startPaletteWindowDrag(): Promise<void> {
   await getCurrentWindow().startDragging();
 }
 
+export async function startPaletteWindowResize(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().startResizeDragging("SouthEast");
+}
+
+export async function suspendToolsetWindows(suspended: boolean): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("suspend_toolset_windows", { suspended });
+}
+
 export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
@@ -923,6 +935,7 @@ export async function listenForPalettePointerLeave(
  *  browser renders palettes in-window straight from MainWindow state. */
 export async function broadcastToolsetLayoutState(layoutState: unknown): Promise<void> {
   if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
     return;
   }
   const { emit } = await import("@tauri-apps/api/event");
@@ -933,7 +946,7 @@ export async function listenForToolsetLayoutState(
   handler: (layoutState: unknown) => void
 ): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
-    return () => undefined;
+    return listenForDomToolsetEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.detail));
   }
   return listenTauriEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.payload));
 }
@@ -1097,6 +1110,7 @@ export async function listenForToolsetDefinitionsRequests(handler: () => void): 
 /** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
  *  is handled by the caller (mode state), not the layout applier. */
 export type ToolsetLayoutEdit =
+  | { kind: "setOrientation"; orientation: "horizontal" | "vertical" }
   | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }

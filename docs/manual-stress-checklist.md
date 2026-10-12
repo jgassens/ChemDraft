@@ -201,3 +201,5 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
    Accept must explain that its document was closed and keep the proposal pending; Reject must work
    from any tab.
+
+2. **Resizable floating toolbars, on macOS and Windows:** with fresh palette settings, confirm each toolbar opens at its normal content-fit size. Drag its bottom-right handle and native edges into wide, tall, and tiny shapes; check all tools and style controls remain reachable by scrolling, commands fire once, and customization still works. Quit immediately after resizing and restart; confirm dimensions survive. Minimize and restore without overwriting dimensions. Open a modal dialog; palettes and flyouts hide, then only previously visible palettes return when it closes. Repeat on a second monitor with a different scale.

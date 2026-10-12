@@ -1087,3 +1087,8 @@ multi-molecule targeting, mixed values, sparse per-atom overrides, `.cds` style-
 the style compatibility boundary, `.template` export, and a shared font catalog backed by the raster
 export font database. Durable schema and architecture notes live in
 `docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
+
+
+### Resizable floating palettes (2026-10-11)
+
+Adapted the floating toolbar resizing from `04309acc` to the current document-tab shell. Palettes reflow and scroll within user-sized frames, retain resized dimensions across restarts, and keep content-fit first-open sizes. Modal palette suspension is granted only to the document window; the standing manual checklist covers both platforms.
