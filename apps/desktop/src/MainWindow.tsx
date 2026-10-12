@@ -375,7 +375,7 @@ import {
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
-  applyNativeCarbonylAtAtomTarget,
+  nativeCarbonylHotkeyAtAtomTarget,
   applyNativeAtomElementTarget,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
@@ -420,10 +420,10 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
-  type NativeRingHotkeyResult,
-  type NativeRingHotkeyRefusal,
+  type NativeAtomSproutHotkeyResult,
+  type NativeAtomSproutRefusal,
   applySingleBondToolAtPoint,
-  applySingleBondToolAtNativeAtom,
+  nativeSingleBondHotkeyAtAtomTarget,
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
@@ -1575,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.22.55-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -3805,7 +3805,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3866,9 +3866,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeCarbonylHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add C=O to hovered atom");
+      setStatus(`Cannot add C=O to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -3896,9 +3896,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applySingleBondToolAtNativeAtom(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeSingleBondHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add a single bond to hovered atom");
+      setStatus(`Cannot add a single bond to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -21079,9 +21079,17 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
+/** Why a ring or sprout could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
   switch (reason) {
+    case "sprout-no-free-direction":
+      return "there is no free direction to grow into without overlapping";
+    case "sprout-needs-two-valences":
+      return "that atom needs two free valences for this sprout";
+    case "methylidene-needs-neutral-carbon":
+      return "methylidene needs a neutral carbon atom";
+    case "closure-bond-exists":
+      return "those atoms are already connected";
     case "atom-no-free-valence":
       return "that atom has no free valence";
     case "bond-atom-no-free-valence":
