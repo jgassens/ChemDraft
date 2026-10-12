@@ -23,12 +23,13 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe("Text tool on shapes", () => {
+describe.each(["macos", "windows"] as const)("Text tool on shapes (%s)", platform => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
     HTMLElement.prototype.setPointerCapture = () => {};
     HTMLElement.prototype.releasePointerCapture = () => {};
     HTMLElement.prototype.hasPointerCapture = () => false;
@@ -150,6 +151,78 @@ describe("Text tool on shapes", () => {
     { type: "generic-atom-label", label: "X" },
     { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "test", warning: "Test fixture" }
   ];
+
+  function overlappingTextDocument(kind: string) {
+    const initial = structuredClone(shapeDocument(true));
+    if (kind !== "filled rectangle") {
+      initial.pages[0].objects = [DocumentObjectSchema.parse({
+        id: "label-target", x: 300, y: 280, width: 100, height: 60,
+        ...objectCases.find(fields => kind === "image"
+          ? fields.type === "graphic" : fields.type === "reaction-arrow")
+      })];
+    }
+    const background = initial.pages[0].objects[0]!;
+    return insertNativeTextObject(initial, { x: background.x + 5, y: background.y + 5 }, "Existing");
+  }
+
+  it.each(["filled rectangle", "image", "reaction arrow"])(
+    "edits text over a %s when the underlying object receives the press", async kind => {
+      const initial = overlappingTextDocument(kind);
+      const background = initial.pages[0].objects[0]!;
+      const text = initial.pages[0].objects.find(object => object.type === "text")!;
+      await render(selectDocumentObjects(initial, initial.pages[0].id, []));
+      // jsdom cannot choose the topmost painted target. Send the press at the text's
+      // glyph coordinates to the underlying hit target, as the browser's layers do.
+      const selector = background.type === "graphic" && background.graphicKind !== "image"
+        ? `[data-object-id="${background.id}"] .graphic-glyph-hit-target`
+        : `[data-object-id="${background.id}"]`;
+      await press(target(selector), { x: text.x + 3, y: text.y + 5 });
+      expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+      expect(snapshot().selection.objectIds).toEqual([text.id]);
+      const editor = target(".text-object-editor") as HTMLTextAreaElement;
+      expect(editor.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(text.id);
+      expect(editor.value).toBe("Existing");
+      expect(document.activeElement).toBe(editor);
+      expect(editor.selectionStart).toBe(editor.value.length);
+      expect(editor.selectionEnd).toBe(editor.value.length);
+      expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+      await command(forceDocumentHistoryCommandId("edit.undo"));
+      expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+    }
+  );
+
+  it("creates text on bare rectangle area beside existing text with one undo entry", async () => {
+    const initial = overlappingTextDocument("filled rectangle");
+    const background = initial.pages[0].objects[0]!;
+    const point = { x: background.x + background.width - 5, y: background.y + background.height - 3 };
+    await render(selectDocumentObjects(initial, initial.pages[0].id, []));
+    await press(target(`[data-object-id="${background.id}"] .graphic-glyph-hit-target`), point);
+    const texts = snapshot().pages[0].objects.filter(object => object.type === "text");
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toMatchObject({ x: point.x, y: point.y, text: "Text" });
+    expect(snapshot().pages[0].objects.slice(0, 2)).toEqual(initial.pages[0].objects);
+    expect(snapshot().selection.objectIds).toEqual([texts[1]!.id]);
+    expect(document.activeElement).toBe(target(".text-object-editor"));
+    await command(forceDocumentHistoryCommandId("edit.undo"));
+    expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
+  it("edits the last overlapping text in document order even under a later shape", async () => {
+    let initial = overlappingTextDocument("filled rectangle");
+    const background = initial.pages[0].objects[0]!;
+    const lowerText = initial.pages[0].objects[1]!;
+    initial = structuredClone(insertNativeTextObject(initial, { x: lowerText.x, y: lowerText.y }, "Top text"));
+    const topText = initial.pages[0].objects[2]!;
+    initial.pages[0].objects = [lowerText, topText, background];
+    await render(selectDocumentObjects(initial, initial.pages[0].id, []));
+    await press(target(`[data-object-id="${background.id}"] .graphic-glyph-hit-target`),
+      { x: topText.x + 3, y: topText.y + 5 });
+    expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+    expect(snapshot().selection.objectIds).toEqual([topText.id]);
+    expect((target(".text-object-editor") as HTMLTextAreaElement).value).toBe("Top text");
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
 
   it.each(objectCases)("creates text on $type with one undo entry", async (fields) => {
     const initial = createPhase4Document("Text on object");

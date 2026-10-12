@@ -1590,7 +1590,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.11.45-opus";
+const CURRENT_BUILD_STAMP = "10.12.12.00-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -16311,7 +16311,15 @@ export function MainWindow({
     if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
       event.preventDefault();
       event.stopPropagation();
-      applyTextDocumentAtPoint(point);
+      // A shape's hit target can cover the text glyphs. Resolve text geometrically in
+      // document order so this also works when each object's paint has its own layer.
+      const text = textObjectAtPoint(currentDocument.pages[0]?.objects ?? [], point);
+      if (text) {
+        restoreToolAfterTextPlacement();
+        startTextObjectEdit(text.id);
+      } else {
+        applyTextDocumentAtPoint(point);
+      }
       return;
     }
 
@@ -23667,6 +23675,19 @@ function pointInsideObjectBounds(
     point.y >= bounds.y - paddingPx &&
     point.y <= bounds.y + bounds.height + paddingPx
   );
+}
+
+function textObjectAtPoint(
+  objects: readonly DocumentObject[],
+  point: ClientPoint
+): TextObject | undefined {
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const object = objects[index];
+    if (object.type === "text" && pointInRect(point, documentObjectVisualBounds(object))) {
+      return object;
+    }
+  }
+  return undefined;
 }
 
 export function nativeMoleculeObjectAtPoint(
