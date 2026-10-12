@@ -22,7 +22,9 @@
 //                 <name>-pubchem.sdf if present; writes <name>-carbon.json (true structure,
 //                 methyls drawn CH3), <name>-nicolaou.json (the picture, methyls relabelled
 //                 Me) and <name>-style.json (layout, moves, ring letters, colours, H and Me
-//                 added, warnings). Before styling it
+//                 added, warnings). Each molecule and its decorations form one native group,
+//                 so moving, copying, deleting or transforming it keeps the figure together.
+//                 Before styling it
 //                   1. compares layouts: ChemDraft's build, ChemDraft's layout of the canonical
 //                      SMILES, and PubChem's 2D record (atoms matched to the document's, wedges
 //                      re-drawn to keep every stereocentre), scored on bond crossings, bonds,
@@ -1333,6 +1335,9 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   const page = doc.pages.find((p) => p.objects.some((o) => o.id === buildMol.objectId)) ?? doc.pages[0];
   const mol = page.objects.find((o) => o.id === buildMol.objectId) ?? page.objects.find((o) => o.type === "molecule");
   if (!mol) fail("No molecule in the document");
+  // Native groups reference the flat page objects; never nest or reorder the artwork.
+  // Track only this molecule's new decorations, leaving unrelated page art alone.
+  const originalIds = new Set(page.objects.map((o) => o.id));
   mol.style ??= {};
   const layout = arrange(mol, buildMol, opts, tools);
   const xs = mol.atoms.map((a) => a.x), ys = mol.atoms.map((a) => a.y);
@@ -1361,7 +1366,7 @@ export function style(doc, buildMol, options = {}, tools = {}) {
       x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys),
       style: { fillColor: colours.get(r), fillOpacity: opts.fillOpacity, strokeColor: colours.get(r), strokeWidth: 0.5, strokeOpacity: 0 },
       data: { artPathKind: "polyline", pathClosed: true, pathNodes: r.poly.map((p) => ({ point: { x: p.x, y: p.y } })) } });
-    notes.push(`Ring ${L}'s outline takes in part of a smaller lettered ring, so its fill is a path object under the molecule (ring-fill-${L}) and the smaller ring shows on top; the path does not follow the atoms if they are moved in the app.`);
+    notes.push(`Ring ${L}'s outline takes in part of a smaller lettered ring, so its fill is a path object under the molecule (ring-fill-${L}) and the smaller ring shows on top; it is grouped with the molecule. Ungroup before editing individual atoms; the path does not follow atom edits.`);
   }
   mol.style.atomLabelShowTerminalCarbonsByAtomId = { ...(mol.style.atomLabelShowTerminalCarbonsByAtomId ?? {}), ...Object.fromEntries(methyls.map((a) => [a.id, true])) };
 
@@ -1378,6 +1383,18 @@ export function style(doc, buildMol, options = {}, tools = {}) {
     }
     const labels = colourLabelsOnFills(model(cmol, buildMol), letters, colours, opts.fillOpacity, meIds, carbon);
     for (const a of cmol.atoms) if (meIds.has(a.id)) a.element = "Me";
+    const children = cpage.objects.filter((o) => o.id === mol.id || !originalIds.has(o.id));
+    const usedIds = new Set(copy.pages.flatMap((p) => p.objects.map((o) => o.id)));
+    let id = `ring-style-group-${mol.id}`, suffix = 2;
+    while (usedIds.has(id)) id = `ring-style-group-${mol.id}-${suffix++}`;
+    // The app resolves group bounds from childObjectIds, not the stored wrapper frame.
+    // render-document conservatively crops around stored non-molecule/text frames using
+    // their diagonal radius, even for invisible groups. A zero-size wrapper at an existing
+    // atom keeps that crop byte-identical without changing any child geometry or paint order.
+    cpage.objects.push({ id, type: "group", x: cmol.atoms[0].x, y: cmol.atoms[0].y,
+      width: 0, height: 0,
+      rotation: 0, style: {}, childObjectIds: children.map((o) => o.id) });
+    copy.selection = { pageId: cpage.id, objectIds: [id] };
     return { copy, placed, labels };
   };
   const carbon = variant(new Set(), carbonLabels);

@@ -215,6 +215,12 @@ white with ring letters, are not the style: the coloured figure is the
 answer, not an optional variant. All of it is native document art
 ([art](art.md)).
 
+Both output documents keep the molecule, ring letters and any separate
+ring-fill paths in one native group. Move, copy, delete or transform the
+group to keep the figure together. Fusion H and Me/CH3 labels belong to
+the molecule itself. Arrange > Ungroup restores individual objects;
+separate fill paths follow group transforms but do not follow atom edits.
+
 `scripts/ring-style.mjs` in this skill applies the style to any molecule.
 It is plain Node with no dependencies and runs on macOS and Windows. It
 edits document JSON only; ChemDraft builds, renders and checks the
@@ -523,6 +529,7 @@ The figure check verifies that no fill remains under a ring-atom label.
   When one lettered ring's outline takes in part of a smaller one, the
   script paints the larger ring's fill as a path object under the
   molecule so the smaller ring shows on top (it says so).
+  These paths belong to their rings and are included in the molecule's group.
 - **A letter rule fails.** Read the candidates it lists and write a
   `letters` map with tighter selectors or `atoms` indices.
 

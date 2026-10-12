@@ -334,6 +334,12 @@ The skill ships a plain Node script (no dependencies, macOS and Windows)
 that applies patterns 1 and 2 to any molecule. Recipe 11 in
 [recipes](recipes.md) has the full commands and the rules; in short:
 
+Both figures are grouped: one native group contains the molecule, ring
+letters and separate ring-fill paths, preserving their paint order.
+Moving, copying, deleting and transforming the group keeps them together.
+Fusion H and Me/CH3 labels are part of the molecule. Arrange > Ungroup
+restores the individual objects; separate fill paths do not follow atom edits.
+
 - `node <skill>/scripts/ring-style.mjs pubchem <dir> <name> <cid or name>`
   fetches the SMILES, InChIKey and stereo counts from PubChem and writes
   the `document` batch.

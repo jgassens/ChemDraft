@@ -5,6 +5,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { GroupObjectSchema } from "@chemdraft/chem-core";
+import {
+  deleteSelectedDocumentObjects, duplicateSelectedDocumentObjects, moveDocumentObjects,
+  rotateSelectedDocumentObjects90, selectDocumentObject, selectionBounds, ungroupSelectedDocumentObjects
+} from "../../apps/desktop/src/documentWorkflow";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const skillRoot = join(root, "skills", "chemdraft");
@@ -128,6 +133,108 @@ beforeAll(async () => {
 });
 
 describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
+  it.each(["cholesterol", "paclitaxel", "morphine", "strychnine", "phenyldecalin"])(
+    "groups %s with every decoration and app ungroup restores the artwork", (name) => {
+      const { build, doc } = fixture(name);
+      const { carbon, picture } = ringStyle.style(structuredClone(doc), build);
+      for (const copy of [carbon, picture]) {
+        const page = copy.pages[0];
+        const groups = page.objects.filter((o: Json) => o.type === "group");
+        expect(groups).toHaveLength(page.objects.filter((o: Json) => o.type === "molecule").length);
+        const group = groups[0];
+        expect(GroupObjectSchema.safeParse(group).success).toBe(true);
+        const artwork = page.objects.filter((o: Json) => o.type !== "group");
+        expect(group.childObjectIds).toEqual(artwork.map((o: Json) => o.id));
+        // Includes the intentional outer-ring paths, even though their molecule fill is "none".
+        for (const fill of artwork.filter((o: Json) => o.id.startsWith("ring-fill-"))) {
+          expect(group.childObjectIds).toContain(fill.id);
+        }
+        expect(copy.selection.objectIds).toEqual([group.id]);
+        const selected = selectDocumentObject(copy, molecule(copy).id);
+        expect(selected.selection.objectIds).toEqual([group.id]);
+        const ungrouped = ungroupSelectedDocumentObjects(selected);
+        expect(ungrouped.pages[0]!.objects).toEqual(artwork);
+        expect(ungrouped.selection.objectIds).toEqual(group.childObjectIds);
+      }
+    }
+  );
+
+  it("keeps unrelated page art outside the molecule's group", () => {
+    const { build, doc } = fixture("cholesterol");
+    const caption = { id: "caption", type: "text", text: "Caption", x: 0, y: 0, width: 80, height: 20, rotation: 0, style: {}, spans: [] };
+    doc.pages[0].objects.push(caption);
+    const { carbon, picture } = ringStyle.style(doc, build);
+    for (const copy of [carbon, picture]) {
+      expect(copy.pages[0].objects.find((o: Json) => o.type === "group").childObjectIds).not.toContain(caption.id);
+      expect(copy.pages[0].objects.find((o: Json) => o.id === caption.id)).toEqual(caption);
+    }
+  });
+
+  it("uses child bounds for native group move, copy, delete and rotation despite its invisible frame", () => {
+    const { build, doc } = fixture("morphine");
+    const { carbon } = ringStyle.style(doc, build);
+    const objects = carbon.pages[0].objects, group = objects.find((o: Json) => o.type === "group");
+    const artwork = objects.filter((o: Json) => o.type !== "group");
+    const bounds = selectionBounds(objects, [group.id]);
+    expect(bounds).toEqual(selectionBounds(objects, group.childObjectIds));
+    expect(bounds!.width).toBeGreaterThan(0);
+    const moved = moveDocumentObjects(carbon, [group.id], 10, 10);
+    for (const child of artwork) {
+      const after = moved.pages[0]!.objects.find((o) => o.id === child.id)!;
+      expect(after.x).toBeCloseTo(child.x + 10);
+      expect(after.y).toBeCloseTo(child.y + 10);
+    }
+    const copied = duplicateSelectedDocumentObjects(carbon);
+    const copiedGroup = copied.pages[0]!.objects.find((o) => o.type === "group" && o.id !== group.id)!;
+    expect(copiedGroup.type === "group" && copiedGroup.childObjectIds).toHaveLength(group.childObjectIds.length);
+    expect(deleteSelectedDocumentObjects(carbon).pages[0]!.objects).toEqual([]);
+    const rotated = rotateSelectedDocumentObjects90(carbon);
+    // Transforming the group must be exactly the same as transforming all its children.
+    const flat = ungroupSelectedDocumentObjects(carbon);
+    const rotatedFlat = rotateSelectedDocumentObjects90(flat);
+    expect(rotated.pages[0]!.objects.filter((o) => o.type !== "group")).toEqual(rotatedFlat.pages[0]!.objects);
+  });
+
+  it.skipIf(!cliReady)("renders native groups to identical CLI SVG/PNG bytes and reads the same chemistry", async () => {
+    const result = await runRingStyleChild<Json[]>(`
+      const fs = await import("node:fs"), { tmpdir } = await import("node:os");
+      const { spawnSync } = await import("node:child_process");
+      const temp = fs.mkdtempSync(join(tmpdir(), "ring-style-group-render-"));
+      const checkout = ${JSON.stringify(cliCheckout)};
+      const render = (doc, name) => {
+        const file = join(temp, name + ".json"), out = join(temp, name);
+        fs.writeFileSync(file, JSON.stringify(doc));
+        const run = spawnSync(process.execPath, [join(checkout, "node_modules", "tsx", "dist", "cli.mjs"),
+          join(checkout, "packages", "chemdraft-cli", "src", "cli.ts"), "render-document",
+          "--document", file, "--out", out, "--format", "both"], { cwd: checkout, encoding: "utf8", windowsHide: true });
+        if (run.status !== 0) throw new Error(run.stderr + run.stdout);
+        const line = JSON.parse(run.stdout.trim());
+        return { svg: fs.readFileSync(out + ".svg"), png: fs.readFileSync(out + ".png"), identity: line.molecules };
+      };
+      const results = [];
+      try {
+        for (const name of ["cholesterol", "morphine", "strychnine"]) {
+          const { doc, build } = fixture(name);
+          const styled = ringStyle.style(doc, build);
+          for (const kind of ["carbon", "picture"]) {
+            const grouped = styled[kind], flat = structuredClone(grouped);
+            for (const page of flat.pages) page.objects = page.objects.filter((o) => o.type !== "group");
+            flat.selection.objectIds = [];
+            const a = render(grouped, name + "-" + kind + "-group"), b = render(flat, name + "-" + kind + "-flat");
+            results.push({ name, kind, svgEqual: a.svg.equals(b.svg), pngEqual: a.png.equals(b.png),
+              groupedIdentity: a.identity, flatIdentity: b.identity });
+          }
+        }
+        return results;
+      } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+    `, cliCheckout!);
+    for (const row of result) {
+      expect(row.svgEqual, `${row.name} ${row.kind}`).toBe(true);
+      expect(row.pngEqual, `${row.name} ${row.kind}`).toBe(true);
+      expect(row.groupedIdentity).toEqual(row.flatIdentity);
+    }
+  }, 180_000);
+
   it("is dependency-free Node: only node: built-ins, no shell", () => {
     const source = read(script);
     const imports = [...source.matchAll(/^\s*import\s[^;]*?from\s+"([^"]+)"/gm)].map((m) => m[1]!);
