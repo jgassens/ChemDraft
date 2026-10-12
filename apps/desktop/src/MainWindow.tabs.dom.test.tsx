@@ -322,6 +322,41 @@ describe("documents in one window", () => {
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
   });
 
+  it.each([false, true])("uses the Save As title when a running command proposes later (close before arrival: %s)", async (closeBeforeArrival) => {
+    await open("Original delayed source");
+    const source = bridge().snapshot().document;
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const commandId = registerProposal({ op: "updatePageLayout", pageId: source.pages[0]!.id,
+      layout: source.pages[0]!.layout }, wait);
+    let invocation!: Promise<unknown>;
+    await act(async () => { invocation = runtime().invokeCommand(commandId); });
+    native.savePicker.mockResolvedValueOnce("/tmp/Renamed delayed source.chemdraft");
+    await command("document.saveAs");
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    if (closeBeforeArrival) await closeTab();
+    await act(async () => { finish(); await invocation; });
+    const proposal = runtime().host.listProposedPatches("pending")[0]!;
+    if (!closeBeforeArrival) {
+      expect(reviewItems()[0]!.documentName).toBeUndefined();
+      await command("document.new");
+      expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft");
+      await activate(0);
+      await closeTab();
+    }
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft (closed)");
+    const other = bridge().snapshot().document;
+    await decide("acceptPluginProposal", proposal.id);
+    const message = "Could not accept the proposal: its document was closed (Renamed delayed source.chemdraft). You can reject it.";
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(bridge().snapshot().document).toEqual(other);
+    await decide("rejectPluginProposal", proposal.id);
+    expect(runtime().proposalDocumentTab(proposal.id)).toBeUndefined();
+  });
+
   it("rejects a pending proposal from another open tab without switching or editing either document", async () => {
     await paste("Source drawing for rejection");
     const source = bridge().snapshot().document;

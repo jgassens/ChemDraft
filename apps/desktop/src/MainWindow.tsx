@@ -7906,6 +7906,7 @@ export function MainWindow({
     let tabs = documentTabsRef.current;
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     // Closing the last document keeps the window open with a fresh document identity and history.
     if (tabs.length === 1) {
       newDocumentTab();
@@ -8540,8 +8541,6 @@ export function MainWindow({
       const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
         ? { ...tab, title: path ? nativePathBasename(path) : tab.title } : tab);
       documentTabsRef.current = tabs;
-      const savedTab = tabs.find((tab) => tab.id === savingTabId);
-      if (savedTab) pluginRuntimeRef.current?.updateProposalDocumentTabTitle(savedTab.id, savedTab.title);
       setDocumentTabs(tabs);
     };
     try {
@@ -9551,7 +9550,8 @@ export function MainWindow({
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
-    getActiveDocumentTab: () => documentTabsRef.current.find((tab) => tab.id === activeDocumentTabIdRef.current)!,
+    getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
+    getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
     getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
