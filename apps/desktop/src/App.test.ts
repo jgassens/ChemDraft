@@ -374,7 +374,12 @@ describe("ChemDraft desktop shell", () => {
 
   it("focuses an analysis window only when the user asked for it", () => {
     // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
-    expect(desktopNativeSource).toContain(".focused(request.focus)");
+    expect(desktopNativeSource).toContain("focused_on_build: false,");
+    expect(desktopNativeSource).toContain("focus_after_show: self.focus && !deferred,");
+    expect(desktopNativeSource).toContain(".focused(presentation.focused_on_build)");
+    expect(desktopNativeSource).toContain(
+      "configure_analysis_window(&window, presentation.focus_after_show)"
+    );
     expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
     expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
     // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
