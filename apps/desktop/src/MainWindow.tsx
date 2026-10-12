@@ -1614,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.12.17.30-opus";
+const CURRENT_BUILD_STAMP = "10.12.17.40-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2231,6 +2231,9 @@ export function MainWindow({
   customizeMainToolbarActiveRef.current = customizeMainToolbarActive;
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
+  const [nativeToolsetLayoutReady, setNativeToolsetLayoutReady] = useState(false);
+  const [nativeToolsetStartupReady, setNativeToolsetStartupReady] = useState(false);
+  const nativeToolsetsSuspendedForLaunchPrompt = nativeToolsetStartupReady && keptDrawingsPrompt !== undefined;
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -3126,6 +3129,7 @@ export function MainWindow({
         resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
         layoutSaveEnabledRef.current = true;
         layoutHydratedRef.current = true;
+        setNativeToolsetLayoutReady(true);
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -8768,10 +8772,13 @@ export function MainWindow({
   // A failed native box safely keeps the drawings; this launch flow has no React dialog fallback.
   const keptDrawingsTitle = `${unrestoredSessionTabCount} ${unrestoredSessionTabCount === 1 ? "drawing didn't" : "drawings didn't"} open`;
   const keptDrawingNames = unrestoredSessionTabsRef.current.map(unrestoredTabDisplayName).join("\n");
+  // Suspension makes open_toolset_window skip creation and report closed. Let startup reconcile
+  // finish (or establish a genuine fallback) before the launch box can acquire that suspension.
+  const keptDrawingsPromptReady = !effectiveNativePalette || !isDesktopRuntime() || nativeToolsetStartupReady;
   useNativePrompt({
     title: keptDrawingsTitle,
     message: [
-      `${keptDrawingsTitle}. ${unrestoredSessionTabCount === 1 ? "Its drawing is" : "Their drawings are"} kept, but this version of ChemDraft can't show ${unrestoredSessionTabCount === 1 ? "it" : "them"}. It may have been saved by a newer ChemDraft, or the data may be damaged.`,
+      `${unrestoredSessionTabCount === 1 ? "Its drawing is" : "Their drawings are"} kept, but this version of ChemDraft can't show ${unrestoredSessionTabCount === 1 ? "it" : "them"}. It may have been saved by a newer ChemDraft, or the data may be damaged.`,
       keptDrawingNames,
       "Choose Save Drawing… to save each drawing, or Delete to delete the kept drawings.\nCancel keeps the drawings for the next launch.",
       keptDrawingsMessage
@@ -8802,7 +8809,7 @@ export function MainWindow({
       }
     }
     return false;
-  }, keptDrawingsPrompt, true, async () => "cancel");
+  }, keptDrawingsPromptReady ? keptDrawingsPrompt : undefined, true, async () => "cancel");
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
     const savingTabId = activeDocumentTabIdRef.current;
@@ -11838,6 +11845,17 @@ export function MainWindow({
       return;
     }
 
+    // The saved layout may add visible toolsets after the first render. Reconcile that layout
+    // before allowing the kept-drawings launch prompt to suspend native window creation.
+    if (!nativeToolsetLayoutReady) {
+      return;
+    }
+    // A plugin can refresh the registry while the box is open. Its hidden windows are healthy;
+    // defer reconciliation until the launch sequence releases them instead of counting failures.
+    if (nativeToolsetsSuspendedForLaunchPrompt) {
+      return;
+    }
+
     let cancelled = false;
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
@@ -11851,15 +11869,15 @@ export function MainWindow({
         return;
       }
       if (result.outcome === "native") {
+        setNativeToolsetStartupReady(true);
         // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
         // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
         // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
         // would permanently drop that palette. The desired set stays authoritative.
         //
-        // A partial set now means the reconciler retried that palette and it still would not open,
-        // because it keeps going until the whole desired set is up. This effect cannot be the retry:
-        // its deps are native mode and the registry, and it reads the desired set from a ref, so
-        // nothing re-runs it when an open fails.
+        // A partial set means the reconciler retried that palette and it still would not open.
+        // Registry changes and the end of the launch prompt can reconcile again; an individual
+        // open failure does not re-run the effect, so the reconciler itself owns retries.
         return;
       }
       // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
@@ -11874,7 +11892,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the

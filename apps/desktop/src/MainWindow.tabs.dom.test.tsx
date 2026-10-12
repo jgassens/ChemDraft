@@ -9,7 +9,7 @@ import { applyNativeChainTool, createNativeSavePayload, createPhase4Document, op
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { createViewportState } from "@chemdraft/viewport-engine";
-import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
+import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import type { DocumentPatch, MoleculeObject } from "@chemdraft/chem-core";
@@ -27,6 +27,10 @@ const native = vi.hoisted(() => ({
   suspendUtilities: false,
   suspensionDepth: 0,
   visibilityChanges: [] as string[],
+  toolsetWindows: new Map<string, boolean>(),
+  suspendedToolsets: [] as string[],
+  loadToolsetLayout: vi.fn<() => Promise<unknown>>(),
+  openToolset: vi.fn<(id: string) => Promise<ToolsetWindowState>>(),
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
@@ -48,6 +52,13 @@ vi.mock("./window-manager", async (original) => ({
   isDesktopRuntime: () => native.desktop,
   loadDocumentSession: native.load,
   saveDocumentSession: native.saveSession,
+  loadToolsetLayoutState: native.loadToolsetLayout,
+  openToolsetWindow: native.openToolset,
+  listToolsetWindowStates: async () => [...native.toolsetWindows].map(([toolsetId, open]) => ({ toolsetId, open, focused: false })),
+  closeToolsetWindow: async (toolsetId: string) => {
+    native.toolsetWindows.set(toolsetId, false);
+    return { toolsetId, open: false, focused: false };
+  },
   setToolbarsMenu: vi.fn().mockResolvedValue(undefined),
   listenForQuitFlushRequest: async (handler: () => Promise<void>) => {
     native.quitFlush = handler;
@@ -69,8 +80,16 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
   isTauri: () => native.suspendUtilities,
   invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
     if (command === "suspend_toolset_windows") {
-      if (options?.suspended) { if (native.suspensionDepth++ === 0) native.visibilityChanges.push("hide"); }
-      else if (--native.suspensionDepth === 0) native.visibilityChanges.push("restore");
+      if (options?.suspended) {
+        if (native.suspensionDepth++ === 0) {
+          native.visibilityChanges.push("hide");
+          native.suspendedToolsets = [...native.toolsetWindows].filter(([, visible]) => visible).map(([id]) => id);
+          for (const id of native.suspendedToolsets) native.toolsetWindows.set(id, false);
+        }
+      } else if (--native.suspensionDepth === 0) {
+        native.visibilityChanges.push("restore");
+        for (const id of native.suspendedToolsets) native.toolsetWindows.set(id, true);
+      }
     }
     return null;
   })
@@ -111,6 +130,14 @@ describe("documents in one window", () => {
     native.suspendUtilities = false;
     native.suspensionDepth = 0;
     native.visibilityChanges = [];
+    native.toolsetWindows.clear();
+    native.suspendedToolsets = [];
+    native.loadToolsetLayout.mockResolvedValue(undefined);
+    native.openToolset.mockImplementation(async (toolsetId) => {
+      // Match Rust: suspension refuses even creation of a window that does not yet exist.
+      if (!native.suspensionDepth) native.toolsetWindows.set(toolsetId, true);
+      return { toolsetId, open: native.toolsetWindows.get(toolsetId) ?? false, focused: false };
+    });
     native.session = undefined;
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
@@ -1016,6 +1043,86 @@ describe("documents in one window", () => {
       expect(pendingPrompt).toBeUndefined();
     };
 
+    const startupLayout = {
+      version: 1, toolsetOrder: [], userToolsets: [],
+      toolsetOverrides: ["core.main", "core.art", "core.structure"].map(toolsetId => ({ toolsetId, visible: true }))
+    };
+
+    it("waits for saved toolbar layout and native window creation before suspending for the launch box", async () => {
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      let finishLayout!: (value: unknown) => void;
+      native.loadToolsetLayout.mockImplementationOnce(() => new Promise(resolve => { finishLayout = resolve; }));
+      let finishArt!: () => void;
+      const openNormally = native.openToolset.getMockImplementation()!;
+      native.openToolset.mockImplementation(async (id) => {
+        if (id === "core.art") await new Promise<void>(resolve => { finishArt = resolve; });
+        return openNormally(id);
+      });
+      native.openToolset.mockClear();
+      await remount();
+      expect(tabs()).toHaveLength(3);
+      expect(native.openToolset).not.toHaveBeenCalled();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.visibilityChanges).toEqual([]);
+
+      await act(async () => finishLayout(startupLayout));
+      expect(native.openToolset).toHaveBeenCalledWith("core.main", expect.anything());
+      expect(native.openToolset).toHaveBeenCalledWith("core.art", expect.anything());
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+
+      await act(async () => finishArt());
+      expect(native.openToolset).toHaveBeenCalledWith("core.structure", expect.anything());
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expect(pendingPrompt?.prompt.message).toMatch(/^Its drawing is kept,/);
+      expect(pendingPrompt?.prompt.message).not.toContain("1 drawing didn't open");
+      expectSuspended();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.has(toolsetId)).toBe(true);
+        expect(native.toolsetWindows.get(toolsetId)).toBe(false);
+      }
+      // Installed plugins can finish loading after the launch box has appeared. The catalog
+      // refresh must not mistake the deliberately hidden windows for creation failures.
+      const currentRuntime = vi.mocked(createPluginRuntime).mock.results.at(-1)!.value as DesktopPluginRuntime;
+      native.openToolset.mockClear();
+      await act(async () => currentRuntime.registerPlugin({
+        id: "org.test.late-startup", name: "Late startup plugin", version: "0.0.1", apiVersion: "^0.1.6",
+        entry: "dist/plugin.js", permissions: [], contributes: { commands: [] }
+      }));
+      // Keeping the box open beyond the old retry window must never activate the web fallback.
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+      expect(native.openToolset).not.toHaveBeenCalled();
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("unavailable");
+      await modalButton("Cancel");
+      expectReleased();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.get(toolsetId)).toBe(true);
+      }
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+    });
+
+    it("still falls back on genuine creation failure before showing the launch box", async () => {
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      native.openToolset.mockRejectedValue(new Error("native window creation failed"));
+      native.openToolset.mockClear();
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+      // Each retry uses the real reconciler, including its delay and failure verdict.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 220)); });
+      }
+      expect(native.openToolset.mock.calls.filter(([id]) => id === "core.main")).toHaveLength(3);
+      expect(container.querySelector(".web-shell")).not.toBeNull();
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Native toolset windows unavailable; using in-window toolbars");
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
     function unsupportedChildrenSession() {
       const session = threeTabSession();
       return { ...session, tabs: session.tabs!.map((tab, index) => ({
@@ -1156,6 +1263,8 @@ describe("documents in one window", () => {
             { id: "cancel", label: "Cancel", cancel: true }]
         });
         expect(pendingPrompt?.prompt.message).toContain("Still unreadable.chemdraft");
+        expect(pendingPrompt?.prompt.message).toMatch(/^Its drawing is kept,/);
+        expect(pendingPrompt?.prompt.message).not.toContain("1 drawing didn't open");
         expect(pendingPrompt?.prompt.message).toContain("Cancel keeps the drawings for the next launch.");
         expectSuspended();
         // The native layer returns the Cancel choice for Escape; its literal-label mapping is
