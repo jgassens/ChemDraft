@@ -1028,6 +1028,14 @@ export function compareBondDepth(
 ): number {
   const crossingKey = crossingPairKey([left.ref, right.ref]);
   const override = context.overrides?.find((candidate) => crossingPairKey(candidate.bonds) === crossingKey);
+  return compareBondDepthWithOverride(left, right, override);
+}
+
+function compareBondDepthWithOverride(
+  left: BondDepthCandidate,
+  right: BondDepthCandidate,
+  override: CrossingOverride | undefined
+): number {
   if (override) {
     if (sameBondRef(override.front, left.ref)) {
       return 1;
@@ -1052,13 +1060,27 @@ function resolvePageBondCrossings(
   page: DocumentPage,
   warnings: PageSvgRenderWarning[]
 ): InternalResolvedBondCrossing[] {
+  const candidateKeys = new Set<string>();
+  let uniqueBondKeys = true;
   const candidates = page.objects.flatMap((object, objectLayerIndex) =>
     object.type === "molecule" && isNativeMoleculeGraph(object)
-      ? nativeBondCandidates(object, objectLayerIndex)
+      ? nativeBondCandidates(object, objectLayerIndex).map((candidate) => {
+          const key = bondRefKey(candidate.ref);
+          if (candidateKeys.has(key)) uniqueBondKeys = false;
+          candidateKeys.add(key);
+          return candidate;
+        })
       : []
   );
   const resolved: InternalResolvedBondCrossing[] = [];
-  const overrides = page.crossings;
+  const overrides = new Map<string, CrossingOverride>();
+  for (const override of page.crossings) {
+    const key = crossingPairKey(override.bonds);
+    // Preserve Array.find's first-match behavior even for duplicate pair overrides.
+    if (!overrides.has(key)) {
+      overrides.set(key, override);
+    }
+  }
 
   forEachCandidatePairOverlappingInX(candidates, (leftIndex, rightIndex) => {
     const left = candidates[leftIndex];
@@ -1070,11 +1092,11 @@ function resolvePageBondCrossings(
     if (!intersection) {
       return;
     }
-    const depth = compareBondDepth(left, right, { overrides });
+    const key = crossingPairKey([left.ref, right.ref]);
+    const override = overrides.get(key);
+    const depth = compareBondDepthWithOverride(left, right, override);
     const frontCandidate = depth >= 0 ? left : right;
     const backCandidate = depth >= 0 ? right : left;
-    const key = crossingPairKey([left.ref, right.ref]);
-    const override = overrides.find((candidate) => crossingPairKey(candidate.bonds) === key);
     const clearancePx = crossingClearancePx(frontCandidate, backCandidate, intersection.angleSin, override);
     resolved.push({
       key,
@@ -1090,7 +1112,7 @@ function resolvePageBondCrossings(
     });
   });
 
-  warnForDepthCycles(resolved, warnings);
+  warnForDepthCycles(resolved, warnings, uniqueBondKeys);
   return resolved.sort((left, right) => left.key.localeCompare(right.key));
 }
 
@@ -1253,11 +1275,18 @@ function nativeBondFootprintPx(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
 
 function warnForDepthCycles(
   crossings: readonly InternalResolvedBondCrossing[],
-  warnings: PageSvgRenderWarning[]
+  warnings: PageSvgRenderWarning[],
+  uniqueBondKeys: boolean
 ): void {
+  // Default depth strictly orders instances, but duplicate ids or composite-key collisions can
+  // merge them into one graph vertex. Only unique keys prove every cycle needs an override.
+  if (uniqueBondKeys && !crossings.some((crossing) => crossing.hasOverride)) {
+    return;
+  }
   const edges = crossings.map((crossing) => ({
     from: bondRefKey(crossing.front),
-    to: bondRefKey(crossing.back)
+    to: bondRefKey(crossing.back),
+    hasOverride: crossing.hasOverride
   }));
   // Prefix the source length so ids containing "->" cannot alias a different edge.
   const edgeKey = (from: string, to: string) => `${from.length}:${from}->${to}`;
@@ -1273,6 +1302,10 @@ function warnForDepthCycles(
   // Keep the existing three-edge-cycle semantics: only visit actual two-edge paths, and look up
   // their closing edge in constant time instead of scanning all crossings for both steps.
   for (const first of edges) {
+    // A three-edge cycle can be rotated to start at any of its override edges.
+    if (uniqueBondKeys && !first.hasOverride) {
+      continue;
+    }
     for (const target of adjacency.get(first.to) ?? []) {
       if (edgeKeys.has(edgeKey(target, first.from))) {
         warnings.push({

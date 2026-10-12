@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ChemDraftSyntheticStylePreset,
+  DocumentPageSchema,
   createEmptyDocument,
   nativeDrawingStyleFromObjectStyle,
   stylePresetToObjectStyle,
@@ -18,6 +19,8 @@ import {
   atomLabelLayout,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
+  bondRefKey,
+  crossingPairKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
   dativeDeprotonationCount,
@@ -38,6 +41,7 @@ import {
   planReactionArrowGeometry,
   bracketGlyphPathD,
   ringInteriorDoubleBondSides,
+  type ResolvedBondCrossing,
   type BondExtensionPlanningInput,
   type PageSvgElementFragment,
   type PageSvgFragment
@@ -573,6 +577,114 @@ function moleculeObject(overrides: Partial<MoleculeObject> = {}): MoleculeObject
   };
 }
 
+// Deliberately straightforward reference: all bond pairs, array-based override lookup,
+// and independent intersection/clearance calculations (no production sweep or override map).
+function referencePageCrossings(page: DocumentPage): ResolvedBondCrossing[] {
+  const candidates = page.objects.flatMap((object, objectLayerIndex) => {
+    if (object.type !== "molecule") return [];
+    const transform = (atom: { x: number; y: number }) => {
+      if (object.rotation === 0) return { x: atom.x, y: atom.y };
+      const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+      const angle = object.rotation * Math.PI / 180;
+      const dx = atom.x - center.x;
+      const dy = atom.y - center.y;
+      return {
+        x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle),
+        y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle)
+      };
+    };
+    return object.bonds.flatMap((bond, bondIndex) => {
+      const from = object.atoms.find((atom) => atom.id === bond.fromAtomId);
+      const to = object.atoms.find((atom) => atom.id === bond.toAtomId);
+      return from && to ? [{
+        ref: { objectId: object.id, bondId: bond.id }, objectLayerIndex, bondIndex,
+        bond, start: transform(from), end: transform(to),
+        style: nativeDrawingStyleFromObjectStyle(object.style)
+      }] : [];
+    });
+  });
+  const crossings: ResolvedBondCrossing[] = [];
+  const cross = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x * b.y - a.y * b.x;
+  const clampClearance = (value: number) => Math.max(7, Math.min(30, value));
+  const stroke = (candidate: typeof candidates[number]) => candidate.bond.display?.bondStyle === "bold"
+    ? candidate.style.bondBoldWidthPx : candidate.style.bondStrokeWidthPx;
+  for (let i = 0; i < candidates.length; i += 1) {
+    const left = candidates[i]!;
+    for (let j = i + 1; j < candidates.length; j += 1) {
+      const right = candidates[j]!;
+      if (left.ref.objectId === right.ref.objectId && [left.bond.fromAtomId, left.bond.toAtomId].some(
+        (id) => id === right.bond.fromAtomId || id === right.bond.toAtomId
+      )) continue;
+      const a = { x: left.end.x - left.start.x, y: left.end.y - left.start.y };
+      const b = { x: right.end.x - right.start.x, y: right.end.y - right.start.y };
+      const denominator = cross(a, b);
+      if (Math.abs(denominator) <= 0.000001) continue;
+      const delta = { x: right.start.x - left.start.x, y: right.start.y - left.start.y };
+      const t = cross(delta, b) / denominator;
+      const u = cross(delta, a) / denominator;
+      if (t <= 0.0001 || t >= 0.9999 || u <= 0.0001 || u >= 0.9999) continue;
+      const point = { x: left.start.x + a.x * t, y: left.start.y + a.y * t };
+      const angleSin = Math.abs(denominator) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y));
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(angleSin)) continue;
+      const key = crossingPairKey([left.ref, right.ref]);
+      const override = page.crossings.find((candidate) => crossingPairKey(candidate.bonds) === key);
+      const frontMatches = (candidate: typeof left) => override?.front.objectId === candidate.ref.objectId &&
+        override.front.bondId === candidate.ref.bondId;
+      // Independent depth oracle: first matching override, then layer, within-object bond
+      // index, then the composite key. An unrelated override front falls through to defaults.
+      const depth = frontMatches(left) ? 1 : frontMatches(right) ? -1
+        : left.objectLayerIndex !== right.objectLayerIndex ? left.objectLayerIndex - right.objectLayerIndex
+        : left.ref.objectId === right.ref.objectId && left.bondIndex !== right.bondIndex ? left.bondIndex - right.bondIndex
+        : bondRefKey(left.ref).localeCompare(bondRefKey(right.ref));
+      const front = depth >= 0 ? left : right;
+      const back = depth >= 0 ? right : left;
+      const bonds: ResolvedBondCrossing["bonds"] = bondRefKey(left.ref).localeCompare(bondRefKey(right.ref)) <= 0
+        ? [left.ref, right.ref] : [right.ref, left.ref];
+      const gap = front.style.bondSpacingMode === "percent"
+        ? Math.max(0.5, front.style.bondLengthPx * front.style.bondSpacingPercent / 100)
+        : front.style.multipleBondGapPx;
+      const footprint = front.bond.display?.bondStyle === "wedge" || front.bond.display?.bondStyle === "hashed"
+        ? Math.max(4, front.style.bondStrokeWidthPx * 2.2, front.style.bondBoldWidthPx * 1.05, front.style.bondLengthPx * 0.24)
+        : stroke(front) + (front.bond.order === "triple" ? gap * 2 : front.bond.order === "double" ? gap : 0);
+      crossings.push({
+        key, bonds, front: front.ref, back: back.ref, point,
+        clearancePx: clampClearance(override?.clearancePx ?? (
+          (footprint + stroke(back) + back.style.bondOverlapClearancePx * 0.75) / Math.max(0.28, Math.abs(angleSin))
+        )),
+        hasOverride: override !== undefined
+      });
+    }
+  }
+  return publicCrossings(crossings);
+}
+
+function publicCrossings(crossings: readonly ResolvedBondCrossing[]): ResolvedBondCrossing[] {
+  // The sweep and all-pairs traversal can visit equal-key crossings in different orders.
+  // Compare every field of these crossings while normalizing only their tied ordering.
+  return crossings.map(({ key, bonds, front, back, point, clearancePx, hasOverride }) => ({
+    key, bonds, front, back, point, clearancePx, hasOverride
+  })).sort((left, right) => left.key.localeCompare(right.key) ||
+    JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function referenceDepthWarnings(crossings: readonly ResolvedBondCrossing[]) {
+  // Preserve precisely the old three-edge semantics, rather than detecting arbitrary cycles.
+  for (const first of crossings) {
+    for (const second of crossings) {
+      if (bondRefKey(first.back) !== bondRefKey(second.front)) continue;
+      for (const third of crossings) {
+        if (bondRefKey(second.back) === bondRefKey(third.front) && bondRefKey(third.back) === bondRefKey(first.front)) {
+          return [{
+            code: "crossing.depth_cycle",
+            message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
+          }];
+        }
+      }
+    }
+  }
+  return [];
+}
+
 function benzeneMolecule(overrides: Partial<MoleculeObject> = {}): MoleculeObject {
   return moleculeObject({
     id: "mol_benzene",
@@ -1078,7 +1190,144 @@ describe("layout-engine page SVG planner", () => {
     expect(plan.warnings).toEqual([]);
   });
 
-  it("plans 256 overlapping benzene rings offset by 24 px in under three seconds", () => {
+  it.each([
+    { name: "duplicate object ids", refs: [
+      { objectId: "A", bondId: "b" }, { objectId: "B", bondId: "b" },
+      { objectId: "C", bondId: "b" }, { objectId: "A", bondId: "b" }
+    ] },
+    { name: "colliding composite bond keys", refs: [
+      { objectId: "x::y", bondId: "z" }, { objectId: "x", bondId: "y::z" }
+    ] }
+  ])("warns about default depth cycles with $name", ({ refs }) => {
+    const page = pageWithObjects(refs.map((ref, index) => {
+      const angle = index * Math.PI / 4;
+      const atoms = [-1, 1].map((sign, atomIndex) => ({
+        id: `a${index}_${atomIndex}`, element: "C", formalCharge: 0,
+        x: 180 + sign * 60 * Math.cos(angle), y: 180 + sign * 60 * Math.sin(angle)
+      }));
+      return moleculeObject({
+        id: ref.objectId, atoms,
+        bonds: [{ id: ref.bondId, fromAtomId: atoms[0]!.id, toAtomId: atoms[1]!.id, order: "single" }]
+      });
+    }));
+    expect(DocumentPageSchema.safeParse(page).success).toBe(true);
+    const expected = referencePageCrossings(page);
+    const warnings = [{
+      code: "crossing.depth_cycle",
+      message: "The page contains a cyclic over/under relationship that may not be realizable as a 3D weave."
+    }];
+    expect(expected).toHaveLength(refs.length === 4 ? 6 : 1);
+    expect(referenceDepthWarnings(expected)).toEqual(warnings);
+    const actual = planPageSvgRender(page);
+    expect(publicCrossings(actual.crossings)).toEqual(expected);
+    expect(actual.warnings).toEqual(warnings);
+
+    // An unrelated overridden edge must not hide default cycles when keys are merged.
+    // Its nonmatching front preserves the default order.
+    page.objects.push(...["isolated_left", "isolated_right"].map((id, index) => moleculeObject({
+      id,
+      atoms: [
+        { id: "atom_001", element: "C", formalCharge: 0, x: 400, y: 400 + index * 80 },
+        { id: "atom_002", element: "C", formalCharge: 0, x: 480, y: 480 - index * 80 }
+      ]
+    })));
+    page.crossings.push({
+      bonds: [{ objectId: "isolated_left", bondId: "bond_001" }, { objectId: "isolated_right", bondId: "bond_001" }],
+      front: { objectId: "absent", bondId: "absent" }
+    });
+    const withOverride = referencePageCrossings(page);
+    expect(withOverride.filter((crossing) => crossing.hasOverride)).toHaveLength(1);
+    expect(publicCrossings(planPageSvgRender(page).crossings)).toEqual(withOverride);
+    expect(planPageSvgRender(page).warnings).toEqual(warnings);
+  });
+
+  it("matches all-pairs crossing resolution and brute-force depth warnings on seeded random pages", () => {
+    let seed = 0x123d3f;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
+    let cyclicPages = 0;
+    let noncyclicOverridePages = 0;
+    let duplicateIdPages = 0;
+    let compositeCollisionPages = 0;
+    let nonmatchingFronts = 0;
+    for (let sample = 0; sample < 240; sample += 1) {
+      const forceCycle = sample % 6 === 5;
+      const objects = Array.from({ length: 3 + Math.floor(random() * 3) }, (_, objectIndex) => {
+        const bondCount = 1 + Math.floor(random() * 3);
+        const atoms = Array.from({ length: bondCount * 2 }, (_, atomIndex) => {
+          const angle = objectIndex * Math.PI / 3;
+          const sign = atomIndex === 0 ? -1 : 1;
+          return {
+            id: `a${objectIndex}_${atomIndex}`, element: "C", formalCharge: 0,
+            x: forceCycle && objectIndex < 3 && atomIndex < 2 ? 180 + sign * 60 * Math.cos(angle) : 100 + random() * 160,
+            y: forceCycle && objectIndex < 3 && atomIndex < 2 ? 180 + sign * 60 * Math.sin(angle) : 100 + random() * 160
+          };
+        });
+        const bonds = Array.from({ length: bondCount }, (_, bondIndex) => ({
+          id: `b${bondIndex}`, fromAtomId: `a${objectIndex}_${bondIndex * 2}`, toAtomId: `a${objectIndex}_${bondIndex * 2 + 1}`,
+          order: (["single", "double", "triple"] as const)[Math.floor(random() * 3)]!,
+          display: { bondStyle: ([undefined, "bold", "wedge", "hashed"] as const)[Math.floor(random() * 4)] }
+        }));
+        return moleculeObject({
+          id: `random_${sample}_${objectIndex}`, atoms, bonds,
+          rotation: forceCycle ? 0 : Math.floor(random() * 4) * 30
+        });
+      });
+      if (sample % 6 === 0 || sample % 6 === 1) {
+        objects[objects.length - 1]!.id = objects[0]!.id;
+        duplicateIdPages += 1;
+      } else if (sample % 6 === 2 || sample % 6 === 3) {
+        objects[0]!.id = "x::y";
+        objects[0]!.bonds[0]!.id = "z";
+        objects[1]!.id = "x";
+        objects[1]!.bonds[0]!.id = "y::z";
+        compositeCollisionPages += 1;
+      }
+      const page = pageWithObjects(objects);
+      const refs = objects.flatMap((object) => object.bonds.map((bond) => ({ objectId: object.id, bondId: bond.id })));
+      if (sample % 2 === 1) {
+        // Include nonintersecting pairs, reversed pair order and duplicate overrides.
+        for (let i = 0; i < refs.length; i += 1) {
+          for (let j = i + 1; j < refs.length; j += 1) {
+            if (random() > 0.25) continue;
+            const bonds: ResolvedBondCrossing["bonds"] = random() < 0.5 ? [refs[i]!, refs[j]!] : [refs[j]!, refs[i]!];
+            const front = random() < 0.2 ? { objectId: "absent", bondId: "absent" }
+              : random() < 0.5 ? bonds[0] : bonds[1];
+            if (front.objectId === "absent") nonmatchingFronts += 1;
+            const clearancePx = random() < 0.5 ? undefined : random() * 45;
+            page.crossings.push({ bonds, front, clearancePx });
+            if (random() < 0.2) page.crossings.push({ bonds: [bonds[1], bonds[0]], front: bonds[0], clearancePx: 30 });
+          }
+        }
+      }
+      if (forceCycle) {
+        const [a, b, c] = objects.slice(0, 3).map((object) => ({ objectId: object.id, bondId: "b0" }));
+        // First-match overrides force a > c > b > a, regardless of other random overrides.
+        page.crossings.unshift(
+          { bonds: [a!, c!], front: a! },
+          { bonds: [c!, b!], front: c! },
+          { bonds: [b!, a!], front: b! }
+        );
+      }
+      const expected = referencePageCrossings(page);
+      const warnings = referenceDepthWarnings(expected);
+      const actual = planPageSvgRender(page);
+      expect(publicCrossings(actual.crossings), `sample ${sample}`).toEqual(expected);
+      expect(actual.warnings, `sample ${sample}`).toEqual(warnings);
+      if (forceCycle) expect(warnings).toHaveLength(1);
+      if (warnings.length) cyclicPages += 1;
+      else if (expected.some((crossing) => crossing.hasOverride)) noncyclicOverridePages += 1;
+    }
+    expect(cyclicPages).toBeGreaterThanOrEqual(40);
+    expect(noncyclicOverridePages).toBeGreaterThan(0);
+    expect(duplicateIdPages).toBe(80);
+    expect(compositeCollisionPages).toBe(80);
+    expect(nonmatchingFronts).toBeGreaterThan(0);
+  });
+
+  it("resolves the 256 overlapping benzene rings identically to the all-pairs reference", () => {
     const base = benzeneMolecule();
     const benzene = benzeneMolecule({
       x: 120, y: 90, width: 180, height: 180,
@@ -1100,14 +1349,19 @@ describe("layout-engine page SVG planner", () => {
       };
     }));
 
-    const start = performance.now();
     const plan = planPageSvgRender(page);
-    const elapsedMs = performance.now() - start;
+    const expected = referencePageCrossings(page);
 
     // Guard the workload too: a sparse fixture would not catch the old cubic cycle check.
     expect(plan.crossings.length).toBeGreaterThan(20_000);
+    expect(publicCrossings(plan.crossings)).toEqual(expected);
+    // On this large no-override graph the strict layer order proves acyclicity without
+    // making the test's brute-force three-edge search itself the performance bottleneck.
+    const layerById = new Map(page.objects.map((object, index) => [object.id, index]));
+    expect(expected.every((crossing) => !crossing.hasOverride &&
+      layerById.get(crossing.front.objectId)! > layerById.get(crossing.back.objectId)!
+    )).toBe(true);
     expect(plan.warnings).toEqual([]);
-    expect(elapsedMs).toBeLessThan(3000);
   }, 10_000);
 
   it("ignores endpoint touches instead of creating spurious crossing gaps", () => {
