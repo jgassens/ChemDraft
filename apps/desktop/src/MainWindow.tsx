@@ -7,6 +7,7 @@ import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tau
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   projectGraphicVisualPagePoint,
+  rotatePointAroundCenter,
   rotatedGraphicLocalBounds,
   unrotateGraphicVisualPagePoint
 } from "./graphicHandleGeometry";
@@ -1610,7 +1611,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.12.17.10-opus";
+const CURRENT_BUILD_STAMP = "10.12.17.15-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -16365,6 +16366,23 @@ export function MainWindow({
       return;
     }
 
+    // Non-text, non-molecule object targets consume presses before the page's Text fallback
+    // can run. Use the same placement path; handles have their own pointer handlers.
+    if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      // A shape's hit target can cover the text glyphs. Resolve text geometrically in
+      // document order so this also works when each object's paint has its own layer.
+      const text = textObjectAtPoint(currentDocument.pages[0]?.objects ?? [], point);
+      if (text) {
+        restoreToolAfterTextPlacement();
+        startTextObjectEdit(text.id);
+      } else {
+        applyTextDocumentAtPoint(point);
+      }
+      return;
+    }
+
     event.stopPropagation();
     if (!shouldActivateDocumentObject(object, activeToolState.activeKind)) {
       return;
@@ -16403,6 +16421,7 @@ export function MainWindow({
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
     applySymbolGlyphAtPoint,
+    applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,
@@ -23761,6 +23780,31 @@ function pointInsideObjectBounds(
     point.y >= bounds.y - paddingPx &&
     point.y <= bounds.y + bounds.height + paddingPx
   );
+}
+
+function textObjectAtPoint(
+  objects: readonly DocumentObject[],
+  point: ClientPoint
+): TextObject | undefined {
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const object = objects[index];
+    if (object.type !== "text") {
+      continue;
+    }
+    // Text's CSS box (and selection frame) rotates around its center. Test in that
+    // local frame, rather than the unrotated box or a larger rotated bounding box.
+    const rotationRad = degreesToRadians(-object.rotation);
+    const localPoint = Math.abs(object.rotation) < 0.001 ? point : rotatePointAroundCenter(
+      point,
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 },
+      Math.cos(rotationRad),
+      Math.sin(rotationRad)
+    );
+    if (pointInRect(localPoint, documentObjectVisualBounds(object))) {
+      return object;
+    }
+  }
+  return undefined;
 }
 
 export function nativeMoleculeObjectAtPoint(
