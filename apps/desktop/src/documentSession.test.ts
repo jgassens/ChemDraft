@@ -5,7 +5,10 @@ import {
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
   documentIsBlank,
+  documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  unrestoredTabContents,
+  unrestoredTabDisplayName,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal
 } from "./documentSession";
@@ -107,6 +110,26 @@ describe("shouldRestoreDocumentSession", () => {
 describe("multi-document session extension", () => {
   const blank = buildDocumentSessionEnvelope(payload, { dirty: false }, "Untitled", true);
   const session = buildDocumentTabsSession([blank, { ...blank, dirty: true }, blank], 1);
+
+  it("offers carried tabs for retry as raw envelopes and retains malformed metadata", () => {
+    const raw = { ...blank, view: { future: true }, futureField: { rescue: true } };
+    const failed = { displayName: "Old tab", contents: "unknown format", version: 99 };
+    const parsed = parseDocumentSessionEnvelope({ ...session, tabs: [raw], activeTabIndex: 0, unrestoredTabs: [failed] })!;
+    expect(documentSessionRestoreCandidates(parsed)).toEqual([raw, failed]);
+    expect(documentSessionRestoreCandidates(parsed)[0]).toBe(raw);
+    expect(documentSessionRestoreCandidates(parseDocumentSessionEnvelope({ ...blank, unrestoredTabs: [failed] })!)).toEqual([
+      { ...blank, unrestoredTabs: [failed] }, failed
+    ]);
+  });
+
+  it("rescues saved text without requiring a readable envelope, and never substitutes missing data", () => {
+    const raw = { displayName: "Old format.cdxml", contents: "exact original text", version: 99 };
+    expect(unrestoredTabContents(raw)).toBe("exact original text");
+    expect(unrestoredTabDisplayName(raw, 0)).toBe("Old format.cdxml");
+    expect(unrestoredTabDisplayName(null, 2)).toBe("Unrestored tab 3");
+    expect(unrestoredTabDisplayName({ displayName: " " }, 0)).toBe("Unrestored tab 1");
+    expect(() => unrestoredTabContents({ contents: 4 })).toThrow("remains in the session");
+  });
 
   it("retains blank tabs and the active index while preserving the version-1 active envelope", () => {
     expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(session)))).toEqual(session);

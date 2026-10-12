@@ -124,10 +124,13 @@ import {
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
   documentIsBlank,
+  documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
-  rawDocumentSessionTab,
   shouldRestoreDocumentSession,
-  strictSessionFlushRefusal
+  strictSessionFlushRefusal,
+  unrestoredTabContents,
+  unrestoredTabDisplayName,
+  unrestoredTabsNotice
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
@@ -2119,6 +2122,10 @@ export function MainWindow({
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const [discardUnrestoredTabsPrompt, setDiscardUnrestoredTabsPrompt] = useState<{
+    text: string;
+    decide: (discard: boolean) => void;
+  }>();
   const [closeTabSaving, setCloseTabSaving] = useState(false);
   const [closeTabSaveMessage, setCloseTabSaveMessage] = useState<string>();
   const closeTabPromptRef = useRef(closeTabPrompt);
@@ -2354,6 +2361,8 @@ export function MainWindow({
   const shellOpenFailureRef = useRef<string | undefined>(undefined);
   const documentSessionSaveEnabledRef = useRef(false);
   const unrestoredSessionTabsRef = useRef<unknown[]>([]);
+  const [unrestoredSessionTabCount, setUnrestoredSessionTabCount] = useState(0);
+  const unrestoredTabFlowRunningRef = useRef(false);
   const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
@@ -2745,9 +2754,10 @@ export function MainWindow({
       canUndo,
       canRedo,
       hasMultipleTabs: documentTabs.length > 1,
+      hasUnrestoredTabs: unrestoredSessionTabCount > 0,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
     }),
-    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
+    [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts, unrestoredSessionTabCount]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
   const pageCssVars = useMemo(
@@ -3526,8 +3536,9 @@ export function MainWindow({
     // macOS Close Tab routing uses has_multiple_document_tabs from this async menu push.
     // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
     // autosave keeps both tabs, so nothing is lost.
-    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
-  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1,
+      unrestoredSessionTabCount > 0).catch(() => undefined);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds, unrestoredSessionTabCount]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -8322,7 +8333,7 @@ export function MainWindow({
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
-  // tabs. Unreadable tabs stay in the envelope; a wholly unreadable session keeps autosave closed.
+  // tabs. Unreadable tabs stay in the envelope; an unreadable envelope keeps autosave closed.
   useEffect(() => {
     if (documentSessionHydratedRef.current) {
       return undefined;
@@ -8354,24 +8365,28 @@ export function MainWindow({
             && documentIsBlank(documentRef.current);
           const shellOpenFailure = shellOpenFailureRef.current;
           shellOpenFailureRef.current = undefined;
-          const sessions = envelope.tabs ?? [envelope];
-          const skipped = [...(envelope.unrestoredTabs ?? [])];
-          const restored = sessions.flatMap((session) => {
+          const skipped: unknown[] = [];
+          const restored = documentSessionRestoreCandidates(envelope).flatMap((rawTab, candidateIndex) => {
             try {
+              const session = parseDocumentSessionEnvelope(rawTab, true);
+              if (!session) throw new Error("Unreadable tab envelope");
               const opened = openNativeDocument(session.contents);
               const resolved = resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              return [{ session, opened, resolved, history, id: crypto.randomUUID() }];
+              return [{ session, opened, resolved, history, candidateIndex, id: crypto.randomUUID() }];
             } catch {
-              skipped.push(rawDocumentSessionTab(session));
+              skipped.push(rawTab);
               return [];
             }
           });
-          if (!restored.length) throw new Error("No readable document tabs");
           unrestoredSessionTabsRef.current = skipped;
-          const restoreNotice = skipped.length
-            ? `; ${skipped.length} ${skipped.length === 1 ? "tab could" : "tabs could"} not be restored` : "";
+          setUnrestoredSessionTabCount(skipped.length);
+          const restoreNotice = unrestoredTabsNotice(skipped.length);
+          if (!restored.length) {
+            setStatus(`Could not restore the last session${restoreNotice}`);
+            return;
+          }
           const restoredTabs = restored.map(({ id, session }) => ({ id, title: session.displayName }));
           let tabs: Array<{ id: string; title: string }> = restoredTabs;
           if (!pristine) {
@@ -8397,7 +8412,7 @@ export function MainWindow({
           documentTabsRef.current = tabs;
           setDocumentTabs(tabs);
           if (pristine) {
-            const selected = restored.find(({ session }) => session === sessions[envelope.activeTabIndex ?? 0]) ?? restored[0]!;
+            const selected = restored.find(({ candidateIndex }) => candidateIndex === (envelope.activeTabIndex ?? 0)) ?? restored[0]!;
             installDocumentTab(selected.id);
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
         };
@@ -8642,6 +8657,89 @@ export function MainWindow({
       }
     });
   }, []);
+
+  const updateUnrestoredTabNotices = useCallback((previousCount: number) => {
+    const previousNotice = unrestoredTabsNotice(previousCount);
+    if (!previousNotice) return;
+    const notice = unrestoredTabsNotice(unrestoredSessionTabsRef.current.length);
+    // Switching back to a restored tab must not resurrect an obsolete recovery notice.
+    for (const [id, snapshot] of documentTabSnapshotsRef.current) {
+      documentTabSnapshotsRef.current.set(id, { ...snapshot, status: snapshot.status.replace(previousNotice, notice) });
+    }
+  }, []);
+
+  const saveUnrestoredTabs = useCallback(async () => {
+    if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
+    unrestoredTabFlowRunningRef.current = true;
+    let saved = 0;
+    let canceled = false;
+    const failures: string[] = [];
+    try {
+      const carried = [...unrestoredSessionTabsRef.current];
+      for (const [index, rawTab] of carried.entries()) {
+        const name = unrestoredTabDisplayName(rawTab, index);
+        try {
+          const contents = unrestoredTabContents(rawTab);
+          let filename = nativePathBasename(name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "");
+          if (!filename) filename = `Unrestored tab ${index + 1}`;
+          if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) filename = `_${filename}`;
+          const extension = filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? "chemdraft";
+          if (!/\.[a-z0-9]+$/i.test(filename)) filename += `.${extension}`;
+          const path = await pickNativeSavePath(filename, { title: `Save Unrestored Tab — ${name}`, extension });
+          if (!path) {
+            canceled = true;
+            break;
+          }
+          // Write exactly the chosen path: changing its extension after the save prompt could
+          // overwrite a different file which the picker never asked the user about.
+          await writeNativeTextFile(path, contents);
+          const previousCount = unrestoredSessionTabsRef.current.length;
+          const position = unrestoredSessionTabsRef.current.indexOf(rawTab);
+          if (position >= 0) unrestoredSessionTabsRef.current.splice(position, 1);
+          setUnrestoredSessionTabCount(unrestoredSessionTabsRef.current.length);
+          saved += 1;
+          await writeDocumentSessionNow({ strict: true });
+          updateUnrestoredTabNotices(previousCount);
+        } catch (error) {
+          failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      setStatus(`Saved ${saved} unrestored ${saved === 1 ? "tab" : "tabs"}; ${unrestoredSessionTabsRef.current.length} remain in the session${canceled ? " (save canceled)" : ""}${failures.length ? `. Save failed: ${failures.join("; ")}` : ""}`);
+    } finally {
+      unrestoredTabFlowRunningRef.current = false;
+    }
+  }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
+
+  const discardUnrestoredTabs = useCallback(async () => {
+    if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
+    unrestoredTabFlowRunningRef.current = true;
+    const carried = [...unrestoredSessionTabsRef.current];
+    try {
+      const text = `Discard ${carried.length} unrestored ${carried.length === 1 ? "tab" : "tabs"}?\n\n${carried.map(unrestoredTabDisplayName).join("\n")}\n\nTheir saved document data will be removed from the session. This cannot be undone.`;
+      const confirmed = await new Promise<boolean>((resolve) => {
+        setDiscardUnrestoredTabsPrompt({ text, decide: (discard) => {
+          setDiscardUnrestoredTabsPrompt(undefined);
+          resolve(discard);
+        } });
+      });
+      if (!confirmed) {
+        setStatus("Discard canceled; unrestored tabs remain in the session");
+        return;
+      }
+      unrestoredSessionTabsRef.current = [];
+      setUnrestoredSessionTabCount(0);
+      await writeDocumentSessionNow({ strict: true });
+      updateUnrestoredTabNotices(carried.length);
+      setStatus(`Discarded ${carried.length} unrestored ${carried.length === 1 ? "tab" : "tabs"}`);
+    } catch (error) {
+      // A failed session write is not a completed discard. Keep the data available to retry.
+      unrestoredSessionTabsRef.current = carried;
+      setUnrestoredSessionTabCount(carried.length);
+      setStatus(`Discard failed; unrestored tabs remain in the session: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      unrestoredTabFlowRunningRef.current = false;
+    }
+  }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
 
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
     const savingTabId = activeDocumentTabIdRef.current;
@@ -8982,6 +9080,8 @@ export function MainWindow({
         if (action.id === "document.saveAs") {
           await saveCurrentDocument(true);
         }
+        if (action.id === "document.saveUnrestoredTabs") await saveUnrestoredTabs();
+        if (action.id === "document.discardUnrestoredTabs") await discardUnrestoredTabs();
         if (action.id === "clipboard.paste") {
           await pasteClipboard();
         }
@@ -9568,6 +9668,8 @@ export function MainWindow({
     startTextObjectEdit,
     runMolecularProperties,
     saveCurrentDocument,
+    saveUnrestoredTabs,
+    discardUnrestoredTabs,
     selectAllCanvasObjects,
     selectedNativeMoleculePart,
     setHoveredNativeAtomElement,
@@ -18288,6 +18390,7 @@ export function MainWindow({
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
+        hasUnrestoredTabs: unrestoredSessionTabCount > 0,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
         keybindingScheme
@@ -18299,6 +18402,7 @@ export function MainWindow({
       canRedo,
       document.selection.objectIds.length,
       quickActions,
+      unrestoredSessionTabCount,
       keybindingScheme,
       selectedMolecule,
       visibleToolsetIds,
@@ -18629,6 +18733,39 @@ export function MainWindow({
           })
         : null}
 
+      {discardUnrestoredTabsPrompt ? (
+        <div role="dialog" aria-modal="true" aria-label="Discard Unrestored Tabs" style={exportDialogBackdropStyle}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              discardUnrestoredTabsPrompt.decide(false);
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              // Only an explicitly focused button may discard; the initial focus is Cancel.
+              const focused = globalThis.document.activeElement;
+              if (focused instanceof HTMLButtonElement && event.currentTarget.contains(focused)) focused.click();
+              else discardUnrestoredTabsPrompt.decide(false);
+            }
+            if (event.key === "Tab") {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+              const next = buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length];
+              event.preventDefault();
+              next?.focus();
+            }
+          }}>
+          <section style={exportDialogPanelStyle}>
+            <h2 style={exportDialogTitleStyle}>Discard Unrestored Tabs</h2>
+            <p style={{ ...exportDialogHintStyle, whiteSpace: "pre-wrap" }}>{discardUnrestoredTabsPrompt.text}</p>
+            <div style={exportDialogFooterStyle}>
+              <button type="button" autoFocus onClick={() => discardUnrestoredTabsPrompt.decide(false)}>Cancel</button>
+              <button type="button" onClick={() => discardUnrestoredTabsPrompt.decide(true)}>Discard</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {closeTabPrompt ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
@@ -29956,12 +30093,15 @@ async function pickNativeOpenPath(): Promise<string | undefined> {
   return typeof selected === "string" ? selected : undefined;
 }
 
-async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
+async function pickNativeSavePath(
+  defaultPath: string,
+  options?: { title: string; extension: string }
+): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
-    title: "Save ChemDraft Document",
+    title: options?.title ?? "Save ChemDraft Document",
     defaultPath,
-    filters: [{ name: "ChemDraft", extensions: ["chemdraft"] }]
+    filters: [{ name: options ? "Saved document" : "ChemDraft", extensions: [options?.extension ?? "chemdraft"] }]
   });
   return selected ?? undefined;
 }
