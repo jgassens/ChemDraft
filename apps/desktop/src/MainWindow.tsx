@@ -1575,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.21.15-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8390,8 +8390,8 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
-  // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
-  // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
+  // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
+  // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
     if (!isDesktopRuntime()) {
       return undefined;
