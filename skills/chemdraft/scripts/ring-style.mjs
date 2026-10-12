@@ -24,6 +24,9 @@
 //                 Me) and <name>-style.json (layout, moves, ring letters, colours, H and Me
 //                 added, warnings). Each molecule and its decorations form one native group,
 //                 so moving, copying, deleting or transforming it keeps the figure together.
+//                 The CLI accepts exactly one molecule per document: its layout, figure and
+//                 identity checks use one PubChem reference. Style separate documents for a
+//                 multi-molecule figure; the exported style() function can style each molecule.
 //                 Before styling it
 //                   1. compares layouts: ChemDraft's build, ChemDraft's layout of the canonical
 //                      SMILES, and PubChem's 2D record (atoms matched to the document's, wedges
@@ -1330,6 +1333,13 @@ function arrange(mol, buildMol, opts, tools) {
   };
 }
 
+function allocateObjectId(usedIds, base) {
+  let id = base, suffix = 2;
+  while (usedIds.has(id)) id = `${base}-${suffix++}`;
+  usedIds.add(id);
+  return id;
+}
+
 export function style(doc, buildMol, options = {}, tools = {}) {
   const opts = { fillOpacity: 0.9, letterSizePx: 20, letterFont: "Times New Roman, Times, serif", fusionH: true, methyls: "ring", ...options };
   const page = doc.pages.find((p) => p.objects.some((o) => o.id === buildMol.objectId)) ?? doc.pages[0];
@@ -1337,7 +1347,8 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   if (!mol) fail("No molecule in the document");
   // Native groups reference the flat page objects; never nest or reorder the artwork.
   // Track only this molecule's new decorations, leaving unrelated page art alone.
-  const originalIds = new Set(page.objects.map((o) => o.id));
+  const usedIds = new Set(doc.pages.flatMap((p) => p.objects.map((o) => o.id)));
+  const fills = [];
   mol.style ??= {};
   const layout = arrange(mol, buildMol, opts, tools);
   const xs = mol.atoms.map((a) => a.x), ys = mol.atoms.map((a) => a.y);
@@ -1362,39 +1373,43 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   for (const [L, r] of outer) {
     mol.style.ringStyles[r.ringKey] = { fillColor: "none" };
     const xs = r.poly.map((p) => p.x), ys = r.poly.map((p) => p.y);
-    page.objects.splice(page.objects.indexOf(mol), 0, { id: `ring-fill-${L}`, type: "graphic", graphicKind: "path", rotation: 0,
+    const fill = { id: allocateObjectId(usedIds, `ring-fill-${mol.id}-${L}`), type: "graphic", graphicKind: "path", rotation: 0,
       x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys),
       style: { fillColor: colours.get(r), fillOpacity: opts.fillOpacity, strokeColor: colours.get(r), strokeWidth: 0.5, strokeOpacity: 0 },
-      data: { artPathKind: "polyline", pathClosed: true, pathNodes: r.poly.map((p) => ({ point: { x: p.x, y: p.y } })) } });
-    notes.push(`Ring ${L}'s outline takes in part of a smaller lettered ring, so its fill is a path object under the molecule (ring-fill-${L}) and the smaller ring shows on top; it is grouped with the molecule. Ungroup before editing individual atoms; the path does not follow atom edits.`);
+      data: { artPathKind: "polyline", pathClosed: true, pathNodes: r.poly.map((p) => ({ point: { x: p.x, y: p.y } })) } };
+    fills.push(fill);
+    page.objects.splice(page.objects.indexOf(mol), 0, fill);
+    notes.push(`Ring ${L}'s outline takes in part of a smaller lettered ring, so its fill is a path object under the molecule (${fill.id}) and the smaller ring shows on top; it is grouped with the molecule. Ungroup before editing individual atoms; the path does not follow atom edits.`);
   }
   mol.style.atomLabelShowTerminalCarbonsByAtomId = { ...(mol.style.atomLabelShowTerminalCarbonsByAtomId ?? {}), ...Object.fromEntries(methyls.map((a) => [a.id, true])) };
 
+  const letterIds = new Map(letters.map(([L]) => [L, allocateObjectId(usedIds, `ring-letter-${mol.id}-${L}`)]));
+  const groupId = allocateObjectId(usedIds, `ring-style-group-${mol.id}`);
   const variant = (meIds, carbon) => {
     const copy = structuredClone(doc);
     const cpage = copy.pages[doc.pages.indexOf(page)];
     const cmol = cpage.objects.find((o) => o.id === mol.id);
+    const letterObjects = [];
     const placed = placeLetters(model(cmol, buildMol), letters.map(([L, r]) => [L, r]), opts, meIds, carbon);
     for (const p of placed.filter((x) => !x.missing)) {
       const fill = colours.get(p.ring), w = 1.4 * p.size;
-      cpage.objects.push({ id: `ring-letter-${p.letter}`, type: "text", text: p.letter, spans: [], rotation: 0,
+      const text = { id: letterIds.get(p.letter), type: "text", text: p.letter, spans: [], rotation: 0,
         x: p.x - w / 2, y: p.y - 0.64 * p.size, width: w, height: 1.25 * p.size,
-        style: { fontSizePx: p.size, fontWeight: 700, fontStyle: "italic", textAlign: "center", fontFamily: opts.letterFont, color: letterColour(fill, opts.fillOpacity) } });
+        style: { fontSizePx: p.size, fontWeight: 700, fontStyle: "italic", textAlign: "center", fontFamily: opts.letterFont, color: letterColour(fill, opts.fillOpacity) } };
+      letterObjects.push(text);
+      cpage.objects.push(text);
     }
     const labels = colourLabelsOnFills(model(cmol, buildMol), letters, colours, opts.fillOpacity, meIds, carbon);
     for (const a of cmol.atoms) if (meIds.has(a.id)) a.element = "Me";
-    const children = cpage.objects.filter((o) => o.id === mol.id || !originalIds.has(o.id));
-    const usedIds = new Set(copy.pages.flatMap((p) => p.objects.map((o) => o.id)));
-    let id = `ring-style-group-${mol.id}`, suffix = 2;
-    while (usedIds.has(id)) id = `ring-style-group-${mol.id}-${suffix++}`;
-    // The app resolves group bounds from childObjectIds, not the stored wrapper frame.
-    // render-document conservatively crops around stored non-molecule/text frames using
-    // their diagonal radius, even for invisible groups. A zero-size wrapper at an existing
-    // atom keeps that crop byte-identical without changing any child geometry or paint order.
-    cpage.objects.push({ id, type: "group", x: cmol.atoms[0].x, y: cmol.atoms[0].y,
-      width: 0, height: 0,
+    const children = [...fills.map((fill) => cpage.objects.find((o) => o.id === fill.id)), cmol, ...letterObjects];
+    // The same union of child frames used by groups made in the app. The invisible wrapper
+    // does not contribute to render-document's visual bounds.
+    const x = Math.min(...children.map((o) => o.x)), y = Math.min(...children.map((o) => o.y));
+    cpage.objects.push({ id: groupId, type: "group", x, y,
+      width: Math.max(...children.map((o) => o.x + o.width)) - x,
+      height: Math.max(...children.map((o) => o.y + o.height)) - y,
       rotation: 0, style: {}, childObjectIds: children.map((o) => o.id) });
-    copy.selection = { pageId: cpage.id, objectIds: [id] };
+    copy.selection = { pageId: cpage.id, objectIds: [groupId] };
     return { copy, placed, labels };
   };
   const carbon = variant(new Set(), carbonLabels);
@@ -1411,7 +1426,7 @@ export function style(doc, buildMol, options = {}, tools = {}) {
   const report = {
     letters: letters.map(([L, r]) => {
       const at = picture.placed.find((p) => p.letter === L && !p.missing);
-      return { letter: L, ringKey: r.ringKey, ring: label(r), fill: colours.get(r), letterColour: letterColour(colours.get(r), opts.fillOpacity),
+      return { letter: L, objectId: letterIds.get(L), ringKey: r.ringKey, ring: label(r), fill: colours.get(r), letterColour: letterColour(colours.get(r), opts.fillOpacity),
         letterAt: at ? { x: at.x, y: at.y, size: at.size, clearancePx: at.clearancePx } : null };
     }),
     unlettered: rings.filter((r) => !letters.some(([, s]) => s === r)).map(label),
@@ -1817,7 +1832,11 @@ function runStyle(dir, name, optionsFile, checkout) {
   if (!build.ok) fail(`The document build failed: ${JSON.stringify(build.error ?? build.warnings)}`);
   const docFile = build.document && fs.existsSync(build.document) ? build.document : path.join(dir, `${name}.json`);
   const options = optionsFile ? readJson(optionsFile) : {};
-  const doc = readJson(docFile), buildMol = build.molecules[0];
+  const doc = readJson(docFile);
+  if (build.molecules?.length !== 1 || doc.pages.flatMap((p) => p.objects).filter((o) => o.type === "molecule").length !== 1) {
+    fail("style accepts exactly one molecule per document: layout, figure and identity checks use one PubChem reference; style separate documents for a multi-molecule figure");
+  }
+  const buildMol = build.molecules[0];
   const cli = chemdraftCli(checkout);
   try {
     const { reference, verify } = identityVerifier(cli.identity, doc, buildMol.objectId, cli.inchiKey);
@@ -1940,7 +1959,7 @@ function documentFaults(dir, name, renders) {
     const m = model(mol, buildMol), rings = describeRings(m, buildMol.rings);
     const letters = report.letters.map((l) => [l.letter, rings.find((r) => r.ringKey === l.ringKey)]).filter(([, r]) => r);
     const placed = report.letters.map((l) => {
-      const t = objects.find((o) => o.id === `ring-letter-${l.letter}`);
+      const t = objects.find((o) => o.id === (l.objectId ?? `ring-letter-${l.letter}`));
       return t ? { letter: l.letter, size: t.style?.fontSizePx ?? 16 } : { letter: l.letter, missing: true };
     });
     for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));

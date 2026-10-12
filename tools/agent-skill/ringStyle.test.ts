@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GroupObjectSchema } from "@chemdraft/chem-core";
+import { runCli } from "../../packages/chemdraft-cli/src/cli";
+import { svgToPng } from "../../packages/chemdraft-cli/src/document";
 import {
   deleteSelectedDocumentObjects, duplicateSelectedDocumentObjects, moveDocumentObjects,
   rotateSelectedDocumentObjects90, selectDocumentObject, selectionBounds, ungroupSelectedDocumentObjects
@@ -145,6 +147,10 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
         expect(GroupObjectSchema.safeParse(group).success).toBe(true);
         const artwork = page.objects.filter((o: Json) => o.type !== "group");
         expect(group.childObjectIds).toEqual(artwork.map((o: Json) => o.id));
+        const bounds = selectionBounds(page.objects, group.childObjectIds)!;
+        expect(group).toMatchObject({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
+        expect(group.width).toBeGreaterThan(0);
+        expect(group.height).toBeGreaterThan(0);
         // Includes the intentional outer-ring paths, even though their molecule fill is "none".
         for (const fill of artwork.filter((o: Json) => o.id.startsWith("ring-fill-"))) {
           expect(group.childObjectIds).toContain(fill.id);
@@ -168,6 +174,43 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       expect(copy.pages[0].objects.find((o: Json) => o.type === "group").childObjectIds).not.toContain(caption.id);
       expect(copy.pages[0].objects.find((o: Json) => o.id === caption.id)).toEqual(caption);
     }
+  });
+
+  it.each(["carbon", "picture"])("keeps two molecules' %s decorations unique and in their own groups", (kind) => {
+    const { build, doc } = fixture("morphine");
+    const first = molecule(doc), second = structuredClone(first);
+    second.id = "second-molecule";
+    second.x += 400;
+    for (const atom of second.atoms) atom.x += 400;
+    const secondBuild = { ...build, objectId: second.id };
+    const caption = { id: `ring-letter-${second.id}-A`, type: "text", text: "Unrelated caption",
+      x: 0, y: 0, width: 80, height: 20, rotation: 0, style: {}, spans: [] };
+    doc.pages[0].objects.push(second, caption);
+    const originalIds = new Set(doc.pages[0].objects.map((o: Json) => o.id));
+    const one = ringStyle.style(doc, build)[kind as "carbon" | "picture"];
+    const firstGroup = one.pages[0].objects.find((o: Json) => o.type === "group");
+    const firstArtwork = structuredClone(one.pages[0].objects.filter((o: Json) => firstGroup.childObjectIds.includes(o.id)));
+    const afterFirstIds = new Set(one.pages[0].objects.map((o: Json) => o.id));
+    const two = ringStyle.style(one, secondBuild)[kind as "carbon" | "picture"];
+    const objects = two.pages[0].objects, groups = objects.filter((o: Json) => o.type === "group");
+    expect(groups).toHaveLength(2);
+    expect(new Set(objects.map((o: Json) => o.id)).size).toBe(objects.length);
+    const secondGroup = groups.find((o: Json) => o.id !== firstGroup.id);
+    expect(groups.find((o: Json) => o.id === firstGroup.id)).toEqual(firstGroup);
+    expect(objects.filter((o: Json) => firstGroup.childObjectIds.includes(o.id))).toEqual(firstArtwork);
+    for (const [group, molId, previous] of [[firstGroup, first.id, originalIds], [secondGroup, second.id, afterFirstIds]]) {
+      const owned = objects.filter((o: Json) => group.childObjectIds.includes(o.id));
+      const created = objects.filter((o: Json) => o.type !== "group" && !previous.has(o.id) &&
+        (group === secondGroup || afterFirstIds.has(o.id)));
+      expect(group.childObjectIds).toEqual([ ...created.filter((o: Json) => o.type === "graphic").map((o: Json) => o.id),
+        molId, ...created.filter((o: Json) => o.type === "text").map((o: Json) => o.id) ]);
+      expect(owned.filter((o: Json) => o.type === "molecule").map((o: Json) => o.id)).toEqual([molId]);
+      expect(owned.some((o: Json) => o.type === "graphic")).toBe(true);
+      expect(owned.filter((o: Json) => o.type === "text")).toHaveLength(firstArtwork.filter((o: Json) => o.type === "text").length);
+      expect(group.childObjectIds).not.toContain(caption.id);
+    }
+    expect(firstGroup.childObjectIds.some((id: string) => secondGroup.childObjectIds.includes(id))).toBe(false);
+    expect(objects.find((o: Json) => o.id === caption.id)).toEqual(caption);
   });
 
   it("uses child bounds for native group move, copy, delete and rotation despite its invisible frame", () => {
@@ -195,44 +238,34 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
     expect(rotated.pages[0]!.objects.filter((o) => o.type !== "group")).toEqual(rotatedFlat.pages[0]!.objects);
   });
 
-  it.skipIf(!cliReady)("renders native groups to identical CLI SVG/PNG bytes and reads the same chemistry", async () => {
-    const result = await runRingStyleChild<Json[]>(`
-      const fs = await import("node:fs"), { tmpdir } = await import("node:os");
-      const { spawnSync } = await import("node:child_process");
-      const temp = fs.mkdtempSync(join(tmpdir(), "ring-style-group-render-"));
-      const checkout = ${JSON.stringify(cliCheckout)};
-      const render = (doc, name) => {
-        const file = join(temp, name + ".json"), out = join(temp, name);
-        fs.writeFileSync(file, JSON.stringify(doc));
-        const run = spawnSync(process.execPath, [join(checkout, "node_modules", "tsx", "dist", "cli.mjs"),
-          join(checkout, "packages", "chemdraft-cli", "src", "cli.ts"), "render-document",
-          "--document", file, "--out", out, "--format", "both"], { cwd: checkout, encoding: "utf8", windowsHide: true });
-        if (run.status !== 0) throw new Error(run.stderr + run.stdout);
-        const line = JSON.parse(run.stdout.trim());
-        return { svg: fs.readFileSync(out + ".svg"), png: fs.readFileSync(out + ".png"), identity: line.molecules };
-      };
-      const results = [];
-      try {
-        for (const name of ["cholesterol", "morphine", "strychnine"]) {
-          const { doc, build } = fixture(name);
-          const styled = ringStyle.style(doc, build);
-          for (const kind of ["carbon", "picture"]) {
-            const grouped = styled[kind], flat = structuredClone(grouped);
-            for (const page of flat.pages) page.objects = page.objects.filter((o) => o.type !== "group");
-            flat.selection.objectIds = [];
-            const a = render(grouped, name + "-" + kind + "-group"), b = render(flat, name + "-" + kind + "-flat");
-            results.push({ name, kind, svgEqual: a.svg.equals(b.svg), pngEqual: a.png.equals(b.png),
-              groupedIdentity: a.identity, flatIdentity: b.identity });
-          }
+  it("matches the real 14459a46 SVG/PNG artwork and chemistry golden", async () => {
+    const golden = join(fixtures, "golden-14459a46");
+    const identities = JSON.parse(read(join(golden, "identity.json")));
+    // Embedded CTABs are checked by the identity golden; decoration IDs now include the molecule.
+    // Preserve every geometry, style, text, paint-order and viewport attribute in this comparison.
+    const artworkSvg = (svg: string) => svg.replace(/\sdata-structure="[^"]*"/g, "")
+      .replace(/data-object-id="ring-(fill|letter)-[^"]*"/g, 'data-object-id="ring-$1"');
+    const temp = mkdtempSync(join(tmpdir(), "ring-style-golden-"));
+    try {
+      for (const name of ["cholesterol", "morphine", "strychnine"]) {
+        const { doc, build } = fixture(name), styled = ringStyle.style(doc, build);
+        for (const kind of ["carbon", "picture"] as const) {
+          const base = `${name}-${kind}`, file = join(temp, base + ".json"), out = join(temp, base);
+          writeFileSync(file, JSON.stringify(styled[kind]));
+          const stdout: string[] = [], stderr: string[] = [];
+          const code = await runCli(["render-document", "--document", file, "--out", out, "--format", "both"],
+            { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) });
+          expect(code, stderr.join("\n") + stdout.join("\n")).toBe(0);
+          const previous = read(join(golden, base + ".svg"));
+          expect(artworkSvg(read(out + ".svg")), base).toBe(artworkSvg(previous));
+          // Rasterize the actual old SVG with this host's fonts, so macOS and Windows can both
+          // compare the old and current picture without cross-platform font substitutions.
+          expect(readFileSync(out + ".png").equals(Buffer.from(svgToPng(previous, 600))), base).toBe(true);
+          expect(JSON.parse(stdout[0]!).molecules, base).toEqual(
+            identities.find((row: Json) => row.name === name && row.kind === kind).molecules);
         }
-        return results;
-      } finally { fs.rmSync(temp, { recursive: true, force: true }); }
-    `, cliCheckout!);
-    for (const row of result) {
-      expect(row.svgEqual, `${row.name} ${row.kind}`).toBe(true);
-      expect(row.pngEqual, `${row.name} ${row.kind}`).toBe(true);
-      expect(row.groupedIdentity).toEqual(row.flatIdentity);
-    }
+      }
+    } finally { rmSync(temp, { recursive: true, force: true }); }
   }, 180_000);
 
   it("is dependency-free Node: only node: built-ins, no shell", () => {
@@ -970,6 +1003,20 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       expect(result.stderr).toMatch(/style needs --checkout/);
     }, 120_000);
 
+    it("rejects multi-molecule CLI input before styling a partial figure", async () => {
+      const { doc, build } = fixture("morphine");
+      const second = structuredClone(molecule(doc));
+      second.id = "second-molecule";
+      doc.pages[0].objects.push(second);
+      writeFileSync(join(dir, "multiple.json"), JSON.stringify(doc));
+      writeFileSync(join(dir, "multiple-build.jsonl"), JSON.stringify({ name: "multiple", ok: true,
+        molecules: [build, { ...build, objectId: second.id }] }));
+      const result = await run("style", dir, "multiple", "--checkout", root);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("exactly one molecule per document");
+      expect(existsSync(join(dir, "multiple-carbon.json"))).toBe(false);
+    });
+
     it.skipIf(!cliReady)("writes the carbon and picture documents from the build output", async () => {
       const result = await run("style", dir, "phenyldecalin", "--checkout", cliCheckout!);
       expect(result.stderr).toBe("");
@@ -1042,6 +1089,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
       const result = await run("--help");
       expect(result.status).toBe(0);
       for (const text of ["ring-style.mjs pubchem", "ring-style.mjs check", "Figure checks", "layout", "terminal ring"]) expect(result.stdout).toContain(text);
+      expect(result.stdout).toContain("exactly one molecule per document");
     }, 120_000);
 
     /** A finished run's files for `check`, written from the styled fixture: one carbon and one
