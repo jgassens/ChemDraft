@@ -374,7 +374,12 @@ describe("ChemDraft desktop shell", () => {
 
   it("focuses an analysis window only when the user asked for it", () => {
     // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
-    expect(desktopNativeSource).toContain(".focused(request.focus)");
+    expect(desktopNativeSource).toContain("focused_on_build: false,");
+    expect(desktopNativeSource).toContain("focus_after_show: self.focus && !deferred,");
+    expect(desktopNativeSource).toContain(".focused(presentation.focused_on_build)");
+    expect(desktopNativeSource).toContain(
+      "configure_analysis_window(&window, presentation.focus_after_show)"
+    );
     expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
     expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
     // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
@@ -453,7 +458,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Cmd+N then immediate Cmd+W can hide the window");
     expect(mainWindowSource).toContain("autosave keeps both tabs, so nothing is lost");
     const checklist = readFileSync("docs/manual-stress-checklist.md", "utf8");
-    expect(checklist).toContain("floating native palettes remain above the dialog");
+    expect(checklist).toContain("native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes");
     expect(checklist).not.toContain("modal hides native palettes");
   });
 
@@ -480,7 +485,7 @@ describe("ChemDraft desktop shell", () => {
 
     // The gate opens only after parser and document restoration finish. The restore helper
     // also returns cleanly for first-run and pristine-blank sessions.
-    const restoreLine = lines.findIndex((line) => line.trim() === "restore();");
+    const restoreLine = lines.findIndex((line) => line.trim() === "await restore();");
     expect(restoreLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeGreaterThan(restoreLine);
     expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');
@@ -1875,7 +1880,8 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps native template dialogs on the fast path", () => {
     expect(mainWindowSource).toContain("prewarmNativeDialogModule()");
-    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"@tauri-apps/plugin-dialog\")");
+    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"./nativeFileDialog\")");
+    expect(mainWindowSource).toContain("dialogs.prewarmNativeFileDialogs()");
     expect(mainWindowSource).toContain("const { open } = await loadTauriDialogModule();");
     expect(mainWindowSource).toContain("const { save } = await loadTauriDialogModule();");
 
@@ -1889,8 +1895,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("recommendImportedPageFit(resolvedOpen.document)");
     expect(mainWindowSource).toContain("<ImportedPageFitPrompt");
     expect(mainWindowSource).toContain("applyImportedPageFitRecommendation(current, pageFitPrompt)");
-    expect(mainWindowSource).toContain("Keep Current Page");
-    expect(mainWindowSource).toContain("Use {recommendedLabel}");
+    expect(mainWindowSource).toContain(`{ id: "keep", label: "Cancel", cancel: true }`);
+    expect(mainWindowSource).toContain("Use {recommendedLabel} Page");
   });
 
   it("also offers the page-size choice when a pasted structure overflows the current page", () => {

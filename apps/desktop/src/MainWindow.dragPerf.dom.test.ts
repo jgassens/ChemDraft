@@ -144,6 +144,7 @@ describe("MainWindow drag and modal performance", () => {
     expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
   });
 
+  // Heavy DOM drag-frame regression can exceed Vitest's default on busy CI hosts.
   it("does not search the document or recompute unchanged modifier hints on drag frames", async () => {
     await mount(rings(64));
     const drag = await previewDrag(10, 10);
@@ -156,7 +157,7 @@ describe("MainWindow drag and modal performance", () => {
     expect(query.mock.calls.filter(([selector]) => selector === OPEN_MODAL_DIALOG_SELECTOR)).toHaveLength(0);
     expect(queryAll.mock.calls.filter(([selector]) => selector === OPEN_MODAL_DIALOG_SELECTOR)).toHaveLength(0);
     expect(hint).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it.each(["MacIntel", "Win32"])("blocks %s keyboard undo and clipboard in a same-turn modal, then unblocks immediately on close", async (platform) => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform });

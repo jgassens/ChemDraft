@@ -1,3 +1,4 @@
+import { nativePrompt } from "./nativePrompt";
 /**
  * Bug and crash reports, sent as an email the user reviews in their own mail client.
  *
@@ -231,14 +232,15 @@ export async function currentReportEnvironment(
   return { appVersion, buildStamp, platform, userAgent };
 }
 
-/** Asks before drafting a crash report: a native dialog on desktop, `confirm` in the browser. */
-export async function askToSendCrashReport(isDesktop: boolean, brief: string, earlierRun: boolean): Promise<boolean> {
+/** Asks before drafting a crash report using the shared native/web prompt. */
+export async function askToSendCrashReport(_isDesktop: boolean, brief: string, earlierRun: boolean): Promise<boolean> {
   const text = earlierRun
     ? `ChemDraft ran into a serious error last time (${brief}).\n\nWould you like to email a crash report? Your email program will open with the report so you can read it before sending.`
     : `ChemDraft ran into an error (${brief}).\n\nWould you like to email a crash report? Your email program will open with the report so you can read it before sending. Saving your work first is a good idea.`;
-  if (isDesktop) {
-    const { confirm } = await import("@tauri-apps/plugin-dialog");
-    return confirm(text, { title: "Send a crash report?", okLabel: "Email Report", cancelLabel: "Not Now", kind: "warning" });
-  }
-  return window.confirm(text);
+  return await nativePrompt({
+    title: "Send a crash report?",
+    message: text,
+    kind: "warning",
+    choices: [{ id: "email", label: "Email Report" }, { id: "cancel", label: "Cancel", cancel: true }]
+  }) === "email";
 }
