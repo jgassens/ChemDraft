@@ -208,6 +208,54 @@ describe.each(["macos", "windows"] as const)("Text tool on shapes (%s)", platfor
     expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   });
 
+  function rotatedTextDocument(rotation: number) {
+    const initial = structuredClone(overlappingTextDocument("filled rectangle"));
+    // Cover both the rotated text and its unrotated box with the underlying shape.
+    Object.assign(initial.pages[0].objects[0]!, { x: 280, y: 220, width: 160, height: 140 });
+    Object.assign(initial.pages[0].objects[1]!, { x: 300, y: 280, width: 100, height: 20, rotation });
+    return selectDocumentObjects(initial, initial.pages[0].id, []);
+  }
+
+  it.each([
+    { rotation: 90, point: { x: 350, y: 245 } },
+    { rotation: 45, point: { x: 318, y: 258 } }
+  ])("edits painted text rotated $rotation degrees when the shape receives the press", async ({ rotation, point }) => {
+    const initial = rotatedTextDocument(rotation);
+    const background = initial.pages[0].objects[0]!;
+    const text = initial.pages[0].objects[1]!;
+    await render(initial);
+    await press(target(`[data-object-id="${background.id}"] .graphic-glyph-hit-target`), point);
+    expect(snapshot().pages[0].objects.filter(object => object.type === "text")).toHaveLength(1);
+    expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+    expect(snapshot().selection.objectIds).toEqual([text.id]);
+    const editor = target(".text-object-editor") as HTMLTextAreaElement;
+    expect(editor.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(text.id);
+    expect(editor.value).toBe("Existing");
+    expect(document.activeElement).toBe(editor);
+    expect(editor.selectionStart).toBe(editor.value.length);
+    expect(editor.selectionEnd).toBe(editor.value.length);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
+  it.each([
+    { rotation: 90, point: { x: 339, y: 290 } },
+    { rotation: 45, point: { x: 366, y: 290 } }
+  ])("creates text just outside the $rotation degree text despite being inside its unrotated box", async ({ rotation, point }) => {
+    const initial = rotatedTextDocument(rotation);
+    const background = initial.pages[0].objects[0]!;
+    await render(initial);
+    await press(target(`[data-object-id="${background.id}"] .graphic-glyph-hit-target`), point);
+    const texts = snapshot().pages[0].objects.filter(object => object.type === "text");
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toMatchObject({ x: point.x, y: point.y, text: "Text" });
+    expect(snapshot().pages[0].objects.slice(0, 2)).toEqual(initial.pages[0].objects);
+    expect(snapshot().selection.objectIds).toEqual([texts[1]!.id]);
+    expect(document.activeElement).toBe(target(".text-object-editor"));
+    await command(forceDocumentHistoryCommandId("edit.undo"));
+    expect(snapshot().pages[0].objects).toEqual(initial.pages[0].objects);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
   it("edits the last overlapping text in document order even under a later shape", async () => {
     let initial = overlappingTextDocument("filled rectangle");
     const background = initial.pages[0].objects[0]!;

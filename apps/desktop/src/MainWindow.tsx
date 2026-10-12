@@ -1590,7 +1590,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.12.00-opus";
+const CURRENT_BUILD_STAMP = "10.12.12.15-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -23683,7 +23683,19 @@ function textObjectAtPoint(
 ): TextObject | undefined {
   for (let index = objects.length - 1; index >= 0; index -= 1) {
     const object = objects[index];
-    if (object.type === "text" && pointInRect(point, documentObjectVisualBounds(object))) {
+    if (object.type !== "text") {
+      continue;
+    }
+    // Text's CSS box (and selection frame) rotates around its center. Test in that
+    // local frame, rather than the unrotated box or a larger rotated bounding box.
+    const rotationRad = degreesToRadians(-object.rotation);
+    const localPoint = Math.abs(object.rotation) < 0.001 ? point : rotatePointAroundCenter(
+      point,
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 },
+      Math.cos(rotationRad),
+      Math.sin(rotationRad)
+    );
+    if (pointInRect(localPoint, documentObjectVisualBounds(object))) {
       return object;
     }
   }
