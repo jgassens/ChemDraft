@@ -7758,6 +7758,10 @@ export function MainWindow({
     cancelMoleculeInspectorPreview();
     cancelSpin3dSession(undefined, { clearModelCache: true });
     // Releasing captures before clearing refs makes late pointer-up/cancel events harmless.
+    for (const [pointerId, owner] of pointerCaptureOwnersRef.current) {
+      if (owner.hasPointerCapture(pointerId)) owner.releasePointerCapture(pointerId);
+    }
+    pointerCaptureOwnersRef.current.clear();
     const pointerSessions = [nativeBondDragRef, nativePlacementDragRef, nativeBondEditDragRef,
       nativePartDragRef, objectDragRef, graphicCornerRadiusDragRef, graphicPathEditDragRef,
       graphicMarkerDragRef, graphicGradientDragRef, freehandArtDragRef, tapeMeasureDragRef,
