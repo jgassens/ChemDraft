@@ -2369,19 +2369,87 @@ export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX = (18 - 8) + 9 / 2 + 2;
 /** Local handle position; the true radius point stays unchanged for editing/readout. */
 export function nativeGraphicCornerRadiusHandlePoint(
   object: GraphicObject,
-  pageScale: number
+  pageScale: number,
+  page: { width: number; height: number }
 ): NativeArtPoint | undefined {
   const point = nativeGraphicCornerRadiusEditPoint(object);
   if (!point) {
     return undefined;
   }
+  const angle = object.rotation * Math.PI / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const rotate = (p: NativeArtPoint): NativeArtPoint => {
+    const dx = p.x - object.width / 2;
+    const dy = p.y - object.height / 2;
+    return {
+      x: (object.x + object.width / 2 + dx * cos - dy * sin) * pageScale,
+      y: (object.y + object.height / 2 + dx * sin + dy * cos) * pageScale
+    };
+  };
+  const project = (p: NativeArtPoint) => rotate(projectGraphicObjectPoint(object, p, { coordinateSpace: "local" }));
+  // Match documentObjectArtTransformFrameStyle: rotate the projected frame
+  // bounds, then place fixed-size, axis-aligned resize targets on its corners.
+  const bounds = planNativeArtVisual(object, { coordinateSpace: "local" }).frameBounds;
+  const corners = [
+    rotate({ x: bounds.x, y: bounds.y }),
+    rotate({ x: bounds.x + bounds.width, y: bounds.y }),
+    rotate({ x: bounds.x, y: bounds.y + bounds.height }),
+    rotate({ x: bounds.x + bounds.width, y: bounds.y + bounds.height })
+  ];
+  const left = Math.min(...corners.map(p => p.x));
+  const right = Math.max(...corners.map(p => p.x));
+  const top = Math.min(...corners.map(p => p.y));
+  const bottom = Math.max(...corners.map(p => p.y));
+  const resizeBoxes = [
+    { left: left - 8, right: left + 10, top: top - 8, bottom: top + 10 },
+    { left: right - 10, right: right + 8, top: top - 8, bottom: top + 10 },
+    { left: left - 8, right: left + 10, top: bottom - 10, bottom: bottom + 8 },
+    { left: right - 10, right: right + 8, top: bottom - 10, bottom: bottom + 8 }
+  ];
+  // The 9px button rotates with the visual shell, but is not plane-tilted.
+  const halfTarget = 4.5 * (Math.abs(cos) + Math.abs(sin));
+  const fits = (x: number): boolean => {
+    const p = project({ x, y: point.y });
+    const box = { left: p.x - halfTarget, right: p.x + halfTarget, top: p.y - halfTarget, bottom: p.y + halfTarget };
+    return box.left >= 0 && box.right <= page.width * pageScale &&
+      box.top >= 0 && box.bottom <= page.height * pageScale &&
+      resizeBoxes.every(target => box.right + 2 <= target.left || box.left - 2 >= target.right ||
+        box.bottom + 2 <= target.top || box.top - 2 >= target.bottom);
+  };
   const corner = projectGraphicObjectPoint(object, { x: 0, y: 0 }, { coordinateSpace: "local" });
-  const edgeUnit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
-  const edgeScale = Math.hypot(edgeUnit.x - corner.x, edgeUnit.y - corner.y);
-  const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / (pageScale * edgeScale);
-  // If two clearances cannot fit, continue outward along the same edge, away
-  // from all resize targets rather than crowding the opposite corner.
-  return { x: object.width < minimum * 2 ? -minimum : Math.max(point.x, minimum), y: point.y };
+  const unit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
+  const edgeScale = pageScale * Math.hypot(unit.x - corner.x, unit.y - corner.y);
+  if (edgeScale > 0.000001) {
+    const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / edgeScale;
+    // Advance by at most one screen pixel and check the actual projected boxes:
+    // distance alone does not guarantee clearance along a skewed edge.
+    const step = 1 / edgeScale;
+    const candidates = [
+      { start: Math.max(point.x, minimum), direction: 1, limit: object.width },
+      { start: -minimum, direction: -1, limit: -Infinity },
+      { start: object.width + minimum, direction: 1, limit: Infinity }
+    ];
+    for (const candidate of candidates) {
+      for (let i = 0; i < 4096; i++) {
+        const x = candidate.start + candidate.direction * i * step;
+        if (candidate.direction > 0 && x > candidate.limit) break;
+        if (fits(x)) return { x, y: point.y };
+        const p = project({ x, y: point.y });
+        const next = project({ x: x + candidate.direction * step, y: point.y });
+        // Once this ray has left the page while travelling away from it, no
+        // later target can fit; move straight to the next placement candidate.
+        if ((p.x - halfTarget < 0 && next.x <= p.x) ||
+          (p.x + halfTarget > page.width * pageScale && next.x >= p.x) ||
+          (p.y - halfTarget < 0 && next.y <= p.y) ||
+          (p.y + halfTarget > page.height * pageScale && next.y >= p.y)) break;
+      }
+    }
+  }
+  // No candidate fits (e.g. an edge on the page boundary or a collapsed
+  // projection). Fall back inside, as far from the corner as the shape allows;
+  // clearance and full visibility cannot be guaranteed in this case.
+  return { x: object.width / 2, y: point.y };
 }
 
 export type NativeGraphicLinearGradientHandleId = "start" | "end";

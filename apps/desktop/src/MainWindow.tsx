@@ -1576,7 +1576,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.03.10-opus";
+const CURRENT_BUILD_STAMP = "10.12.03.20-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -18684,7 +18684,9 @@ export function MainWindow({
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
-                      pageScale={viewport.scale}
+                      pageScale={selected && !inGroupSelection && object.type === "graphic" &&
+                        nativeGraphicCornerRadiusEditPoint(object) !== undefined
+                        ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
@@ -24995,7 +24997,7 @@ function DocumentObjectViewContent({
   layerIndex: number;
   pageWidth: number;
   pageHeight: number;
-  pageScale: number;
+  pageScale?: number;
   spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
@@ -26045,7 +26047,9 @@ function DocumentObjectViewContent({
     const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
       <GraphicCornerRadiusHandle
         object={object}
-        pageScale={pageScale}
+        pageScale={pageScale ?? 1}
+        pageWidth={pageWidth}
+        pageHeight={pageHeight}
         readout={graphicCornerRadiusReadout}
         counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
@@ -27094,6 +27098,8 @@ function graphicGradientHandleStatusName(
 function GraphicCornerRadiusHandle({
   object,
   pageScale,
+  pageWidth,
+  pageHeight,
   readout,
   counterRotationDegrees,
   onPointerDown,
@@ -27101,12 +27107,14 @@ function GraphicCornerRadiusHandle({
 }: {
   object: GraphicObject;
   pageScale: number;
+  pageWidth: number;
+  pageHeight: number;
   readout?: GraphicCornerRadiusReadoutState;
   counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusHandlePoint(object, pageScale);
+  const point = nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight });
   if (!point) {
     return null;
   }

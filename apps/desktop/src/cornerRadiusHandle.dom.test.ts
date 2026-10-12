@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import * as workflow from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -38,6 +39,7 @@ describe("square-corner radius and resize handles", () => {
       else Reflect.deleteProperty(HTMLElement.prototype, name);
     }
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   function page() { return container.querySelector<HTMLElement>(".page")!; }
@@ -52,10 +54,15 @@ describe("square-corner radius and resize handles", () => {
     Object.defineProperties(event, { pointerId: { value: pointerId }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
     target.dispatchEvent(event);
   }
-  async function render(width = 100, rotation = 0) {
-    const inserted = insertNativeArtGraphicObject(createPhase4Document("Square corner"), { x: 220, y: 180 }, "tool.art.rect");
+  async function render(width = 100, rotation = 0, radius = 0, withIdleObject = false) {
+    const initial = withIdleObject
+      ? insertNativeArtGraphicObject(createPhase4Document("Square corner"), { x: 400, y: 300 }, "tool.art.rect")
+      : createPhase4Document("Square corner");
+    const inserted = insertNativeArtGraphicObject(initial, { x: 220, y: 180 }, "tool.art.rect");
     objectId = inserted.selection.objectIds[0];
-    const document = applyPatch(inserted, { op: "updateObject", objectId, changes: { width, height: 100, rotation } });
+    const object = inserted.pages[0].objects.find(item => item.id === objectId)!;
+    if (object.type !== "graphic") throw new Error("Expected rectangle");
+    const document = applyPatch(inserted, { op: "updateObject", objectId, changes: { width, height: 100, rotation, data: { ...object.data, cornerRadiusPx: radius } } });
     await act(async () => root.render(createElement(MainWindow, { initialDocument: document, initialCrosshairsVisible: false, initialRulersVisible: false, initialPaletteMode: "hidden", nativePalette: true })));
     page().getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, width: 792, height: 612, right: 792, bottom: 612, toJSON: () => ({}) });
   }
@@ -67,6 +74,39 @@ describe("square-corner radius and resize handles", () => {
     const dy = -object.height / 2;
     return { x: object.x + object.width / 2 + dx * Math.cos(angle) - dy * Math.sin(angle), y: object.y + object.height / 2 + dx * Math.sin(angle) + dy * Math.cos(angle) };
   }
+
+  it("bails out of unselected object views on zoom while moving the selected radius handle", async () => {
+    // This helper is evaluated by DocumentObjectViewContent on every render,
+    // even for unselected graphics, so calls count view renders, not DOM writes.
+    const renderCounter = vi.spyOn(workflow, "nativeGraphicCornerRadiusEditPoint");
+    await render(100, 0, 0, true);
+    const idleId = container.querySelector<HTMLElement>(`.graphic-object:not([data-object-id="${objectId}"])`)!.dataset.objectId!;
+    expect(renderCounter.mock.calls.some(([object]) => object.id === idleId)).toBe(true);
+    const before = radiusHandle().style.left;
+    renderCounter.mockClear();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("view.zoomIn"); });
+    expect(renderCounter.mock.calls.filter(([object]) => object.id === idleId)).toHaveLength(0);
+    expect(radiusHandle().style.left).not.toBe(before);
+    expect(renderCounter.mock.calls.some(([object]) => object.id === objectId)).toBe(true);
+  });
+
+  it.each([[100, 0, 7, 3, 10], [100, 37, 7, 3, 10], [10, 0, 1, 2, 3],
+    [100, 0, 7, 100, 50], [10, 0, 1, 100, 5], [100, 37, 7, -100, 0]])(
+    "preserves starting radius and clamps relative travel (width %s, rotation %s, radius %s, travel %s)",
+    async (width, rotation, radius, travel, expected) => {
+      await render(width, rotation, radius);
+      const start = handlePoint();
+      await act(async () => dispatch(radiusHandle(), "pointerdown", start));
+      await act(async () => dispatch(page(), "pointermove", start));
+      expect(graphic().data.cornerRadiusPx).toBe(radius);
+      const angle = rotation * Math.PI / 180;
+      const end = { x: start.x + travel * Math.cos(angle), y: start.y + travel * Math.sin(angle) };
+      await act(async () => dispatch(page(), "pointermove", end));
+      expect(graphic().data.cornerRadiusPx).toBeCloseTo(expected);
+      await act(async () => dispatch(page(), "pointerup", end));
+      expect(graphic().data.cornerRadiusPx).toBeCloseTo(expected);
+    }
+  );
 
   it("leaves the top-left resize target centre clear and starts a resize there", async () => {
     await render();
