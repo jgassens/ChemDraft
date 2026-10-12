@@ -22,6 +22,10 @@ describe("anchored mechanism arrow interaction frame", () => {
   let originalResizeObserver: typeof ResizeObserver;
   let originalRequestAnimationFrame: typeof requestAnimationFrame;
   let originalCancelAnimationFrame: typeof cancelAnimationFrame;
+  const captureMethods = {
+    set: Element.prototype.setPointerCapture, release: Element.prototype.releasePointerCapture,
+    has: Element.prototype.hasPointerCapture
+  };
 
   beforeEach(() => {
     originalResizeObserver = globalThis.ResizeObserver;
@@ -30,6 +34,10 @@ describe("anchored mechanism arrow interaction frame", () => {
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     globalThis.requestAnimationFrame = (callback) => window.setTimeout(() => callback(Date.now()), 0);
     globalThis.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
+    // SVG handlers capture on their owning group, rather than the path clicked below.
+    Element.prototype.setPointerCapture = () => {};
+    Element.prototype.releasePointerCapture = () => {};
+    Element.prototype.hasPointerCapture = () => false;
     vi.spyOn(window, "confirm").mockReturnValue(false);
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
@@ -45,6 +53,9 @@ describe("anchored mechanism arrow interaction frame", () => {
     globalThis.ResizeObserver = originalResizeObserver;
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
+    Element.prototype.setPointerCapture = captureMethods.set;
+    Element.prototype.releasePointerCapture = captureMethods.release;
+    Element.prototype.hasPointerCapture = captureMethods.has;
     vi.restoreAllMocks();
   });
 
@@ -93,12 +104,11 @@ describe("anchored mechanism arrow interaction frame", () => {
       x: 0, y: 0, left: 0, top: 0, right: page.width, bottom: page.height,
       width: page.width, height: page.height, toJSON: () => ({})
     });
-    pageElement.setPointerCapture = () => {};
-    pageElement.releasePointerCapture = () => {};
-    pageElement.hasPointerCapture = () => false;
     const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
     const frame = () => container.querySelector<HTMLElement>(`.mechanism-arrow-object[data-object-id="${arrow.id}"]`)!;
-    const curve = () => container.querySelector<SVGPathElement>(`.page-svg-surface path[data-object-id="${arrow.id}"]`)!;
+    // Arrow paint lives in an ordered SVG run; its handles are portalled into chrome.
+    const controls = () => container.querySelector<HTMLElement>(`[data-object-controls="${arrow.id}"]`)!;
+    const curve = () => container.querySelector<SVGPathElement>(`[data-page-svg-object-visual="${arrow.id}"] path`)!;
     const boundsFromCurve = (document: ChemDraftDocument) => {
       const geometry = mechanismArrowGeometry(document.pages[0], arrow)!;
       expect(curve().getAttribute("d")).toBe(geometry.pathD);
@@ -114,22 +124,24 @@ describe("anchored mechanism arrow interaction frame", () => {
       expect(parseFloat(frame().style.top)).toBeCloseTo(bounds.y / page.height * 100, 8);
       expect(parseFloat(frame().style.width)).toBeCloseTo(bounds.width / page.width * 100, 8);
       expect(parseFloat(frame().style.height)).toBeCloseTo(bounds.height / page.height * 100, 8);
-      arrow.controlPoints.forEach((control, index) => {
-        const handle = frame().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`);
-        if (handle) {
+      expect(controls().style.left).toBe(frame().style.left);
+      expect(controls().style.top).toBe(frame().style.top);
+      expect(controls().style.width).toBe(frame().style.width);
+      expect(controls().style.height).toBe(frame().style.height);
+      if (snapshot().selection.objectIds.includes(arrow.id)) {
+        arrow.controlPoints.forEach((control, index) => {
+          const handle = controls().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`)!;
+          expect(handle).not.toBeNull();
           expect(handle.style.left).toBe(`calc(${control.x - bounds.x}px * var(--page-scale))`);
           expect(handle.style.top).toBe(`calc(${control.y - bounds.y}px * var(--page-scale))`);
-        }
-      });
+        });
+      }
     };
     const oldBounds = boundsFromCurve(snapshot());
     expect(oldBounds).toEqual({ x: arrow.x, y: arrow.y, width: arrow.width, height: arrow.height });
     expectFrame(oldBounds);
     const oldPath = curve().getAttribute("d");
     const sourceElement = container.querySelector<HTMLElement>(`.document-object[data-object-id="${source.id}"]`)!;
-    sourceElement.setPointerCapture = () => {};
-    sourceElement.releasePointerCapture = () => {};
-    sourceElement.hasPointerCapture = () => false;
     const start = { x: source.x + source.width / 2, y: source.y + source.height / 2 };
     const end = { x: start.x, y: start.y + 200 };
     await act(async () => { pointer(sourceElement, "pointerdown", start, 1); });
@@ -148,9 +160,6 @@ describe("anchored mechanism arrow interaction frame", () => {
     expectFrame(newBounds);
 
     // The SVG shaft remains the actual pointer target, at its newly resolved coordinates.
-    curve().setPointerCapture = () => {};
-    curve().releasePointerCapture = () => {};
-    curve().hasPointerCapture = () => false;
     await act(async () => {
       pointer(curve(), "pointerdown", mechanismArrowGeometry(moved.pages[0], arrow)!.source, 10);
       pointer(pageElement, "pointerup", mechanismArrowGeometry(moved.pages[0], arrow)!.source, 10);
@@ -202,7 +211,7 @@ describe("anchored mechanism arrow interaction frame", () => {
     const pivot = { x: Number(svgTransform[2]), y: Number(svgTransform[3]) };
     const geometry = mechanismArrowGeometry(rotated.pages[0], arrow)!;
     for (const [index, control] of geometry.controls.entries()) {
-      const handle = frame().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`)!;
+      const handle = controls().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`)!;
       expect(handle).not.toBeNull();
       const localX = Number(handle.style.left.match(/calc\(([-\d.e]+)px/)![1]);
       const localY = Number(handle.style.top.match(/calc\(([-\d.e]+)px/)![1]);
