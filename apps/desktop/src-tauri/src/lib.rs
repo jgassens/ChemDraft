@@ -733,13 +733,26 @@ pub fn run() {
                         if APP_QUITTING.load(Ordering::SeqCst) {
                             return;
                         }
+                        // Windows sends Resized when the owner is restored from the taskbar;
+                        // macOS also reports its restored frame. Never release a prompt here.
+                        schedule_suspended_utility_restore(window.app_handle());
                         if let Err(error) = persist_main_window_geometry(window) {
                             eprintln!("Could not persist ChemDraft main window frame: {error}");
                         }
                     }
+                    WindowEvent::Focused(true) => {
+                        schedule_suspended_utility_restore(window.app_handle());
+                    }
                     _ => {}
                 }
                 return;
+            }
+
+            // Owned windows may finish unminimizing after their owner's Resized event.
+            if is_suspended_utility_label(window.label())
+                && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(true))
+            {
+                schedule_suspended_utility_restore(window.app_handle());
             }
 
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
@@ -788,6 +801,13 @@ pub fn run() {
                 // corner. Like persist_main_window_geometry, minimized frames are not user frames.
                 WindowEvent::Moved(_) if toolset_frame_is_transient(app, window) => {}
                 WindowEvent::Moved(position) => {
+                    if !UTILITY_SUSPENSION
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .persist_move(window.label(), (position.x, position.y))
+                    {
+                        return;
+                    }
                     let logical_position = logical_toolset_position_from_physical(
                         position.x as f64,
                         position.y as f64,
@@ -1289,10 +1309,9 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let document_minimized = cfg!(windows)
-                && app
-                    .get_webview_window(MAIN_WINDOW_LABEL)
-                    .is_some_and(|main| main.is_minimized().unwrap_or(true));
+            let document_minimized = app
+                .get_webview_window(MAIN_WINDOW_LABEL)
+                .is_some_and(|main| main.is_minimized().unwrap_or(true));
             let snapshot: Vec<_> = windows
                 .iter()
                 .map(|window| {
@@ -1336,9 +1355,67 @@ fn restore_suspended_utility_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> R
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .release(quit_in_progress());
+    restore_utility_labels(app, labels)
+}
+
+fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending_restore()
+        .is_none()
+    {
+        return;
+    }
+    let app = app.clone();
+    // Serialize unminimize recovery with async panel creation just like prompt release. Taking
+    // WINDOW_CREATION in the event callback would deadlock a build waiting on the main thread;
+    // restoring without it could clear the snapshot before a new hidden panel is enrolled.
+    tauri::async_runtime::spawn(async move {
+        let Ok(_creation) = lock_window_creation() else {
+            return;
+        };
+        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return;
+        };
+        let result = run_on_main_thread_blocking(&main, move || {
+            let labels = UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending_restore();
+            restore_utility_labels(&app, labels)
+        });
+        if let Err(error) = result.and_then(|result| result) {
+            eprintln!("Could not restore ChemDraft floating windows: {error}");
+        }
+    });
+}
+
+/// Main-thread-only. Keep every obligation if the document is minimized; its restore event retries.
+fn restore_utility_labels<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    labels: Option<Vec<String>>,
+) -> Result<(), String> {
     let Some(mut labels) = labels else {
         return Ok(());
     };
+    if quit_in_progress() {
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .release(true);
+        return Ok(());
+    }
+    if app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_none_or(|main| main.is_minimized().unwrap_or(true))
+    {
+        return Ok(());
+    }
+    UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .start_restore();
     // Restore panels and toolbars first, then their flyouts, and the shared tooltip last.
     labels.sort_by_key(|label| {
         if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
@@ -1357,23 +1434,37 @@ fn restore_suspended_utility_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> R
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
+        if app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .is_none_or(|main| main.is_minimized().unwrap_or(true))
+        {
+            break;
+        }
         let Some(window) = app.get_webview_window(&label) else {
+            UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .restored(&label);
             continue;
         };
-        if window.is_minimized().unwrap_or(true)
-            || (cfg!(windows)
-                && app
-                    .get_webview_window(MAIN_WINDOW_LABEL)
-                    .is_some_and(|main| main.is_minimized().unwrap_or(true)))
-        {
+        if window.is_minimized().unwrap_or(true) {
             continue;
         }
         if toolset_id_for_window_label(app, &label).is_some() {
+            buffer_utility_recovery_position(&window);
             recover_offscreen_toolset_window(app, &window);
         }
         let shown = restore_utility_window(&window);
         if let Err(error) = shown {
             result = Err(error);
+        } else {
+            if toolset_id_for_window_label(app, &label).is_some() {
+                buffer_utility_recovery_position(&window);
+            }
+            UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .restored(&label);
         }
     }
     UTILITY_SUSPENSION
@@ -1381,6 +1472,15 @@ fn restore_suspended_utility_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> R
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .finish_restore();
     result
+}
+
+fn buffer_utility_recovery_position<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    if let Ok(position) = window.outer_position() {
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recovery_move(window.label(), (position.x, position.y));
+    }
 }
 
 fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
@@ -1399,6 +1499,10 @@ fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Resul
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // All utilities, including explicitly requested analysis panels, are BUILT focused(false).
+        // Tao retains MARKER_DONT_FOCUS for their lifetime, so set_visible uses SW_SHOWNOACTIVATE
+        // even after a panel has received focus explicitly. Going through Tauri also updates Tao's
+        // VISIBLE flag, so subsequent hide/show calls still work. Do not build panels focused(true).
         window.show().map_err(|error| error.to_string())
     }
 }
@@ -1815,6 +1919,23 @@ struct OpenPluginPanelRequest {
     focus: bool,
 }
 
+struct PanelWindowPresentation {
+    focused_on_build: bool,
+    visible_on_build: bool,
+    focus_after_show: bool,
+}
+
+impl OpenPluginPanelRequest {
+    fn presentation(&self, deferred: bool) -> PanelWindowPresentation {
+        PanelWindowPresentation {
+            // Tao's Windows show mode is a lifetime creation trait, not the current focus state.
+            focused_on_build: false,
+            visible_on_build: !deferred,
+            focus_after_show: self.focus && !deferred,
+        }
+    }
+}
+
 /// The native window label for a panel id. Must be injective: `panel.a-b.c` and `panel.a.b-c` are
 /// different panels and must never share (and so replace or reveal) one window. Tauri labels allow
 /// `:` but not `.`, and panel ids never contain `:` (`is_valid_plugin_storage_id`), so swapping `.`
@@ -1853,6 +1974,24 @@ mod plugin_panel_label_tests {
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
                 .unwrap();
         assert!(explicit.focus);
+    }
+
+    #[test]
+    fn explicit_panel_focus_never_changes_the_non_activating_restore_trait() {
+        for focus in [false, true] {
+            let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
+                "panelId": "v1x61x62", "title": "Analyze", "focus": focus
+            }))
+            .unwrap();
+            for deferred in [false, true] {
+                let presentation = request.presentation(deferred);
+                // On Windows this selects SW_SHOWNOACTIVATE for ALL subsequent shows, including
+                // restoration of an Analyze panel that was explicitly focused after its build.
+                assert!(!presentation.focused_on_build);
+                assert_eq!(presentation.visible_on_build, !deferred);
+                assert_eq!(presentation.focus_after_show, focus && !deferred);
+            }
+        }
     }
 
     #[test]
@@ -2000,17 +2139,23 @@ async fn open_plugin_panel_window(
 
     let label = plugin_panel_window_label(&request.panel_id);
     let _creation = lock_window_creation()?;
-    if utility_windows_suspended() {
-        return Ok(());
-    }
+    let deferred = utility_windows_suspended();
+    let presentation = request.presentation(deferred);
     if let Some(window) = app.get_webview_window(&label) {
+        if deferred {
+            UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .defer_show(label);
+            return Ok(());
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
-        if request.focus || !cfg!(target_os = "macos") {
+        if presentation.focus_after_show || !cfg!(target_os = "macos") {
             window.show().map_err(|error| error.to_string())?;
         }
-        configure_analysis_window(&window, request.focus)?;
+        configure_analysis_window(&window, presentation.focus_after_show)?;
         return Ok(());
     }
 
@@ -2029,7 +2174,10 @@ async fn open_plugin_panel_window(
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
     .focusable(true)
-    .focused(request.focus)
+    // Windows uses this creation trait for EVERY later show, not just the initial reveal. Focus
+    // explicit opens below instead, so restoration always uses Tao's non-activating show path.
+    .focused(presentation.focused_on_build)
+    .visible(presentation.visible_on_build)
     .resizable(true)
     .decorations(false)
     .shadow(false)
@@ -2042,7 +2190,16 @@ async fn open_plugin_panel_window(
     }
     let window = builder.build().map_err(|error| error.to_string())?;
 
-    configure_analysis_window(&window, request.focus)?;
+    if deferred {
+        // MainWindow can record this open as successful: the real (hidden) window is enrolled in
+        // restoration, even though it did not exist when the suspension snapshot was taken.
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .defer_show(label);
+    } else {
+        configure_analysis_window(&window, presentation.focus_after_show)?;
+    }
     Ok(())
 }
 
@@ -5631,7 +5788,15 @@ fn recover_offscreen_toolset_window<R: Runtime>(
         return;
     }
 
-    let _ = window.set_position(tauri::LogicalPosition::new(clamped.x, clamped.y));
+    let physical = tauri::LogicalPosition::new(clamped.x, clamped.y).to_physical::<i32>(scale);
+    if utility_windows_suspended() {
+        // Register before SetWindowPos: Windows may buffer Moved until after finish_restore.
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recovery_move(window.label(), (physical.x, physical.y));
+    }
+    let _ = window.set_position(physical);
 }
 
 fn persisted_toolset_position<R: Runtime>(
