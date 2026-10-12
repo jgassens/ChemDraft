@@ -5702,7 +5702,7 @@ export function MainWindow({
     }
     const ownsHotkeyHistory = state.continuesHotkey && state.hotkeyUndoState &&
       documentHistoryRef.current.past.at(-1) === state.hotkeyUndoDocument;
-    let cancelledHotkey = false;
+    const hotkeyCancellation = { cancelled: false };
     // Cancel both stages only if nothing else edited the post-hotkey document. Otherwise keep the
     // first letter and its history: an external change must never become part of our rollback.
     const changed = replacePresentDocument((current) => {
@@ -5720,13 +5720,13 @@ export function MainWindow({
         draftRollback: createAtomLabelDraftRollback(state.beforeMolecule)
       };
       recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, hotkeyMolecule);
-      cancelledHotkey = true;
+      hotkeyCancellation.cancelled = true;
       return restoreAtomLabelDraft(restored, hotkeyRollback);
     });
     // Remove our own first-letter entry rather than undoing it into Redo. A subsequent external
     // commit owns its history; only the unchanged hotkey history line can be restored wholesale.
     const history = documentHistoryRef.current;
-    const discardedHotkeyHistory = cancelledHotkey && ownsHotkeyHistory && state.hotkeyUndoState;
+    const discardedHotkeyHistory = hotkeyCancellation.cancelled && ownsHotkeyHistory && state.hotkeyUndoState;
     if (discardedHotkeyHistory) {
       const present = history.present;
       documentUndoLabelsRef.current.delete(present);
