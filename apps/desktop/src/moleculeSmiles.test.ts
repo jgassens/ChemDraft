@@ -59,14 +59,13 @@ describe("Copy As SMILES messages", () => {
     assertSmilesMessages(warnings);
   });
 
-  it("reports both dative warnings in terms of SMILES", async () => {
+  it("reports the dative loss exactly once in terms of SMILES", async () => {
     const mol = molecule(["Zn", "C"]);
     mol.bonds[0].display = { bondStyle: "dashed" };
     const warnings: string[] = [];
     await copyAsSmiles(documentWith(mol), warnings);
     expect(warnings).toEqual([
-      "SMILES has no dative/coordination bond: 1 dashed bond(s) written as plain single.",
-      "SMILES conversion wrote 1 dative (dashed) bond as plain single."
+      "SMILES has no dative/coordination bond: 1 dashed bond(s) written as plain single."
     ]);
     assertSmilesMessages(warnings);
   });
@@ -137,6 +136,19 @@ describe("Copy As SMILES messages", () => {
     mol.bonds[0].order = "unknown";
     await expect(copyAsSmiles(documentWith(mol), [])).rejects.toThrow("Cannot write SMILES: bond b0 has an unknown bond order.");
     expect(computeStructureIdentifiers).not.toHaveBeenCalled();
+  });
+
+  it("preserves earlier warnings when the second molecule refuses conversion", async () => {
+    const doc = documentWith(molecule());
+    const refused = { ...molecule(["C", "C"]), id: "refused" };
+    refused.bonds[0].order = "unknown";
+    doc.pages[0].objects.push(refused);
+    const warnings: string[] = [];
+    await expect(copyAsSmiles(doc, warnings)).rejects.toThrow("Cannot write SMILES:");
+    expect(warnings).toEqual([
+      'Atom label "Phe" cannot be spelled as a single SMILES atom; written as a dummy atom [*].',
+      'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in SMILES.'
+    ]);
   });
 
   it("reports native double-bond stereo loss for the correct molecule index", async () => {

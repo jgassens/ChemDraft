@@ -6253,7 +6253,7 @@ export function MainWindow({
       // Lossy-copy warnings (dative bonds flattened, dummy-atom labels) ride the copy result so
       // the status bar never reports a silent success (AGENTS.md §6.7).
       const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
-      setStatus(didWrite ? `Copied ${label} to clipboard${warningSuffix}` : `Copy as ${label} failed: clipboard unavailable`);
+      setStatus(didWrite ? `Copied ${label} to clipboard${warningSuffix}` : `Copy as ${label} failed: clipboard unavailable${warningSuffix}`);
     };
 
     switch (commandId) {
@@ -6262,7 +6262,8 @@ export function MainWindow({
         try {
           await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
         } catch (error) {
-          setStatus(`Copy as SMILES failed: ${error instanceof Error ? error.message : String(error)}`);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`Copy as SMILES failed: ${error instanceof Error ? error.message : String(error)}${warningSuffix}`);
         }
         return;
       }

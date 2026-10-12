@@ -33,15 +33,23 @@ describe("Copy As SMILES status line", () => {
     container.remove();
     vi.unstubAllGlobals();
   });
-  it.each(["success", "empty", "clipboard unavailable", "unknown order"])("shows specific SMILES status for %s", async (path) => {
+  it.each(["success", "empty", "clipboard unavailable", "clipboard rejection", "unknown order", "second molecule refusal"])("shows specific SMILES status for %s", async (path) => {
     let doc = createPhase4Document("Copy SMILES");
     if (path !== "empty") {
       doc = structuredClone(insertNativeSingleBondMolecule(doc, { x: 300, y: 300 }));
       const mol = doc.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
       mol.atoms[1].element = "Phe";
       if (path === "unknown order") mol.bonds[0].order = "unknown";
+      if (path === "second molecule refusal") {
+        const second = structuredClone(mol);
+        second.id = "refused";
+        second.bonds[0].order = "unknown";
+        doc.pages[0].objects.push(second);
+        doc.selection.objectIds = [mol.id, second.id];
+      }
     }
     if (path === "clipboard unavailable") vi.mocked(writeClipboardText).mockResolvedValue(false);
+    if (path === "clipboard rejection") vi.mocked(writeClipboardText).mockRejectedValue(new Error("permission denied"));
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialDocument: doc, initialActiveToolCommandId: "tool.select",
@@ -53,16 +61,20 @@ describe("Copy As SMILES status line", () => {
     });
     const expected = path === "empty" ? "Nothing to copy as SMILES"
       : path === "clipboard unavailable" ? "Copy as SMILES failed: clipboard unavailable"
-      : path === "unknown order" ? "Copy as SMILES failed: Cannot write SMILES:"
+      : path === "clipboard rejection" ? "Copy as SMILES failed: permission denied"
+      : path === "unknown order" || path === "second molecule refusal" ? "Copy as SMILES failed: Cannot write SMILES:"
       : "Copied SMILES to clipboard";
     await vi.waitFor(() => {
       const status = container.querySelector('[role="status"]')?.textContent;
       expect(status).toContain(expected);
       expect(status).not.toMatch(/molfile|\bMOL\b|V2000|V3000/i);
-      if (path === "success") expect(status).toContain("the label's group is not represented in SMILES.");
-      if (path === "unknown order") expect(status).toContain("has an unknown bond order.");
+      if (["success", "clipboard unavailable", "clipboard rejection", "second molecule refusal"].includes(path)) {
+        expect(status).toContain(" — Atom label");
+        expect(status).toContain("the label's group is not represented in SMILES.");
+      }
+      if (path === "unknown order" || path === "second molecule refusal") expect(status).toContain("has an unknown bond order.");
     });
-    if (path === "empty" || path === "unknown order") expect(writeClipboardText).not.toHaveBeenCalled();
+    if (path === "empty" || path === "unknown order" || path === "second molecule refusal") expect(writeClipboardText).not.toHaveBeenCalled();
     else expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith("*C");
   });
 });

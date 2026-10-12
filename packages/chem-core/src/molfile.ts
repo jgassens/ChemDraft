@@ -540,11 +540,10 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
-  if (dativeBondCount > 0) {
+  // moleculeSmiles already reports this loss; retain the export warning only for MOL callers.
+  if (dativeBondCount > 0 && options.messageFormat !== "SMILES") {
     options.warnings?.push(
-      options.messageFormat
-        ? `${options.messageFormat} conversion wrote ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} as plain single.`
-        : `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
+      `V2000 has no coordination bond type: ${dativeBondCount} dative (dashed) bond${dativeBondCount === 1 ? "" : "s"} written as plain single. Export V3000 to preserve ${dativeBondCount === 1 ? "it" : "them"}.`
     );
   }
 
