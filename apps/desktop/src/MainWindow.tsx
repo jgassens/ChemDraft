@@ -521,6 +521,7 @@ import {
   snapNativeMoleculePartDragDelta,
   snapNativeMoleculePartRotationDegrees,
   nativeGraphicCornerRadiusEditPoint,
+  nativeGraphicCornerRadiusHandlePoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
@@ -1575,7 +1576,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.00.10-opus";
+const CURRENT_BUILD_STAMP = "10.12.03.10-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -12635,12 +12636,18 @@ export function MainWindow({
     });
   }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
-  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicCornerRadius(
-      drag.startDocument,
-      drag.objectId,
-      nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
-    ), []);
+  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type !== "graphic") {
+      return drag.startDocument;
+    }
+    const start = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, drag.startPoint);
+    const current = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
+    return updateNativeGraphicCornerRadius(drag.startDocument, drag.objectId, {
+      x: graphicCornerRadiusReadoutValue(object) + current.x - start.x,
+      y: 0
+    });
+  }, []);
 
   const previewGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -18677,6 +18684,7 @@ export function MainWindow({
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
+                      pageScale={viewport.scale}
                       spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
@@ -24913,6 +24921,7 @@ function DocumentObjectViewContent({
   layerIndex,
   pageWidth,
   pageHeight,
+  pageScale,
   spinning = false,
   selected,
   inGroupSelection,
@@ -24986,6 +24995,7 @@ function DocumentObjectViewContent({
   layerIndex: number;
   pageWidth: number;
   pageHeight: number;
+  pageScale: number;
   spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
@@ -26035,6 +26045,7 @@ function DocumentObjectViewContent({
     const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
       <GraphicCornerRadiusHandle
         object={object}
+        pageScale={pageScale}
         readout={graphicCornerRadiusReadout}
         counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
@@ -27082,24 +27093,27 @@ function graphicGradientHandleStatusName(
 
 function GraphicCornerRadiusHandle({
   object,
+  pageScale,
   readout,
   counterRotationDegrees,
   onPointerDown,
   onDoubleClick
 }: {
   object: GraphicObject;
+  pageScale: number;
   readout?: GraphicCornerRadiusReadoutState;
   counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusEditPoint(object);
+  const point = nativeGraphicCornerRadiusHandlePoint(object, pageScale);
   if (!point) {
     return null;
   }
 
   const radius = readout?.radius ?? graphicCornerRadiusReadoutValue(object);
   const projectedPoint = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const projectedReadoutPoint = projectGraphicObjectPoint(object, nativeGraphicCornerRadiusEditPoint(object)!, { coordinateSpace: "local" });
   const label = `Radius: ${Math.round(radius)} px`;
 
   return (
@@ -27122,8 +27136,8 @@ function GraphicCornerRadiusHandle({
         className="graphic-corner-radius-readout"
         data-graphic-corner-radius-readout="true"
         style={{
-          left: pageScaledCssPx(projectedPoint.x),
-          top: pageScaledCssPx(projectedPoint.y),
+          left: pageScaledCssPx(projectedReadoutPoint.x),
+          top: pageScaledCssPx(projectedReadoutPoint.y),
           transform: graphicSystemReadoutTransform(counterRotationDegrees, "corner-radius")
         }}
       >

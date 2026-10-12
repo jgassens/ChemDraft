@@ -13,6 +13,7 @@ import {
   createGraphicFreehandPathCache,
   defaultVisualEffectForKind,
   graphicCornerRadiusEditPoint,
+  projectGraphicObjectPoint,
   graphicObjectSupportsBooleanOperation,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
@@ -2359,6 +2360,28 @@ export function nativeGraphicCornerRadiusEditPoint(
   object: GraphicObject
 ): NativeGraphicCornerRadiusEditPoint | undefined {
   return graphicCornerRadiusEditPoint(object);
+}
+
+// Mirrors App.css: .object-resize-handle is 18px, corner offsets are -8px,
+// and .graphic-corner-radius-handle is 9px. Keep a 2px gap between hit targets.
+export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX = (18 - 8) + 9 / 2 + 2;
+
+/** Local handle position; the true radius point stays unchanged for editing/readout. */
+export function nativeGraphicCornerRadiusHandlePoint(
+  object: GraphicObject,
+  pageScale: number
+): NativeArtPoint | undefined {
+  const point = nativeGraphicCornerRadiusEditPoint(object);
+  if (!point) {
+    return undefined;
+  }
+  const corner = projectGraphicObjectPoint(object, { x: 0, y: 0 }, { coordinateSpace: "local" });
+  const edgeUnit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
+  const edgeScale = Math.hypot(edgeUnit.x - corner.x, edgeUnit.y - corner.y);
+  const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / (pageScale * edgeScale);
+  // If two clearances cannot fit, continue outward along the same edge, away
+  // from all resize targets rather than crowding the opposite corner.
+  return { x: object.width < minimum * 2 ? -minimum : Math.max(point.x, minimum), y: point.y };
 }
 
 export type NativeGraphicLinearGradientHandleId = "start" | "end";
