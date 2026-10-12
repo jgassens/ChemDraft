@@ -7462,8 +7462,17 @@ export function applySingleBondToolAtNativeAtom(
   target: NativeMoleculeDeleteTarget,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeSingleBondHotkeyAtAtomTarget(document, target, plan).document;
+}
+
+/** The hotkey outcome, with the existing placement decision and its refusal reason. */
+export function nativeSingleBondHotkeyAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  plan?: NativeBondGrowthPlan
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   const page = firstPage(document);
@@ -7471,12 +7480,12 @@ export function applySingleBondToolAtNativeAtom(
     object.id === target.objectId && object.type === "molecule"
   );
   if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-    return document;
+    return { document, refusal: molecule ? "structure-not-editable" : "target-unavailable" };
   }
 
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
   if (!atom) {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   // When the on-canvas growth arrow is showing for this atom, commit exactly what it previews
@@ -7486,24 +7495,26 @@ export function applySingleBondToolAtNativeAtom(
   // picks the pure geometric direction — ChemDraw's hotkey behavior.
   const planned = plan ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
   if (!planned) {
-    return document;
+    return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
   }
 
   const extended = planned.targetAtomId
     ? connectNativeCarbonAtoms(molecule, target.atomId, planned.targetAtomId)
     : extendNativeCarbonGraph(molecule, target.atomId, planned.newAtomPoint);
   if (!extended) {
-    return document;
+    return { document, refusal: planned.targetAtomId
+      ? nativeSproutConnectionFailureReason(molecule, target.atomId, planned.targetAtomId)
+      : nativeSproutFailureReason(molecule, target.atomId) };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: extended },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
 }
 
 export function applyNativeCarbonylAtAtomTarget(
@@ -7511,8 +7522,17 @@ export function applyNativeCarbonylAtAtomTarget(
   target: NativeMoleculeDeleteTarget,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeCarbonylHotkeyAtAtomTarget(document, target, plan).document;
+}
+
+/** The hotkey outcome, with the existing placement decision and its refusal reason. */
+export function nativeCarbonylHotkeyAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  plan?: NativeBondGrowthPlan
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   const page = firstPage(document);
@@ -7520,22 +7540,22 @@ export function applyNativeCarbonylAtAtomTarget(
     object.id === target.objectId && object.type === "molecule"
   );
   if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-    return document;
+    return { document, refusal: molecule ? "structure-not-editable" : "target-unavailable" };
   }
 
   const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, plan);
   if (!nextMolecule) {
-    return document;
+    return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
 }
 
 /** ChemDraw-style numeric sprout hotkeys: what pressing 4/5/8/9/0 over an atom builds. */
@@ -7588,24 +7608,24 @@ export function applyNativeAtomSproutTarget(
   return nativeAtomSproutHotkeyTarget(document, target, kind, plan).document;
 }
 
-/** {@link applyNativeAtomSproutTarget}, also reporting why a cyclic-bond closure was refused. */
+/** {@link applyNativeAtomSproutTarget}, also reporting why a sprout was refused. */
 export function nativeAtomSproutHotkeyTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
   kind: NativeAtomSproutKind,
   plan?: NativeBondGrowthPlan
-): NativeRingHotkeyResult {
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return { document };
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
 
   const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
@@ -7613,12 +7633,12 @@ export function nativeAtomSproutHotkeyTarget(
 
   if (kind === "wedge" || kind === "hashed") {
     if (!growthPlan || growthPlan.targetAtomId) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
       bondStyle: kind === "wedge" ? "wedge" : "hashed"
     });
-    return { document: nativeMoleculePatched(document, page, molecule, grown) };
+    return nativeSproutPatched(document, page, molecule, target.atomId, grown);
   }
 
   if (kind === "methylidene") {
@@ -7631,11 +7651,15 @@ export function nativeAtomSproutHotkeyTarget(
       nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
       !growthPlan || growthPlan.targetAtomId
     ) {
-      return { document };
+      return { document, refusal: nativeElementFromAtomLabel(sourceAtom.element) !== "C" || sourceAtom.formalCharge !== 0
+        ? "methylidene-needs-neutral-carbon"
+        : nativeAtomFormalChargeForValence("C", nextValence) !== 0
+          ? "sprout-needs-two-valences"
+          : nativeSproutFailureReason(molecule, target.atomId) };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!grown) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const newAtom = grown.atoms[grown.atoms.length - 1];
     const bonds = grown.bonds.map((bond) =>
@@ -7648,26 +7672,27 @@ export function nativeAtomSproutHotkeyTarget(
   }
 
   if (kind === "gemDimethyl") {
-    // All-or-nothing: the hotkey promises a PAIR of methyls, and the only signal the caller can
-    // surface is the reference-equality refusal ("Cannot add gem-dimethyl here") — committing one
+    // All-or-nothing: the hotkey promises a PAIR of methyls — committing one
     // methyl when the second cannot be planned would read as success. So an atom without two free
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
     if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0, molecule) < 2) {
-      return { document };
+      return { document, refusal: "sprout-needs-two-valences" };
     }
     if (!growthPlan || growthPlan.targetAtomId) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!first) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
     const second = secondPlan && !secondPlan.targetAtomId
       ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
       : undefined;
-    return { document: nativeMoleculePatched(document, page, molecule, second) };
+    return second
+      ? { document: nativeMoleculePatched(document, page, molecule, second) }
+      : { document, refusal: nativeSproutFailureReason(first, target.atomId) };
   }
 
   // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
@@ -7711,11 +7736,11 @@ export function nativeAtomSproutHotkeyTarget(
 
   if (outgoingDegrees === undefined) {
     if (!growthPlan) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     return growthPlan.targetAtomId
       ? nativeCyclicClosurePatched(document, page, molecule, target, growthPlan.targetAtomId)
-      : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint)) };
+      : nativeSproutPatched(document, page, molecule, target.atomId, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint));
   }
 
   const nextPoint = {
@@ -7730,7 +7755,7 @@ export function nativeAtomSproutHotkeyTarget(
   );
   return closure
     ? nativeCyclicClosurePatched(document, page, molecule, target, closure.id)
-    : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, nextPoint)) };
+    : nativeSproutPatched(document, page, molecule, target.atomId, extendNativeCarbonGraph(molecule, target.atomId, nextPoint));
 }
 
 /**
@@ -7744,13 +7769,54 @@ function nativeCyclicClosurePatched(
   molecule: MoleculeObject,
   target: Extract<NativeMoleculeDeleteTarget, { kind: "atom" }>,
   closureAtomId: string
-): NativeRingHotkeyResult {
+): NativeAtomSproutHotkeyResult {
   const closed = connectNativeCarbonAtoms(molecule, target.atomId, closureAtomId);
   if (!closed) {
-    return { document };
+    return { document, refusal: nativeSproutConnectionFailureReason(molecule, target.atomId, closureAtomId) };
   }
   const refusal = nativeRingPlacementValenceRefusal(molecule, closed, target);
   return refusal ? { document, refusal } : { document: nativeMoleculePatched(document, page, molecule, closed) };
+}
+
+/** Refusal diagnostics only: these helpers never decide whether a sprout is placed. */
+export type NativeAtomSproutRefusal = NativeRingHotkeyRefusal
+  | "sprout-no-free-direction"
+  | "sprout-needs-two-valences"
+  | "methylidene-needs-neutral-carbon"
+  | "connection-atom-no-free-valence"
+  | "closure-bond-exists";
+
+export type NativeAtomSproutHotkeyResult = {
+  document: ChemDraftDocument;
+  refusal?: NativeAtomSproutRefusal;
+};
+
+function nativeSproutFailureReason(molecule: MoleculeObject, atomId: string): NativeAtomSproutRefusal {
+  if (!molecule.atoms.some((atom) => atom.id === atomId)) return "target-unavailable";
+  return canGrowNativeAtom(molecule, atomId) ? "sprout-no-free-direction" : "atom-no-free-valence";
+}
+
+function nativeSproutConnectionFailureReason(
+  molecule: MoleculeObject, sourceAtomId: string, targetAtomId: string
+): NativeAtomSproutRefusal {
+  if (!molecule.atoms.some((atom) => atom.id === targetAtomId)) return "target-unavailable";
+  if (sourceAtomId === targetAtomId || nativeBondExistsBetween(molecule, sourceAtomId, targetAtomId)) return "closure-bond-exists";
+  if (!canGrowNativeAtom(molecule, sourceAtomId)) return "atom-no-free-valence";
+  const sameComponent = nativeComponents(molecule.atoms, nativeAdjacency(molecule.atoms, molecule.bonds))
+    .some((atomIds) => atomIds.includes(sourceAtomId) && atomIds.includes(targetAtomId));
+  return sameComponent ? "closure-atom-no-free-valence" : "connection-atom-no-free-valence";
+}
+
+function nativeSproutPatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  atomId: string,
+  next: MoleculeObject | undefined
+): NativeAtomSproutHotkeyResult {
+  return next
+    ? { document: nativeMoleculePatched(document, page, molecule, next) }
+    : { document, refusal: nativeSproutFailureReason(molecule, atomId) };
 }
 
 /**
