@@ -215,6 +215,14 @@ white with ring letters, are not the style: the coloured figure is the
 answer, not an optional variant. All of it is native document art
 ([art](art.md)).
 
+Both output documents keep the molecule, ring letters and any separate
+ring-fill paths in one native group. Move, copy, delete or transform the
+group to keep the figure together. Edit > Copy retains the editable group;
+Edit > Copy As (SVG, image, etc.) copies its child artwork, recursively,
+cropped to that artwork. Fusion H and Me/CH3 labels belong to
+the molecule itself. Arrange > Ungroup restores individual objects;
+separate fill paths follow group transforms but do not follow atom edits.
+
 `scripts/ring-style.mjs` in this skill applies the style to any molecule.
 It is plain Node with no dependencies and runs on macOS and Windows. It
 edits document JSON only; ChemDraft builds, renders and checks the
@@ -222,6 +230,13 @@ chemistry. `style` runs the CLI of the ChemDraft checkout it is given
 (`node ring-style.mjs style <dir> <name> <options> --checkout <checkout>`)
 with the same Node and no shell, to check every coordinate change it
 makes.
+
+The `style` CLI accepts exactly one molecule per document and rejects
+multi-molecule input. Its layout search, figure report and identity checks
+use one PubChem reference. Style each molecule in a separate document,
+then combine the groups in the app. Script callers can apply the exported
+`style(document, buildMolecule, options, tools)` function per molecule;
+each call creates unique decoration IDs and groups only its own artwork.
 
 ### The rules it applies
 
@@ -523,6 +538,7 @@ The figure check verifies that no fill remains under a ring-atom label.
   When one lettered ring's outline takes in part of a smaller one, the
   script paints the larger ring's fill as a path object under the
   molecule so the smaller ring shows on top (it says so).
+  These paths belong to their rings and are included in the molecule's group.
 - **A letter rule fails.** Read the candidates it lists and write a
   `letters` map with tighter selectors or `atoms` indices.
 

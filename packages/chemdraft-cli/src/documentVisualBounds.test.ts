@@ -29,6 +29,25 @@ function methoxyDocument(carbonX: number): ChemDraftDocument {
 }
 
 describe("CLI render bounds hold an anchored group label", () => {
+  it.each([false, true])("ignores nested invisible group frames (includeObjectFrames=%s)", (includeObjectFrames) => {
+    const document = methoxyDocument(300);
+    const page = document.pages[0]!;
+    page.objects.push({
+      id: "caption", type: "text", text: "Label", spans: [],
+      x: 220, y: 350, width: 80, height: 20, rotation: 0, style: {}
+    });
+    const expected = documentVisualBounds(document, includeObjectFrames);
+    page.objects.push({
+      id: "inner", type: "group", childObjectIds: ["mol", "caption"],
+      x: 200, y: 280, width: 120, height: 90, rotation: 0, style: {}
+    }, {
+      // A stale outer wrapper must not change the crop either.
+      id: "outer", type: "group", childObjectIds: ["inner", "caption"],
+      x: -1000, y: -1000, width: 2000, height: 2000, rotation: 0, style: {}
+    });
+    expect(documentVisualBounds(document, includeObjectFrames)).toEqual(expected);
+  });
+
   it.each([
     ["right", 300, "MeO"],
     ["left", 220, "OMe"]

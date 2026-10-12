@@ -376,7 +376,7 @@ import {
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
-  applyNativeCarbonylAtAtomTarget,
+  nativeCarbonylHotkeyAtAtomTarget,
   applyNativeAtomElementTarget,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
@@ -421,10 +421,10 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
-  type NativeRingHotkeyResult,
-  type NativeRingHotkeyRefusal,
+  type NativeAtomSproutHotkeyResult,
+  type NativeAtomSproutRefusal,
   applySingleBondToolAtPoint,
-  applySingleBondToolAtNativeAtom,
+  nativeSingleBondHotkeyAtAtomTarget,
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
@@ -3855,7 +3855,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3916,9 +3916,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeCarbonylHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add C=O to hovered atom");
+      setStatus(`Cannot add C=O to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -3946,9 +3946,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applySingleBondToolAtNativeAtom(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeSingleBondHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add a single bond to hovered atom");
+      setStatus(`Cannot add a single bond to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -6563,6 +6563,23 @@ export function MainWindow({
     focusTextObjectEditor(objectId);
     setStatus("Editing text");
   }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
+
+  const handleTextDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target instanceof Element ? event.target : undefined;
+    if (target?.closest("textarea, input, button") ||
+        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) {
+      return;
+    }
+    // Paint and interaction chrome can live in different layers. Route from the glyph (or
+    // overlay) that was actually hit to its owner, rather than relying on their stacking.
+    const objectId = target?.closest("[data-object-id]")?.getAttribute("data-object-id");
+    if (!objectId || findDocumentObject(documentRef.current, objectId)?.type !== "text") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    startTextObjectEdit(objectId);
+  }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     const currentDocument = documentRef.current;
@@ -9587,6 +9604,8 @@ export function MainWindow({
     resetDocumentHistory,
     restoreDocumentHistory,
     restoreToolAfterEyedropper,
+    restoreToolAfterTextPlacement,
+    startTextObjectEdit,
     runMolecularProperties,
     saveCurrentDocument,
     selectAllCanvasObjects,
@@ -15790,16 +15809,21 @@ export function MainWindow({
     }
 
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
+      // The companion mousedown must not blur the newly mounted editor. Bridge events
+      // skip this browser default, so this needs the same guard as atom-label editing.
+      event.preventDefault();
       event.stopPropagation();
-      replacePresentDocument((current) => selectDocumentObject(current, objectId));
       restoreToolAfterTextPlacement();
-      setActiveEditorObjectId(undefined);
-      setActiveTextEditObjectId(objectId);
-      setActiveAtomLabelEdit(undefined);
-      setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
-      assignHoveredNativeDeleteTarget(undefined);
-      setFreeformNativeBond(undefined);
+      startTextObjectEdit(objectId);
+      return;
+    }
+
+    if (object?.type === "text" && activeTextEditObjectIdRef.current === objectId &&
+        activeToolState.activeCommandId === "tool.select") {
+      // A second press can still hit the SVG glyph after Text-tool placement restored
+      // Select. Keep the edit and its selection alive through the ensuing dblclick.
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -16377,6 +16401,7 @@ export function MainWindow({
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit,
+    startTextObjectEdit,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativeArtLineDrawOrDefault,
@@ -18340,7 +18365,6 @@ export function MainWindow({
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
     onTextChange: updateTextObjectContent,
-    onTextEditStart: startTextObjectEdit,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
     isTextPlaceholderPending,
@@ -18720,6 +18744,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
+                onDoubleClick={handleTextDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -21350,15 +21375,25 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
+/** Why a ring or sprout could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
   switch (reason) {
+    case "sprout-no-free-direction":
+      return "there is no free direction to grow into without overlapping";
+    case "sprout-needs-two-valences":
+      return "that atom needs two free valences for this sprout";
+    case "methylidene-needs-neutral-carbon":
+      return "methylidene needs a neutral carbon atom";
+    case "closure-bond-exists":
+      return "those atoms are already connected";
     case "atom-no-free-valence":
       return "that atom has no free valence";
     case "bond-atom-no-free-valence":
       return "an atom on that bond has no free valence";
     case "closure-atom-no-free-valence":
       return "the ring would close onto an atom with no free valence";
+    case "connection-atom-no-free-valence":
+      return "the atom it would connect to has no free valence";
     case "double-bond-overfill":
       return "the ring's double bonds would overfill a neighbouring atom";
     case "atom-label-not-element":
@@ -25248,7 +25283,6 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel,
   onContextMenu,
   onTextChange,
-  onTextEditStart,
   onTextEditFinish,
   onTextSelectionChange,
   isTextPlaceholderPending,
@@ -25323,7 +25357,6 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
-  onTextEditStart(objectId: string): void;
   onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
@@ -25348,8 +25381,13 @@ function DocumentObjectViewContent({
     editor.focus();
     if (isTextPlaceholderPending(object.id)) {
       editor.select();
+    } else {
+      // SVG glyphs do not provide a textarea offset. Reopened text starts at the end;
+      // later focus retries leave the user's caret and selection alone.
+      const end = editor.value.length;
+      editor.setSelectionRange(end, end);
     }
-  }, [editingText, object, isTextPlaceholderPending]);
+  }, [editingText, object.id, isTextPlaceholderPending]);
 
   if (object.type === "group") {
     return null;
@@ -25477,15 +25515,6 @@ function DocumentObjectViewContent({
     // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
     // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
     // onPaste handler inserts clipboard text synchronously, without needing async-read permission.
-  };
-  const handleTextDoubleClick = (event: ObjectMouseEvent) => {
-    if (object.type !== "text") {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    onTextEditStart(object.id);
   };
   const handleTextResizeStart = (edge: TextResizeEdge) => (event: PointerEvent<HTMLButtonElement>) => {
     onTextResizeStart(object.id, edge, event);
@@ -26022,7 +26051,6 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-        onDoubleClick={handleTextDoubleClick}
       />
     );
   }
