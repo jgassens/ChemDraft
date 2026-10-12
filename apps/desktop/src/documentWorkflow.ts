@@ -11336,8 +11336,7 @@ function moveDocumentObjectPatches(
 ): DocumentPatch[] {
   const objectId = object.id;
   const clampToPage = options.clampToPage ?? true;
-  const nextX = clampToPage ? clamp(position.x, 0, Math.max(0, page.width - object.width)) : position.x;
-  const nextY = clampToPage ? clamp(position.y, 0, Math.max(0, page.height - object.height)) : position.y;
+  const { x: nextX, y: nextY } = clampToPage ? clampedObjectMovePosition(page, object, position) : position;
   const dx = nextX - object.x;
   const dy = nextY - object.y;
   if (dx === 0 && dy === 0) {
@@ -13114,6 +13113,42 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
   );
 }
 
+function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
+  return {
+    x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
+    y: clamp(position.y, 0, Math.max(0, page.height - object.height))
+  };
+}
+
+function clampedSelectionMoveDelta(page: DocumentPage, bounds: SelectionBounds, dx: number, dy: number): PagePoint {
+  return {
+    x: clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width))),
+    y: clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)))
+  };
+}
+
+/** Resolve effective drag deltas against one immutable start document, including anchored marks.
+ * Bounds are computed once per drag; previews and release share the movement functions' clamps. */
+export function documentObjectMoveDeltaResolver(
+  document: ChemDraftDocument,
+  objectId: string,
+  groupObjectIds?: readonly string[]
+): (dx: number, dy: number) => PagePoint {
+  if (groupObjectIds && groupObjectIds.length > 1) {
+    const page = firstPage(document);
+    const ids = resolveGroupedDocumentObjectIds(page.objects, groupObjectIds);
+    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)]);
+    return bounds ? (dx, dy) => clampedSelectionMoveDelta(page, bounds, dx, dy) : () => ({ x: 0, y: 0 });
+  }
+  const page = pageContainingObject(document, objectId);
+  const object = objectOnPage(page, objectId);
+  if (!page || !object) return () => ({ x: 0, y: 0 });
+  return (dx, dy) => {
+    const position = clampedObjectMovePosition(page, object, { x: object.x + dx, y: object.y + dy });
+    return { x: position.x - object.x, y: position.y - object.y };
+  };
+}
+
 /** Move every object in `ids` by the same delta, clamped so the group bbox stays on the page. */
 export function moveDocumentObjects(
   document: ChemDraftDocument,
@@ -13129,8 +13164,7 @@ export function moveDocumentObjects(
     return document;
   }
 
-  const cdx = clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width)));
-  const cdy = clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)));
+  const { x: cdx, y: cdy } = clampedSelectionMoveDelta(page, bounds, dx, dy);
   if (Math.abs(cdx) < 1e-6 && Math.abs(cdy) < 1e-6) {
     return document;
   }
@@ -18141,11 +18175,14 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
   const computeStructureIdentifiers = await loadStructureIdentifiers();
   const warnings: ExportWarning[] = [];
   const parts: string[] = [];
-  for (const [index, molecule] of molecules.entries()) {
-    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
-    if (smiles.length > 0) parts.push(smiles);
+  try {
+    for (const [index, molecule] of molecules.entries()) {
+      const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+      if (smiles.length > 0) parts.push(smiles);
+    }
+  } finally {
+    warningsOut?.push(...warnings.map((warning) => warning.message));
   }
-  warningsOut?.push(...warnings.map((warning) => warning.message));
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 
