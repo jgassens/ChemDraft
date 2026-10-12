@@ -1087,3 +1087,10 @@ multi-molecule targeting, mixed values, sparse per-atom overrides, `.cds` style-
 the style compatibility boundary, `.template` export, and a shared font catalog backed by the raster
 export font database. Durable schema and architecture notes live in
 `docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
+
+
+### Resizable floating palettes (2026-10-11)
+
+Adapted the floating toolbar resizing from `04309acc` to the current document-tab shell. Palettes wrap and scroll within user-sized frames while honouring the saved orientation, retain resized dimensions across restarts, and keep the full measured content-fit first-open size, including the resize row. A native persistence gate refuses minimized palettes, minimized Windows document owners, and frames during quit.
+
+Native Open/Save dialogs, the Preferences window lifetime, About, and HTML modals share one document-owned suspension coordinator. Overlapping dialogs restore previously visible palettes only after the last closes, including cancellation and failure. Restore refuses after quit starts and recovers each palette from a detached monitor before showing it. Native tooltip and popover reveal paths refuse while suspended and dismiss pending transient content. Suspension and About permissions are document-only; the standing manual checklist covers both platforms.

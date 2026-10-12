@@ -3618,7 +3618,8 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain(".iro-color-picker .IroColorPicker");
     expect(appCss).toContain('.color-channel-group input[type="number"]::-webkit-inner-spin-button');
     expect(appCss).toContain("appearance: textfield;");
-    expect(readFileSync(join(__dirname, "PaletteWindow.tsx"), "utf8")).toContain("new ResizeObserver");
+    expect(readFileSync(join(__dirname, "ToolPalette.tsx"), "utf8")).toContain("new ResizeObserver");
+    expect(readFileSync(join(__dirname, "PaletteWindow.tsx"), "utf8")).toContain("startPaletteWindowResize");
   });
 
   it("keeps the art inspector color picker dependency license acceptable", () => {

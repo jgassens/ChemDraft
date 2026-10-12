@@ -1,3 +1,4 @@
+import { paletteSuspension, withToolsetWindowsSuspended } from "./window-manager/paletteSuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
@@ -659,6 +660,7 @@ import {
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
   dismissToolsetPopovers,
+  showAboutDialog,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -1575,7 +1577,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.22.08-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2347,6 +2349,23 @@ export function MainWindow({
     setArrowEditTargetId(undefined);
   }, [activeToolState.activeCommandId]);
   const nativePaletteRef = useRef(nativePalette);
+  // Native owned palettes float above their document, including HTML dialogs.
+  // Suspend them for the lifetime of any modal without changing saved visibility.
+  useEffect(() => {
+    if (!effectiveNativePalette) return;
+
+    const update = () => {
+      const suspended = window.document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+      paletteSuspension.setHtmlModal(suspended);
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(window.document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal"] });
+    update();
+    return () => {
+      observer.disconnect();
+      paletteSuspension.setHtmlModal(false);
+    };
+  }, [effectiveNativePalette]);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
   const artPaintTargetCueTimerRef = useRef<number | undefined>(undefined);
@@ -9306,6 +9325,10 @@ export function MainWindow({
 
     viewActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "help.about") {
+          void withToolsetWindowsSuspended(() => showAboutDialog()).catch(() => setStatus("About unavailable"));
+          return;
+        }
         if (action.id === PREFERENCES_COMMAND_ID) {
           if (!isDesktopRuntime()) {
             setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
@@ -9313,7 +9336,7 @@ export function MainWindow({
               : "Preferences pop-up blocked");
             return;
           }
-          void togglePreferencesWindow().catch(() => {
+          void withToolsetWindowsSuspended(() => togglePreferencesWindow()).catch(() => {
             setStatus("Preferences unavailable");
           });
           return;
@@ -11702,7 +11725,7 @@ export function MainWindow({
     let active = true;
     let unlisten: (() => void) | undefined;
     void listenForToolsetLayoutEdits((payload) => {
-      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID && payload.edit.kind !== "setOrientation") {
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
@@ -11710,7 +11733,8 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      if (!registry.get(payload.toolsetId)) return;
+      const currentGroups = getToolsetPaletteGroups(payload.toolsetId, registry);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -11726,7 +11750,8 @@ export function MainWindow({
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
-        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+        gridRows: registry.get(payload.toolsetId)?.gridLayout?.rows,
+        gridLayout: registry.get(payload.toolsetId)?.gridLayout
       });
       if (next !== current) {
         commitToolbarLayoutRef.current(next, false);
@@ -18297,6 +18322,7 @@ export function MainWindow({
                 activeTool={activeTool}
                 currentDistributeMode={distributeMode}
                 mode="floating"
+                responsive
                 orientation={toolset.gridLayout?.orientation ?? "vertical"}
                 title={toolset.title}
                 onInvoke={invoke}
@@ -18356,7 +18382,9 @@ export function MainWindow({
                   onPointerCancel={stopWebPaletteDrag}
                 >
                   <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
+
                 </div>
+                <div className="palette-scroll-viewport" data-orientation={toolset.gridLayout?.orientation ?? "vertical"} data-palette-control="true">
                 {customizingThis ? (
                   <ToolbarCustomizeController
                     toolsetId={toolset.id}
@@ -18381,6 +18409,44 @@ export function MainWindow({
                 ) : (
                   renderPalette(paletteGroups)
                 )}
+                </div>
+                <button
+                  type="button"
+                  className="palette-resize-handle"
+                  aria-label="Resize toolbar"
+                  title="Drag to resize toolbar"
+                  data-palette-control="true"
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const handle = event.currentTarget;
+                    const palette = handle.closest<HTMLElement>(".web-floating-palette");
+                    if (!palette) return;
+                    const rect = palette.getBoundingClientRect();
+                    const originX = event.clientX;
+                    const originY = event.clientY;
+                    const pointerId = event.pointerId;
+                    handle.setPointerCapture(pointerId);
+                    const resize = (move: globalThis.PointerEvent) => {
+                      if (move.pointerId !== pointerId) return;
+                      palette.style.width = `${Math.max(96, rect.width + move.clientX - originX)}px`;
+                      palette.style.height = `${Math.max(56, rect.height + move.clientY - originY)}px`;
+                    };
+                    const stop = (up: globalThis.PointerEvent) => {
+                      if (up.pointerId !== pointerId) return;
+                      handle.removeEventListener("pointermove", resize);
+                      handle.removeEventListener("pointerup", stop);
+                      handle.removeEventListener("pointercancel", stop);
+                      handle.removeEventListener("lostpointercapture", stop);
+                      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+                    };
+                    handle.addEventListener("pointermove", resize);
+                    handle.addEventListener("pointerup", stop);
+                    handle.addEventListener("pointercancel", stop);
+                    handle.addEventListener("lostpointercapture", stop);
+                  }}
+                >◢</button>
               </section>
             );
           })
@@ -29575,21 +29641,21 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 
 async function pickNativeOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await open({
+  const selected = await withToolsetWindowsSuspended(() => open({
     title: "Open ChemDraft or CDXML Document",
     multiple: false,
     fileAccessMode: "scoped"
-  });
+  }));
   return typeof selected === "string" ? selected : undefined;
 }
 
 async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: "Save ChemDraft Document",
     defaultPath,
     filters: [{ name: "ChemDraft", extensions: ["chemdraft"] }]
-  });
+  }));
   return selected ?? undefined;
 }
 
@@ -29599,17 +29665,17 @@ async function pickNativeExportPath(
   extensions: readonly string[]
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  });
+  }));
   return selected ? ensureExportFileExtension(selected, extensions) : undefined;
 }
 
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await open({
+  const selected = await withToolsetWindowsSuspended(() => open({
     title: "Import Drawn Structure Settings Template",
     multiple: false,
     fileAccessMode: "scoped",
@@ -29618,17 +29684,17 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
       { name: "ChemDraw Style Sheets", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
-  });
+  }));
   return typeof selected === "string" ? selected : undefined;
 }
 
 async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await save({
+  const selected = await withToolsetWindowsSuspended(() => save({
     title: "Export Drawn Structure Settings Template",
     defaultPath,
     filters: [{ name: "Drawn Structure Settings Template", extensions: ["template"] }]
-  });
+  }));
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
 

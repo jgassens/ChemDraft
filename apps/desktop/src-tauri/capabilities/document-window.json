@@ -1,0 +1,11 @@
+{
+  "identifier": "document-window",
+  "description": "Document-only control of temporary palette suspension.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-suspend-toolset-windows",
+    "allow-show-about-dialog"
+  ]
+}

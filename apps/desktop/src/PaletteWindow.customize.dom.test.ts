@@ -6,16 +6,26 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createPaletteRegistryFromLayoutState, PaletteWindow } from "./PaletteWindow";
+import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
+import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
+import { desktopToolsetRegistry } from "./toolsets";
 import {
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
+  broadcastToolsetLayoutState,
   TOOLSET_LAYOUT_EDIT_EVENT,
   type ToolsetLayoutEditPayload
 } from "./window-manager";
+
+vi.mock("./window-manager", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./window-manager")>(),
+  setCurrentWindowLogicalSize: vi.fn(async () => undefined),
+  canPersistCurrentToolsetSize: vi.fn(async () => true)
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,6 +36,14 @@ describe("PaletteWindow customize mode bridge", () => {
   let editListener: (event: Event) => void;
 
   beforeEach(() => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      clear: () => storage.clear()
+    });
+    vi.clearAllMocks();
+
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -45,6 +63,8 @@ describe("PaletteWindow customize mode bridge", () => {
       root.unmount();
     });
     container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   async function renderMainPalette(initialRegistry?: Parameters<typeof PaletteWindow>[0]["initialRegistry"]) {
@@ -56,6 +76,91 @@ describe("PaletteWindow customize mode bridge", () => {
       await Promise.resolve();
     });
   }
+
+  it("restores saved sizes on a fresh mount and immediately saves user resizes", async () => {
+    const { setCurrentWindowLogicalSize } = await import("./window-manager");
+    localStorage.setItem("chemdraft.palette.size.core.main", JSON.stringify({ width: 320, height: 240 }));
+    await renderMainPalette();
+    expect(setCurrentWindowLogicalSize).toHaveBeenCalledWith({ width: 320, height: 240 });
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(380);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(260);
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(JSON.parse(localStorage.getItem("chemdraft.palette.size.core.main")!)).toEqual({ width: 380, height: 260 });
+    act(() => root.unmount());
+    root = createRoot(container);
+    await renderMainPalette();
+    expect(setCurrentWindowLogicalSize).toHaveBeenLastCalledWith({ width: 380, height: 260 });
+  });
+
+  it("uses today's measured content size when the palette has never been resized", async () => {
+    const { setCurrentWindowLogicalSize } = await import("./window-manager");
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 280, height: 112 } as DOMRect);
+    await renderMainPalette();
+    expect(setCurrentWindowLogicalSize).toHaveBeenCalledWith({ width: 280, height: 112 });
+    expect(localStorage.getItem("chemdraft.palette.size.core.main")).toBeNull();
+  });
+
+  it("refuses transient resize frames reported by the native owner/quit gate", async () => {
+    const manager = await import("./window-manager");
+    vi.mocked(manager.canPersistCurrentToolsetSize).mockResolvedValue(false);
+    await renderMainPalette();
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(380);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(260);
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(localStorage.getItem("chemdraft.palette.size.core.main")).toBeNull();
+    vi.mocked(manager.canPersistCurrentToolsetSize).mockResolvedValue(true);
+  });
+
+  it.each(["vertical", "horizontal"] as const)("honours saved %s orientation even in an opposite-shaped frame", async (orientation) => {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {} disconnect() {}
+    });
+    await renderMainPalette();
+    const state = applyToolsetLayoutEdit(emptyLayoutState(), { toolsetId: "core.main", edit: { kind: "setOrientation", orientation } }, {
+      presentItemIds: new Set(), commandTitle: () => undefined,
+      gridLayout: desktopToolsetRegistry.require("core.main").gridLayout
+    });
+    await act(async () => { await broadcastToolsetLayoutState(state); });
+    const viewport = container.querySelector<HTMLElement>(".palette-scroll-viewport")!;
+    Object.defineProperty(viewport, "clientWidth", { value: orientation === "vertical" ? 1000 : 100 });
+    Object.defineProperty(viewport, "clientHeight", { value: orientation === "vertical" ? 100 : 1000 });
+    await act(async () => { observers.forEach((callback) => callback()); });
+    expect(container.querySelector(`.tool-palette.${orientation}`)).not.toBeNull();
+  });
+
+  it("does not persist startup sizing as a user resize", async () => {
+    await renderMainPalette();
+    expect(localStorage.getItem("chemdraft.palette.size.core.main")).toBeNull();
+  });
+
+  it("routes orientation changes and keeps every command and style control reachable", async () => {
+    await renderMainPalette();
+    const commandIds = () => Array.from(container.querySelectorAll<HTMLElement>("[data-command-id]"))
+      .map((element) => element.dataset.commandId).sort();
+    const originalCommands = commandIds();
+    expect(originalCommands.length).toBeGreaterThan(0);
+    const orientationButton = container.querySelector<HTMLButtonElement>('[aria-label="Switch to vertical toolbar"]');
+    expect(orientationButton).not.toBeNull();
+    await act(async () => {
+      orientationButton?.click();
+    });
+    expect(edits).toEqual([{ toolsetId: "core.main", edit: { kind: "setOrientation", orientation: "vertical" } }]);
+    const state = applyToolsetLayoutEdit(emptyLayoutState(), edits[0], {
+      presentItemIds: new Set(),
+      commandTitle: () => undefined,
+      gridLayout: desktopToolsetRegistry.require("core.main").gridLayout
+    });
+    await act(async () => {
+      await broadcastToolsetLayoutState(state);
+    });
+    expect(container.querySelector('.palette-scroll-viewport[data-orientation="vertical"]')).not.toBeNull();
+    expect(container.querySelector('[data-toolbar-style-controls="main"]')).not.toBeNull();
+    expect(commandIds()).toEqual(originalCommands);
+    expect(container.querySelector('[aria-label="Resize toolbar"]')).not.toBeNull();
+    expect(container.querySelector(".tool-palette.customizing")).toBeNull();
+  });
 
   it("shows the Done/Restore bar when customize mode turns on and hides it when off", async () => {
     await renderMainPalette();
