@@ -10,6 +10,8 @@ import {
   applyNativeTemplateToolAtPoint,
   createPhase4Document,
   insertNativeArtGraphicObject,
+  insertNativeTextObject,
+  createMechanismArrowBetween,
   nativeGraphicPathEditPoints,
   updateNativeGraphicPathHandle
 } from "./documentWorkflow";
@@ -43,6 +45,16 @@ describe("graphic path direct editing interactions", () => {
   let originalRequestAnimationFrame: typeof requestAnimationFrame | undefined;
   let originalCancelAnimationFrame: typeof cancelAnimationFrame | undefined;
 
+  const captures = new Map<number, Element>();
+  let captureSets: Array<{ owner: Element; pointerId: number }> = [];
+  let captureReleases: Array<{ owner: Element; pointerId: number }> = [];
+  let historyBefore: { past: ChemDraftDocument[]; future: ChemDraftDocument[] };
+  const originalCaptureMethods = {
+    set: Element.prototype.setPointerCapture,
+    release: Element.prototype.releasePointerCapture,
+    has: Element.prototype.hasPointerCapture
+  };
+
   beforeEach(() => {
     originalResizeObserver = globalThis.ResizeObserver;
     originalRequestAnimationFrame = globalThis.requestAnimationFrame;
@@ -50,9 +62,20 @@ describe("graphic path direct editing interactions", () => {
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
     globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 0);
     globalThis.cancelAnimationFrame = (handle: number) => window.clearTimeout(handle);
-    Element.prototype.setPointerCapture = () => {};
-    Element.prototype.releasePointerCapture = () => {};
-    Element.prototype.hasPointerCapture = () => false;
+    captures.clear();
+    captureSets = [];
+    captureReleases = [];
+    // Use Element so SVG object owners are covered too. Reject releasing from the wrong owner.
+    Element.prototype.setPointerCapture = function(pointerId) {
+      captures.set(pointerId, this);
+      captureSets.push({ owner: this, pointerId });
+    };
+    Element.prototype.releasePointerCapture = function(pointerId) {
+      expect(captures.get(pointerId)).toBe(this);
+      captures.delete(pointerId);
+      captureReleases.push({ owner: this, pointerId });
+    };
+    Element.prototype.hasPointerCapture = function(pointerId) { return captures.get(pointerId) === this; };
     window.history.replaceState(null, "", "/?agentBridge=1&artStyleQa=0");
 
     container = document.createElement("div");
@@ -65,6 +88,9 @@ describe("graphic path direct editing interactions", () => {
       root.unmount();
     });
     container.remove();
+    Element.prototype.setPointerCapture = originalCaptureMethods.set;
+    Element.prototype.releasePointerCapture = originalCaptureMethods.release;
+    Element.prototype.hasPointerCapture = originalCaptureMethods.has;
     window.history.replaceState(null, "", "/");
     delete window.__CHEMDRAFT_AGENT__;
     if (originalResizeObserver) {
@@ -272,6 +298,8 @@ describe("graphic path direct editing interactions", () => {
       pointerType: { value: "mouse" }
     });
     target.dispatchEvent(event);
+    // Browsers implicitly drop capture after pointerup, independently of app cleanup.
+    if (type === "pointerup") captures.delete(pointerId);
   }
 
   async function holdShiftForRotationHandles() {
@@ -293,6 +321,381 @@ describe("graphic path direct editing interactions", () => {
       }));
     });
   }
+
+  it.each([
+    ["rectangle", "z"], ["bracket", "z"], ["reaction arrow", "z"],
+    ["rectangle", "xy"], ["bracket", "xy"], ["reaction arrow", "xy"]
+  ] as const)("applies and cancels typed rotation for a selected %s (%s)", async (kind, axis) => {
+    const drawing = createPhase4Document("Art Rotation Entry");
+    drawing.pages[0]!.objects = [kind === "rectangle" ? {
+      id: "art-entry", type: "graphic", graphicKind: "rect", x: 220, y: 180,
+      width: 80, height: 50, rotation: 0, style: {}, data: {}
+    } : {
+      id: "art-entry", type: "bracket", bracketKind: "square", x: 220, y: 180,
+      width: 80, height: 50, rotation: 0, style: {}, containedObjectIds: []
+    }];
+    drawing.selection.objectIds = ["art-entry"];
+    const initialDocument = kind === "reaction arrow"
+      ? insertNativeArtGraphicObject(createPhase4Document("Arrow Rotation Entry"), { x: 220, y: 180 }, "tool.art.reactionArrow")
+      : drawing;
+    const objectId = initialDocument.selection.objectIds[0]!;
+    await renderMainWindow(initialDocument);
+    if (kind === "reaction arrow") await shiftHover(objectId);
+    await holdShiftForRotationHandles();
+    const handleSelector = axis === "z" ? '[data-selection-rotate-handle="true"]' : '[data-selection-tilt3d-handle="true"]';
+    const handle = container.querySelector<HTMLButtonElement>(handleSelector)!;
+    expect(handle).not.toBeNull();
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", { x: 260, y: 150 }, 80, 1, { shiftKey: true });
+      dispatchPointer(pageElement(), "pointerup", { x: 260, y: 150 }, 80, 1, { shiftKey: true });
+    });
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", { x: 260, y: 150 }, 81, 2, { shiftKey: true });
+    });
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointerup", { x: 260, y: 150 }, 81, 2, { shiftKey: true });
+      handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, shiftKey: true, detail: 2 }));
+    });
+    const form = container.querySelector<HTMLFormElement>('[aria-label="selected art object rotation entry"]');
+    expect(form).not.toBeNull();
+    const inputSelector = axis === "z" ? '[aria-label="Z rotation degrees"]' : '[aria-label="X rotation degrees"]';
+    const input = form!.querySelector<HTMLInputElement>(inputSelector)!;
+    expect(document.activeElement).toBe(input);
+    await releaseShiftForRotationHandles();
+    expect(container.contains(input)).toBe(true);
+    expect(document.activeElement).toBe(input);
+    const bridge = window.__CHEMDRAFT_AGENT__!;
+    const currentObject = () => bridge.snapshot().document.pages[0]!.objects.find((object) => object.id === objectId)!;
+    const setDegrees = async (field: HTMLInputElement, degrees: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, degrees);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await setDegrees(input, "30");
+    if (axis === "xy") {
+      await setDegrees(form!.querySelector<HTMLInputElement>('[aria-label="Y rotation degrees"]')!, "15");
+    }
+    await act(async () => {
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      // jsdom does not perform the browser's implicit form submission for Enter.
+      if (input.dispatchEvent(enter)) form!.requestSubmit();
+    });
+    expect(container.querySelector('[data-rotation-input-popover]')).toBeNull();
+    expect(axis === "z" ? currentObject().rotation : currentObject().style.tiltXDegrees).toBeCloseTo(30, 5);
+    if (axis === "xy") expect(currentObject().style.tiltYDegrees).toBeCloseTo(15, 5);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Undid Rotate art object");
+    expect(axis === "z" ? currentObject().rotation : currentObject().style.tiltXDegrees ?? 0).toBe(0);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+
+    if (kind === "reaction arrow") await shiftHover(objectId);
+    await holdShiftForRotationHandles();
+    await act(async () => {
+      container.querySelector(handleSelector)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, shiftKey: true }));
+    });
+    const cancelInput = container.querySelector<HTMLInputElement>(inputSelector)!;
+    expect(document.activeElement).toBe(cancelInput);
+    await releaseShiftForRotationHandles();
+    const beforeCancel = bridge.snapshot().document;
+    await setDegrees(cancelInput, "45");
+    await act(async () => {
+      cancelInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-rotation-input-popover]')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Rotation entry canceled");
+    expect(bridge.snapshot().document).toEqual(beforeCancel);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+  });
+
+  function snapshotDocument() {
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) throw new Error("Expected agent bridge.");
+    return bridge.snapshot().document;
+  }
+
+  async function command(id: string) {
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); });
+  }
+
+  function canHistory(direction: "undo" | "redo") {
+    return container.querySelector(`[data-can-${direction}="true"]`) !== null;
+  }
+
+  // Traverse the public history commands to compare every stack entry, not just button availability.
+  async function historyStacks() {
+    const past: ChemDraftDocument[] = [];
+    const future: ChemDraftDocument[] = [];
+    while (canHistory("undo")) {
+      await command("edit.undo");
+      past.push(snapshotDocument());
+    }
+    for (let i = 0; i < past.length; i++) await command("edit.redo");
+    while (canHistory("redo")) {
+      await command("edit.redo");
+      future.push(snapshotDocument());
+    }
+    for (let i = 0; i < future.length; i++) await command("edit.undo");
+    return { past, future };
+  }
+
+  async function seedHistory() {
+    // Four turns return to the same geometry, with a fifth left on the redo stack.
+    for (let i = 0; i < 5; i++) await command("layout.rotate90");
+    await command("edit.undo");
+    historyBefore = await historyStacks();
+    expect(historyBefore.past.length).toBeGreaterThan(0);
+    expect(historyBefore.future.length).toBeGreaterThan(0);
+  }
+
+  async function escapeAndRelease(before: ChemDraftDocument, target: Element, point: { x: number; y: number }, pointerId: number, status: string) {
+    const owner = captures.get(pointerId);
+    expect(owner).toBeDefined();
+    expect(captureSets).toContainEqual({ owner, pointerId });
+    const releasesBefore = captureReleases.length;
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }));
+    });
+    expect(captures.has(pointerId)).toBe(false);
+    expect(captureReleases).toContainEqual({ owner, pointerId });
+    expect(captureReleases.slice(releasesBefore)).toEqual([{ owner, pointerId }]);
+    expect(snapshotDocument()).toEqual(before);
+    expect(snapshotDocument().selection).toEqual(before.selection);
+    expect(canHistory("undo")).toBe(true);
+    expect(canHistory("redo")).toBe(true);
+    expect(container.textContent).toContain(status);
+    expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+    await act(async () => {
+      dispatchPointer(target, "pointermove", { x: point.x + 30, y: point.y + 30 }, pointerId);
+      dispatchPointer(target, "pointerup", point, pointerId);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    expect(snapshotDocument()).toEqual(before);
+    expect(canHistory("undo")).toBe(true);
+    expect(canHistory("redo")).toBe(true);
+    expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+    expect(await historyStacks()).toEqual(historyBefore);
+  }
+
+  it.each(["molecule", "rectangle", "mixed"] as const)("Escape rolls back a %s move while preserving history and disarming release", async (kind) => {
+    let seeded = createPhase4Document("Escape Move");
+    if (kind !== "rectangle") {
+      seeded = applyNativeTemplateToolAtPoint(seeded, { x: 200, y: 260 }, "benzene");
+    }
+    if (kind !== "molecule") {
+      seeded = insertNativeArtGraphicObject(seeded, { x: 400, y: 180 }, "tool.art.rect");
+    }
+    if (kind === "mixed") {
+      seeded = applyPatch(seeded, { op: "setSelection", pageId: seeded.pages[0].id,
+        objectIds: seeded.pages[0].objects.map((object) => object.id) });
+    }
+    const objectId = seeded.selection.objectIds[0]!;
+    const object = seeded.pages[0].objects.find((candidate) => candidate.id === objectId)!;
+    // Molecules start moves from an atom/bond hit, rather than empty ring interiors.
+    const start = object.type === "molecule" ? object.atoms[0]! :
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+    const end = { x: start.x + 80, y: start.y + 50 };
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+    await seedHistory();
+    const before = snapshotDocument();
+    const target = objectElement(objectId);
+    await act(async () => { dispatchPointer(target, "pointerdown", start, 81); });
+    await act(async () => {
+      dispatchPointer(target, "pointermove", end, 81);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    if (kind === "rectangle") {
+      expect(snapshotDocument()).toEqual(before);
+      expect(container.querySelector('[data-art-transform-preview="true"]')).not.toBeNull();
+    } else {
+      expect(snapshotDocument()).not.toEqual(before);
+    }
+    await escapeAndRelease(before, target, end, 81, "Move canceled");
+  });
+
+  it.each(["resize", "rotate", "tilt", "corner", "path"] as const)("Escape rolls back a %s handle gesture", async (kind) => {
+    const seeded = insertNativeArtGraphicObject(createPhase4Document("Escape Handle"),
+      { x: 220, y: 180 }, kind === "path" ? "tool.art.line" : kind === "corner" ? "tool.art.roundedRectShadow" : "tool.art.rect");
+    const objectId = seeded.selection.objectIds[0]!;
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+    if (kind === "rotate" || kind === "tilt") await holdShiftForRotationHandles();
+    await seedHistory();
+    const before = snapshotDocument();
+    const object = graphicById(before, objectId);
+    const start = kind === "path" ? debugArtObject(objectId).projectedEditPoints!.middle! :
+      { x: object.x + object.width, y: object.y + object.height };
+    const handle = kind === "resize" ? resizeHandle("bottom-right") : kind === "path" ? pathHandle("middle") :
+      kind === "tilt" ? container.querySelector<HTMLButtonElement>('[data-selection-tilt3d-handle]') :
+      kind === "corner" ? container.querySelector<HTMLButtonElement>('[data-graphic-corner-radius-handle]') :
+      container.querySelector<HTMLButtonElement>('[data-selection-rotate-handle="true"]');
+    if (!handle) throw new Error("Expected gesture handle.");
+    const end = { x: start.x + 80, y: start.y + 50 };
+    await act(async () => { dispatchPointer(handle, "pointerdown", start, 82); });
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointermove", end, 82);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    if (!container.querySelector('[data-art-transform-preview="true"]')) {
+      expect(snapshotDocument()).not.toEqual(before);
+    }
+    await escapeAndRelease(before, pageElement(), end, 82,
+      kind === "path" ? "Path edit canceled" : kind === "resize" ? "Resize canceled" :
+      kind === "tilt" ? "3D rotate canceled" : kind === "corner" ? "Corner radius canceled" : "Rotate canceled");
+  });
+
+  it.each(["tool.select", "tool.lasso"])("Escape abandons a %s region without changing selection on release", async (tool) => {
+    const seeded = insertNativeArtGraphicObject(createPhase4Document("Escape Region"), { x: 220, y: 180 }, "tool.art.rect");
+    await renderMainWindow(seeded, { initialActiveToolCommandId: tool });
+    await seedHistory();
+    const before = snapshotDocument();
+    await act(async () => { dispatchPointer(pageElement(), "pointerdown", { x: 100, y: 100 }, 83); });
+    await act(async () => { dispatchPointer(pageElement(), "pointermove", { x: 600, y: 400 }, 83); });
+    expect(container.querySelector('.selection-marquee, .selection-lasso-surface')).not.toBeNull();
+    await escapeAndRelease(before, pageElement(), { x: 600, y: 400 }, 83, "Selection canceled");
+    expect(container.querySelector('.selection-marquee, .selection-lasso-surface')).toBeNull();
+  });
+
+  it.each(["text", "group-resize", "group-rotate", "group-tilt", "marker", "gradient", "mechanism"] as const)(
+    "Escape releases capture and preserves both history stacks for %s editing", async (kind) => {
+      let seeded = createPhase4Document("Escape extended handles");
+      if (kind === "text") {
+        seeded = insertNativeTextObject(seeded, { x: 220, y: 180 }, "Resize me");
+      } else if (kind === "mechanism" || kind === "group-tilt") {
+        seeded = applyNativeTemplateToolAtPoint(seeded, { x: 250, y: 260 }, "benzene");
+        if (kind === "group-tilt") {
+          seeded = applyNativeTemplateToolAtPoint(seeded, { x: 420, y: 400 }, "benzene");
+        } else {
+          const molecule = seeded.pages[0].objects.find(object => object.type === "molecule")!;
+          if (molecule.type !== "molecule") throw new Error("Expected molecule");
+          seeded = createMechanismArrowBetween(seeded, "full-headed",
+            { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[0]!.id },
+            { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[3]!.id });
+        }
+      } else {
+        seeded = insertNativeArtGraphicObject(seeded, { x: 220, y: 180 },
+          kind === "marker" ? "tool.art.resonanceArrow" : "tool.art.rect");
+        if (kind.startsWith("group-")) {
+          seeded = insertNativeArtGraphicObject(seeded, { x: 400, y: 300 }, "tool.art.rect");
+        }
+      }
+      if (kind.startsWith("group-")) {
+        seeded = applyPatch(seeded, { op: "setSelection", pageId: seeded.pages[0].id,
+          objectIds: seeded.pages[0].objects.map(object => object.id) });
+      }
+      if (kind === "gradient") {
+        const id = seeded.selection.objectIds[0]!;
+        const graphic = graphicById(seeded, id);
+        seeded = applyPatch(seeded, { op: "updateObject", objectId: id, changes: {
+          style: { ...graphic.style, fillMode: "solid", fillPaint: {
+            kind: "linear-gradient", units: "object", x1: 0, y1: 0, x2: 1, y2: 0,
+            stops: [{ offset: 0, color: "#ffffff" }, { offset: 1, color: "#1d7f68" }]
+          } }
+        } });
+      }
+      await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+      await seedHistory();
+      if (kind === "group-tilt") await holdShiftForRotationHandles();
+      const before = snapshotDocument();
+      const id = before.selection.objectIds[0]!;
+      const object = before.pages[0].objects.find(object => object.id === id)!;
+      let selector = '[data-text-resize-edge="right"]';
+      let start = { x: object.x + object.width, y: object.y + object.height / 2 };
+      if (kind === "group-resize") selector = '[data-group-selection] [data-object-resize-corner="bottom-right"]';
+      if (kind === "group-rotate") selector = '[data-group-rotate-handle]';
+      if (kind === "group-tilt") selector = '[data-group-tilt3d-handle]';
+      if (kind === "marker") {
+        selector = '[data-graphic-marker-handle="markerEnd"]';
+        start = debugArtObject(id).plan.markerHandles!.find(handle => handle.id === "markerEnd")!.point;
+      }
+      if (kind === "gradient") selector = '[data-graphic-gradient-handle="end"]';
+      if (kind === "mechanism") {
+        selector = '[data-mechanism-handle-index="0"]';
+        if (object.type !== "mechanism-arrow") throw new Error("Expected mechanism arrow");
+        start = object.controlPoints[0]!;
+      }
+      const handle = container.querySelector<HTMLElement>(selector);
+      if (!handle) throw new Error("Expected handle: " + selector);
+      const end = { x: start.x + 70, y: start.y + 60 };
+      await act(async () => { dispatchPointer(handle, "pointerdown", start, 84); });
+      await act(async () => {
+        dispatchPointer(kind === "mechanism" ? handle : pageElement(), "pointermove", end, 84);
+        await new Promise(resolve => window.setTimeout(resolve, 10));
+      });
+      if (!container.querySelector('[data-art-transform-preview="true"]')) {
+        expect(snapshotDocument()).not.toEqual(before);
+      }
+      const status = kind === "text" ? "Resize canceled" : kind.startsWith("group-") ? "Transform canceled" :
+        kind === "marker" ? "Arrowhead edit canceled" : kind === "gradient" ? "Gradient edit canceled" : "Electron push arrow edit canceled";
+      await escapeAndRelease(before, kind === "mechanism" ? handle : pageElement(), end, 84, status);
+    });
+
+  it.each(["native-part", "bond-edit", "bond-grow"] as const)(
+    "Escape releases capture and preserves history for a %s gesture", async (kind) => {
+      const seeded = applyNativeTemplateToolAtPoint(createPhase4Document("Escape native gesture"),
+        { x: 300, y: 300 }, "benzene");
+      await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+      await seedHistory();
+      const molecule = snapshotDocument().pages[0].objects.find(object => object.type === "molecule")!;
+      if (molecule.type !== "molecule") throw new Error("Expected molecule");
+      const atom = molecule.atoms[0]!;
+      const bond = molecule.bonds[0]!;
+      const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+      const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+      const start = kind === "bond-edit" ? { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 } : atom;
+      if (kind === "native-part") {
+        // Additive click drills down to one atom without arming a whole-object move.
+        await act(async () => {
+          dispatchPointer(objectElement(molecule.id), "pointerdown", start, 85, 1, { shiftKey: true });
+          dispatchPointer(pageElement(), "pointerup", start, 85, 1, { shiftKey: true });
+        });
+        await waitPastDoublePressWindow();
+        expect(window.__CHEMDRAFT_AGENT__!.snapshot().selectedNativeMoleculePart).toBeDefined();
+      } else {
+        await command("tool.bond");
+      }
+      const before = snapshotDocument();
+      const end = { x: start.x + 65, y: start.y - 55 };
+      await act(async () => { dispatchPointer(objectElement(molecule.id), "pointerdown", start, 86); });
+      await act(async () => {
+        dispatchPointer(pageElement(), "pointermove", end, 86);
+        await new Promise(resolve => window.setTimeout(resolve, 10));
+      });
+      if (kind === "native-part") expect(snapshotDocument()).not.toEqual(before);
+      await escapeAndRelease(before, pageElement(), end, 86,
+        kind === "native-part" ? "Move canceled" : kind === "bond-edit" ? "Bond edit canceled" : "Bond canceled");
+      expect(window.__CHEMDRAFT_AGENT__!.snapshot().hoveredNativeTarget).toBeUndefined();
+    });
+
+  it.each(["menu", "window"])("routes Escape from %s to an open menu before the active drag, then allows the drag to continue", async (escapeTarget) => {
+    const seeded = insertNativeArtGraphicObject(createPhase4Document("Escape menu precedence"),
+      { x: 220, y: 180 }, "tool.art.rect");
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+    await seedHistory();
+    const before = snapshotDocument();
+    const id = before.selection.objectIds[0]!;
+    const object = graphicById(before, id);
+    const start = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+    const end = { x: start.x + 60, y: start.y + 40 };
+    await act(async () => { dispatchPointer(objectElement(id), "pointerdown", start, 87); });
+    await act(async () => { dispatchPointer(pageElement(), "pointermove", end, 87); });
+    const owner = captures.get(87);
+    expect(owner).toBeDefined();
+    const menu = container.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!;
+    expect(menu).not.toBeNull();
+    // A menu can be opened by keyboard while the physical pointer button remains held.
+    await act(async () => { menu.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => {
+      (escapeTarget === "menu" ? menu : window).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }));
+    });
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(captures.get(87)).toBe(owner);
+    expect(container.textContent).not.toContain("Move canceled");
+    await act(async () => { dispatchPointer(pageElement(), "pointermove", { x: end.x + 20, y: end.y + 20 }, 87); });
+    expect(container.querySelector('[data-art-transform-preview="true"]')).not.toBeNull();
+    await escapeAndRelease(before, pageElement(), end, 87, "Move canceled");
+  });
 
   it("previews a line middle-handle drag below the object drag threshold", async () => {
     const document = insertNativeArtGraphicObject(

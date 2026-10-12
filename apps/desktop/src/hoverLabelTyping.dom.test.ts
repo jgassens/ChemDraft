@@ -180,15 +180,18 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
-  it("Escape cancels continuation and retains the first instant assignment", async () => {
+  it.each(["OM", "OMe", "NMe"])("Escape cancels hover %s on a ring including the first instant assignment", async label => {
+    const before = snapshot().document;
     await hover(0);
-    await press("O");
-    await press("M");
-    await press("e");
+    for (const key of label) await press(key);
     await press("Escape");
     expect(editor()).toBeNull();
-    expect(molecule().atoms[0]).toMatchObject({ element: "O" });
-    expect(molecule().atoms[0]!.labelLiteral).not.toBe(true);
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Atom label unchanged");
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to redo");
     expectIntact();
   });
 

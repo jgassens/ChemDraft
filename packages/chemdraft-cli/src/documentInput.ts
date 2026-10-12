@@ -4,6 +4,7 @@ import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { withNativeDocumentLabelBondSides } from "@chemdraft/document-workflow-core";
 import { validateBatchName, CliUsageError } from "./output";
+import { decodeUserText } from "./textInput";
 
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 
@@ -35,7 +36,7 @@ export async function loadAgentDocument(file: string) {
         length += read.bytesRead;
       }
       if (length > MAX_DOCUMENT_BYTES) throw new Error("Document exceeds the 5 MB input limit.");
-      contents = bytes.subarray(0, length).toString("utf8");
+      contents = decodeUserText(bytes.subarray(0, length));
     } finally {
       await handle.close();
     }
