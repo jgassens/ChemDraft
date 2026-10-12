@@ -8481,8 +8481,8 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
-  // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
-  // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
+  // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
+  // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
     if (!isDesktopRuntime()) {
       return undefined;
