@@ -2,12 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { message, type MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
 
-export interface NativePromptChoice {
-  id: string;
-  label: string;
-  cancel?: boolean;
-  destructive?: boolean;
-}
+/**
+ * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
+ * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
+ * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
+ */
+export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
+export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
+export type NativePromptChoice =
+  | { id: string; label: string; cancel?: false; destructive?: boolean }
+  | {
+      id: string;
+      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL;
+      cancel: true;
+      destructive?: false;
+    };
 export interface NativePromptOptions {
   title: string;
   message: string;
@@ -36,14 +45,18 @@ export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogC
     throw new Error("A prompt needs one safe cancel choice and one to three distinct labelled choices.");
   }
   const actions = choices.filter((choice) => !choice.cancel);
-  if (!actions.length) return { ok: cancel.label };
-  if (actions.length === 1 && !actions[0]!.destructive) {
-    return { ok: actions[0]!.label, cancel: cancel.label };
+  if (!actions.length) {
+    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
+    return { ok: cancel.label };
   }
-  // The plugin has no default-button option: yes/ok is always the default. For a two-choice
-  // destructive prompt, offer the safe choice in both yes and cancel slots rather than default
-  // to deletion or mislabel the system cancel slot. Both safe buttons return the same choice.
-  const safe = actions.find((choice) => !choice.destructive) ?? cancel;
+  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
+    throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
+  }
+  // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
+  // must be a safe action. A lone destructive action needs a safe alternative beside Cancel.
+  const safe = actions.find((choice) => !choice.destructive);
+  if (!safe) throw new Error("A destructive action is never the default button; offer a safe action too.");
+  if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
 }
@@ -71,9 +84,9 @@ export async function nativePrompt(
     console.error("Native prompt failed", error);
     return fallback(prompt);
   }
-  // Custom buttons normally return their label. An OS dismissal returns Cancel; fail closed
-  // on any unexpected result too. Do not interpret arbitrary labels as positional button IDs.
-  return result === "Cancel" ? cancel.id : prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
+  // Custom buttons return their label and an OS dismissal returns Cancel, which is also the cancel
+  // choice's label. Fail closed on any unexpected result; never read labels as positional button IDs.
+  return prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
 }
 
 /** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise. */

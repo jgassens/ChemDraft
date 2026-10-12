@@ -442,11 +442,12 @@ describe("PluginManagerDialog", () => {
   });
 
   it.each([
-    ["Remove", "confirm-remove-recognition-engine", 1],
-    ["Keep", "keep-recognition-engine", 0]
+    ["remove", 1],
+    ["keep", 0],
+    ["cancel", 0]
   ])(
     "asks once after uninstalling MolScribe whether to remove the engine too (%s)",
-    async (_label, action, removals) => {
+    async (choice, removals) => {
       let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
       onTestFinished(setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; })));
       const runtime = createRuntime();
@@ -483,11 +484,12 @@ describe("PluginManagerDialog", () => {
       expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
       expect(pending?.prompt.message).toContain("Also remove the recognition engine (2.5 GB)?");
       expect(pending?.prompt.choices).toEqual([
-        { id: "remove", label: "Remove", destructive: true }, { id: "keep", label: "Keep", cancel: true }
+        { id: "keep", label: "Keep Engine" }, { id: "remove", label: "Remove Engine", destructive: true },
+        { id: "cancel", label: "Cancel", cancel: true }
       ]);
       expect(onUninstallRecognitionEngine).not.toHaveBeenCalled();
 
-      await act(async () => { pending!.resolve(action === "confirm-remove-recognition-engine" ? "remove" : "keep"); });
+      await act(async () => { pending!.resolve(choice); });
       expect(onUninstallRecognitionEngine).toHaveBeenCalledTimes(removals);
       expect(document.querySelector('[data-testid="recognition-engine-removal-offer"]')).toBeNull();
       expect(document.querySelector(".plugin-manager-error")).toBeNull();

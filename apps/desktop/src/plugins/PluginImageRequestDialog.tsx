@@ -79,7 +79,7 @@ export function PluginImageRequestDialog({
     title: request.request.title,
     message: [`Requested by ${request.pluginName} (${request.pluginId})`, request.unavailableReason, request.error].filter(Boolean).join("\n\n"),
     kind: "warning",
-    choices: [{ id: "cancel", label: request.unavailableReason ? "Close" : "Cancel", cancel: true }]
+    choices: [{ id: "cancel", label: "OK", cancel: true }]
   }, () => onCancel(request.id), simple ? request.id : undefined);
   const visible = !simple || prompt.visible;
 
@@ -187,7 +187,7 @@ export function PluginImageRequestDialog({
         </div>
         <footer className="plugin-prompt-actions">
           <button className="plugin-manager-button" type="button" onClick={() => { if (simple) prompt.choose("cancel"); else onCancel(request.id); }}>
-            {request.unavailableReason ? "Close" : "Cancel"}
+            {simple ? "OK" : request.unavailableReason ? "Close" : "Cancel"}
           </button>
         </footer>
       </div>

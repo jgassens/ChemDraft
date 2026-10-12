@@ -89,7 +89,8 @@ export interface AvailableUpdate {
 
 export interface UpdateFlowDeps {
   check(): Promise<AvailableUpdate | null>;
-  confirm(text: string, options: { title: string; okLabel: string; cancelLabel: string }): Promise<boolean>;
+  /** Asks with the action button labelled `okLabel` beside Cancel. */
+  confirm(text: string, options: { title: string; okLabel: string }): Promise<boolean>;
   message(text: string, options: { title: string; kind: "info" | "error" }): Promise<void>;
   setStatus(text: string): void;
   /** Write the document session to disk now. Rejects if it could not be saved. */
@@ -132,8 +133,7 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
   try {
     accepted = await deps.confirm(updatePromptText(update), {
       title: DIALOG_TITLE,
-      okLabel: "Install and Restart",
-      cancelLabel: "Later"
+      okLabel: "Install and Restart"
     });
   } catch (error) {
     // The prompt itself failed (dialog plugin error, window closing). Nothing was installed; release
@@ -231,7 +231,7 @@ export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flu
     confirm: async (text, options) => {
       return await nativePrompt({
         title: options.title, message: text, kind: "info",
-        choices: [{ id: "update", label: options.okLabel }, { id: "cancel", label: options.cancelLabel, cancel: true }]
+        choices: [{ id: "update", label: options.okLabel }, { id: "cancel", label: "Cancel", cancel: true }]
       }) === "update";
     },
     message: async (text, options) => {

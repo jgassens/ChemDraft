@@ -46,7 +46,7 @@ export function StructureRecognitionInstallDialog({
     kind: unsupported || request.error ? "warning" : "info",
     choices: [
       ...(!unsupported ? [{ id: "install", label: reinstall ? "Install engine again" : "Install" }] : []),
-      { id: "decline", label: "Not now", cancel: true }
+      { id: "decline", label: unsupported ? "OK" : "Cancel", cancel: true }
     ]
   }, (choice) => {
     if (choice === "install") { onInstall(request.id); return false; }
@@ -142,7 +142,7 @@ export function StructureRecognitionInstallDialog({
           ) : (
             <>
               <button className="plugin-manager-button" type="button" onClick={() => prompt.choose("decline")}>
-                Not now
+                {unsupported ? "OK" : "Cancel"}
               </button>
               {!unsupported ? (
                 <button

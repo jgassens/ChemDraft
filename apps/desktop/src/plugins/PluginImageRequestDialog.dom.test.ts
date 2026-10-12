@@ -100,7 +100,7 @@ describe("PluginImageRequestDialog", () => {
     });
     expect(document.querySelector('[aria-modal="true"]')).toBeNull();
     expect(pending?.prompt.message).toContain("No image source is available.");
-    expect(pending?.prompt.choices).toEqual([{ id: "cancel", label: "Close", cancel: true }]);
+    expect(pending?.prompt.choices).toEqual([{ id: "cancel", label: "OK", cancel: true }]);
     await act(async () => pending!.resolve("cancel"));
     expect(onCancel).toHaveBeenCalledExactlyOnceWith(baseRequest.id);
     expect(onAcquire).not.toHaveBeenCalled();

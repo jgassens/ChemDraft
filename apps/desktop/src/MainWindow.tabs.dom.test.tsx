@@ -521,7 +521,7 @@ describe("documents in one window", () => {
     expect(drawnText()).toContain("Keep the first drawing");
   });
 
-  it.each(["Import Visible CDXML", "Restore Embedded"])("CDXML conflict %s opens only the chosen document", async (choice) => {
+  it.each(["Import Visible CDXML", "Restore Embedded", "Cancel"])("CDXML conflict %s opens only the chosen document", async (choice) => {
     await paste("Original embedded note");
     const original = bridge().snapshot().document;
     const payload = createNativeSavePayload(original).contents;
@@ -532,6 +532,9 @@ describe("documents in one window", () => {
     native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
     await command("document.open");
     expect(pendingPrompt?.prompt.title).toBe("Modified visible CDXML");
+    // Cancel keeps a dismissal's old outcome, the embedded document; Escape reaches it on macOS.
+    expect(pendingPrompt?.prompt.choices.map((candidate) => candidate.label))
+      .toEqual(["Import Visible CDXML", "Restore Embedded", "Cancel"]);
     expect(bridge().snapshot().document).toEqual(original);
     expect(tabs()).toHaveLength(1);
     await modalButton(choice);
@@ -540,6 +543,35 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
     await activate(0);
     expect(bridge().snapshot().document).toEqual(original);
+  });
+
+  it("reopening a file whose CDXML choice is still pending gives one tab for the path", async () => {
+    await paste("Original embedded note");
+    const edited = createNativeSavePayload(bridge().snapshot().document).contents
+      .replace("Original embedded note", "Externally edited note");
+    const prompts: { prompt: NativePromptOptions; resolve: (id: string) => void }[] = [];
+    const restore = setNativePromptProvider((prompt) => new Promise((resolve) => { prompts.push({ prompt, resolve }); }));
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+        native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+        await command("document.open");
+      }
+      let shown = 0;
+      while (prompts.length) {
+        const { prompt, resolve } = prompts.shift()!;
+        expect(prompt.title).toBe("Modified visible CDXML");
+        shown += 1;
+        await act(async () => resolve("visible"));
+      }
+      expect(shown).toBe(1);
+    } finally { restore(); }
+    expect(tabs()).toHaveLength(2);
+    expect(active()).toBe(1);
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    expect(drawnText()).toContain("Externally edited note");
+    const saved = await flush();
+    expect(saved.tabs!.filter((tab) => tab.path === "/tmp/conflicted.chemdraft")).toHaveLength(1);
   });
 
   it("the web build keeps the original close dialog and Escape retains the drawing", async () => {

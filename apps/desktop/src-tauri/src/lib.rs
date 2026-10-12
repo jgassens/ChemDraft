@@ -6774,9 +6774,20 @@ mod tests {
             .and_then(serde_json::Value::as_array)
             .expect("default capability should declare permissions");
 
-        expect_true(permissions.iter().any(|permission| {
-            capability_permission_identifier(permission) == Some("dialog:allow-save")
-        }));
+        // The save panel is the document window's alone (capabilities/document-dialogs.json).
+        let dialogs: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/document-dialogs.json"))
+                .expect("document dialogs capability should parse");
+        assert_eq!(dialogs["windows"], serde_json::json!(["main"]));
+        expect_true(
+            dialogs["permissions"]
+                .as_array()
+                .expect("document dialogs permissions")
+                .iter()
+                .any(|permission| {
+                    capability_permission_identifier(permission) == Some("dialog:allow-save")
+                }),
+        );
         expect_true(permissions.iter().any(|permission| {
             capability_permission_identifier(permission) == Some("fs:allow-write-text-file")
         }));

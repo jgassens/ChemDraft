@@ -2,7 +2,6 @@
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import { nativePrompt, nativePromptButtons, setNativePromptProvider, useNativePrompt, type NativePromptOptions } from "./nativePrompt";
 
 const plugin = vi.hoisted(() => ({ native: true, message: vi.fn() }));
@@ -34,41 +33,66 @@ describe("nativePrompt", () => {
     expect(await nativePrompt(three)).toBe("cancel");
   });
 
-  it("uses ok/cancel for two safe choices and preserves a custom cancel label", async () => {
+  it("uses ok/cancel for one action beside Cancel", async () => {
     const prompt: NativePromptOptions = { ...three, choices: [
-      { id: "resize", label: "Use A3" }, { id: "keep", label: "Keep Current Page", cancel: true }
+      { id: "resize", label: "Use A3 Page" }, { id: "keep", label: "Cancel", cancel: true }
     ] };
-    for (const [result, expected] of [["Use A3", "resize"], ["Keep Current Page", "keep"], ["Cancel", "keep"]]) {
+    for (const [result, expected] of [["Use A3 Page", "resize"], ["Cancel", "keep"]]) {
       plugin.message.mockResolvedValue(result);
       expect(await nativePrompt(prompt)).toBe(expected);
     }
     expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({
-      buttons: { ok: "Use A3", cancel: "Keep Current Page" }
+      buttons: { ok: "Use A3 Page", cancel: "Cancel" }
     }));
   });
 
-  it("uses a single labelled ok button for acknowledgement, including dismissal", async () => {
-    const prompt: NativePromptOptions = { ...three, choices: [{ id: "close", label: "Close", cancel: true }] };
-    for (const result of ["Close", "Cancel"]) {
+  it("uses a single OK button for a notice, including dismissal", async () => {
+    const prompt: NativePromptOptions = { ...three, choices: [{ id: "close", label: "OK", cancel: true }] };
+    for (const result of ["OK", "Cancel"]) {
       plugin.message.mockResolvedValue(result);
       expect(await nativePrompt(prompt)).toBe("close");
     }
-    expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: { ok: "Close" } }));
+    expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: { ok: "OK" } }));
   });
 
   it("never puts a destructive choice in the native default slot, regardless of input order", () => {
     expect(nativePromptButtons(three)).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [...three.choices].reverse() })).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [
-      { id: "delete", label: "Remove", destructive: true }, { id: "keep", label: "Keep", cancel: true }
-    ] })).toEqual({ yes: "Keep", no: "Remove", cancel: "Keep" });
+      { id: "remove", label: "Remove Engine", destructive: true }, { id: "keep", label: "Keep Engine" },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ] })).toEqual({ yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" });
+  });
+
+  it("shows each button once: a lone destructive action is refused, not paired with a duplicated safe button", () => {
+    expect(() => nativePromptButtons({ ...three, choices: [
+      { id: "remove", label: "Remove", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
+    ] })).toThrow(/never the default/);
+    for (const prompt of [three, { ...three, choices: [{ id: "a", label: "Use A3 Page" }, { id: "c", label: "Cancel" as const, cancel: true as const }] }]) {
+      const labels = Object.values(nativePromptButtons(prompt));
+      expect(new Set(labels).size).toBe(labels.length);
+    }
+  });
+
+  it("labels the cancel choice Cancel whenever there is a choice, and a notice's button OK (Escape on macOS)", () => {
+    // AppKit reaches only a button titled "Cancel" with Escape; any other cancel label stranded the box open.
+    const loose = (choices: { id: string; label: string; cancel?: boolean }[]) =>
+      ({ ...three, choices } as unknown as NativePromptOptions);
+    expect(() => nativePromptButtons(loose([{ id: "resize", label: "Use A3" }, { id: "keep", label: "Keep Current Page", cancel: true }]))).toThrow(/Cancel/);
+    expect(() => nativePromptButtons(loose([{ id: "install", label: "Install" }, { id: "no", label: "Not now", cancel: true }]))).toThrow(/Cancel/);
+    expect(() => nativePromptButtons(loose([{ id: "install", label: "Install" }, { id: "ok", label: "OK", cancel: true }]))).toThrow(/Cancel/);
+    expect(() => nativePromptButtons(loose([{ id: "close", label: "Close", cancel: true }]))).toThrow(/OK/);
+    expect(() => nativePromptButtons(loose([{ id: "close", label: "Cancel", cancel: true }]))).toThrow(/OK/);
+    // @ts-expect-error a cancel choice's label is "Cancel" or "OK" by type, too
+    const typed: NativePromptOptions = { ...three, choices: [{ id: "close", label: "Close", cancel: true }] };
+    expect(() => nativePromptButtons(typed)).toThrow();
   });
 
   it("rejects ambiguous or unsafe choice specifications", () => {
     for (const choices of [[], three.choices.slice(0, 1), [...three.choices, { id: "fourth", label: "Fourth" }],
-      [{ id: "delete", label: "Delete", cancel: true, destructive: true }],
-      [{ id: "one", label: "Same", cancel: true }, { id: "two", label: "Same" }]]) {
-      expect(() => nativePromptButtons({ ...three, choices })).toThrow();
+      [{ id: "delete", label: "Cancel", cancel: true, destructive: true }],
+      [{ id: "one", label: "Cancel", cancel: true }, { id: "two", label: "Cancel" }]]) {
+      expect(() => nativePromptButtons({ ...three, choices } as NativePromptOptions)).toThrow();
     }
   });
 
@@ -143,12 +167,5 @@ describe("nativePrompt", () => {
       expect(plugin.message).toHaveBeenCalledTimes(1);
       expect(onChoice).toHaveBeenCalledExactlyOnceWith("cancel");
     } finally { await act(async () => root.unmount()); }
-  });
-
-  it("grants message permission to main alone, on both desktop platforms", () => {
-    const capability = JSON.parse(readFileSync("apps/desktop/src-tauri/capabilities/native-prompts.json", "utf8"));
-    expect(capability.windows).toEqual(["main"]);
-    expect(capability.permissions).toEqual(["dialog:allow-message"]);
-    expect(capability.platforms).toBeUndefined();
   });
 });

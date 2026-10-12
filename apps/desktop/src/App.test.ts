@@ -1889,8 +1889,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("recommendImportedPageFit(resolvedOpen.document)");
     expect(mainWindowSource).toContain("<ImportedPageFitPrompt");
     expect(mainWindowSource).toContain("applyImportedPageFitRecommendation(current, pageFitPrompt)");
-    expect(mainWindowSource).toContain("Keep Current Page");
-    expect(mainWindowSource).toContain("Use {recommendedLabel}");
+    expect(mainWindowSource).toContain(`{ id: "keep", label: "Cancel", cancel: true }`);
+    expect(mainWindowSource).toContain("Use {recommendedLabel} Page");
   });
 
   it("also offers the page-size choice when a pasted structure overflows the current page", () => {

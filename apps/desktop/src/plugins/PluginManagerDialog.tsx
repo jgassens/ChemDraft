@@ -215,8 +215,9 @@ export function PluginManagerDialog({
     message: `Also remove the recognition engine (${formatDiskBytes(engineRemovalOfferBytes ?? 0)})?`,
     kind: "warning",
     choices: [
-      { id: "remove", label: "Remove", destructive: true },
-      { id: "keep", label: "Keep", cancel: true }
+      { id: "keep", label: "Keep Engine" },
+      { id: "remove", label: "Remove Engine", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
     ]
   }, async (choice) => {
     if (choice === "remove") await removeRecognitionEngineAfterUninstall();
@@ -499,21 +500,30 @@ export function PluginManagerDialog({
             <div className="plugin-manager-package-actions">
               <button
                 className="plugin-manager-button"
-                data-action="confirm-remove-recognition-engine"
-                disabled={busy}
-                onClick={() => engineRemovalPrompt.choose("remove")}
-                type="button"
-              >
-                Remove
-              </button>
-              <button
-                className="plugin-manager-button"
                 data-action="keep-recognition-engine"
                 disabled={busy}
                 onClick={() => engineRemovalPrompt.choose("keep")}
                 type="button"
               >
-                Keep
+                Keep Engine
+              </button>
+              <button
+                className="plugin-manager-button"
+                data-action="confirm-remove-recognition-engine"
+                disabled={busy}
+                onClick={() => engineRemovalPrompt.choose("remove")}
+                type="button"
+              >
+                Remove Engine
+              </button>
+              <button
+                className="plugin-manager-button"
+                data-action="cancel-recognition-engine-removal"
+                disabled={busy}
+                onClick={() => engineRemovalPrompt.choose("cancel")}
+                type="button"
+              >
+                Cancel
               </button>
             </div>
           </div>

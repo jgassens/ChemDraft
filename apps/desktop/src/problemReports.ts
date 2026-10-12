@@ -241,6 +241,6 @@ export async function askToSendCrashReport(_isDesktop: boolean, brief: string, e
     title: "Send a crash report?",
     message: text,
     kind: "warning",
-    choices: [{ id: "email", label: "Email Report" }, { id: "cancel", label: "Not Now", cancel: true }]
+    choices: [{ id: "email", label: "Email Report" }, { id: "cancel", label: "Cancel", cancel: true }]
   }) === "email";
 }

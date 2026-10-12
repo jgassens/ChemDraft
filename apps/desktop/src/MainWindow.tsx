@@ -1250,6 +1250,12 @@ type ResolvedOpenDocument = {
   source: ReturnType<typeof openNativeDocument>["source"];
   statusSourceLabel?: string;
 };
+type OpenDocumentContentsOptions = {
+  /** Restore-session path: the contents hold edits never written to `path`. */
+  dirty?: boolean;
+  /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
+  statusOverride?: string;
+};
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
@@ -7976,16 +7982,11 @@ export function MainWindow({
     }
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
-  const openDocumentContents = useCallback(async (
+  const openDocumentContentsNow = useCallback(async (
     contents: string,
     displayName: string,
     path?: string,
-    options?: {
-      /** Restore-session path: the contents hold edits never written to `path`. */
-      dirty?: boolean;
-      /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
-      statusOverride?: string;
-    }
+    options?: OpenDocumentContentsOptions
   ) => {
     if (closeTabPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for Save/Discard/Cancel and the startup restore before activating an OS open-with.
@@ -8034,6 +8035,23 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+  const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
+  openDocumentContentsNowRef.current = openDocumentContentsNow;
+  const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
+  // file must wait and then find the tab the first one made, not add a second tab for one path.
+  const openDocumentContents = useCallback((
+    contents: string,
+    displayName: string,
+    path?: string,
+    options?: OpenDocumentContentsOptions
+  ): Promise<void> => {
+    const run = documentOpenQueueRef.current.then(() =>
+      openDocumentContentsNowRef.current(contents, displayName, path, options));
+    documentOpenQueueRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
 
   const openDocumentContentsRef = useRef(openDocumentContents);
   openDocumentContentsRef.current = openDocumentContents;
@@ -19458,11 +19476,11 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
   const prompt = useNativePrompt({
     title: "Imported Content Exceeds Page",
-    message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nResize the page to ${recommendedLabel} and place the import on the page, or keep the current page size and leave the overflow unchanged.`,
+    message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
     kind: "warning",
     choices: [
-      { id: "resize", label: `Use ${recommendedLabel}` },
-      { id: "keep", label: "Keep Current Page", cancel: true }
+      { id: "resize", label: `Use ${recommendedLabel} Page` },
+      { id: "keep", label: "Cancel", cancel: true }
     ]
   }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.displayName);
   if (!prompt.visible) return null;
@@ -19483,14 +19501,14 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
           {recommendation.displayName} extends beyond {currentLabel}{overflow ? ` by about ${overflow}` : ""}.
         </p>
         <p style={exportDialogHintStyle}>
-          Resize the page to {recommendedLabel} and place the import on the page, or keep the current page size and leave the overflow unchanged.
+          Change the page to {recommendedLabel} to fit the imported content?
         </p>
         <div style={exportDialogFooterStyle}>
           <button autoFocus type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("keep")}>
-            Keep Current Page
+            Cancel
           </button>
           <button type="button" style={exportDialogPrimaryButtonStyle} onClick={() => prompt.choose("resize")}>
-            Use {recommendedLabel}
+            Use {recommendedLabel} Page
           </button>
         </div>
       </section>
@@ -29457,7 +29475,12 @@ async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDoc
       title: "Modified visible CDXML",
       message: "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset, or restore the embedded ChemDraft document instead?",
       kind: "warning",
-      choices: [{ id: "visible", label: "Import Visible CDXML" }, { id: "embedded", label: "Restore Embedded", cancel: true }]
+      // Cancel keeps the outcome a dismissal always had: the embedded document.
+      choices: [
+        { id: "visible", label: "Import Visible CDXML" },
+        { id: "embedded", label: "Restore Embedded" },
+        { id: "cancel", label: "Cancel", cancel: true }
+      ]
     }) === "visible";
     return importVisible
       ? {

@@ -96,7 +96,7 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(prompt.message).toContain("Images never leave it.");
     expect(prompt.message).toContain("Experimental");
     expect(prompt.choices).toEqual([
-      { id: "install", label: "Install" }, { id: "decline", label: "Not now", cancel: true }
+      { id: "install", label: "Install" }, { id: "decline", label: "Cancel", cancel: true }
     ]);
     await consent.choose("install");
     expect(callbacks.onInstall).toHaveBeenCalledWith(7);
@@ -158,7 +158,7 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(document.body.textContent).toContain("isn’t supported");
     expect(document.querySelector("h2")?.textContent).toBe("Recognition engine unavailable");
     expect(() => button("Install")).toThrow();
-    expect(button("Not now")).toBeDefined();
+    expect(button("OK")).toBeDefined();
   });
 
   it("shows the status detail for an unsupported computer, such as an Intel Mac", () => {
