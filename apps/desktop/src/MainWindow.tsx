@@ -1577,7 +1577,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.02.50-opus";
+const CURRENT_BUILD_STAMP = "10.12.03.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7754,10 +7754,6 @@ export function MainWindow({
     cancelMoleculeInspectorPreview();
     cancelSpin3dSession(undefined, { clearModelCache: true });
     // Releasing captures before clearing refs makes late pointer-up/cancel events harmless.
-    for (const [pointerId, owner] of pointerCaptureOwnersRef.current) {
-      if (owner.hasPointerCapture(pointerId)) owner.releasePointerCapture(pointerId);
-    }
-    pointerCaptureOwnersRef.current.clear();
     const pointerSessions = [nativeBondDragRef, nativePlacementDragRef, nativeBondEditDragRef,
       nativePartDragRef, objectDragRef, graphicCornerRadiusDragRef, graphicPathEditDragRef,
       graphicMarkerDragRef, graphicGradientDragRef, freehandArtDragRef, tapeMeasureDragRef,
@@ -7767,6 +7763,7 @@ export function MainWindow({
     for (const ref of pointerSessions) {
       const pointerId = ref.current?.pointerId;
       if (pointerId !== undefined) {
+        releaseGesturePointer(pointerId);
         for (const target of [pageRef.current, canvasRegionRef.current]) {
           if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
         }
@@ -7809,7 +7806,7 @@ export function MainWindow({
     resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
     selectionClipboardPasteStateRef.current = undefined;
   }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
-    replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
+    releaseGesturePointer, replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });

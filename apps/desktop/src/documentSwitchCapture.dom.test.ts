@@ -73,15 +73,18 @@ describe("document switch pointer capture", () => {
     else Reflect.deleteProperty(globalThis, "ResizeObserver");
   });
 
-  async function render(document: ChemDraftDocument) {
+  async function render(
+    document: ChemDraftDocument,
+    options: { initialPaletteMode?: "floating" | "hidden"; nativePalette?: boolean } = {}
+  ) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialDocument: document,
         initialActiveToolCommandId: "tool.select",
         initialCrosshairsVisible: false,
-        initialPaletteMode: "hidden",
+        initialPaletteMode: options.initialPaletteMode ?? "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        nativePalette: options.nativePalette ?? true
       }));
     });
     page().getBoundingClientRect = () => pageRect;
@@ -97,6 +100,18 @@ describe("document switch pointer capture", () => {
   function object(objectId: string): HTMLElement {
     const result = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`);
     if (!result) throw new Error("Expected rendered object.");
+    return result;
+  }
+
+  function paletteDragSurface(): HTMLElement {
+    const result = container.querySelector<HTMLElement>('[data-web-palette-drag-region="true"]');
+    if (!result) throw new Error("Expected floating web palette drag surface.");
+    return result;
+  }
+
+  function palette(): HTMLElement {
+    const result = container.querySelector<HTMLElement>('[data-floating-palette="web-preview"]');
+    if (!result) throw new Error("Expected floating web palette.");
     return result;
   }
 
@@ -155,7 +170,9 @@ describe("document switch pointer capture", () => {
     Object.defineProperties(event, {
       isPrimary: { value: true }, pointerId: { value: pointerId }, pointerType: { value: "mouse" }
     });
-    target.dispatchEvent(event);
+    // jsdom does not route later pointer events to the capture owner, so model the browser's
+    // retargeting here. This lets the palette cases send events outside the palette itself.
+    (captures.get(pointerId) ?? target).dispatchEvent(event);
     if (type === "pointerup") captures.delete(pointerId);
   }
 
@@ -167,7 +184,6 @@ describe("document switch pointer capture", () => {
 
   async function expectSwitchCancelsCapture(
     owner: Element,
-    target: Element,
     pointerId: number,
     before: ChemDraftDocument,
     beforeHistory: { past: ChemDraftDocument[]; future: ChemDraftDocument[] }
@@ -181,8 +197,8 @@ describe("document switch pointer capture", () => {
     const secondDocument = snapshot();
     const secondHistory = await historyStacks();
     await act(async () => {
-      dispatchPointer(target, "pointermove", { x: 700, y: 500 }, pointerId);
-      dispatchPointer(target, "pointerup", { x: 700, y: 500 }, pointerId);
+      dispatchPointer(page(), "pointermove", { x: 700, y: 500 }, pointerId);
+      dispatchPointer(page(), "pointerup", { x: 700, y: 500 }, pointerId);
     });
     expect(snapshot()).toEqual(secondDocument);
     expect(await historyStacks()).toEqual(secondHistory);
@@ -201,8 +217,11 @@ describe("document switch pointer capture", () => {
     const beforeHistory = await historyStacks();
     const target = object(objectId);
     const start = { x: 250, y: 210 };
-    await act(async () => { dispatchPointer(target, "pointerdown", start, 71); });
-    await expectSwitchCancelsCapture(target, target, 71, before, beforeHistory);
+    await act(async () => {
+      dispatchPointer(target, "pointerdown", start, 71);
+      dispatchPointer(target, "pointermove", { x: 300, y: 240 }, 71);
+    });
+    await expectSwitchCancelsCapture(target, 71, before, beforeHistory);
   });
 
   it("releases a direct-edit handle capture when switching tabs", async () => {
@@ -218,8 +237,11 @@ describe("document switch pointer capture", () => {
     const beforeHistory = await historyStacks();
     const handle = container.querySelector<HTMLButtonElement>('[data-mechanism-handle-index="0"]');
     if (!handle) throw new Error("Expected direct-edit handle.");
-    await act(async () => { dispatchPointer(handle, "pointerdown", { x: 250, y: 260 }, 72); });
-    await expectSwitchCancelsCapture(handle, handle, 72, before, beforeHistory);
+    await act(async () => {
+      dispatchPointer(handle, "pointerdown", { x: 250, y: 260 }, 72);
+      dispatchPointer(handle, "pointermove", { x: 280, y: 290 }, 72);
+    });
+    await expectSwitchCancelsCapture(handle, 72, before, beforeHistory);
   });
 
   it("releases a marquee page capture when switching tabs", async () => {
@@ -229,7 +251,66 @@ describe("document switch pointer capture", () => {
     const before = snapshot();
     const beforeHistory = await historyStacks();
     const target = page();
-    await act(async () => { dispatchPointer(target, "pointerdown", { x: 80, y: 80 }, 73); });
-    await expectSwitchCancelsCapture(target, target, 73, before, beforeHistory);
+    await act(async () => {
+      dispatchPointer(target, "pointerdown", { x: 80, y: 80 }, 73);
+      dispatchPointer(target, "pointermove", { x: 120, y: 120 }, 73);
+    });
+    await expectSwitchCancelsCapture(target, 73, before, beforeHistory);
+  });
+
+  it("keeps a floating web palette drag captured across a tab switch", async () => {
+    await render(createPhase4Document("Palette capture"), {
+      initialPaletteMode: "floating",
+      nativePalette: false
+    });
+    const dragSurface = paletteDragSurface();
+    const initialX = palette().style.getPropertyValue("--palette-x");
+    await act(async () => { dispatchPointer(dragSurface, "pointerdown", { x: 100, y: 100 }, 74); });
+    expect(captures.get(74)).toBe(dragSurface);
+
+    await switchToNewTab();
+    expect(captures.get(74)).toBe(dragSurface);
+    expect(captureReleases.filter((release) => release.pointerId === 74)).toEqual([]);
+
+    await act(async () => {
+      dispatchPointer(page(), "pointermove", { x: 160, y: 145 }, 74);
+      dispatchPointer(page(), "pointerup", { x: 160, y: 145 }, 74);
+    });
+    expect(palette().style.getPropertyValue("--palette-x")).not.toBe(initialX);
+    expect(captures.has(74)).toBe(false);
+    expect(captureReleases.filter((release) => release.pointerId === 74)).toEqual([{ owner: dragSurface, pointerId: 74 }]);
+  });
+
+  it("releases only the document gesture when a palette drag uses another pointer", async () => {
+    const document = insertNativeArtGraphicObject(createPhase4Document("Two captures"), { x: 220, y: 180 }, "tool.art.rect");
+    const objectId = document.selection.objectIds[0]!;
+    await render(document, { initialPaletteMode: "floating", nativePalette: false });
+    const documentOwner = object(objectId);
+    const dragSurface = paletteDragSurface();
+    await act(async () => {
+      dispatchPointer(documentOwner, "pointerdown", { x: 250, y: 210 }, 75);
+      dispatchPointer(documentOwner, "pointermove", { x: 300, y: 240 }, 75);
+      dispatchPointer(dragSurface, "pointerdown", { x: 100, y: 100 }, 76);
+    });
+    expect(captures.get(75)).toBe(documentOwner);
+    expect(captures.get(76)).toBe(dragSurface);
+
+    await switchToNewTab();
+    expect(captures.has(75)).toBe(false);
+    expect(captures.get(76)).toBe(dragSurface);
+    expect(captureReleases).toContainEqual({ owner: documentOwner, pointerId: 75 });
+    expect(captureReleases.filter((release) => release.pointerId === 76)).toEqual([]);
+
+    const destinationDocument = snapshot();
+    const destinationHistory = await historyStacks();
+    await act(async () => {
+      dispatchPointer(page(), "pointermove", { x: 700, y: 500 }, 75);
+      dispatchPointer(page(), "pointerup", { x: 700, y: 500 }, 75);
+      dispatchPointer(page(), "pointermove", { x: 160, y: 145 }, 76);
+      dispatchPointer(page(), "pointerup", { x: 160, y: 145 }, 76);
+    });
+    expect(snapshot()).toEqual(destinationDocument);
+    expect(await historyStacks()).toEqual(destinationHistory);
+    expect(captures.has(76)).toBe(false);
   });
 });
