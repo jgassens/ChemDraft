@@ -554,8 +554,9 @@ describe("toolset bridge interactions", () => {
     });
 
     // Both molecules render their ring as selected (the headline cross-molecule win).
-    expect(wrapperFor(molA.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
-    expect(wrapperFor(molB.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    // Ring highlights share the interaction layer with handles, above every object's paint.
+    expect(container.querySelector(`[data-object-controls="${molA.id}"]`)!.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    expect(container.querySelector(`[data-object-controls="${molB.id}"]`)!.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
     // The status counts rings across both molecules, not just the primary.
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected 2 rings");
 

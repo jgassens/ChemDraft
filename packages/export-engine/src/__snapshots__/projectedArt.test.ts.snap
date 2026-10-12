@@ -1,0 +1,106 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`projected reaction arrows and brackets > keeps untilted curly bracket serialization byte-identical > rotation 0 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="translate(100 100)" data-bracket-kind="curly" d="M 119 0 C 18 2.4000000000000004, 102 9.120000000000001, 24 12 C 102 14.879999999999999, 18 21.6, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted curly bracket serialization byte-identical > rotation 37 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(37 160 112) translate(100 100)" data-bracket-kind="curly" d="M 119 0 C 18 2.4000000000000004, 102 9.120000000000001, 24 12 C 102 14.879999999999999, 18 21.6, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted curly bracket serialization byte-identical > rotation 90 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(90 160 112) translate(100 100)" data-bracket-kind="curly" d="M 119 0 C 18 2.4000000000000004, 102 9.120000000000001, 24 12 C 102 14.879999999999999, 18 21.6, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted polymer bracket serialization byte-identical > rotation 0 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="translate(100 100)" data-bracket-kind="polymer" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted polymer bracket serialization byte-identical > rotation 37 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(37 160 112) translate(100 100)" data-bracket-kind="polymer" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted polymer bracket serialization byte-identical > rotation 90 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(90 160 112) translate(100 100)" data-bracket-kind="polymer" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted round bracket serialization byte-identical > rotation 0 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="translate(100 100)" data-bracket-kind="round" d="M 119 0 C 21.599999999999998 3.84, 21.599999999999998 20.16, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted round bracket serialization byte-identical > rotation 37 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(37 160 112) translate(100 100)" data-bracket-kind="round" d="M 119 0 C 21.599999999999998 3.84, 21.599999999999998 20.16, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted round bracket serialization byte-identical > rotation 90 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(90 160 112) translate(100 100)" data-bracket-kind="round" d="M 119 0 C 21.599999999999998 3.84, 21.599999999999998 20.16, 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted square bracket serialization byte-identical > rotation 0 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="translate(100 100)" data-bracket-kind="square" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted square bracket serialization byte-identical > rotation 37 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(37 160 112) translate(100 100)" data-bracket-kind="square" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted square bracket serialization byte-identical > rotation 90 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(90 160 112) translate(100 100)" data-bracket-kind="square" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted unknown bracket serialization byte-identical > rotation 0 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="translate(100 100)" data-bracket-kind="unknown" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted unknown bracket serialization byte-identical > rotation 37 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(37 160 112) translate(100 100)" data-bracket-kind="unknown" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
+
+exports[`projected reaction arrows and brackets > keeps untilted unknown bracket serialization byte-identical > rotation 90 1`] = `
+"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Projection">
+  <rect width="816" height="1056" fill="#ffffff" />
+  <path data-object-id="projected-art" data-layer-index="0" data-object-type="bracket" transform="rotate(90 160 112) translate(100 100)" data-bracket-kind="unknown" d="M 119 0 L 0 0 L 0 23 L 119 23" fill="none" stroke="#172026" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>"
+`;
