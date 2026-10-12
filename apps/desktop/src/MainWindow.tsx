@@ -11601,7 +11601,6 @@ export function MainWindow({
       }
     };
     const handleBlur = () => {
-      cancelSelectionPointerGesture();
       setShiftPressed(false);
       hoverLabelAssignmentRef.current = undefined;
     };
@@ -11616,7 +11615,7 @@ export function MainWindow({
       window.removeEventListener("blur", handleBlur);
       window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [cancelSelectionPointerGesture]);
+  }, []);
 
   // Observe in capture phase so inline editors and handles can keep their own propagation rules.
   // Read drag refs after event dispatch: pointer-down/up handlers create/clear them synchronously.
