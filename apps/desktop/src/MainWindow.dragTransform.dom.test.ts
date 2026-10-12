@@ -135,6 +135,134 @@ describe("object move retained SVG preview", () => {
     return doc;
   }
 
+  function anchoredArrowScenario(allAnchorsMoved = false) {
+    let doc = rings(1);
+    doc = workflow.insertNativeTemplateMolecule(doc, { x: 430, y: 350 }, "benzene");
+    const [left, right] = doc.pages[0].objects as MoleculeObject[];
+    doc = workflow.createMechanismArrowBetween(doc, "full-headed",
+      { kind: "atom", objectId: left.id, atomId: left.atoms[0].id },
+      { kind: "atom", objectId: right.id, atomId: right.atoms[0].id });
+    const arrow = doc.pages[0].objects.find(object => object.type === "mechanism-arrow")!;
+    return workflow.selectDocumentObjects(doc, doc.pages[0].id,
+      allAnchorsMoved ? [left.id, right.id, arrow.id] : [right.id, arrow.id]);
+  }
+
+  it.each([false, true])("clears tab-switch previews and uses connected targets on the next drag (arrow: %s)", async arrow => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    await mount(arrow ? anchoredArrowScenario() : rings(1));
+    const drag = await start();
+    const paint = paintedSvg();
+    await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
+    await act(async () => container.querySelector('[aria-label="New tab"]')!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(drag.target.isConnected).toBe(false);
+    expect(drag.target.style.translate).toBe("");
+    await act(async () => container.querySelector('[role="tab"][aria-selected="false"]')!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(snapshot()).toEqual(drag.before);
+    expect(paintedSvg()).toEqual(paint);
+    container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () => ({
+      x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({})
+    });
+    clock.mockReturnValue(2000);
+    const next = await start();
+    await move(next.target, { x: next.point.x + 20, y: next.point.y + 15 });
+    expect(next.target.style.translate).toBe("calc(20px * var(--page-scale)) calc(15px * var(--page-scale))");
+    await act(async () => pointer(next.target, "pointercancel", next.point));
+    expect(snapshot()).toEqual(drag.before);
+    expect(paintedSvg()).toEqual(paint);
+  });
+
+  it.each(["edit.undo", "edit.redo", "layout.rotate90"].flatMap(action =>
+    [false, true].map(beforeFrame => ({ action, beforeFrame }))
+  ))("cancels the retained gesture on external document install: $action (before frame: $beforeFrame)", async ({ action, beforeFrame }) => {
+    await mount(rings(1));
+    const initial = snapshot();
+    await command("layout.rotate90");
+    const rotated = snapshot();
+    if (action === "edit.redo") await command("edit.undo");
+    const drag = await start();
+    if (beforeFrame) {
+      await act(async () => pointer(drag.target, "pointermove", { x: drag.point.x + 40, y: drag.point.y + 30 }));
+    } else await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
+    await command(action);
+    const installed = snapshot();
+    if (action === "edit.undo") expect(installed).toEqual(initial);
+    if (action === "edit.redo") expect(installed).toEqual(rotated);
+    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+    expect(drag.target.style.translate).toBe("");
+    await move(drag.target, { x: drag.point.x + 60, y: drag.point.y + 50 });
+    await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 60, y: drag.point.y + 50 }));
+    await flushFrames();
+    expect(snapshot()).toBe(installed);
+    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+    const paint = paintedSvg();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount(installed);
+    expect(paintedSvg()).toEqual(paint);
+  });
+
+  it("recollects cached targets if a control wrapper detaches during the gesture", async () => {
+    await mount(rings(1));
+    const drag = await start();
+    await move(drag.target, { x: drag.point.x + 20, y: drag.point.y + 15 });
+    const original = container.querySelector<HTMLElement>(`[data-object-controls="${drag.molecule.id}"]`)!;
+    const replacement = original.cloneNode(true) as HTMLElement;
+    replacement.style.translate = "";
+    replacement.removeAttribute("data-object-move-preview");
+    original.replaceWith(replacement);
+    try {
+      await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
+      expect(replacement.style.translate).toBe("calc(40px * var(--page-scale)) calc(30px * var(--page-scale))");
+      expect(original.style.translate).toBe("");
+    } finally {
+      // Restore React's owned node before teardown.
+      replacement.replaceWith(original);
+    }
+    await act(async () => pointer(drag.target, "pointercancel", drag.point));
+    expect(snapshot()).toEqual(drag.before);
+    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+  });
+
+  it("cancels a retained move on window blur through the Escape cancellation path", async () => {
+    await mount(anchoredArrowScenario());
+    const drag = await start();
+    const paint = paintedSvg();
+    await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
+    await act(async () => window.dispatchEvent(new Event("blur")));
+    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+    expect(snapshot()).toEqual(drag.before);
+    expect(paintedSvg()).toEqual(paint);
+    await move(drag.target, { x: drag.point.x + 60, y: drag.point.y + 50 });
+    await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 60, y: drag.point.y + 50 }));
+    expect(snapshot()).toEqual(drag.before);
+  });
+
+  it.each([false, true])("places replanned arrow controls at the committed geometry (all anchors moved: %s)", async allAnchorsMoved => {
+    await mount(anchoredArrowScenario(allAnchorsMoved));
+    const arrow = snapshot().pages[0].objects.find(object => object.type === "mechanism-arrow")!;
+    const controls = () => container.querySelector<HTMLElement>(`[data-object-controls="${arrow.id}"]`)!;
+    const handles = () => [...controls().querySelectorAll<HTMLElement>(".mechanism-arrow-handle")]
+      .map(element => element.getAttribute("style"));
+    const initialControls = controls().getAttribute("style");
+    const initialHandles = handles();
+    expect(initialHandles.length).toBeGreaterThan(0);
+    const drag = await start();
+    await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
+    expect(controls().style.translate).toBe("");
+    if (!allAnchorsMoved) {
+      expect(controls().getAttribute("style")).toBe(initialControls);
+      expect(handles()).toEqual(initialHandles);
+    }
+    const previewControls = controls().getAttribute("style");
+    const previewHandles = handles();
+    await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 40, y: drag.point.y + 30 }));
+    expect(controls().getAttribute("style")).toBe(previewControls);
+    expect(handles()).toEqual(previewHandles);
+    expect(snapshot()).toEqual(oldMove(drag.before, drag.molecule, 40, 30));
+  });
+
   it.each(["single", "molecules", "mixed", "rotated tilted", "grouped", "mixed grouped rotated tilted"])(
     "retains SVG and commits the old path's exact document and paint: %s", async kind => {
       await mount(scenario(kind));
