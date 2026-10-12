@@ -173,8 +173,51 @@ describe("multi-document session extension", () => {
     expect(recovered.tabs).toEqual([blank, { ...blank, dirty: true }]);
     expect(recovered.unrestoredTabs).toEqual([corrupt]);
     expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(recovered)))!.unrestoredTabs).toEqual([corrupt]);
-    expect(parseDocumentSessionEnvelope({ ...session, tabs: [corrupt] })).toBeUndefined();
-    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0, tabs: [session] })).toBeUndefined();
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0, tabs: [corrupt] })!.unrestoredTabs).toEqual([corrupt]);
+    expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 0, tabs: [session] })!.unrestoredTabs).toEqual([session]);
+  });
+
+  describe.each(["macos", "windows"] as const)("unreadable child envelopes on %s", (platform) => {
+    const path = platform === "macos" ? "/tmp/drawing.chemdraft" : "C:\\drawings\\drawing.chemdraft";
+    const originalContents = "{\r\n  \"drawing\": \"α 🧪\"\r\n}\t\n";
+    const unsupported = { ...blank, version: 99, path, contents: originalContents, future: { data: [1, 2] } };
+    const malformed = { ...unsupported, version: 1, dirty: "unknown" };
+    const previouslyKept = { ...unsupported, displayName: "Previously kept" };
+
+    it.each(["unsupported versions", "bad shapes"])("keeps every child with %s when none is readable", (kind) => {
+      const children = kind === "unsupported versions" ? [unsupported, { ...unsupported }] : [malformed, null];
+      const parsed = parseDocumentSessionEnvelope({ ...session, tabs: children, activeTabIndex: 1 })!;
+      expect(parsed).toEqual({ version: 1, tabs: [], activeTabIndex: 0, unrestoredTabs: children });
+      expect(shouldRestoreDocumentSession(parsed)).toBe(true);
+      const candidates = documentSessionRestoreCandidates(parsed);
+      expect(candidates).toEqual(children);
+      expect(candidates[0]).toBe(children[0]);
+      expect(unrestoredTabContents(candidates[0])).toBe(originalContents);
+      const autosaved = { ...buildDocumentTabsSession([blank], 0), unrestoredTabs: candidates };
+      expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(autosaved)))!.unrestoredTabs).toEqual(children);
+    });
+
+    it.each([false, true])("includes previously kept tabs with unreadable children (readable sibling: %s)", (readableSibling) => {
+      const rawTabs = readableSibling ? [unsupported, blank, malformed] : [unsupported, malformed];
+      const parsed = parseDocumentSessionEnvelope({ ...session, tabs: rawTabs, activeTabIndex: 1,
+        unrestoredTabs: [previouslyKept] })!;
+      expect(parsed.tabs).toEqual(readableSibling ? [blank] : []);
+      expect(parsed.unrestoredTabs).toEqual([previouslyKept, unsupported, malformed]);
+      const candidates = documentSessionRestoreCandidates(parsed);
+      expect(candidates).toEqual([...(readableSibling ? [blank] : []), previouslyKept, unsupported, malformed]);
+      expect(candidates.at(-1)).toBe(malformed);
+    });
+
+    it("does not depend on a readable active-document mirror in a structurally valid outer session", () => {
+      const parsed = parseDocumentSessionEnvelope({ version: 1, tabs: [unsupported], activeTabIndex: 0 })!;
+      expect(documentSessionRestoreCandidates(parsed)).toEqual([unsupported]);
+    });
+
+    it("still rejects an unreadable outer session even when it carries recoverable children", () => {
+      expect(parseDocumentSessionEnvelope({ ...session, version: 99, tabs: [unsupported], activeTabIndex: 0,
+        unrestoredTabs: [previouslyKept] })).toBeUndefined();
+      expect(parseDocumentSessionEnvelope("{bad JSON")).toBeUndefined();
+    });
   });
 });
 

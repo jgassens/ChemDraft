@@ -1016,6 +1016,131 @@ describe("documents in one window", () => {
       expect(pendingPrompt).toBeUndefined();
     };
 
+    function unsupportedChildrenSession() {
+      const session = threeTabSession();
+      return { ...session, tabs: session.tabs!.map((tab, index) => ({
+        ...tab, version: 99, contents: `${tab.contents}\r\n\t `,
+        extraRecoveryData: { original: index, label: "α 🧪" }
+      })) };
+    }
+
+    it("offers every version-99 child, keeps them after Cancel and relaunch, and autosaves new work", async () => {
+      const raw = unsupportedChildrenSession();
+      native.session = raw;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(bridge().snapshot().page.objectCount).toBe(0);
+      expect(bridge().snapshot().file).toEqual({ dirty: false });
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      for (const tab of raw.tabs) expect(pendingPrompt?.prompt.message).toContain(tab.displayName);
+      expectSuspended();
+      expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+      await modalButton("Cancel");
+      expectReleased();
+      native.saveSession.mockClear();
+      await paste("Fresh work after unreadable children");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
+      expect(native.saveSession).toHaveBeenCalled();
+      const autosaved = parseDocumentSessionEnvelope(native.session)!;
+      expect(autosaved.unrestoredTabs).toEqual(raw.tabs);
+      expect(autosaved.tabs![0]!.contents).toContain("Fresh work after unreadable children");
+      native.visibilityChanges = [];
+      await remount();
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      expect(drawnText()).toContain("Fresh work after unreadable children");
+      expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it("saves the original contents of every version-99 child without reserializing them", async () => {
+      const raw = unsupportedChildrenSession();
+      native.session = raw;
+      await remount();
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      const paths = raw.tabs.map((_, index) => platform === "Win32"
+        ? `C:\\rescued\\drawing-${index}.chemdraft` : `/tmp/drawing-${index}.chemdraft`);
+      for (const path of paths) native.savePicker.mockResolvedValueOnce(path);
+      native.writeFile.mockClear();
+      await modalButton("Save Drawing…");
+      expect(native.writeFile).toHaveBeenCalledTimes(3);
+      raw.tabs.forEach((tab, index) => {
+        expect(native.writeFile).toHaveBeenNthCalledWith(index + 1, paths[index], tab.contents);
+      });
+      expectReleased();
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+      expect(tabs()).toHaveLength(1);
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+    });
+
+    it("restores readable siblings while offering unsupported and malformed child envelopes", async () => {
+      const session = threeTabSession();
+      const unreadable = [
+        { ...session.tabs![0]!, version: 99, extraRecoveryData: { original: true } },
+        { ...session.tabs![2]!, dirty: "unknown", extraRecoveryData: { original: false } }
+      ];
+      native.session = { ...session, tabs: [unreadable[0], session.tabs![1], unreadable[1]] };
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(bridge().snapshot().document.title).toBe("Second");
+      expect(pendingPrompt?.prompt.title).toBe("2 drawings didn't open");
+      expect((await flush()).unrestoredTabs).toEqual(unreadable);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each([false, true])("includes existing kept tabs with new unreadable children (readable sibling: %s)", async (readableSibling) => {
+      const raw = unsupportedChildrenSession();
+      const readable = threeTabSession().tabs![1]!;
+      const children = readableSibling ? [raw.tabs[0], readable, raw.tabs[2]] : raw.tabs;
+      const alreadyKept = { version: 99, displayName: "Previously kept", contents: "original\r\nα 🧪" };
+      const recoverable = { ...readable, contents: fileContents("Previously kept, now readable") };
+      native.session = { ...raw, tabs: children, unrestoredTabs: [alreadyKept, recoverable] };
+      await remount();
+      expect(tabs()).toHaveLength(readableSibling ? 2 : 1);
+      expect(pendingPrompt?.prompt.title).toBe(`${readableSibling ? 3 : 4} drawings didn't open`);
+      expect(pendingPrompt?.prompt.message).toContain("Previously kept");
+      const expectedKept = [alreadyKept, ...children.filter(tab => tab.version === 99)];
+      expect((await flush()).unrestoredTabs).toEqual(expectedKept);
+      await modalButton("Cancel");
+      expectReleased();
+      await activate(readableSibling ? 1 : 0);
+      expect(bridge().snapshot().document.title).toBe("Previously kept, now readable");
+    });
+
+    it("offers malformed children even when no child envelope is readable", async () => {
+      const session = threeTabSession();
+      const children = session.tabs!.map(tab => ({ ...tab, dirty: "unknown" }));
+      native.session = { ...session, tabs: children };
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      expect((await flush()).unrestoredTabs).toEqual(children);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each(["unknown outer version", "bad JSON"])("leaves the raw file and autosave gate unchanged for %s", async (failure) => {
+      const raw = failure === "bad JSON" ? "{bad JSON" : { ...unsupportedChildrenSession(), version: 99,
+        unrestoredTabs: [{ version: 99, contents: "previously kept" }] };
+      native.session = raw;
+      if (failure === "bad JSON") {
+        // The native load rejects invalid JSON before any envelope reaches MainWindow.
+        native.load.mockImplementationOnce(async () => JSON.parse(raw as string));
+      }
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.visibilityChanges).toEqual([]);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("will not be autosaved");
+      native.saveSession.mockClear();
+      await paste("Drawing after unreadable outer session");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
+      await flush();
+      expect(native.saveSession).not.toHaveBeenCalled();
+      expect(native.session).toEqual(raw);
+    });
+
     it.each(["Cancel", "Escape"])("keeps raw drawings and retries next launch after %s", async (ending) => {
       const session = sessionWithUnrestoredTabs(["Still unreadable.chemdraft"]);
       native.session = session;
