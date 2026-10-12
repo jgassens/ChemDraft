@@ -133,6 +133,7 @@ import {
   textSizeCommands
 } from "./commands";
 import { Icon } from "./icons";
+import { getDrawingToolDefinition } from "./drawingTools";
 import { toolbarAsset } from "./toolbarAssets";
 import {
   commandShortcutDisplay,
@@ -3547,7 +3548,23 @@ function ToolbarPaletteItem({
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
-  const primaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
+  const defaultPrimaryCommand = item.primary.type === "command" ? item.primary.command : undefined;
+  const [selectedFlyoutCommandId, setSelectedFlyoutCommandId] = useState<string>();
+  const followsSelectedTool = defaultPrimaryCommand?.id === "tool.symbol"
+    || defaultPrimaryCommand?.id === "tool.charge";
+  const activeFlyoutCommand = followsSelectedTool
+    ? item.submenu?.items.find((command) => command.id === activeTool)
+    : undefined;
+  useEffect(() => {
+    if (activeFlyoutCommand) {
+      setSelectedFlyoutCommandId(activeFlyoutCommand.id);
+    }
+  }, [activeFlyoutCommand?.id]);
+  const primaryCommand = followsSelectedTool
+    ? activeFlyoutCommand
+      ?? item.submenu?.items.find((command) => command.id === selectedFlyoutCommandId)
+      ?? defaultPrimaryCommand
+    : defaultPrimaryCommand;
   const [menuOpen, setMenuOpen] = useState(false);
   const shellRef = useRef<HTMLSpanElement | null>(null);
   useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
@@ -3565,7 +3582,20 @@ function ToolbarPaletteItem({
     primaryCommand?.id === activeTool
     || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
   );
-  const tooltipText = toolbarTooltipText(item, primaryCommand);
+  const selectedDescription = primaryCommand?.description
+    ?? (primaryCommand ? getDrawingToolDefinition(primaryCommand.id)?.usageHint?.action : undefined);
+  const tooltipItem = followsSelectedTool && primaryCommand && primaryCommand.id !== defaultPrimaryCommand?.id
+    ? {
+        ...item,
+        tooltip: {
+          ...item.tooltip,
+          description: selectedDescription
+            ? `${primaryCommand.title}: ${selectedDescription}`
+            : primaryCommand.title
+        }
+      }
+    : item;
+  const tooltipText = toolbarTooltipText(tooltipItem, primaryCommand);
   // Injective sanitization: encode each disallowed char by code point so ids differing only in
   // punctuation (e.g. "plugin.foo:bar" vs "plugin.foo.bar") don't collapse to the same DOM id.
   const menuId = hasSubmenu
@@ -3891,7 +3921,7 @@ function ToolbarPaletteItem({
         <ToolbarItemTooltip
           disabledReason={primaryDisabled ? primaryCommand?.disabledReason ?? "unavailable" : undefined}
           id={tooltipId}
-          item={item}
+          item={tooltipItem}
           text={tooltipText}
         />
       </button>
@@ -3940,7 +3970,7 @@ function ToolbarPaletteItem({
                 }}
               >
                 <ToolbarCommandIcon command={command} />
-                <span>{command.title}</span>
+                <span className="toolbar-command-label">{command.title}</span>
               </button>
             );
           })}
@@ -3994,6 +4024,11 @@ export function ToolbarItemIcon({
   if (item.iconDataUri) {
     return <img className="tool-icon-image" src={item.iconDataUri} alt="" aria-hidden="true" />;
   }
+  // Only the Symbol/charge group previews its selected command instead of its shared asset.
+  const primaryId = item.primary.type === "command" ? item.primary.command.id : undefined;
+  if (command && (primaryId === "tool.symbol" || primaryId === "tool.charge")) {
+    return <ToolbarCommandIcon command={command} />;
+  }
   // toolbarAsset() returns undefined for an unknown key (e.g. a plugin's unregistered assetName);
   // only render the image when it resolves, otherwise fall through to a real icon.
   const assetSrc = item.assetName ? toolbarAsset(item.assetName) : undefined;
@@ -4012,6 +4047,10 @@ export function ToolbarItemIcon({
 }
 
 function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
+  const symbolGlyph = symbolToolGlyph(command.id);
+  if (symbolGlyph) {
+    return <span className="symbol-tool-glyph" aria-hidden="true">{symbolGlyph}</span>;
+  }
   const assetSrc = command.assetName ? toolbarAsset(command.assetName) : undefined;
   if (assetSrc) {
     return <img className="tool-icon-image" src={assetSrc} alt="" aria-hidden="true" />;
@@ -4023,6 +4062,18 @@ function ToolbarCommandIcon({ command }: { command: CommandSpec }) {
     return <TitleGlyphIcon title={command.title || command.id} />;
   }
   return <Icon name={command.icon} />;
+}
+
+export function symbolToolGlyph(commandId: string): string | undefined {
+  return ({
+    "tool.symbol": "°",
+    "tool.symbol.degree": "°",
+    "tool.symbol.plusMinus": "±",
+    "tool.symbol.angstrom": "Å",
+    "tool.symbol.delta": "Δ",
+    "tool.symbol.centerDot": "·",
+    "tool.symbol.prime": "′"
+  } as Record<string, string>)[commandId];
 }
 
 const TITLE_GLYPH_STOPWORDS = new Set([

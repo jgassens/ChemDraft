@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
+import { toolbarAsset } from "./toolbarAssets";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
@@ -977,6 +978,70 @@ describe("ToolPalette arrange flyouts", () => {
       expect(command.assetName).toBeUndefined();
       expect(command.icon).toBeUndefined();
     }
+  });
+
+  it("keeps another toolbar item's asset icon ahead of its command icon", () => {
+    // Use a distinct item asset and command icon so the assertion checks the rendered image.
+    const source = getToolsetItemGroups("core.art").flat().find((entry) => entry.primary.type === "command");
+    if (!source || source.primary.type !== "command") throw new Error("Expected command toolbar item.");
+    const assetItem: ToolbarPaletteItemModel = {
+      ...source,
+      assetName: "Art_Shapes",
+      primary: { type: "command", command: { ...source.primary.command, assetName: "Art_Circle", icon: "bond" } }
+    };
+    act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[assetItem]], onInvoke: vi.fn() }));
+    });
+    const image = container.querySelector<HTMLImageElement>("button > .tool-icon-image");
+    expect(image?.getAttribute("src")).toBe(toolbarAsset("Art_Shapes"));
+    expect(image?.getAttribute("src")).not.toBe(toolbarAsset("Art_Circle"));
+  });
+
+  it("remembers every selected symbol in the group preview and primary action", () => {
+    const onInvoke = vi.fn();
+    const symbols = [
+      ["degree", "\u00b0"], ["plusMinus", "\u00b1"], ["angstrom", "\u00c5"],
+      ["delta", "\u0394"], ["centerDot", "\u00b7"], ["prime", "\u2032"]
+    ];
+    const item = getToolsetItemGroups("core.main").flat().find((entry) => entry.id === "tool.symbol");
+    if (!item) throw new Error("Expected symbol tool group.");
+    const render = (activeTool: string) => act(() => {
+      root.render(createElement(ToolPalette, {
+        groups: [], itemGroups: [[item]], activeTool, orientation: "horizontal", onInvoke
+      }));
+    });
+    render("tool.select");
+    expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe("\u00b0");
+    expect(container.querySelector("button")?.getAttribute("data-tooltip")).toContain(item.tooltip.description);
+    for (const [name, glyph] of symbols) {
+      render(`tool.symbol.${name}`);
+      expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe(glyph);
+      render("tool.select");
+      expect(container.querySelector(".symbol-tool-glyph")?.textContent).toBe(glyph);
+      const button = container.querySelector<HTMLButtonElement>(`[data-command-id="tool.symbol.${name}"]`);
+      if (!button) throw new Error("Expected selected symbol button.");
+      expect(button.getAttribute("data-tooltip")).toContain(item.tooltip.title);
+      expect(button.getAttribute("data-tooltip")).toContain(glyph);
+      expect(button.querySelector(".tool-tooltip")?.textContent).toContain(glyph);
+      act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onInvoke).toHaveBeenLastCalledWith(`tool.symbol.${name}`);
+    }
+  });
+
+  it("describes the remembered positive charge while keeping the charge group title", () => {
+    const item = getToolsetItemGroups("core.main").flat().find((entry) => entry.id === "tool.charge");
+    if (!item) throw new Error("Expected charge tool group.");
+    const render = (activeTool: string) => act(() => {
+      root.render(createElement(ToolPalette, { itemGroups: [[item]], activeTool, onInvoke: vi.fn() }));
+    });
+    render("tool.select");
+    expect(container.querySelector("button")?.getAttribute("data-tooltip")).toBe(`${item.tooltip.title}; hold for choices`);
+    render("tool.plus");
+    render("tool.select");
+    const button = container.querySelector<HTMLButtonElement>('button[data-command-id="tool.plus"]');
+    expect(button?.getAttribute("data-tooltip")).toContain(item.tooltip.title);
+    expect(button?.getAttribute("data-tooltip")).toContain("Positive Charge");
+    expect(button?.querySelector(".tool-tooltip")?.textContent).toContain("Positive Charge");
   });
 
   it("keeps the declared group primary action while allowing enabled submenu commands", () => {

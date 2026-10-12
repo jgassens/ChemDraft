@@ -180,6 +180,100 @@ describe("hover label typing over a long chain (stress)", () => {
     return snapshot().hoveredNativeTarget as { kind?: string; atomId?: string; bondId?: string } | undefined;
   }
 
+  it.each([
+    { selectedAtomIndex: 0, closeKey: "Enter" },
+    { selectedAtomIndex: 0, closeKey: "Escape" },
+    { selectedAtomIndex: 1, closeKey: "Enter" }
+  ])("restores pre-selected atom $selectedAtomIndex after hover NMe closes with $closeKey", async ({ selectedAtomIndex, closeKey }) => {
+    const before = molecule();
+    const labelledAtom = before.atoms[0]!;
+    const selectedAtom = before.atoms[selectedAtomIndex]!;
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.select"); });
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before.id}"]`)!;
+    for (const element of [wrapper, container.querySelector<HTMLElement>(".page")!]) {
+      element.setPointerCapture = () => {};
+      element.releasePointerCapture = () => {};
+      element.hasPointerCapture = () => false;
+    }
+    for (const type of ["pointerdown", "pointerup"]) {
+      await act(async () => {
+        const event = new MouseEvent(type, {
+          bubbles: true, cancelable: true, button: 0, buttons: type === "pointerdown" ? 1 : 0,
+          clientX: selectedAtom.x, clientY: selectedAtom.y, detail: 1
+        });
+        Object.defineProperties(event, { pointerId: { value: 8 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        wrapper.dispatchEvent(event);
+      });
+    }
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.bond"); });
+    const selectionBefore = snapshot().selection;
+    const partBefore = snapshot().selectedNativeMoleculePart;
+    expect(partBefore).toEqual({ objectId: before.id, kind: "atom", atomId: selectedAtom.id });
+
+    expect(await pointAt(labelledAtom)).toMatchObject({ kind: "atom", atomId: labelledAtom.id });
+    for (const key of "NMe") await press(key);
+    expect(snapshot().selectedNativeMoleculePart).toEqual({ objectId: before.id, kind: "atom", atomId: labelledAtom.id });
+    await press(closeKey);
+
+    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
+    expect(snapshot().selection).toEqual(selectionBefore);
+    expect(snapshot().selectedNativeMoleculePart).toEqual(partBefore);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    if (closeKey === "Enter") {
+      expect(molecule().atoms.find(atom => atom.id === labelledAtom.id)).toMatchObject({ element: "NMe", labelLiteral: true });
+    }
+  });
+
+  it.each([
+    { label: "NMe", atomIndex: 1 },
+    { label: "OMe", atomIndex: 1 },
+    // C on a carbon changes nothing: editor ownership must not depend on an undoable first key.
+    { label: "CF3", atomIndex: 1 }
+  ])("leaves committed $label unchanged when c is pressed over empty canvas", async ({ label, atomIndex }) => {
+    const before = molecule();
+    const atom = before.atoms[atomIndex]!;
+    expect(await pointAt(atom)).toMatchObject({ kind: "atom", atomId: atom.id });
+    for (const key of label) await press(key);
+    await press("Enter");
+    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
+    const committed = molecule();
+    expect(committed.atoms.some(candidate => candidate.element === label && candidate.labelLiteral)).toBe(true);
+
+    // Dispatch the actual pointermove path, rather than moving through the agent bridge.
+    expect(await pointAt({ x: 40, y: 40 })).toBeUndefined();
+    await press("c");
+    expect(molecule()).toEqual(committed);
+    // One undo must undo the label itself: c must add no history entry.
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(before);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each([
+    { label: "NMe", atomIndex: 1 },
+    { label: "OMe", atomIndex: 1 },
+    { label: "CF3", atomIndex: 1 }
+  ])("applies c only to another hovered atom after committing $label", async ({ label, atomIndex }) => {
+    const other = molecule().atoms[3]!;
+    expect(await pointAt(other)).toMatchObject({ kind: "atom", atomId: other.id });
+    await press("O");
+    const atom = molecule().atoms[atomIndex]!;
+    expect(await pointAt(atom)).toMatchObject({ kind: "atom", atomId: atom.id });
+    for (const key of label) await press(key);
+    await press("Enter");
+    const committed = molecule();
+    expect(committed.atoms.some(candidate => candidate.element === label && candidate.labelLiteral)).toBe(true);
+
+    expect(await pointAt(other)).toMatchObject({ kind: "atom", atomId: other.id });
+    await press("c");
+    expect(molecule().atoms.find(candidate => candidate.id === other.id)).toMatchObject({ element: "C" });
+    expect(molecule().atoms.filter(candidate => candidate.id !== other.id))
+      .toEqual(committed.atoms.filter(candidate => candidate.id !== other.id));
+    expect(molecule().bonds).toEqual(committed.bonds);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(committed);
+  });
+
   // Undo back to the plain chain and the Bond tool, so every trial starts the same.
   async function resetTrial() {
     if (snapshot().activeToolCommandId !== "tool.bond") {
