@@ -18175,11 +18175,14 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
   const computeStructureIdentifiers = await loadStructureIdentifiers();
   const warnings: ExportWarning[] = [];
   const parts: string[] = [];
-  for (const [index, molecule] of molecules.entries()) {
-    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
-    if (smiles.length > 0) parts.push(smiles);
+  try {
+    for (const [index, molecule] of molecules.entries()) {
+      const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+      if (smiles.length > 0) parts.push(smiles);
+    }
+  } finally {
+    warningsOut?.push(...warnings.map((warning) => warning.message));
   }
-  warningsOut?.push(...warnings.map((warning) => warning.message));
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 
