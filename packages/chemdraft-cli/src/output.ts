@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { decodeUserText } from "./textInput";
 
 export interface CliIo {
   stdout: (line: string) => void;
@@ -100,7 +101,7 @@ export async function readBatchFile<T extends NamedBatchJob>(
 ): Promise<T[]> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    parsed = JSON.parse(decodeUserText(await readFile(path))) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new CliUsageError(`Could not read batch file "${path}": ${message}`);
