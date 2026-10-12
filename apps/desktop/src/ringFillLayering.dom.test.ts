@@ -73,33 +73,118 @@ function paintedIndicators(root: Element): Element[] {
   const positive = (value: string | null) => Number.parseFloat(value ?? "") > 0;
   const visibleColor = (value: string) => value !== "" && value !== "none" &&
     value !== "transparent" && !/rgba\([^)]*,\s*0\)/.test(value);
-  return [root, ...root.querySelectorAll("*")].filter(element => {
+  // jsdom resolves CSS declarations but omits SVG presentation attributes and
+  // some inheritance. Prefer CSS, then fill those gaps by walking ancestors.
+  const stylesheetDeclares = (element: Element, name: string, rules: CSSRuleList): boolean =>
+    Array.from(rules).some(rule => {
+      if ("selectorText" in rule && "style" in rule) {
+        const styled = rule as CSSStyleRule;
+        return Boolean(styled.style.getPropertyValue(name)) && element.matches(styled.selectorText);
+      }
+      return "cssRules" in rule && stylesheetDeclares(element, name, (rule as CSSGroupingRule).cssRules);
+    });
+  const resolved = new WeakMap<Element, Map<string, string>>();
+  const local = (element: Element, name: string) => {
+    const cached = resolved.get(element);
+    if (cached?.has(name)) return cached.get(name)!;
+    const inline = (element as HTMLElement | SVGElement).style?.getPropertyValue(name);
+    const declared = Array.from(document.styleSheets).some(sheet => stylesheetDeclares(element, name, sheet.cssRules));
+    // Computed SVG defaults in jsdom can mask an ancestor's presentation attribute.
+    // Use computed values only where there is an actual CSS declaration.
+    const value = (declared ? getComputedStyle(element).getPropertyValue(name) : inline) || inline || element.getAttribute(name) || "";
+    const values = cached ?? new Map<string, string>();
+    values.set(name, value);
+    resolved.set(element, values);
+    return value;
+  };
+  const effective = (element: Element, name: string, fallback: string): string => {
     for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) {
-      const css = getComputedStyle(ancestor);
-      if (css.display === "none" || css.visibility === "hidden" || css.visibility === "collapse" ||
-        Number(css.opacity || 1) === 0 || ancestor.getAttribute("display") === "none" ||
-        ["hidden", "collapse"].includes(ancestor.getAttribute("visibility") ?? "") ||
-        Number(ancestor.getAttribute("opacity") ?? 1) === 0 ||
+      const value = local(ancestor, name).trim();
+      if (value && value !== "inherit" && value !== "unset") return value === "initial" ? fallback : value;
+    }
+    return fallback;
+  };
+  type Point = { x: number; y: number };
+  const distinct = (a: Point, b: Point) => a.x !== b.x || a.y !== b.y;
+  const hasExtent = (points: Point[]) => points.some(point => distinct(points[0], point));
+  const hasArea = (points: Point[]) => {
+    const a = points[0];
+    const b = points.find(point => distinct(a, point));
+    return b !== undefined && points.some(c => Math.abs(
+      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) > 1e-9);
+  };
+  const pathGeometry = (d: string) => {
+    // Keep subpaths separate; control points reveal curved geometry too.
+    const tokens = d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/gi) ?? [];
+    const counts: Record<string, number> = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7 };
+    let cursor: Point = { x: 0, y: 0 };
+    let points: Point[] = [];
+    let command = "";
+    let fill = false;
+    let stroke = false;
+    const finish = () => { fill ||= hasArea(points); stroke ||= hasExtent(points); };
+    for (let i = 0; i < tokens.length;) {
+      if (/^[a-z]$/i.test(tokens[i])) command = tokens[i++];
+      const upper = command.toUpperCase();
+      if (upper === "Z") {
+        finish();
+        cursor = points[0] ?? cursor;
+        command = "";
+        continue;
+      }
+      const count = counts[upper];
+      if (!count || i + count > tokens.length || tokens.slice(i, i + count).some(token => /^[a-z]$/i.test(token))) break;
+      const values = tokens.slice(i, i + count).map(Number);
+      i += count;
+      const relative = command !== upper;
+      const point = (x: number, y: number) => ({ x: x + (relative ? cursor.x : 0), y: y + (relative ? cursor.y : 0) });
+      if (upper === "M") { finish(); points = []; }
+      if (upper === "H") points.push({ x: values[0] + (relative ? cursor.x : 0), y: cursor.y });
+      else if (upper === "V") points.push({ x: cursor.x, y: values[0] + (relative ? cursor.y : 0) });
+      else if (upper === "A") {
+        const end = point(values[5], values[6]);
+        if (distinct(cursor, end) && values[0] > 0 && values[1] > 0) fill = true;
+        points.push(end);
+      } else for (let j = 0; j < count; j += 2) points.push(point(values[j], values[j + 1]));
+      cursor = points[points.length - 1];
+      if (upper === "M") command = relative ? "l" : "L";
+    }
+    finish();
+    return { fill, stroke };
+  };
+  return [root, ...root.querySelectorAll("*")].filter(element => {
+    let fillVisible = true;
+    let strokeVisible = true;
+    for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) {
+      if (local(ancestor, "display") === "none" ||
+        ["hidden", "collapse"].includes(effective(ancestor, "visibility", "visible")) ||
+        Number(local(ancestor, "opacity") || 1) === 0 ||
         ["defs", "clipPath", "mask", "symbol", "marker", "pattern"].includes(ancestor.localName)) return false;
+      fillVisible &&= Number(local(ancestor, "fill-opacity") || 1) !== 0;
+      strokeVisible &&= Number(local(ancestor, "stroke-opacity") || 1) !== 0;
     }
     const css = getComputedStyle(element);
     if (element instanceof SVGElement) {
       const attr = (name: string) => element.getAttribute(name);
-      const geometry = element.localName === "circle" ? positive(attr("r"))
+      const sized = element.localName === "circle" ? positive(attr("r"))
         : element.localName === "ellipse" ? positive(attr("rx")) && positive(attr("ry"))
           : element.localName === "rect" ? positive(attr("width")) && positive(attr("height"))
-            : element.localName === "line" ? attr("x1") !== attr("x2") || attr("y1") !== attr("y2")
-              : element.localName === "path" ? /[LlHhVvCcSsQqTtAa]/.test(attr("d") ?? "")
-                : ["polygon", "polyline"].includes(element.localName) ? (attr("points")?.match(/-?\d+(?:\.\d+)?/g)?.length ?? 0) >= 4
-                  : element.localName === "text" && Boolean(element.textContent?.trim());
-      if (!geometry) return false;
-      // jsdom does not include SVG presentation attributes in computed styles.
-      return (visibleColor(attr("stroke") ?? css.stroke) &&
-        positive(attr("stroke-width") ?? (css.strokeWidth || "1")) &&
-        Number(attr("stroke-opacity") ?? (css.strokeOpacity || 1)) > 0) ||
-        (!["line", "polyline"].includes(element.localName) &&
-          visibleColor(attr("fill") ?? (css.fill || "black")) &&
-          Number(attr("fill-opacity") ?? (css.fillOpacity || 1)) > 0);
+            : element.localName === "text" && Boolean(element.textContent?.trim());
+      let geometry = { fill: sized, stroke: sized };
+      if (element.localName === "path") geometry = pathGeometry(attr("d") ?? "");
+      if (["polygon", "polyline", "line"].includes(element.localName)) {
+        const numbers = element.localName === "line"
+          ? ["x1", "y1", "x2", "y2"].map(name => Number(attr(name) ?? 0))
+          : (attr("points")?.match(/[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+        const points: Point[] = [];
+        for (let i = 0; i + 1 < numbers.length; i += 2) points.push({ x: numbers[i], y: numbers[i + 1] });
+        geometry = { fill: element.localName !== "line" && hasArea(points), stroke: hasExtent(points) };
+      }
+      return (geometry.stroke && strokeVisible && visibleColor(effective(element, "stroke", "none")) &&
+        positive(effective(element, "stroke-width", "1")) &&
+        Number(effective(element, "stroke-opacity", "1")) > 0) ||
+        (geometry.fill && fillVisible && visibleColor(effective(element, "fill", "black")) &&
+          Number(effective(element, "fill-opacity", "1")) > 0);
     }
     const sized = Boolean(css.width && css.width !== "0px" && css.width !== "auto" &&
       css.height && css.height !== "0px" && css.height !== "auto");
@@ -335,6 +420,56 @@ describe("canvas ring-fill layers", () => {
     portal.querySelector("svg")!.insertAdjacentHTML("beforeend", '<circle r="5" fill="red"/>');
     expect(paintedIndicators(portal)).toHaveLength(1);
     portal.remove();
+  });
+
+  it.each([
+    '<circle r="5" fill="red" style="fill:none;stroke:none"/>',
+    '<g fill="none" stroke="none"><circle r="5"/></g>',
+    '<path d="M0 0 L10 0" fill="red" stroke="none"/>',
+    '<path d="M0 0 L10 0 L20 0 Z" fill="red" stroke="none"/>',
+    '<path d="M0 0 L0 0" fill="none" stroke="red"/>',
+    '<path d="M0 0 M10 0 M0 10" fill="red"/>',
+    '<polygon points="0,0 10,0 20,0" fill="red" stroke="none"/>',
+    '<circle r="5" fill="transparent"/>',
+    '<circle r="5" fill="rgba(255,0,0,0)"/>',
+    '<circle r="5" fill="red" style="opacity:0"/>',
+    '<g opacity="0"><circle r="5" fill="red"/></g>',
+    '<g style="opacity:0"><circle r="5" fill="red"/></g>',
+    '<g fill-opacity="0"><circle r="5" fill="red"/></g>',
+    '<g style="fill-opacity:0"><circle r="5" fill="red"/></g>',
+    '<g stroke-opacity="0"><path d="M0 0 L10 0" fill="none" stroke="red"/></g>',
+    '<circle r="5" fill="none" stroke="red" stroke-width="0"/>',
+    '<circle r="5" fill="none" stroke="red" stroke-width="2" style="stroke-width:0"/>',
+    '<g stroke-width="0"><circle r="5" fill="none" stroke="red"/></g>',
+    '<g display="none"><circle r="5" fill="red"/></g>',
+    '<g visibility="hidden"><circle r="5" fill="red"/></g>'
+  ])("rejects invisible or degenerate SVG: %s", markup => {
+    container.innerHTML = `<svg>${markup}</svg>`;
+    expect(paintedIndicators(container)).toEqual([]);
+  });
+
+  it.each([
+    '<g fill="red"><circle r="5"/></g>',
+    '<g fill="none"><circle r="5" style="fill:red"/></g>',
+    '<circle r="5" fill="none" style="fill:red"/>',
+    '<circle r="5" opacity="0" style="opacity:1;fill:red"/>',
+    '<path d="M0 0 L10 0" fill="none" stroke="red"/>',
+    '<path d="M0 0 L10 0 L0 10" fill="red"/>',
+    '<path d="m0 0 h10 v10 z" fill="red"/>',
+    '<path d="M0 0 Q5 10 10 0" fill="red"/>',
+    '<polygon points="0,0 10,0 0,10" fill="red"/>'
+  ])("accepts effective SVG paint with geometry: %s", markup => {
+    container.innerHTML = `<svg>${markup}</svg>`;
+    expect(paintedIndicators(container)).toHaveLength(1);
+  });
+
+  it("resolves stylesheet paint before presentation attributes and inherits it", () => {
+    stylesheet.textContent += ".test-no-paint { fill: none; stroke: none; } .test-paint { fill: red; }";
+    container.innerHTML = `<svg><circle class="test-no-paint" r="5" fill="red"/>
+      <g class="test-no-paint"><circle r="5"/></g>
+      <circle class="test-paint" r="5" fill="none"/>
+      <g class="test-paint"><circle r="5"/></g></svg>`;
+    expect(paintedIndicators(container)).toHaveLength(2);
   });
 
   function rectangleFixture() {
