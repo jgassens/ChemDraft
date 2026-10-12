@@ -5,9 +5,11 @@ import {
   createMechanismArrowBetween,
   createPhase4Document,
   documentObjectInteractionBounds,
+  documentObjectInteractionRotationOrigin,
   documentObjectVisualBounds,
   insertNativeSingleBondMolecule,
   moveDocumentObject,
+  rotateDocumentObject,
   selectionBounds
 } from "./documentWorkflow";
 
@@ -23,8 +25,11 @@ describe("resolved mechanism arrow bounds", () => {
       { kind: "atom", objectId: target.id, atomId: target.atoms[0].id });
     const arrow = document.pages[0].objects.find((object): object is MechanismArrowObject => object.type === "mechanism-arrow")!;
     const before = documentObjectInteractionBounds(arrow, document.pages[0].objects);
+    expect(documentObjectInteractionBounds(arrow, document.pages[0].objects)).toBe(before);
     const moved = moveDocumentObject(document, source.id, { x: source.x, y: source.y + 200 });
     const after = documentObjectInteractionBounds(arrow, moved.pages[0].objects);
+    expect(after).not.toBe(before);
+    expect(documentObjectInteractionBounds(arrow, moved.pages[0].objects)).toBe(after);
     const geometry = mechanismArrowGeometry(moved.pages[0], arrow)!;
     const points = [geometry.source, geometry.target, ...geometry.controls];
     const x = Math.min(...points.map((point) => point.x)) - 12;
@@ -49,6 +54,21 @@ describe("resolved mechanism arrow bounds", () => {
     const redone = redo(restored);
     expect(documentObjectInteractionBounds(arrow, redone.present.pages[0].objects)).toEqual(after);
     expect(redone.present).toEqual(moved);
+
+    const rotated = rotateDocumentObject(moved, arrow.id, 90);
+    const rotatedArrow = rotated.pages[0].objects.find((object): object is MechanismArrowObject => object.id === arrow.id && object.type === "mechanism-arrow")!;
+    const frame = documentObjectInteractionBounds(rotatedArrow, rotated.pages[0].objects);
+    const origin = documentObjectInteractionRotationOrigin(rotatedArrow, frame);
+    const pivot = { x: rotatedArrow.x + rotatedArrow.width / 2, y: rotatedArrow.y + rotatedArrow.height / 2 };
+    expect({ x: frame.x + origin.x, y: frame.y + origin.y }).toEqual(pivot);
+    // A quarter turn of each frame-local HTML handle equals the SVG control rotated
+    // about the stored object centre, even when the anchor has moved the frame centre.
+    for (const control of mechanismArrowGeometry(rotated.pages[0], rotatedArrow)!.controls) {
+      const local = { x: control.x - frame.x, y: control.y - frame.y };
+      const handle = { x: frame.x + origin.x - (local.y - origin.y), y: frame.y + origin.y + (local.x - origin.x) };
+      expect(handle.x).toBeCloseTo(pivot.x - (control.y - pivot.y), 8);
+      expect(handle.y).toBeCloseTo(pivot.y + (control.x - pivot.x), 8);
+    }
   });
 
   it("keeps the stored frame when an anchor cannot resolve", () => {

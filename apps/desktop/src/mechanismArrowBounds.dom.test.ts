@@ -6,7 +6,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createMechanismArrowBetween, createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
+import { createMechanismArrowBetween, createPhase4Document, insertNativeSingleBondMolecule, rotateDocumentObject } from "./documentWorkflow";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,7 +68,18 @@ describe("anchored mechanism arrow interaction frame", () => {
     initial = createMechanismArrowBetween(initial, "full-headed",
       { kind: "atom", objectId: source.id, atomId: source.atoms[0].id },
       { kind: "atom", objectId: target.id, atomId: target.atoms[0].id });
-    const arrow = initial.pages[0].objects.find((object): object is MechanismArrowObject => object.type === "mechanism-arrow")!;
+    let arrow = initial.pages[0].objects.find((object): object is MechanismArrowObject => object.type === "mechanism-arrow")!;
+    // Start with a stored frame matching the rendered geometry. Both main and this branch
+    // pass the initial assertion; the regression must fail only after the anchor moves.
+    const initialGeometry = mechanismArrowGeometry(initial.pages[0], arrow)!;
+    const initialPoints = [initialGeometry.source, initialGeometry.target, ...initialGeometry.controls];
+    const x = Math.min(...initialPoints.map((point) => point.x)) - 12;
+    const y = Math.min(...initialPoints.map((point) => point.y)) - 12;
+    initial = applyPatch(initial, { op: "updateObject", objectId: arrow.id, changes: {
+      x, y, width: Math.max(...initialPoints.map((point) => point.x)) + 12 - x,
+      height: Math.max(...initialPoints.map((point) => point.y)) + 12 - y
+    } });
+    arrow = initial.pages[0].objects.find((object): object is MechanismArrowObject => object.id === arrow.id && object.type === "mechanism-arrow")!;
     initial = applyPatch(initial, { op: "setSelection", pageId: initial.pages[0].id, objectIds: [source.id] });
     await act(async () => {
       root.render(createElement(MainWindow, {
@@ -112,6 +123,7 @@ describe("anchored mechanism arrow interaction frame", () => {
       });
     };
     const oldBounds = boundsFromCurve(snapshot());
+    expect(oldBounds).toEqual({ x: arrow.x, y: arrow.y, width: arrow.width, height: arrow.height });
     expectFrame(oldBounds);
     const oldPath = curve().getAttribute("d");
     const sourceElement = container.querySelector<HTMLElement>(`.document-object[data-object-id="${source.id}"]`)!;
@@ -165,5 +177,37 @@ describe("anchored mechanism arrow interaction frame", () => {
     await marquee(newBounds, 12);
     expect(snapshot().selection.objectIds).toContain(arrow.id);
     expectFrame(boundsFromCurve(snapshot()));
+
+    // Render the same moved snapshot after committing a quarter turn. jsdom does not
+    // lay out CSS transforms, so apply the actual DOM transform/origin numerically.
+    const rotated = applyPatch(rotateDocumentObject(snapshot(), arrow.id, 90), {
+      op: "setSelection", pageId: page.id, objectIds: [arrow.id]
+    });
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(MainWindow, {
+        initialDocument: rotated, initialActiveToolCommandId: "tool.select",
+        initialCrosshairsVisible: false, initialRulersVisible: false, initialPaletteMode: "hidden", nativePalette: true
+      }));
+    });
+    const bounds = boundsFromCurve(snapshot());
+    expectFrame(bounds);
+    expect(frame().style.transform).toBe("rotate(90deg)");
+    const origin = [...frame().style.transformOrigin.matchAll(/calc\(([-\d.e]+)px/g)].map((match) => Number(match[1]));
+    expect(origin).toHaveLength(2);
+    const svgGroup = curve().closest("[transform]")!;
+    const svgTransform = svgGroup.getAttribute("transform")!.match(/rotate\(([-\d.]+) ([-\d.]+) ([-\d.]+)\)/)!;
+    expect(Number(svgTransform[1])).toBe(90);
+    const pivot = { x: Number(svgTransform[2]), y: Number(svgTransform[3]) };
+    const geometry = mechanismArrowGeometry(rotated.pages[0], arrow)!;
+    for (const [index, control] of geometry.controls.entries()) {
+      const handle = frame().querySelector<HTMLElement>(`[data-mechanism-handle-index="${index}"]`)!;
+      expect(handle).not.toBeNull();
+      const localX = Number(handle.style.left.match(/calc\(([-\d.e]+)px/)![1]);
+      const localY = Number(handle.style.top.match(/calc\(([-\d.e]+)px/)![1]);
+      expect(bounds.x + origin[0] - (localY - origin[1])).toBeCloseTo(pivot.x - (control.y - pivot.y), 3);
+      expect(bounds.y + origin[1] + (localX - origin[0])).toBeCloseTo(pivot.y + (control.x - pivot.x), 3);
+    }
   });
 });

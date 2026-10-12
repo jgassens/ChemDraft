@@ -467,6 +467,7 @@ import {
   deleteNativeGraphicPathNode,
   documentObjectVisualBounds,
   documentObjectInteractionBounds,
+  documentObjectInteractionRotationOrigin,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
@@ -1576,7 +1577,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.05.20-opus";
+const CURRENT_BUILD_STAMP = "10.12.05.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -25223,6 +25224,11 @@ function DocumentObjectViewContent({
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
   const frameBounds = interactionBounds ?? object;
+  const mechanismRotationOrigin = object.type === "mechanism-arrow"
+    ? objectTransformPreview && objectTransformPreview.mode !== "move"
+      ? { x: objectTransformPreview.origin.x - frameBounds.x, y: objectTransformPreview.origin.y - frameBounds.y }
+      : documentObjectInteractionRotationOrigin(object, frameBounds)
+    : undefined;
   const style = {
     left: `${(frameBounds.x / pageWidth) * 100}%`,
     top: `${(frameBounds.y / pageHeight) * 100}%`,
@@ -25230,7 +25236,9 @@ function DocumentObjectViewContent({
     height: `${(frameBounds.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
-    transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
+    transformOrigin: mechanismRotationOrigin
+      ? `${pageScaledCssPx(mechanismRotationOrigin.x)} ${pageScaledCssPx(mechanismRotationOrigin.y)}`
+      : documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)

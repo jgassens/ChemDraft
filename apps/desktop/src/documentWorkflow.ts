@@ -12531,7 +12531,17 @@ interface ObjectBounds {
 
 // Anchor resolution only uses objects; retain valid page metadata for array-based callers.
 const mechanismBoundsPage = createPhase4Document().pages[0];
-const mechanismBoundsPages = new WeakMap<readonly DocumentObject[], DocumentPage>();
+// Page object arrays are immutable snapshots. A move replaces the array, invalidating both
+// the resolved bounds and anchor indexes; repeated marquee/lasso evaluations reuse them.
+const mechanismBoundsSnapshots = new WeakMap<readonly DocumentObject[], {
+  bounds: Map<MechanismArrowObject, ObjectBounds>;
+  atoms: Map<MoleculeObject, ReadonlyMap<string, PagePoint>>;
+}>();
+
+/** Stored SVG rotation pivot expressed in the live interaction frame's local coordinates. */
+export function documentObjectInteractionRotationOrigin(object: DocumentObject, bounds: ObjectBounds): PagePoint {
+  return { x: object.x + object.width / 2 - bounds.x, y: object.y + object.height / 2 - bounds.y };
+}
 
 /** Live interaction frame; anchored arrows have no independent stored position. */
 export function documentObjectInteractionBounds(
@@ -12539,17 +12549,45 @@ export function documentObjectInteractionBounds(
   objects: readonly DocumentObject[]
 ): ObjectBounds {
   if (object.type === "mechanism-arrow") {
-    let page = mechanismBoundsPages.get(objects);
-    if (!page) {
-      page = { ...mechanismBoundsPage, objects: [...objects] };
-      mechanismBoundsPages.set(objects, page);
+    let snapshot = mechanismBoundsSnapshots.get(objects);
+    if (!snapshot) {
+      snapshot = { bounds: new Map(), atoms: new Map() };
+      mechanismBoundsSnapshots.set(objects, snapshot);
     }
-    const geometry = mechanismArrowGeometry(page, object);
-    if (geometry) {
-      // Use the creation/handle-edit frame convention, with room for the head and handles,
-      // but resolve endpoints against the current atoms, just as the page renderer does.
-      return mechanismArrowBounds([geometry.source, geometry.target, ...geometry.controls]);
+    const cached = snapshot.bounds.get(object);
+    if (cached) {
+      return cached;
     }
+    const byId = objectByIdIndex(objects);
+    const resolve = (anchor: MechanismArrowObject["source"]): PagePoint | undefined => {
+      if (anchor.kind === "point") return anchor.point;
+      if (!anchor.objectId) return undefined;
+      const anchored = byId.get(anchor.objectId);
+      if (!anchored) return undefined;
+      if (anchor.kind === "object") return objectCenter(anchored);
+      if (anchored.type !== "molecule" || !anchor.atomId) return undefined;
+      let atoms = snapshot.atoms.get(anchored);
+      if (!atoms) {
+        const byAtomId = new Map<string, PagePoint>();
+        for (const atom of anchored.atoms) {
+          if (!byAtomId.has(atom.id)) byAtomId.set(atom.id, atom);
+        }
+        atoms = byAtomId;
+        snapshot.atoms.set(anchored, atoms);
+      }
+      return atoms.get(anchor.atomId);
+    };
+    const source = resolve(object.source);
+    const target = resolve(object.target);
+    // Point anchors avoid linear searches inside the shared geometry implementation.
+    const geometry = source && target ? mechanismArrowGeometry(mechanismBoundsPage, {
+      ...object, source: { kind: "point", point: source }, target: { kind: "point", point: target }
+    }) : undefined;
+    const bounds = geometry
+      ? mechanismArrowBounds([geometry.source, geometry.target, ...geometry.controls])
+      : { x: object.x, y: object.y, width: object.width, height: object.height };
+    snapshot.bounds.set(object, bounds);
+    return bounds;
   }
   return { x: object.x, y: object.y, width: object.width, height: object.height };
 }
