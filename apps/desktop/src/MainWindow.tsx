@@ -6,6 +6,11 @@ import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
+  projectGraphicVisualPagePoint,
+  rotatedGraphicLocalBounds,
+  unrotateGraphicVisualPagePoint
+} from "./graphicHandleGeometry";
+import {
   activeOpenWarnings,
   NO_OPEN_WARNINGS_REASON,
   OPEN_WARNINGS_LIST_ID,
@@ -467,6 +472,8 @@ import {
   conformerGraphSignature,
   deleteNativeGraphicPathNode,
   documentObjectVisualBounds,
+  documentObjectInteractionBounds,
+  documentObjectInteractionRotationOrigin,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
@@ -522,6 +529,7 @@ import {
   snapNativeMoleculePartDragDelta,
   snapNativeMoleculePartRotationDegrees,
   nativeGraphicCornerRadiusEditPoint,
+  nativeGraphicCornerRadiusHandlePoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
@@ -12879,12 +12887,18 @@ export function MainWindow({
     });
   }, [clearObjectTransformPreview, objectDragDelta, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
 
-  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicCornerRadius(
-      drag.startDocument,
-      drag.objectId,
-      nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
-    ), []);
+  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type !== "graphic") {
+      return drag.startDocument;
+    }
+    const start = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, drag.startPoint);
+    const current = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
+    return updateNativeGraphicCornerRadius(drag.startDocument, drag.objectId, {
+      x: graphicCornerRadiusReadoutValue(object) + current.x - start.x,
+      y: 0
+    });
+  }, []);
 
   const previewGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -18941,9 +18955,15 @@ export function MainWindow({
                       key={objectRenderKey}
                       {...objectViewHandlers}
                       object={object}
+                      interactionBounds={object.type === "mechanism-arrow"
+                        ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
+                        : undefined}
                       layerIndex={layerIndex}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
+                      pageScale={selected && !inGroupSelection && object.type === "graphic" &&
+                        nativeGraphicCornerRadiusEditPoint(object) !== undefined
+                        ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
@@ -22575,7 +22595,7 @@ export function EraserSweepPreviewOverlay({
         if (!object) {
           return null;
         }
-        const bounds = documentObjectVisualBounds(object);
+        const bounds = documentObjectVisualBounds(object, objects);
         return (
           <rect
             className="eraser-sweep-object"
@@ -23308,7 +23328,7 @@ export function selectionInSelectionRect(
       continue;
     }
 
-    if (rectangleContainsRect(rect, objectBounds(object))) {
+    if (rectangleContainsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23359,7 +23379,7 @@ export function eraserSweepInSelectionRect(
       continue;
     }
 
-    if (rectangleIntersectsRect(rect, objectBounds(object))) {
+    if (rectangleIntersectsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23482,7 +23502,7 @@ export function selectionInSelectionLasso(
       continue;
     }
 
-    if (polygonIntersectsRect(points, objectBounds(object))) {
+    if (polygonIntersectsRect(points, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23553,7 +23573,7 @@ export function selectionInSelectionPolygon(
       continue;
     }
 
-    if (polygonContainsRect(polygon, objectBounds(object))) {
+    if (polygonContainsRect(polygon, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23606,13 +23626,11 @@ function rectangleIntersectsRect(
   );
 }
 
-function objectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
-  return {
-    x: object.x,
-    y: object.y,
-    width: object.width,
-    height: object.height
-  };
+function objectBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[] = [object]
+): { x: number; y: number; width: number; height: number } {
+  return documentObjectInteractionBounds(object, objects);
 }
 
 function parentGroupForDocumentObject(
@@ -23664,7 +23682,7 @@ export function visualSelectionBounds(
       continue;
     }
 
-    const bounds = documentObjectVisualBounds(object);
+    const bounds = documentObjectVisualBounds(object, objects);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -25222,6 +25240,7 @@ function DocumentObjectViewContent({
   layerIndex,
   pageWidth,
   pageHeight,
+  pageScale,
   spinning = false,
   selected,
   inGroupSelection,
@@ -25243,6 +25262,7 @@ function DocumentObjectViewContent({
   hoverDestructive,
   freeformPreview,
   mechanismHandlesVisible,
+  interactionBounds,
   onMechanismHandlePointerDown,
   onMechanismHandlePointerMove,
   onMechanismHandlePointerUp,
@@ -25296,6 +25316,7 @@ function DocumentObjectViewContent({
   layerIndex: number;
   pageWidth: number;
   pageHeight: number;
+  pageScale?: number;
   spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
@@ -25317,6 +25338,7 @@ function DocumentObjectViewContent({
   hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
   mechanismHandlesVisible?: boolean;
+  interactionBounds?: { x: number; y: number; width: number; height: number };
   onMechanismHandlePointerDown(objectId: string, controlIndex: number, event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerMove(event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerUp(event: PointerEvent<HTMLButtonElement>): void;
@@ -25535,14 +25557,22 @@ function DocumentObjectViewContent({
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
+  const frameBounds = interactionBounds ?? object;
+  const mechanismRotationOrigin = object.type === "mechanism-arrow"
+    ? objectTransformPreview && objectTransformPreview.mode !== "move"
+      ? { x: objectTransformPreview.origin.x - frameBounds.x, y: objectTransformPreview.origin.y - frameBounds.y }
+      : documentObjectInteractionRotationOrigin(object, frameBounds)
+    : undefined;
   const style = {
-    left: `${(object.x / pageWidth) * 100}%`,
-    top: `${(object.y / pageHeight) * 100}%`,
-    width: `${(object.width / pageWidth) * 100}%`,
-    height: `${(object.height / pageHeight) * 100}%`,
+    left: `${(frameBounds.x / pageWidth) * 100}%`,
+    top: `${(frameBounds.y / pageHeight) * 100}%`,
+    width: `${(frameBounds.width / pageWidth) * 100}%`,
+    height: `${(frameBounds.height / pageHeight) * 100}%`,
     zIndex: layerIndex + 20,
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
-    transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
+    transformOrigin: mechanismRotationOrigin
+      ? `${pageScaledCssPx(mechanismRotationOrigin.x)} ${pageScaledCssPx(mechanismRotationOrigin.y)}`
+      : documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
@@ -26075,8 +26105,8 @@ function DocumentObjectViewContent({
             aria-label={`Electron push arrow handle ${controlIndex + 1}`}
             data-mechanism-handle-index={controlIndex}
             style={{
-              left: `calc(${control.x - object.x}px * var(--page-scale))`,
-              top: `calc(${control.y - object.y}px * var(--page-scale))`
+              left: `calc(${control.x - frameBounds.x}px * var(--page-scale))`,
+              top: `calc(${control.y - frameBounds.y}px * var(--page-scale))`
             }}
             onPointerDown={(event) => onMechanismHandlePointerDown(object.id, controlIndex, event)}
             onPointerMove={onMechanismHandlePointerMove}
@@ -26356,6 +26386,9 @@ function DocumentObjectViewContent({
     const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
       <GraphicCornerRadiusHandle
         object={object}
+        pageScale={pageScale ?? 1}
+        pageWidth={pageWidth}
+        pageHeight={pageHeight}
         readout={graphicCornerRadiusReadout}
         counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
@@ -27403,24 +27436,36 @@ function graphicGradientHandleStatusName(
 
 function GraphicCornerRadiusHandle({
   object,
+  pageScale,
+  pageWidth,
+  pageHeight,
   readout,
   counterRotationDegrees,
   onPointerDown,
   onDoubleClick
 }: {
   object: GraphicObject;
+  pageScale: number;
+  pageWidth: number;
+  pageHeight: number;
   readout?: GraphicCornerRadiusReadoutState;
   counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusEditPoint(object);
+  // The placement search projects many candidate spots; repeat it only when
+  // the shape, zoom or page changes, not on every render of the selection.
+  const point = useMemo(
+    () => nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight }),
+    [object, pageScale, pageWidth, pageHeight]
+  );
   if (!point) {
     return null;
   }
 
   const radius = readout?.radius ?? graphicCornerRadiusReadoutValue(object);
   const projectedPoint = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const projectedReadoutPoint = projectGraphicObjectPoint(object, nativeGraphicCornerRadiusEditPoint(object)!, { coordinateSpace: "local" });
   const label = `Radius: ${Math.round(radius)} px`;
 
   return (
@@ -27443,8 +27488,8 @@ function GraphicCornerRadiusHandle({
         className="graphic-corner-radius-readout"
         data-graphic-corner-radius-readout="true"
         style={{
-          left: pageScaledCssPx(projectedPoint.x),
-          top: pageScaledCssPx(projectedPoint.y),
+          left: pageScaledCssPx(projectedReadoutPoint.x),
+          top: pageScaledCssPx(projectedReadoutPoint.y),
           transform: graphicSystemReadoutTransform(counterRotationDegrees, "corner-radius")
         }}
       >
@@ -28275,88 +28320,6 @@ function documentObjectArtTransformFrameStyle(
     top: pageScaledCssPx(bounds.y),
     width: pageScaledCssPx(bounds.width),
     height: pageScaledCssPx(bounds.height)
-  };
-}
-
-function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: { x: number; y: number; width: number; height: number },
-  rotationDegrees: number
-): { x: number; y: number; width: number; height: number } {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = {
-    x: Math.max(object.width, 1) / 2,
-    y: Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(rotationDegrees);
-  const cos = Math.cos(rotationRad);
-  const sin = Math.sin(rotationRad);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
-
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
-  };
-}
-
-function unrotateGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  if (Math.abs(object.rotation) < 0.001) {
-    return point;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(-object.rotation);
-  return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function projectGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  const projected = projectGraphicObjectPoint(object, point);
-  if (Math.abs(object.rotation) < 0.001) {
-    return projected;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(object.rotation);
-  return rotatePointAroundCenter(projected, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function rotatePointAroundCenter(
-  point: { x: number; y: number },
-  center: { x: number; y: number },
-  cos: number,
-  sin: number
-): { x: number; y: number } {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  return {
-    x: center.x + dx * cos - dy * sin,
-    y: center.y + dx * sin + dy * cos
   };
 }
 
