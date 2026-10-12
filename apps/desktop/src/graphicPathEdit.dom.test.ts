@@ -289,6 +289,102 @@ describe("graphic path direct editing interactions", () => {
     });
   }
 
+  function snapshotDocument() {
+    const bridge = window.__CHEMDRAFT_AGENT__;
+    if (!bridge) throw new Error("Expected agent bridge.");
+    return bridge.snapshot().document;
+  }
+
+  async function escapeAndRelease(before: ChemDraftDocument, target: Element, point: { x: number; y: number }, pointerId: number, status: string) {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }));
+    });
+    expect(snapshotDocument()).toEqual(before);
+    expect(snapshotDocument().selection).toEqual(before.selection);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(container.textContent).toContain(status);
+    expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+    await act(async () => {
+      dispatchPointer(target, "pointermove", { x: point.x + 30, y: point.y + 30 }, pointerId);
+      dispatchPointer(target, "pointerup", point, pointerId);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    expect(snapshotDocument()).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(container.querySelector('[data-art-transform-preview="true"]')).toBeNull();
+  }
+
+  it.each(["molecule", "rectangle", "mixed"] as const)("Escape rolls back a %s move without history or a later release commit", async (kind) => {
+    let seeded = createPhase4Document("Escape Move");
+    if (kind !== "rectangle") {
+      seeded = applyNativeTemplateToolAtPoint(seeded, { x: 200, y: 260 }, "benzene");
+    }
+    if (kind !== "molecule") {
+      seeded = insertNativeArtGraphicObject(seeded, { x: 400, y: 180 }, "tool.art.rect");
+    }
+    if (kind === "mixed") {
+      seeded = applyPatch(seeded, { op: "setSelection", pageId: seeded.pages[0].id,
+        objectIds: seeded.pages[0].objects.map((object) => object.id) });
+    }
+    const objectId = seeded.selection.objectIds[0]!;
+    const object = seeded.pages[0].objects.find((candidate) => candidate.id === objectId)!;
+    // Molecules start moves from an atom/bond hit, rather than empty ring interiors.
+    const start = object.type === "molecule" ? object.atoms[0]! :
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+    const end = { x: start.x + 80, y: start.y + 50 };
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+    const before = snapshotDocument();
+    const target = objectElement(objectId);
+    await act(async () => { dispatchPointer(target, "pointerdown", start, 81); });
+    await act(async () => {
+      dispatchPointer(target, "pointermove", end, 81);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    if (kind === "rectangle") {
+      expect(snapshotDocument()).toEqual(before);
+      expect(container.querySelector('[data-art-transform-preview="true"]')).not.toBeNull();
+    } else {
+      expect(snapshotDocument()).not.toEqual(before);
+    }
+    await escapeAndRelease(before, target, end, 81, "Move canceled");
+  });
+
+  it.each(["resize", "rotate", "path"] as const)("Escape rolls back a %s handle gesture", async (kind) => {
+    const seeded = insertNativeArtGraphicObject(createPhase4Document("Escape Handle"),
+      { x: 220, y: 180 }, kind === "path" ? "tool.art.line" : "tool.art.rect");
+    const objectId = seeded.selection.objectIds[0]!;
+    await renderMainWindow(seeded, { initialActiveToolCommandId: "tool.select" });
+    if (kind === "rotate") await holdShiftForRotationHandles();
+    const before = snapshotDocument();
+    const object = graphicById(before, objectId);
+    const start = kind === "path" ? debugArtObject(objectId).projectedEditPoints!.middle! :
+      { x: object.x + object.width, y: object.y + object.height };
+    const handle = kind === "resize" ? resizeHandle("bottom-right") : kind === "path" ? pathHandle("middle") :
+      container.querySelector<HTMLButtonElement>('[data-selection-rotate-handle="true"]');
+    if (!handle) throw new Error("Expected gesture handle.");
+    const end = { x: start.x + 80, y: start.y + 50 };
+    await act(async () => { dispatchPointer(handle, "pointerdown", start, 82); });
+    await act(async () => {
+      dispatchPointer(pageElement(), "pointermove", end, 82);
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    if (!container.querySelector('[data-art-transform-preview="true"]')) {
+      expect(snapshotDocument()).not.toEqual(before);
+    }
+    await escapeAndRelease(before, pageElement(), end, 82, kind === "path" ? "Path edit canceled" : kind === "resize" ? "Resize canceled" : "Rotate canceled");
+  });
+
+  it.each(["tool.select", "tool.lasso"])("Escape abandons a %s region without changing selection on release", async (tool) => {
+    const seeded = insertNativeArtGraphicObject(createPhase4Document("Escape Region"), { x: 220, y: 180 }, "tool.art.rect");
+    await renderMainWindow(seeded, { initialActiveToolCommandId: tool });
+    const before = snapshotDocument();
+    await act(async () => { dispatchPointer(pageElement(), "pointerdown", { x: 100, y: 100 }, 83); });
+    await act(async () => { dispatchPointer(pageElement(), "pointermove", { x: 600, y: 400 }, 83); });
+    expect(container.querySelector('.selection-marquee, .selection-lasso-surface')).not.toBeNull();
+    await escapeAndRelease(before, pageElement(), { x: 600, y: 400 }, 83, "Selection canceled");
+    expect(container.querySelector('.selection-marquee, .selection-lasso-surface')).toBeNull();
+  });
+
   it("previews a line middle-handle drag below the object drag threshold", async () => {
     const document = insertNativeArtGraphicObject(
       createPhase4Document("Immediate Path Preview"),

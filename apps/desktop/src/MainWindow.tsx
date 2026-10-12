@@ -1357,12 +1357,14 @@ function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
 }
 type SelectionMarqueeState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
 };
 type SelectionLassoState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   points: ClientPoint[];
   latestPoint: ClientPoint;
@@ -1575,7 +1577,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.00.10-opus";
+const CURRENT_BUILD_STAMP = "10.12.01.40-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10927,6 +10929,60 @@ export function MainWindow({
     }
   }, []);
 
+  // Snapshot previews enter history only on pointerup. Escape must also disarm the session
+  // and discard the deferred CSS preview used by graphics.
+  const cancelSelectionPointerGesture = useCallback((): string | undefined => {
+    const sessions = [
+      [objectDragRef, "Move"],
+      [nativePartDragRef, "Move"],
+      [objectResizeDragRef, "Resize"],
+      [textResizeRef, "Resize"],
+      [objectRotateDragRef, "Rotate"],
+      [groupTransformDragRef, "Transform"],
+      [graphicPathEditDragRef, "Path edit"],
+      [graphicMarkerDragRef, "Arrowhead edit"],
+      [graphicGradientDragRef, "Gradient edit"],
+      [mechanismHandleDragRef, "Electron push arrow edit"],
+      [nativeBondEditDragRef, "Bond edit"]
+    ] as const;
+    for (const [ref, label] of sessions) {
+      const drag = ref.current;
+      if (!drag) continue;
+      ref.current = null;
+      replacePresentDocument(drag.startDocument);
+      clearObjectTransformPreview(drag.pointerId);
+      objectDragMachineRef.current = initialInteractionState();
+      objectRotateMachineRef.current = initialInteractionState();
+      groupTransformMachineRef.current = initialInteractionState();
+      setObjectResizeReadout(undefined);
+      setObjectRotateReadout(undefined);
+      setProjectedPlaneTiltReadout(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      // Capture may belong to an object or handle rather than the page. Its eventual release
+      // is harmless because the session ref is already gone.
+      return `${label} canceled`;
+    }
+    const region = selectionLassoRef.current ?? selectionMarqueeRef.current;
+    if (region) {
+      setSelectedNativeMoleculeParts(region.startNativeSelections);
+      selectionLassoRef.current = null;
+      selectionMarqueeRef.current = null;
+      lassoMachineRef.current = initialInteractionState();
+      marqueeMachineRef.current = initialInteractionState();
+      setSelectionLasso(undefined);
+      setSelectionMarquee(undefined);
+      setEraserSweepPreview(undefined);
+      return "Selection canceled";
+    }
+    if (nativeBondDragRef.current) {
+      nativeBondDragRef.current = null;
+      setFreeformNativeBond(undefined);
+      setHoveredNativeAtom(undefined);
+      return "Bond canceled";
+    }
+    return undefined;
+  }, [clearObjectTransformPreview, replacePresentDocument]);
+
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
     if (!drag || (event && drag.pointerId !== event.pointerId)) {
@@ -11105,6 +11161,15 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape") {
+        const canceled = cancelSelectionPointerGesture();
+        if (canceled) {
+          event.preventDefault();
+          setStatus(canceled);
+          return;
+        }
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -11231,6 +11296,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
@@ -13933,6 +13999,7 @@ export function MainWindow({
     event.stopPropagation();
     selectionLassoRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       points: [point],
       latestPoint: point,
@@ -13954,6 +14021,7 @@ export function MainWindow({
     event.preventDefault();
     selectionMarqueeRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       latestPoint: point,
       dragging: false
