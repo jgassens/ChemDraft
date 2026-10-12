@@ -2,6 +2,13 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
+  OBJECT_RESIZE_HANDLE_OFFSET_PX,
+  OBJECT_RESIZE_HANDLE_SIZE_PX,
+  projectGraphicVisualLocalPoint,
+  rotatedGraphicLocalBounds as rotatedGraphicFrameBounds
+} from "./graphicHandleGeometry";
+import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
   clampGraphicShaftMarkSizePx,
@@ -2362,11 +2369,24 @@ export function nativeGraphicCornerRadiusEditPoint(
   return graphicCornerRadiusEditPoint(object);
 }
 
-// Mirrors App.css: .object-resize-handle is 18px, corner offsets are -8px,
-// and .graphic-corner-radius-handle is 9px. Keep a 2px gap between hit targets.
-export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX = (18 - 8) + 9 / 2 + 2;
+const GRAPHIC_HANDLE_GAP_PX = 2;
+const GRAPHIC_HANDLE_RAY_OVERSHOOT_PX = 64;
 
-/** Local handle position; the true radius point stays unchanged for editing/readout. */
+/** Distance from a frame corner to the radius handle's centre that clears the resize target. */
+export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX =
+  (OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX) +
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 + GRAPHIC_HANDLE_GAP_PX;
+
+/**
+ * Local handle position; the true radius point stays unchanged for editing/readout.
+ *
+ * The handle must be visible (its centre on the page, so at least half of the
+ * target can be clicked) and clear of every resize target. Candidates, in
+ * order: inside along the top edge, past the controlled corner, past the
+ * opposite top corner. If no candidate is clear, the visible spot with the most
+ * clearance wins; the middle of the top edge is used only when nothing visible
+ * was found.
+ */
 export function nativeGraphicCornerRadiusHandlePoint(
   object: GraphicObject,
   pageScale: number,
@@ -2376,79 +2396,98 @@ export function nativeGraphicCornerRadiusHandlePoint(
   if (!point) {
     return undefined;
   }
-  const angle = object.rotation * Math.PI / 180;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const rotate = (p: NativeArtPoint): NativeArtPoint => {
-    const dx = p.x - object.width / 2;
-    const dy = p.y - object.height / 2;
-    return {
-      x: (object.x + object.width / 2 + dx * cos - dy * sin) * pageScale,
-      y: (object.y + object.height / 2 + dx * sin + dy * cos) * pageScale
-    };
+  const project = (x: number): NativeArtPoint => {
+    const p = projectGraphicVisualLocalPoint(object, { x, y: point.y });
+    return { x: (object.x + p.x) * pageScale, y: (object.y + p.y) * pageScale };
   };
-  const project = (p: NativeArtPoint) => rotate(projectGraphicObjectPoint(object, p, { coordinateSpace: "local" }));
   // Match documentObjectArtTransformFrameStyle: rotate the projected frame
   // bounds, then place fixed-size, axis-aligned resize targets on its corners.
-  const bounds = planNativeArtVisual(object, { coordinateSpace: "local" }).frameBounds;
-  const corners = [
-    rotate({ x: bounds.x, y: bounds.y }),
-    rotate({ x: bounds.x + bounds.width, y: bounds.y }),
-    rotate({ x: bounds.x, y: bounds.y + bounds.height }),
-    rotate({ x: bounds.x + bounds.width, y: bounds.y + bounds.height })
-  ];
-  const left = Math.min(...corners.map(p => p.x));
-  const right = Math.max(...corners.map(p => p.x));
-  const top = Math.min(...corners.map(p => p.y));
-  const bottom = Math.max(...corners.map(p => p.y));
+  const frame = rotatedGraphicFrameBounds(
+    object,
+    planNativeArtVisual(object, { coordinateSpace: "local" }).frameBounds,
+    object.rotation
+  );
+  const left = (object.x + frame.x) * pageScale;
+  const top = (object.y + frame.y) * pageScale;
+  const right = left + frame.width * pageScale;
+  const bottom = top + frame.height * pageScale;
+  const outer = -OBJECT_RESIZE_HANDLE_OFFSET_PX;
+  const inner = OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX;
   const resizeBoxes = [
-    { left: left - 8, right: left + 10, top: top - 8, bottom: top + 10 },
-    { left: right - 10, right: right + 8, top: top - 8, bottom: top + 10 },
-    { left: left - 8, right: left + 10, top: bottom - 10, bottom: bottom + 8 },
-    { left: right - 10, right: right + 8, top: bottom - 10, bottom: bottom + 8 }
+    { left: left - outer, right: left + inner, top: top - outer, bottom: top + inner },
+    { left: right - inner, right: right + outer, top: top - outer, bottom: top + inner },
+    { left: left - outer, right: left + inner, top: bottom - inner, bottom: bottom + outer },
+    { left: right - inner, right: right + outer, top: bottom - inner, bottom: bottom + outer }
   ];
   // The 9px button rotates with the visual shell, but is not plane-tilted.
-  const halfTarget = 4.5 * (Math.abs(cos) + Math.abs(sin));
-  const fits = (x: number): boolean => {
-    const p = project({ x, y: point.y });
-    const box = { left: p.x - halfTarget, right: p.x + halfTarget, top: p.y - halfTarget, bottom: p.y + halfTarget };
-    return box.left >= 0 && box.right <= page.width * pageScale &&
-      box.top >= 0 && box.bottom <= page.height * pageScale &&
-      resizeBoxes.every(target => box.right + 2 <= target.left || box.left - 2 >= target.right ||
-        box.bottom + 2 <= target.top || box.top - 2 >= target.bottom);
+  const angle = object.rotation * Math.PI / 180;
+  const halfTarget = GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 * (Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle)));
+  const pageWidth = page.width * pageScale;
+  const pageHeight = page.height * pageScale;
+  const epsilon = 1e-6;
+  const visible = (p: NativeArtPoint): boolean =>
+    p.x >= -epsilon && p.x <= pageWidth + epsilon && p.y >= -epsilon && p.y <= pageHeight + epsilon;
+  // Smallest gap between the handle's box and any resize target (negative when overlapping).
+  const clearance = (p: NativeArtPoint): number => Math.min(...resizeBoxes.map((target) => Math.max(
+    target.left - (p.x + halfTarget),
+    (p.x - halfTarget) - target.right,
+    target.top - (p.y + halfTarget),
+    (p.y - halfTarget) - target.bottom
+  )));
+
+  let best: { x: number; clearance: number } | undefined;
+  const consider = (x: number, p: NativeArtPoint): boolean => {
+    if (!visible(p)) return false;
+    const gap = clearance(p);
+    if (gap >= GRAPHIC_HANDLE_GAP_PX - epsilon) return true;
+    if (!best || gap > best.clearance) best = { x, clearance: gap };
+    return false;
   };
+
   const corner = projectGraphicObjectPoint(object, { x: 0, y: 0 }, { coordinateSpace: "local" });
   const unit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
   const edgeScale = pageScale * Math.hypot(unit.x - corner.x, unit.y - corner.y);
   if (edgeScale > 0.000001) {
     const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / edgeScale;
-    // Advance by at most one screen pixel and check the actual projected boxes:
-    // distance alone does not guarantee clearance along a skewed edge.
+    // Advance by one screen pixel and check the actual projected boxes:
+    // distance alone does not guarantee clearance along a skewed edge. Each
+    // ray is bounded by the edge's screen length plus a fixed overshoot.
     const step = 1 / edgeScale;
-    const candidates = [
+    const maxSteps = Math.ceil(Math.max(object.width, 0) * edgeScale + GRAPHIC_HANDLE_RAY_OVERSHOOT_PX);
+    const rays = [
       { start: Math.max(point.x, minimum), direction: 1, limit: object.width },
       { start: -minimum, direction: -1, limit: -Infinity },
       { start: object.width + minimum, direction: 1, limit: Infinity }
     ];
-    for (const candidate of candidates) {
-      for (let i = 0; i < 4096; i++) {
-        const x = candidate.start + candidate.direction * i * step;
-        if (candidate.direction > 0 && x > candidate.limit) break;
-        if (fits(x)) return { x, y: point.y };
-        const p = project({ x, y: point.y });
-        const next = project({ x: x + candidate.direction * step, y: point.y });
-        // Once this ray has left the page while travelling away from it, no
-        // later target can fit; move straight to the next placement candidate.
-        if ((p.x - halfTarget < 0 && next.x <= p.x) ||
-          (p.x + halfTarget > page.width * pageScale && next.x >= p.x) ||
-          (p.y - halfTarget < 0 && next.y <= p.y) ||
-          (p.y + halfTarget > page.height * pageScale && next.y >= p.y)) break;
+    for (const ray of rays) {
+      let p = project(ray.start);
+      for (let i = 0; i <= maxSteps; i++) {
+        const x = ray.start + ray.direction * i * step;
+        if (ray.direction > 0 && x > ray.limit) break;
+        if (consider(x, p)) return { x, y: point.y };
+        const next = project(x + ray.direction * step);
+        // Once the centre has left the page while travelling away from it, no
+        // later spot can be visible; move straight to the next ray.
+        if ((p.x < -epsilon && next.x <= p.x) ||
+          (p.x > pageWidth + epsilon && next.x >= p.x) ||
+          (p.y < -epsilon && next.y <= p.y) ||
+          (p.y > pageHeight + epsilon && next.y >= p.y)) break;
+        p = next;
       }
     }
+    // Nothing clear on the rays: score the inside stretch the first ray
+    // skipped as well, then take the visible spot with the most clearance.
+    const insideSteps = Math.min(maxSteps, Math.ceil(Math.max(object.width, 0) * edgeScale));
+    for (let i = 0; i <= insideSteps; i++) {
+      const x = Math.min(i * step, Math.max(object.width, 0));
+      if (consider(x, project(x))) return { x, y: point.y };
+    }
   }
-  // No candidate fits (e.g. an edge on the page boundary or a collapsed
-  // projection). Fall back inside, as far from the corner as the shape allows;
-  // clearance and full visibility cannot be guaranteed in this case.
+  if (best) {
+    return { x: best.x, y: point.y };
+  }
+  // No spot on the page (e.g. a collapsed projection): fall back inside, as
+  // far from the corner as the shape allows.
   return { x: object.width / 2, y: point.y };
 }
 

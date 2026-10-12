@@ -5,6 +5,11 @@ import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
+  projectGraphicVisualPagePoint,
+  rotatedGraphicLocalBounds,
+  unrotateGraphicVisualPagePoint
+} from "./graphicHandleGeometry";
+import {
   activeOpenWarnings,
   NO_OPEN_WARNINGS_REASON,
   OPEN_WARNINGS_LIST_ID,
@@ -1576,7 +1581,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.03.20-opus";
+const CURRENT_BUILD_STAMP = "10.12.03.30-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -27114,7 +27119,12 @@ function GraphicCornerRadiusHandle({
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight });
+  // The placement search projects many candidate spots; repeat it only when
+  // the shape, zoom or page changes, not on every render of the selection.
+  const point = useMemo(
+    () => nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight }),
+    [object, pageScale, pageWidth, pageHeight]
+  );
   if (!point) {
     return null;
   }
@@ -27976,88 +27986,6 @@ function documentObjectArtTransformFrameStyle(
     top: pageScaledCssPx(bounds.y),
     width: pageScaledCssPx(bounds.width),
     height: pageScaledCssPx(bounds.height)
-  };
-}
-
-function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: { x: number; y: number; width: number; height: number },
-  rotationDegrees: number
-): { x: number; y: number; width: number; height: number } {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = {
-    x: Math.max(object.width, 1) / 2,
-    y: Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(rotationDegrees);
-  const cos = Math.cos(rotationRad);
-  const sin = Math.sin(rotationRad);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
-
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
-  };
-}
-
-function unrotateGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  if (Math.abs(object.rotation) < 0.001) {
-    return point;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(-object.rotation);
-  return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function projectGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  const projected = projectGraphicObjectPoint(object, point);
-  if (Math.abs(object.rotation) < 0.001) {
-    return projected;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(object.rotation);
-  return rotatePointAroundCenter(projected, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function rotatePointAroundCenter(
-  point: { x: number; y: number },
-  center: { x: number; y: number },
-  cos: number,
-  sin: number
-): { x: number; y: number } {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  return {
-    x: center.x + dx * cos - dy * sin,
-    y: center.y + dx * sin + dy * cos
   };
 }
 

@@ -90,6 +90,24 @@ describe("square-corner radius and resize handles", () => {
     expect(renderCounter.mock.calls.some(([object]) => object.id === objectId)).toBe(true);
   });
 
+  it("reuses the radius handle placement across renders that keep shape, zoom and page", async () => {
+    await render();
+    const views = vi.spyOn(workflow, "nativeGraphicCornerRadiusEditPoint");
+    const placements = vi.spyOn(workflow, "nativeGraphicCornerRadiusHandlePoint");
+    const start = handlePoint();
+    // Hovering the handle and the page re-renders the selected view (the
+    // readout's edit point is read on every render) without changing inputs.
+    for (const offset of [0, 1, 2, 40, 41]) {
+      await act(async () => dispatch(page(), "pointermove", { x: start.x + offset, y: start.y + 60 }));
+    }
+    await act(async () => dispatch(radiusHandle(), "pointerdown", start));
+    await act(async () => dispatch(page(), "pointerup", start));
+    expect(views.mock.calls.some(([object]) => object.id === objectId)).toBe(true);
+    expect(placements).not.toHaveBeenCalled();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("view.zoomIn"); });
+    expect(placements.mock.calls.filter(([object]) => object.id === objectId)).toHaveLength(1);
+  });
+
   it.each([[100, 0, 7, 3, 10], [100, 37, 7, 3, 10], [10, 0, 1, 2, 3],
     [100, 0, 7, 100, 50], [10, 0, 1, 100, 5], [100, 37, 7, -100, 0]])(
     "preserves starting radius and clamps relative travel (width %s, rotation %s, radius %s, travel %s)",
