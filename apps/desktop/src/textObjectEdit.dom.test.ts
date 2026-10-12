@@ -143,10 +143,40 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     expectEditing();
   });
 
-  it("uses the registered T shortcut to edit selected text", async () => {
+  it.each(["command", "T"])("creates a second text after activating Text by %s with text selected", async activation => {
     await mount("tool.select", true);
-    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true })); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-    expectEditing();
+    const originalText = snapshot().document.pages[0].objects[0];
+    await act(async () => {
+      if (activation === "command") await window.__CHEMDRAFT_AGENT__!.command("tool.text");
+      else window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true }));
+    });
+    expect(snapshot().activeToolCommandId).toBe("tool.text");
+    expect(editor()).toBeNull();
+    expect(snapshot().document.selection.objectIds).toEqual([objectId]);
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true,
+        button: 0, buttons: 1, clientX: 400, clientY: 350 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
+    const newEditor = editor()!;
+    expect(newEditor).not.toBeNull();
+    expect(newEditor.value).toBe("Text");
+    const texts = snapshot().document.pages[0].objects.filter(object => object.type === "text");
+    expect(texts).toHaveLength(2);
+    expect(texts.find(object => object.id === objectId)).toEqual(originalText);
+    const newText = texts.find(object => object.id !== objectId)!;
+    expect(newText).toMatchObject({ type: "text", text: "Text" });
+    expect(newEditor.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(newText.id);
+    expect(document.activeElement).toBe(newEditor);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(newEditor, "New conditions");
+      newEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { newEditor.blur(); });
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(2);
+    expect(objects.find(object => object.id === objectId)).toEqual(originalText);
+    expect(objects.find(object => object.id !== objectId)).toMatchObject({ type: "text", text: "New conditions" });
   });
 });

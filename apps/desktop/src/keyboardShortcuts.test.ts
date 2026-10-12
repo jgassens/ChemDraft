@@ -39,7 +39,7 @@ describe("document window shortcuts", () => {
     // question here is whether its chord would reach it at all.
     const registry = createDesktopShortcutRegistry(commands, { platform, includeDisabled: true });
     // Enter commits atom labels and paths, but has no global text-reopening binding.
-    // Existing text is reopened through the registered Text-tool command (T).
+    // T activates the registered Text tool; existing text is edited by a canvas click.
     expect(registry.resolve({ key: "Enter" })).toBeUndefined();
     const menu = buildAppMenuModel({
       rulersVisible: true,

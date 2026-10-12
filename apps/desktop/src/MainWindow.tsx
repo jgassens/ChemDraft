@@ -9285,13 +9285,6 @@ export function MainWindow({
           }
         }
         setStatus(tool.id === "tool.art.eyedropper" ? currentEyedropperStatus : result.status);
-        if (tool.id === "tool.text") {
-          const selectedText = getSelectedTextObject(documentRef.current);
-          if (selectedText) {
-            restoreToolAfterTextPlacement();
-            startTextObjectEdit(selectedText.id);
-          }
-        }
       });
     });
 
