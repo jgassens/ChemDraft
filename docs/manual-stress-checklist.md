@@ -184,7 +184,7 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    fragments), undo/redo histories, warnings, zoom and scroll; switch by click and Ctrl+Tab /
    Ctrl+Shift+Tab and verify every state follows its tab. Check inspector/style controls, native
    palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
-   by their button and CmdOrCtrl+W: the Save/Discard/Cancel modal blocks document actions; floating native palettes remain above the dialog.
+   by their button and CmdOrCtrl+W: the native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes.
    Cancel keeps the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
    inactive tab too; a clean tab's × closes without prompting. Close the only tab by ×, both clean
    and dirty: Cancel keeps a dirty drawing, Save closes only on success, and closing leaves one fresh
@@ -201,3 +201,42 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
    Accept must explain that its document was closed and keep the proposal pending; Reject must work
    from any tab.
+
+
+Native simple prompts — run every item on **macOS and Windows** with the floating Drawing, Rings,
+and Art toolbars open, including at 125%/150% display scale:
+
+- For every prompt below, confirm the message box uses the OS appearance, stays above the floating
+  toolbars, and belongs to the document window. Escape and closing the box choose its cancel action.
+  Enter must never choose a destructive action. Repeat in the web preview with `?agentBridge=1`:
+  the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+- Close a dirty foreground or background tab: Save / Don’t Save / Cancel. Cancel retains drawing,
+  selection, dirty state, and history; Don’t Save removes only that tab (or leaves a fresh Untitled
+  when it was the last one). Save closes only after success. Cancel the save picker, simulate a write
+  failure, and edit during a slow save: the tab remains open and the next prompt includes the reason.
+  Queue an OS open-with while prompted: it waits, and Save still writes the prompted drawing.
+- Import oversized CDXML or paste oversized content: Use the recommended page / Keep Current Page.
+  Escape keeps the original page and overflow; resize remains one undoable layout operation and
+  preserves chemical identity and editable objects.
+- Apply a whole-molecule appearance change to a molecule with per-ring attributes:
+  Keep Overrides / Clear Overrides / Cancel. Cancel changes nothing; Keep retains ring attributes;
+  Clear removes them for the selected molecule with the existing labelled undo entry. Undo restores
+  the attributes. Enter must not choose Clear Overrides.
+- Request the local recognition engine: Install / Not now (or Install engine again / Not now).
+  Escape declines without installing; Install starts only on that choice. The progress dialog stays
+  in-app, keeps byte/phase feedback, and Cancel still stops only an install owned by that request.
+  An unsupported-computer notice has only Not now and never installs anything.
+- Uninstall the recognition plugin, then answer Remove / Keep for its engine. Keep and Escape leave
+  the engine on disk; Remove deletes only the engine and reports the same result. With the plugin’s
+  current API, the safe Keep action is also offered in the default slot, so two Keep buttons may
+  appear; both must retain the engine and Remove must never be the default.
+- Open an image request with no available source: Close acknowledges the specific reason and
+  cancels that request; no image acquisition or recognition runs.
+- Open a file whose visible CDXML disagrees with its embedded document: Import Visible CDXML /
+  Restore Embedded chooses the same document as before; Escape restores the embedded document.
+  If no visible subset can be read: Restore Embedded / Cancel, and Escape cancels the open.
+- Crash-report consent: Email Report / Not Now. Escape creates no email draft; Email Report opens
+  the same reviewable draft. On Windows, check app-update consent and informational result boxes:
+  cancellation does not install; accepting keeps the existing download/install/session-flush flow.
+- Windows document-window close still flushes the session and quits (without a new dirty-tab
+  prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.

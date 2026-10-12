@@ -453,7 +453,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Cmd+N then immediate Cmd+W can hide the window");
     expect(mainWindowSource).toContain("autosave keeps both tabs, so nothing is lost");
     const checklist = readFileSync("docs/manual-stress-checklist.md", "utf8");
-    expect(checklist).toContain("floating native palettes remain above the dialog");
+    expect(checklist).toContain("native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes");
     expect(checklist).not.toContain("modal hides native palettes");
   });
 
@@ -480,7 +480,7 @@ describe("ChemDraft desktop shell", () => {
 
     // The gate opens only after parser and document restoration finish. The restore helper
     // also returns cleanly for first-run and pristine-blank sessions.
-    const restoreLine = lines.findIndex((line) => line.trim() === "restore();");
+    const restoreLine = lines.findIndex((line) => line.trim() === "await restore();");
     expect(restoreLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeGreaterThan(restoreLine);
     expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');

@@ -1,3 +1,4 @@
+import { nativePrompt } from "./nativePrompt";
 /**
  * Windows app updates (macOS uses Sparkle; see docs/releasing/windows-updates.md).
  *
@@ -228,12 +229,16 @@ export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flu
       return check();
     },
     confirm: async (text, options) => {
-      const { confirm } = await import("@tauri-apps/plugin-dialog");
-      return confirm(text, { ...options, kind: "info" });
+      return await nativePrompt({
+        title: options.title, message: text, kind: "info",
+        choices: [{ id: "update", label: options.okLabel }, { id: "cancel", label: options.cancelLabel, cancel: true }]
+      }) === "update";
     },
     message: async (text, options) => {
-      const { message } = await import("@tauri-apps/plugin-dialog");
-      await message(text, options);
+      await nativePrompt({
+        title: options.title, message: text, kind: options.kind ?? "info",
+        choices: [{ id: "ok", label: "OK", cancel: true }]
+      });
     }
   };
 }

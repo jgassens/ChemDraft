@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
+import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import type { PluginManifest } from "@chemdraft/plugin-api";
 import { act, createElement, Fragment, useEffect, useReducer, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
@@ -446,6 +447,8 @@ describe("PluginManagerDialog", () => {
   ])(
     "asks once after uninstalling MolScribe whether to remove the engine too (%s)",
     async (_label, action, removals) => {
+      let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+      onTestFinished(setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; })));
       const runtime = createRuntime();
       const onUninstallRecognitionEngine = vi.fn(async () => undefined);
       const onUninstall = vi.fn(async (_pluginId: string) => {});
@@ -478,13 +481,13 @@ describe("PluginManagerDialog", () => {
       expect(onUninstall).toHaveBeenCalledWith(molscribeManifest.id);
       // The plugin is gone, so its engine row is too; the engine itself is still on disk until asked.
       expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
-      const offer = document.querySelector('[data-testid="recognition-engine-removal-offer"]');
-      expect(offer?.textContent).toContain("Also remove the recognition engine (2.5 GB)?");
+      expect(pending?.prompt.message).toContain("Also remove the recognition engine (2.5 GB)?");
+      expect(pending?.prompt.choices).toEqual([
+        { id: "remove", label: "Remove", destructive: true }, { id: "keep", label: "Keep", cancel: true }
+      ]);
       expect(onUninstallRecognitionEngine).not.toHaveBeenCalled();
 
-      await act(async () => {
-        offer!.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click();
-      });
+      await act(async () => { pending!.resolve(action === "confirm-remove-recognition-engine" ? "remove" : "keep"); });
       expect(onUninstallRecognitionEngine).toHaveBeenCalledTimes(removals);
       expect(document.querySelector('[data-testid="recognition-engine-removal-offer"]')).toBeNull();
       expect(document.querySelector(".plugin-manager-error")).toBeNull();

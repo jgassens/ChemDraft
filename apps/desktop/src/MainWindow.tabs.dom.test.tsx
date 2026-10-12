@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { createNativeSavePayload, createPhase4Document, openNativeDocument } from "./documentWorkflow";
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
@@ -80,7 +81,14 @@ describe("documents in one window", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
 
+  let pendingPrompt: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+  let restorePromptProvider: () => void;
+
   beforeEach(async () => {
+    pendingPrompt = undefined;
+    restorePromptProvider = setNativePromptProvider((prompt) => new Promise((resolve) => {
+      pendingPrompt = { prompt, resolve };
+    }));
     vi.clearAllMocks();
     vi.mocked(setToolbarsMenu).mockResolvedValue(undefined);
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
@@ -101,6 +109,7 @@ describe("documents in one window", () => {
   });
 
   afterEach(() => {
+    restorePromptProvider();
     act(() => root?.unmount());
     root = undefined;
     container?.remove();
@@ -147,6 +156,7 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document.title).toBe(title);
     expect(bridge().snapshot().page.objectCount).toBe(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     const saved = await flush();
     expect(saved.tabs).toHaveLength(1);
     expect(saved.tabs![0]).toMatchObject({ pristine: true, blank: true, dirty: false });
@@ -169,9 +179,12 @@ describe("documents in one window", () => {
     return parseDocumentSessionEnvelope(native.session)!;
   }
   async function modalButton(label: string) {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-      .find((candidate) => candidate.textContent === label)!;
-    await act(async () => button.click());
+    expect(pendingPrompt).toBeDefined();
+    const { prompt, resolve } = pendingPrompt!;
+    const choice = prompt.choices.find((candidate) => candidate.label === label);
+    expect(choice).toBeDefined();
+    pendingPrompt = undefined;
+    await act(async () => resolve(choice!.id));
   }
   async function key(shiftKey = false) {
     const event = new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, shiftKey, bubbles: true, cancelable: true });
@@ -350,6 +363,7 @@ describe("documents in one window", () => {
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
@@ -490,15 +504,69 @@ describe("documents in one window", () => {
     const invoke = vi.spyOn(runtime().host, "invokeCommand");
     await closeTab();
     expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./));
-    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    expect(pendingPrompt?.prompt).toMatchObject({
+      title: "Save changes before closing?", kind: "warning",
+      choices: [{ id: "save", label: "Save" }, { id: "discard", label: "Don't Save", destructive: true },
+        { id: "cancel", label: "Cancel", cancel: true }]
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeDefined();
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(drawnText()).toContain("Second dirty drawing");
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()).toHaveLength(1);
     expect(drawnText()).toContain("Keep the first drawing");
+  });
+
+  it.each(["Import Visible CDXML", "Restore Embedded"])("CDXML conflict %s opens only the chosen document", async (choice) => {
+    await paste("Original embedded note");
+    const original = bridge().snapshot().document;
+    const payload = createNativeSavePayload(original).contents;
+    expect(payload).toContain("Original embedded note");
+    const edited = payload.replace("Original embedded note", "Externally edited note");
+    expect(openNativeDocument(edited).conflict?.visibleDocument).toBeDefined();
+    native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+    await command("document.open");
+    expect(pendingPrompt?.prompt.title).toBe("Modified visible CDXML");
+    expect(bridge().snapshot().document).toEqual(original);
+    expect(tabs()).toHaveLength(1);
+    await modalButton(choice);
+    expect(tabs()).toHaveLength(2);
+    expect(drawnText()).toContain(choice === "Import Visible CDXML" ? "Externally edited note" : "Original embedded note");
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    await activate(0);
+    expect(bridge().snapshot().document).toEqual(original);
+  });
+
+  it("the web build keeps the original close dialog and Escape retains the drawing", async () => {
+    restorePromptProvider();
+    native.desktop = false;
+    await remount();
+    await paste("Web drawing stays editable");
+    const before = bridge().snapshot().document;
+    await closeTab();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Save changes before closing?"]')!;
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.textContent).toContain("Save the changes to Untitled?");
+    expect(Array.from(dialog.querySelectorAll("button")).map((button) => button.textContent))
+      .toEqual(["Cancel", "Don't Save", "Save"]);
+    await act(async () => dialog.querySelector("button")!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true
+    })));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    await closeTab();
+    const discard = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find((button) => button.textContent === "Don't Save")!;
+    await act(async () => discard.click());
+    expect(bridge().snapshot().page.objectCount).toBe(0);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    expect(tabs()).toHaveLength(1);
   });
 
   it("closing an inactive clean tab keeps the current drawing active", async () => {
@@ -508,6 +576,7 @@ describe("documents in one window", () => {
     const currentDocument = bridge().snapshot().document;
     await closeTab(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(bridge().snapshot().document).toEqual(currentDocument);
@@ -520,13 +589,13 @@ describe("documents in one window", () => {
     await closeTab();
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(pendingPrompt).toBeDefined();
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     native.writeFile.mockRejectedValueOnce(new Error("disk full"));
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("disk full");
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("disk full");
+    expect(pendingPrompt?.prompt.message).toContain("disk full");
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     await modalButton("Save");
     expect(native.writeFile).toHaveBeenLastCalledWith("/tmp/saved.chemdraft", expect.any(String));
@@ -546,13 +615,13 @@ describe("documents in one window", () => {
     const before = bridge().snapshot().document;
     const closedTab = tabs()[0];
     await closeTab();
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Save the changes to Untitled?");
+    expect(pendingPrompt?.prompt.message).toContain("Save the changes to Untitled?");
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().document).toEqual(before);
     expect(bridge().snapshot().file.dirty).toBe(true);
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()[0]).not.toBe(closedTab);
     await expectPristineUntitled();
   });
@@ -568,6 +637,7 @@ describe("documents in one window", () => {
     }
     expect(invoke).not.toHaveBeenCalled();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(bridge().snapshot().document).toEqual(before);
     const saved = await flush();
     expect(native.quit).toHaveBeenCalledOnce();
@@ -678,6 +748,7 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     await activate(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(reject).not.toHaveBeenCalled();
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
   });
@@ -822,6 +893,7 @@ describe("documents in one window", () => {
     if (action === "switch") await key();
     else await closeTab();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(active()).toBe(action === "switch" ? 1 : 0);
     await pointer(page, "pointerup", 230, 180);
     expect(bridge().snapshot().document).toEqual(other);

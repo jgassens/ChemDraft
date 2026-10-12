@@ -1,3 +1,4 @@
+import { useNativePrompt } from "../nativePrompt";
 import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
@@ -73,13 +74,22 @@ export function PluginImageRequestDialog({
   const titleId = useId();
   const attributionId = useId();
 
+  const simple = request.providers.length === 0 && !request.permissionPanel;
+  const prompt = useNativePrompt({
+    title: request.request.title,
+    message: [`Requested by ${request.pluginName} (${request.pluginId})`, request.unavailableReason, request.error].filter(Boolean).join("\n\n"),
+    kind: "warning",
+    choices: [{ id: "cancel", label: request.unavailableReason ? "Close" : "Cancel", cancel: true }]
+  }, () => onCancel(request.id), simple ? request.id : undefined);
+  const visible = !simple || prompt.visible;
+
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     dialogRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus();
     return () => {
       if (previousFocus?.isConnected) previousFocus.focus();
     };
-  }, []);
+  }, [visible]);
 
   // A source button turning disabled while it acquires (or the failure that follows) must not leave
   // the modal without focus.
@@ -91,7 +101,7 @@ export function PluginImageRequestDialog({
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        onCancel(request.id);
+        if (simple) prompt.choose("cancel"); else onCancel(request.id);
         return;
       }
       if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
@@ -104,7 +114,7 @@ export function PluginImageRequestDialog({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel, request.id]);
+  }, [onCancel, request.id, simple, prompt.choose]);
 
   useEffect(() => {
     const handleFocus = (): void => onPermissionFocus(request.id);
@@ -112,7 +122,7 @@ export function PluginImageRequestDialog({
     return () => window.removeEventListener("focus", handleFocus);
   }, [onPermissionFocus, request.id]);
 
-  if (typeof document === "undefined") return null;
+  if (typeof document === "undefined" || !visible) return null;
 
   return createPortal(
     <div className="plugin-prompt-backdrop" role="presentation">
@@ -176,7 +186,7 @@ export function PluginImageRequestDialog({
           {request.error ? <p className="plugin-image-error" role="alert">{request.error}</p> : null}
         </div>
         <footer className="plugin-prompt-actions">
-          <button className="plugin-manager-button" type="button" onClick={() => onCancel(request.id)}>
+          <button className="plugin-manager-button" type="button" onClick={() => { if (simple) prompt.choose("cancel"); else onCancel(request.id); }}>
             {request.unavailableReason ? "Close" : "Cancel"}
           </button>
         </footer>

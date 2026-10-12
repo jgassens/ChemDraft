@@ -1,0 +1,165 @@
+import { useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { message, type MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
+
+export interface NativePromptChoice {
+  id: string;
+  label: string;
+  cancel?: boolean;
+  destructive?: boolean;
+}
+export interface NativePromptOptions {
+  title: string;
+  message: string;
+  kind: "info" | "warning" | "error";
+  choices: readonly NativePromptChoice[];
+}
+export type NativePromptFallback = (prompt: NativePromptOptions) => Promise<string>;
+export type NativePromptProvider = (prompt: NativePromptOptions, fallback: NativePromptFallback) => Promise<string>;
+let provider: NativePromptProvider | undefined;
+
+/** Test injection is scoped by the returned restore function; it never enables native access. */
+export function setNativePromptProvider(next: NativePromptProvider): () => void {
+  const previous = provider;
+  provider = next;
+  return () => { provider = previous; };
+}
+
+export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogCustomButtons {
+  const { choices } = prompt;
+  const cancel = choices.find((choice) => choice.cancel);
+  if (!cancel || choices.filter((choice) => choice.cancel).length !== 1 ||
+      choices.length < 1 || choices.length > 3 || cancel.destructive ||
+      choices.filter((choice) => choice.destructive).length > 1 ||
+      new Set(choices.map((choice) => choice.id)).size !== choices.length ||
+      new Set(choices.map((choice) => choice.label)).size !== choices.length) {
+    throw new Error("A prompt needs one safe cancel choice and one to three distinct labelled choices.");
+  }
+  const actions = choices.filter((choice) => !choice.cancel);
+  if (!actions.length) return { ok: cancel.label };
+  if (actions.length === 1 && !actions[0]!.destructive) {
+    return { ok: actions[0]!.label, cancel: cancel.label };
+  }
+  // The plugin has no default-button option: yes/ok is always the default. For a two-choice
+  // destructive prompt, offer the safe choice in both yes and cancel slots rather than default
+  // to deletion or mislabel the system cancel slot. Both safe buttons return the same choice.
+  const safe = actions.find((choice) => !choice.destructive) ?? cancel;
+  const other = actions.find((choice) => choice !== safe)!;
+  return { yes: safe.label, no: other.label, cancel: cancel.label };
+}
+
+export async function nativePrompt(
+  prompt: NativePromptOptions,
+  fallback: NativePromptFallback = renderPromptFallback,
+  signal?: AbortSignal
+): Promise<string> {
+  const buttons = nativePromptButtons(prompt);
+  const cancel = prompt.choices.find((choice) => choice.cancel)!;
+  if (signal?.aborted) return cancel.id;
+  if (provider) {
+    const result = await provider(prompt, fallback);
+    return prompt.choices.find((choice) => choice.id === result)?.id ?? cancel.id;
+  }
+  if (!isTauri()) return fallback(prompt);
+  let result: string;
+  try {
+    await Promise.resolve();
+    // React StrictMode replays mount effects. Its first request must not open a second OS box.
+    if (signal?.aborted) return cancel.id;
+    result = await message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+  } catch (error) {
+    console.error("Native prompt failed", error);
+    return fallback(prompt);
+  }
+  // Custom buttons normally return their label. An OS dismissal returns Cancel; fail closed
+  // on any unexpected result too. Do not interpret arbitrary labels as positional button IDs.
+  return result === "Cancel" ? cancel.id : prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
+}
+
+/** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise. */
+export function useNativePrompt(
+  prompt: NativePromptOptions,
+  onChoice: (id: string) => void | boolean | Promise<void | boolean>,
+  requestKey: string | number | undefined
+): { visible: boolean; choose: (id: string) => void } {
+  const current = useRef({ prompt, onChoice });
+  current.current = { prompt, onChoice };
+  const resolve = useRef<((id: string) => void) | undefined>(undefined);
+  const [visible, setVisible] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (requestKey === undefined) { setVisible(false); return; }
+    let disposed = false;
+    const controller = new AbortController();
+    const fallback: NativePromptFallback = () => new Promise((done) => {
+      if (disposed) { done(current.current.prompt.choices.find((choice) => choice.cancel)!.id); return; }
+      resolve.current = done;
+      setVisible(true);
+    });
+    void nativePrompt(current.current.prompt, fallback, controller.signal).then(async (id) => {
+      if (disposed) return;
+      resolve.current = undefined;
+      // Wait for React to publish Save's status before asking again with its failure detail.
+      const repeat = await current.current.onChoice(id) === false;
+      if (disposed) return;
+      if (repeat) setAttempt((value) => value + 1);
+      else setVisible(false);
+    });
+    return () => {
+      disposed = true;
+      controller.abort();
+      resolve.current?.(current.current.prompt.choices.find((choice) => choice.cancel)!.id);
+      resolve.current = undefined;
+    };
+  }, [requestKey, attempt]);
+  return { visible, choose: (id) => resolve.current?.(id) };
+}
+
+/** Browser-only message fallback for callers that did not previously own a React modal. */
+function renderPromptFallback(prompt: NativePromptOptions): Promise<string> {
+  return new Promise((resolve) => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const backdrop = document.createElement("div");
+    backdrop.className = "plugin-prompt-backdrop";
+    const dialog = document.createElement("section");
+    dialog.className = "plugin-prompt-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", prompt.title);
+    const title = document.createElement("h2");
+    title.textContent = prompt.title;
+    const text = document.createElement("p");
+    text.textContent = prompt.message;
+    const footer = document.createElement("footer");
+    footer.className = "plugin-prompt-actions";
+    const finish = (id: string) => {
+      backdrop.remove();
+      if (previous?.isConnected) previous.focus();
+      resolve(id);
+    };
+    for (const choice of prompt.choices) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "plugin-manager-button";
+      button.textContent = choice.label;
+      button.onclick = () => finish(choice.id);
+      footer.append(button);
+    }
+    dialog.append(title, text, footer);
+    backdrop.append(dialog);
+    document.body.append(backdrop);
+    const buttons = Array.from(footer.querySelectorAll("button"));
+    buttons[prompt.choices.findIndex((choice) => choice.cancel)]?.focus();
+    dialog.onkeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(prompt.choices.find((choice) => choice.cancel)!.id);
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+      }
+    };
+  });
+}

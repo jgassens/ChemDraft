@@ -1,3 +1,4 @@
+import { useNativePrompt } from "../nativePrompt";
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -208,6 +209,19 @@ export function PluginManagerDialog({
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose]);
+
+  const engineRemovalPrompt = useNativePrompt({
+    title: "Remove recognition engine?",
+    message: `Also remove the recognition engine (${formatDiskBytes(engineRemovalOfferBytes ?? 0)})?`,
+    kind: "warning",
+    choices: [
+      { id: "remove", label: "Remove", destructive: true },
+      { id: "keep", label: "Keep", cancel: true }
+    ]
+  }, async (choice) => {
+    if (choice === "remove") await removeRecognitionEngineAfterUninstall();
+    else setEngineRemovalOfferBytes(undefined);
+  }, engineRemovalOfferBytes);
 
   if (typeof document === "undefined") {
     return null;
@@ -472,7 +486,7 @@ export function PluginManagerDialog({
           </div>
         ) : null}
 
-        {engineRemovalOfferBytes !== undefined ? (
+        {engineRemovalOfferBytes !== undefined && engineRemovalPrompt.visible ? (
           <div
             aria-labelledby={`${titleId}-engine-offer`}
             className="plugin-manager-notice"
@@ -487,7 +501,7 @@ export function PluginManagerDialog({
                 className="plugin-manager-button"
                 data-action="confirm-remove-recognition-engine"
                 disabled={busy}
-                onClick={() => void removeRecognitionEngineAfterUninstall()}
+                onClick={() => engineRemovalPrompt.choose("remove")}
                 type="button"
               >
                 Remove
@@ -496,7 +510,7 @@ export function PluginManagerDialog({
                 className="plugin-manager-button"
                 data-action="keep-recognition-engine"
                 disabled={busy}
-                onClick={() => setEngineRemovalOfferBytes(undefined)}
+                onClick={() => engineRemovalPrompt.choose("keep")}
                 type="button"
               >
                 Keep

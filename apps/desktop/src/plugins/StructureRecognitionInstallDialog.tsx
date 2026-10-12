@@ -1,3 +1,4 @@
+import { useNativePrompt } from "../nativePrompt";
 import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
@@ -33,13 +34,33 @@ export function StructureRecognitionInstallDialog({
   // An engine is on disk but does not match this build; the detail says why in plain words.
   const reinstall = request.status.state === "broken";
 
+  const prompt = useNativePrompt({
+    title: unsupported ? "Recognition engine unavailable" : "Install recognition engine?",
+    message: [
+      `Requested by ${request.pluginName} (${request.pluginId})`,
+      unsupported ? "This computer isn’t supported by the MolScribe recognition engine yet." :
+        `MolScribe recognition engine: a private Python, PyTorch and a 1.1 GB model.\nSpace needed: ${formatDiskBytes(request.status.requiredDiskBytes)}. Free space: ${formatDiskBytes(request.status.freeDiskBytes)}.\nIt runs entirely on this computer. Images never leave it.\n${EXPERIMENTAL_PLUGIN_NOTICE}`,
+      request.status.detail,
+      request.error ? recognitionInstallErrorMessage(request.error, request.status) : undefined
+    ].filter(Boolean).join("\n\n"),
+    kind: unsupported || request.error ? "warning" : "info",
+    choices: [
+      ...(!unsupported ? [{ id: "install", label: reinstall ? "Install engine again" : "Install" }] : []),
+      { id: "decline", label: "Not now", cancel: true }
+    ]
+  }, (choice) => {
+    if (choice === "install") { onInstall(request.id); return false; }
+    onDecline(request.id);
+  }, request.installing ? undefined : `${request.id}:${request.error?.code ?? ""}`);
+  const visible = request.installing || prompt.visible;
+
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     dialogRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])")?.focus();
     return () => {
       if (previous?.isConnected) previous.focus();
     };
-  }, []);
+  }, [visible]);
 
   // Install swaps the footer, unmounting the focused button; keep the keyboard on this dialog.
   useLayoutEffect(() => keepFocusInsideDialog(dialogRef.current));
@@ -51,7 +72,7 @@ export function StructureRecognitionInstallDialog({
         event.preventDefault();
         event.stopPropagation();
         if (request.installing) void onCancel(request.id);
-        else onDecline(request.id);
+        else prompt.choose("decline");
         return;
       }
       if (event.key !== "Tab") return;
@@ -61,7 +82,7 @@ export function StructureRecognitionInstallDialog({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onCancel, onDecline, request.id, request.installing]);
 
-  if (typeof document === "undefined") return null;
+  if (typeof document === "undefined" || !visible) return null;
 
   return createPortal(
     <div className="plugin-prompt-backdrop" role="presentation">
@@ -120,14 +141,14 @@ export function StructureRecognitionInstallDialog({
             </button>
           ) : (
             <>
-              <button className="plugin-manager-button" type="button" onClick={() => onDecline(request.id)}>
+              <button className="plugin-manager-button" type="button" onClick={() => prompt.choose("decline")}>
                 Not now
               </button>
               {!unsupported ? (
                 <button
                   className="plugin-manager-button recognition-install-confirm"
                   type="button"
-                  onClick={() => void onInstall(request.id)}
+                  onClick={() => prompt.choose("install")}
                 >
                   {reinstall ? "Install engine again" : "Install"}
                 </button>

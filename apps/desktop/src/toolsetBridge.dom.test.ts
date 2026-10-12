@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -1225,25 +1226,24 @@ describe("toolset bridge interactions", () => {
       "#1f5fbf"
     );
 
+    let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+    const restoreProvider = setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; }));
+    onTestFinished(restoreProvider);
     await renderMainWindow(initialDocument);
 
     expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="objects"]')).not.toBeNull();
-    routeCommand("object.color.red");
+    await act(async () => routeCommand("object.color.red"));
 
-    const prompt = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Per-ring appearance attributes"]');
-    expect(prompt).not.toBeNull();
+    expect(pending?.prompt.title).toBe("Per-Ring Attributes");
+    expect(pending?.prompt.message).toContain("per-ring attributes");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Choose how to handle per-ring attributes");
     let renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
     );
     expect(renderedRingFill?.getAttribute("fill")).toBe("#1f5fbf");
 
-    const keepButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent === "Keep Overrides");
-    await act(async () => {
-      keepButton?.click();
-    });
-
+    expect(pending?.prompt.choices.find((choice) => choice.id === "keep")?.label).toBe("Keep Overrides");
+    await act(async () => { pending!.resolve("keep"); });
     expect(container.querySelector('[role="dialog"][aria-label="Per-ring appearance attributes"]')).toBeNull();
     renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
@@ -1251,13 +1251,11 @@ describe("toolset bridge interactions", () => {
     expect(renderedRingFill?.getAttribute("fill")).toBe("#1f5fbf");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected fill");
 
-    routeCommand("object.color.green");
-    const clearButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent === "Clear Overrides");
-    await act(async () => {
-      clearButton?.click();
+    await act(async () => routeCommand("object.color.green"));
+    expect(pending?.prompt.choices.find((choice) => choice.id === "clear")).toMatchObject({
+      label: "Clear Overrides", destructive: true
     });
-
+    await act(async () => { pending!.resolve("clear"); });
     expect(container.querySelector('[role="dialog"][aria-label="Per-ring appearance attributes"]')).toBeNull();
     renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
