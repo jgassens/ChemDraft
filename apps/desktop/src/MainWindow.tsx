@@ -2129,6 +2129,15 @@ export function MainWindow({
   // A second placement can end an earlier edit before React observes it, so pending ids cannot be
   // kept in one overwriteable slot.
   const textObjectIdsAwaitingAutoConversionRef = useRef<Set<string>>(new Set());
+  // Only fresh insertions own a placeholder. Synchronous clearing also protects focus retries.
+  const pendingTextPlaceholderObjectIdRef = useRef<string | undefined>(undefined);
+  const isTextPlaceholderPending = useCallback((objectId: string) =>
+    pendingTextPlaceholderObjectIdRef.current === objectId, []);
+  const clearTextPlaceholder = useCallback((objectId: string) => {
+    if (pendingTextPlaceholderObjectIdRef.current === objectId) {
+      pendingTextPlaceholderObjectIdRef.current = undefined;
+    }
+  }, []);
   const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
   activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
@@ -5960,10 +5969,10 @@ export function MainWindow({
     }
 
     editor.focus({ preventScroll: true });
-    if (editor.value === "Text") {
+    if (isTextPlaceholderPending(objectId)) {
       editor.select();
     }
-  }, []);
+  }, [isTextPlaceholderPending]);
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
@@ -6054,6 +6063,7 @@ export function MainWindow({
     }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
+    pendingTextPlaceholderObjectIdRef.current = inserted?.id;
     setActiveTextEditObjectId(inserted?.id);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
@@ -6511,6 +6521,9 @@ export function MainWindow({
   // unreliable). Whichever path ends the first edit of a newly placed object converts it.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (pendingTextPlaceholderObjectIdRef.current !== activeTextEditObjectId) {
+      pendingTextPlaceholderObjectIdRef.current = undefined;
+    }
     const previous = previousTextEditObjectIdRef.current;
     previousTextEditObjectIdRef.current = activeTextEditObjectId;
     if (!previous || previous === activeTextEditObjectId) {
@@ -13525,6 +13538,9 @@ export function MainWindow({
     }
 
     const changed = commitLiveInputPreview(session.startDocument);
+    if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+    }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
@@ -18327,6 +18343,8 @@ export function MainWindow({
     onTextEditStart: startTextObjectEdit,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
+    isTextPlaceholderPending,
+    onTextPlaceholderClear: clearTextPlaceholder,
     onTextResizeStart: startTextResize,
     onAtomLabelChange: updateAtomLabelDraft,
     onAtomLabelCancel: cancelAtomLabelEdit,
@@ -25233,6 +25251,8 @@ function DocumentObjectViewContent({
   onTextEditStart,
   onTextEditFinish,
   onTextSelectionChange,
+  isTextPlaceholderPending,
+  onTextPlaceholderClear,
   onTextResizeStart,
   onAtomLabelChange,
   onAtomLabelCancel,
@@ -25306,6 +25326,8 @@ function DocumentObjectViewContent({
   onTextEditStart(objectId: string): void;
   onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
+  isTextPlaceholderPending(objectId: string): boolean;
+  onTextPlaceholderClear(objectId: string): void;
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
   onAtomLabelChange(state: AtomLabelEditState, text: string): void;
   onAtomLabelCancel(state: AtomLabelEditState): void;
@@ -25324,10 +25346,10 @@ function DocumentObjectViewContent({
     }
 
     editor.focus();
-    if (object.text === "Text") {
+    if (isTextPlaceholderPending(object.id)) {
       editor.select();
     }
-  }, [editingText, object]);
+  }, [editingText, object, isTextPlaceholderPending]);
 
   if (object.type === "group") {
     return null;
@@ -25388,6 +25410,7 @@ function DocumentObjectViewContent({
     onObjectResizeDoubleClick(object.id, corner, event);
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onTextPlaceholderClear(object.id);
     recordTextEditorSelection(event.currentTarget);
     onTextChange(object.id, event.currentTarget.value);
   };
@@ -25402,6 +25425,7 @@ function DocumentObjectViewContent({
       return;
     }
 
+    onTextPlaceholderClear(object.id);
     const start = editor.selectionStart;
     const end = editor.selectionEnd;
     const currentValue = editor.value;
@@ -25434,6 +25458,14 @@ function DocumentObjectViewContent({
 
     const commandKeyPressed = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();
+
+    if (
+      (!commandKeyPressed && event.key.length === 1) ||
+      ["Backspace", "Delete", "Enter", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key) ||
+      (commandKeyPressed && ["a", "x"].includes(key))
+    ) {
+      onTextPlaceholderClear(object.id);
+    }
 
     if (commandKeyPressed && key === "a") {
       event.preventDefault();
@@ -25521,6 +25553,8 @@ function DocumentObjectViewContent({
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive &&
+    // Keep the transform frame hosting typed Z/X/Y entry when Shift releases.
+    !rotationInput &&
     !showGraphicGradientHandles;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
@@ -26155,7 +26189,7 @@ function DocumentObjectViewContent({
               onChange={handleTextChange}
               onPaste={handleTextPaste}
               onFocus={(event) => {
-                if (object.text === "Text") {
+                if (isTextPlaceholderPending(object.id)) {
                   event.currentTarget.select();
                 }
                 recordTextEditorSelection(event.currentTarget);
@@ -26170,7 +26204,10 @@ function DocumentObjectViewContent({
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                onTextPlaceholderClear(object.id);
+                event.stopPropagation();
+              }}
               onPointerUp={(event) => {
                 event.stopPropagation();
                 recordTextEditorSelection(event.currentTarget);
