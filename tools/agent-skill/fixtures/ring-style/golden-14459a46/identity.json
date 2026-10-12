@@ -1,0 +1,86 @@
+[
+  {
+    "name": "cholesterol",
+    "kind": "carbon",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12CC=C3C[C@@H](O)CC[C@]3(C)[C@@]1([H])CC[C@]1(C)[C@@H]([C@H](C)CCCC(C)C)CC[C@@]21[H]",
+        "stereoCenters": 8,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  },
+  {
+    "name": "cholesterol",
+    "kind": "picture",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12CC=C3C[C@@H](O)CC[C@]3(C)[C@@]1([H])CC[C@]1(C)[C@@H]([C@H](C)CCCC(C)C)CC[C@@]21[H]",
+        "stereoCenters": 8,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  },
+  {
+    "name": "morphine",
+    "kind": "carbon",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12C=C[C@H](O)[C@]3([H])Oc4c(O)ccc5c4[C@]13CCN(C)[C@]2([H])C5",
+        "stereoCenters": 5,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  },
+  {
+    "name": "morphine",
+    "kind": "picture",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12C=C[C@H](O)[C@]3([H])Oc4c(O)ccc5c4[C@]13CCN(C)[C@]2([H])C5",
+        "stereoCenters": 5,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  },
+  {
+    "name": "strychnine",
+    "kind": "carbon",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12CC(=O)N3c4ccccc4[C@]45CCN6CC(=CCO1)[C@H](C[C@H]64)[C@@H]2[C@H]35",
+        "stereoCenters": 6,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  },
+  {
+    "name": "strychnine",
+    "kind": "picture",
+    "molecules": [
+      {
+        "objectId": "mol_clipboard_001",
+        "canonicalSmiles": "[H][C@@]12CC(=O)N3c4ccccc4[C@]45CCN6CC(=CCO1)[C@H](C[C@H]64)[C@@H]2[C@H]35",
+        "stereoCenters": 6,
+        "unspecifiedStereoCenters": 0,
+        "unspecifiedDoubleBonds": 0,
+        "exportWarnings": []
+      }
+    ]
+  }
+]

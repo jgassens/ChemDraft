@@ -659,6 +659,9 @@ export function documentVisualBounds(document: ChemDraftDocument, includeObjectF
   if (!page) throw new Error("The render document has no page.");
 
   for (const object of page.objects) {
+    // Groups reference children in this same flat array and render no geometry of their own.
+    // Their stored frames must not enlarge the crop; each child is measured below.
+    if (object.type === "group") continue;
     if (includeObjectFrames && object.type !== "molecule" && object.type !== "text") {
       // Native object frames conservatively include art paths which are not line/polygon fragments.
       const cx = object.x + object.width / 2, cy = object.y + object.height / 2;
