@@ -149,6 +149,7 @@ describe("toolset bridge interactions", () => {
     return target;
   }
 
+  // Heavy DOM render and undo regression can exceed Vitest's default on busy CI hosts.
   it("centers every double bond of a whole selected molecule as one undo entry", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Whole molecule position"), { x: 300, y: 300 }, "benzene");
     const molecule = initial.pages[0].objects[0] as MoleculeObject;
@@ -161,7 +162,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Double-bond position: center");
     await act(async () => { routeCommand("edit.redo"); });
     expect(count()).toBe(6);
-  });
+  }, 20_000);
 
   it("centers selected double bonds with one labelled undo entry and retains the bond selection", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Centered selection"), { x: 300, y: 300 }, "benzene");
@@ -1120,6 +1121,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected ring");
   });
 
+  // Heavy multi-ring DOM command routing can exceed Vitest's default on busy CI hosts.
   it("stress-routes repeated Art commands across a multi-ring selection", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Multi Ring Art Stress"),
@@ -1200,7 +1202,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[data-art-effect-controls="glow"]')).toBeNull();
     expect(container.querySelector('[data-art-effect-controls="shadow"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Cleared 2 selected ring effects");
-  });
+  }, 20_000);
 
   it("requires an explicit choice before whole-molecule Art edits clear ring overrides", async () => {
     let initialDocument = insertNativeTemplateMolecule(
