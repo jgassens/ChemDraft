@@ -225,18 +225,26 @@ describe("object move retained SVG preview", () => {
     expect(container.querySelector("[data-object-move-preview]")).toBeNull();
   });
 
-  it("cancels a retained move on window blur through the Escape cancellation path", async () => {
+  it("continues a retained move after window blur and commits without a stale transform", async () => {
     await mount(anchoredArrowScenario());
     const drag = await start();
-    const paint = paintedSvg();
     await move(drag.target, { x: drag.point.x + 40, y: drag.point.y + 30 });
     await act(async () => window.dispatchEvent(new Event("blur")));
-    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+    expect(drag.target.style.translate).toBe("calc(40px * var(--page-scale)) calc(30px * var(--page-scale))");
     expect(snapshot()).toEqual(drag.before);
-    expect(paintedSvg()).toEqual(paint);
     await move(drag.target, { x: drag.point.x + 60, y: drag.point.y + 50 });
+    expect(drag.target.style.translate).toBe("calc(60px * var(--page-scale)) calc(50px * var(--page-scale))");
     await act(async () => pointer(drag.target, "pointerup", { x: drag.point.x + 60, y: drag.point.y + 50 }));
-    expect(snapshot()).toEqual(drag.before);
+    await flushFrames();
+    const committed = snapshot();
+    expect(committed).toEqual(oldMove(drag.before, drag.molecule, 60, 50));
+    expect(container.querySelector("[data-object-move-preview]")).toBeNull();
+    expect(drag.target.style.translate).toBe("");
+    const paint = paintedSvg();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount(committed);
+    expect(paintedSvg()).toEqual(paint);
   });
 
   it.each([false, true])("places replanned arrow controls at the committed geometry (all anchors moved: %s)", async allAnchorsMoved => {

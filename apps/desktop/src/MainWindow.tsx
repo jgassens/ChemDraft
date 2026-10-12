@@ -1610,7 +1610,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.12.04.45-opus";
+const CURRENT_BUILD_STAMP = "10.12.04.50-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11663,7 +11663,6 @@ export function MainWindow({
       }
     };
     const handleBlur = () => {
-      cancelSelectionPointerGesture();
       setShiftPressed(false);
       hoverLabelAssignmentRef.current = undefined;
     };
@@ -11678,7 +11677,7 @@ export function MainWindow({
       window.removeEventListener("blur", handleBlur);
       window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [cancelSelectionPointerGesture]);
+  }, []);
 
   // Observe in capture phase so inline editors and handles can keep their own propagation rules.
   // Read drag refs after event dispatch: pointer-down/up handlers create/clear them synchronously.
