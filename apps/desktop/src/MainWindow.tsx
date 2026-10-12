@@ -1575,7 +1575,7 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.11.20.25-opus";
+const CURRENT_BUILD_STAMP = "10.11.22.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -13309,6 +13309,9 @@ export function MainWindow({
     }
 
     const changed = commitLiveInputPreview(session.startDocument);
+    if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+    }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
@@ -25265,6 +25268,8 @@ function DocumentObjectViewContent({
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive &&
+    // Keep the transform frame hosting typed Z/X/Y entry when Shift releases.
+    !rotationInput &&
     !showGraphicGradientHandles;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
