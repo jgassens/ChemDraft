@@ -755,11 +755,13 @@ pub fn run() {
                 schedule_suspended_utility_restore(window.app_handle());
             }
 
+            // A window closed during a prompt must not come back. Plugin panels are hidden on close
+            // (below), never destroyed, so their CloseRequested counts; a toolbar's close request
+            // could still be refused, so for toolbars only Destroyed does.
             if is_suspended_utility_label(window.label())
-                && matches!(
-                    event,
-                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-                )
+                && (matches!(event, WindowEvent::Destroyed)
+                    || (is_plugin_panel_window_label(window.label())
+                        && matches!(event, WindowEvent::CloseRequested { .. })))
             {
                 UTILITY_SUSPENSION
                     .lock()
@@ -1310,7 +1312,7 @@ fn utility_windows_top_to_bottom<R: Runtime>(
     }
     #[cfg(target_os = "macos")]
     {
-        let mtm = MainThreadMarker::new()
+        MainThreadMarker::new()
             .ok_or_else(|| "AppKit stacking order must be read on the main thread.".to_string())?;
         let mut labels = HashMap::new();
         for window in windows {
@@ -1319,21 +1321,25 @@ fn utility_windows_top_to_bottom<R: Runtime>(
                 .ok_or_else(|| "Could not access a native ChemDraft utility window.".to_string())?;
             labels.insert(native.windowNumber(), window.label().to_string());
         }
-        let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
-        // SAFETY: orderedWindows returns NSArray<NSWindow> in front-to-back order. Its binding is
-        // behind NSApplicationScripting, which we do not otherwise need; all AppKit access here
-        // is on the main thread, and Retained keeps the returned snapshot alive while iterating.
-        let ordered: objc2::rc::Retained<objc2_foundation::NSArray<NSWindow>> =
-            unsafe { objc2::msg_send![&*application, orderedWindows] };
+        // Not NSApp.orderedWindows: it lists only scriptable windows and leaves panels out, and
+        // these are panels by style. +[NSWindow windowNumbersWithOptions:0] is the window server's
+        // front-to-back order of this app's on-screen windows on the active space, across window
+        // levels. SAFETY: a class method returning an autoreleased NSArray<NSNumber> (or nil),
+        // called on the main thread; Retained keeps the snapshot alive while it is read.
+        let numbers: Option<
+            objc2::rc::Retained<objc2_foundation::NSArray<objc2_foundation::NSNumber>>,
+        > = unsafe { objc2::msg_send![objc2::class!(NSWindow), windowNumbersWithOptions: 0usize] };
+        let numbers =
+            numbers.ok_or_else(|| "NSWindow windowNumbersWithOptions returned nil.".to_string())?;
         let mut order = Vec::new();
-        for native in ordered.iter() {
-            if let Some(label) = labels.remove(&native.windowNumber()) {
+        for number in numbers.iter() {
+            if let Some(label) = labels.remove(&number.integerValue()) {
                 order.push(label);
             }
         }
         if !labels.is_empty() {
             return Err(format!(
-                "NSApp orderedWindows omitted {} visible utility window(s).",
+                "NSWindow windowNumbersWithOptions omitted {} visible utility window(s).",
                 labels.len()
             ));
         }
