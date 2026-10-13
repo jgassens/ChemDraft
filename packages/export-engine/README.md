@@ -7,10 +7,14 @@ Format-specific work should go through the correct adapters and compatibility pa
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
 
-ASCII-only SVG text elements retain the existing standard-font path, including
-bold/italic and font-family selection. If a text element contains non-ASCII text,
-the element and its spans use embedded DejaVu Sans 2.35 instead. This avoids mixing
-font metrics inside one text element and preserves plain ASCII drawings' output.
+SVG text elements containing only Latin-1 (U+0000–U+00FF) and the 27 additional
+WinAnsi characters retain the existing standard-font path, including bold/italic
+and font-family selection. jsPDF 4.2.1 maps `ŒœŠšŸŽžƒˆ˜–—‘’‚“”„†‡•…‰‹›€™` to
+the correct WinAnsi bytes; tests decode the declared PDF encoding and verify text
+round-trips. Thus °, ±, ×, µ (U+00B5), é, dashes, quotes, euro and trademark do
+not require embedding. If a text element contains any other character (such as
+μ U+03BC), the element and its spans use embedded DejaVu Sans 2.35 instead. This
+avoids mixing font metrics inside one text element.
 Regular, bold, oblique and bold-oblique are real faces; no style is synthesized.
 Weights below 600 use regular/oblique, and weights at least 600 use bold/bold-oblique.
 
@@ -20,7 +24,7 @@ each face's cmap, not inferred from a family name. The canvas defaults to Arial 
 Helvetica; DejaVu Sans is wider, so Unicode text may differ in spacing. The locally
 available Liberation Sans 1.07.4 candidate was closer in metrics but lacked all
 subscript digits, superscript signs and equilibrium arrows. Other user-selected
-fonts also use DejaVu Sans for non-ASCII text. Unsupported glyphs and non-BMP
+fonts also use DejaVu Sans for text outside the standard-font character set. Unsupported glyphs and non-BMP
 characters fail explicitly instead of disappearing during PDF serialization.
 
 Arabic and right-to-left scripts are not supported in PDF export yet: jsPDF's

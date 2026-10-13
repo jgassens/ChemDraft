@@ -45,7 +45,13 @@ export function extractPdfTextRuns(bytes: Uint8Array): string[] {
           if (character === undefined) throw new Error(`Unmapped glyph ${hex}`);
           return character;
         }).join(""));
-      } else result.push(token[3]!.replace(/\\([\\()])/g, "$1"));
+      } else {
+        const literal = token[3]!.replace(/\\([\\()])/g, "$1");
+        const fontObject = objects.get(resources.get(font)!) ?? "";
+        result.push(fontObject.includes("/Encoding /WinAnsiEncoding")
+          ? new TextDecoder("windows-1252").decode(Buffer.from(literal, "latin1"))
+          : literal);
+      }
     }
   }
   return result;

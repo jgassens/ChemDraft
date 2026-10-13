@@ -48,6 +48,28 @@ describe("exportDocumentToPdf", () => {
     expect(Buffer.from(result.bytes).toString("latin1")).toContain("/BaseFont /Helvetica");
   });
 
+  it.each([true, false])("keeps Latin-1 text on standard fonts with compression=%s", async (compress) => {
+    const text = "80 °C ± 0.5 × 2, µL, é";
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser, compress }));
+    expect(pdfFontStreams(result.bytes)).toHaveLength(0);
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
+  });
+
+  it("embeds mixed Latin-1 and Greek mu text", async () => {
+    const text = "80 °C ± 0.5 × 2, µL, é, μ";
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser }));
+    expect(pdfFontStreams(result.bytes)).toHaveLength(1);
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
+  });
+
+  // All 27 WinAnsi additions above U+00FF, decoded using the PDF's encoding.
+  it.each([true, false])("round-trips WinAnsi additions on standard fonts with compression=%s", async (compress) => {
+    const text = "ŒœŠšŸŽžƒˆ˜–—‘’‚“”„†‡•…‰‹›€™";
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser, compress }));
+    expect(pdfFontStreams(result.bytes)).toHaveLength(0);
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
+  });
+
   it.each([
     { fontWeight: 400, fontStyle: "normal" },
     { fontWeight: 700, fontStyle: "normal" },

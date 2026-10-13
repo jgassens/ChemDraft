@@ -10,8 +10,12 @@ const arabicText = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-
 // forms), Syriac, Thaana, NKo, and the U+08xx scripts it classifies as RTL.
 const rtlText = /[\u0590-\u05ff\u0700-\u074f\u0780-\u089f\ufb1d-\ufb4f\u200f]/u;
 
+// jsPDF 4.2.1 preserves Latin-1 and maps these 27 additional Unicode characters
+// to bytes in the standard fonts' declared WinAnsiEncoding (verified in PDF streams).
+const needsEmbeddedFont = /[^\u0000-\u00ffŒœŠšŸŽžƒˆ˜–—‘’‚“”„†‡•…‰‹›€™]/u;
+
 // Keep the losslessly encoded font files in separate chunks. Neither importing the
-// export engine nor exporting an ASCII PDF loads font data (browser or Node).
+// export engine nor exporting a standard-font PDF loads font data (browser or Node).
 const loadFace = {
   normal: () => import("./fonts/DejaVuSans"),
   bold: () => import("./fonts/DejaVuSans-Bold"),
@@ -36,7 +40,7 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
     if (content.includes("\\s+")) {
       throw new Error("Cannot export PDF: U+005C in the literal sequence \\s+ is not supported; jsPDF text processing cannot preserve original Unicode.");
     }
-    if (!/[^\x00-\x7f]/u.test(content)) continue;
+    if (!needsEmbeddedFont.test(content)) continue;
 
     for (const element of [text, ...text.querySelectorAll("tspan")]) {
       const weight = inheritedAttribute(element, "font-weight") ?? "400";
