@@ -23,6 +23,17 @@ subscript digits, superscript signs and equilibrium arrows. Other user-selected
 fonts also use DejaVu Sans for non-ASCII text. Unsupported glyphs and non-BMP
 characters fail explicitly instead of disappearing during PDF serialization.
 
+Arabic and right-to-left scripts are not supported in PDF export yet: jsPDF's
+Arabic shaping changes the Unicode written into ToUnicode, and its bidi processing
+reorders mixed LTR/RTL text. Turning shaping off would render unjoined Arabic
+letters. Export therefore refuses Arabic in U+0600–U+06FF, U+0750–U+077F,
+U+08A0–U+08FF, U+FB50–U+FDFF and U+FE70–U+FEFF, plus RTL text in U+0590–U+05FF,
+U+0700–U+074F, U+0780–U+089F, U+FB1D–U+FB4F and the U+200F direction mark.
+The error names the character's Unicode code point and the text preservation
+limitation. The literal sequence `\s+` is also refused (including in ASCII text),
+because jsPDF's unconditional Arabic hook replaces it with a space. Chemistry
+characters, Greek letters and arrows retain their original Unicode.
+
 The lossless base64 font modules load dynamically only during a PDF export that
 needs them, one face per required style. jsPDF's Identity-H TrueType writer embeds
 only used glyph outlines and writes a ToUnicode CMap for copying and searching.

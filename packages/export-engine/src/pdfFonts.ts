@@ -3,6 +3,13 @@ import type { jsPDF } from "jspdf";
 const family = "ChemDraftDejaVuSans";
 type Face = "normal" | "bold" | "italic" | "bolditalic";
 
+// jsPDF 4.2.1's arabic parser recognizes these ranges and substitutes shapes /
+// ligatures before building ToUnicode. Disabling it would render unjoined letters.
+const arabicText = /[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufeff]/u;
+// Its bidi engine also reorders mixed LTR/RTL runs: Hebrew (including presentation
+// forms), Syriac, Thaana, NKo, and the U+08xx scripts it classifies as RTL.
+const rtlText = /[\u0590-\u05ff\u0700-\u074f\u0780-\u089f\ufb1d-\ufb4f\u200f]/u;
+
 // Keep the losslessly encoded font files in separate chunks. Neither importing the
 // export engine nor exporting an ASCII PDF loads font data (browser or Node).
 const loadFace = {
@@ -16,7 +23,20 @@ const loadFace = {
 export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => void> {
   const runs = new Map<Face, string[]>();
   for (const text of svg.querySelectorAll("text")) {
-    if (!/[^\x00-\x7f]/u.test(text.textContent ?? "")) continue;
+    const content = text.textContent ?? "";
+    const unsupported = content.match(arabicText) ?? content.match(rtlText);
+    if (unsupported) {
+      const character = unsupported[0];
+      const code = character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+      const script = arabicText.test(character) ? "Arabic script" : "Right-to-left scripts";
+      throw new Error(`Cannot export PDF: ${script} not supported in PDF export yet (U+${code}); jsPDF shaping or reordering cannot preserve original Unicode.`);
+    }
+    // The same unconditional Arabic hook splits on the literal string "\\s+",
+    // even in ASCII text. Refuse that sequence rather than silently replacing it.
+    if (content.includes("\\s+")) {
+      throw new Error("Cannot export PDF: U+005C in the literal sequence \\s+ is not supported; jsPDF text processing cannot preserve original Unicode.");
+    }
+    if (!/[^\x00-\x7f]/u.test(content)) continue;
 
     for (const element of [text, ...text.querySelectorAll("tspan")]) {
       const weight = inheritedAttribute(element, "font-weight") ?? "400";

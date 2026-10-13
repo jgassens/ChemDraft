@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
+import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
@@ -74,6 +75,32 @@ describe("exportDocumentToPdf", () => {
   it("refuses characters the embedded font cannot preserve", async () => {
     await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText("μ \u{1f9ea}"), { domParser })))
       .rejects.toThrow("does not support U+1F9EA");
+  });
+
+  it("refuses Arabic that jsPDF would shape into different Unicode", async () => {
+    const text = "μ مرحبا";
+    expect(new jsPDF().processArabic(text)).not.toBe(text);
+    await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser })))
+      .rejects.toThrow("Arabic script not supported in PDF export yet (U+0645); jsPDF shaping or reordering cannot preserve original Unicode.");
+  });
+
+  it.each([
+    ["μ שלום", "U+05E9"],
+    ["μ שׁשׁ", "U+FB2A"]
+  ])("refuses mixed RTL text %s instead of reordering it", async (text, code) => {
+    await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser })))
+      .rejects.toThrow(`Right-to-left scripts not supported in PDF export yet (${code})`);
+  });
+
+  it.each(["\\s+", "μ \\s+"])("refuses the literal sequence jsPDF replaces in %s", async (text) => {
+    await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser })))
+      .rejects.toThrow("U+005C in the literal sequence \\s+ is not supported; jsPDF text processing cannot preserve original Unicode.");
+  });
+
+  it.each([true, false])("keeps chemistry characters and Greek unchanged with compression=%s", async (compress) => {
+    const text = "μ ₆ ⁻ ² → ← ↔ ⇌ α β γ Δ Ω";
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser, compress }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
   });
 
   it("exports the active page as PDF bytes through the SVG renderer", async () => {

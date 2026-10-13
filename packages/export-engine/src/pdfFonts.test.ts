@@ -29,6 +29,25 @@ describe("vendored PDF font cmap coverage", () => {
 });
 
 describe("PDF font loading", () => {
+  it.each([
+    ["\u0600", "Arabic script"], ["\u0750", "Arabic script"],
+    ["\u08a0", "Arabic script"], ["\ufb50", "Arabic script"],
+    ["\ufdf2", "Arabic script"], ["\ufe8e", "Arabic script"],
+    ["\u05d0", "Right-to-left scripts"], ["\ufb1d", "Right-to-left scripts"],
+    ["\u0710", "Right-to-left scripts"], ["\u0780", "Right-to-left scripts"],
+    ["\u07ca", "Right-to-left scripts"], ["\u0840", "Right-to-left scripts"],
+    ["\u200f", "Right-to-left scripts"]
+  ])("refuses unsupported script character %s in a styled span", async (character, script) => {
+    const dom = new JSDOM(`<svg><text>μ<tspan font-weight="700">${character}</tspan></text></svg>`);
+    const pdf = new jsPDF();
+    const addFont = vi.spyOn(pdf, "addFont");
+    const code = character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+    await expect(preparePdfFonts(dom.window.document.documentElement, pdf))
+      .rejects.toThrow(`${script} not supported in PDF export yet (U+${code})`);
+    expect(addFont).not.toHaveBeenCalled();
+    dom.window.close();
+  });
+
   it("does not register embedded or browser fonts for ASCII text", async () => {
     const dom = new JSDOM('<svg xmlns="http://www.w3.org/2000/svg"><text>H2O</text></svg>', { contentType: "image/svg+xml" });
     const pdf = new jsPDF();
