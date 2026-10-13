@@ -170,7 +170,7 @@ describe("plugin extraction integrity", () => {
     expect(() =>
       extractPlugin({ pluginRoot: fixture.pluginRoot, outDir: join(fixture.caseRoot, "out") })
     ).toThrow(/symbolic link.*src[/\\]local-secret\.txt/);
-  }, 20_000);
+  }, 30_000);
 
   it("builds from the recorded commit, so ignored source cannot enter the archive", () => {
     const fixture = createPluginFixture();

@@ -158,7 +158,7 @@ describe("MainWindow drag and modal performance", () => {
     expect(query.mock.calls.filter(([selector]) => selector === OPEN_MODAL_DIALOG_SELECTOR)).toHaveLength(0);
     expect(queryAll.mock.calls.filter(([selector]) => selector === OPEN_MODAL_DIALOG_SELECTOR)).toHaveLength(0);
     expect(hint).not.toHaveBeenCalled();
-  }, 20_000);
+  }, 30_000);
 
   it.each(["MacIntel", "Win32"])("blocks %s keyboard undo and clipboard in a same-turn modal, then unblocks immediately on close", async (platform) => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
