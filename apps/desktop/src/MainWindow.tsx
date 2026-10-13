@@ -1,3 +1,4 @@
+import { handleQuitRequest, loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -699,6 +700,8 @@ import {
   saveDocumentSession,
   listenForQuitFlushRequest,
   confirmQuitAfterFlush,
+  reportQuitPromptShowing,
+  cancelQuit,
   sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -1625,7 +1628,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.13.13.05-opus";
+const CURRENT_BUILD_STAMP = "10.13.14.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8633,6 +8636,9 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
+  const [quitPromptOpen, setQuitPromptOpen] = useState(false);
+  const [quitSaveBusy, setQuitSaveBusy] = useState(false);
+
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
@@ -8642,8 +8648,13 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void listenForQuitFlushRequest(async () => {
-      await writeDocumentSessionNow();
-      await confirmQuitAfterFlush();
+      await handleQuitRequest(loadAskToSaveBeforeQuit(),
+        documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty === true),
+        () => setQuitPromptOpen(true), async () => {
+          await writeDocumentSessionNow();
+          await confirmQuitAfterFlush();
+        });
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -8940,6 +8951,44 @@ export function MainWindow({
       return false;
     }
   }, [documentForFlush]);
+
+  // Effects run after the modal is committed to the DOM; only now pause native grace.
+  useEffect(() => {
+    if (!quitPromptOpen) return;
+    void reportQuitPromptShowing().then((accepted) => {
+      if (!accepted) setQuitPromptOpen(false);
+    }).catch(() => setQuitPromptOpen(false));
+  }, [quitPromptOpen]);
+
+  const cancelQuitPrompt = useCallback(async () => {
+    await cancelQuit();
+    setQuitPromptOpen(false);
+  }, []);
+
+  const finishPromptedQuit = useCallback(async (save: boolean) => {
+    setQuitSaveBusy(true);
+    try {
+      if (save) {
+        for (const tab of documentTabsRef.current) {
+          const file = tab.id === activeDocumentTabIdRef.current ? fileStateRef.current :
+            documentTabSnapshotsRef.current.get(tab.id)?.file;
+          if (!file?.dirty) continue;
+          activateDocumentTab(tab.id);
+          if (!await saveCurrentDocument(false) || fileStateRef.current.dirty) {
+            await cancelQuitPrompt();
+            return;
+          }
+        }
+      }
+      await writeDocumentSessionNow();
+      await confirmQuitAfterFlush();
+    } catch (error) {
+      setStatus(`Quit failed: ${error instanceof Error ? error.message : String(error)}`);
+      await cancelQuitPrompt();
+    } finally {
+      setQuitSaveBusy(false);
+    }
+  }, [activateDocumentTab, saveCurrentDocument, writeDocumentSessionNow, cancelQuitPrompt]);
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
@@ -18955,6 +19004,31 @@ export function MainWindow({
           })
         : null}
 
+      {quitPromptOpen ? (
+        <div role="dialog" aria-modal="true" aria-labelledby="quit-prompt-title" style={exportDialogBackdropStyle}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !quitSaveBusy) {
+              event.preventDefault();
+              void cancelQuitPrompt();
+            }
+            if (event.key === "Tab") {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+              event.preventDefault();
+              buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+            }
+          }}>
+          <section style={exportDialogPanelStyle}>
+            <h2 id="quit-prompt-title" style={exportDialogTitleStyle}>Save changes before quitting?</h2>
+            <p style={exportDialogHintStyle}>Your documents have unsaved changes.</p>
+            <div style={exportDialogFooterStyle}>
+              <button type="button" disabled={quitSaveBusy} onClick={() => { void finishPromptedQuit(true); }}>Save</button>
+              <button type="button" disabled={quitSaveBusy} onClick={() => { void finishPromptedQuit(false); }}>Discard</button>
+              <button type="button" autoFocus disabled={quitSaveBusy} onClick={() => { void cancelQuitPrompt(); }}>Cancel</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {closeTabPrompt && closePrompt.visible ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {

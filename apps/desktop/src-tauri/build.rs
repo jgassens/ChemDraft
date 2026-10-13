@@ -33,6 +33,8 @@ fn main() {
             "hide_toolset_tooltip_window",
             "set_current_window_global_position",
             "quit_after_flush",
+            "quit_prompt_showing",
+            "cancel_quit",
             "close_toolset_popover",
             "set_toolset_window_focusable",
             "route_toolset_command",

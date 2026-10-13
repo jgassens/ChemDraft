@@ -587,6 +587,18 @@ export async function confirmQuitAfterFlush(): Promise<void> {
   await invoke("quit_after_flush").catch(() => undefined);
 }
 
+export async function reportQuitPromptShowing(): Promise<boolean> {
+  if (!isDesktopRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("quit_prompt_showing");
+}
+
+export async function cancelQuit(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("cancel_quit");
+}
+
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */
 export interface ToolbarMenuEntry {
   toolsetId: string;

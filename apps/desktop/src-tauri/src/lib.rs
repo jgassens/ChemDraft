@@ -123,16 +123,17 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 /// The app's quit flow. Tests run their own `QuitFlow` with a fake host and short timings.
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
 
-/// A quit's state and timings. Nothing ever clears `requested` or `quitting`: no quit is
-/// cancelled once asked for. The app never prompts to save, a relaunch is a new process, and the
-/// Windows updater's `install()` ends the process itself.
+/// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
+/// once `quitting` is set, the exit watchdog remains unchanged.
 struct QuitFlow {
-    /// Set once a quit has been requested, so repeated close clicks don't re-request it.
+    /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
     /// Set once the quit is decided (`quit_now`); the app's is `APP_QUITTING`.
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
+    /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
+    prompt: Mutex<(u64, bool)>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -145,6 +146,7 @@ impl QuitFlow {
     ) -> Self {
         Self {
             requested: AtomicBool::new(false),
+            prompt: Mutex::new((0, false)),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -250,7 +252,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 }
 
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
-/// webview and the app never prompts to save, so exiting straight away dropped anything edited in
+/// webview, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -258,13 +260,18 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
+    let mut prompt = flow.prompt.lock().unwrap();
     if flow.requested.swap(true, Ordering::SeqCst) {
         // A second Cmd+Q bypasses the wait. Keep repeated Windows closes idempotent.
-        if force_repeated_quit {
+        if force_repeated_quit && !prompt.1 {
             quit_now_with(flow, host, QuitReason::RepeatedRequest);
         }
         return;
     }
+    prompt.0 += 1;
+    prompt.1 = false;
+    let generation = prompt.0;
+    drop(prompt);
     if !host.ask_document_to_flush() {
         quit_now_with(flow, host, QuitReason::NoDocument);
         return;
@@ -272,7 +279,10 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        let prompt = flow.prompt.lock().unwrap();
+        if prompt.0 == generation && !prompt.1 && flow.requested.load(Ordering::SeqCst) {
+            quit_now_with(flow, &host, QuitReason::GraceExpired);
+        }
     });
 }
 
@@ -301,6 +311,35 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 #[tauri::command]
 async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+}
+
+/// Pause only after the document window has mounted its modal prompt.
+fn acknowledge_quit_prompt(flow: &QuitFlow) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if !flow.requested.load(Ordering::SeqCst) || flow.quitting.load(Ordering::SeqCst) {
+        return false;
+    }
+    prompt.1 = true;
+    true
+}
+
+fn cancel_quit_with(flow: &QuitFlow) {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if !flow.quitting.load(Ordering::SeqCst) {
+        prompt.0 += 1;
+        prompt.1 = false;
+        flow.requested.store(false, Ordering::SeqCst);
+    }
+}
+
+#[tauri::command]
+async fn quit_prompt_showing() -> bool {
+    acknowledge_quit_prompt(&QUIT)
+}
+
+#[tauri::command]
+async fn cancel_quit() {
+    cancel_quit_with(&QUIT);
 }
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
@@ -921,6 +960,8 @@ pub fn run() {
             hide_toolset_tooltip_window,
             set_current_window_global_position,
             quit_after_flush,
+            quit_prompt_showing,
+            cancel_quit,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
@@ -6766,6 +6807,56 @@ mod tests {
     }
 
     const NEVER: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn only_an_acknowledged_prompt_pauses_the_grace_and_repeated_mac_quit() {
+        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        assert!(!acknowledge_quit_prompt(flow));
+        request_quit_with(flow, &host, true);
+        assert!(acknowledge_quit_prompt(flow));
+        request_quit_with(flow, &host, true);
+        thread::sleep(Duration::from_millis(160));
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn cancel_keeps_the_app_open_and_a_new_unanswered_request_is_bounded() {
+        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, false);
+        assert!(acknowledge_quit_prompt(flow));
+        cancel_quit_with(flow);
+        thread::sleep(Duration::from_millis(160));
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.requested.load(Ordering::SeqCst));
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        request_quit_with(flow, &host, false);
+        assert_eq!(
+            host.wait_for_calls(4),
+            ["ask to flush", "ask to flush", "exit", "force exit"]
+        );
+        assert!(!acknowledge_quit_prompt(flow));
+    }
+
+    #[test]
+    fn cancellation_invalidates_the_previous_timer_before_another_request() {
+        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, false);
+        cancel_quit_with(flow);
+        request_quit_with(flow, &host, false);
+        assert!(acknowledge_quit_prompt(flow));
+        thread::sleep(Duration::from_millis(160));
+        assert_eq!(host.calls(), ["ask to flush", "ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {

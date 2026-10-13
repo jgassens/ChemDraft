@@ -8,6 +8,8 @@ import { MainWindow, documentTabPathKey } from "./MainWindow";
 import { applyNativeChainTool, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveKeybindingSettings } from "./keybindingSettings";
+import { saveAskToSaveBeforeQuit } from "./quitSettings";
+import { MemoryStorage } from "./testSupport/memoryStorage";
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
@@ -38,6 +40,8 @@ const native = vi.hoisted(() => ({
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
   quit: vi.fn(),
+  promptShowing: vi.fn(),
+  cancelQuit: vi.fn(),
   events: new Map<string, (payload: unknown) => void>(),
   picker: vi.fn<() => Promise<string | null>>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
@@ -66,7 +70,9 @@ vi.mock("./window-manager", async (original) => ({
     native.quitFlush = handler;
     return () => { native.quitFlush = undefined; };
   },
-  confirmQuitAfterFlush: native.quit
+  confirmQuitAfterFlush: native.quit,
+  reportQuitPromptShowing: native.promptShowing,
+  cancelQuit: native.cancelQuit
 }));
 vi.mock("./window-manager/tauriEvents", async (original) => {
   const listen = async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -125,6 +131,13 @@ describe("documents in one window", () => {
       pendingPrompt = { prompt, resolve };
     }));
     vi.clearAllMocks();
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    saveAskToSaveBeforeQuit(false);
+    native.promptShowing.mockImplementation(async () => {
+      expect(document.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]')).not.toBeNull();
+      return true;
+    });
+    native.cancelQuit.mockResolvedValue(undefined);
     vi.mocked(setToolbarsMenu).mockResolvedValue(undefined);
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
@@ -227,6 +240,11 @@ describe("documents in one window", () => {
   async function flush() {
     await act(async () => { await native.quitFlush!(); });
     return parseDocumentSessionEnvelope(native.session)!;
+  }
+  async function quitButton(label: string) {
+    const dialog = container.querySelector('[aria-labelledby="quit-prompt-title"]')!;
+    const button = [...dialog.querySelectorAll('button')].find((candidate) => candidate.textContent === label)!;
+    await act(async () => { button.click(); });
   }
   async function modalButton(label: string) {
     expect(pendingPrompt).toBeDefined();
@@ -1075,6 +1093,65 @@ describe("documents in one window", () => {
     await key();
     expect(active()).toBe(0);
     await modalButton("Cancel");
+  });
+
+  it("opt-in quit with no changes flushes without a prompt", async () => {
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+    expect(native.quit).toHaveBeenCalledTimes(1);
+    expect(native.promptShowing).not.toHaveBeenCalled();
+  });
+
+  it("opt-in quit prompts for a dirty background tab and Cancel keeps it open", async () => {
+    await paste("Unsaved drawing");
+    await command("document.new");
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+    expect(native.promptShowing).toHaveBeenCalledTimes(1);
+    expect(native.quit).not.toHaveBeenCalled();
+    await quitButton("Cancel");
+    expect(native.cancelQuit).toHaveBeenCalledTimes(1);
+    expect(native.quit).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
+  });
+
+  it("opt-in Discard flushes then quits", async () => {
+    await paste("Unsaved drawing");
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+    await quitButton("Discard");
+    expect(native.saveSession).toHaveBeenCalled();
+    expect(native.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it("opt-in Save writes every dirty tab before quitting", async () => {
+    await paste("First unsaved drawing");
+    await command("document.new");
+    await paste("Second unsaved drawing");
+    saveAskToSaveBeforeQuit(true);
+    native.savePicker.mockResolvedValueOnce("/tmp/first-quit.chemdraft")
+      .mockResolvedValueOnce("/tmp/second-quit.chemdraft");
+    await flush();
+    await quitButton("Save");
+    expect(native.writeFile.mock.calls.map(([path]) => path).filter((path) => path.endsWith(".chemdraft"))).toEqual([
+      "/tmp/first-quit.chemdraft", "/tmp/second-quit.chemdraft"
+    ]);
+    expect(native.quit).toHaveBeenCalledTimes(1);
+    expect(native.cancelQuit).not.toHaveBeenCalled();
+  });
+
+  it("opt-in Save saves dirty tabs before quitting and picker cancellation stays open", async () => {
+    await paste("Unsaved drawing");
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+    await quitButton("Save");
+    expect(native.cancelQuit).toHaveBeenCalledTimes(1);
+    expect(native.quit).not.toHaveBeenCalled();
+    native.savePicker.mockResolvedValueOnce("/tmp/quit-drawing.chemdraft");
+    await flush();
+    await quitButton("Save");
+    expect(native.writeFile).toHaveBeenCalled();
+    expect(native.quit).toHaveBeenCalledTimes(1);
   });
 
   it("quit flush and restore round-trip three tabs, an untitled dirty drawing, and the active index", async () => {

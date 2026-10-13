@@ -274,3 +274,10 @@ and Art toolbars open, including at 125%/150% display scale:
   informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
 - Windows document-window close still flushes the session and quits (without a new dirty-tab
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
+- On both platforms, leave “Ask to save unsaved changes before quitting” off and verify the
+  existing quit/session-recovery flow. Turn it on: clean tabs quit without a prompt, and a dirty
+  foreground or background tab opens Save / Discard / Cancel with floating palettes hidden.
+  Cancel and Escape keep the app open; Save writes all dirty tabs before quitting. Cancel a save
+  picker or fail a write: the app stays open. Discard quits with existing session recovery.
+  Leave the prompt open beyond three seconds, then cancel and quit again. A document window
+  that never answers the quit event must still quit after the native grace period.

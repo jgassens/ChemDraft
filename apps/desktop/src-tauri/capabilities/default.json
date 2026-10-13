@@ -42,6 +42,8 @@
     "allow-hide-toolset-tooltip-window",
     "allow-set-current-window-global-position",
     "allow-quit-after-flush",
+    "allow-quit-prompt-showing",
+    "allow-cancel-quit",
     "allow-close-toolset-popover",
     "allow-set-toolset-window-focusable",
     "core:window:allow-show",
