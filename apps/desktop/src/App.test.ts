@@ -374,7 +374,12 @@ describe("ChemDraft desktop shell", () => {
 
   it("focuses an analysis window only when the user asked for it", () => {
     // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
-    expect(desktopNativeSource).toContain(".focused(request.focus)");
+    expect(desktopNativeSource).toContain("focused_on_build: false,");
+    expect(desktopNativeSource).toContain("focus_after_show: self.focus && !deferred,");
+    expect(desktopNativeSource).toContain(".focused(presentation.focused_on_build)");
+    expect(desktopNativeSource).toContain(
+      "configure_analysis_window(&window, presentation.focus_after_show)"
+    );
     expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
     expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
     // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
@@ -453,7 +458,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("Cmd+N then immediate Cmd+W can hide the window");
     expect(mainWindowSource).toContain("autosave keeps both tabs, so nothing is lost");
     const checklist = readFileSync("docs/manual-stress-checklist.md", "utf8");
-    expect(checklist).toContain("floating native palettes remain above the dialog");
+    expect(checklist).toContain("native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes");
     expect(checklist).not.toContain("modal hides native palettes");
   });
 
@@ -478,13 +483,16 @@ describe("ChemDraft desktop shell", () => {
     expect(enablingLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeLessThan(catchLine);
 
-    // The gate opens only after parser and document restoration finish. The restore helper
-    // also returns cleanly for first-run and pristine-blank sessions.
-    const restoreLine = lines.findIndex((line) => line.trim() === "restore();");
+    // Unreadable payloads are kept for recovery; an unreadable outer envelope closes autosave.
+    const restoreLine = lines.findIndex((line) => line.trim() === "await restore();");
     expect(restoreLine).toBeGreaterThan(thenLine);
     expect(enablingLine).toBeGreaterThan(restoreLine);
     expect(mainWindowSource).toContain('if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope")');
-    expect(mainWindowSource).toContain('if (!restored.length) throw new Error("No readable document tabs")');
+    expect(mainWindowSource).toContain("unrestoredSessionTabsRef.current = skipped");
+    expect(mainWindowSource).toContain("documentSessionRestoreCandidates(envelope)");
+    expect(mainWindowSource).toContain('setKeptDrawingsPrompt("notice")');
+    expect(mainWindowSource).not.toContain('action.id === "document.saveUnrestoredTabs"');
+    expect(mainWindowSource).not.toContain('action.id === "document.discardUnrestoredTabs"');
   });
 
   it("keeps toolbar 3D cleanup separate from projected-plane rotate without conformer imports", () => {
@@ -1875,7 +1883,8 @@ describe("ChemDraft desktop shell", () => {
 
   it("keeps native template dialogs on the fast path", () => {
     expect(mainWindowSource).toContain("prewarmNativeDialogModule()");
-    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"@tauri-apps/plugin-dialog\")");
+    expect(mainWindowSource).toContain("tauriDialogModulePromise ??= import(\"./nativeFileDialog\")");
+    expect(mainWindowSource).toContain("dialogs.prewarmNativeFileDialogs()");
     expect(mainWindowSource).toContain("const { open } = await loadTauriDialogModule();");
     expect(mainWindowSource).toContain("const { save } = await loadTauriDialogModule();");
 
@@ -1889,8 +1898,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("recommendImportedPageFit(resolvedOpen.document)");
     expect(mainWindowSource).toContain("<ImportedPageFitPrompt");
     expect(mainWindowSource).toContain("applyImportedPageFitRecommendation(current, pageFitPrompt)");
-    expect(mainWindowSource).toContain("Keep Current Page");
-    expect(mainWindowSource).toContain("Use {recommendedLabel}");
+    expect(mainWindowSource).toContain(`{ id: "keep", label: "Cancel", cancel: true }`);
+    expect(mainWindowSource).toContain("Use {recommendedLabel} Page");
   });
 
   it("also offers the page-size choice when a pasted structure overflows the current page", () => {
@@ -4007,16 +4016,15 @@ describe("ChemDraft desktop shell", () => {
     });
   });
 
-  it("lets the overlay own brackets and arrows so the editor does not paint them twice", () => {
-    // The overlay draws both types in full (BracketGlyph, the arrow geometry renderer). Including
-    // them in the editor surface too doubled every stroke in a second colour.
+  it("includes brackets and arrows in the ordered SVG paint runs", () => {
+    // Ordinary paint and hits share the ordered surface; overlays retain edit chrome only.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "bracket_001",
       type: "bracket",
       x: 10, y: 10, width: 16, height: 64, rotation: 0, style: {},
       bracketKind: "curly",
       containedObjectIds: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     expect(editorPageSvgSurfaceIncludesObject({
       id: "arrow_001",
       type: "reaction-arrow",
@@ -4025,7 +4033,7 @@ describe("ChemDraft desktop shell", () => {
       start: { kind: "point", point: { x: 10, y: 22 } },
       end: { kind: "point", point: { x: 130, y: 22 } },
       labels: []
-    } as DocumentObject)).toBe(false);
+    } as DocumentObject)).toBe(true);
     // Text still comes from the surface.
     expect(editorPageSvgSurfaceIncludesObject({
       id: "text_001",
@@ -4429,7 +4437,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain("graphic-object");
     expect(markup).not.toContain("art-transform-qa-panel");
     expect(markup).toContain('data-graphic-kind="rect"');
-    expect(markup).not.toContain('data-object-type="graphic"');
+    expect(markup).toContain('data-object-type="graphic"');
     expect(markup).not.toContain("art-object-content");
     expect(markup).not.toContain("graphic-object selected");
     expect(markup).toContain('id="graphic-effects-');
@@ -4605,7 +4613,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain("const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object))");
+    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage)");
     expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
@@ -4631,7 +4639,7 @@ describe("ChemDraft desktop shell", () => {
     expect(rotatedMarkup).not.toMatch(/class="document-object document-object-overlay graphic-object"[^>]*transform:rotate\(45deg\)/);
     expect(rotatedMarkup).not.toContain("graphic-glyph-projected-shape");
     expect(rotatedMarkup).toContain("graphic-glyph-shape");
-    expect(rotatedMarkup).not.toContain('data-object-type="graphic"');
+    expect(rotatedMarkup).toContain('data-object-type="graphic"');
 
     const sphere = insertNativeArtGraphicObject(
       createPhase4Document("Sphere Rotation"),

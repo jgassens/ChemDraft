@@ -16,6 +16,9 @@ const nativeSave = vi.hoisted(() => vi.fn());
 const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(undefined)
+}));
 vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: nativeWriteTextFile }));
 const bridgeEmit = vi.hoisted(() => vi.fn());
 const bridgeListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());

@@ -2,6 +2,13 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import {
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
+  OBJECT_RESIZE_HANDLE_OFFSET_PX,
+  OBJECT_RESIZE_HANDLE_SIZE_PX,
+  projectGraphicVisualLocalPoint,
+  rotatedGraphicLocalBounds as rotatedGraphicFrameBounds
+} from "./graphicHandleGeometry";
+import {
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
   clampGraphicShaftMarkSizePx,
@@ -13,6 +20,7 @@ import {
   createGraphicFreehandPathCache,
   defaultVisualEffectForKind,
   graphicCornerRadiusEditPoint,
+  projectGraphicObjectPoint,
   graphicObjectSupportsBooleanOperation,
   graphicPathEditPoints,
   graphicPathNodeEditPoints,
@@ -2359,6 +2367,139 @@ export function nativeGraphicCornerRadiusEditPoint(
   object: GraphicObject
 ): NativeGraphicCornerRadiusEditPoint | undefined {
   return graphicCornerRadiusEditPoint(object);
+}
+
+const GRAPHIC_HANDLE_GAP_PX = 2;
+const GRAPHIC_HANDLE_RAY_OVERSHOOT_PX = 64;
+
+/** Distance from a frame corner to the radius handle's centre that clears the resize target. */
+export const GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX =
+  (OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX) +
+  GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 + GRAPHIC_HANDLE_GAP_PX;
+
+/**
+ * Local handle position; the true radius point stays unchanged for editing/readout.
+ *
+ * The handle must be visible (its centre on the page, so at least half of the
+ * target can be clicked) and clear of every resize target. Candidates, in
+ * order: inside along the top edge, past the controlled corner, past the
+ * opposite top corner; then the stretches those skipped (outside each top corner,
+ * then inside). If no candidate is clear, the visible spot with the most
+ * clearance wins; the middle of the top edge is used only when nothing visible
+ * was found.
+ */
+export function nativeGraphicCornerRadiusHandlePoint(
+  object: GraphicObject,
+  pageScale: number,
+  page: { width: number; height: number }
+): NativeArtPoint | undefined {
+  const point = nativeGraphicCornerRadiusEditPoint(object);
+  if (!point) {
+    return undefined;
+  }
+  const project = (x: number): NativeArtPoint => {
+    const p = projectGraphicVisualLocalPoint(object, { x, y: point.y });
+    return { x: (object.x + p.x) * pageScale, y: (object.y + p.y) * pageScale };
+  };
+  // Match documentObjectArtTransformFrameStyle: rotate the projected frame
+  // bounds, then place fixed-size, axis-aligned resize targets on its corners.
+  const frame = rotatedGraphicFrameBounds(
+    object,
+    planNativeArtVisual(object, { coordinateSpace: "local" }).frameBounds,
+    object.rotation
+  );
+  const left = (object.x + frame.x) * pageScale;
+  const top = (object.y + frame.y) * pageScale;
+  const right = left + frame.width * pageScale;
+  const bottom = top + frame.height * pageScale;
+  const outer = -OBJECT_RESIZE_HANDLE_OFFSET_PX;
+  const inner = OBJECT_RESIZE_HANDLE_SIZE_PX + OBJECT_RESIZE_HANDLE_OFFSET_PX;
+  const resizeBoxes = [
+    { left: left - outer, right: left + inner, top: top - outer, bottom: top + inner },
+    { left: right - inner, right: right + outer, top: top - outer, bottom: top + inner },
+    { left: left - outer, right: left + inner, top: bottom - inner, bottom: bottom + outer },
+    { left: right - inner, right: right + outer, top: bottom - inner, bottom: bottom + outer }
+  ];
+  // The 9px button rotates with the visual shell, but is not plane-tilted.
+  const angle = object.rotation * Math.PI / 180;
+  const halfTarget = GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX / 2 * (Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle)));
+  const pageWidth = page.width * pageScale;
+  const pageHeight = page.height * pageScale;
+  const epsilon = 1e-6;
+  const visible = (p: NativeArtPoint): boolean =>
+    p.x >= -epsilon && p.x <= pageWidth + epsilon && p.y >= -epsilon && p.y <= pageHeight + epsilon;
+  // Smallest gap between the handle's box and any resize target (negative when overlapping).
+  const clearance = (p: NativeArtPoint): number => Math.min(...resizeBoxes.map((target) => Math.max(
+    target.left - (p.x + halfTarget),
+    (p.x - halfTarget) - target.right,
+    target.top - (p.y + halfTarget),
+    (p.y - halfTarget) - target.bottom
+  )));
+
+  let best: { x: number; clearance: number } | undefined;
+  const consider = (x: number, p: NativeArtPoint): boolean => {
+    if (!visible(p)) return false;
+    const gap = clearance(p);
+    if (gap >= GRAPHIC_HANDLE_GAP_PX - epsilon) return true;
+    if (!best || gap > best.clearance) best = { x, clearance: gap };
+    return false;
+  };
+
+  const corner = projectGraphicObjectPoint(object, { x: 0, y: 0 }, { coordinateSpace: "local" });
+  const unit = projectGraphicObjectPoint(object, { x: 1, y: 0 }, { coordinateSpace: "local" });
+  const edgeScale = pageScale * Math.hypot(unit.x - corner.x, unit.y - corner.y);
+  if (edgeScale > 0.000001) {
+    const minimum = GRAPHIC_CORNER_RADIUS_HANDLE_SEPARATION_PX / edgeScale;
+    // Advance by one screen pixel and check the actual projected boxes:
+    // distance alone does not guarantee clearance along a skewed edge. Each
+    // ray is bounded by the edge's screen length plus a fixed overshoot.
+    const step = 1 / edgeScale;
+    const maxSteps = Math.ceil(Math.max(object.width, 0) * edgeScale + GRAPHIC_HANDLE_RAY_OVERSHOOT_PX);
+    const rays = [
+      { start: Math.max(point.x, minimum), direction: 1, limit: object.width },
+      { start: -minimum, direction: -1, limit: -Infinity },
+      { start: object.width + minimum, direction: 1, limit: Infinity }
+    ];
+    for (const ray of rays) {
+      let p = project(ray.start);
+      for (let i = 0; i <= maxSteps; i++) {
+        const x = ray.start + ray.direction * i * step;
+        if (ray.direction > 0 && x > ray.limit) break;
+        if (consider(x, p)) return { x, y: point.y };
+        const next = project(x + ray.direction * step);
+        // Once the centre has left the page while travelling away from it, no
+        // later spot can be visible; move straight to the next ray.
+        if ((p.x < -epsilon && next.x <= p.x) ||
+          (p.x > pageWidth + epsilon && next.x >= p.x) ||
+          (p.y < -epsilon && next.y <= p.y) ||
+          (p.y > pageHeight + epsilon && next.y >= p.y)) break;
+        p = next;
+      }
+    }
+    // Nothing clear on the rays: score the stretches they skipped. First the
+    // outside gaps between each top corner and its ray start (walking from
+    // the ray start back toward the corner), then the inside stretch, then
+    // take the visible spot with the most clearance.
+    const outsideSteps = Math.ceil(minimum * edgeScale);
+    for (const stretch of [{ start: -minimum, direction: 1, corner: 0 }, { start: object.width + minimum, direction: -1, corner: object.width }]) {
+      for (let i = 1; i <= outsideSteps; i++) {
+        const x = stretch.start + stretch.direction * i * step;
+        if (stretch.direction > 0 ? x >= stretch.corner : x <= stretch.corner) break;
+        if (consider(x, project(x))) return { x, y: point.y };
+      }
+    }
+    const insideSteps = Math.min(maxSteps, Math.ceil(Math.max(object.width, 0) * edgeScale));
+    for (let i = 0; i <= insideSteps; i++) {
+      const x = Math.min(i * step, Math.max(object.width, 0));
+      if (consider(x, project(x))) return { x, y: point.y };
+    }
+  }
+  if (best) {
+    return { x: best.x, y: point.y };
+  }
+  // No spot on the page (e.g. a collapsed projection): fall back inside, as
+  // far from the corner as the shape allows.
+  return { x: object.width / 2, y: point.y };
 }
 
 export type NativeGraphicLinearGradientHandleId = "start" | "end";
@@ -7462,8 +7603,17 @@ export function applySingleBondToolAtNativeAtom(
   target: NativeMoleculeDeleteTarget,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeSingleBondHotkeyAtAtomTarget(document, target, plan).document;
+}
+
+/** The hotkey outcome, with the existing placement decision and its refusal reason. */
+export function nativeSingleBondHotkeyAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  plan?: NativeBondGrowthPlan
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   const page = firstPage(document);
@@ -7471,12 +7621,12 @@ export function applySingleBondToolAtNativeAtom(
     object.id === target.objectId && object.type === "molecule"
   );
   if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-    return document;
+    return { document, refusal: molecule ? "structure-not-editable" : "target-unavailable" };
   }
 
   const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
   if (!atom) {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   // When the on-canvas growth arrow is showing for this atom, commit exactly what it previews
@@ -7486,24 +7636,26 @@ export function applySingleBondToolAtNativeAtom(
   // picks the pure geometric direction — ChemDraw's hotkey behavior.
   const planned = plan ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
   if (!planned) {
-    return document;
+    return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
   }
 
   const extended = planned.targetAtomId
     ? connectNativeCarbonAtoms(molecule, target.atomId, planned.targetAtomId)
     : extendNativeCarbonGraph(molecule, target.atomId, planned.newAtomPoint);
   if (!extended) {
-    return document;
+    return { document, refusal: planned.targetAtomId
+      ? nativeSproutConnectionFailureReason(molecule, target.atomId, planned.targetAtomId)
+      : nativeSproutFailureReason(molecule, target.atomId) };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: extended },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
 }
 
 export function applyNativeCarbonylAtAtomTarget(
@@ -7511,8 +7663,17 @@ export function applyNativeCarbonylAtAtomTarget(
   target: NativeMoleculeDeleteTarget,
   plan?: NativeBondGrowthPlan
 ): ChemDraftDocument {
+  return nativeCarbonylHotkeyAtAtomTarget(document, target, plan).document;
+}
+
+/** The hotkey outcome, with the existing placement decision and its refusal reason. */
+export function nativeCarbonylHotkeyAtAtomTarget(
+  document: ChemDraftDocument,
+  target: NativeMoleculeDeleteTarget,
+  plan?: NativeBondGrowthPlan
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return document;
+    return { document, refusal: "target-unavailable" };
   }
 
   const page = firstPage(document);
@@ -7520,22 +7681,22 @@ export function applyNativeCarbonylAtAtomTarget(
     object.id === target.objectId && object.type === "molecule"
   );
   if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-    return document;
+    return { document, refusal: molecule ? "structure-not-editable" : "target-unavailable" };
   }
 
   const nextMolecule = addNativeCarbonylToAtom(molecule, target.atomId, page.width, page.height, plan);
   if (!nextMolecule) {
-    return document;
+    return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
 }
 
 /** ChemDraw-style numeric sprout hotkeys: what pressing 4/5/8/9/0 over an atom builds. */
@@ -7588,24 +7749,24 @@ export function applyNativeAtomSproutTarget(
   return nativeAtomSproutHotkeyTarget(document, target, kind, plan).document;
 }
 
-/** {@link applyNativeAtomSproutTarget}, also reporting why a cyclic-bond closure was refused. */
+/** {@link applyNativeAtomSproutTarget}, also reporting why a sprout was refused. */
 export function nativeAtomSproutHotkeyTarget(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,
   kind: NativeAtomSproutKind,
   plan?: NativeBondGrowthPlan
-): NativeRingHotkeyResult {
+): NativeAtomSproutHotkeyResult {
   if (target.kind !== "atom") {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
-  const located = nativeMoleculeForPartTarget(document, target);
-  if (!located) {
-    return { document };
+  const located = nativeHotkeyMoleculeForTarget(document, target);
+  if ("refusal" in located) {
+    return { document, refusal: located.refusal };
   }
   const { page, molecule } = located;
   const sourceAtom = molecule.atoms.find((atom) => atom.id === target.atomId);
   if (!sourceAtom) {
-    return { document };
+    return { document, refusal: "target-unavailable" };
   }
 
   const growthPlan = (plan && !plan.targetAtomId ? plan : undefined)
@@ -7613,12 +7774,12 @@ export function nativeAtomSproutHotkeyTarget(
 
   if (kind === "wedge" || kind === "hashed") {
     if (!growthPlan || growthPlan.targetAtomId) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint, {
       bondStyle: kind === "wedge" ? "wedge" : "hashed"
     });
-    return { document: nativeMoleculePatched(document, page, molecule, grown) };
+    return nativeSproutPatched(document, page, molecule, target.atomId, grown);
   }
 
   if (kind === "methylidene") {
@@ -7631,11 +7792,15 @@ export function nativeAtomSproutHotkeyTarget(
       nativeAtomFormalChargeForValence("C", nextValence) !== 0 ||
       !growthPlan || growthPlan.targetAtomId
     ) {
-      return { document };
+      return { document, refusal: nativeElementFromAtomLabel(sourceAtom.element) !== "C" || sourceAtom.formalCharge !== 0
+        ? "methylidene-needs-neutral-carbon"
+        : nativeAtomFormalChargeForValence("C", nextValence) !== 0
+          ? "sprout-needs-two-valences"
+          : nativeSproutFailureReason(molecule, target.atomId) };
     }
     const grown = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!grown) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const newAtom = grown.atoms[grown.atoms.length - 1];
     const bonds = grown.bonds.map((bond) =>
@@ -7648,26 +7813,27 @@ export function nativeAtomSproutHotkeyTarget(
   }
 
   if (kind === "gemDimethyl") {
-    // All-or-nothing: the hotkey promises a PAIR of methyls, and the only signal the caller can
-    // surface is the reference-equality refusal ("Cannot add gem-dimethyl here") — committing one
+    // All-or-nothing: the hotkey promises a PAIR of methyls — committing one
     // methyl when the second cannot be planned would read as success. So an atom without two free
     // growth slots refuses up front, and a failed second plan refuses the whole sprout.
     const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
     if (nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(target.atomId) ?? 0, molecule) < 2) {
-      return { document };
+      return { document, refusal: "sprout-needs-two-valences" };
     }
     if (!growthPlan || growthPlan.targetAtomId) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const first = extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint);
     if (!first) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     const secondPlan = nativeBondGrowthPlanForAtom(first, target.atomId, page.width, page.height);
     const second = secondPlan && !secondPlan.targetAtomId
       ? extendNativeCarbonGraph(first, target.atomId, secondPlan.newAtomPoint)
       : undefined;
-    return { document: nativeMoleculePatched(document, page, molecule, second) };
+    return second
+      ? { document: nativeMoleculePatched(document, page, molecule, second) }
+      : { document, refusal: nativeSproutFailureReason(first, target.atomId) };
   }
 
   // Cyclic mode ("0"): continue the chain, turning the same way the chain last turned by the
@@ -7711,11 +7877,11 @@ export function nativeAtomSproutHotkeyTarget(
 
   if (outgoingDegrees === undefined) {
     if (!growthPlan) {
-      return { document };
+      return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
     }
     return growthPlan.targetAtomId
       ? nativeCyclicClosurePatched(document, page, molecule, target, growthPlan.targetAtomId)
-      : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint)) };
+      : nativeSproutPatched(document, page, molecule, target.atomId, extendNativeCarbonGraph(molecule, target.atomId, growthPlan.newAtomPoint));
   }
 
   const nextPoint = {
@@ -7730,7 +7896,7 @@ export function nativeAtomSproutHotkeyTarget(
   );
   return closure
     ? nativeCyclicClosurePatched(document, page, molecule, target, closure.id)
-    : { document: nativeMoleculePatched(document, page, molecule, extendNativeCarbonGraph(molecule, target.atomId, nextPoint)) };
+    : nativeSproutPatched(document, page, molecule, target.atomId, extendNativeCarbonGraph(molecule, target.atomId, nextPoint));
 }
 
 /**
@@ -7744,13 +7910,54 @@ function nativeCyclicClosurePatched(
   molecule: MoleculeObject,
   target: Extract<NativeMoleculeDeleteTarget, { kind: "atom" }>,
   closureAtomId: string
-): NativeRingHotkeyResult {
+): NativeAtomSproutHotkeyResult {
   const closed = connectNativeCarbonAtoms(molecule, target.atomId, closureAtomId);
   if (!closed) {
-    return { document };
+    return { document, refusal: nativeSproutConnectionFailureReason(molecule, target.atomId, closureAtomId) };
   }
   const refusal = nativeRingPlacementValenceRefusal(molecule, closed, target);
   return refusal ? { document, refusal } : { document: nativeMoleculePatched(document, page, molecule, closed) };
+}
+
+/** Refusal diagnostics only: these helpers never decide whether a sprout is placed. */
+export type NativeAtomSproutRefusal = NativeRingHotkeyRefusal
+  | "sprout-no-free-direction"
+  | "sprout-needs-two-valences"
+  | "methylidene-needs-neutral-carbon"
+  | "connection-atom-no-free-valence"
+  | "closure-bond-exists";
+
+export type NativeAtomSproutHotkeyResult = {
+  document: ChemDraftDocument;
+  refusal?: NativeAtomSproutRefusal;
+};
+
+function nativeSproutFailureReason(molecule: MoleculeObject, atomId: string): NativeAtomSproutRefusal {
+  if (!molecule.atoms.some((atom) => atom.id === atomId)) return "target-unavailable";
+  return canGrowNativeAtom(molecule, atomId) ? "sprout-no-free-direction" : "atom-no-free-valence";
+}
+
+function nativeSproutConnectionFailureReason(
+  molecule: MoleculeObject, sourceAtomId: string, targetAtomId: string
+): NativeAtomSproutRefusal {
+  if (!molecule.atoms.some((atom) => atom.id === targetAtomId)) return "target-unavailable";
+  if (sourceAtomId === targetAtomId || nativeBondExistsBetween(molecule, sourceAtomId, targetAtomId)) return "closure-bond-exists";
+  if (!canGrowNativeAtom(molecule, sourceAtomId)) return "atom-no-free-valence";
+  const sameComponent = nativeComponents(molecule.atoms, nativeAdjacency(molecule.atoms, molecule.bonds))
+    .some((atomIds) => atomIds.includes(sourceAtomId) && atomIds.includes(targetAtomId));
+  return sameComponent ? "closure-atom-no-free-valence" : "connection-atom-no-free-valence";
+}
+
+function nativeSproutPatched(
+  document: ChemDraftDocument,
+  page: ChemDraftDocument["pages"][number],
+  molecule: MoleculeObject,
+  atomId: string,
+  next: MoleculeObject | undefined
+): NativeAtomSproutHotkeyResult {
+  return next
+    ? { document: nativeMoleculePatched(document, page, molecule, next) }
+    : { document, refusal: nativeSproutFailureReason(molecule, atomId) };
 }
 
 /**
@@ -11336,8 +11543,7 @@ function moveDocumentObjectPatches(
 ): DocumentPatch[] {
   const objectId = object.id;
   const clampToPage = options.clampToPage ?? true;
-  const nextX = clampToPage ? clamp(position.x, 0, Math.max(0, page.width - object.width)) : position.x;
-  const nextY = clampToPage ? clamp(position.y, 0, Math.max(0, page.height - object.height)) : position.y;
+  const { x: nextX, y: nextY } = clampToPage ? clampedObjectMovePosition(page, object, position) : position;
   const dx = nextX - object.x;
   const dy = nextY - object.y;
   if (dx === 0 && dy === 0) {
@@ -12529,6 +12735,69 @@ interface ObjectBounds {
   height: number;
 }
 
+// Anchor resolution only uses objects; retain valid page metadata for array-based callers.
+const mechanismBoundsPage = createPhase4Document().pages[0];
+// Page object arrays are immutable snapshots. A move replaces the array, invalidating both
+// the resolved bounds and anchor indexes; repeated marquee/lasso evaluations reuse them.
+const mechanismBoundsSnapshots = new WeakMap<readonly DocumentObject[], {
+  bounds: Map<MechanismArrowObject, ObjectBounds>;
+  atoms: Map<MoleculeObject, ReadonlyMap<string, PagePoint>>;
+}>();
+
+/** Stored SVG rotation pivot expressed in the live interaction frame's local coordinates. */
+export function documentObjectInteractionRotationOrigin(object: DocumentObject, bounds: ObjectBounds): PagePoint {
+  return { x: object.x + object.width / 2 - bounds.x, y: object.y + object.height / 2 - bounds.y };
+}
+
+/** Live interaction frame; anchored arrows have no independent stored position. */
+export function documentObjectInteractionBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[]
+): ObjectBounds {
+  if (object.type === "mechanism-arrow") {
+    let snapshot = mechanismBoundsSnapshots.get(objects);
+    if (!snapshot) {
+      snapshot = { bounds: new Map(), atoms: new Map() };
+      mechanismBoundsSnapshots.set(objects, snapshot);
+    }
+    const cached = snapshot.bounds.get(object);
+    if (cached) {
+      return cached;
+    }
+    const byId = objectByIdIndex(objects);
+    const resolve = (anchor: MechanismArrowObject["source"]): PagePoint | undefined => {
+      if (anchor.kind === "point") return anchor.point;
+      if (!anchor.objectId) return undefined;
+      const anchored = byId.get(anchor.objectId);
+      if (!anchored) return undefined;
+      if (anchor.kind === "object") return objectCenter(anchored);
+      if (anchored.type !== "molecule" || !anchor.atomId) return undefined;
+      let atoms = snapshot.atoms.get(anchored);
+      if (!atoms) {
+        const byAtomId = new Map<string, PagePoint>();
+        for (const atom of anchored.atoms) {
+          if (!byAtomId.has(atom.id)) byAtomId.set(atom.id, atom);
+        }
+        atoms = byAtomId;
+        snapshot.atoms.set(anchored, atoms);
+      }
+      return atoms.get(anchor.atomId);
+    };
+    const source = resolve(object.source);
+    const target = resolve(object.target);
+    // Point anchors avoid linear searches inside the shared geometry implementation.
+    const geometry = source && target ? mechanismArrowGeometry(mechanismBoundsPage, {
+      ...object, source: { kind: "point", point: source }, target: { kind: "point", point: target }
+    }) : undefined;
+    const bounds = geometry
+      ? mechanismArrowBounds([geometry.source, geometry.target, ...geometry.controls])
+      : { x: object.x, y: object.y, width: object.width, height: object.height };
+    snapshot.bounds.set(object, bounds);
+    return bounds;
+  }
+  return { x: object.x, y: object.y, width: object.width, height: object.height };
+}
+
 /** Union axis-aligned bounding box (and center) of the selected objects, in page coords. */
 export function selectionBounds(
   objects: readonly DocumentObject[],
@@ -12546,10 +12815,11 @@ export function selectionBounds(
     if (!object) {
       continue;
     }
-    minX = Math.min(minX, object.x);
-    minY = Math.min(minY, object.y);
-    maxX = Math.max(maxX, object.x + object.width);
-    maxY = Math.max(maxY, object.y + object.height);
+    const bounds = documentObjectInteractionBounds(object, objects);
+    minX = Math.min(minX, bounds.x);
+    minY = Math.min(minY, bounds.y);
+    maxX = Math.max(maxX, bounds.x + bounds.width);
+    maxY = Math.max(maxY, bounds.y + bounds.height);
     count += 1;
   }
   if (count === 0) {
@@ -12791,14 +13061,12 @@ export function ungroupSelectedDocumentObjects(document: ChemDraftDocument): Che
   );
 }
 
-export function documentObjectVisualBounds(object: DocumentObject): ObjectBounds {
+export function documentObjectVisualBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[] = [object]
+): ObjectBounds {
   if (object.type !== "graphic") {
-    return {
-      x: object.x,
-      y: object.y,
-      width: object.width,
-      height: object.height
-    };
+    return documentObjectInteractionBounds(object, objects);
   }
 
   const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
@@ -13114,6 +13382,42 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
   );
 }
 
+function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
+  return {
+    x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
+    y: clamp(position.y, 0, Math.max(0, page.height - object.height))
+  };
+}
+
+function clampedSelectionMoveDelta(page: DocumentPage, bounds: SelectionBounds, dx: number, dy: number): PagePoint {
+  return {
+    x: clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width))),
+    y: clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)))
+  };
+}
+
+/** Resolve effective drag deltas against one immutable start document, including anchored marks.
+ * Bounds are computed once per drag; previews and release share the movement functions' clamps. */
+export function documentObjectMoveDeltaResolver(
+  document: ChemDraftDocument,
+  objectId: string,
+  groupObjectIds?: readonly string[]
+): (dx: number, dy: number) => PagePoint {
+  if (groupObjectIds && groupObjectIds.length > 1) {
+    const page = firstPage(document);
+    const ids = resolveGroupedDocumentObjectIds(page.objects, groupObjectIds);
+    const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)]);
+    return bounds ? (dx, dy) => clampedSelectionMoveDelta(page, bounds, dx, dy) : () => ({ x: 0, y: 0 });
+  }
+  const page = pageContainingObject(document, objectId);
+  const object = objectOnPage(page, objectId);
+  if (!page || !object) return () => ({ x: 0, y: 0 });
+  return (dx, dy) => {
+    const position = clampedObjectMovePosition(page, object, { x: object.x + dx, y: object.y + dy });
+    return { x: position.x - object.x, y: position.y - object.y };
+  };
+}
+
 /** Move every object in `ids` by the same delta, clamped so the group bbox stays on the page. */
 export function moveDocumentObjects(
   document: ChemDraftDocument,
@@ -13129,8 +13433,7 @@ export function moveDocumentObjects(
     return document;
   }
 
-  const cdx = clamp(dx, -bounds.x, Math.max(-bounds.x, page.width - (bounds.x + bounds.width)));
-  const cdy = clamp(dy, -bounds.y, Math.max(-bounds.y, page.height - (bounds.y + bounds.height)));
+  const { x: cdx, y: cdy } = clampedSelectionMoveDelta(page, bounds, dx, dy);
   if (Math.abs(cdx) < 1e-6 && Math.abs(cdy) < 1e-6) {
     return document;
   }
@@ -13273,7 +13576,7 @@ function layoutItemVisualBounds(
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     }
   }
-  return documentObjectVisualBounds(object);
+  return documentObjectVisualBounds(object, pageObjects);
 }
 
 export function distributeSelectedDocumentObjects(
@@ -17940,10 +18243,13 @@ function importedContentFitDelta(min: number, size: number, extent: number): num
  */
 export function copyAsScopeObjects(document: ChemDraftDocument): readonly DocumentObject[] {
   const page = firstPage(document);
-  const selectedIds = new Set(document.selection.objectIds);
-  if (selectedIds.size === 0 || !page.objects.some((object) => selectedIds.has(object.id))) {
-    return page.objects;
+  const selectionIds = new Set(document.selection.objectIds);
+  if (selectionIds.size === 0 || !page.objects.some((object) => selectionIds.has(object.id))) {
+    return page.objects.filter((object) => object.type !== "group");
   }
+  // Groups are invisible wrappers. Resolve their leaves before collecting anchored artwork,
+  // preserving page paint order in the final filter and avoiding wrapper frames in the crop.
+  const selectedIds = new Set(resolveGroupedDocumentObjectIds(page.objects, [...selectionIds]));
 
   const isArrowObject = (object: DocumentObject): object is MechanismArrowObject | ArrowObject =>
     object.type === "mechanism-arrow" || object.type === "reaction-arrow";
@@ -18141,11 +18447,14 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
   const computeStructureIdentifiers = await loadStructureIdentifiers();
   const warnings: ExportWarning[] = [];
   const parts: string[] = [];
-  for (const [index, molecule] of molecules.entries()) {
-    const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
-    if (smiles.length > 0) parts.push(smiles);
+  try {
+    for (const [index, molecule] of molecules.entries()) {
+      const smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers);
+      if (smiles.length > 0) parts.push(smiles);
+    }
+  } finally {
+    warningsOut?.push(...warnings.map((warning) => warning.message));
   }
-  warningsOut?.push(...warnings.map((warning) => warning.message));
   return parts.length > 0 ? parts.join(".") : undefined;
 }
 

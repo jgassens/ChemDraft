@@ -8,6 +8,23 @@ use crate::fonts::shared_fontdb;
 const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
+// Bound parser input as well as output pixels. A permitted 25 MiB image becomes 33.3 MiB
+// when base64-embedded (PluginImageMaxBytes in plugin-api). 128 MiB accommodates two such
+// images plus 500 molecules at the largest checked-in SVG fixture's size (82,007 bytes,
+// fixtures/ocsr/brevetoxin-a.svg): about 106 MiB total, with room for page markup.
+const MAX_SVG_BYTES: usize = 128 * 1024 * 1024;
+
+/// Export SVGs may embed data URLs, but must never read files from the host.
+fn export_svg_options() -> usvg::Options<'static> {
+    usvg::Options {
+        fontdb: shared_fontdb(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
 
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -17,6 +34,18 @@ pub(crate) enum RasterExportFormat {
     Bmp,
     Gif,
     Tiff,
+}
+
+impl RasterExportFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+            Self::Bmp => "BMP",
+            Self::Gif => "GIF",
+            Self::Tiff => "TIFF",
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -54,15 +83,33 @@ pub(crate) struct RasterExportResponse {
 }
 
 #[tauri::command]
-pub(crate) fn rasterize_svg(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
-    rasterize_svg_impl(request)
+pub(crate) async fn rasterize_svg(
+    request: RasterExportRequest,
+) -> Result<RasterExportResponse, String> {
+    let format = request.format;
+    tauri::async_runtime::spawn_blocking(move || rasterize_svg_impl(request))
+        .await
+        .map_err(|error| {
+            format!(
+                "Could not export {}: the raster rendering worker failed: {error}",
+                format.label()
+            )
+        })?
 }
 
 fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
-    let options = usvg::Options {
-        fontdb: shared_fontdb(),
-        ..Default::default()
-    };
+    // Check UTF-8 bytes before font discovery or usvg parsing; usvg's tree limits do not
+    // bound the input string (including embedded data: images).
+    if request.svg.len() > MAX_SVG_BYTES {
+        return Err(format!(
+            "Could not export {}: the drawing is too large to render ({:.1} MiB of SVG; the limit is {} MiB).",
+            request.format.label(),
+            request.svg.len() as f64 / (1024.0 * 1024.0),
+            MAX_SVG_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let options = export_svg_options();
 
     let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
@@ -388,6 +435,57 @@ fn warning(code: &'static str, message: String) -> RasterExportWarning {
 mod tests {
     use super::*;
 
+    #[test]
+    fn export_images_accept_only_data_urls() {
+        let directory =
+            std::env::temp_dir().join(format!("chemdraft-export-images-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create image fixture directory");
+        let image_path = directory.join("fixture.svg");
+        std::fs::write(&image_path, r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#)
+            .expect("write real image fixture");
+        let mut options = export_svg_options();
+        options.resources_dir = Some(directory.clone());
+        let absolute = image_path.to_string_lossy().replace('\\', "/");
+        for href in [
+            format!("file:///{absolute}"),
+            "fixture.svg".to_string(),
+            absolute,
+        ] {
+            let escaped_href = href
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&apos;");
+            for attribute in ["href", "xlink:href"] {
+                let svg = format!(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><image {attribute}="{escaped_href}" width="8" height="8"/></svg>"#
+                );
+                let tree = usvg::Tree::from_data(svg.as_bytes(), &options).expect("parse SVG");
+                assert!(tree.root().children().is_empty(), "must not load {href}");
+                let response = rasterize_svg_impl(RasterExportRequest {
+                    svg,
+                    background: Some("transparent".to_string()),
+                    ..request(RasterExportFormat::Png)
+                })
+                .expect("rasterize SVG");
+                let pixels = image::load_from_memory(&response.bytes)
+                    .expect("decode PNG")
+                    .to_rgba8();
+                assert!(
+                    pixels.pixels().all(|pixel| pixel[3] == 0),
+                    "raster must not load {href}"
+                );
+            }
+        }
+
+        let embedded = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='red'/%3E%3C/svg%3E" width="8" height="8"/></svg>"#;
+        let tree =
+            usvg::Tree::from_data(embedded.as_bytes(), &options).expect("parse embedded SVG");
+        assert!(!tree.root().children().is_empty(), "data URL must load");
+        std::fs::remove_dir_all(&directory).expect("remove fixture directory");
+    }
+
     const SIMPLE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32" viewBox="0 0 64 32"><rect width="64" height="32" fill="#ffffff"/><circle cx="16" cy="16" r="8" fill="#111111"/></svg>"##;
 
     fn request(format: RasterExportFormat) -> RasterExportRequest {
@@ -424,6 +522,59 @@ mod tests {
         assert_eq!(tiff.width, 64);
         assert_eq!(tiff.height, 32);
         assert!(tiff.bytes.starts_with(b"II") || tiff.bytes.starts_with(b"MM"));
+    }
+
+    #[test]
+    fn rejects_oversized_svg_before_parsing() {
+        // Deliberately invalid SVG: a parser error here would mean the guard ran too late.
+        // Multi-byte text also proves the limit counts bytes rather than characters.
+        let response = rasterize_svg_impl(RasterExportRequest {
+            svg: "é".repeat(MAX_SVG_BYTES / 2 + 1),
+            ..request(RasterExportFormat::Png)
+        });
+        assert_eq!(
+            response.expect_err("oversized input should fail before parsing"),
+            "Could not export PNG: the drawing is too large to render (128.0 MiB of SVG; the limit is 128 MiB)."
+        );
+    }
+
+    #[test]
+    fn async_command_preserves_synchronous_render_bytes() {
+        for format in [
+            RasterExportFormat::Png,
+            RasterExportFormat::Jpeg,
+            RasterExportFormat::Bmp,
+            RasterExportFormat::Gif,
+            RasterExportFormat::Tiff,
+        ] {
+            let expected =
+                rasterize_svg_impl(request(format)).expect("normal render should encode");
+            let actual = tauri::async_runtime::block_on(rasterize_svg(request(format)))
+                .expect("background render should encode");
+            assert_eq!(actual.bytes, expected.bytes);
+            assert_eq!(actual.width, expected.width);
+            assert_eq!(actual.height, expected.height);
+            assert!(actual.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn output_dimension_limit_cannot_be_raised_by_the_request() {
+        let request = RasterExportRequest {
+            scale: Some(1000.0),
+            max_dimension_px: Some(u32::MAX),
+            ..request(RasterExportFormat::Png)
+        };
+        let base_size = tiny_skia::IntSize::from_wh(64, 32).expect("valid source dimensions");
+        let (width, height, _, _, warnings) =
+            target_size(&request, base_size).expect("large dimensions should clamp");
+        assert_eq!(width, DEFAULT_MAX_DIMENSION_PX);
+        assert_eq!(height, DEFAULT_MAX_DIMENSION_PX / 2);
+        assert_eq!(warnings[0].code, "raster_dimension_clamped");
+        assert_eq!(
+            warnings[0].message,
+            "Raster export was clamped to 8192px on its longest side."
+        );
     }
 
     #[test]

@@ -1,10 +1,17 @@
-import { paletteSuspension, withToolsetWindowsSuspended } from "./window-manager/paletteSuspension";
+import { withNativeUtilitySuspension, observeNativeUtilityModals } from "./nativeUtilitySuspension";
+import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
+import {
+  projectGraphicVisualPagePoint,
+  rotatePointAroundCenter,
+  rotatedGraphicLocalBounds,
+  unrotateGraphicVisualPagePoint
+} from "./graphicHandleGeometry";
 import {
   activeOpenWarnings,
   NO_OPEN_WARNINGS_REASON,
@@ -15,6 +22,7 @@ import {
   type OpenWarningsReport
 } from "./openWarnings";
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
+import { modifierLabels } from "./modifierLabels";
 import {
   createElement,
   memo,
@@ -31,8 +39,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type RefObject,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
@@ -81,7 +91,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
-import { createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
@@ -123,10 +133,13 @@ import {
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
   documentIsBlank,
+  documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
-  rawDocumentSessionTab,
   shouldRestoreDocumentSession,
-  strictSessionFlushRefusal
+  strictSessionFlushRefusal,
+  unrestoredTabContents,
+  unrestoredTabDisplayName,
+  unrestoredTabsNotice
 } from "./documentSession";
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
@@ -138,6 +151,7 @@ import {
 } from "./plugins/applyPluginDocumentPatch";
 import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNotice";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
+import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
@@ -168,7 +182,7 @@ import {
 } from "./plugins/panelBridge";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { isBlockedByModalDialog, shouldIgnoreShortcutTarget } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -197,6 +211,8 @@ import {
   type PageSvgRenderPlan,
   bracketGlyphPathD,
   planReactionArrowGeometry,
+  projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
+  projectedPlaneSvgTransformForObject,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -376,7 +392,7 @@ import {
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
-  applyNativeCarbonylAtAtomTarget,
+  nativeCarbonylHotkeyAtAtomTarget,
   applyNativeAtomElementTarget,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
@@ -421,10 +437,10 @@ import {
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
-  type NativeRingHotkeyResult,
-  type NativeRingHotkeyRefusal,
+  type NativeAtomSproutHotkeyResult,
+  type NativeAtomSproutRefusal,
   applySingleBondToolAtPoint,
-  applySingleBondToolAtNativeAtom,
+  nativeSingleBondHotkeyAtAtomTarget,
   applyToolbarColorToSelection,
   applyGraphicObjectColorToSelection,
   applyGraphicObjectEyedropperToSelection,
@@ -467,6 +483,8 @@ import {
   conformerGraphSignature,
   deleteNativeGraphicPathNode,
   documentObjectVisualBounds,
+  documentObjectInteractionBounds,
+  documentObjectInteractionRotationOrigin,
   spin3dModelCoordsForMolecule,
   validSpin3dModelFor,
   type ProjectedPlaneTiltDocumentResult,
@@ -522,6 +540,7 @@ import {
   snapNativeMoleculePartDragDelta,
   snapNativeMoleculePartRotationDegrees,
   nativeGraphicCornerRadiusEditPoint,
+  nativeGraphicCornerRadiusHandlePoint,
   nativeGraphicLinearGradientHandlePoints,
   nativeGraphicPathEditPoints,
   nativeGraphicPathNodeEditPoints,
@@ -540,6 +559,7 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
   type ChemDraftSelectionClipboardPayload,
@@ -962,6 +982,9 @@ type ObjectDragState = {
   // together by the pointer delta (group move). Undefined ⇒ single-object move.
   groupObjectIds?: readonly string[];
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+  moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
+  movePreviewObjectIds?: readonly string[];
+  movePreviewArrowIds?: readonly string[];
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1197,6 +1220,13 @@ type ObjectTransformPreviewState = {
   scaleX: number;
   scaleY: number;
   artPreviewProxies?: Record<string, ArtTransformDragPreviewProxy>;
+  /** Move existing paint/hit/chrome nodes without entering React's render path. */
+  retainedMove?: boolean;
+  arrowPreviewFragments?: ReadonlyMap<string, readonly PageSvgElementFragment[]>;
+  arrowPreviewObjects?: ReadonlyMap<string, {
+    object: Extract<DocumentObject, { type: "mechanism-arrow" }>;
+    interactionBounds: ReturnType<typeof documentObjectInteractionBounds>;
+  }>;
 };
 type ArtTransformDragPreviewProxy = {
   kind: "svg-image" | "bounds";
@@ -1248,6 +1278,12 @@ type ResolvedOpenDocument = {
   source: ReturnType<typeof openNativeDocument>["source"];
   statusSourceLabel?: string;
 };
+type OpenDocumentContentsOptions = {
+  /** Restore-session path: the contents hold edits never written to `path`. */
+  dirty?: boolean;
+  /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
+  statusOverride?: string;
+};
 export type NativeMoleculeSelectionPart =
   | { objectId: string; kind: "atom"; atomId: string }
   | { objectId: string; kind: "bond"; bondId: string }
@@ -1279,6 +1315,13 @@ type AtomLabelEditState = AtomLabelDraftState & {
   /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
   startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  /** Captured immediately after the hotkey, before any external edit can be mistaken for ours. */
+  hotkeyAfterDocument?: ChemDraftDocument;
+  /** Shared between keys; never adopt an intervening write as part of our cancellable draft. */
+  cancellation: { document: ChemDraftDocument; intervened: boolean; superseded?: boolean };
+  saveRevision: number;
+  /** Pre-first-letter history and dirty state; Escape discards the hotkey without adding Redo. */
+  hotkeyUndoState?: { history: DocumentHistory; file: NativeFileState };
   /** Render-only attachment target; keyboard ownership remains on atomId. */
   previewAtomId?: string;
   objectId: string;
@@ -1321,6 +1364,9 @@ type AtomLabelEditOptions = {
   hotkeyChanged?: boolean;
   startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyAfterDocument?: ChemDraftDocument;
+  saveRevision?: number;
+  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
@@ -1359,12 +1405,14 @@ function inlineEditorBlurEndsEdit(editor: HTMLElement): boolean {
 }
 type SelectionMarqueeState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
 };
 type SelectionLassoState = {
   pointerId: number;
+  startNativeSelections: NativeMoleculeSelectionPart[];
   startPoint: ClientPoint;
   points: ClientPoint[];
   latestPoint: ClientPoint;
@@ -1577,7 +1625,8 @@ const GRAPHIC_HANDLE_DRAG_THRESHOLD = 1;
 const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
-const CURRENT_BUILD_STAMP = "10.12.01.00-codex";
+const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
+const CURRENT_BUILD_STAMP = "10.13.12.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1685,7 +1734,7 @@ function scissorsStatusLabel(action = "click path to split"): string {
 
 function eyedropperStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: ${targetLabel} target selected; click source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+  return `Eyedropper: ${targetLabel} target selected; click source art; switch Fill/Stroke, ${modifierLabels().optionGlyph} click copies all; Esc exits`;
 }
 
 function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): string {
@@ -1695,7 +1744,7 @@ function eyedropperChooseTargetStatusLabel(target: GraphicStylePaintTarget): str
 
 function eyedropperSameTargetStatusLabel(target: GraphicStylePaintTarget): string {
   const targetLabel = target === "fill" ? "Fill" : "Stroke";
-  return `Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ⌥ click copies all; Esc exits`;
+  return `Eyedropper: ${targetLabel} target selected; click different source art; switch Fill/Stroke, ${modifierLabels().optionGlyph} click copies all; Esc exits`;
 }
 // Whole-molecule double-click is normally read from the browser's `event.detail` click
 // counter. That counter is unreliable when the first press mutates the DOM/selection under
@@ -1848,6 +1897,23 @@ export function MainWindow({
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
+  // Capture can belong to an object or a handle (even one later unmounted), not just the page.
+  const pointerCaptureOwnersRef = useRef(new Map<number, Element>());
+  const captureGesturePointer = useCallback((owner: Element | null | undefined, pointerId: number) => {
+    if (!owner) return;
+    // Drop owners whose browser capture already ended on pointerup/cancel.
+    for (const [id, previousOwner] of pointerCaptureOwnersRef.current) {
+      if (!previousOwner.hasPointerCapture(id)) pointerCaptureOwnersRef.current.delete(id);
+    }
+    owner.setPointerCapture(pointerId);
+    pointerCaptureOwnersRef.current.set(pointerId, owner);
+  }, []);
+  const releaseGesturePointer = useCallback((pointerId: number) => {
+    const owner = pointerCaptureOwnersRef.current.get(pointerId);
+    pointerCaptureOwnersRef.current.delete(pointerId);
+    if (owner?.hasPointerCapture(pointerId)) owner.releasePointerCapture(pointerId);
+  }, []);
   const webPaletteDragRef = useRef<PaletteDragState | null>(null);
   const nativeBondDragRef = useRef<NativeBondDragState | null>(null);
   const nativePlacementDragRef = useRef<NativePlacementDragState | null>(null);
@@ -1879,6 +1945,10 @@ export function MainWindow({
   const bezierArtNodeDragRef = useRef<BezierArtNodeDragState | null>(null);
   const pendingObjectTransformPreviewRef = useRef<ObjectTransformPreviewState | undefined>(undefined);
   const objectTransformPreviewRafRef = useRef<number | undefined>(undefined);
+  const retainedObjectMoveRef = useRef<{
+    pointerId: number;
+    targets: RetainedObjectMoveTarget[];
+  } | undefined>(undefined);
   const objectRotateDragRef = useRef<ObjectRotateDragState | null>(null);
   const objectRotateReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const projectedPlaneTiltDragRef = useRef<ProjectedPlaneTiltDragState | null>(null);
@@ -2055,12 +2125,16 @@ export function MainWindow({
   );
   const document = documentHistory.present;
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
+  const [moveArrowPreviewFragments, setMoveArrowPreviewFragments] = useState<
+    ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>();
+  const [moveArrowPreviewObjects, setMoveArrowPreviewObjects] = useState<ObjectTransformPreviewState["arrowPreviewObjects"]>();
   const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
   const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
   const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
+  const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const activeDocumentTabIdRef = useRef("initial");
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
@@ -2082,6 +2156,10 @@ export function MainWindow({
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const [keptDrawingsPrompt, setKeptDrawingsPrompt] = useState<"notice">();
+  const keptDrawingsPromptRef = useRef(keptDrawingsPrompt);
+  keptDrawingsPromptRef.current = keptDrawingsPrompt;
+  const [keptDrawingsMessage, setKeptDrawingsMessage] = useState<string>();
   const [closeTabSaving, setCloseTabSaving] = useState(false);
   const [closeTabSaveMessage, setCloseTabSaveMessage] = useState<string>();
   const closeTabPromptRef = useRef(closeTabPrompt);
@@ -2093,6 +2171,15 @@ export function MainWindow({
   // A second placement can end an earlier edit before React observes it, so pending ids cannot be
   // kept in one overwriteable slot.
   const textObjectIdsAwaitingAutoConversionRef = useRef<Set<string>>(new Set());
+  // Only fresh insertions own a placeholder. Synchronous clearing also protects focus retries.
+  const pendingTextPlaceholderObjectIdRef = useRef<string | undefined>(undefined);
+  const isTextPlaceholderPending = useCallback((objectId: string) =>
+    pendingTextPlaceholderObjectIdRef.current === objectId, []);
+  const clearTextPlaceholder = useCallback((objectId: string) => {
+    if (pendingTextPlaceholderObjectIdRef.current === objectId) {
+      pendingTextPlaceholderObjectIdRef.current = undefined;
+    }
+  }, []);
   const activeTextEditObjectIdRef = useRef<string | undefined>(undefined);
   activeTextEditObjectIdRef.current = activeTextEditObjectId;
   const [activeTextSelection, setActiveTextSelection] = useState<{ objectId: string; range: NativeTextSelectionRange } | undefined>();
@@ -2164,6 +2251,11 @@ export function MainWindow({
   customizeMainToolbarActiveRef.current = customizeMainToolbarActive;
   const [webPaletteFallback, setWebPaletteFallback] = useState(false);
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
+  const [nativeToolsetLayoutReady, setNativeToolsetLayoutReady] = useState(false);
+  const [nativeToolsetStartupReady, setNativeToolsetStartupReady] = useState(false);
+  const [keptDrawingsStartupWaitExpired, setKeptDrawingsStartupWaitExpired] = useState(false);
+  const nativeToolsetsSuspendedForLaunchPrompt =
+    (nativeToolsetStartupReady || keptDrawingsStartupWaitExpired) && keptDrawingsPrompt !== undefined;
   const [webPalettePositions, setWebPalettePositions] = useState<Record<string, PalettePosition>>(() =>
     createDefaultToolsetPositions(desktopToolsetRegistry)
   );
@@ -2298,6 +2390,8 @@ export function MainWindow({
   const documentHistoryRef = useRef<DocumentHistory>(documentHistory);
   const documentUndoLabelsRef = useRef(new WeakMap<ChemDraftDocument, string>());
   const fileStateRef = useRef<NativeFileState>(fileState);
+  // Successful explicit saves, per tab, including a save completed while its label editor is open.
+  const documentSaveRevisionsRef = useRef(new Map<string, number>());
   // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
@@ -2306,6 +2400,8 @@ export function MainWindow({
   const shellOpenFailureRef = useRef<string | undefined>(undefined);
   const documentSessionSaveEnabledRef = useRef(false);
   const unrestoredSessionTabsRef = useRef<unknown[]>([]);
+  const [unrestoredSessionTabCount, setUnrestoredSessionTabCount] = useState(0);
+  const unrestoredTabFlowRunningRef = useRef(false);
   const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
   const lastExportDirectoryRef = useRef<string | undefined>(undefined);
@@ -2349,22 +2445,10 @@ export function MainWindow({
     setArrowEditTargetId(undefined);
   }, [activeToolState.activeCommandId]);
   const nativePaletteRef = useRef(nativePalette);
-  // Native owned palettes float above their document, including HTML dialogs.
-  // Suspend them for the lifetime of any modal without changing saved visibility.
+  // HTML dialogs share main's native counter with file panels, prompts and utility windows.
   useEffect(() => {
     if (!effectiveNativePalette) return;
-
-    const update = () => {
-      const suspended = window.document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
-      paletteSuspension.setHtmlModal(suspended);
-    };
-    const observer = new MutationObserver(update);
-    observer.observe(window.document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal"] });
-    update();
-    return () => {
-      observer.disconnect();
-      paletteSuspension.setHtmlModal(false);
-    };
+    return observeNativeUtilityModals(window.document).stop;
   }, [effectiveNativePalette]);
   const toolBeforeTextPlacementRef = useRef<ActiveToolState | undefined>(undefined);
   const toolBeforeEyedropperRef = useRef<ActiveToolState | undefined>(undefined);
@@ -2414,6 +2498,7 @@ export function MainWindow({
   const hintHoverTargetRef = useRef<ModifierHintContext["hoverTarget"]>(undefined);
   const [statusModifierHint, setStatusModifierHint] = useState("");
   const refreshModifierHintRef = useRef<() => void>(() => undefined);
+  const modifierHintInputsRef = useRef<string | undefined>(undefined);
   const agentPointerTargetsRef = useRef<Map<number, EventTarget>>(new Map());
   const agentRuntimeSourceRef = useRef("disabled");
   // The last template-tool hover (page point + tool/template identity + resolved target), so a
@@ -2689,25 +2774,23 @@ export function MainWindow({
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
     [labelDisplayPage, nativeDoubleBondSidePreview]);
-  const editorSvgDisplayPage = useMemo(() => {
-    const svgObjects = plannedDisplayPage.objects.filter((object) => editorPageSvgSurfaceIncludesObject(object));
-    if (svgObjects.length === plannedDisplayPage.objects.length) {
-      return plannedDisplayPage;
-    }
-
-    return { ...plannedDisplayPage, objects: svgObjects };
-  }, [plannedDisplayPage]);
+  // One full-page plan supplies both the native overlays and the ordered SVG runs.
+  // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
+  // their start geometry until the real document is rendered once on release.
   const pageSvgRenderPlan = useMemo(() =>
-    markFrame("planPageSvgRender", () => planPageSvgRender(editorSvgDisplayPage, { anchorResolutionPage: plannedDisplayPage })), [editorSvgDisplayPage, plannedDisplayPage]);
+    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage)), [plannedDisplayPage]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
-  const nativeMoleculeOverlayFragments = useMemo(() => {
+  const baseObjectOverlayFragments = useMemo(() => {
     const next = reuseUnchangedFragments(
       previousOverlayFragmentsRef.current,
-      markFrame("planNativeMoleculeOverlayRender", () => nativeMoleculeOverlayFragmentsByObjectId(plannedDisplayPage))
+      objectOverlayFragmentsByObjectId(pageSvgRenderPlan)
     );
     previousOverlayFragmentsRef.current = next;
     return next;
-  }, [plannedDisplayPage]);
+  }, [pageSvgRenderPlan]);
+  const objectOverlayFragments = useMemo(() => moveArrowPreviewFragments
+    ? new Map([...baseObjectOverlayFragments, ...moveArrowPreviewFragments])
+    : baseObjectOverlayFragments, [baseObjectOverlayFragments, moveArrowPreviewFragments]);
   const pageRulerUnit = useMemo(() => rulerUnitForPageLayout(activePage.layout), [activePage.layout.sourceUnit]);
   if (fileState.dirty || fileState.path || documentHistory.past.length || documentHistory.future.length || !documentIsBlank(document)) {
     nonPristineTabsRef.current.add(activeDocumentTabId);
@@ -2863,14 +2946,57 @@ export function MainWindow({
       textRange
     };
   }, [selectedNativeMoleculePart]);
+  const clearObjectTransformPreview = useCallback((pointerId?: number) => {
+    const retained = retainedObjectMoveRef.current;
+    if (retained && (pointerId === undefined || retained.pointerId === pointerId)) {
+      restoreRetainedObjectMoveTargets(retained.targets);
+      retainedObjectMoveRef.current = undefined;
+    }
+    if (!retained || pointerId === undefined || retained.pointerId === pointerId) {
+      setMoveArrowPreviewFragments(undefined);
+      setMoveArrowPreviewObjects(undefined);
+    }
+    const pendingPreview = pendingObjectTransformPreviewRef.current;
+    if (!pendingPreview || pointerId === undefined || pendingPreview.pointerId === pointerId) {
+      pendingObjectTransformPreviewRef.current = undefined;
+    }
+
+    if (objectTransformPreviewRafRef.current !== undefined) {
+      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+      objectTransformPreviewRafRef.current = undefined;
+    }
+
+    setObjectTransformPreview((current) => {
+      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
+        return current;
+      }
+      return undefined;
+    });
+  }, []);
+
   const installDocumentHistory = useCallback((history: DocumentHistory, switchingTabs = false) => {
+    // Retained moves never install preview documents. Any install while one is active
+    // replaces its source geometry, so disarm it before React updates the paint/chrome.
+    const drag = objectDragRef.current;
+    if (drag && !graphicObjectIdsForCssDragPreview(drag)) {
+      objectDragRef.current = null;
+      objectDragMachineRef.current = initialInteractionState();
+      clearObjectTransformPreview(drag.pointerId);
+      releaseGesturePointer(drag.pointerId);
+      setHoveredNativeAtom(undefined);
+      setShiftHoveredArrowId(undefined);
+      shiftHoveredArrowIdRef.current = undefined;
+      hoveredArrowIdRef.current = undefined;
+      hoverPagePointRef.current = undefined;
+      setArrowEditTargetId(undefined);
+    }
     documentHistoryRef.current = history;
     documentRef.current = history.present;
     // A switch restores its own selection below; the previous tab's inline text range and fragment
     // must not be captured as style targets for a document whose object ids may happen to match.
     if (!switchingTabs) updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
-  }, [updateToolbarStyleTargetSnapshot]);
+  }, [clearObjectTransformPreview, releaseGesturePointer, updateToolbarStyleTargetSnapshot]);
   // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
   // holds (an opened file's parse, or a newly created document), so the engine admits it without the
   // copy-and-reparse `toEngineDocument` would make — 150–200 ms per open of a 5,000-molecule file.
@@ -3077,6 +3203,7 @@ export function MainWindow({
         resolvedToolsetIdsRef.current = new Set(toolbarCatalog.registry().listToolsets().map((toolset) => toolset.id));
         layoutSaveEnabledRef.current = true;
         layoutHydratedRef.current = true;
+        setNativeToolsetLayoutReady(true);
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -3824,7 +3951,7 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeRingHotkeyResult
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -3885,9 +4012,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applyNativeCarbonylAtAtomTarget(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeCarbonylHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add C=O to hovered atom");
+      setStatus(`Cannot add C=O to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -3915,9 +4042,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const nextDocument = applySingleBondToolAtNativeAtom(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeSingleBondHotkeyAtAtomTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus("Cannot add a single bond to hovered atom");
+      setStatus(`Cannot add a single bond to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -4831,7 +4958,7 @@ export function MainWindow({
         const atomId = interactive3dAtomIdByIndexRef.current[bestIndex];
         if (atomId) {
           try {
-            event.currentTarget.setPointerCapture(event.pointerId);
+            captureGesturePointer(event.currentTarget, event.pointerId);
           } catch {
             /* best-effort */
           }
@@ -4866,7 +4993,7 @@ export function MainWindow({
     }
     // Inside the box: grab to rotate. Capture is best-effort.
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       /* ignore — pointer capture is an enhancement, not a requirement */
     }
@@ -5646,6 +5773,15 @@ export function MainWindow({
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
       startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
+      hotkeyAfterDocument: continuing?.hotkeyAfterDocument ?? options.hotkeyAfterDocument,
+      cancellation: continuing?.cancellation ?? {
+        document: documentRef.current,
+        intervened: !!options.hotkeyAfterDocument &&
+          !atomLabelDraftDocumentUnchanged(currentDocument, options.hotkeyAfterDocument, target)
+      },
+      saveRevision: continuing?.saveRevision ?? options.saveRevision ??
+        documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
+      hotkeyUndoState: continuing?.hotkeyUndoState ?? options.hotkeyUndoState,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
       ...(continuing
@@ -5679,6 +5815,7 @@ export function MainWindow({
     }
 
     replacePresentDocument((current) => {
+      state.cancellation.intervened ||= !atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
       // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
       // hydrogens, and are valence-checked without them. A side-dependent label typed back to its
       // starting text is written as it started (applyNativeAtomLabelDraft).
@@ -5695,6 +5832,7 @@ export function MainWindow({
       }
       return next;
     });
+    state.cancellation.document = documentRef.current;
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
@@ -5705,13 +5843,58 @@ export function MainWindow({
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
       return;
     }
-    // One targeted rollback: label fields (including recorded side), with current positions kept.
-    replacePresentDocument((current) => restoreAtomLabelDraft(current, state));
+    const ownsHotkeyHistory = state.continuesHotkey && state.hotkeyUndoState &&
+      documentHistoryRef.current.past.at(-1) === state.hotkeyUndoDocument;
+    const hotkeyCancellation = { cancelled: false };
+    // Cancel both stages only if nothing else edited the post-hotkey document. Otherwise keep the
+    // first letter and its history: an external change must never become part of our rollback.
+    const changed = replacePresentDocument((current) => {
+      if (!documentOwnsAtomLabelDraft(current, state)) {
+        state.cancellation.superseded = true;
+        return current;
+      }
+      const unchanged = !state.cancellation.intervened &&
+        atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
+      const restored = restoreAtomLabelDraft(current, state);
+      const afterHotkey = state.hotkeyAfterDocument;
+      if (!state.startedFromHover || !afterHotkey ||
+        (state.continuesHotkey && !ownsHotkeyHistory) || !unchanged) return restored;
+      const hotkeyMolecule = findDocumentObject(afterHotkey, state.objectId);
+      if (hotkeyMolecule?.type !== "molecule") return restored;
+      const hotkeyRollback: AtomLabelDraftState = {
+        objectId: state.objectId, atomId: state.atomId,
+        draftBeforeAtom: state.beforeAtom, draftBeforeMolecule: state.beforeMolecule,
+        draftRollback: createAtomLabelDraftRollback(state.beforeMolecule)
+      };
+      recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, hotkeyMolecule);
+      hotkeyCancellation.cancelled = true;
+      return restoreAtomLabelDraft(restored, hotkeyRollback);
+    });
+    // Remove our own first-letter entry rather than undoing it into Redo. A subsequent external
+    // commit owns its history; only the unchanged hotkey history line can be restored wholesale.
+    const history = documentHistoryRef.current;
+    const discardedHotkeyHistory = hotkeyCancellation.cancelled && ownsHotkeyHistory && state.hotkeyUndoState;
+    if (discardedHotkeyHistory) {
+      const present = history.present;
+      documentUndoLabelsRef.current.delete(present);
+      const previousLabel = documentUndoLabelsRef.current.get(discardedHotkeyHistory.history.present);
+      if (previousLabel) documentUndoLabelsRef.current.set(present, previousLabel);
+      installDocumentHistory({ ...discardedHotkeyHistory.history, present });
+    }
+    const savedDuringEdit = (documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0) !== state.saveRevision;
+    if (discardedHotkeyHistory || (changed && savedDuringEdit)) {
+      // A save may have changed the path as well as the saved chemistry. Preserve today's file
+      // association; only an edit with no intervening save can recover its pre-letter clean state.
+      const file = { ...fileStateRef.current,
+        dirty: savedDuringEdit ? true : discardedHotkeyHistory ? discardedHotkeyHistory.file.dirty : true };
+      fileStateRef.current = file;
+      setFileState(file);
+    }
     atomLabelEditKeepsSelectionRef.current = state;
     cancelledAtomLabelEditRef.current = state;
     setActiveAtomLabelEdit(undefined);
     setStatus("Atom label unchanged");
-  }, [replacePresentDocument]);
+  }, [installDocumentHistory, replacePresentDocument]);
 
   const finishAtomLabelEdit = useCallback((state: AtomLabelEditState, reason: AtomLabelFinishReason) => {
     // Keystrokes only write a draft; the close applies the decision once. A late blur (the input
@@ -5875,21 +6058,21 @@ export function MainWindow({
 
   const focusTextObjectEditorDom = useCallback((objectId: string) => {
     const editor = pageRef.current?.querySelector<HTMLTextAreaElement>(
-      `[data-object-id="${objectId}"] .text-object-editor`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) .text-object-editor`
     );
     if (!editor) {
       return;
     }
 
     editor.focus({ preventScroll: true });
-    if (editor.value === "Text") {
+    if (isTextPlaceholderPending(objectId)) {
       editor.select();
     }
-  }, []);
+  }, [isTextPlaceholderPending]);
 
   const focusAtomLabelEditorDom = useCallback((objectId: string, atomId: string) => {
     const editor = pageRef.current?.querySelector<HTMLInputElement>(
-      `[data-object-id="${cssEscapeIdentifier(objectId)}"] [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
+      `:is([data-object-id="${cssEscapeIdentifier(objectId)}"], [data-object-controls="${cssEscapeIdentifier(objectId)}"]) [data-atom-label-editor="true"][data-atom-id="${cssEscapeIdentifier(atomId)}"]`
     );
     // Already focused: leave it, so a retry never moves the caret the user is typing at.
     if (!editor || editor.ownerDocument.activeElement === editor) {
@@ -5976,6 +6159,7 @@ export function MainWindow({
     }
     restoreToolAfterTextPlacement();
     setActiveEditorObjectId(undefined);
+    pendingTextPlaceholderObjectIdRef.current = inserted?.id;
     setActiveTextEditObjectId(inserted?.id);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
@@ -6272,13 +6456,18 @@ export function MainWindow({
       // Lossy-copy warnings (dative bonds flattened, dummy-atom labels) ride the copy result so
       // the status bar never reports a silent success (AGENTS.md §6.7).
       const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
-      setStatus(didWrite ? `Copied ${label} to clipboard${warningSuffix}` : `Copy as ${label} failed: clipboard unavailable`);
+      setStatus(didWrite ? `Copied ${label} to clipboard${warningSuffix}` : `Copy as ${label} failed: clipboard unavailable${warningSuffix}`);
     };
 
     switch (commandId) {
       case "clipboard.copyAs.smiles": {
         const warnings: string[] = [];
-        await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
+        try {
+          await writeText(await copyAsSmiles(current, warnings), "SMILES", warnings);
+        } catch (error) {
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`Copy as SMILES failed: ${error instanceof Error ? error.message : String(error)}${warningSuffix}`);
+        }
         return;
       }
       case "clipboard.copyAs.mol": {
@@ -6428,6 +6617,9 @@ export function MainWindow({
   // unreliable). Whichever path ends the first edit of a newly placed object converts it.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (pendingTextPlaceholderObjectIdRef.current !== activeTextEditObjectId) {
+      pendingTextPlaceholderObjectIdRef.current = undefined;
+    }
     const previous = previousTextEditObjectIdRef.current;
     previousTextEditObjectIdRef.current = activeTextEditObjectId;
     if (!previous || previous === activeTextEditObjectId) {
@@ -6467,6 +6659,16 @@ export function MainWindow({
     focusTextObjectEditor(objectId);
     setStatus("Editing text");
   }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
+
+  const handleTextDoubleClick = useCallback((objectId: string, event: ObjectMouseEvent) => {
+    if (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text") {
+      return;
+    }
+    // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
+    event.preventDefault();
+    event.stopPropagation();
+    startTextObjectEdit(objectId);
+  }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     const currentDocument = documentRef.current;
@@ -7740,6 +7942,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
+    clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
     const preview = rotationInputRef.current ?? objectResizeInputRef.current ??
       artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current ??
@@ -7764,6 +7967,7 @@ export function MainWindow({
     for (const ref of pointerSessions) {
       const pointerId = ref.current?.pointerId;
       if (pointerId !== undefined) {
+        releaseGesturePointer(pointerId);
         for (const target of [pageRef.current, canvasRegionRef.current]) {
           if (target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
         }
@@ -7805,8 +8009,8 @@ export function MainWindow({
     hoverPagePointRef.current = undefined;
     resetFreehandArtPreviewPath(freehandArtPreviewPathRef.current);
     selectionClipboardPasteStateRef.current = undefined;
-  }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession,
-    replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
+  }, [cancelMoleculeInspectorPreview, cancelObjectStylePreview, cancelSpin3dSession, clearObjectTransformPreview,
+    releaseGesturePointer, replacePresentDocument, updateObjectResizeInput, updateRotationInput]);
 
   const clearDocumentInteractionState = useCallback((options: { clearSpin3dModelCache?: boolean } = {}) => {
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
@@ -7923,6 +8127,7 @@ export function MainWindow({
     let tabs = documentTabsRef.current;
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     // Closing the last document keeps the window open with a fresh document identity and history.
     if (tabs.length === 1) {
       newDocumentTab();
@@ -7972,19 +8177,14 @@ export function MainWindow({
     }
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
-  const openDocumentContents = useCallback((
+  const openDocumentContentsNow = useCallback(async (
     contents: string,
     displayName: string,
     path?: string,
-    options?: {
-      /** Restore-session path: the contents hold edits never written to `path`. */
-      dirty?: boolean;
-      /** Replaces the "Opened …" status line (e.g. "Restored last session — …"). */
-      statusOverride?: string;
-    }
+    options?: OpenDocumentContentsOptions
   ) => {
-    if (closeTabPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
-      // Wait for Save/Discard/Cancel and the startup restore before activating an OS open-with.
+    if (closeTabPromptRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+      // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       return;
     }
@@ -8000,7 +8200,7 @@ export function MainWindow({
       return;
     }
     const opened = openNativeDocument(contents);
-    const resolvedOpen = resolveOpenResultDocument(opened);
+    const resolvedOpen = await resolveOpenResultDocument(opened);
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -8030,21 +8230,40 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+  const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
+  openDocumentContentsNowRef.current = openDocumentContentsNow;
+  const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
+  // file must wait and then find the tab the first one made, not add a second tab for one path.
+  const openDocumentContents = useCallback((
+    contents: string,
+    displayName: string,
+    path?: string,
+    options?: OpenDocumentContentsOptions
+  ): Promise<void> => {
+    const run = documentOpenQueueRef.current.then(() =>
+      openDocumentContentsNowRef.current(contents, displayName, path, options));
+    documentOpenQueueRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
 
   const openDocumentContentsRef = useRef(openDocumentContents);
   openDocumentContentsRef.current = openDocumentContents;
 
   useEffect(() => {
-    if (closeTabPrompt || !documentSessionHydratedRef.current) return;
+    if (closeTabPrompt || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
     const opens = pendingDocumentOpensRef.current.splice(0);
-    for (const request of opens) {
-      try {
-        openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-      } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+    void (async () => {
+      for (const request of opens) {
+        try {
+          await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+        } catch (error) {
+          setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
-    }
-  }, [closeTabPrompt]);
+    })();
+  }, [closeTabPrompt, keptDrawingsPrompt]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -8084,7 +8303,7 @@ export function MainWindow({
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     for (const path of paths) {
       try {
-        openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
+        await openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -8118,7 +8337,7 @@ export function MainWindow({
 
     try {
       const contents = await readNativeTextFile(path);
-      openDocumentContents(contents, nativePathBasename(path), path);
+      await openDocumentContents(contents, nativePathBasename(path), path);
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -8129,14 +8348,14 @@ export function MainWindow({
       return undefined;
     }
 
-    const openPayloadFromHash = () => {
+    const openPayloadFromHash = async () => {
       const payload = agentBridgeDocumentPayloadFromHash();
       if (!payload) {
         return;
       }
 
       try {
-        openDocumentContents(payload.contents, payload.displayName, payload.path);
+        await openDocumentContents(payload.contents, payload.displayName, payload.path);
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -8156,7 +8375,7 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    const openNativePayload = (payload: NativeOpenDocumentPayload) => {
+    const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
       const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
       const now = Date.now();
       const last = lastNativeOpenPayloadKeyRef.current;
@@ -8168,7 +8387,7 @@ export function MainWindow({
       }
       lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
       try {
-        openDocumentContents(payload.contents, payload.displayName, payload.path);
+        await openDocumentContents(payload.contents, payload.displayName, payload.path);
       } catch (error) {
         const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
         setStatus(failure);
@@ -8212,7 +8431,7 @@ export function MainWindow({
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
-  // tabs. Unreadable tabs stay in the envelope; a wholly unreadable session keeps autosave closed.
+  // tabs. Unreadable tabs stay in the envelope; an unreadable envelope keeps autosave closed.
   useEffect(() => {
     if (documentSessionHydratedRef.current) {
       return undefined;
@@ -8224,44 +8443,49 @@ export function MainWindow({
 
     let active = true;
     void loadDocumentSession()
-      .then((raw) => {
+      .then(async (raw) => {
         if (!active) {
           return;
         }
         // Only a completed restore (or an absent/pristine session) is a clean read.
-        // A parser or document-open failure must leave autosave closed.
-        const restore = () => {
+        // An unreadable outer envelope must leave autosave closed; raw tabs remain recoverable.
+        const restore = async () => {
           const envelope = parseDocumentSessionEnvelope(raw);
           if (!envelope) {
             if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope");
             return;
           }
           if (!shouldRestoreDocumentSession(envelope)) return;
+          const shellOpenFailure = shellOpenFailureRef.current;
+          shellOpenFailureRef.current = undefined;
+          const skipped: unknown[] = [];
+          const restored = [];
+          for (const [candidateIndex, rawTab] of documentSessionRestoreCandidates(envelope).entries()) {
+            try {
+              const session = parseDocumentSessionEnvelope(rawTab, true);
+              if (!session) throw new Error("Unreadable tab envelope");
+              const opened = openNativeDocument(session.contents);
+              const resolved = await resolveOpenResultDocument(opened);
+              if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+              const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
+              restored.push({ session, opened, resolved, history, candidateIndex, id: crypto.randomUUID() });
+            } catch {
+              skipped.push(rawTab);
+            }
+          }
+          if (!active) return;
           const pristine = documentTabsRef.current.length === 1
             && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
             && !fileStateRef.current.path
             && !fileStateRef.current.dirty
             && documentIsBlank(documentRef.current);
-          const shellOpenFailure = shellOpenFailureRef.current;
-          shellOpenFailureRef.current = undefined;
-          const sessions = envelope.tabs ?? [envelope];
-          const skipped = [...(envelope.unrestoredTabs ?? [])];
-          const restored = sessions.flatMap((session) => {
-            try {
-              const opened = openNativeDocument(session.contents);
-              const resolved = resolveOpenResultDocument(opened);
-              if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
-              const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              return [{ session, opened, resolved, history, id: crypto.randomUUID() }];
-            } catch {
-              skipped.push(rawDocumentSessionTab(session));
-              return [];
-            }
-          });
-          if (!restored.length) throw new Error("No readable document tabs");
           unrestoredSessionTabsRef.current = skipped;
-          const restoreNotice = skipped.length
-            ? `; ${skipped.length} ${skipped.length === 1 ? "tab could" : "tabs could"} not be restored` : "";
+          setUnrestoredSessionTabCount(skipped.length);
+          const restoreNotice = unrestoredTabsNotice(skipped.length);
+          if (!restored.length) {
+            setStatus(`Could not restore the last session${restoreNotice}`);
+            return;
+          }
           const restoredTabs = restored.map(({ id, session }) => ({ id, title: session.displayName }));
           let tabs: Array<{ id: string; title: string }> = restoredTabs;
           if (!pristine) {
@@ -8287,11 +8511,12 @@ export function MainWindow({
           documentTabsRef.current = tabs;
           setDocumentTabs(tabs);
           if (pristine) {
-            const selected = restored.find(({ session }) => session === sessions[envelope.activeTabIndex ?? 0]) ?? restored[0]!;
+            const selected = restored.find(({ candidateIndex }) => candidateIndex === (envelope.activeTabIndex ?? 0)) ?? restored[0]!;
             installDocumentTab(selected.id);
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
         };
-        restore();
+        await restore();
+        if (!active) return;
         documentSessionSaveEnabledRef.current = true;
       })
       .catch(() => {
@@ -8300,13 +8525,18 @@ export function MainWindow({
         // document. Editing is unaffected; only the session file is left alone.
         setStatus("Could not read the last session; this session will not be autosaved");
       })
-      .finally(() => {
+      .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (unrestoredSessionTabsRef.current.length) {
+            keptDrawingsPromptRef.current = "notice";
+            setKeptDrawingsPrompt("notice");
+            return;
+          }
           const opens = pendingDocumentOpensRef.current.splice(0);
           for (const request of opens) {
             try {
-              openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
+              await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
             } catch (error) {
               setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
             }
@@ -8409,8 +8639,8 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
-  // Off macOS, closing the document window (or File ▸ Exit) quits the app. Rust asks for the pending
-  // autosave first: without this, an edit made inside the debounce window was lost on relaunch.
+  // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
+  // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
     if (!isDesktopRuntime()) {
       return undefined;
@@ -8533,12 +8763,145 @@ export function MainWindow({
     });
   }, []);
 
+  const updateUnrestoredTabNotices = useCallback((previousCount: number) => {
+    const previousNotice = unrestoredTabsNotice(previousCount);
+    if (!previousNotice) return;
+    const notice = unrestoredTabsNotice(unrestoredSessionTabsRef.current.length);
+    // Switching back to a restored tab must not resurrect an obsolete recovery notice.
+    for (const [id, snapshot] of documentTabSnapshotsRef.current) {
+      documentTabSnapshotsRef.current.set(id, { ...snapshot, status: snapshot.status.replace(previousNotice, notice) });
+    }
+  }, []);
+
+  const saveUnrestoredTabs = useCallback(async () => {
+    if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
+    unrestoredTabFlowRunningRef.current = true;
+    setKeptDrawingsMessage(undefined);
+    let saved = 0;
+    let canceled = false;
+    const failures: string[] = [];
+    try {
+      const carried = [...unrestoredSessionTabsRef.current];
+      for (const [index, rawTab] of carried.entries()) {
+        const name = unrestoredTabDisplayName(rawTab, index);
+        try {
+          const contents = unrestoredTabContents(rawTab);
+          let filename = nativePathBasename(name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "");
+          if (!filename) filename = `Kept drawing ${index + 1}`;
+          if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) filename = `_${filename}`;
+          const extension = filename.match(/\.([a-z0-9]+)$/i)?.[1] ?? "chemdraft";
+          if (!/\.[a-z0-9]+$/i.test(filename)) filename += `.${extension}`;
+          const path = await pickNativeSavePath(filename, { title: `Save Drawing — ${name}`, extension });
+          if (!path) {
+            canceled = true;
+            break;
+          }
+          // Write exactly the chosen path: changing its extension after the save prompt could
+          // overwrite a different file which the picker never asked the user about.
+          await writeNativeTextFile(path, contents);
+          const previousCount = unrestoredSessionTabsRef.current.length;
+          const position = unrestoredSessionTabsRef.current.indexOf(rawTab);
+          if (position >= 0) unrestoredSessionTabsRef.current.splice(position, 1);
+          setUnrestoredSessionTabCount(unrestoredSessionTabsRef.current.length);
+          saved += 1;
+          await writeDocumentSessionNow({ strict: true });
+          updateUnrestoredTabNotices(previousCount);
+        } catch (error) {
+          failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const message = `Saved ${saved} ${saved === 1 ? "drawing" : "drawings"}; ${unrestoredSessionTabsRef.current.length} kept for later${canceled ? " (save canceled)" : ""}${failures.length ? `. Save failed: ${failures.join("; ")}` : ""}`;
+      setStatus(message);
+      setKeptDrawingsMessage(message);
+      return !unrestoredSessionTabsRef.current.length;
+    } finally {
+      unrestoredTabFlowRunningRef.current = false;
+    }
+  }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
+
+  const discardUnrestoredTabs = useCallback(async () => {
+    if (unrestoredTabFlowRunningRef.current || !unrestoredSessionTabsRef.current.length) return;
+    unrestoredTabFlowRunningRef.current = true;
+    setKeptDrawingsMessage(undefined);
+    const carried = [...unrestoredSessionTabsRef.current];
+    try {
+      unrestoredSessionTabsRef.current = [];
+      setUnrestoredSessionTabCount(0);
+      await writeDocumentSessionNow({ strict: true });
+      updateUnrestoredTabNotices(carried.length);
+      setStatus(`Deleted ${carried.length} kept ${carried.length === 1 ? "drawing" : "drawings"}`);
+      return true;
+    } catch (error) {
+      // A failed session write is not a completed discard. Keep the data available to retry.
+      unrestoredSessionTabsRef.current = carried;
+      setUnrestoredSessionTabCount(carried.length);
+      const message = `Delete failed; the drawings are kept for later: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message);
+      setKeptDrawingsMessage(message);
+      return false;
+    } finally {
+      unrestoredTabFlowRunningRef.current = false;
+    }
+  }, [updateUnrestoredTabNotices, writeDocumentSessionNow]);
+
+  // One summary box owns the whole chain: each raw drawing gets its own save panel.
+  // A failed native box safely keeps the drawings; this launch flow has no React dialog fallback.
+  const keptDrawingsTitle = `${unrestoredSessionTabCount} ${unrestoredSessionTabCount === 1 ? "drawing didn't" : "drawings didn't"} open`;
+  const keptDrawingNames = unrestoredSessionTabsRef.current.map(unrestoredTabDisplayName).join("\n");
+  // Suspension makes open_toolset_window skip creation and report closed. Let startup reconcile
+  // finish (or establish a genuine fallback) before the launch box can acquire that suspension.
+  // Bound only the prompt's wait, not native setup: 1 s allows the reconciler's two 200 ms retry
+  // delays plus 600 ms for layout/IPC. A stalled IPC must not indefinitely lock commands and opens.
+  const keptDrawingsPromptReady = !effectiveNativePalette || !isDesktopRuntime()
+    || nativeToolsetStartupReady || keptDrawingsStartupWaitExpired;
+  useEffect(() => {
+    if (!keptDrawingsPrompt || keptDrawingsPromptReady) return;
+    const timer = window.setTimeout(() => setKeptDrawingsStartupWaitExpired(true), 1000);
+    return () => window.clearTimeout(timer);
+  }, [keptDrawingsPrompt, keptDrawingsPromptReady]);
+  useNativePrompt({
+    title: keptDrawingsTitle,
+    message: [
+      `${unrestoredSessionTabCount === 1 ? "Its drawing is" : "Their drawings are"} kept, but this version of ChemDraft can't show ${unrestoredSessionTabCount === 1 ? "it" : "them"}. It may have been saved by a newer ChemDraft, or the data may be damaged.`,
+      keptDrawingNames,
+      "Choose Save Drawing… to save each drawing, or Delete to delete the kept drawings.\nCancel keeps the drawings for the next launch.",
+      keptDrawingsMessage
+    ].filter(Boolean).join("\n\n"),
+    kind: "warning",
+    choices: [
+      { id: "save", label: "Save Drawing…" },
+      { id: "delete", label: "Delete", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async (choice) => {
+    if (choice === "cancel") { setKeptDrawingsPrompt(undefined); return; }
+    if (choice === "save") {
+      if (await saveUnrestoredTabs()) { setKeptDrawingsPrompt(undefined); return; }
+    } else if (choice === "delete") {
+      const confirmed = await nativePrompt({
+        title: "Delete the kept drawing?",
+        message: `Delete the kept drawing? This cannot be undone.\n\n${unrestoredSessionTabsRef.current.map(unrestoredTabDisplayName).join("\n")}`,
+        kind: "warning",
+        choices: [
+          { id: "delete", label: "Delete", destructive: true },
+          { id: "cancel", label: "Cancel", cancel: true }
+        ]
+      }, async () => "cancel");
+      if (confirmed === "delete" && await discardUnrestoredTabs()) {
+        setKeptDrawingsPrompt(undefined);
+        return;
+      }
+    }
+    return false;
+  }, keptDrawingsPromptReady ? keptDrawingsPrompt : undefined, true, async () => "cancel");
+
   const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
     const savingTabId = activeDocumentTabIdRef.current;
     const savingDocument = documentRef.current;
     const savingFileState = fileStateRef.current;
     const payload = createNativeSavePayload(documentForFlush());
     const finishSave = (path?: string) => {
+      documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
@@ -8586,19 +8949,39 @@ export function MainWindow({
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
-    if (!id || closeTabSaving) return;
+    if (!id || closeTabSaving) return false;
     setCloseTabSaving(true);
     try {
       if (await saveCurrentDocument(false)) {
         const file = id === activeDocumentTabIdRef.current ? fileStateRef.current :
           documentTabSnapshotsRef.current.get(id)?.file;
-        if (file && !file.dirty) removeDocumentTab(id);
+        if (file && !file.dirty) { removeDocumentTab(id); return true; }
         else setCloseTabSaveMessage("The document changed while saving. Save again to close this tab.");
       }
     } finally {
       setCloseTabSaving(false);
     }
+    return false;
   }, [closeTabSaving, removeDocumentTab, saveCurrentDocument]);
+
+  const closePrompt = useNativePrompt({
+    title: "Save changes before closing?",
+    message: `Save the changes to ${documentTabs.find((tab) => tab.id === closeTabPrompt)?.title}?${closeTabSaveMessage ? `\n\n${closeTabSaveMessage}` : ""}`,
+    kind: "warning",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async (choice) => {
+    const id = closeTabPromptRef.current;
+    if (!id) return;
+    if (choice === "cancel") setCloseTabPrompt(undefined);
+    else if (choice === "discard") removeDocumentTab(id);
+    else {
+      return await saveAndCloseDocumentTab() ? undefined : false;
+    }
+  }, closeTabPrompt, true);
 
   const openExportDialog = useCallback(() => {
     setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
@@ -9326,7 +9709,7 @@ export function MainWindow({
     viewActions.forEach((action) => {
       register(action, () => {
         if (action.id === "help.about") {
-          void withToolsetWindowsSuspended(() => showAboutDialog()).catch(() => setStatus("About unavailable"));
+          void withNativeUtilitySuspension(() => showAboutDialog()).catch(() => setStatus("About unavailable"));
           return;
         }
         if (action.id === PREFERENCES_COMMAND_ID) {
@@ -9336,7 +9719,7 @@ export function MainWindow({
               : "Preferences pop-up blocked");
             return;
           }
-          void withToolsetWindowsSuspended(() => togglePreferencesWindow()).catch(() => {
+          void withNativeUtilitySuspension(() => togglePreferencesWindow()).catch(() => {
             setStatus("Preferences unavailable");
           });
           return;
@@ -9457,6 +9840,8 @@ export function MainWindow({
     resetDocumentHistory,
     restoreDocumentHistory,
     restoreToolAfterEyedropper,
+    restoreToolAfterTextPlacement,
+    startTextObjectEdit,
     runMolecularProperties,
     saveCurrentDocument,
     selectAllCanvasObjects,
@@ -9570,7 +9955,8 @@ export function MainWindow({
   const pluginRuntime = usePluginRuntime({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
-    getActiveDocumentTab: () => documentTabsRef.current.find((tab) => tab.id === activeDocumentTabIdRef.current)!,
+    getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
+    getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
     getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
@@ -9603,6 +9989,7 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  pluginRuntimeRef.current = pluginRuntime.runtime;
 
   // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
   // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
@@ -9893,10 +10280,11 @@ export function MainWindow({
   // reopens the window after the user closes it with proposals still waiting.
   const [proposalReview, setProposalReview] = useState({ pending: 0, windowOpen: false });
   const proposalDocumentName = useCallback((proposal: QueuedProposedPatch): string | undefined => {
-    if (documentTabs.length < 2) return undefined;
     const owner = pluginRuntime.runtime.proposalDocumentTab(proposal.id);
     if (!owner) return "Unavailable document";
-    return documentTabs.find((tab) => tab.id === owner.id)?.title ?? `${owner.title} (closed)`;
+    const tab = documentTabs.find((tab) => tab.id === owner.id);
+    if (!tab) return `${owner.title} (closed)`;
+    return documentTabs.length < 2 ? undefined : tab.title;
   }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
     (open: boolean, focus: boolean): Promise<boolean> => {
@@ -10033,6 +10421,7 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (keptDrawingsPromptRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
@@ -10387,6 +10776,8 @@ export function MainWindow({
     // including any part of this molecule, while discarding selection introduced only by the editor.
     // With nothing selected beforehand, element keys over empty canvas have no atom to fall back to.
     const deliberateClose = kept?.objectId === previous.objectId && kept.atomId === previous.atomId;
+    // A same-atom external label wins wholesale, including its document selection.
+    if (cancelled?.cancellation.superseded) return;
     if (deliberateClose && !previous.startedFromHover) return;
     restoreSelectionAfterAtomLabelEdit(previous, deliberateClose && previous.startedFromHover);
   }, [activeAtomLabelEdit, finalizeAtomLabelDraft, restoreSelectionAfterAtomLabelEdit]);
@@ -10642,15 +11033,8 @@ export function MainWindow({
 
     freehandArtDragRef.current = null;
     clearFreehandArtPreview();
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, [clearFreehandArtPreview]);
+    releaseGesturePointer(drag.pointerId);
+  }, [clearFreehandArtPreview, releaseGesturePointer]);
 
   const syncPathArtPreview = useCallback((draw: PathArtDrawState | null) => {
     setPathArtPreview(draw
@@ -10666,9 +11050,11 @@ export function MainWindow({
 
   const clearNativePathArtDraw = useCallback(() => {
     pathArtDrawRef.current = null;
+    const drag = bezierArtNodeDragRef.current;
     bezierArtNodeDragRef.current = null;
+    if (drag) releaseGesturePointer(drag.pointerId);
     syncPathArtPreview(null);
-  }, [syncPathArtPreview]);
+  }, [releaseGesturePointer, syncPathArtPreview]);
 
   const activateSelectToolAfterArtCommit = useCallback(() => {
     const selectToolState = createActiveToolState("tool.select");
@@ -10755,7 +11141,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
-        options.currentTarget?.setPointerCapture(options.pointerId);
+        captureGesturePointer(options.currentTarget, options.pointerId);
       }
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
@@ -10795,7 +11181,7 @@ export function MainWindow({
         latestPoint: point,
         dragging: false
       };
-      options.currentTarget?.setPointerCapture(options.pointerId);
+      captureGesturePointer(options.currentTarget, options.pointerId);
     }
     syncPathArtPreview(current);
     setStatus(pathArtDrawStatusLabel(pathKind, current.nodes.length));
@@ -10850,15 +11236,8 @@ export function MainWindow({
     }
 
     bezierArtNodeDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   useEffect(() => {
     const draw = pathArtDrawRef.current;
@@ -10875,32 +11254,34 @@ export function MainWindow({
 
     objectTransformPreviewRafRef.current = window.requestAnimationFrame(() => {
       objectTransformPreviewRafRef.current = undefined;
-      setObjectTransformPreview(pendingObjectTransformPreviewRef.current);
-    });
-  }, []);
-
-  const clearObjectTransformPreview = useCallback((pointerId?: number) => {
-    const pendingPreview = pendingObjectTransformPreviewRef.current;
-    if (!pendingPreview || pointerId === undefined || pendingPreview.pointerId === pointerId) {
-      pendingObjectTransformPreviewRef.current = undefined;
-    }
-
-    if (objectTransformPreviewRafRef.current !== undefined) {
-      window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
-      objectTransformPreviewRafRef.current = undefined;
-    }
-
-    setObjectTransformPreview((current) => {
-      if (!current || (pointerId !== undefined && current.pointerId !== pointerId)) {
-        return current;
+      const preview = pendingObjectTransformPreviewRef.current;
+      if (preview?.retainedMove) {
+        const cached = retainedObjectMoveRef.current;
+        if (cached && (cached.pointerId !== preview.pointerId || cached.targets.some(target => !target.element.isConnected))) {
+          restoreRetainedObjectMoveTargets(cached.targets);
+          retainedObjectMoveRef.current = undefined;
+        }
+        retainedObjectMoveRef.current ??= {
+          pointerId: preview.pointerId,
+          targets: retainedObjectMoveTargets(pageRef.current, preview.objectIds, preview.arrowPreviewFragments)
+        };
+        translateRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets, preview.translateX, preview.translateY);
+        if (preview.arrowPreviewFragments) {
+          setMoveArrowPreviewFragments(preview.arrowPreviewFragments);
+          setMoveArrowPreviewObjects(preview.arrowPreviewObjects);
+        }
+      } else {
+        setObjectTransformPreview(preview);
       }
-      return undefined;
     });
   }, []);
 
   useEffect(() => () => {
     if (objectTransformPreviewRafRef.current !== undefined) {
       window.cancelAnimationFrame(objectTransformPreviewRafRef.current);
+    }
+    if (retainedObjectMoveRef.current) {
+      restoreRetainedObjectMoveTargets(retainedObjectMoveRef.current.targets);
     }
   }, []);
 
@@ -10911,15 +11292,8 @@ export function MainWindow({
     }
 
     projectedPlaneTiltDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   /** Abandon an in-flight placement and restore the document it started from. Defined ahead of the
    *  keydown effect that calls it, so the effect's dependency list can name it. */
@@ -10929,11 +11303,9 @@ export function MainWindow({
       return;
     }
     nativePlacementDragRef.current = null;
-    // The capture lives on the page element, or on the object the press began on, and a key event
-    // can address neither. Dropping the ref is what matters: the pointerup then finds no drag and
-    // commits nothing, and the browser releases the capture with it.
+    releaseGesturePointer(drag.pointerId);
     replacePresentDocument(drag.startDocument);
-  }, [replacePresentDocument]);
+  }, [releaseGesturePointer, replacePresentDocument]);
 
   /** Abandon an in-flight electron-push-arrow drag before it commits. Defined ahead of the
    *  keydown effect that calls it, so the effect's dependency list can name it. */
@@ -10944,11 +11316,75 @@ export function MainWindow({
     }
     mechanismArrowDragRef.current = null;
     setMechanismArrowPreview(undefined);
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
+
+  // Snapshot previews enter history only on pointerup. Escape must also disarm the session
+  // and discard the deferred CSS preview used by graphics.
+  const cancelSelectionPointerGesture = useCallback((): string | undefined => {
+    const sessions = [
+      [objectDragRef, "Move"],
+      [nativePartDragRef, "Move"],
+      [objectResizeDragRef, "Resize"],
+      [textResizeRef, "Resize"],
+      [objectRotateDragRef, "Rotate"],
+      [groupTransformDragRef, "Transform"],
+      [graphicPathEditDragRef, "Path edit"],
+      [graphicMarkerDragRef, "Arrowhead edit"],
+      [graphicGradientDragRef, "Gradient edit"],
+      [mechanismHandleDragRef, "Electron push arrow edit"],
+      [nativeBondEditDragRef, "Bond edit"]
+    ] as const;
+    for (const [ref, label] of sessions) {
+      const drag = ref.current;
+      if (!drag) continue;
+      ref.current = null;
+      replacePresentDocument(drag.startDocument);
+      clearObjectTransformPreview(drag.pointerId);
+      objectDragMachineRef.current = initialInteractionState();
+      objectRotateMachineRef.current = initialInteractionState();
+      groupTransformMachineRef.current = initialInteractionState();
+      setObjectResizeReadout(undefined);
+      setObjectRotateReadout(undefined);
+      setProjectedPlaneTiltReadout(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      releaseGesturePointer(drag.pointerId);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setShiftHoveredArrowId(undefined);
+      shiftHoveredArrowIdRef.current = undefined;
+      hoveredArrowIdRef.current = undefined;
+      hoverPagePointRef.current = undefined;
+      setArrowEditTargetId(undefined);
+      return `${label} canceled`;
     }
-  }, []);
+    const region = selectionLassoRef.current ?? selectionMarqueeRef.current;
+    if (region) {
+      setSelectedNativeMoleculeParts(region.startNativeSelections);
+      selectionLassoRef.current = null;
+      selectionMarqueeRef.current = null;
+      lassoMachineRef.current = initialInteractionState();
+      marqueeMachineRef.current = initialInteractionState();
+      setSelectionLasso(undefined);
+      setSelectionMarquee(undefined);
+      setEraserSweepPreview(undefined);
+      releaseGesturePointer(region.pointerId);
+      assignHoveredNativeDeleteTarget(undefined);
+      setHoveredNativeAtom(undefined);
+      return "Selection canceled";
+    }
+    if (nativeBondDragRef.current) {
+      const pointerId = nativeBondDragRef.current.pointerId;
+      nativeBondDragRef.current = null;
+      releaseGesturePointer(pointerId);
+      setNativeDoubleBondSidePreview(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setHoveredNativeAtom(undefined);
+      return "Bond canceled";
+    }
+    return undefined;
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, releaseGesturePointer, replacePresentDocument]);
 
   const clearTapeMeasureDrag = useCallback((event?: { pointerId: number; currentTarget?: Element }) => {
     const drag = tapeMeasureDragRef.current;
@@ -10957,15 +11393,8 @@ export function MainWindow({
     }
 
     tapeMeasureDragRef.current = null;
-    const page = pageRef.current;
-    if (page?.hasPointerCapture(drag.pointerId)) {
-      page.releasePointerCapture(drag.pointerId);
-    }
-    const currentTarget = event?.currentTarget;
-    if (currentTarget?.hasPointerCapture(drag.pointerId)) {
-      currentTarget.releasePointerCapture(drag.pointerId);
-    }
-  }, []);
+    releaseGesturePointer(drag.pointerId);
+  }, [releaseGesturePointer]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -11019,16 +11448,20 @@ export function MainWindow({
         hoverLabelAssignmentRef.current = undefined;
       }
 
+      // A menu opened by keyboard during a drag owns this Escape, even if the canvas's
+      // window listener runs before the menu's listener. Leave the gesture armed.
+      if (event.key === "Escape" &&
+          window.document.querySelector('[role="menubar"] [aria-expanded="true"]')) {
+        return;
+      }
+
       if (event.key === "Escape" && graphicCornerRadiusDragRef.current) {
         const graphicCornerRadiusDrag = graphicCornerRadiusDragRef.current;
         event.preventDefault();
         replacePresentDocument(graphicCornerRadiusDrag.startDocument);
         graphicCornerRadiusDragRef.current = null;
         setGraphicCornerRadiusReadout(undefined);
-        const page = pageRef.current;
-        if (page?.hasPointerCapture(graphicCornerRadiusDrag.pointerId)) {
-          page.releasePointerCapture(graphicCornerRadiusDrag.pointerId);
-        }
+        releaseGesturePointer(graphicCornerRadiusDrag.pointerId);
         setStatus("Corner radius canceled");
         return;
       }
@@ -11128,6 +11561,15 @@ export function MainWindow({
         return;
       }
 
+      if (event.key === "Escape") {
+        const canceled = cancelSelectionPointerGesture();
+        if (canceled) {
+          event.preventDefault();
+          setStatus(canceled);
+          return;
+        }
+      }
+
       if (
         event.key === "Escape" &&
         activeToolCommandIdRef.current !== "tool.select" &&
@@ -11190,7 +11632,9 @@ export function MainWindow({
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
-            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument
+            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
+            hotkeyUndoState: assignment.hotkeyUndoState,
+            hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -11210,6 +11654,8 @@ export function MainWindow({
           const beforeAtom = beforeObject?.type === "molecule" && hoveredTarget?.kind === "atom"
             ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
           const beforeHotkeyDocument = documentRef.current;
+          const hotkeyUndoState = { history: documentHistoryRef.current, file: fileStateRef.current };
+          const saveRevision = documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0;
           invokeCommandRef.current(hoveredTargetCommandId);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
@@ -11224,7 +11670,9 @@ export function MainWindow({
               const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
               hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
                 beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
-                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined };
+                hotkeyAfterDocument: documentRef.current, saveRevision,
+                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
+                hotkeyUndoState: hotkeyChanged ? hotkeyUndoState : undefined };
             }
           }
           return;
@@ -11254,6 +11702,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
     clearNativeFreehandArtDrag,
@@ -11397,8 +11846,10 @@ export function MainWindow({
     window.addEventListener("focusout", refreshAfterEvent, true);
     window.addEventListener("blur", clearModifiers);
     window.document.addEventListener("visibilitychange", onVisibility);
+    const unsubscribeModalChanges = subscribeToModalDialogChanges(refreshAfterEvent);
     return () => {
       mounted = false;
+      unsubscribeModalChanges();
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("keyup", onKey, true);
       for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"] as const) {
@@ -11487,7 +11938,25 @@ export function MainWindow({
       return;
     }
 
+    // The saved layout may add visible toolsets after the first render. Reconcile that layout
+    // before allowing the kept-drawings launch prompt to suspend native window creation.
+    if (!nativeToolsetLayoutReady) {
+      return;
+    }
+    // A plugin or a timed-out layout/IPC can finish while the box is open. Its hidden windows are
+    // healthy; cancel/defer reconciliation until the launch sequence releases them instead of
+    // counting suspension's refusal to create/reveal windows as genuine failures.
+    if (nativeToolsetsSuspendedForLaunchPrompt) {
+      return;
+    }
+
     let cancelled = false;
+    const useFallback = () => {
+      if (cancelled) return;
+      setWebPaletteFallback(true);
+      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
+      setStatus("Native toolset windows unavailable; using in-window toolbars");
+    };
     void reconcileNativePaletteWindows({
       listToolsetWindowStates,
       openToolsetWindow: (toolsetId) => openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId)),
@@ -11500,30 +11969,28 @@ export function MainWindow({
         return;
       }
       if (result.outcome === "native") {
+        setNativeToolsetStartupReady(true);
         // Do NOT narrow visibleToolsetIds to the set that actually opened. If one palette missed its
         // creating frame (is_visible() briefly false) while others opened, the reconciler returns a
         // partial openedToolsetIds; overwriting the desired set with it — and then persisting that —
         // would permanently drop that palette. The desired set stays authoritative.
         //
-        // A partial set now means the reconciler retried that palette and it still would not open,
-        // because it keeps going until the whole desired set is up. This effect cannot be the retry:
-        // its deps are native mode and the registry, and it reads the desired set from a ref, so
-        // nothing re-runs it when an open fails.
+        // A partial set means the reconciler retried that palette and it still would not open.
+        // Registry changes and the end of the launch prompt can reconcile again; an individual
+        // open failure does not re-run the effect, so the reconciler itself owns retries.
         return;
       }
       // Retries exhausted — native windows are genuinely unavailable, so show in-window toolbars
       // rather than leaving the app with no toolbars at all. (A transient startup miss no longer
       // lands here; reconcileNativePaletteWindows retries first so it can't permanently trap the
       // palettes in the viewport.)
-      setWebPaletteFallback(true);
-      setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
-      setStatus("Native toolset windows unavailable; using in-window toolbars");
-    });
+      useFallback();
+    }).catch(useFallback);
 
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
@@ -11893,7 +12360,7 @@ export function MainWindow({
     void file
       .text()
       .then((contents) => {
-        openDocumentContents(contents, file.name);
+        return openDocumentContents(contents, file.name);
       })
       .catch((error: unknown) => {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -11933,7 +12400,7 @@ export function MainWindow({
       startY: position.y
     };
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, [toolsetRegistry, webPalettePositions]);
 
   const moveWebPalette = useCallback((event: PointerEvent<HTMLElement>) => {
@@ -12087,7 +12554,7 @@ export function MainWindow({
     templatePreviewKeyRef.current = undefined;
     templatePreviewTargetKeyRef.current = undefined;
     templatePreviewPlanRef.current = undefined;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
     return true;
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument]);
 
@@ -12247,10 +12714,18 @@ export function MainWindow({
       return;
     }
 
+    // A non-molecule glyph in front owns the pointer. Do not highlight or sprout a
+    // hidden atom beneath it; pointer hits and hover must describe the same drawing.
+    const ownerElement = eventTarget instanceof Element
+      ? eventTarget.closest("[data-page-svg-object-visual], [data-object-id]") : null;
+    const ownerId = ownerElement?.getAttribute("data-page-svg-object-visual") ?? ownerElement?.getAttribute("data-object-id");
+    const owner = ownerId ? findDocumentObject(sourceDocument, ownerId) : undefined;
+    const overNonMolecule = owner !== undefined && (owner.type !== "molecule" || !isNativeMoleculeGraph(owner));
+
     // Ring/template tools resolve the hover with the bond-preferring template resolver (purely
     // geometric) so the highlight matches what a click will fuse/attach. Every other tool keeps
     // the generic atom-first hover (with its DOM tiebreak) unchanged.
-    const target = activeNativeTemplateId
+    const target = overNonMolecule ? undefined : activeNativeTemplateId
       ? nativeMoleculeTemplateHoverTarget(
           sourceDocument,
           point,
@@ -12305,7 +12780,7 @@ export function MainWindow({
       setNativeDoubleBondSidePreview(undefined);
     }
 
-    if (bondToolActive) {
+    if (bondToolActive && !overNonMolecule) {
       updateBondGrowthPreview(sourceDocument, point);
       return;
     }
@@ -12579,7 +13054,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
     setStatus(freehandArtStatusLabel(commandId));
   }, [assignHoveredNativeDeleteTarget, clearFreehandArtPreview]);
 
@@ -12636,36 +13111,74 @@ export function MainWindow({
         });
   }, []);
 
+  const objectDragDelta = useCallback((drag: ObjectDragState, point: ClientPoint): ClientPoint => {
+    drag.moveDeltaResolver ??= documentObjectMoveDeltaResolver(drag.startDocument, drag.objectId, drag.groupObjectIds);
+    return drag.moveDeltaResolver(point.x - drag.startPoint.x, point.y - drag.startPoint.y);
+  }, []);
+
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
-      if (previewObjectIds) {
-        scheduleObjectTransformPreview({
-          pointerId: drag.pointerId,
-          objectIds: previewObjectIds,
-          mode: "move",
-          origin: drag.startPoint,
-          translateX: point.x - drag.startPoint.x,
-          translateY: point.y - drag.startPoint.y,
-          rotationDegrees: 0,
-          scaleX: 1,
-          scaleY: 1,
-          artPreviewProxies: drag.artPreviewProxies
+      const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
+        : objectDragDelta(drag, point);
+      drag.movePreviewObjectIds ??= objectIdsForRetainedMovePreview(drag);
+      drag.movePreviewArrowIds ??= mechanismArrowIdsForMovePreview(drag.startDocument.pages[0], drag.movePreviewObjectIds);
+      let arrowPreviewFragments: ObjectTransformPreviewState["arrowPreviewFragments"];
+      let arrowPreviewObjects: ObjectTransformPreviewState["arrowPreviewObjects"];
+      if (!previewObjectIds && drag.movePreviewArrowIds.length) {
+        // Anchored endpoints can change shape rather than translate rigidly. Replan only
+        // these arrows, resolving anchors against the unchanged movement implementation.
+        // No molecule SVG or bond crossing plan is built on this path.
+        const page = objectDragDocument(drag, point).pages[0];
+        const arrowIds = new Set(drag.movePreviewArrowIds);
+        // Resolve the frame against the same moved anchors as the SVG. Keep the stored
+        // object (and its rotation pivot) intact; frame-local controls subtract this
+        // resolved origin once, just as they do after the move is committed.
+        arrowPreviewObjects = new Map(page.objects.flatMap(object =>
+          object.type === "mechanism-arrow" && arrowIds.has(object.id) ? [[object.id, {
+            object, interactionBounds: documentObjectInteractionBounds(object, page.objects)
+          }] as const] : []));
+        const arrowPlan = planPageSvgRender({
+          ...page, objects: page.objects.filter(object => arrowIds.has(object.id))
+        }, { anchorResolutionPage: page });
+        const layers = new Map(page.objects.map((object, index) => [object.id, index]));
+        arrowPreviewFragments = objectOverlayFragmentsByObjectId({ ...arrowPlan,
+          fragments: arrowPlan.fragments.map(fragment => fragment.kind === "element"
+            ? { ...fragment, attrs: { ...fragment.attrs,
+                "data-layer-index": layers.get(String(fragment.attrs["data-object-id"])) } }
+            : fragment)
         });
-        return;
       }
-
-      clearObjectTransformPreview(drag.pointerId);
-      replacePresentDocument(objectDragDocument(drag, point));
+      scheduleObjectTransformPreview({
+        pointerId: drag.pointerId,
+        objectIds: previewObjectIds ?? drag.movePreviewObjectIds,
+        mode: "move",
+        origin: drag.startPoint,
+        translateX: delta.x,
+        translateY: delta.y,
+        rotationDegrees: 0,
+        scaleX: 1,
+        scaleY: 1,
+        artPreviewProxies: drag.artPreviewProxies,
+        retainedMove: !previewObjectIds,
+        arrowPreviewFragments,
+        arrowPreviewObjects
+      });
     });
-  }, [clearObjectTransformPreview, objectDragDocument, replacePresentDocument, scheduleObjectTransformPreview]);
+  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
 
-  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument =>
-    updateNativeGraphicCornerRadius(
-      drag.startDocument,
-      drag.objectId,
-      nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point)
-    ), []);
+  const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type !== "graphic") {
+      return drag.startDocument;
+    }
+    const start = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, drag.startPoint);
+    const current = nativeGraphicCornerRadiusPointFromProjectedDrag(drag.startDocument, drag.objectId, point);
+    return updateNativeGraphicCornerRadius(drag.startDocument, drag.objectId, {
+      x: graphicCornerRadiusReadoutValue(object) + current.x - start.x,
+      y: 0
+    });
+  }, []);
 
   const previewGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint) => {
     drag.latestPoint = point;
@@ -13334,6 +13847,9 @@ export function MainWindow({
     }
 
     const changed = commitLiveInputPreview(session.startDocument);
+    if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+    }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
     setProjectedPlaneTiltReadout(undefined);
@@ -13751,7 +14267,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    pageRef.current?.setPointerCapture(event.pointerId);
+    captureGesturePointer(pageRef.current, event.pointerId);
   }, [assignHoveredNativeDeleteTarget, pagePointFromPointerEvent]);
 
   const groupProjectedPlaneTiltFromDrag = useCallback((
@@ -13848,7 +14364,7 @@ export function MainWindow({
         ? "group-rotate"
         : mode === "projected-plane-tilt" ? "group-projected-plane-tilt" : "group-resize"
     });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       mode === "rotate"
         ? "Rotate selected group"
@@ -13884,7 +14400,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Measure: drag endpoint");
   }, [clearTransientInteractionChrome]);
 
@@ -13904,7 +14420,7 @@ export function MainWindow({
       latestPoint: sourcePoint
     };
     setMechanismArrowPreview({ arrowKind, sourcePoint, latestPoint: sourcePoint });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Electron push: release on an atom or charge");
   }, []);
 
@@ -13924,7 +14440,7 @@ export function MainWindow({
       controlIndex,
       startDocument: documentRef.current
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, []);
 
   const moveMechanismHandleDrag = useCallback((event: PointerEvent<HTMLButtonElement>) => {
@@ -13958,6 +14474,7 @@ export function MainWindow({
     event.stopPropagation();
     selectionLassoRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       points: [point],
       latestPoint: point,
@@ -13971,7 +14488,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Lasso selection");
   }, [clearTransientInteractionChrome]);
 
@@ -13979,6 +14496,7 @@ export function MainWindow({
     event.preventDefault();
     selectionMarqueeRef.current = {
       pointerId: event.pointerId,
+      startNativeSelections: selectedNativeMoleculePartsRef.current,
       startPoint: point,
       latestPoint: point,
       dragging: false
@@ -13990,7 +14508,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     setActiveGraphicTransformObjectId(undefined);
     clearTransientInteractionChrome();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureGesturePointer(event.currentTarget, event.pointerId);
   }, [clearTransientInteractionChrome]);
 
   const handlePagePointerDown = useCallback((event: ObjectPointerEvent) => {
@@ -15291,7 +15809,8 @@ export function MainWindow({
     // and we move pointer capture to the resolved molecule's wrapper so every drag/up handler
     // (all keyed by objectId) stays consistent with the re-targeted object.
     let captureElement: Element = event.currentTarget;
-    if (point && findDocumentObject(document, objectId)?.type === "molecule") {
+    const pressedObject = findDocumentObject(document, objectId);
+    if (point && pressedObject?.type === "molecule" && isNativeMoleculeGraph(pressedObject)) {
       const resolved = nativeMoleculeCanvasHoverTarget(
         document,
         point,
@@ -15436,7 +15955,7 @@ export function MainWindow({
         target: { kind: "object", objectId },
         dragKind: "object-move"
       });
-      captureElement.setPointerCapture(event.pointerId);
+      captureGesturePointer(captureElement, event.pointerId);
       return;
     }
 
@@ -15581,16 +16100,21 @@ export function MainWindow({
     }
 
     if (activeToolState.activeCommandId === "tool.text" && object?.type === "text") {
+      // The companion mousedown must not blur the newly mounted editor. Bridge events
+      // skip this browser default, so this needs the same guard as atom-label editing.
+      event.preventDefault();
       event.stopPropagation();
-      replacePresentDocument((current) => selectDocumentObject(current, objectId));
       restoreToolAfterTextPlacement();
-      setActiveEditorObjectId(undefined);
-      setActiveTextEditObjectId(objectId);
-      setActiveAtomLabelEdit(undefined);
-      setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
-      assignHoveredNativeDeleteTarget(undefined);
-      setFreeformNativeBond(undefined);
+      startTextObjectEdit(objectId);
+      return;
+    }
+
+    if (object?.type === "text" && activeTextEditObjectIdRef.current === objectId &&
+        activeToolState.activeCommandId === "tool.select") {
+      // A second press can still hit the SVG glyph after Text-tool placement restored
+      // Select. Keep the edit and its selection alive through the ensuing dblclick.
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -15693,7 +16217,7 @@ export function MainWindow({
       event.stopPropagation();
       let nextDocument = document;
       let status = "Deleted object";
-      if (object.type === "molecule") {
+      if (object.type === "molecule" && isNativeMoleculeGraph(object)) {
         if (!nativeMoleculeHit) {
           setStatus("No atom or bond under eraser");
           return;
@@ -15755,7 +16279,7 @@ export function MainWindow({
       }
     }
 
-    if (activeToolState.activeKind === "selection" && object?.type === "molecule" && point) {
+    if (activeToolState.activeKind === "selection" && object?.type === "molecule" && isNativeMoleculeGraph(object) && point) {
       event.preventDefault();
       const pressPartKey = nativeMoleculeHit
         ? `${nativeMoleculeHit.kind}:${nativeMoleculeHit.kind === "atom" ? nativeMoleculeHit.atomId : nativeMoleculeHit.bondId}`
@@ -15888,7 +16412,7 @@ export function MainWindow({
           artPreviewProxies: createArtTransformDragPreviewProxies(selectedDocument, groupObjectIds ?? [objectId], viewportRef.current.scale),
           dragging: false
         };
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
         return;
       }
 
@@ -15911,7 +16435,7 @@ export function MainWindow({
           dragging: false
         };
         objectDragMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-move" });
-        (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+        captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
         setStatus(dragIntent.target.kind === "atom"
           ? "Selected atom"
           : dragIntent.target.kind === "bond" ? "Selected bond" : "Selected molecule parts");
@@ -15953,7 +16477,7 @@ export function MainWindow({
       return;
     }
 
-    if (object?.type === "molecule" && point && !nativeMoleculeHit) {
+    if (object?.type === "molecule" && isNativeMoleculeGraph(object) && point && !nativeMoleculeHit) {
       return;
     }
 
@@ -16057,7 +16581,7 @@ export function MainWindow({
           target: { kind: "object", objectId },
           dragKind: "object-move"
         });
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
       }
       return;
     }
@@ -16074,7 +16598,7 @@ export function MainWindow({
           latestPoint: point,
           dragging: false
         };
-        captureElement.setPointerCapture(event.pointerId);
+        captureGesturePointer(captureElement, event.pointerId);
         return;
       }
     }
@@ -16104,7 +16628,7 @@ export function MainWindow({
         freeformUnlocked: false,
         altKey: event.altKey
       };
-      captureElement.setPointerCapture(event.pointerId);
+      captureGesturePointer(captureElement, event.pointerId);
       setHoveredNativeAtom({
         objectId,
         atomId: preview.atomId,
@@ -16113,6 +16637,23 @@ export function MainWindow({
         newAtomPoint: preview.newAtomPoint
       });
       setFreeformNativeBond(undefined);
+      return;
+    }
+
+    // Non-text, non-molecule object targets consume presses before the page's Text fallback
+    // can run. Use the same placement path; handles have their own pointer handlers.
+    if (activeToolState.activeCommandId === "tool.text" && object && object.type !== "text" && object.type !== "molecule" && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      // A shape's hit target can cover the text glyphs. Resolve text geometrically in
+      // document order so this also works when each object's paint has its own layer.
+      const text = textObjectAtPoint(currentDocument.pages[0]?.objects ?? [], point);
+      if (text) {
+        restoreToolAfterTextPlacement();
+        startTextObjectEdit(text.id);
+      } else {
+        applyTextDocumentAtPoint(point);
+      }
       return;
     }
 
@@ -16154,6 +16695,7 @@ export function MainWindow({
     applyNativeTemplateDocumentAtPoint,
     applySingleBondDocumentAtPoint,
     applySymbolGlyphAtPoint,
+    applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
     currentEyedropperStatus,
@@ -16168,6 +16710,7 @@ export function MainWindow({
     restoreToolAfterTextPlacement,
     selectedNativeMoleculePart,
     startAtomLabelEdit,
+    startTextObjectEdit,
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativeArtLineDrawOrDefault,
@@ -16322,7 +16865,7 @@ export function MainWindow({
         : undefined
     };
     objectRotateMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "object", objectId }, dragKind: "object-rotate" });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       object.type === "text"
         ? "Rotate selected text box"
@@ -16523,7 +17066,7 @@ export function MainWindow({
       target: { kind: "object", objectId },
       dragKind: "projected-plane-tilt"
     });
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(selectedFragmentTarget
       ? "3D rotate: drag to tilt/twist selected fragment"
       : object.type === "molecule" ? "3D rotate: drag to tilt/twist" : "X/Y rotate selected art object");
@@ -16605,7 +17148,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16644,7 +17187,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus("Adjust selected rectangle corner radius");
   }, [
     activeToolState.activeKind,
@@ -16703,7 +17246,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16775,7 +17318,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(
       nodeEditPoints
         ? "Move selected path node"
@@ -16809,7 +17352,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16847,7 +17390,7 @@ export function MainWindow({
       shiftKey: event.shiftKey,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(markerId === "markerStart" ? "Adjust start arrowhead size" : "Adjust end arrowhead size");
   }, [
     activeToolState.activeKind,
@@ -16870,7 +17413,7 @@ export function MainWindow({
       return;
     }
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      captureGesturePointer(event.currentTarget, event.pointerId);
     } catch {
       // Pointer capture can be unavailable if the browser has already canceled the press.
     }
@@ -16917,7 +17460,7 @@ export function MainWindow({
       latestPoint: point,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(`Move ${graphicGradientHandleStatusName(target, handle)}`);
   }, [
     activeToolState.activeKind,
@@ -17004,7 +17547,7 @@ export function MainWindow({
       stretching: event.shiftKey,
       dragging: false
     };
-    (pageRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+    captureGesturePointer((pageRef.current ?? event.currentTarget), event.pointerId);
     setStatus(selectedFragmentTarget
       ? "Resize selected molecule fragment"
       : object.type === "molecule" ? "Resize selected molecule" : "Resize selected art object");
@@ -17034,9 +17577,11 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event);
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
 
+    const clickedObject = findDocumentObject(currentDocument, objectId);
+    const nativeContext = clickedObject?.type === "molecule" && isNativeMoleculeGraph(clickedObject);
     // Resolve by geometry before crossing actions, so a right-click at a weave still acts
     // on the atom/bond under the pointer. Crossing state is secondary menu context.
-    const resolvedNativeHit = point
+    const resolvedNativeHit = nativeContext && point
       ? nativeMoleculeCanvasHoverTarget(
           currentDocument,
           point,
@@ -17060,7 +17605,7 @@ export function MainWindow({
             toAtomId: resolvedNativeHit.toAtomId,
             distanceToPointer: resolvedNativeHit.distanceToPointer
           };
-    } else if (crossingHit) {
+    } else if (nativeContext && crossingHit) {
       objectId = crossingHit.front.objectId;
     }
     const object = findDocumentObject(currentDocument, objectId);
@@ -17100,7 +17645,7 @@ export function MainWindow({
       );
       nextSelectedNativePart = selectionResolution.selectedPart;
       targetKind = selectionResolution.targetKind;
-    } else if (!preserveMultiSelection && object?.type === "molecule" && !nativeMoleculeHit) {
+    } else if (!preserveMultiSelection && object?.type === "molecule" && isNativeMoleculeGraph(object) && !nativeMoleculeHit) {
       return;
     }
 
@@ -17852,7 +18397,10 @@ export function MainWindow({
     replacePresentDocument
   ]);
 
-  const handleObjectPointerLeave = useCallback((objectId: string) => {
+  const handleObjectPointerLeave = useCallback((objectId: string, event: ObjectPointerEvent) => {
+    // Paint, generous catchers and HTML edit controls are separate DOM surfaces. Leaving
+    // one for another surface owned by this object is still an object hover.
+    if (objectHoverOwner(event.relatedTarget) === objectId) return;
     if (
       nativeBondDragRef.current?.objectId === objectId ||
       nativeBondEditDragRef.current?.objectId === objectId ||
@@ -18110,6 +18658,7 @@ export function MainWindow({
     onPointerUp: handleObjectPointerUp,
     onPointerCancel: handleObjectPointerCancel,
     onPointerLeave: handleObjectPointerLeave,
+    onTextDoubleClick: handleTextDoubleClick,
     onRotatePointerDown: handleObjectRotatePointerDown,
     onRotateDoubleClick: handleObjectRotateDoubleClick,
     onProjectedPlaneTiltPointerDown: handleProjectedPlaneTiltPointerDown,
@@ -18131,9 +18680,10 @@ export function MainWindow({
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
     onTextChange: updateTextObjectContent,
-    onTextEditStart: startTextObjectEdit,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
+    isTextPlaceholderPending,
+    onTextPlaceholderClear: clearTextPlaceholder,
     onTextResizeStart: startTextResize,
     onAtomLabelChange: updateAtomLabelDraft,
     onAtomLabelCancel: cancelAtomLabelEdit,
@@ -18184,7 +18734,7 @@ export function MainWindow({
       : undefined;
     const data = markerObject?.type === "graphic" ? markerObject.data : undefined;
     const focusTarget = window.document.activeElement;
-    setStatusModifierHint(modifierHint({
+    const context: ModifierHintContext = {
       activeTool: activeToolState.activeCommandId,
       interaction,
       hoverTarget: shiftHoveredArrowId ? "arrow" : hintHoverTargetRef.current,
@@ -18195,7 +18745,13 @@ export function MainWindow({
       dualShaftArrow: data?.dualShaft === true,
       twoArrowheads: Boolean(data?.markerStart && data.markerStart.kind !== "none" && data.markerEnd && data.markerEnd.kind !== "none"),
       lassoSubtracting: selectionLassoRef.current?.subtracting
-    }, heldHintModifiersRef.current));
+    };
+    const held = heldHintModifiersRef.current;
+    const inputs = JSON.stringify([context, Boolean(held.shiftKey), Boolean(held.altKey), Boolean(held.metaKey), Boolean(held.ctrlKey)]);
+    if (inputs !== modifierHintInputsRef.current) {
+      modifierHintInputsRef.current = inputs;
+      setStatusModifierHint(modifierHint(context, held));
+    }
   };
   // Also refresh after command-driven tool/selection changes and interaction cancellation.
   useEffect(() => { refreshModifierHintRef.current(); });
@@ -18452,12 +19008,12 @@ export function MainWindow({
           })
         : null}
 
-      {closeTabPrompt ? (
+      {closeTabPrompt && closePrompt.visible ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
             if (event.key === "Escape" && !closeTabSaving) {
               event.preventDefault();
-              setCloseTabPrompt(undefined);
+              closePrompt.choose("cancel");
             }
             if (event.key === "Tab") {
               const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
@@ -18472,9 +19028,9 @@ export function MainWindow({
             <p style={exportDialogHintStyle}>Save the changes to {documentTabs.find((tab) => tab.id === closeTabPrompt)?.title}?</p>
             {closeTabSaveMessage ? <p role="status" style={exportDialogWarningStyle}>{closeTabSaveMessage}</p> : null}
             <div style={exportDialogFooterStyle}>
-              <button type="button" autoFocus disabled={closeTabSaving} onClick={() => setCloseTabPrompt(undefined)}>Cancel</button>
-              <button type="button" disabled={closeTabSaving} onClick={() => removeDocumentTab(closeTabPrompt)}>Discard</button>
-              <button type="button" disabled={closeTabSaving} onClick={() => void saveAndCloseDocumentTab()}>Save</button>
+              <button type="button" autoFocus disabled={closeTabSaving} onClick={() => closePrompt.choose("cancel")}>Cancel</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => closePrompt.choose("discard")}>Don't Save</button>
+              <button type="button" disabled={closeTabSaving} onClick={() => closePrompt.choose("save")}>Save</button>
             </div>
           </section>
         </div>
@@ -18514,7 +19070,7 @@ export function MainWindow({
             const files = Array.from(event.dataTransfer.files);
             void (async () => {
               for (const file of files) {
-                try { openDocumentContents(await file.text(), file.name); }
+                try { await openDocumentContents(await file.text(), file.name); }
                 catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
               }
             })();
@@ -18551,19 +19107,19 @@ export function MainWindow({
                     verticalTicks={verticalCrosshairTicks}
                   />
                 ) : null}
+                <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  {...objectViewHandlers}
                   ariaLabel={document.title}
                   pageHeight={activePage.height}
                   pageWidth={activePage.width}
                   plan={pageSvgRenderPlan}
+                  page={plannedDisplayPage}
+                  objectOverlayFragments={objectOverlayFragments}
+                  objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
-                  onContextMenu={handleObjectContextMenu}
-                  onPointerCancel={handleObjectPointerCancel}
-                  onPointerDown={handleObjectPointerDown}
-                  onPointerLeave={handleObjectPointerLeave}
-                  onPointerMove={handleObjectPointerMove}
-                  onPointerUp={handleObjectPointerUp}
                 />
+                <PageInteractionPortal target={interactionLayer}>
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -18674,6 +19230,7 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                 {(() => {
                   const resolvedSelectionObjectIds = resolveGroupedDocumentObjectIds(
                     document.pages[0].objects,
@@ -18739,10 +19296,18 @@ export function MainWindow({
                     <DocumentObjectView
                       key={objectRenderKey}
                       {...objectViewHandlers}
-                      object={object}
+                      object={moveArrowPreviewObjects?.get(object.id)?.object ?? object}
+                      interactionBounds={moveArrowPreviewObjects?.get(object.id)?.interactionBounds ??
+                        (object.type === "mechanism-arrow"
+                          ? documentObjectInteractionBounds(object, plannedDisplayPage.objects)
+                          : undefined)}
                       layerIndex={layerIndex}
+                      interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
+                      pageScale={selected && !inGroupSelection && object.type === "graphic" &&
+                        nativeGraphicCornerRadiusEditPoint(object) !== undefined
+                        ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected}
                       inGroupSelection={inGroupSelection}
@@ -18784,7 +19349,7 @@ export function MainWindow({
                       doubleBondSidePreview={
                         nativeDoubleBondSidePreview?.objectId === object.id ? nativeDoubleBondSidePreview : undefined
                       }
-                      nativeMoleculeSvgFragments={nativeMoleculeOverlayFragments.get(object.id)}
+                      nativeMoleculeSvgFragments={objectOverlayFragments.get(object.id)}
                       rotateReadout={objectRotateReadout?.objectId === object.id ? objectRotateReadout : undefined}
                       projectedPlaneTiltReadout={
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
@@ -18802,6 +19367,7 @@ export function MainWindow({
                     />
                   );
                 })}
+                <PageInteractionPortal target={interactionLayer}>
                 {groupSelectionBounds ? (
                   <GroupSelectionOverlay
                     bounds={groupSelectionBounds}
@@ -18841,9 +19407,12 @@ export function MainWindow({
                     pageHeight={activePage.height}
                   />
                 ) : null}
+                </PageInteractionPortal>
                   </>
                   );
                 })()}
+                </div>
+                <div className="page-interaction-layer" data-page-interaction-layer="true" ref={setInteractionLayer} />
                 {artTransformQaEnabled ? (
                   <ArtTransformQaLayer
                     draft={artTransformQaDraft}
@@ -19333,12 +19902,29 @@ function MoleculeStyleOverridePrompt({
   onCancel
 }: MoleculeStyleOverridePromptProps) {
   const moleculeLabel = objectCount === 1 ? "This molecule has" : "These molecules have";
+  const prompt = useNativePrompt({
+    title: "Per-Ring Attributes",
+    message: `${moleculeLabel} per-ring attributes from the Molecule Inspector. Whole-molecule appearance changes can either keep those ring overrides or clear them for a uniform molecule.\n\nClearing per-ring attributes removes them from the whole selected molecule. Use Undo to restore them.`,
+    kind: "warning",
+    choices: [
+      { id: "keep", label: "Keep Overrides" },
+      { id: "clear", label: "Clear Overrides", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, (choice) => {
+    if (choice === "keep") onKeep();
+    else if (choice === "clear") onClear();
+    else onCancel();
+  }, "ring-overrides");
+  if (!prompt.visible) return null;
+
   return (
     <div
       aria-label="Per-ring appearance attributes"
       aria-modal="true"
       role="dialog"
       style={exportDialogBackdropStyle}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); prompt.choose("cancel"); } }}
     >
       <section style={exportDialogPanelStyle}>
         <div style={exportDialogHeaderStyle}>
@@ -19351,13 +19937,13 @@ function MoleculeStyleOverridePrompt({
           Clearing per-ring attributes removes them from the whole selected molecule. Use Undo to restore them.
         </p>
         <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+          <button autoFocus type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("cancel")}>
             Cancel
           </button>
-          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
+          <button type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("keep")}>
             Keep Overrides
           </button>
-          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onClear}>
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={() => prompt.choose("clear")}>
             Clear Overrides
           </button>
         </div>
@@ -19382,12 +19968,24 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
     recommendation.overflowBottomPx > 0 ? `${Math.ceil(recommendation.overflowBottomPx)} px taller` : undefined
   ].filter(Boolean).join(" and ");
 
+  const prompt = useNativePrompt({
+    title: "Imported Content Exceeds Page",
+    message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
+    kind: "warning",
+    choices: [
+      { id: "resize", label: `Use ${recommendedLabel} Page` },
+      { id: "keep", label: "Cancel", cancel: true }
+    ]
+  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.displayName);
+  if (!prompt.visible) return null;
+
   return (
     <div
       aria-label="Imported content page size"
       aria-modal="true"
       role="dialog"
       style={exportDialogBackdropStyle}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); prompt.choose("keep"); } }}
     >
       <section style={exportDialogPanelStyle}>
         <div style={exportDialogHeaderStyle}>
@@ -19397,14 +19995,14 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
           {recommendation.displayName} extends beyond {currentLabel}{overflow ? ` by about ${overflow}` : ""}.
         </p>
         <p style={exportDialogHintStyle}>
-          Resize the page to {recommendedLabel} and place the import on the page, or keep the current page size and leave the overflow unchanged.
+          Change the page to {recommendedLabel} to fit the imported content?
         </p>
         <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onKeep}>
-            Keep Current Page
+          <button autoFocus type="button" style={exportDialogButtonStyle} onClick={() => prompt.choose("keep")}>
+            Cancel
           </button>
-          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={onResize}>
-            Use {recommendedLabel}
+          <button type="button" style={exportDialogPrimaryButtonStyle} onClick={() => prompt.choose("resize")}>
+            Use {recommendedLabel} Page
           </button>
         </div>
       </section>
@@ -20251,6 +20849,79 @@ function graphicObjectIdsForCssDragPreview(drag: ObjectDragState): string[] | un
     : undefined;
 }
 
+/** Include group descendants and the atom-anchored marks carried by the move commit. */
+function objectIdsForRetainedMovePreview(drag: ObjectDragState): string[] {
+  const objects = drag.startDocument.pages[0].objects;
+  const ids = new Set(resolveGroupedDocumentObjectIds(objects, drag.groupObjectIds ?? [drag.objectId]));
+  const atomsByMolecule = new Map(objects.flatMap(object => object.type === "molecule" && ids.has(object.id)
+    ? [[object.id, new Set(object.atoms.map(atom => atom.id))] as const] : []));
+  for (const object of objects) {
+    if (object.type === "electron-mark" && object.anchor.kind === "atom" &&
+      object.anchor.objectId && object.anchor.atomId &&
+      atomsByMolecule.get(object.anchor.objectId)?.has(object.anchor.atomId)) ids.add(object.id);
+  }
+  return [...ids];
+}
+
+function mechanismArrowIdsForMovePreview(page: DocumentPage, movedObjectIds: readonly string[]): string[] {
+  const moved = new Set(movedObjectIds);
+  return page.objects.flatMap(object => object.type === "mechanism-arrow" &&
+    (moved.has(object.id) || [object.source, object.target].some(anchor =>
+      anchor.kind !== "point" && anchor.objectId !== undefined && moved.has(anchor.objectId))) ? [object.id] : []);
+}
+
+type RetainedObjectMoveTarget = {
+  element: HTMLElement | SVGElement;
+  svg: boolean;
+  transform: string | null;
+  translate: string;
+};
+
+function retainedObjectMoveTargets(
+  page: HTMLElement | null,
+  objectIds: readonly string[],
+  arrowFragments?: ReadonlyMap<string, readonly PageSvgElementFragment[]>
+): RetainedObjectMoveTarget[] {
+  if (!page) return [];
+  const ids = new Set(objectIds);
+  // Collect once per gesture, scoped to this page. Descendant bond/atom catchers ride
+  // with their paint wrapper; translating them individually would apply the delta twice.
+  return [...page.querySelectorAll<HTMLElement | SVGElement>(
+    ".document-object[data-object-id], [data-object-controls], [data-page-svg-object-visual], [data-group-selection]"
+  )].filter(element => !arrowFragments?.has(element.getAttribute("data-page-svg-object-visual") ??
+    element.getAttribute("data-object-controls") ?? element.getAttribute("data-object-id") ?? "") &&
+    (ids.has(element.getAttribute("data-object-id") ??
+    element.getAttribute("data-object-controls") ?? element.getAttribute("data-page-svg-object-visual") ?? "") ||
+    (objectIds.length > 1 && element.hasAttribute("data-group-selection"))))
+    .map(element => ({ element, svg: element.hasAttribute("data-page-svg-object-visual"),
+      transform: element.getAttribute("transform"), translate: element.style.translate }));
+}
+
+function translateRetainedObjectMoveTargets(targets: readonly RetainedObjectMoveTarget[], dx: number, dy: number): void {
+  for (const { element, svg, transform } of targets) {
+    element.setAttribute("data-object-move-preview", "true");
+    if (svg) {
+      element.setAttribute("transform", `translate(${formatSvgNumber(dx)} ${formatSvgNumber(dy)})${transform ? ` ${transform}` : ""}`);
+    } else {
+      // The individual translate property precedes the committed rotation/projection.
+      // It moves both paint and hit targets in page space, even for a tilted molecule.
+      element.style.translate = `${pageScaledCssPx(dx)} ${pageScaledCssPx(dy)}`;
+    }
+  }
+}
+
+function restoreRetainedObjectMoveTargets(targets: readonly RetainedObjectMoveTarget[]): void {
+  for (const { element, svg, transform, translate } of targets) {
+    element.removeAttribute("data-object-move-preview");
+    if (svg) {
+      if (transform === null) element.removeAttribute("transform");
+      else element.setAttribute("transform", transform);
+    } else {
+      element.style.translate = translate;
+    }
+  }
+}
+
 function createArtTransformDragPreviewProxies(
   document: ChemDraftDocument,
   objectIds: readonly string[],
@@ -20645,8 +21316,9 @@ function previewGraphicObjectColorOnDom(
       continue;
     }
 
-    const element = artObjectPreviewElement(root, objectId);
-    if (!element) {
+    const elements = [artObjectPreviewElement(root, objectId),
+      root.querySelector(`[data-page-svg-object-visual="${cssEscapeIdentifier(objectId)}"]`)].filter((element): element is Element => element !== null);
+    if (elements.length === 0) {
       continue;
     }
 
@@ -20655,7 +21327,7 @@ function previewGraphicObjectColorOnDom(
     const selector = freehandPath || target === "fill"
       ? ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape"
       : ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape, .graphic-glyph-stroke";
-    for (const paintElement of Array.from(element.querySelectorAll<SVGElement>(selector))) {
+    for (const paintElement of elements.flatMap(element => Array.from(element.querySelectorAll<SVGElement>(selector)))) {
       if (paintElement.classList.contains("graphic-glyph-hit-target") || paintElement.classList.contains("graphic-glyph-shadow")) {
         continue;
       }
@@ -21145,15 +21817,25 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
   }
 }
 
-/** Why a ring (tool click or hotkey) could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeRingHotkeyRefusal): string {
+/** Why a ring or sprout could not change the target molecule, worded for the status line. */
+export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
   switch (reason) {
+    case "sprout-no-free-direction":
+      return "there is no free direction to grow into without overlapping";
+    case "sprout-needs-two-valences":
+      return "that atom needs two free valences for this sprout";
+    case "methylidene-needs-neutral-carbon":
+      return "methylidene needs a neutral carbon atom";
+    case "closure-bond-exists":
+      return "those atoms are already connected";
     case "atom-no-free-valence":
       return "that atom has no free valence";
     case "bond-atom-no-free-valence":
       return "an atom on that bond has no free valence";
     case "closure-atom-no-free-valence":
       return "the ring would close onto an atom with no free valence";
+    case "connection-atom-no-free-valence":
+      return "the atom it would connect to has no free valence";
     case "double-bond-overfill":
       return "the ring's double bonds would overfill a neighbouring atom";
     case "atom-label-not-element":
@@ -21341,6 +22023,9 @@ type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
   beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject;
   hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument;
+  hotkeyAfterDocument?: ChemDraftDocument;
+  saveRevision: number;
+  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 /**
@@ -22162,7 +22847,7 @@ function SpinOverlay({
       aria-hidden="true"
       data-spin3d-overlay="true"
       viewBox={`0 0 ${pageWidth} ${pageHeight}`}
-      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, cursor: "grab", touchAction: "none" }}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 50, pointerEvents: "auto", cursor: "grab", touchAction: "none" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -22332,7 +23017,7 @@ export function EraserSweepPreviewOverlay({
         if (!object) {
           return null;
         }
-        const bounds = documentObjectVisualBounds(object);
+        const bounds = documentObjectVisualBounds(object, objects);
         return (
           <rect
             className="eraser-sweep-object"
@@ -23065,7 +23750,7 @@ export function selectionInSelectionRect(
       continue;
     }
 
-    if (rectangleContainsRect(rect, objectBounds(object))) {
+    if (rectangleContainsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23116,7 +23801,7 @@ export function eraserSweepInSelectionRect(
       continue;
     }
 
-    if (rectangleIntersectsRect(rect, objectBounds(object))) {
+    if (rectangleIntersectsRect(rect, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23239,7 +23924,7 @@ export function selectionInSelectionLasso(
       continue;
     }
 
-    if (polygonIntersectsRect(points, objectBounds(object))) {
+    if (polygonIntersectsRect(points, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23310,7 +23995,7 @@ export function selectionInSelectionPolygon(
       continue;
     }
 
-    if (polygonContainsRect(polygon, objectBounds(object))) {
+    if (polygonContainsRect(polygon, objectBounds(object, objects))) {
       objectIds.push(object.id);
     }
   }
@@ -23363,13 +24048,11 @@ function rectangleIntersectsRect(
   );
 }
 
-function objectBounds(object: DocumentObject): { x: number; y: number; width: number; height: number } {
-  return {
-    x: object.x,
-    y: object.y,
-    width: object.width,
-    height: object.height
-  };
+function objectBounds(
+  object: DocumentObject,
+  objects: readonly DocumentObject[] = [object]
+): { x: number; y: number; width: number; height: number } {
+  return documentObjectInteractionBounds(object, objects);
 }
 
 function parentGroupForDocumentObject(
@@ -23421,7 +24104,7 @@ export function visualSelectionBounds(
       continue;
     }
 
-    const bounds = documentObjectVisualBounds(object);
+    const bounds = documentObjectVisualBounds(object, objects);
     minX = Math.min(minX, bounds.x);
     minY = Math.min(minY, bounds.y);
     maxX = Math.max(maxX, bounds.x + bounds.width);
@@ -23486,6 +24169,31 @@ function pointInsideObjectBounds(
     point.y >= bounds.y - paddingPx &&
     point.y <= bounds.y + bounds.height + paddingPx
   );
+}
+
+function textObjectAtPoint(
+  objects: readonly DocumentObject[],
+  point: ClientPoint
+): TextObject | undefined {
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    const object = objects[index];
+    if (object.type !== "text") {
+      continue;
+    }
+    // Text's CSS box (and selection frame) rotates around its center. Test in that
+    // local frame, rather than the unrotated box or a larger rotated bounding box.
+    const rotationRad = degreesToRadians(-object.rotation);
+    const localPoint = Math.abs(object.rotation) < 0.001 ? point : rotatePointAroundCenter(
+      point,
+      { x: object.x + object.width / 2, y: object.y + object.height / 2 },
+      Math.cos(rotationRad),
+      Math.sin(rotationRad)
+    );
+    if (pointInRect(localPoint, documentObjectVisualBounds(object))) {
+      return object;
+    }
+  }
+  return undefined;
 }
 
 export function nativeMoleculeObjectAtPoint(
@@ -24684,93 +25392,160 @@ function selectionStatusLabel(selection: {
   return "No selection";
 }
 
-function PageSvgSurface({
+function objectHoverOwner(target: EventTarget | null): string | undefined {
+  if (!(target instanceof Element)) return undefined;
+  const owner = target.closest("[data-page-svg-object-visual], [data-object-controls], [data-object-id]");
+  return owner?.getAttribute("data-page-svg-object-visual") ?? owner?.getAttribute("data-object-controls") ??
+    owner?.getAttribute("data-object-id") ?? undefined;
+}
+
+function PageInteractionPortal({ target, children }: { target: HTMLDivElement | null; children: ReactNode }) {
+  // Static rendering has no mounted DOM target. Keep its affordance markup available.
+  return target ? createPortal(children, target) : <>{children}</>;
+}
+
+// Object paint does not change on hover. Its handlers use the same stable wrappers as the views.
+const PageSvgSurface = memo(PageSvgSurfaceContent);
+
+function PageSvgSurfaceContent({
   ariaLabel,
   pageHeight,
   pageWidth,
   plan,
+  page,
+  objectOverlayFragments,
+  objectTransformPreview,
   spinningObjectId,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onPointerCancel,
-  onPointerLeave,
-  onContextMenu
+  ...handlers
 }: {
   ariaLabel: string;
   pageHeight: number;
   pageWidth: number;
   plan: PageSvgRenderPlan;
+  page: DocumentPage;
+  objectOverlayFragments: ReadonlyMap<string, readonly PageSvgElementFragment[]>;
+  objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
+  onTextDoubleClick(objectId: string, event: ObjectMouseEvent): void;
 }) {
+  const visualLayers = useMemo(() => {
+    const layers: { layerIndex: number; objects: DocumentObject[] }[] = [];
+    let current: typeof layers[number] | undefined;
+    page.objects.forEach((object, layerIndex) => {
+      if (!editorPageSvgSurfaceIncludesObject(object)) {
+        current = undefined;
+        return;
+      }
+      if (!objectOverlayFragments.get(object.id)?.length) return;
+      if (!current) {
+        current = { layerIndex, objects: [] };
+        layers.push(current);
+      }
+      current.objects.push(object);
+    });
+    return layers;
+  }, [page, objectOverlayFragments]);
+  const previewIds = useMemo(() => new Set(objectTransformPreview?.objectIds ?? []), [objectTransformPreview?.objectIds]);
+
   return (
-    <svg
-      aria-label={`${ariaLabel} page drawing`}
-      className="page-svg-surface"
-      data-page-svg-surface="true"
-      viewBox={`0 0 ${pageWidth} ${pageHeight}`}
-    >
-      {plan.fragments.map((fragment) => {
-        const rendered = renderPageSvgFragment(fragment, {
-          onContextMenu,
-          onPointerCancel,
-          onPointerDown,
-          onPointerLeave,
-          onPointerMove,
-          onPointerUp
-        });
-        // The spun molecule's drawn structure fades to a faint ghost (the live 3D overlay
-        // paints on top); pointer events off so the overlay owns the drag.
-        const isSpinning = spinningObjectId !== undefined &&
-          fragment.attrs["data-object-id"] === spinningObjectId;
-        return isSpinning
-          ? <g key={`spin-${fragment.key}`} opacity={0.1} style={{ pointerEvents: "none" }}>{rendered}</g>
-          : rendered;
-      })}
-    </svg>
+    <>
+      <svg
+        aria-label={`${ariaLabel} page drawing`}
+        className="page-svg-surface"
+        data-page-svg-surface="true"
+        viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+      >
+        {/* Non-object page helpers, if any, stay below the object stack. Each object's
+            hits share its paint layer; no invisible lower copy can steal a front hit. */}
+        {plan.fragments.filter(fragment => fragment.attrs["data-object-id"] === undefined)
+          .map(fragment => renderPageSvgFragment(fragment, handlers))}
+      </svg>
+      {visualLayers.map(({ layerIndex, objects }) => (
+        <svg
+          key={objects[0]!.id}
+          className="page-svg-visual-layer"
+          data-page-svg-visual-layer={layerIndex}
+          viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+          style={{ zIndex: layerIndex + DOCUMENT_OBJECT_LAYER_OFFSET, pointerEvents: "none" }}
+        >
+          {objects.map(object => {
+            const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
+            const fragments = objectOverlayFragments.get(object.id)!;
+            return (
+              <g
+                key={object.id}
+                data-page-svg-object-visual={object.id}
+                data-object-type={object.type}
+                data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
+                opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
+                style={{ pointerEvents: object.id === spinningObjectId ? "none" : "auto" }}
+                onPointerDown={event => handlers.onPointerDown(object.id, event)}
+                onPointerMove={event => handlers.onPointerMove(object.id, event)}
+                onPointerUp={event => handlers.onPointerUp(object.id, event)}
+                onPointerCancel={handlers.onPointerCancel}
+                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
+                onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+              >
+                {object.type === "graphic" ? (
+                  // Keep the existing art renderer and its generous stroke/fill catchers.
+                  // It uses the same art-engine geometry as export, in local coordinates.
+                  <svg x={object.x} y={object.y} width={object.width} height={object.height}
+                    viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
+                    <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
+                      {preview?.artPreviewProxies?.[object.id]
+                        ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
+                        : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
+                    </g>
+                  </svg>
+                ) : (
+                  <>
+                    {object.type === "bracket" || object.type === "reaction-arrow" ? (
+                      <rect x={object.x} y={object.y} width={object.width} height={object.height}
+                        transform={projectedPlaneSvgTransformForObject(object)}
+                        fill="transparent" pointerEvents="all" />
+                    ) : null}
+                    {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
+                  </>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      ))}
+    </>
   );
 }
 
-export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
-  // Types the interactive overlay draws in full are excluded here, or the surface and the overlay
-  // both paint them — visibly, since the surface strokes #172026 while the overlay's CSS strokes
-  // #111111. Export is unaffected: it plans the page directly and never applies this filter.
-  if (object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow") {
-    return false;
-  }
+function objectTransformPreviewSvgTransform(preview: ObjectTransformPreviewState): string {
+  const { origin, translateX, translateY, rotationDegrees, scaleX, scaleY } = preview;
+  return `translate(${formatSvgNumber(translateX)} ${formatSvgNumber(translateY)}) ` +
+    `translate(${formatSvgNumber(origin.x)} ${formatSvgNumber(origin.y)}) ` +
+    `rotate(${formatSvgNumber(rotationDegrees)}) scale(${formatSvgNumber(scaleX)} ${formatSvgNumber(scaleY)}) ` +
+    `translate(${formatSvgNumber(-origin.x)} ${formatSvgNumber(-origin.y)})`;
+}
 
+export function editorPageSvgSurfaceIncludesObject(object: DocumentObject): boolean {
   return object.type !== "molecule" || !isNativeMoleculeGraph(object);
 }
 
-function nativeMoleculeOverlayFragmentsByObjectId(page: DocumentPage): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
-  const nativeMoleculeIds = new Set(page.objects
-    .filter((object): object is MoleculeObject => object.type === "molecule" && isNativeMoleculeGraph(object))
-    .map((object) => object.id));
-  if (nativeMoleculeIds.size === 0) {
-    return new Map();
-  }
-
+function objectOverlayFragmentsByObjectId(plan: PageSvgRenderPlan): ReadonlyMap<string, readonly PageSvgElementFragment[]> {
   const byObjectId = new Map<string, PageSvgElementFragment[]>();
-  planPageSvgRender(page).fragments.forEach((fragment) => {
-    const objectId = typeof fragment.attrs["data-object-id"] === "string"
-      ? fragment.attrs["data-object-id"]
-      : undefined;
-    if (!objectId || !nativeMoleculeIds.has(objectId)) {
-      return;
-    }
-
+  for (const fragment of plan.fragments) {
+    const objectId = fragment.attrs["data-object-id"];
+    if (typeof objectId !== "string") continue;
     const fragments = byObjectId.get(objectId) ?? [];
     fragments.push(fragment);
     byObjectId.set(objectId, fragments);
-  });
-
+  }
   return byObjectId;
 }
 
@@ -24839,7 +25614,7 @@ function renderPageSvgFragment(
     onPointerMove(objectId: string, event: ObjectPointerEvent): void;
     onPointerUp(objectId: string, event: ObjectPointerEvent): void;
     onPointerCancel(event: ObjectPointerEvent): void;
-    onPointerLeave(objectId: string): void;
+    onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
     onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   }
 ): ReturnType<typeof createElement> | string {
@@ -24856,7 +25631,7 @@ function renderPageSvgFragment(
       onContextMenu: (event: ObjectMouseEvent) => handlers.onContextMenu(objectId, event),
       onPointerCancel: (event: ObjectPointerEvent) => handlers.onPointerCancel(event),
       onPointerDown: (event: ObjectPointerEvent) => handlers.onPointerDown(objectId, event),
-      onPointerLeave: () => handlers.onPointerLeave(objectId),
+      onPointerLeave: (event: ObjectPointerEvent) => handlers.onPointerLeave(objectId, event),
       onPointerMove: (event: ObjectPointerEvent) => handlers.onPointerMove(objectId, event),
       onPointerUp: (event: ObjectPointerEvent) => handlers.onPointerUp(objectId, event)
     });
@@ -24925,6 +25700,7 @@ function reactSvgAttributeName(name: string): string {
     "color-interpolation-filters": "colorInterpolationFilters",
     "dominant-baseline": "dominantBaseline",
     "fill-opacity": "fillOpacity",
+    "fill-rule": "fillRule",
     "flood-color": "floodColor",
     "flood-opacity": "floodOpacity",
     "font-family": "fontFamily",
@@ -24977,8 +25753,10 @@ const DocumentObjectView = memo(DocumentObjectViewContent);
 function DocumentObjectViewContent({
   object,
   layerIndex,
+  interactionLayer,
   pageWidth,
   pageHeight,
+  pageScale,
   spinning = false,
   selected,
   inGroupSelection,
@@ -25000,6 +25778,7 @@ function DocumentObjectViewContent({
   hoverDestructive,
   freeformPreview,
   mechanismHandlesVisible,
+  interactionBounds,
   onMechanismHandlePointerDown,
   onMechanismHandlePointerMove,
   onMechanismHandlePointerUp,
@@ -25040,9 +25819,10 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel,
   onContextMenu,
   onTextChange,
-  onTextEditStart,
   onTextEditFinish,
   onTextSelectionChange,
+  isTextPlaceholderPending,
+  onTextPlaceholderClear,
   onTextResizeStart,
   onAtomLabelChange,
   onAtomLabelCancel,
@@ -25050,8 +25830,10 @@ function DocumentObjectViewContent({
 }: {
   object: DocumentObject;
   layerIndex: number;
+  interactionLayer: HTMLDivElement | null;
   pageWidth: number;
   pageHeight: number;
+  pageScale?: number;
   spinning?: boolean;
   selected: boolean;
   inGroupSelection: boolean;
@@ -25073,6 +25855,7 @@ function DocumentObjectViewContent({
   hoverDestructive: boolean;
   freeformPreview?: FreeformNativeBondPreview;
   mechanismHandlesVisible?: boolean;
+  interactionBounds?: { x: number; y: number; width: number; height: number };
   onMechanismHandlePointerDown(objectId: string, controlIndex: number, event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerMove(event: PointerEvent<HTMLButtonElement>): void;
   onMechanismHandlePointerUp(event: PointerEvent<HTMLButtonElement>): void;
@@ -25091,7 +25874,7 @@ function DocumentObjectViewContent({
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
   onPointerCancel(event: ObjectPointerEvent): void;
-  onPointerLeave(objectId: string): void;
+  onPointerLeave(objectId: string, event: ObjectPointerEvent): void;
   onRotatePointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onRotateDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onProjectedPlaneTiltPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
@@ -25113,9 +25896,10 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
-  onTextEditStart(objectId: string): void;
   onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
+  isTextPlaceholderPending(objectId: string): boolean;
+  onTextPlaceholderClear(objectId: string): void;
   onTextResizeStart(objectId: string, edge: TextResizeEdge, event: PointerEvent<HTMLButtonElement>): void;
   onAtomLabelChange(state: AtomLabelEditState, text: string): void;
   onAtomLabelCancel(state: AtomLabelEditState): void;
@@ -25134,10 +25918,15 @@ function DocumentObjectViewContent({
     }
 
     editor.focus();
-    if (object.text === "Text") {
+    if (isTextPlaceholderPending(object.id)) {
       editor.select();
+    } else {
+      // SVG glyphs do not provide a textarea offset. Reopened text starts at the end;
+      // later focus retries leave the user's caret and selection alone.
+      const end = editor.value.length;
+      editor.setSelectionRange(end, end);
     }
-  }, [editingText, object]);
+  }, [editingText, object.id, isTextPlaceholderPending]);
 
   if (object.type === "group") {
     return null;
@@ -25155,8 +25944,8 @@ function DocumentObjectViewContent({
   const handleObjectPointerCancel = (event: ObjectPointerEvent) => {
     onPointerCancel(event);
   };
-  const handleObjectPointerLeave = () => {
-    onPointerLeave(object.id);
+  const handleObjectPointerLeave = (event: ObjectPointerEvent) => {
+    onPointerLeave(object.id, event);
   };
   const handleObjectContextMenu = (event: ObjectMouseEvent) => {
     onContextMenu(object.id, event);
@@ -25198,6 +25987,7 @@ function DocumentObjectViewContent({
     onObjectResizeDoubleClick(object.id, corner, event);
   };
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onTextPlaceholderClear(object.id);
     recordTextEditorSelection(event.currentTarget);
     onTextChange(object.id, event.currentTarget.value);
   };
@@ -25212,6 +26002,7 @@ function DocumentObjectViewContent({
       return;
     }
 
+    onTextPlaceholderClear(object.id);
     const start = editor.selectionStart;
     const end = editor.selectionEnd;
     const currentValue = editor.value;
@@ -25245,6 +26036,14 @@ function DocumentObjectViewContent({
     const commandKeyPressed = event.metaKey || event.ctrlKey;
     const key = event.key.toLowerCase();
 
+    if (
+      (!commandKeyPressed && event.key.length === 1) ||
+      ["Backspace", "Delete", "Enter", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key) ||
+      (commandKeyPressed && ["a", "x"].includes(key))
+    ) {
+      onTextPlaceholderClear(object.id);
+    }
+
     if (commandKeyPressed && key === "a") {
       event.preventDefault();
       event.currentTarget.select();
@@ -25255,15 +26054,6 @@ function DocumentObjectViewContent({
     // Cmd/Ctrl+V is intentionally not intercepted here: preventing the default action would also
     // cancel the native `paste` event that handleTextPaste relies on. Let it through so the editor's
     // onPaste handler inserts clipboard text synchronously, without needing async-read permission.
-  };
-  const handleTextDoubleClick = (event: ObjectMouseEvent) => {
-    if (object.type !== "text") {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    onTextEditStart(object.id);
   };
   const handleTextResizeStart = (edge: TextResizeEdge) => (event: PointerEvent<HTMLButtonElement>) => {
     onTextResizeStart(object.id, edge, event);
@@ -25284,15 +26074,46 @@ function DocumentObjectViewContent({
   const artObjectProjection = documentObjectSupportsArtTransform(object)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
+  const frameBounds = interactionBounds ?? object;
+  const mechanismRotationOrigin = object.type === "mechanism-arrow"
+    ? objectTransformPreview && objectTransformPreview.mode !== "move"
+      ? { x: objectTransformPreview.origin.x - frameBounds.x, y: objectTransformPreview.origin.y - frameBounds.y }
+      : documentObjectInteractionRotationOrigin(object, frameBounds)
+    : undefined;
   const style = {
-    left: `${(object.x / pageWidth) * 100}%`,
-    top: `${(object.y / pageHeight) * 100}%`,
-    width: `${(object.width / pageWidth) * 100}%`,
-    height: `${(object.height / pageHeight) * 100}%`,
-    zIndex: layerIndex + 20,
+    left: `${(frameBounds.x / pageWidth) * 100}%`,
+    top: `${(frameBounds.y / pageHeight) * 100}%`,
+    width: `${(frameBounds.width / pageWidth) * 100}%`,
+    height: `${(frameBounds.height / pageHeight) * 100}%`,
+    zIndex: layerIndex + DOCUMENT_OBJECT_LAYER_OFFSET,
     transform: documentObjectOuterCssTransform(object, artObjectProjection, objectTransformPreview),
-    transformOrigin: documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
+    transformOrigin: mechanismRotationOrigin
+      ? `${pageScaledCssPx(mechanismRotationOrigin.x)} ${pageScaledCssPx(mechanismRotationOrigin.y)}`
+      : documentObjectOuterCssTransformOrigin(object, objectTransformPreview)
   } as CSSProperties;
+  // The positioned copy carries only edit/preview chrome. Its own z-index is bounded
+  // inside the page's interaction layer, independent of the object's paint index.
+  const chrome = (children: ReactNode, extraStyle?: CSSProperties) => interactionLayer ? createPortal(
+    <div
+      className={["document-object-chrome",
+        selected && object.type !== "graphic" && (object.type !== "molecule" || !isNativeMoleculeGraph(object))
+          ? "selected" : ""].filter(Boolean).join(" ")}
+      style={{ ...style, ...extraStyle, zIndex: 1 }}
+      data-object-controls={object.id}
+      data-object-id={object.type === "text" ? object.id : undefined}
+      onPointerLeave={handleObjectPointerLeave}
+    >
+      {(objectTransformPreview || spinning) && object.type !== "graphic" && nativeMoleculeSvgFragments ? (
+        <svg className="object-transform-preview-visual" viewBox={`0 0 ${object.width} ${object.height}`} aria-hidden="true"
+          data-spin3d-ghost={spinning ? "true" : undefined} style={spinning ? { opacity: 0.1 } : undefined}>
+          <g transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}>
+            {nativeMoleculeSvgFragments.map(renderStaticPageSvgFragment)}
+          </g>
+        </svg>
+      ) : null}
+      {children}
+    </div>, interactionLayer
+  ) : <>{children}</>;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
@@ -25331,6 +26152,8 @@ function DocumentObjectViewContent({
     object.type === "graphic" &&
     (graphicPathEditPoints !== undefined || graphicPathNodeEditPoints !== undefined) &&
     graphicEditHandlesActive &&
+    // Keep the transform frame hosting typed Z/X/Y entry when Shift releases.
+    !rotationInput &&
     !showGraphicGradientHandles;
   const showGraphicCornerRadiusHandle = selected &&
     object.type === "graphic" &&
@@ -25574,6 +26397,8 @@ function DocumentObjectViewContent({
                 className="native-molecule-overlay-visual"
                 data-native-molecule-overlay-visual="true"
                 transform={`translate(${formatSvgNumber(-object.x)} ${formatSvgNumber(-object.y)})`}
+                // The 10% spin ghost lives above the paint stack in the chrome layer.
+                style={spinning ? { visibility: "hidden" } : undefined}
               >
                 {(editingAtomLabel
                   ? nativeMoleculeSvgFragments
@@ -25583,6 +26408,14 @@ function DocumentObjectViewContent({
                 ).map((fragment) => renderStaticPageSvgFragment(fragment))}
               </g>
             ) : null}
+          </svg>
+          {chrome(<>
+          <svg
+            className="native-molecule-overlay native-molecule-interaction-overlay"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            aria-hidden="true"
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
             {selectionBlob}
             {selectedRingBlobs}
             {object.atoms
@@ -25782,6 +26615,7 @@ function DocumentObjectViewContent({
                 />
               );
             }) : null}
+          </>)}
         </div>
       );
     }
@@ -25798,8 +26632,9 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-        onDoubleClick={handleTextDoubleClick}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 
@@ -25815,7 +26650,7 @@ function DocumentObjectViewContent({
         data-layer-index={layerIndex}
         data-mechanism-arrow-kind={object.arrowKind}
       >
-        {mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
+        {chrome(mechanismHandlesVisible ? object.controlPoints.map((control, controlIndex) => (
           <button
             type="button"
             className="mechanism-arrow-handle"
@@ -25823,15 +26658,15 @@ function DocumentObjectViewContent({
             aria-label={`Electron push arrow handle ${controlIndex + 1}`}
             data-mechanism-handle-index={controlIndex}
             style={{
-              left: `calc(${control.x - object.x}px * var(--page-scale))`,
-              top: `calc(${control.y - object.y}px * var(--page-scale))`
+              left: `calc(${control.x - frameBounds.x}px * var(--page-scale))`,
+              top: `calc(${control.y - frameBounds.y}px * var(--page-scale))`
             }}
             onPointerDown={(event) => onMechanismHandlePointerDown(object.id, controlIndex, event)}
             onPointerMove={onMechanismHandlePointerMove}
             onPointerUp={onMechanismHandlePointerUp}
             onPointerCancel={onMechanismHandlePointerCancel}
           />
-        )) : null}
+        )) : null)}
       </div>
     );
   }
@@ -25858,7 +26693,9 @@ function DocumentObjectViewContent({
         onPointerUp={handleObjectPointerUp}
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
-      />
+      >
+        {chrome(null)}
+      </div>
     );
   }
 
@@ -25903,6 +26740,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
+        {chrome(<>
         {(selected && !inGroupSelection) || editingText ? (
           <>
             <button
@@ -25965,7 +26803,7 @@ function DocumentObjectViewContent({
               onChange={handleTextChange}
               onPaste={handleTextPaste}
               onFocus={(event) => {
-                if (object.text === "Text") {
+                if (isTextPlaceholderPending(object.id)) {
                   event.currentTarget.select();
                 }
                 recordTextEditorSelection(event.currentTarget);
@@ -25980,7 +26818,10 @@ function DocumentObjectViewContent({
               onKeyDown={handleTextKeyDown}
               onKeyUp={(event) => recordTextEditorSelection(event.currentTarget)}
               onSelect={(event) => recordTextEditorSelection(event.currentTarget)}
-              onPointerDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                onTextPlaceholderClear(object.id);
+                event.stopPropagation();
+              }}
               onPointerUp={(event) => {
                 event.stopPropagation();
                 recordTextEditorSelection(event.currentTarget);
@@ -25988,6 +26829,7 @@ function DocumentObjectViewContent({
             />
           </>
         ) : null}
+        </>, textCss)}
       </div>
     );
   }
@@ -26049,7 +26891,7 @@ function DocumentObjectViewContent({
             />
           ))}
         </svg>
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26072,7 +26914,7 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {artObjectTransformFrame}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -26101,6 +26943,9 @@ function DocumentObjectViewContent({
     const graphicCornerRadiusHandle = showGraphicCornerRadiusHandle ? (
       <GraphicCornerRadiusHandle
         object={object}
+        pageScale={pageScale ?? 1}
+        pageWidth={pageWidth}
+        pageHeight={pageHeight}
         readout={graphicCornerRadiusReadout}
         counterRotationDegrees={graphicVisualRotationDegrees}
         onDoubleClick={handleGraphicCornerRadiusDoubleClick}
@@ -26164,12 +27009,17 @@ function DocumentObjectViewContent({
             {artTransformProxy ? null : <GraphicGlyph object={object} />}
           </div>
           {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
-          {graphicCornerRadiusHandle}
-          {graphicGradientHandles}
-          {graphicPathEditHandles}
         </div>
-        {graphicEyedropperTargetOverlay}
-        {artObjectTransformFrame}
+        {chrome(<>
+          <div className="graphic-visual-shell" style={graphicVisualStyle}>
+            {artTransformProxy ? <ArtTransformDragPreviewProxy proxy={artTransformProxy} /> : null}
+            {graphicCornerRadiusHandle}
+            {graphicGradientHandles}
+            {graphicPathEditHandles}
+          </div>
+          {graphicEyedropperTargetOverlay}
+          {artObjectTransformFrame}
+        </>)}
       </div>
     );
   }
@@ -26186,17 +27036,18 @@ function DocumentObjectViewContent({
       onPointerCancel={handleObjectPointerCancel}
       onPointerLeave={handleObjectPointerLeave}
     >
-      {artObjectTransformFrame}
+      {chrome(artObjectTransformFrame)}
     </div>
   );
 }
 
-function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPreviewProxy }) {
+function ArtTransformDragPreviewProxy({ proxy, asSvg = false }: { proxy: ArtTransformDragPreviewProxy; asSvg?: boolean }) {
   const [rasterImageUrl, setRasterImageUrl] = useState<string | undefined>();
 
   useEffect(() => {
     setRasterImageUrl(undefined);
-    if (proxy.kind !== "svg-image" || !proxy.imageUrl) {
+    // The HTML copy is hidden edit chrome; only the ordered SVG image needs rasterizing.
+    if (!asSvg || proxy.kind !== "svg-image" || !proxy.imageUrl) {
       return;
     }
 
@@ -26210,10 +27061,15 @@ function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPrevie
     return () => {
       active = false;
     };
-  }, [proxy]);
+  }, [proxy, asSvg]);
 
   if (proxy.kind === "svg-image" && proxy.imageUrl) {
     const imageUrl = rasterImageUrl ?? proxy.imageUrl;
+    if (asSvg) {
+      return <image href={imageUrl} width={proxy.width} height={proxy.height} preserveAspectRatio="none"
+        data-art-transform-drag-preview="image" data-art-transform-drag-preview-source={rasterImageUrl ? "raster" : "svg"}
+        pointerEvents="none" />;
+    }
     return (
       <img
         alt=""
@@ -26226,6 +27082,11 @@ function ArtTransformDragPreviewProxy({ proxy }: { proxy: ArtTransformDragPrevie
         src={imageUrl}
       />
     );
+  }
+
+  if (asSvg) {
+    return <rect width={proxy.width} height={proxy.height} fill="rgb(29 127 104 / 10%)"
+      stroke="var(--cd-accent)" strokeWidth={1.5} data-art-transform-drag-preview="bounds" pointerEvents="none" />;
   }
 
   return (
@@ -26830,7 +27691,7 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
   ));
 }
 
-function GraphicGlyph({ object }: { object: GraphicObject }) {
+const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
   const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
@@ -26842,12 +27703,12 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
   const strokeDasharray = plan.stroke.dasharray;
   const cornerRadius = plan.cornerRadius;
   const fillMode = plan.fill.mode;
-  const gradientId = `graphic-gloss-${object.id}`;
-  const effectFilterId = `graphic-effects-${object.id}`;
-  const fillPaintId = `graphic-fill-${object.id}`;
-  const strokePaintId = `graphic-stroke-${object.id}`;
-  const markerStartId = `graphic-marker-start-${object.id}`;
-  const markerEndId = `graphic-marker-end-${object.id}`;
+  const gradientId = `${definitionPrefix}graphic-gloss-${object.id}`;
+  const effectFilterId = `${definitionPrefix}graphic-effects-${object.id}`;
+  const fillPaintId = `${definitionPrefix}graphic-fill-${object.id}`;
+  const strokePaintId = `${definitionPrefix}graphic-stroke-${object.id}`;
+  const markerStartId = `${definitionPrefix}graphic-marker-start-${object.id}`;
+  const markerEndId = `${definitionPrefix}graphic-marker-end-${object.id}`;
   const pathD = plan.pathD;
   const visiblePathD = plan.visiblePathD ?? pathD;
   const projectionTransform = plan.projectionTransform;
@@ -27104,7 +27965,7 @@ function GraphicGlyph({ object }: { object: GraphicObject }) {
       )}
     </svg>
   );
-}
+});
 
 function graphicObjectIsFreehandPath(object: GraphicObject): boolean {
   return object.graphicKind === "path" && object.data.artPathKind === "freehand";
@@ -27148,24 +28009,36 @@ function graphicGradientHandleStatusName(
 
 function GraphicCornerRadiusHandle({
   object,
+  pageScale,
+  pageWidth,
+  pageHeight,
   readout,
   counterRotationDegrees,
   onPointerDown,
   onDoubleClick
 }: {
   object: GraphicObject;
+  pageScale: number;
+  pageWidth: number;
+  pageHeight: number;
   readout?: GraphicCornerRadiusReadoutState;
   counterRotationDegrees: number;
   onPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   onDoubleClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
-  const point = nativeGraphicCornerRadiusEditPoint(object);
+  // The placement search projects many candidate spots; repeat it only when
+  // the shape, zoom or page changes, not on every render of the selection.
+  const point = useMemo(
+    () => nativeGraphicCornerRadiusHandlePoint(object, pageScale, { width: pageWidth, height: pageHeight }),
+    [object, pageScale, pageWidth, pageHeight]
+  );
   if (!point) {
     return null;
   }
 
   const radius = readout?.radius ?? graphicCornerRadiusReadoutValue(object);
   const projectedPoint = projectGraphicObjectPoint(object, point, { coordinateSpace: "local" });
+  const projectedReadoutPoint = projectGraphicObjectPoint(object, nativeGraphicCornerRadiusEditPoint(object)!, { coordinateSpace: "local" });
   const label = `Radius: ${Math.round(radius)} px`;
 
   return (
@@ -27188,8 +28061,8 @@ function GraphicCornerRadiusHandle({
         className="graphic-corner-radius-readout"
         data-graphic-corner-radius-readout="true"
         style={{
-          left: pageScaledCssPx(projectedPoint.x),
-          top: pageScaledCssPx(projectedPoint.y),
+          left: pageScaledCssPx(projectedReadoutPoint.x),
+          top: pageScaledCssPx(projectedReadoutPoint.y),
           transform: graphicSystemReadoutTransform(counterRotationDegrees, "corner-radius")
         }}
       >
@@ -28020,114 +28893,6 @@ function documentObjectArtTransformFrameStyle(
     top: pageScaledCssPx(bounds.y),
     width: pageScaledCssPx(bounds.width),
     height: pageScaledCssPx(bounds.height)
-  };
-}
-
-function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: { x: number; y: number; width: number; height: number },
-  rotationDegrees: number
-): { x: number; y: number; width: number; height: number } {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = {
-    x: Math.max(object.width, 1) / 2,
-    y: Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(rotationDegrees);
-  const cos = Math.cos(rotationRad);
-  const sin = Math.sin(rotationRad);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
-
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
-  };
-}
-
-function unrotateGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  if (Math.abs(object.rotation) < 0.001) {
-    return point;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(-object.rotation);
-  return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function projectGraphicVisualPagePoint(object: GraphicObject, point: ClientPoint): ClientPoint {
-  const projected = projectGraphicObjectPoint(object, point);
-  if (Math.abs(object.rotation) < 0.001) {
-    return projected;
-  }
-
-  const center = {
-    x: object.x + Math.max(object.width, 1) / 2,
-    y: object.y + Math.max(object.height, 1) / 2
-  };
-  const rotationRad = degreesToRadians(object.rotation);
-  return rotatePointAroundCenter(projected, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function rotatePointAroundCenter(
-  point: { x: number; y: number },
-  center: { x: number; y: number },
-  cos: number,
-  sin: number
-): { x: number; y: number } {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  return {
-    x: center.x + dx * cos - dy * sin,
-    y: center.y + dx * sin + dy * cos
-  };
-}
-
-function documentObjectProjectedPlaneMatrix(
-  tiltXDegrees: number,
-  tiltYDegrees: number,
-  rotationDegrees: number
-): DocumentObjectProjectionMatrix {
-  const tiltXRad = degreesToRadians(tiltXDegrees);
-  const tiltYRad = degreesToRadians(tiltYDegrees);
-  const cx = Math.cos(tiltXRad);
-  const sx = Math.sin(tiltXRad);
-  const cy = Math.cos(tiltYRad);
-  const sy = Math.sin(tiltYRad);
-  const zRad = degreesToRadians(rotationDegrees);
-  const cz = Math.cos(zRad);
-  const sz = Math.sin(zRad);
-
-  // Same screen-space projected-plane basis used by native molecule X/Y tilt
-  // for local z=0 points, expressed as a 2D affine CSS matrix. The in-plane
-  // Z rotation is applied first, then the screen-space Y and X tilts.
-  return {
-    a: cy * cz,
-    b: cx * sz + sx * sy * cz,
-    c: -cy * sz,
-    d: cx * cz - sx * sy * sz
   };
 }
 
@@ -29358,7 +30123,7 @@ function NativeFreeformBondPreview({
   );
 }
 
-function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): ResolvedOpenDocument | undefined {
+async function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>): Promise<ResolvedOpenDocument | undefined> {
   if (result.document) {
     return { document: result.document, source: result.source };
   }
@@ -29367,9 +30132,17 @@ function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>
   }
 
   if (result.conflict.visibleDocument) {
-    const importVisible = window.confirm(
-      "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset? Choose Cancel to restore the embedded ChemDraft document instead."
-    );
+    const importVisible = await nativePrompt({
+      title: "Modified visible CDXML",
+      message: "This file's visible CDXML was modified outside ChemDraft. Import the edited visible CDXML subset, or restore the embedded ChemDraft document instead?",
+      kind: "warning",
+      // Cancel keeps the outcome a dismissal always had: the embedded document.
+      choices: [
+        { id: "visible", label: "Import Visible CDXML" },
+        { id: "embedded", label: "Restore Embedded" },
+        { id: "cancel", label: "Cancel", cancel: true }
+      ]
+    }) === "visible";
     return importVisible
       ? {
           document: result.conflict.visibleDocument,
@@ -29383,9 +30156,12 @@ function resolveOpenResultDocument(result: ReturnType<typeof openNativeDocument>
         };
   }
 
-  const restoreEmbedded = window.confirm(
-    "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?"
-  );
+  const restoreEmbedded = await nativePrompt({
+    title: "Restore embedded document?",
+    message: "This file's visible CDXML was modified outside ChemDraft, but ChemDraft could not import a visible subset. Restore the embedded ChemDraft document?",
+    kind: "warning",
+    choices: [{ id: "restore", label: "Restore Embedded" }, { id: "cancel", label: "Cancel", cancel: true }]
+  }) === "restore";
   return restoreEmbedded
     ? {
         document: result.conflict.embeddedDocument,
@@ -29641,21 +30417,24 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 
 async function pickNativeOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await withToolsetWindowsSuspended(() => open({
+  const selected = await open({
     title: "Open ChemDraft or CDXML Document",
     multiple: false,
     fileAccessMode: "scoped"
-  }));
+  });
   return typeof selected === "string" ? selected : undefined;
 }
 
-async function pickNativeSavePath(defaultPath: string): Promise<string | undefined> {
+async function pickNativeSavePath(
+  defaultPath: string,
+  options?: { title: string; extension: string }
+): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await withToolsetWindowsSuspended(() => save({
-    title: "Save ChemDraft Document",
+  const selected = await save({
+    title: options?.title ?? "Save ChemDraft Document",
     defaultPath,
-    filters: [{ name: "ChemDraft", extensions: ["chemdraft"] }]
-  }));
+    filters: [{ name: options ? "Saved document" : "ChemDraft", extensions: [options?.extension ?? "chemdraft"] }]
+  });
   return selected ?? undefined;
 }
 
@@ -29665,17 +30444,17 @@ async function pickNativeExportPath(
   extensions: readonly string[]
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await withToolsetWindowsSuspended(() => save({
+  const selected = await save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  }));
+  });
   return selected ? ensureExportFileExtension(selected, extensions) : undefined;
 }
 
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
-  const selected = await withToolsetWindowsSuspended(() => open({
+  const selected = await open({
     title: "Import Drawn Structure Settings Template",
     multiple: false,
     fileAccessMode: "scoped",
@@ -29684,25 +30463,25 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
       { name: "ChemDraw Style Sheets", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
-  }));
+  });
   return typeof selected === "string" ? selected : undefined;
 }
 
 async function pickNativeMoleculeTemplateSavePath(defaultPath: string): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
-  const selected = await withToolsetWindowsSuspended(() => save({
+  const selected = await save({
     title: "Export Drawn Structure Settings Template",
     defaultPath,
     filters: [{ name: "Drawn Structure Settings Template", extensions: ["template"] }]
-  }));
+  });
   return selected ? ensureExportFileExtension(selected, ["template"]) : undefined;
 }
 
-type TauriDialogModule = typeof import("@tauri-apps/plugin-dialog");
+type TauriDialogModule = typeof import("./nativeFileDialog");
 let tauriDialogModulePromise: Promise<TauriDialogModule> | undefined;
 
 function loadTauriDialogModule(): Promise<TauriDialogModule> {
-  tauriDialogModulePromise ??= import("@tauri-apps/plugin-dialog");
+  tauriDialogModulePromise ??= import("./nativeFileDialog");
   return tauriDialogModulePromise;
 }
 
@@ -29711,7 +30490,7 @@ function prewarmNativeDialogModule(): void {
     return;
   }
 
-  void loadTauriDialogModule().catch(() => {
+  void loadTauriDialogModule().then((dialogs) => dialogs.prewarmNativeFileDialogs()).catch(() => {
     tauriDialogModulePromise = undefined;
   });
 }

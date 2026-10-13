@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondOrderResolution, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
-import { createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import { applyColorToNativeMoleculePart, applyNativeAtomElementTarget, commitNativeAtomLabelTarget, createPhase4Document, insertNativeTemplateMolecule, moveNativeMoleculeParts } from "./documentWorkflow";
 
 function molecule(document: ChemDraftDocument): MoleculeObject {
@@ -45,6 +45,25 @@ function expectDerivedFromGraph(object: MoleculeObject) {
 }
 
 describe("atom-label draft rollback", () => {
+  it("leaves the entire document alone when an external label supersedes the draft", () => {
+    const { document, state } = fixture();
+    const preview = draft(document, state);
+    const current = molecule(preview);
+    const external = replaceMolecule(preview, { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, element: "O", labelLiteral: undefined } : atom) });
+    expect(restoreAtomLabelDraft(external, state)).toBe(external);
+  });
+
+  it("cancels later draft keys back to an externally accepted label, rather than the original label", () => {
+    const { document, state } = fixture();
+    const preview = draft(document, state, "NM");
+    const current = molecule(preview);
+    const accepted = { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, element: "O" } : atom) };
+    const continued = draft(replaceMolecule(preview, accepted), state, "NMe");
+    expect(molecule(restoreAtomLabelDraft(continued, state))).toBe(accepted);
+  });
+
   it("restores an imported molecule exactly, including hints cleared on other atoms", () => {
     const { document, before, state } = fixture();
     const preview = draft(document, state);
@@ -135,5 +154,53 @@ describe("atom-label draft rollback", () => {
     expect(committed.bonds).toHaveLength(7);
     expect(committed.atoms[6]).toMatchObject({ element: "OMe", labelLiteral: true });
     expectDerivedFromGraph(committed);
+  });
+});
+
+describe("immutable atom-label cancellation snapshots", () => {
+  it("ignores shell and edited-atom key order while checking non-label fields", () => {
+    const { document, state } = fixture();
+    const original = molecule(document);
+    const reorder = <T extends object>(value: T): T => Object.fromEntries(Object.entries(value).reverse()) as T;
+    const changed = replaceMolecule(document, reorder({ ...original, atoms: original.atoms.map(atom =>
+      atom.id === state.atomId ? reorder({ ...atom, element: "NMe" }) : atom) }));
+    expect(atomLabelDraftDocumentUnchanged(reorder(changed), document, state)).toBe(true);
+    const moved = replaceMolecule(changed, { ...molecule(changed), atoms: molecule(changed).atoms.map(atom =>
+      atom.id === state.atomId ? { ...atom, x: atom.x + 1 } : atom) });
+    expect(atomLabelDraftDocumentUnchanged(moved, document, state)).toBe(false);
+  });
+
+  it("detects explicit undefined and external selection differences", () => {
+    const { document, state } = fixture();
+    const current = molecule(document);
+    const changed = replaceMolecule(document, { ...current, atoms: current.atoms.map(atom => atom.id === state.atomId
+      ? { ...atom, z: undefined } : atom) });
+    expect(atomLabelDraftDocumentUnchanged(changed, document, state)).toBe(false);
+    expect(atomLabelDraftDocumentUnchanged({ ...document, selection: { ...document.selection, objectIds: [] } }, document, state)).toBe(false);
+  });
+
+  it("treats replaced atoms, bonds, other objects and other pages as intervening changes", () => {
+    const { document, state } = fixture();
+    const current = molecule(document);
+    for (const changed of [
+      { ...current, atoms: current.atoms.map((atom, index) => index === 1 ? { ...atom } : atom) },
+      { ...current, bonds: current.bonds.map((bond, index) => index === 0 ? { ...bond } : bond) }
+    ]) expect(atomLabelDraftDocumentUnchanged(replaceMolecule(document, changed), document, state)).toBe(false);
+    const page = document.pages[0]!;
+    const other = { ...current, id: "other-molecule" };
+    const twoObjects = { ...document, pages: [{ ...page, objects: [...page.objects, other] }] };
+    expect(atomLabelDraftDocumentUnchanged({ ...twoObjects, pages: [{ ...twoObjects.pages[0]!, objects: [current, { ...other }] }] }, twoObjects, state)).toBe(false);
+    const otherPage = { ...page, id: "other-page", objects: [] };
+    const twoPages = { ...document, pages: [page, otherPage] };
+    expect(atomLabelDraftDocumentUnchanged({ ...twoPages, pages: [page, { ...otherPage }] }, twoPages, state)).toBe(false);
+  });
+
+  it("does not inspect the payload of unchanged objects", () => {
+    const { document, state } = fixture();
+    const page = document.pages[0]!;
+    const other = { ...molecule(document), id: "large-molecule", get structure(): string { throw new Error("Payload visited"); } };
+    const withLargeObject = { ...document, pages: [{ ...page, objects: [...page.objects, other] }] };
+    const copy = { ...withLargeObject, pages: [{ ...withLargeObject.pages[0]!, objects: [...withLargeObject.pages[0]!.objects] }] };
+    expect(atomLabelDraftDocumentUnchanged(copy, withLargeObject, state)).toBe(true);
   });
 });

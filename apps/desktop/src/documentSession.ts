@@ -57,6 +57,17 @@ export interface DocumentSessionView {
   scrollTop: number;
 }
 
+/** A readable outer session can contain no readable document envelopes. It still carries all
+ * recovery data, without inventing an active document from the outer compatibility fields. */
+export interface UnrestoredDocumentTabsSession {
+  version: typeof DOCUMENT_SESSION_VERSION;
+  tabs: [];
+  activeTabIndex: 0;
+  unrestoredTabs: unknown[];
+}
+
+type ParsedDocumentSession = DocumentSessionEnvelope | UnrestoredDocumentTabsSession;
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -140,8 +151,35 @@ export function rawDocumentSessionTab(tab: DocumentSessionEnvelope): unknown {
   return rawSessionTabs.get(tab) ?? tab;
 }
 
+/** Retry carried envelopes through the current parser without normalizing away recovery data. */
+export function documentSessionRestoreCandidates(envelope: ParsedDocumentSession): unknown[] {
+  const tabs = envelope.tabs ?? ("contents" in envelope ? [envelope] : []);
+  return [...tabs.map(rawDocumentSessionTab), ...(envelope.unrestoredTabs ?? [])];
+}
+
+export function unrestoredTabDisplayName(raw: unknown, index: number): string {
+  return record(raw) && typeof raw.displayName === "string" && raw.displayName.trim()
+    ? raw.displayName : `Kept drawing ${index + 1}`;
+}
+
+export function unrestoredTabsNotice(count: number): string {
+  return count
+    ? `; ${count} ${count === 1 ? "drawing is" : "drawings are"} kept for later`
+    : "";
+}
+
+/** Saved bytes need not be readable by this version in order to rescue them. */
+export function unrestoredTabContents(raw: unknown): string {
+  if (!record(raw) || typeof raw.contents !== "string") {
+    throw new Error("The saved tab has no document text; it remains in the session");
+  }
+  return raw.contents;
+}
+
 /** Validate each tab independently, retaining unreadable envelopes for the next autosave. */
-export function parseDocumentSessionEnvelope(raw: unknown, nested = false): DocumentSessionEnvelope | undefined {
+export function parseDocumentSessionEnvelope(raw: unknown, nested: true): DocumentSessionEnvelope | undefined;
+export function parseDocumentSessionEnvelope(raw: unknown, nested?: false): ParsedDocumentSession | undefined;
+export function parseDocumentSessionEnvelope(raw: unknown, nested = false): ParsedDocumentSession | undefined {
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
@@ -162,7 +200,9 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Docu
         tabs.push(tab);
       } else unrestoredTabs.push(rawTab);
     });
-    if (!tabs.length) return undefined;
+    if (!tabs.length) return {
+      version: DOCUMENT_SESSION_VERSION, tabs: [], activeTabIndex: 0, unrestoredTabs
+    };
     return { ...buildDocumentTabsSession(tabs, activeTabIndex),
       ...(unrestoredTabs.length ? { unrestoredTabs } : {}) };
   }
@@ -205,9 +245,9 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Docu
  *  "Restored last session" over the identical blank it starts with anyway. A blank canvas still
  *  restores when it IS a file (reopen it) or carries unsaved edits (e.g. the user erased
  *  everything and that erasure is the unsaved state). Multiple tabs keep pristine Untitled tabs. */
-export function shouldRestoreDocumentSession(envelope: DocumentSessionEnvelope): boolean {
+export function shouldRestoreDocumentSession(envelope: ParsedDocumentSession): boolean {
   return (envelope.tabs?.length ?? 0) > 1 || (envelope.unrestoredTabs?.length ?? 0) > 0 ||
-    envelope.path !== undefined || envelope.dirty || !envelope.blank || envelope.pristine === false;
+    ("contents" in envelope && (envelope.path !== undefined || envelope.dirty || !envelope.blank || envelope.pristine === false));
 }
 
 /**

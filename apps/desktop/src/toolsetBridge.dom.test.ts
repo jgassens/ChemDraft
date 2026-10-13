@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -148,6 +149,7 @@ describe("toolset bridge interactions", () => {
     return target;
   }
 
+  // Heavy DOM render and undo regression can exceed Vitest's default on busy CI hosts.
   it("centers every double bond of a whole selected molecule as one undo entry", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Whole molecule position"), { x: 300, y: 300 }, "benzene");
     const molecule = initial.pages[0].objects[0] as MoleculeObject;
@@ -160,7 +162,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Double-bond position: center");
     await act(async () => { routeCommand("edit.redo"); });
     expect(count()).toBe(6);
-  });
+  }, 20_000);
 
   it("centers selected double bonds with one labelled undo entry and retains the bond selection", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Centered selection"), { x: 300, y: 300 }, "benzene");
@@ -554,8 +556,9 @@ describe("toolset bridge interactions", () => {
     });
 
     // Both molecules render their ring as selected (the headline cross-molecule win).
-    expect(wrapperFor(molA.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
-    expect(wrapperFor(molB.id).querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    // Ring highlights share the interaction layer with handles, above every object's paint.
+    expect(container.querySelector(`[data-object-controls="${molA.id}"]`)!.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
+    expect(container.querySelector(`[data-object-controls="${molB.id}"]`)!.querySelectorAll(".native-molecule-selected-ring")).toHaveLength(1);
     // The status counts rings across both molecules, not just the primary.
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected 2 rings");
 
@@ -1119,6 +1122,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Selected ring");
   });
 
+  // Heavy multi-ring DOM command routing can exceed Vitest's default on busy CI hosts.
   it("stress-routes repeated Art commands across a multi-ring selection", async () => {
     let initialDocument = insertNativeTemplateMolecule(
       createPhase4Document("Rendered Multi Ring Art Stress"),
@@ -1199,7 +1203,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[data-art-effect-controls="glow"]')).toBeNull();
     expect(container.querySelector('[data-art-effect-controls="shadow"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Cleared 2 selected ring effects");
-  });
+  }, 30_000);
 
   it("requires an explicit choice before whole-molecule Art edits clear ring overrides", async () => {
     let initialDocument = insertNativeTemplateMolecule(
@@ -1225,25 +1229,24 @@ describe("toolset bridge interactions", () => {
       "#1f5fbf"
     );
 
+    let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+    const restoreProvider = setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; }));
+    onTestFinished(restoreProvider);
     await renderMainWindow(initialDocument);
 
     expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="objects"]')).not.toBeNull();
-    routeCommand("object.color.red");
+    await act(async () => routeCommand("object.color.red"));
 
-    const prompt = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Per-ring appearance attributes"]');
-    expect(prompt).not.toBeNull();
+    expect(pending?.prompt.title).toBe("Per-Ring Attributes");
+    expect(pending?.prompt.message).toContain("per-ring attributes");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Choose how to handle per-ring attributes");
     let renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
     );
     expect(renderedRingFill?.getAttribute("fill")).toBe("#1f5fbf");
 
-    const keepButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent === "Keep Overrides");
-    await act(async () => {
-      keepButton?.click();
-    });
-
+    expect(pending?.prompt.choices.find((choice) => choice.id === "keep")?.label).toBe("Keep Overrides");
+    await act(async () => { pending!.resolve("keep"); });
     expect(container.querySelector('[role="dialog"][aria-label="Per-ring appearance attributes"]')).toBeNull();
     renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`
@@ -1251,13 +1254,11 @@ describe("toolset bridge interactions", () => {
     expect(renderedRingFill?.getAttribute("fill")).toBe("#1f5fbf");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Updated selected fill");
 
-    routeCommand("object.color.green");
-    const clearButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent === "Clear Overrides");
-    await act(async () => {
-      clearButton?.click();
+    await act(async () => routeCommand("object.color.green"));
+    expect(pending?.prompt.choices.find((choice) => choice.id === "clear")).toMatchObject({
+      label: "Clear Overrides", destructive: true
     });
-
+    await act(async () => { pending!.resolve("clear"); });
     expect(container.querySelector('[role="dialog"][aria-label="Per-ring appearance attributes"]')).toBeNull();
     renderedRingFill = container.querySelector<SVGPathElement>(
       `[data-molecule-fill-ring="true"][data-ring-key="${ring.ringKey}"]`

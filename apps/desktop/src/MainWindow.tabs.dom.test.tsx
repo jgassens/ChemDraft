@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { applyNativeChainTool, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import { saveKeybindingSettings } from "./keybindingSettings";
 import { createViewportState } from "@chemdraft/viewport-engine";
-import { DOM_COMMAND_EVENT, setToolbarsMenu } from "./window-manager";
+import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
-import type { DocumentPatch } from "@chemdraft/chem-core";
+import type { DocumentPatch, MoleculeObject } from "@chemdraft/chem-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowSnapshotPayload,
   broadcastAnalysisWindowSnapshot, respondToProposalDecision
@@ -17,9 +20,19 @@ import {
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
+import * as atomLabelDraft from "./atomLabelDraft";
+import * as nativePaletteReconciliation from "./toolbars/reconcileNativePalettes";
 
 const native = vi.hoisted(() => ({
   desktop: true,
+  suspendUtilities: false,
+  suspensionDepth: 0,
+  visibilityChanges: [] as string[],
+  toolsetWindows: new Map<string, boolean>(),
+  suspendedToolsets: [] as string[],
+  loadToolsetLayout: vi.fn<() => Promise<unknown>>(),
+  listToolsets: vi.fn<() => Promise<ToolsetWindowState[]>>(),
+  openToolset: vi.fn<(id: string) => Promise<ToolsetWindowState>>(),
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
@@ -33,7 +46,7 @@ const native = vi.hoisted(() => ({
 }));
 vi.mock("./documentWorkflow", async (original) => {
   const actual = await original<typeof import("./documentWorkflow")>();
-  return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload) };
+  return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload), openNativeDocument: vi.fn(actual.openNativeDocument) };
 });
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./window-manager", async (original) => ({
@@ -41,6 +54,13 @@ vi.mock("./window-manager", async (original) => ({
   isDesktopRuntime: () => native.desktop,
   loadDocumentSession: native.load,
   saveDocumentSession: native.saveSession,
+  loadToolsetLayoutState: native.loadToolsetLayout,
+  openToolsetWindow: native.openToolset,
+  listToolsetWindowStates: native.listToolsets,
+  closeToolsetWindow: async (toolsetId: string) => {
+    native.toolsetWindows.set(toolsetId, false);
+    return { toolsetId, open: false, focused: false };
+  },
   setToolbarsMenu: vi.fn().mockResolvedValue(undefined),
   listenForQuitFlushRequest: async (handler: () => Promise<void>) => {
     native.quitFlush = handler;
@@ -58,7 +78,23 @@ vi.mock("./window-manager/tauriEvents", async (original) => {
     listenTauriEvent: listen, listenCurrentWindowEvent: listen };
 });
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(null)
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  isTauri: () => native.suspendUtilities,
+  invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+    if (command === "suspend_toolset_windows") {
+      if (options?.suspended) {
+        if (native.suspensionDepth++ === 0) {
+          native.visibilityChanges.push("hide");
+          native.suspendedToolsets = [...native.toolsetWindows].filter(([, visible]) => visible).map(([id]) => id);
+          for (const id of native.suspendedToolsets) native.toolsetWindows.set(id, false);
+        }
+      } else if (--native.suspensionDepth === 0) {
+        native.visibilityChanges.push("restore");
+        for (const id of native.suspendedToolsets) native.toolsetWindows.set(id, true);
+      }
+    }
+    return null;
+  })
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
@@ -80,12 +116,32 @@ describe("documents in one window", () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
 
+  let pendingPrompt: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+  let restorePromptProvider: () => void;
+
   beforeEach(async () => {
+    pendingPrompt = undefined;
+    restorePromptProvider = setNativePromptProvider((prompt) => new Promise((resolve) => {
+      pendingPrompt = { prompt, resolve };
+    }));
     vi.clearAllMocks();
     vi.mocked(setToolbarsMenu).mockResolvedValue(undefined);
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
+    native.suspendUtilities = false;
+    native.suspensionDepth = 0;
+    native.visibilityChanges = [];
+    native.toolsetWindows.clear();
+    native.suspendedToolsets = [];
+    native.loadToolsetLayout.mockResolvedValue(undefined);
+    native.listToolsets.mockImplementation(async () => [...native.toolsetWindows]
+      .map(([toolsetId, open]) => ({ toolsetId, open, focused: false })));
+    native.openToolset.mockImplementation(async (toolsetId) => {
+      // Match Rust: suspension refuses even creation of a window that does not yet exist.
+      if (!native.suspensionDepth) native.toolsetWindows.set(toolsetId, true);
+      return { toolsetId, open: native.toolsetWindows.get(toolsetId) ?? false, focused: false };
+    });
     native.session = undefined;
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
@@ -101,12 +157,14 @@ describe("documents in one window", () => {
   });
 
   afterEach(() => {
+    restorePromptProvider();
     act(() => root?.unmount());
     root = undefined;
     container?.remove();
     window.history.replaceState(null, "", "/");
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   async function mount(initialDocument = createPhase4Document("Untitled")) {
@@ -120,6 +178,7 @@ describe("documents in one window", () => {
   }
   async function remount() {
     act(() => root!.unmount());
+    pendingPrompt = undefined;
     container.innerHTML = "";
     await mount();
   }
@@ -147,6 +206,7 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document.title).toBe(title);
     expect(bridge().snapshot().page.objectCount).toBe(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     const saved = await flush();
     expect(saved.tabs).toHaveLength(1);
     expect(saved.tabs![0]).toMatchObject({ pristine: true, blank: true, dirty: false });
@@ -169,9 +229,12 @@ describe("documents in one window", () => {
     return parseDocumentSessionEnvelope(native.session)!;
   }
   async function modalButton(label: string) {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-      .find((candidate) => candidate.textContent === label)!;
-    await act(async () => button.click());
+    expect(pendingPrompt).toBeDefined();
+    const { prompt, resolve } = pendingPrompt!;
+    const choice = prompt.choices.find((candidate) => candidate.label === label);
+    expect(choice).toBeDefined();
+    pendingPrompt = undefined;
+    await act(async () => resolve(choice!.id));
   }
   async function key(shiftKey = false) {
     const event = new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, shiftKey, bubbles: true, cancelable: true });
@@ -208,6 +271,132 @@ describe("documents in one window", () => {
     if (content.kind !== "patchReview") throw new Error("No proposal review snapshot");
     return content.proposals;
   };
+
+  async function mountHoverChain() {
+    act(() => root!.unmount());
+    container.innerHTML = "";
+    vi.mocked(createPluginRuntime).mockClear();
+    saveKeybindingSettings({ scheme: "chemdraft" });
+    const chain = applyNativeChainTool(createPhase4Document("Hover cancellation"), { x: 80, y: 300 }, { x: 700, y: 300 });
+    await mount(selectDocumentObjects(chain, chain.pages[0]!.id, []));
+    await command("tool.bond");
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      element.getBoundingClientRect = () => rect;
+    }
+  }
+  const hoverMolecule = () => bridge().snapshot().document.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+  const labelEditor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+  async function hoverChainAtom(index: number) {
+    const atom = hoverMolecule().atoms[index]!;
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: atom.x, clientY: atom.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
+    expect(bridge().snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+  }
+  async function labelKey(key: string) {
+    const target = document.activeElement ?? document.body;
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => { target.dispatchEvent(event); });
+    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+      const value = target.value + key;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.setSelectionRange(value.length, value.length);
+      });
+    }
+  }
+
+  it("Escape preserves an accepted chemistry proposal between the first hover letter and the draft", async () => {
+    await mountHoverChain();
+    await hoverChainAtom(1);
+    await labelKey("N");
+    const beforeProposal = hoverMolecule();
+    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
+      atoms: beforeProposal.atoms.map((atom, index) => index === 3 ? { ...atom, element: "O" } : atom)
+    } });
+    await decide("acceptPluginProposal", proposal.id);
+    const acceptedAtom = hoverMolecule().atoms[3]!;
+    expect(acceptedAtom.element).toBe("O");
+    await labelKey("M");
+    await labelKey("e");
+    expect(labelEditor()?.value).toBe("NMe");
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(hoverMolecule().atoms[3]).toEqual(acceptedAtom);
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    // The external proposal keeps its undo entry.
+    await command("edit.undo");
+    expect(hoverMolecule().atoms[3]!.element).toBe("C");
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it.each(["O", "N"])("Escape preserves a same-atom proposal that supersedes the open draft with %s", async element => {
+    await mountHoverChain();
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    const beforeProposal = hoverMolecule();
+    const proposal = await propose({ op: "updateObject", objectId: beforeProposal.id, changes: {
+      atoms: beforeProposal.atoms.map((atom, index) => index === 1 ? { ...atom, element } : atom)
+    } });
+    await decide("acceptPluginProposal", proposal.id);
+    const accepted = bridge().snapshot().document;
+    expect(hoverMolecule().atoms[1]!.element).toBe(element);
+    expect(labelEditor()?.value).toBe("NMe");
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(accepted);
+    // Escape neither overwrites the accepted atom nor removes the proposal's history entry.
+    await command("edit.undo");
+    expect(hoverMolecule().atoms[1]!.element).toBe("N");
+  });
+
+  it("Escape discards the first letter even when rollback constructs document keys in a different order", async () => {
+    await mountHoverChain();
+    const before = bridge().snapshot().document;
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    const restore = atomLabelDraft.restoreAtomLabelDraft;
+    vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
+      const restored = restore(document, state);
+      return Object.fromEntries(Object.entries(restored).reverse()) as typeof restored;
+    });
+    await labelKey("Escape");
+    expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
+    await mountHoverChain();
+    native.savePicker.mockResolvedValueOnce("/tmp/chain.chemdraft");
+    await command("document.save");
+    expect(bridge().snapshot().file).toEqual({ path: "/tmp/chain.chemdraft", dirty: false });
+    const before = bridge().snapshot().document;
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    const savedPath = saveCommand === "document.saveAs" ? "/tmp/renamed-chain.chemdraft" : "/tmp/chain.chemdraft";
+    if (saveCommand === "document.saveAs") native.savePicker.mockResolvedValueOnce(savedPath);
+    await command(saveCommand);
+    expect(labelEditor()?.value).toBe("NMe");
+    const [path, contents] = native.writeFile.mock.calls.at(-1)!;
+    expect(path).toBe(savedPath);
+    const saved = openChemDraftPayload(contents).document!;
+    const savedMolecule = saved.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(savedMolecule.atoms[1]!.element).toBe("NMe");
+    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: false });
+    await labelKey("Escape");
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: true });
+    expect(document.title).toContain(`${savedPath.split("/").at(-1)} •`);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+  });
 
   it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {
     await open("Source");
@@ -281,6 +470,8 @@ describe("documents in one window", () => {
     }
     await closeTab();
     const other = bridge().snapshot().document;
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Closed source.chemdraft (closed)");
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
     await decide("acceptPluginProposal", proposal.id);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("its document was closed (Closed source.chemdraft)");
@@ -294,6 +485,65 @@ describe("documents in one window", () => {
     await decide("rejectPluginProposal", proposal.id);
     expect(runtime().host.listProposedPatches("pending")).toEqual([]);
     expect(bridge().snapshot().document).toEqual(other);
+  });
+
+  it.each([false, true])("uses the Save As title for proposal labels and the Accept refusal (multiple: %s)", async (multiple) => {
+    await open("Original source");
+    const proposal = await propose({ op: "updatePageLayout", pageId: bridge().snapshot().document.pages[0]!.id,
+      layout: bridge().snapshot().document.pages[0]!.layout });
+    expect(reviewItems()[0]!.documentName).toBeUndefined();
+    if (multiple) {
+      await command("document.new");
+      expect(reviewItems()[0]!.documentName).toBe("Original source.chemdraft");
+      await activate(0);
+    }
+    native.savePicker.mockResolvedValueOnce("/tmp/Renamed source.chemdraft");
+    await command("document.saveAs");
+    expect(tabs()[0]!.textContent).toBe("Renamed source.chemdraft");
+    expect(reviewItems()[0]!.documentName).toBe(multiple ? "Renamed source.chemdraft" : undefined);
+    await closeTab();
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Renamed source.chemdraft (closed)");
+    await decide("acceptPluginProposal", proposal.id);
+    const message = "Could not accept the proposal: its document was closed (Renamed source.chemdraft). You can reject it.";
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+  });
+
+  it.each([false, true])("uses the Save As title when a running command proposes later (close before arrival: %s)", async (closeBeforeArrival) => {
+    await open("Original delayed source");
+    const source = bridge().snapshot().document;
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => { finish = resolve; });
+    const commandId = registerProposal({ op: "updatePageLayout", pageId: source.pages[0]!.id,
+      layout: source.pages[0]!.layout }, wait);
+    let invocation!: Promise<unknown>;
+    await act(async () => { invocation = runtime().invokeCommand(commandId); });
+    native.savePicker.mockResolvedValueOnce("/tmp/Renamed delayed source.chemdraft");
+    await command("document.saveAs");
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    if (closeBeforeArrival) await closeTab();
+    await act(async () => { finish(); await invocation; });
+    const proposal = runtime().host.listProposedPatches("pending")[0]!;
+    if (!closeBeforeArrival) {
+      expect(reviewItems()[0]!.documentName).toBeUndefined();
+      await command("document.new");
+      expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft");
+      await activate(0);
+      await closeTab();
+    }
+    expect(tabs()).toHaveLength(1);
+    expect(reviewItems()[0]!.documentName).toBe("Renamed delayed source.chemdraft (closed)");
+    const other = bridge().snapshot().document;
+    await decide("acceptPluginProposal", proposal.id);
+    const message = "Could not accept the proposal: its document was closed (Renamed delayed source.chemdraft). You can reject it.";
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(bridge().snapshot().document).toEqual(other);
+    await decide("rejectPluginProposal", proposal.id);
+    expect(runtime().proposalDocumentTab(proposal.id)).toBeUndefined();
   });
 
   it("rejects a pending proposal from another open tab without switching or editing either document", async () => {
@@ -350,6 +600,7 @@ describe("documents in one window", () => {
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
@@ -490,15 +741,101 @@ describe("documents in one window", () => {
     const invoke = vi.spyOn(runtime().host, "invokeCommand");
     await closeTab();
     expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./));
-    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    expect(pendingPrompt?.prompt).toMatchObject({
+      title: "Save changes before closing?", kind: "warning",
+      choices: [{ id: "save", label: "Save" }, { id: "discard", label: "Don't Save", destructive: true },
+        { id: "cancel", label: "Cancel", cancel: true }]
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeDefined();
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(drawnText()).toContain("Second dirty drawing");
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()).toHaveLength(1);
     expect(drawnText()).toContain("Keep the first drawing");
+  });
+
+  it.each(["Import Visible CDXML", "Restore Embedded", "Cancel"])("CDXML conflict %s opens only the chosen document", async (choice) => {
+    await paste("Original embedded note");
+    const original = bridge().snapshot().document;
+    const payload = createNativeSavePayload(original).contents;
+    expect(payload).toContain("Original embedded note");
+    const edited = payload.replace("Original embedded note", "Externally edited note");
+    expect(openNativeDocument(edited).conflict?.visibleDocument).toBeDefined();
+    native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+    await command("document.open");
+    expect(pendingPrompt?.prompt.title).toBe("Modified visible CDXML");
+    // Cancel keeps a dismissal's old outcome, the embedded document; Escape reaches it on macOS.
+    expect(pendingPrompt?.prompt.choices.map((candidate) => candidate.label))
+      .toEqual(["Import Visible CDXML", "Restore Embedded", "Cancel"]);
+    expect(bridge().snapshot().document).toEqual(original);
+    expect(tabs()).toHaveLength(1);
+    await modalButton(choice);
+    expect(tabs()).toHaveLength(2);
+    expect(drawnText()).toContain(choice === "Import Visible CDXML" ? "Externally edited note" : "Original embedded note");
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    await activate(0);
+    expect(bridge().snapshot().document).toEqual(original);
+  });
+
+  it("reopening a file whose CDXML choice is still pending gives one tab for the path", async () => {
+    await paste("Original embedded note");
+    const edited = createNativeSavePayload(bridge().snapshot().document).contents
+      .replace("Original embedded note", "Externally edited note");
+    const prompts: { prompt: NativePromptOptions; resolve: (id: string) => void }[] = [];
+    const restore = setNativePromptProvider((prompt) => new Promise((resolve) => { prompts.push({ prompt, resolve }); }));
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        native.picker.mockResolvedValueOnce("/tmp/conflicted.chemdraft");
+        native.readFile.mockResolvedValueOnce(new TextEncoder().encode(edited));
+        await command("document.open");
+      }
+      let shown = 0;
+      while (prompts.length) {
+        const { prompt, resolve } = prompts.shift()!;
+        expect(prompt.title).toBe("Modified visible CDXML");
+        shown += 1;
+        await act(async () => resolve("visible"));
+      }
+      expect(shown).toBe(1);
+    } finally { restore(); }
+    expect(tabs()).toHaveLength(2);
+    expect(active()).toBe(1);
+    expect(bridge().snapshot().file.path).toBe("/tmp/conflicted.chemdraft");
+    expect(drawnText()).toContain("Externally edited note");
+    const saved = await flush();
+    expect(saved.tabs!.filter((tab) => tab.path === "/tmp/conflicted.chemdraft")).toHaveLength(1);
+  });
+
+  it("the web build keeps the original close dialog and Escape retains the drawing", async () => {
+    restorePromptProvider();
+    native.desktop = false;
+    await remount();
+    await paste("Web drawing stays editable");
+    const before = bridge().snapshot().document;
+    await closeTab();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Save changes before closing?"]')!;
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.textContent).toContain("Save the changes to Untitled?");
+    expect(Array.from(dialog.querySelectorAll("button")).map((button) => button.textContent))
+      .toEqual(["Cancel", "Don't Save", "Save"]);
+    await act(async () => dialog.querySelector("button")!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true
+    })));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    await closeTab();
+    const discard = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find((button) => button.textContent === "Don't Save")!;
+    await act(async () => discard.click());
+    expect(bridge().snapshot().page.objectCount).toBe(0);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    expect(tabs()).toHaveLength(1);
   });
 
   it("closing an inactive clean tab keeps the current drawing active", async () => {
@@ -508,6 +845,7 @@ describe("documents in one window", () => {
     const currentDocument = bridge().snapshot().document;
     await closeTab(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(bridge().snapshot().document).toEqual(currentDocument);
@@ -520,18 +858,71 @@ describe("documents in one window", () => {
     await closeTab();
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(pendingPrompt).toBeDefined();
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     native.writeFile.mockRejectedValueOnce(new Error("disk full"));
     await modalButton("Save");
     expect(tabs()).toHaveLength(multiple ? 2 : 1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("disk full");
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("disk full");
+    expect(pendingPrompt?.prompt.message).toContain("disk full");
     native.savePicker.mockResolvedValueOnce("/tmp/saved.chemdraft");
     await modalButton("Save");
     expect(native.writeFile).toHaveBeenLastCalledWith("/tmp/saved.chemdraft", expect.any(String));
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
+
+  it.each(["document.open", "document.save", "document.saveAs"])(
+    "%s suspends the standalone document file panel until cancellation", async (commandId) => {
+      native.suspendUtilities = true;
+      await paste("Standalone panel suspension");
+      const picker = commandId === "document.open" ? native.picker : native.savePicker;
+      let finishPanel!: (path: string | null) => void;
+      picker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
+      await command(commandId);
+      await vi.waitFor(() => expect(finishPanel).toBeDefined());
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      await act(async () => finishPanel(null));
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
+
+  it.each(["saved", "Don't Save", "Cancel", "panel cancelled then Cancel", "panel throws then Cancel"])(
+    "balances suspension through the real tab-close flow: %s", async (ending) => {
+      native.suspendUtilities = true;
+      await paste("Close-chain suspension");
+      await closeTab();
+      expect(native.suspensionDepth).toBe(1);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      if (ending === "Cancel" || ending === "Don't Save") {
+        await modalButton(ending);
+      } else {
+        let finishPanel!: (path: string | null) => void;
+        let failPanel!: (error: Error) => void;
+        native.savePicker.mockImplementationOnce(() => new Promise((resolve, reject) => {
+          finishPanel = resolve; failPanel = reject;
+        }));
+        const saving = modalButton("Save");
+        await vi.waitFor(() => expect(native.savePicker).toHaveBeenCalled());
+        expect(native.suspensionDepth).toBe(2);
+        expect(native.visibilityChanges).toEqual(["hide"]);
+        await act(async () => {
+          if (ending === "panel throws then Cancel") failPanel(new Error("panel unavailable"));
+          else finishPanel(ending === "saved" ? "/tmp/suspended-save.chemdraft" : null);
+        });
+        await saving;
+        if (ending !== "saved") {
+          expect(pendingPrompt?.prompt.message).toContain(ending.startsWith("panel throws") ? "panel unavailable" : "Save canceled");
+          expect(native.suspensionDepth).toBe(1);
+          expect(native.visibilityChanges).toEqual(["hide"]);
+          await modalButton("Cancel");
+        }
+      }
+      await vi.waitFor(() => expect(native.suspensionDepth).toBe(0));
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    }
+  );
 
   it.each([false, true])("the only clean tab x leaves a pristine Untitled without prompting (saved: %s)", async (saved) => {
     if (saved) await open("Clean saved drawing");
@@ -546,13 +937,13 @@ describe("documents in one window", () => {
     const before = bridge().snapshot().document;
     const closedTab = tabs()[0];
     await closeTab();
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Save the changes to Untitled?");
+    expect(pendingPrompt?.prompt.message).toContain("Save the changes to Untitled?");
     await modalButton("Cancel");
     expect(tabs()).toHaveLength(1);
     expect(bridge().snapshot().document).toEqual(before);
     expect(bridge().snapshot().file.dirty).toBe(true);
     await closeTab();
-    await modalButton("Discard");
+    await modalButton("Don't Save");
     expect(tabs()[0]).not.toBe(closedTab);
     await expectPristineUntitled();
   });
@@ -568,6 +959,7 @@ describe("documents in one window", () => {
     }
     expect(invoke).not.toHaveBeenCalled();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(bridge().snapshot().document).toEqual(before);
     const saved = await flush();
     expect(native.quit).toHaveBeenCalledOnce();
@@ -678,6 +1070,7 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     await activate(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(reject).not.toHaveBeenCalled();
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
   });
@@ -689,6 +1082,583 @@ describe("documents in one window", () => {
       view: { viewport: createViewportState(), scrollLeft: 0, scrollTop: 0 }
     })), 1);
   }
+
+  function sessionWithUnrestoredTabs(names = ["First.chemdraft", "Second.cdxml", "Third.chemdraft"]) {
+    const session = threeTabSession();
+    session.unrestoredTabs = names.map((displayName, index) => ({
+      ...session.tabs![index % 3]!, displayName, contents: `unreadable raw document ${index}`,
+      extraRecoveryData: { original: index }
+    }));
+    return session;
+  }
+
+  describe.each(["MacIntel", "Win32"])("kept drawings on %s", (platform) => {
+    beforeEach(() => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+      native.suspendUtilities = true;
+    });
+
+    const expectSuspended = () => {
+      expect(native.suspensionDepth).toBeGreaterThan(0);
+      expect(native.visibilityChanges).toEqual(["hide"]);
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+    };
+    const expectReleased = () => {
+      expect(native.suspensionDepth).toBe(0);
+      expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+      expect(pendingPrompt).toBeUndefined();
+    };
+
+    const startupLayout = {
+      version: 1, toolsetOrder: [], userToolsets: [],
+      toolsetOverrides: ["core.main", "core.art", "core.structure"].map(toolsetId => ({ toolsetId, visible: true }))
+    };
+
+    it("waits for saved toolbar layout and native window creation before suspending for the launch box", async () => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      let finishLayout!: (value: unknown) => void;
+      native.loadToolsetLayout.mockImplementationOnce(() => new Promise(resolve => { finishLayout = resolve; }));
+      let finishArt!: () => void;
+      const openNormally = native.openToolset.getMockImplementation()!;
+      native.openToolset.mockImplementation(async (id) => {
+        if (id === "core.art") await new Promise<void>(resolve => { finishArt = resolve; });
+        return openNormally(id);
+      });
+      native.openToolset.mockClear();
+      await remount();
+      expect(tabs()).toHaveLength(3);
+      expect(native.openToolset).not.toHaveBeenCalled();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.visibilityChanges).toEqual([]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+
+      await act(async () => finishLayout(startupLayout));
+      expect(native.openToolset).toHaveBeenCalledWith("core.main", expect.anything());
+      expect(native.openToolset).toHaveBeenCalledWith("core.art", expect.anything());
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+
+      await act(async () => finishArt());
+      expect(native.openToolset).toHaveBeenCalledWith("core.structure", expect.anything());
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expect(pendingPrompt?.prompt.message).toMatch(/^Its drawing is kept,/);
+      expect(pendingPrompt?.prompt.message).not.toContain("1 drawing didn't open");
+      expectSuspended();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.has(toolsetId)).toBe(true);
+        expect(native.toolsetWindows.get(toolsetId)).toBe(false);
+      }
+      // Installed plugins can finish loading after the launch box has appeared. The catalog
+      // refresh must not mistake the deliberately hidden windows for creation failures.
+      const currentRuntime = vi.mocked(createPluginRuntime).mock.results.at(-1)!.value as DesktopPluginRuntime;
+      native.openToolset.mockClear();
+      await act(async () => currentRuntime.registerPlugin({
+        id: "org.test.late-startup", name: "Late startup plugin", version: "0.0.1", apiVersion: "^0.1.6",
+        entry: "dist/plugin.js", permissions: [], contributes: { commands: [] }
+      }));
+      // Keeping the box open beyond the old retry window must never activate the web fallback.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(native.openToolset).not.toHaveBeenCalled();
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("unavailable");
+      await modalButton("Cancel");
+      expectReleased();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.get(toolsetId)).toBe(true);
+      }
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+    });
+
+    it("still falls back on genuine creation failure before showing the launch box", async () => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      native.openToolset.mockRejectedValue(new Error("native window creation failed"));
+      native.openToolset.mockClear();
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+      // Each retry uses the real reconciler, including its delay and failure verdict.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(220); });
+      }
+      expect(native.openToolset.mock.calls.filter(([id]) => id === "core.main")).toHaveLength(3);
+      expect(container.querySelector(".web-shell")).not.toBeNull();
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Native toolset windows unavailable; using in-window toolbars");
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each(["layout", "list", "open"])("bounds a never-resolving %s load/IPC without blocking commands or queued opens", async (stalled) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      if (stalled === "layout") native.loadToolsetLayout.mockImplementationOnce(() => new Promise(() => {}));
+      if (stalled === "list") native.listToolsets.mockImplementation(() => new Promise(() => {}));
+      if (stalled === "open") native.openToolset.mockImplementation(() => new Promise(() => {}));
+      await remount();
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/incoming.chemdraft", displayName: "incoming.chemdraft", contents: fileContents("Incoming drawing")
+      }));
+      await command("document.new");
+      expect(tabs()).toHaveLength(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.suspensionDepth).toBe(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      // Timeout alone cannot establish that native windows are genuinely unavailable.
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      await modalButton("Cancel");
+      expectReleased();
+      expect(tabs()).toHaveLength(4);
+      expect(bridge().snapshot().document.title).toBe("Incoming drawing");
+      await command("document.new");
+      expect(tabs()).toHaveLength(5);
+    });
+
+    it.each(["layout", "list", "reconciliation"])("opens the box and applies fallback when %s rejects", async (rejected) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      if (rejected === "layout") native.loadToolsetLayout.mockRejectedValueOnce(new Error("layout read failed"));
+      else if (rejected === "list") native.listToolsets.mockRejectedValue(new Error("list IPC failed"));
+      else vi.spyOn(nativePaletteReconciliation, "reconcileNativePaletteWindows")
+        .mockRejectedValueOnce(new Error("reconciliation failed"));
+      await remount();
+      // IPC rejections take the existing three-attempt path; a layout rejection settles directly.
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+      expect(container.querySelector(".web-shell")).not.toBeNull();
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+      await command("document.new");
+      expect(tabs()).toHaveLength(4);
+    });
+
+    it.each([
+      ["layout", false], ["open", false], ["layout", true], ["open", true]
+    ] as const)("handles late %s completion without a second box or false fallback (dismissed: %s)", async (late, dismissed) => {
+      vi.useFakeTimers();
+      native.session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.loadToolsetLayout.mockResolvedValue(startupLayout);
+      let finish!: () => void;
+      if (late === "layout") {
+        native.loadToolsetLayout.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(startupLayout); }));
+      } else {
+        const openNormally = native.openToolset.getMockImplementation()!;
+        native.openToolset.mockImplementationOnce(async (id) => {
+          await new Promise<void>(resolve => { finish = resolve; });
+          return openNormally(id);
+        });
+      }
+      await remount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      const firstPrompt = pendingPrompt;
+      expect(firstPrompt).toBeDefined();
+      expectSuspended();
+      if (dismissed) await modalButton("Cancel");
+      native.openToolset.mockClear();
+      await act(async () => finish());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      if (!dismissed) {
+        // Finishing under suspension must defer the rest of creation until the box is dismissed.
+        expect(pendingPrompt).toBe(firstPrompt);
+        expect(native.openToolset).not.toHaveBeenCalled();
+        await modalButton("Cancel");
+      }
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+      expectReleased();
+      for (const { toolsetId } of startupLayout.toolsetOverrides) {
+        expect(native.toolsetWindows.get(toolsetId)).toBe(true);
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(pendingPrompt).toBeUndefined();
+      expect(container.querySelector(".native-shell")).not.toBeNull();
+    });
+
+    function unsupportedChildrenSession() {
+      const session = threeTabSession();
+      return { ...session, tabs: session.tabs!.map((tab, index) => ({
+        ...tab, version: 99, contents: `${tab.contents}\r\n\t `,
+        extraRecoveryData: { original: index, label: "α 🧪" }
+      })) };
+    }
+
+    it("offers every version-99 child, keeps them after Cancel and relaunch, and autosaves new work", async () => {
+      const raw = unsupportedChildrenSession();
+      native.session = raw;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(bridge().snapshot().page.objectCount).toBe(0);
+      expect(bridge().snapshot().file).toEqual({ dirty: false });
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      for (const tab of raw.tabs) expect(pendingPrompt?.prompt.message).toContain(tab.displayName);
+      expectSuspended();
+      expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+      await modalButton("Cancel");
+      expectReleased();
+      native.saveSession.mockClear();
+      await paste("Fresh work after unreadable children");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
+      expect(native.saveSession).toHaveBeenCalled();
+      const autosaved = parseDocumentSessionEnvelope(native.session)!;
+      expect(autosaved.unrestoredTabs).toEqual(raw.tabs);
+      expect(autosaved.tabs![0]!.contents).toContain("Fresh work after unreadable children");
+      native.visibilityChanges = [];
+      await remount();
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      expect(drawnText()).toContain("Fresh work after unreadable children");
+      expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it("saves the original contents of every version-99 child without reserializing them", async () => {
+      const raw = unsupportedChildrenSession();
+      native.session = raw;
+      await remount();
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      const paths = raw.tabs.map((_, index) => platform === "Win32"
+        ? `C:\\rescued\\drawing-${index}.chemdraft` : `/tmp/drawing-${index}.chemdraft`);
+      for (const path of paths) native.savePicker.mockResolvedValueOnce(path);
+      native.writeFile.mockClear();
+      await modalButton("Save Drawing…");
+      expect(native.writeFile).toHaveBeenCalledTimes(3);
+      raw.tabs.forEach((tab, index) => {
+        expect(native.writeFile).toHaveBeenNthCalledWith(index + 1, paths[index], tab.contents);
+      });
+      expectReleased();
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+      expect(tabs()).toHaveLength(1);
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+    });
+
+    it("restores readable siblings while offering unsupported and malformed child envelopes", async () => {
+      const session = threeTabSession();
+      const unreadable = [
+        { ...session.tabs![0]!, version: 99, extraRecoveryData: { original: true } },
+        { ...session.tabs![2]!, dirty: "unknown", extraRecoveryData: { original: false } }
+      ];
+      native.session = { ...session, tabs: [unreadable[0], session.tabs![1], unreadable[1]] };
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(bridge().snapshot().document.title).toBe("Second");
+      expect(pendingPrompt?.prompt.title).toBe("2 drawings didn't open");
+      expect((await flush()).unrestoredTabs).toEqual(unreadable);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each([false, true])("includes existing kept tabs with new unreadable children (readable sibling: %s)", async (readableSibling) => {
+      const raw = unsupportedChildrenSession();
+      const readable = threeTabSession().tabs![1]!;
+      const children = readableSibling ? [raw.tabs[0], readable, raw.tabs[2]] : raw.tabs;
+      const alreadyKept = { version: 99, displayName: "Previously kept", contents: "original\r\nα 🧪" };
+      const recoverable = { ...readable, contents: fileContents("Previously kept, now readable") };
+      native.session = { ...raw, tabs: children, unrestoredTabs: [alreadyKept, recoverable] };
+      await remount();
+      expect(tabs()).toHaveLength(readableSibling ? 2 : 1);
+      expect(pendingPrompt?.prompt.title).toBe(`${readableSibling ? 3 : 4} drawings didn't open`);
+      expect(pendingPrompt?.prompt.message).toContain("Previously kept");
+      const expectedKept = [alreadyKept, ...children.filter(tab => tab.version === 99)];
+      expect((await flush()).unrestoredTabs).toEqual(expectedKept);
+      await modalButton("Cancel");
+      expectReleased();
+      await activate(readableSibling ? 1 : 0);
+      expect(bridge().snapshot().document.title).toBe("Previously kept, now readable");
+    });
+
+    it("offers malformed children even when no child envelope is readable", async () => {
+      const session = threeTabSession();
+      const children = session.tabs!.map(tab => ({ ...tab, dirty: "unknown" }));
+      native.session = { ...session, tabs: children };
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      expect((await flush()).unrestoredTabs).toEqual(children);
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each(["unknown outer version", "bad JSON"])("leaves the raw file and autosave gate unchanged for %s", async (failure) => {
+      const raw = failure === "bad JSON" ? "{bad JSON" : { ...unsupportedChildrenSession(), version: 99,
+        unrestoredTabs: [{ version: 99, contents: "previously kept" }] };
+      native.session = raw;
+      if (failure === "bad JSON") {
+        // The native load rejects invalid JSON before any envelope reaches MainWindow.
+        native.load.mockImplementationOnce(async () => JSON.parse(raw as string));
+      }
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+      expect(native.visibilityChanges).toEqual([]);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("will not be autosaved");
+      native.saveSession.mockClear();
+      await paste("Drawing after unreadable outer session");
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 900)); });
+      await flush();
+      expect(native.saveSession).not.toHaveBeenCalled();
+      expect(native.session).toEqual(raw);
+    });
+
+    it.each(["Cancel", "Escape"])("keeps raw drawings and retries next launch after %s", async (ending) => {
+      const session = sessionWithUnrestoredTabs(["Still unreadable.chemdraft"]);
+      native.session = session;
+      for (let launch = 0; launch < 2; launch += 1) {
+        native.visibilityChanges = [];
+        vi.mocked(openNativeDocument).mockClear();
+        await remount();
+        expect(openNativeDocument).toHaveBeenCalledWith("unreadable raw document 0");
+        expect(tabs()).toHaveLength(3);
+        expect(pendingPrompt?.prompt).toMatchObject({
+          title: "1 drawing didn't open", kind: "warning",
+          choices: [{ id: "save", label: "Save Drawing…" }, { id: "delete", label: "Delete", destructive: true },
+            { id: "cancel", label: "Cancel", cancel: true }]
+        });
+        expect(pendingPrompt?.prompt.message).toContain("Still unreadable.chemdraft");
+        expect(pendingPrompt?.prompt.message).toMatch(/^Its drawing is kept,/);
+        expect(pendingPrompt?.prompt.message).not.toContain("1 drawing didn't open");
+        expect(pendingPrompt?.prompt.message).toContain("Cancel keeps the drawings for the next launch.");
+        expectSuspended();
+        // The native layer returns the Cancel choice for Escape; its literal-label mapping is
+        // also tested at the plugin message boundary in nativePrompt.test.ts.
+        if (ending === "Escape") {
+          const resolve = pendingPrompt!.resolve;
+          const cancel = pendingPrompt!.prompt.choices.find(choice => choice.cancel)!;
+          pendingPrompt = undefined;
+          await act(async () => resolve(cancel.id));
+        } else await modalButton("Cancel");
+        expectReleased();
+        await command("view.zoomIn");
+        expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      }
+    });
+
+    it("retries carried tabs and restores drawings that are now readable", async () => {
+      const session = threeTabSession();
+      const recovered = { ...session.tabs![0]!, displayName: "Recovered.chemdraft", contents: fileContents("Recovered") };
+      session.unrestoredTabs = [recovered];
+      native.session = session;
+      await remount();
+      expect(openNativeDocument).toHaveBeenCalledWith(recovered.contents);
+      expect(tabs()).toHaveLength(4);
+      expect(active()).toBe(1);
+      expect(pendingPrompt).toBeUndefined();
+      await activate(3);
+      expect(bridge().snapshot().document.title).toBe("Recovered");
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+      await remount();
+      expect(tabs()).toHaveLength(4);
+    });
+
+    it("keeps a future schema unchanged and opens it after its schema becomes readable", async () => {
+      const drawing = createPhase4Document("Future drawing");
+      const session = threeTabSession();
+      session.tabs![1] = { ...session.tabs![1]!, displayName: "Future.chemdraft",
+        contents: JSON.stringify({ ...drawing, schema: "chemdraft.document.v999" }) };
+      native.session = session;
+      await remount();
+      expect(tabs()).toHaveLength(2);
+      expect(pendingPrompt?.prompt.message).toContain("Future.chemdraft");
+      expect(pendingPrompt?.prompt.message).toContain("saved by a newer ChemDraft");
+      await modalButton("Cancel");
+      const saved = await flush();
+      expect(saved.unrestoredTabs).toEqual([session.tabs![1]]);
+      saved.unrestoredTabs = [{ ...session.tabs![1]!, contents: JSON.stringify(drawing) }];
+      native.session = saved;
+      await remount();
+      expect(tabs()).toHaveLength(3);
+      expect(pendingPrompt).toBeUndefined();
+      await activate(2);
+      expect(bridge().snapshot().document.title).toBe("Future drawing");
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+    });
+
+    it("saves an unsupported envelope's exact text to the chosen path unchanged", async () => {
+      const session = sessionWithUnrestoredTabs(["Recovered.chemdraft"]);
+      session.unrestoredTabs = [{ version: 99, displayName: "Recovered.chemdraft", contents: "future saved format" }];
+      native.session = session;
+      await remount();
+      native.writeFile.mockClear();
+      native.savePicker.mockResolvedValueOnce(platform === "Win32" ? "C:\\rescued\\chosen-name" : "/tmp/chosen-name");
+      native.writeFile.mockImplementationOnce(async () => { expectSuspended(); });
+      await modalButton("Save Drawing…");
+      expect(native.writeFile).toHaveBeenCalledExactlyOnceWith(
+        platform === "Win32" ? "C:\\rescued\\chosen-name" : "/tmp/chosen-name", "future saved format");
+      expectReleased();
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+      await activate(2);
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("kept for later");
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+    });
+
+    it("saves several raw drawings individually and removes only successful writes", async () => {
+      const session = sessionWithUnrestoredTabs();
+      native.session = session;
+      await remount();
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      native.writeFile.mockClear();
+      native.savePicker.mockResolvedValueOnce("C:\\rescued\\First.chemdraft")
+        .mockResolvedValueOnce("C:\\rescued\\Second.cdxml").mockResolvedValueOnce("C:\\rescued\\Third.chemdraft");
+      native.writeFile.mockResolvedValueOnce().mockRejectedValueOnce(new Error("disk full")).mockResolvedValueOnce();
+      await modalButton("Save Drawing…");
+      expect(native.savePicker).toHaveBeenNthCalledWith(1, {
+        title: "Save Drawing — First.chemdraft", defaultPath: "First.chemdraft",
+        filters: [{ name: "Saved document", extensions: ["chemdraft"] }]
+      });
+      expect(native.savePicker).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        defaultPath: "Second.cdxml", filters: [{ name: "Saved document", extensions: ["cdxml"] }]
+      }));
+      expect(native.writeFile).toHaveBeenNthCalledWith(1, "C:\\rescued\\First.chemdraft", "unreadable raw document 0");
+      expect(native.writeFile).toHaveBeenNthCalledWith(2, "C:\\rescued\\Second.cdxml", "unreadable raw document 1");
+      expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
+      expect(pendingPrompt?.prompt.message).toContain("Second.cdxml: disk full");
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+      await remount();
+      expect((await flush()).unrestoredTabs).toEqual([session.unrestoredTabs![1]]);
+      expect(pendingPrompt).toBeDefined();
+    });
+
+    it.each([0, 1])("keeps pending, canceled and unattempted drawings (saved before cancellation: %s)", async (saved) => {
+      const session = sessionWithUnrestoredTabs();
+      native.session = session;
+      await remount();
+      let finishWrite!: () => void;
+      native.writeFile.mockClear();
+      if (saved) {
+        native.savePicker.mockResolvedValueOnce("/tmp/rescued.chemdraft").mockResolvedValueOnce(null);
+        native.writeFile.mockImplementationOnce(() => new Promise((resolve) => { finishWrite = resolve; }));
+      }
+      await modalButton("Save Drawing…");
+      if (saved) {
+        expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+        expectSuspended();
+        await command("document.new");
+        expect(tabs()).toHaveLength(3);
+        await act(async () => finishWrite());
+      }
+      expect(native.writeFile).toHaveBeenCalledTimes(saved);
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs!.slice(saved));
+      expect(pendingPrompt?.prompt.message).toContain(`Saved ${saved} ${saved === 1 ? "drawing" : "drawings"}; ${3 - saved} kept for later (save canceled)`);
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it.each(["Delete", "Cancel", "Escape"])("requires a second native confirmation before deleting (%s)", async (ending) => {
+      const session = sessionWithUnrestoredTabs(["Alpha.chemdraft", "Beta.chemdraft"]);
+      native.session = session;
+      await remount();
+      await modalButton("Delete");
+      expect(pendingPrompt?.prompt).toMatchObject({
+        title: "Delete the kept drawing?", kind: "warning",
+        choices: [{ id: "delete", label: "Delete", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }]
+      });
+      expect(pendingPrompt?.prompt.message).toContain("This cannot be undone.");
+      expect(pendingPrompt?.prompt.message).toContain("Alpha.chemdraft");
+      expect(pendingPrompt?.prompt.message).toContain("Beta.chemdraft");
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      expectSuspended();
+      await modalButton(ending === "Escape" ? "Cancel" : ending);
+      const confirmed = ending === "Delete";
+      expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
+      if (!confirmed) {
+        expect(pendingPrompt?.prompt.title).toBe("2 drawings didn't open");
+        expectSuspended();
+        await modalButton("Cancel");
+      }
+      expectReleased();
+      await activate(2);
+      expect(container.querySelector('[role="status"]')?.textContent.includes("kept for later")).toBe(!confirmed);
+      await remount();
+      expect((await flush()).unrestoredTabs).toEqual(confirmed ? undefined : session.unrestoredTabs);
+      expect(pendingPrompt === undefined).toBe(confirmed);
+    });
+
+    it("returns to the native prompt after a save panel fails", async () => {
+      const session = sessionWithUnrestoredTabs(["Kept.chemdraft"]);
+      native.session = session;
+      await remount();
+      native.savePicker.mockRejectedValueOnce(new Error("panel failed"));
+      await modalButton("Save Drawing…");
+      expect(pendingPrompt?.prompt.message).toContain("Kept.chemdraft: panel failed");
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it("keeps drawings without an in-app fallback when native prompting fails", async () => {
+      const session = sessionWithUnrestoredTabs();
+      native.session = session;
+      const restoreFailureProvider = setNativePromptProvider(async (prompt, fallback) => fallback(prompt));
+      try {
+        await remount();
+        expectReleased();
+        expect(container.querySelector('[role="dialog"]')).toBeNull();
+        expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      } finally { restoreFailureProvider(); }
+    });
+
+    it("retains kept drawings when persisting confirmed deletion fails", async () => {
+      const session = sessionWithUnrestoredTabs();
+      native.session = session;
+      await remount();
+      await modalButton("Delete");
+      native.saveSession.mockRejectedValueOnce(new Error("session write refused"));
+      await modalButton("Delete");
+      expect(pendingPrompt?.prompt.message).toContain("Delete failed; the drawings are kept for later: session write refused");
+      expect((await flush()).unrestoredTabs).toEqual(session.unrestoredTabs);
+      expectSuspended();
+      await modalButton("Cancel");
+      expectReleased();
+    });
+
+    it("carries every raw tab when all document payloads fail", async () => {
+      const raw = { ...threeTabSession(), tabs: threeTabSession().tabs!.map(tab => ({ ...tab, contents: "corrupt" })) };
+      native.session = raw;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      expect((await flush()).unrestoredTabs).toEqual(raw.tabs);
+      await modalButton("Delete");
+      await modalButton("Delete");
+      expect((await flush()).unrestoredTabs).toBeUndefined();
+      expectReleased();
+    });
+
+    it("queues OS open-with until the launch prompt ends", async () => {
+      native.session = sessionWithUnrestoredTabs();
+      await remount();
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/incoming.chemdraft", displayName: "incoming.chemdraft", contents: fileContents("Incoming drawing")
+      }));
+      expect(tabs()).toHaveLength(3);
+      await modalButton("Cancel");
+      expect(tabs()).toHaveLength(4);
+      expect(bridge().snapshot().document.title).toBe("Incoming drawing");
+    });
+
+    it("does not register retired menu commands or prompt on a clean launch", async () => {
+      await remount();
+      expect(pendingPrompt).toBeUndefined();
+      for (const id of ["document.saveUnrestoredTabs", "document.discardUnrestoredTabs"]) {
+        expect(runtime().host.commands.has(id)).toBe(false);
+      }
+      expect(native.savePicker).not.toHaveBeenCalled();
+    });
+  });
 
   it("restores all three tabs despite negative scroll or malformed cosmetic data", async () => {
     const session = threeTabSession();
@@ -713,7 +1683,7 @@ describe("documents in one window", () => {
     await act(async () => finishRead(session));
     expect(tabs()).toHaveLength(2);
     expect(bridge().snapshot().document.title).toBe("First");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("1 tab could not be restored");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("1 drawing is kept for later");
     const saved = await flush();
     expect(saved.unrestoredTabs).toEqual([corrupt]);
     expect(saved.tabs!.map((tab) => tab.displayName)).toEqual(["First.chemdraft", "Third.chemdraft"]);
@@ -723,9 +1693,8 @@ describe("documents in one window", () => {
     expect((await flush()).unrestoredTabs).toEqual([corrupt]);
   });
 
-  it.each(["envelope", "contents"])("never overwrites a wholly unreadable session (%s)", async (failure) => {
-    const raw = failure === "envelope" ? { version: 99, recoverMe: true } :
-      { ...threeTabSession(), tabs: threeTabSession().tabs!.map((tab) => ({ ...tab, contents: "corrupt" })) };
+  it("never overwrites a wholly unreadable session envelope", async () => {
+    const raw = { version: 99, recoverMe: true };
     native.session = raw;
     await remount();
     native.saveSession.mockClear();
@@ -822,6 +1791,7 @@ describe("documents in one window", () => {
     if (action === "switch") await key();
     else await closeTab();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
     expect(active()).toBe(action === "switch" ? 1 : 0);
     await pointer(page, "pointerup", 230, 180);
     expect(bridge().snapshot().document).toEqual(other);

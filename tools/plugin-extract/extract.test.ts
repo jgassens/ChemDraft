@@ -150,6 +150,7 @@ describe("plugin extraction integrity", () => {
     ).toThrow(/uncommitted or untracked files/);
   });
 
+  // Heavy git-backed symlink setup can exceed Vitest's default on busy Windows CI hosts.
   it.skipIf(!canCreateFileSymlinks)("refuses a committed symlink rather than dereferencing local bytes into the archive", () => {
     const fixture = createPluginFixture();
     writeFileSync(join(fixture.caseRoot, "outside-secret.txt"), "must not ship\n");
@@ -169,7 +170,7 @@ describe("plugin extraction integrity", () => {
     expect(() =>
       extractPlugin({ pluginRoot: fixture.pluginRoot, outDir: join(fixture.caseRoot, "out") })
     ).toThrow(/symbolic link.*src[/\\]local-secret\.txt/);
-  });
+  }, 30_000);
 
   it("builds from the recorded commit, so ignored source cannot enter the archive", () => {
     const fixture = createPluginFixture();

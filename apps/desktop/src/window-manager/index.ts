@@ -573,8 +573,8 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
   await (options?.strict ? write : write.catch(() => undefined));
 }
 
-/** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the
- *  document window, or File ▸ Exit). The listener flushes the pending session autosave and then
+/** Emitted by Rust before application-menu Quit / Cmd+Q on macOS, or closing the document
+ *  window / File ▸ Exit elsewhere. The listener flushes the pending session autosave and then
  *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 
@@ -742,12 +742,6 @@ export async function startPaletteWindowResize(): Promise<void> {
   if (!isDesktopRuntime()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().startResizeDragging("SouthEast");
-}
-
-export async function suspendToolsetWindows(suspended: boolean): Promise<void> {
-  if (!isDesktopRuntime()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("suspend_toolset_windows", { suspended });
 }
 
 /** Native gate includes the palette, its Windows owner, and the quit lifecycle. */

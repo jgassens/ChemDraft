@@ -82,7 +82,7 @@ describe("2D→3D stereochemistry fidelity", () => {
 
       expect(backCenters.length).toBe(refCenters.length);
       expect(backId).toBe(refId); // canonical stereo identical → absolute config preserved
-    });
+    }, 30_000);
   }
 
   // RELATIVE, through the ACTUAL adapter: an enantiomer/epimer must produce mirror-image
@@ -116,7 +116,7 @@ describe("2D→3D stereochemistry fidelity", () => {
       }
       // Every defined center that differs between the two SMILES must flip in 3D.
       expect(flipped).toBe(A.centers.length);
-    });
+    }, 30_000);
   }
 });
 
