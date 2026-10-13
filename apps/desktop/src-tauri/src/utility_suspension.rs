@@ -18,7 +18,7 @@ pub(crate) struct UtilitySuspension {
     visibility: HashMap<String, bool>,
     restore: HashSet<String>,
     /// Original macOS parent relationships, retained through nested prompts and restore retries.
-    document_children: HashSet<String>,
+    document_children: HashMap<String, bool>,
     /// Bottom to top, retained for the whole cycle, including already-restored siblings.
     restore_order: Vec<String>,
     recovery_positions: HashMap<String, HashSet<(i32, i32)>>,
@@ -45,9 +45,8 @@ impl UtilitySuspension {
             return false;
         }
         for (label, visible, minimized, was_document_child) in windows {
-            if was_document_child {
-                self.document_children.insert(label.clone());
-            }
+            self.document_children
+                .insert(label.clone(), was_document_child);
             self.visibility.insert(label.clone(), visible);
             if visible && !minimized {
                 self.restore.insert(label.clone());
@@ -68,8 +67,11 @@ impl UtilitySuspension {
     }
 
     #[cfg(any(target_os = "macos", test))]
-    pub(crate) fn was_document_child(&self, label: &str) -> bool {
-        self.document_children.contains(label)
+    pub(crate) fn restore_as_document_child(&self, label: &str) -> bool {
+        self.document_children
+            .get(label)
+            .copied()
+            .unwrap_or_else(|| super::utility_window_has_document_parent(label))
     }
 
     pub(crate) fn defer_panel(&mut self, label: String, request: super::OpenPluginPanelRequest) {
@@ -230,27 +232,84 @@ mod tests {
         state.start_restore();
         state.restored("Rings");
         state.finish_restore();
-        assert!(!state.was_document_child("Art"));
-        assert!(!state.was_document_child("Rings"));
-        assert!(state.was_document_child("panel"));
+        assert!(!state.restore_as_document_child("Art"));
+        assert!(!state.restore_as_document_child("Rings"));
+        assert!(state.restore_as_document_child("panel"));
         // A reusable panel closed and explicitly reopened during the cycle keeps its parent too.
         state.closed("hidden-panel");
         state.defer_show("hidden-panel".into());
-        assert!(state.was_document_child("hidden-panel"));
+        assert!(state.restore_as_document_child("hidden-panel"));
         state.defer_show("new-panel".into());
-        assert!(!state.was_document_child("new-panel"));
+        // Deferred enrollment does not invent an original relationship.
+        assert!(!state.document_children.contains_key("new-panel"));
         for label in state.pending_restore().unwrap() {
             state.restored(&label);
         }
         state.finish_restore();
-        assert!(!state.was_document_child("panel"));
-        assert!(!state.was_document_child("hidden-panel"));
+        assert!(!state.restore_as_document_child("panel"));
+        assert!(!state.restore_as_document_child("hidden-panel"));
 
         // The next cycle records a fresh relationship, and quitting clears it as well.
         state.begin([("Art".into(), true, false, true)], None);
-        assert!(state.was_document_child("Art"));
+        assert!(state.restore_as_document_child("Art"));
         state.release(true);
-        assert!(!state.was_document_child("Art"));
+        assert!(!state.restore_as_document_child("Art"));
+    }
+
+    #[test]
+    fn deferred_new_panel_uses_creation_parent_and_relative_sibling_order() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [
+                ("toolset-art".into(), true, false, false),
+                // Even an originally unparented panel keeps its recorded relationship.
+                ("plugin-panel-original".into(), true, false, false),
+            ],
+            Some(vec!["plugin-panel-original".into(), "toolset-art".into()]),
+        );
+        let panel = "plugin-panel-new";
+        let request = serde_json::from_value(serde_json::json!({
+            "panelId": "new", "title": "Analyze", "focus": true
+        }))
+        .unwrap();
+        state.defer_panel(panel.into(), request);
+        state.defer_show("toolset-new".into());
+        state.release(false).unwrap();
+        let mut stack = document_stack();
+        state.start_restore();
+        place(&mut state, &mut stack, "plugin-panel-original");
+        place(&mut state, &mut stack, "toolset-art");
+        state.finish_restore();
+        assert!(state.take_deferred_panels().unwrap().contains_key(panel));
+
+        // The deferred builder creates this panel hidden and unparented. Restoration attaches it
+        // just as normal creation would, preserving every original window's relationship.
+        assert!(!state.document_children.contains_key(panel));
+        assert!(state.restore_as_document_child(panel));
+        assert!(!state.restore_as_document_child("plugin-panel-original"));
+        assert!(!state.restore_as_document_child("toolset-art"));
+        assert!(!state.restore_as_document_child("toolset-new"));
+        assert_eq!(
+            state.restore_placement(panel, |_| true),
+            RestorePlacement::Above("plugin-panel-original".into())
+        );
+        state.start_restore();
+        place(&mut state, &mut stack, panel);
+        place(&mut state, &mut stack, "toolset-new");
+        state.finish_restore();
+        assert_eq!(
+            stack,
+            vec![
+                "foreign-dialog",
+                "foreign-app",
+                "toolset-new",
+                panel,
+                "plugin-panel-original",
+                "toolset-art",
+                "document",
+            ]
+        );
+        assert!(!state.active());
     }
 
     fn snapshot() -> Vec<(String, bool, bool, bool)> {

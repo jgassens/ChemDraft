@@ -1732,14 +1732,14 @@ fn restore_utility_window<R: Runtime>(
             anchor.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let anchor = unsafe { anchor_pointer.as_ref() }
             .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
-        // Ordering out can detach children. Reattach only original document children; toolbars
-        // stay unparented so dragging the document does not move them after a suspension cycle.
-        // Both children and unparented utilities use the recorded relative stacking position below.
-        let was_document_child = UTILITY_SUSPENSION
+        // Ordering out can detach children. Preserve recorded relationships for original windows;
+        // newly deferred windows use the normal creation policy (panels parented, toolbars not).
+        // Both children and unparented utilities use the retained relative stacking position below.
+        let restore_as_document_child = UTILITY_SUSPENSION
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .was_document_child(window.label());
-        if was_document_child
+            .restore_as_document_child(window.label());
+        if restore_as_document_child
             && native
                 .parentWindow()
                 .is_none_or(|parent| !std::ptr::eq(&*parent, owner))
@@ -2264,6 +2264,12 @@ fn is_plugin_panel_window_label(label: &str) -> bool {
         && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
 }
 
+/// Normal document parenting policy, shared by plugin-panel creation and suspended restoration.
+/// Palettes/popovers stay unparented on macOS; their Windows ownership is set separately.
+fn utility_window_has_document_parent(label: &str) -> bool {
+    is_plugin_panel_window_label(label)
+}
+
 #[cfg(test)]
 mod plugin_panel_label_tests {
     use super::{
@@ -2675,7 +2681,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .skip_taskbar(true);
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
-    if !(restoring && cfg!(target_os = "macos")) {
+    if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
         if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
