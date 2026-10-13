@@ -3,10 +3,13 @@
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
-linked width and height, DPI and physical width, page/content cropping, background controls,
+linked pixel and physical dimensions, DPI, page/content cropping, background controls,
 numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses
 the existing padded content framing and does not edit the document. PNG embeds density;
-PDF uses the requested physical size. Other raster formats display a DPI-derived size.
+SVG and PDF use the requested physical size. Other raster formats display a DPI-derived size.
+Presets fit the longer frame side, including portrait drawings. PDF pages exceeding
+14400 points (200 inches) on either side are refused with instructions to reduce
+the pixel dimensions or increase DPI.
 Preview updates are debounced and render at most 800 px on the longest side; only
 the final export renders at the requested size.
 

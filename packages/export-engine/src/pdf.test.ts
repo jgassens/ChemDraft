@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createEmptyDocument,
+  createCustomPageLayout,
   createPageLayout,
   type TextObject,
   type UnknownCompatibilityObject
@@ -19,6 +20,31 @@ import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../lay
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("refuses 8190 by 4095 px at 36 DPI before rendering instead of clipping", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    await expect(exportDocumentToPdf(document, { outputWidth: 8190 / 36 * 96, outputHeight: 4095 / 36 * 96 }))
+      .rejects.toThrow("physical page size exceeds 14400 points (200 inches) per side");
+  });
+
+  it.each([96, 300, 600])("fits the entire drawing inside the DPI-derived physical PDF page at %s DPI", async (dpi) => {
+    const original = createEmptyDocument({ now: timestamp });
+    const document = applyPatch({ ...original, pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }] }, { op: "addObject", pageId: "page_001", object: filledRingFixture() }, { now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser, compress: false, outputWidth: 2008 / dpi * 96, outputHeight: 1004 / dpi * 96
+    }));
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    const box = pdf.match(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/)!;
+    const widthPt = Number(box[1]), heightPt = Number(box[2]);
+    expect(widthPt).toBeCloseTo(2008 / dpi * 72, 6);
+    expect(heightPt).toBeCloseTo(1004 / dpi * 72, 6);
+    const points = pdfDrawingPoints(pdf);
+    expect(points.length).toBeGreaterThan(3);
+    expect(Math.min(...points.map(([x]) => x))).toBeCloseTo(0, 6);
+    expect(Math.max(...points.map(([x]) => x))).toBeCloseTo(widthPt, 6);
+    expect(Math.min(...points.map(([, y]) => y))).toBeCloseTo(0, 6);
+    expect(Math.max(...points.map(([, y]) => y))).toBeCloseTo(heightPt, 6);
+  });
+
   it("uses custom output dimensions for the physical PDF page", async () => {
     const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, outputWidth: 960, outputHeight: 480 }));
@@ -413,4 +439,29 @@ function defineTestGlobal(target: Record<string, unknown>, key: string, value: u
     writable: true,
     value
   });
+}
+
+// Apply nested PDF graphics-state matrices to actual uncompressed drawing paths.
+function pdfDrawingPoints(pdf: string): Array<[number, number]> {
+  type Matrix = [number, number, number, number, number, number];
+  let matrix: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const points: Array<[number, number]> = [];
+  const point = (x: number, y: number) => points.push([
+    matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]
+  ]);
+  const source = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map((match) => match[1]).join("\n");
+  for (const line of source.split("\n")) {
+    const parts = line.trim().split(/\s+/), op = parts.pop();
+    const n = parts.map(Number);
+    if (op === "q") stack.push([...matrix]);
+    else if (op === "Q") matrix = stack.pop() ?? matrix;
+    else if (op === "cm" && n.length === 6) {
+      const [a,b,c,d,e,f] = matrix;
+      matrix = [a*n[0]+c*n[1], b*n[0]+d*n[1], a*n[2]+c*n[3], b*n[2]+d*n[3], a*n[4]+c*n[5]+e, b*n[4]+d*n[5]+f];
+    } else if (op === "m" || op === "l") point(n[0], n[1]);
+    else if (op === "c") for (let i=0; i<6; i+=2) point(n[i], n[i+1]);
+    else if (op === "re") { point(n[0], n[1]); point(n[0]+n[2], n[1]+n[3]); }
+  }
+  return points;
 }

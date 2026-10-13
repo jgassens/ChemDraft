@@ -20,6 +20,8 @@ export interface SvgExportOptions {
   background?: string;
   outputWidth?: number;
   outputHeight?: number;
+  /** Units for explicitly requested dimensions; omitted sizes retain page-layout units. */
+  outputUnit?: "mm" | "in";
 }
 
 export interface SvgExportResult {
@@ -42,6 +44,8 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   }
 
   const svgSize = pageLayoutSvgSize(page.layout);
+  const outputWidth = options.outputWidth === undefined ? svgSize.width : `${options.outputWidth}${options.outputUnit ?? ""}`;
+  const outputHeight = options.outputHeight === undefined ? svgSize.height : `${options.outputHeight}${options.outputUnit ?? ""}`;
   const plan = planPageSvgRender(page);
   const body = plan.fragments.map((fragment) => serializeSvgFragment(fragment, 2)).join("\n");
   const warnings = plan.warnings.map<ExportWarning>((warning) => ({
@@ -65,7 +69,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   return {
     format: "svg",
     contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${options.outputWidth ?? svgSize.width}" height="${options.outputHeight ?? svgSize.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
       backgroundMarkup,
       pageGuideMarkup,
       body,

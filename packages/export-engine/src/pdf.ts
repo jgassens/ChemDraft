@@ -36,14 +36,19 @@ export async function exportDocumentToPdf(
     throw new Error(`Cannot export PDF: page index ${pageIndex} does not exist.`);
   }
 
+  const widthPt = cssPxToPdfPt(options.outputWidth ?? page.width);
+  const heightPt = cssPxToPdfPt(options.outputHeight ?? page.height);
+  if (Math.max(widthPt, heightPt) > 14400) {
+    throw new Error("Cannot export PDF: physical page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.");
+  }
+
   const descriptor = getExportFormatDescriptor("pdf");
   const svgResult = exportDocumentToSvg(document, {
     pageIndex,
     includePageGuides: options.includePageGuides
   });
   const svgElement = parseSvgElement(svgResult.contents, options.domParser);
-  const widthPt = cssPxToPdfPt(options.outputWidth ?? page.width);
-  const heightPt = cssPxToPdfPt(options.outputHeight ?? page.height);
+
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
     unit: "pt",

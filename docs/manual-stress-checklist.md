@@ -282,4 +282,8 @@ and Art toolbars open, including at 125%/150% display scale:
   only the saved export uses the requested size. Choose content crop and transparent PNG,
   verify JPEG numeric quality changes the preview, and check PNG density/PDF physical dimensions.
   Close during rendering and switch formats rapidly: stale previews must never replace the
-  current format, and updates remain debounced.
+  current format, and updates remain debounced. Repeat each preset with an empty portrait
+  Letter page and a tall drawing; submit after editing pixels and physical dimensions.
+  Verify saved SVG millimeter dimensions and PDF drawing bounds match the displayed physical
+  size. Request 8190 x 4095 px at 36 DPI in PDF: a specific 14400-point limit message must
+  prevent export without clipping. Typing a filename must not rerun the content crop.

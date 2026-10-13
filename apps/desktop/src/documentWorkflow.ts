@@ -18550,7 +18550,7 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
 
 export function exportPhase4Svg(
   document: ChemDraftDocument,
-  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex" | "background" | "outputWidth" | "outputHeight"> = {}
+  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex" | "background" | "outputWidth" | "outputHeight" | "outputUnit"> = {}
 ): SvgExportResult {
   return exportDocumentToSvg(document, {
     ...options,
