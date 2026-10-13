@@ -1,0 +1,101 @@
+import { inflateSync } from "node:zlib";
+
+// Decode actual jsPDF objects and streams, including compressed content and CMaps.
+function pdfObjects(bytes: Uint8Array): Map<number, string> {
+  return new Map([...Buffer.from(bytes).toString("latin1").matchAll(/(\d+) 0 obj\n([\s\S]*?)\nendobj/g)]
+    .map((match) => [Number(match[1]), match[2]!]));
+}
+
+function stream(object: string): Buffer {
+  const start = object.indexOf("stream\n") + 7;
+  const length = Number(object.match(/\/Length (\d+)/)![1]);
+  const bytes = Buffer.from(object.slice(start, start + length), "latin1");
+  return object.includes("/FlateDecode") ? inflateSync(bytes) : bytes;
+}
+
+export function extractPdfTextRuns(bytes: Uint8Array): string[] {
+  const objects = pdfObjects(bytes);
+  const fontMaps = new Map<number, Map<number, string>>();
+  for (const [id, object] of objects) {
+    const reference = object.match(/\/ToUnicode (\d+) 0 R/);
+    if (!reference) continue;
+    const cmap = stream(objects.get(Number(reference[1]))!).toString("ascii");
+    const mapping = new Map<number, string>();
+    for (const block of cmap.matchAll(/\d+ beginbfchar\n([\s\S]*?)endbfchar/g)) {
+      for (const entry of block[1]!.matchAll(/<([\da-f]+)>\s*<([\da-f]+)>/gi)) {
+        mapping.set(parseInt(entry[1]!, 16), String.fromCharCode(parseInt(entry[2]!, 16)));
+      }
+    }
+    fontMaps.set(id, mapping);
+  }
+  const resources = new Map([...Buffer.from(bytes).toString("latin1").matchAll(/\/F(\d+) (\d+) 0 R/g)]
+    .map((match) => [Number(match[1]), Number(match[2])]));
+  const result: string[] = [];
+  for (const object of objects.values()) {
+    if (!object.includes("stream\n")) continue;
+    const contents = stream(object).toString("latin1");
+    let font = 0;
+    for (const token of contents.matchAll(/\/F(\d+)\s+[\d.]+\s+Tf|<([\da-f]+)>\s*Tj|\(((?:\\.|[^\\)])*)\)\s*Tj/g)) {
+      if (token[1]) font = Number(token[1]);
+      else if (token[2]) {
+        const mapping = fontMaps.get(resources.get(font)!);
+        if (!mapping) throw new Error(`Missing ToUnicode mapping for F${font}`);
+        result.push(token[2].match(/.{4}/g)!.map((hex) => {
+          const character = mapping.get(parseInt(hex, 16));
+          if (character === undefined) throw new Error(`Unmapped glyph ${hex}`);
+          return character;
+        }).join(""));
+      } else result.push(token[3]!.replace(/\\([\\()])/g, "$1"));
+    }
+  }
+  return result;
+}
+
+export function pdfFontStreams(bytes: Uint8Array): Buffer[] {
+  const objects = pdfObjects(bytes);
+  return [...objects.values()].flatMap((object) => {
+    const reference = object.match(/\/FontFile2 (\d+) 0 R/);
+    return reference ? [stream(objects.get(Number(reference[1]))!)] : [];
+  });
+}
+
+export function sfntTable(font: Buffer, name: string): Buffer {
+  for (let i = 0; i < font.readUInt16BE(4); i++) {
+    const offset = 12 + i * 16;
+    if (font.toString("ascii", offset, offset + 4) === name) {
+      const start = font.readUInt32BE(offset + 8);
+      return font.subarray(start, start + font.readUInt32BE(offset + 12));
+    }
+  }
+  throw new Error(`Missing TrueType table ${name}`);
+}
+
+/** Read the font's BMP cmap (format 4) independently of jsPDF's font parser. */
+export function unicodeCmap(font: Buffer): Map<number, number> {
+  const cmap = sfntTable(font, "cmap");
+  for (let i = 0; i < cmap.readUInt16BE(2); i++) {
+    const record = 4 + i * 8;
+    if (cmap.readUInt16BE(record) !== 3 || cmap.readUInt16BE(record + 2) !== 1) continue;
+    const table = cmap.subarray(cmap.readUInt32BE(record + 4));
+    if (table.readUInt16BE(0) !== 4) continue;
+    const count = table.readUInt16BE(6) / 2;
+    const starts = 16 + count * 2;
+    const deltas = starts + count * 2;
+    const ranges = deltas + count * 2;
+    const result = new Map<number, number>();
+    for (let segment = 0; segment < count; segment++) {
+      const end = table.readUInt16BE(14 + segment * 2);
+      const start = table.readUInt16BE(starts + segment * 2);
+      const delta = table.readInt16BE(deltas + segment * 2);
+      const rangeAddress = ranges + segment * 2;
+      const range = table.readUInt16BE(rangeAddress);
+      for (let code = start; code <= end && code < 0xffff; code++) {
+        let glyph = range ? table.readUInt16BE(rangeAddress + range + 2 * (code - start)) : code;
+        if (!range || glyph) glyph = (glyph + delta) & 0xffff;
+        if (glyph) result.set(code, glyph);
+      }
+    }
+    return result;
+  }
+  throw new Error("Missing Unicode BMP cmap");
+}

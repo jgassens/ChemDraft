@@ -2,6 +2,7 @@ import {
   applyPatch,
   createEmptyDocument,
   createPageLayout,
+  type TextObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
 import { execFileSync } from "node:child_process";
@@ -11,11 +12,70 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
+import { extractPdfTextRuns, pdfFontStreams, sfntTable } from "./pdf.testUtils";
 import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../layout-engine/src/ringFillNotches.fixture";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each([true, false])("preserves Unicode text and labels with compression=%s", async (compress) => {
+    const text = "μmol H₂O SO₄²⁻ Na⁺";
+    const label = "μ₆⁻";
+    const document = applyPatch(documentWithText(text), {
+      op: "addObject", pageId: "page_001", object: {
+        id: "unicode_label", type: "molecule", x: 100, y: 180,
+        width: 150, height: 30, rotation: 0, style: { atomLabelBackgroundColor: "transparent" }, structureFormat: "unknown", structure: "",
+        atoms: [{ id: "label_atom", element: label, labelLiteral: true, x: 120, y: 200, formalCharge: 0 }],
+        bonds: [], superatoms: [], rGroups: [], chemistry: { warnings: [], isotopeLabels: [], stereochemistry: [] }
+      }
+    }, { now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text, label]);
+    expect(Buffer.from(result.bytes).toString("latin1")).toContain("/Encoding /Identity-H");
+    // A full regular face is 756,072 bytes. jsPDF retains font metadata tables,
+    // but subsets the outlines: <60 KB compressed, <150 KB uncompressed.
+    expect(result.bytes.length).toBeLessThan(compress ? 60_000 : 150_000);
+    const streams = pdfFontStreams(result.bytes);
+    expect(streams).toHaveLength(1);
+    expect(sfntTable(streams[0]!, "glyf").length).toBeLessThan(10_000);
+  });
+
+  it("leaves the standard-font ASCII output unchanged", async () => {
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText("H2O + NaCl"), { domParser, compress: false }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual(["H2O + NaCl"]);
+    expect(pdfFontStreams(result.bytes)).toHaveLength(0);
+    expect(Buffer.from(result.bytes).toString("latin1")).toContain("/BaseFont /Helvetica");
+  });
+
+  it.each([
+    { fontWeight: 400, fontStyle: "normal" },
+    { fontWeight: 700, fontStyle: "normal" },
+    { fontWeight: 400, fontStyle: "italic" },
+    { fontWeight: 700, fontStyle: "italic" }
+  ])("embeds a real face for $fontWeight/$fontStyle", async (style) => {
+    const text = "μ µ ₀₁₂₃₄₅₆₇₈₉ ⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹ →←↔⇌⇋ Δ±×°−";
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text, style), { domParser }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
+    expect(pdfFontStreams(result.bytes)).toHaveLength(1);
+  });
+
+  it("preserves differently styled spans within Unicode text", async () => {
+    const document = structuredClone(documentWithText("μmol H₂O"));
+    const object = document.pages[0]!.objects[0] as TextObject;
+    object.spans = [
+      { text: "μmol ", script: "normal", style: {} },
+      { text: "H₂O", script: "normal", style: { fontWeight: 700, fontStyle: "italic" } }
+    ];
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
+    expect(extractPdfTextRuns(result.bytes).join("")).toBe(object.text);
+    expect(pdfFontStreams(result.bytes)).toHaveLength(2);
+  });
+
+  it("refuses characters the embedded font cannot preserve", async () => {
+    await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText("μ \u{1f9ea}"), { domParser })))
+      .rejects.toThrow("does not support U+1F9EA");
+  });
+
   it("exports the active page as PDF bytes through the SVG renderer", async () => {
     const document = createEmptyDocument({ title: "PDF Export", now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
@@ -133,10 +193,11 @@ describe("exportDocumentToPdf", () => {
       ["--import", "tsx", "--input-type=module", "--eval", nodePdfExportScript()],
       { cwd: process.cwd(), encoding: "utf8" }
     );
-    const result = JSON.parse(stdout) as { header: string; byteLength: number };
+    const result = JSON.parse(stdout) as { header: string; byteLength: number; pdfBase64: string };
 
     expect(result.header).toBe("%PDF-");
     expect(result.byteLength).toBeGreaterThan(1000);
+    expect(extractPdfTextRuns(Buffer.from(result.pdfBase64, "base64"))).toEqual(["μmol H₂O SO₄²⁻ Na⁺ ₆"]);
   }, 60_000);
 });
 
@@ -145,7 +206,7 @@ function nodePdfExportScript(): string {
 
   return `
     import { JSDOM } from "jsdom";
-    const { createEmptyDocument } = await import("@chemdraft/chem-core");
+    const { applyPatch, createEmptyDocument } = await import("@chemdraft/chem-core");
     const { exportDocumentToPdf } = await import(${JSON.stringify(pdfModuleUrl)});
     const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });
     for (const [key, value] of Object.entries({
@@ -171,14 +232,29 @@ function nodePdfExportScript(): string {
       value: () => null
     });
     const result = await exportDocumentToPdf(
-      createEmptyDocument({ title: "Node PDF Export", now: "2026-05-29T00:00:00.000Z" }),
+      applyPatch(createEmptyDocument({ title: "Node PDF Export", now: "2026-05-29T00:00:00.000Z" }), {
+        op: "addObject", pageId: "page_001", object: {
+          id: "node_unicode", type: "text", x: 100, y: 120, width: 400, height: 40,
+          rotation: 0, style: {}, text: "μmol H₂O SO₄²⁻ Na⁺ ₆", spans: []
+        }
+      }),
       { domParser: new dom.window.DOMParser() }
     );
     console.log(JSON.stringify({
       header: new TextDecoder().decode(result.bytes.slice(0, 5)),
-      byteLength: result.bytes.length
+      byteLength: result.bytes.length,
+      pdfBase64: Buffer.from(result.bytes).toString("base64")
     }));
   `;
+}
+
+function documentWithText(text: string, style: TextObject["style"] = {}) {
+  return applyPatch(createEmptyDocument({ now: timestamp }), {
+    op: "addObject", pageId: "page_001", object: {
+      id: "pdf_text", type: "text", x: 100, y: 120, width: 400, height: 40,
+      rotation: 0, style, text, spans: []
+    }
+  }, { now: timestamp });
 }
 
 async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
