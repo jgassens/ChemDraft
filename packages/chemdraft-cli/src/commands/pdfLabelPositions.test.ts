@@ -171,8 +171,10 @@ it.each([
 it("measures inherited text/tspan styles and restores shims and the jsPDF hook after failure", async () => {
   const before = [...jsPDF.API.events];
   let prototype: SVGElement;
+  let getAttribute: SVGElement["getAttribute"];
   await expect(withPdfDom(async (parser) => {
     prototype = SVGElement.prototype;
+    getAttribute = Element.prototype.getAttribute;
     const pdf = new jsPDF({ unit: "pt" });
     const root = parser.parseFromString('<svg xmlns="http://www.w3.org/2000/svg"><text x="50" y="20" font-family="Arial" font-size="18" text-anchor="middle">Na<tspan font-size="12" font-weight="700">+</tspan></text></svg>', "image/svg+xml");
     const text = root.querySelector("text") as unknown as SVGTextElement;
@@ -193,6 +195,52 @@ it("measures inherited text/tspan styles and restores shims and the jsPDF hook a
   // JSDOM originally has neither method, so teardown must delete them, even on failure.
   expect(Object.getOwnPropertyDescriptor(prototype!, "getBBox")).toBeUndefined();
   expect(Object.getOwnPropertyDescriptor(prototype!, "getComputedTextLength")).toBeUndefined();
+  expect(Object.getOwnPropertyDescriptor(prototype!, "getAttribute")).toBeUndefined();
+  expect(prototype!.getAttribute).toBe(getAttribute!);
+});
+
+it.each([undefined, "57.6"])("centres a monospace tspan inside serif text (textLength=%s)", async (textLength) => {
+  await withPdfDom(async (parser) => {
+    const pdf = new jsPDF({ unit: "pt", format: [300, 150], orientation: "landscape" });
+    // A natural textLength still executes TextChunk.measureText (2691), rather
+    // than the ordinary put measurement (2706), without extra letter spacing.
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><text x="100" y="60" font-family="serif" font-size="24" text-anchor="middle" ${textLength ? `textLength="${textLength}"` : ""}><tspan font-family="monospace">MMMM</tspan></text></svg>`, "image/svg+xml");
+    await svg2pdf(svg.documentElement, pdf);
+    const runs = pdfTextPositions(Buffer.from(pdf.output("arraybuffer")), 150, 1);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.fontName).toBe("Courier");
+    expect(runs[0]!.width).toBeCloseTo(57.6, 6);
+    expect(runs[0]!.x).toBeCloseTo(71.2, 6);
+    expect(runs[0]!.x + runs[0]!.width / 2).toBeCloseTo(100, 6);
+  });
+});
+
+it.each(([
+  ["", '<tspan font-weight="500">M<tspan font-weight="700">MM</tspan>M</tspan>',
+    ["Times-Roman", "Helvetica-Bold", "Times-Roman"], [21.36, 39.84, 21.36]],
+  ['font-weight="500"', '<tspan font-family="monospace">M<tspan font-weight="700">MM</tspan>M</tspan>',
+    ["Courier", "Courier-Bold", "Courier"], [14.4, 28.8, 14.4]],
+  ['font-weight="500"', '<tspan font-weight="700"><tspan font-family="monospace" font-weight="500">MMMM</tspan></tspan>',
+    ["Courier"], [57.6]],
+  ["", '<tspan font-family="monospace" font-weight="500">M<tspan font-weight="700">MM</tspan>M</tspan>',
+    ["Times-Roman", "Courier-Bold", "Times-Roman"], [21.36, 28.8, 21.36]]
+] as const).flatMap(test => [undefined, test[3].reduce((sum: number, width) => sum + width, 0)]
+  .map(textLength => [...test, textLength] as const)))("centres nested font overrides from text attributes %s: %s (fonts=%s, widths=%s, textLength=%s)", async (attributes, content, expectedFonts, expectedWidths, textLength) => {
+  await withPdfDom(async (parser) => {
+    const pdf = new jsPDF({ unit: "pt", format: [300, 150], orientation: "landscape" });
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><text x="100" y="60" font-family="Arial" font-size="24" text-anchor="middle" ${attributes} ${textLength ? `textLength="${textLength}"` : ""}>${content}</text></svg>`, "image/svg+xml");
+    await svg2pdf(svg.documentElement, pdf);
+    const runs = pdfTextPositions(Buffer.from(pdf.output("arraybuffer")), 150, 1);
+    expect(runs.map(run => run.fontName)).toEqual(expectedFonts);
+    const totalWidth = expectedWidths.reduce((total, width) => total + width, 0);
+    let x = 100 - totalWidth / 2;
+    runs.forEach((run, index) => {
+      expect(run.width).toBeCloseTo(expectedWidths[index]!, 6);
+      expect(run.x).toBeCloseTo(x, 6);
+      x += run.width;
+    });
+    expect((runs[0]!.x + x) / 2).toBeCloseTo(100, 6);
+  });
 });
 
 it.each([
@@ -215,7 +263,7 @@ it.each([
   });
 });
 
-it.each(["500", "800"])("uses a registered %snormal style before aliases and later families", async (weight) => {
+it.each(["500", "800"].flatMap(weight => [false, true].map(tspan => [weight, tspan] as const)))("uses a registered %snormal style before aliases and later families (tspan=%s)", async (weight, tspan) => {
   await withPdfDom(async (parser) => {
     // A standard-font registration exercises custom family/style lookup without
     // bundling a font fixture. The quoted comma also exercises the family parser.
@@ -231,7 +279,8 @@ it.each(["500", "800"])("uses a registered %snormal style before aliases and lat
     } finally {
       jsPDF.API.events.splice(jsPDF.API.events.indexOf(registration), 1);
     }
-    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><g transform="scale(0.75)"><text x="100" y="60" font-family="'Registered, Family', Arial, serif" font-size="24" font-weight="${weight}" text-anchor="middle">MMMM</text></g></svg>`, "image/svg+xml");
+    const fontAttributes = `font-family="'Registered, Family', Arial, serif" font-weight="${weight}"`;
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><g transform="scale(0.75)"><text x="100" y="60" ${tspan ? 'font-family="Arial"' : fontAttributes} font-size="24" text-anchor="middle">${tspan ? `<tspan ${fontAttributes}>MMMM</tspan>` : "MMMM"}</text></g></svg>`, "image/svg+xml");
     const expectedWidth = glyphAdvance("MMMM", pdf.getFont("Registered, Family", `${weight}normal`), 24);
     expect((svg.querySelector("text") as unknown as SVGTextElement).getBBox().width).toBeCloseTo(expectedWidth, 6);
     await svg2pdf(svg.documentElement, pdf);

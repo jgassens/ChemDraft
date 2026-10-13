@@ -7,6 +7,7 @@ const svg2pdfRequire = createRequire(exporterRequire.resolve("svg2pdf.js"));
 const fontFamilyParser = svg2pdfRequire("font-family-papandreou") as { parse(value: string): string[] };
 
 interface PdfFont { fontStyle: string }
+interface FontState { family: string; style: string; weight: string }
 
 interface PdfMetrics {
   getFontList(): Record<string, string[]>;
@@ -41,7 +42,7 @@ function fontSize(element: Element | null): number {
 }
 
 /** Installed only while withPdfDom owns the serialized headless export. */
-export function installPdfTextMetrics() {
+export function installPdfTextMetrics(prototype: SVGElement) {
   const { jsPDF } = exporterRequire("jspdf") as {
     jsPDF: { version: string; API: { events: [string, (this: PdfMetrics) => void][] } };
   };
@@ -51,9 +52,10 @@ export function installPdfTextMetrics() {
   const listener: [string, (this: PdfMetrics) => void] = ["initialized", function () { pdf = this; }];
   jsPDF.API.events.push(listener);
 
-  // Mirror svg2pdf's combineFontStyleAndFontWeight, findFirstAvailableFontFamily,
-  // and applyAttributes. An alias wins even without the requested style; jsPDF
-  // then supplies its own Times fallback. Reuse svg2pdf's family-list parser.
+  // svg2pdf 2.7.0 exports only svg2pdf, not its font helpers. Mirror
+  // dist/svg2pdf.es.js:960–1006 (family/style resolution), 1673–1685 (parse order),
+  // and 1786–1817 (applyAttributes). Reuse its actual family-list parser.
+  // An alias wins even without the requested style; jsPDF supplies the fallback.
   const isJsPDF23 = jsPDF.version.split(".").slice(0, 2).join(".") === "2.3";
   function fontStyle(style: string, weight: string): string {
     // svg2pdf compares numeric CSS weights with loose equality.
@@ -67,28 +69,25 @@ export function installPdfTextMetrics() {
         : (numericWeight === 700 ? "bold" : weight) + style;
   }
 
-  function runFont(element: Element): PdfFont {
-    // svg2pdf's hidden DOM measuring node already carries one resolved family,
-    // not a CSS family list (a registered name may itself contain a comma).
-    const parent = element.parentElement;
-    if (parent?.localName === "svg" && parent.parentElement === element.ownerDocument.body
-      && parent.style.visibility === "hidden") {
-      // RenderedNode.render applies attributes before TextNode.renderCore measures
-      // text (svg2pdf 2.7). The node's requested CSS style may have fallen back in
-      // jsPDF, and a later family-only setFont keeps that effective PDF style.
-      // Read the rendering state rather than re-requesting the unsupported style.
-      return pdf!.getFont();
-    }
+  function applyFont(from: FontState, to: FontState, font: PdfFont): PdfFont {
+    const styleChanged = to.style !== from.style || to.weight !== from.weight;
+    if (to.family === from.family && !styleChanged) return font;
+    return pdf!.getFont(fontAliases[to.family] ?? to.family,
+      styleChanged ? fontStyle(to.style, to.weight) : font.fontStyle);
+  }
+
+  function elementFont(element: Element): { state: FontState; font: PdfFont } {
     const ancestors: Element[] = [];
     for (let node: Element | null = element; node; node = node.parentElement) ancestors.unshift(node);
-    let family = "times", style = "normal", weight = "normal";
-    let font = pdf!.getFont(family, style);
+    let state: FontState = { family: "times", style: "normal", weight: "normal" };
+    let font = pdf!.getFont(state.family, state.style);
+    let textState = state;
     const available = pdf!.getFontList();
     for (const node of ancestors) {
-      const nextStyle = ownAttribute(node, "font-style") ?? style;
-      const nextWeight = ownAttribute(node, "font-weight") ?? weight;
+      const nextStyle = ownAttribute(node, "font-style") ?? state.style;
+      const nextWeight = ownAttribute(node, "font-weight") ?? state.weight;
       const requestedStyle = fontStyle(nextStyle, nextWeight);
-      let nextFamily = family;
+      let nextFamily = state.family;
       const declaredFamily = ownAttribute(node, "font-family");
       if (declaredFamily) {
         nextFamily = fontFamilyParser.parse(declaredFamily).map((candidate) => {
@@ -97,13 +96,53 @@ export function installPdfTextMetrics() {
           return Object.hasOwn(fontAliases, lower) ? lower : undefined;
         }).find((candidate) => candidate !== undefined) ?? "times";
       }
-      if (nextFamily !== family || nextStyle !== style || nextWeight !== weight) {
-        font = pdf!.getFont(fontAliases[nextFamily] ?? nextFamily,
-          nextStyle !== style || nextWeight !== weight ? requestedStyle : font.fontStyle);
+      const next = { family: nextFamily, style: nextStyle, weight: nextWeight };
+      // Nested tspans only accumulate SVG context during processTSpans. The
+      // eventual draw compares their final context directly to the text's.
+      if (node.localName !== "tspan") {
+        font = applyFont(state, next, font);
+        textState = next;
       }
-      family = nextFamily; style = nextStyle; weight = nextWeight;
+      state = next;
     }
-    return font;
+    if (element.localName === "tspan") font = applyFont(textState, state, font);
+    return { state, font };
+  }
+
+  let enclosingText: { state: FontState; font: PdfFont } | undefined;
+  const previousGetAttribute = Object.getOwnPropertyDescriptor(prototype, "getAttribute");
+  const getAttribute = prototype.getAttribute;
+  // TextNode.renderCore reads textLength at 2865, after RenderedNode.render
+  // applies the enclosing <text> attributes at 1978–1979 and before ANY text
+  // measurements. Capture both logical SVG attributes and the effective PDF
+  // font here: unsupported CSS styles may already have fallen back in jsPDF.
+  Object.defineProperty(prototype, "getAttribute", {
+    configurable: true,
+    value: function (this: SVGElement, name: string) {
+      if (name === "textLength" && this.localName === "text" && pdf) {
+        enclosingText = { state: elementFont(this).state, font: pdf.getFont() };
+      }
+      return getAttribute.call(this, name);
+    }
+  });
+
+  function runFont(element: Element): PdfFont {
+    const parent = element.parentElement;
+    if (parent?.localName === "svg" && parent.parentElement === element.ownerDocument.body
+      && parent.style.visibility === "hidden" && enclosingText) {
+      // svgTextMeasure (4018–4027) carries svg2pdf's already-resolved run state,
+      // including every ancestor tspan. Do NOT parse this family again: a
+      // registered family name can itself contain a comma. TextChunk measures
+      // at 2691/2706 before applying run attributes at 2752. That application
+      // compares the flattened run state to the enclosing TEXT, not to each
+      // ancestor tspan, so apply exactly one delta to the captured PDF font.
+      return applyFont(enclosingText.state, {
+        family: element.getAttribute("font-family")!,
+        style: element.getAttribute("font-style")!,
+        weight: element.getAttribute("font-weight")!
+      }, enclosingText.font);
+    }
+    return elementFont(element).font;
   }
 
   function textWidth(element: Element): number {
@@ -138,6 +177,8 @@ export function installPdfTextMetrics() {
       };
     },
     restore() {
+      if (previousGetAttribute) Object.defineProperty(prototype, "getAttribute", previousGetAttribute);
+      else Reflect.deleteProperty(prototype, "getAttribute");
       const index = jsPDF.API.events.indexOf(listener);
       if (index >= 0) jsPDF.API.events.splice(index, 1);
     }

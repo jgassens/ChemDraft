@@ -184,7 +184,7 @@ async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promis
   let textMetrics: ReturnType<typeof installPdfTextMetrics> | undefined;
 
   try {
-    const measurements = installPdfTextMetrics();
+    const measurements = installPdfTextMetrics(dom.window.SVGElement.prototype);
     textMetrics = measurements;
     const define = (key: string, value: unknown) =>
       Object.defineProperty(writableGlobal, key, { configurable: true, writable: true, value });
