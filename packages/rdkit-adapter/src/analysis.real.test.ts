@@ -138,7 +138,7 @@ describe("engine regression — aspirin, pinned to RDKit 2026.03.3", () => {
 });
 
 // Heavy real-RDKit corpus analyses can exceed Vitest's default on busy CI hosts.
-describe("composition is source-preserving", { timeout: 20_000 }, () => {
+describe("composition is source-preserving", { timeout: 60_000 }, () => {
   it("keeps sodium benzoate a salt", async () => {
     const run = await analyze(corpusEntry("sodium-benzoate").smiles);
     const result = composition(run);

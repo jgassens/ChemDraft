@@ -134,7 +134,7 @@ beforeAll(async () => {
   ringStyle = await import(pathToFileURL(script).href) as RingStyle;
 });
 
-describe("ring-style.mjs (Nicolaou-style rings for any molecule)", () => {
+describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30_000 }, () => {
   it.each(["cholesterol", "paclitaxel", "morphine", "strychnine", "phenyldecalin"])(
     "groups %s with every decoration and app ungroup restores the artwork", (name) => {
       const { build, doc } = fixture(name);

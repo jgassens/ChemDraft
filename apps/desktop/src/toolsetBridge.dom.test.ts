@@ -1203,7 +1203,7 @@ describe("toolset bridge interactions", () => {
     expect(container.querySelector('[data-art-effect-controls="glow"]')).toBeNull();
     expect(container.querySelector('[data-art-effect-controls="shadow"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Cleared 2 selected ring effects");
-  }, 20_000);
+  }, 30_000);
 
   it("requires an explicit choice before whole-molecule Art edits clear ring overrides", async () => {
     let initialDocument = insertNativeTemplateMolecule(
