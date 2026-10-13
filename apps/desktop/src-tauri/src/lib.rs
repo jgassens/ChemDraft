@@ -2677,7 +2677,8 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .visible(presentation.visible_on_build)
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping panels need a visible edge, matching the palette popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true);
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
@@ -5834,7 +5835,8 @@ fn ensure_toolset_window<R: Runtime>(
     .focusable(toolset_window_focusable())
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping palettes need a visible edge, matching the popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
