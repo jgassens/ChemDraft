@@ -14,6 +14,22 @@ reproduced in the materials accompanying a binary distribution. Full terms are
 vendored alongside each artifact; the complete inventory, including build provenance
 and artifact hashes, is in docs/architecture/dependency-inventory.md.
 
+Noto Sans 2.015 (primary regular, bold, italic, bold-italic PDF fonts)
+  SIL Open Font License 1.1.
+  Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
+  Source: https://github.com/notofonts/latin-greek-cyrillic; unmodified TrueType
+  faces from the LibreOffice bundle, losslessly stored as base64 modules and
+  subset by jsPDF during export. Font and licence provenance and hashes:
+  packages/export-engine/src/fonts/README.md
+  Full licence text: packages/export-engine/src/fonts/LICENSE_NOTO.txt
+
+DejaVu Sans 2.35 (fallback regular, bold, oblique, bold-oblique PDF fonts)
+  Bitstream Vera and Arev font licences; DejaVu changes are public domain.
+  Copyright (c) 2003 Bitstream, Inc.; Copyright (c) 2006 Tavmjong Bah.
+  Source: https://dejavu-fonts.github.io/, release 2.35. Unmodified TrueType
+  files, losslessly stored as base64 modules and subset by jsPDF during export.
+  Full licence text: packages/export-engine/src/fonts/LICENSE_DEJAVU.txt
+
 RDKit MinimalLib (vendored WebAssembly build)
   BSD-3-Clause. Copyright (c) 2006-2026 Rational Discovery LLC, Greg Landrum,
   and other RDKit contributors.
