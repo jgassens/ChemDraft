@@ -13,18 +13,20 @@ and font-family selection. jsPDF 4.2.1 maps `ŒœŠšŸŽžƒˆ˜–—‘’‚
 the correct WinAnsi bytes; tests decode the declared PDF encoding and verify text
 round-trips. Thus °, ±, ×, µ (U+00B5), é, dashes, quotes, euro and trademark do
 not require embedding. If a text element contains any other character (such as
-μ U+03BC), the element and its spans use embedded DejaVu Sans 2.35 instead. This
-avoids mixing font metrics inside one text element.
-Regular, bold, oblique and bold-oblique are real faces; no style is synthesized.
-Weights below 600 use regular/oblique, and weights at least 600 use bold/bold-oblique.
+μ U+03BC), its text runs use embedded Noto Sans 2.015, with DejaVu Sans 2.35 for
+characters absent from the matching Noto face's cmap. Adjacent tspans let one text
+element mix the families without changing text order, authored positioning or style.
+Regular, bold, italic and bold-italic are real faces; no style is synthesized
+(DejaVu's italic faces are named oblique). Weights below 600 use regular/italic,
+and weights at least 600 use bold/bold-italic.
 
-DejaVu Sans covers the required chemistry characters, Greek letters, every assigned
-character in U+2070–U+209F, and arrows such as →, ↔ and ⇌. Coverage is checked from
-each face's cmap, not inferred from a family name. The canvas defaults to Arial /
-Helvetica; DejaVu Sans is wider, so Unicode text may differ in spacing. The locally
-available Liberation Sans 1.07.4 candidate was closer in metrics but lacked all
-subscript digits, superscript signs and equilibrium arrows. Other user-selected
-fonts also use DejaVu Sans for text outside the standard-font character set. Unsupported glyphs and non-BMP
+Noto supplies Latin/Greek, Unicode subscript/superscript digits and signs; its
+subscript digits extend below the baseline (about −0.13…0.31 em) and superscript
+digits sit above it (about 0.41…0.85 em). DejaVu covers Noto's missing chemistry
+symbols `→←↔⇌⇋∞≠≤≥⊕⊖` and any other cmap gap. Coverage is checked from each face's
+cmap, not inferred from a family name. The canvas defaults to Arial / Helvetica,
+so embedded Unicode text may differ in spacing. Other user-selected fonts also
+use this Noto/DejaVu combination outside the standard-font character set. Unsupported glyphs and non-BMP
 characters fail explicitly instead of disappearing during PDF serialization.
 
 Arabic and right-to-left scripts are not supported in PDF export yet: jsPDF's
@@ -39,24 +41,27 @@ because jsPDF's unconditional Arabic hook replaces it with a space. Chemistry
 characters, Greek letters and arrows retain their original Unicode.
 
 The lossless base64 font modules load dynamically only during a PDF export that
-needs them, one face per required style. jsPDF's Identity-H TrueType writer embeds
+needs them, one face per required family/style. Fallback data loads only on a
+primary cmap gap, and only used faces are registered. jsPDF's Identity-H TrueType writer embeds
 only used glyph outlines and writes a ToUnicode CMap for copying and searching.
 In browsers, temporary FontFace registrations let svg2pdf measure with the same
 font; these registrations are removed after conversion, including on failure.
 Node uses the same embedded data without filesystem, network or OS-font access.
 The existing headless DOM measurement shim still approximates text positions.
 
-Small drawing measurements (one text box, default letter page):
+Small drawing measurements (one text box, default letter page, headless DOM):
 
-| Text | Compressed before / after | Uncompressed before / after |
+| Text | Compressed | Uncompressed |
 | --- | --- | --- |
-| `H2O + NaCl` | 3,193 / 3,193 bytes | 3,325 / 3,325 bytes |
-| `μmol H₂O SO₄²⁻ Na⁺` | 3,220 / 52,071 bytes | 3,351 / 140,786 bytes |
+| `H2O + NaCl` (standard fonts, unchanged) | 3,193 bytes | 3,325 bytes |
+| `μmol H₂O SO₄²⁻ Na⁺` (Noto) | 47,512 bytes | 113,092 bytes |
+| `K ⇌ 10⁻³, SO₄²⁻ μmol H₂O` (Noto + DejaVu) | 95,292 bytes | 248,685 bytes |
 
 jsPDF retains metadata tables but subsets glyph outlines; the regression fixture
 with a text box and `μ₆⁻` atom label stays below 60 KB compressed / 150 KB
-uncompressed, and its embedded `glyf` table stays below 10 KB. The original regular
-TTF is 756,072 bytes. Tests decode both compressed and uncompressed content streams
+uncompressed, and its embedded `glyf` table stays below 10 KB. The original Noto regular
+TTF is 825,628 bytes. Mixed-family fixtures stay below 120 KB compressed / 300 KB
+uncompressed, with each subset's `glyf` table below 10 KB. Tests decode both compressed and uncompressed content streams
 and ToUnicode maps and compare the extracted text with its original input.
 
 Font terms, source and hashes are in [src/fonts/README.md](src/fonts/README.md).

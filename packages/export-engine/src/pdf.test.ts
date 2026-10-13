@@ -13,7 +13,7 @@ import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
-import { extractPdfTextRuns, pdfFontStreams, sfntTable } from "./pdf.testUtils";
+import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
 import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../layout-engine/src/ringFillNotches.fixture";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
@@ -33,8 +33,8 @@ describe("exportDocumentToPdf", () => {
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress }));
     expect(extractPdfTextRuns(result.bytes)).toEqual([text, label]);
     expect(Buffer.from(result.bytes).toString("latin1")).toContain("/Encoding /Identity-H");
-    // A full regular face is 756,072 bytes. jsPDF retains font metadata tables,
-    // but subsets the outlines: <60 KB compressed, <150 KB uncompressed.
+    // The primary regular face is 825,628 bytes. jsPDF retains font metadata
+    // tables, but subsets outlines: <60 KB compressed, <150 KB uncompressed.
     expect(result.bytes.length).toBeLessThan(compress ? 60_000 : 150_000);
     const streams = pdfFontStreams(result.bytes);
     expect(streams).toHaveLength(1);
@@ -78,8 +78,32 @@ describe("exportDocumentToPdf", () => {
   ])("embeds a real face for $fontWeight/$fontStyle", async (style) => {
     const text = "μ µ ₀₁₂₃₄₅₆₇₈₉ ⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹ →←↔⇌⇋ Δ±×°−";
     const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text, style), { domParser }));
-    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
-    expect(pdfFontStreams(result.bytes)).toHaveLength(1);
+    expect(extractPdfTextRuns(result.bytes).join("")).toBe(text);
+    expect(pdfFontStreams(result.bytes)).toHaveLength(2);
+    const names = pdfFontStreams(result.bytes).map((font) => sfntName(font, 6));
+    const bold = style.fontWeight >= 600;
+    const italic = style.fontStyle === "italic";
+    expect(names).toEqual([
+      `NotoSans-${bold ? (italic ? "BoldItalic" : "Bold") : (italic ? "Italic" : "Regular")}`,
+      `DejaVuSans${bold ? (italic ? "-BoldOblique" : "-Bold") : (italic ? "-Oblique" : "")}`
+    ]);
+  });
+
+  it.each([
+    { fontWeight: 400, fontStyle: "normal" },
+    { fontWeight: 700, fontStyle: "normal" },
+    { fontWeight: 400, fontStyle: "italic" },
+    { fontWeight: 700, fontStyle: "italic" }
+  ])("round-trips Noto/DejaVu splits in $fontWeight/$fontStyle", async (style) => {
+    const text = "K ⇌ 10⁻³, SO₄²⁻ μmol H₂O";
+    for (const compress of [true, false]) {
+      const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text, style), { domParser, compress }));
+      expect(extractPdfTextRuns(result.bytes)).toEqual(["K ", "⇌", " 10⁻³, SO₄²⁻ μmol H₂O"]);
+      const fonts = pdfFontStreams(result.bytes);
+      expect(fonts).toHaveLength(2);
+      for (const font of fonts) expect(sfntTable(font, "glyf").length).toBeLessThan(10_000);
+      expect(result.bytes.length).toBeLessThan(compress ? 120_000 : 300_000);
+    }
   });
 
   it("preserves differently styled spans within Unicode text", async () => {
@@ -97,6 +121,11 @@ describe("exportDocumentToPdf", () => {
   it("refuses characters the embedded font cannot preserve", async () => {
     await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText("μ \u{1f9ea}"), { domParser })))
       .rejects.toThrow("does not support U+1F9EA");
+  });
+
+  it("specifically refuses a BMP character absent from both cmaps", async () => {
+    await expect(withPdfDom((domParser) => exportDocumentToPdf(documentWithText("μ \u4e00"), { domParser })))
+      .rejects.toThrow("embedded font normal does not support U+4E00");
   });
 
   it("refuses Arabic that jsPDF would shape into different Unicode", async () => {
@@ -122,7 +151,7 @@ describe("exportDocumentToPdf", () => {
   it.each([true, false])("keeps chemistry characters and Greek unchanged with compression=%s", async (compress) => {
     const text = "μ ₆ ⁻ ² → ← ↔ ⇌ α β γ Δ Ω";
     const result = await withPdfDom((domParser) => exportDocumentToPdf(documentWithText(text), { domParser, compress }));
-    expect(extractPdfTextRuns(result.bytes)).toEqual([text]);
+    expect(extractPdfTextRuns(result.bytes).join("")).toBe(text);
   });
 
   it("exports the active page as PDF bytes through the SVG renderer", async () => {

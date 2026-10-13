@@ -76,6 +76,30 @@ export function sfntTable(font: Buffer, name: string): Buffer {
   throw new Error(`Missing TrueType table ${name}`);
 }
 
+/** Ink bounds from the actual glyph header, including composite glyphs, in em. */
+export function glyphBounds(font: Buffer, code: number): { yMin: number; yMax: number } {
+  const glyph = unicodeCmap(font).get(code);
+  if (!glyph) throw new Error(`Missing glyph U+${code.toString(16)}`);
+  const head = sfntTable(font, "head");
+  const unitsPerEm = head.readUInt16BE(18);
+  const loca = sfntTable(font, "loca");
+  const offset = head.readInt16BE(50) === 0 ? loca.readUInt16BE(glyph * 2) * 2 : loca.readUInt32BE(glyph * 4);
+  const glyf = sfntTable(font, "glyf");
+  return { yMin: glyf.readInt16BE(offset + 4) / unitsPerEm, yMax: glyf.readInt16BE(offset + 8) / unitsPerEm };
+}
+
+export function sfntName(font: Buffer, id: number): string {
+  const names = sfntTable(font, "name");
+  for (let i = 0; i < names.readUInt16BE(2); i++) {
+    const record = 6 + i * 12;
+    if (names.readUInt16BE(record) !== 3 || names.readUInt16BE(record + 6) !== id) continue;
+    const start = names.readUInt16BE(4) + names.readUInt16BE(record + 10);
+    const value = Buffer.from(names.subarray(start, start + names.readUInt16BE(record + 8)));
+    return value.swap16().toString("utf16le");
+  }
+  throw new Error(`Missing TrueType name ${id}`);
+}
+
 /** Read the font's BMP cmap (format 4) independently of jsPDF's font parser. */
 export function unicodeCmap(font: Buffer): Map<number, number> {
   const cmap = sfntTable(font, "cmap");
