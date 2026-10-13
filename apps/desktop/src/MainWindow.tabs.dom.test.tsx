@@ -948,23 +948,78 @@ describe("documents in one window", () => {
     await expectPristineUntitled();
   });
 
-  it("one dirty tab leaves CmdOrCtrl+W to window close and flushes the work without prompting", async () => {
-    await paste("Retained by window close");
+  async function mountForShortcutPlatform(platform: "macos" | "windows") {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
+    await remount();
+  }
+  async function closeWithShortcut(platform: "macos" | "windows") {
+    await mountForShortcutPlatform(platform);
+    const event = new KeyboardEvent("keydown", {
+      key: "w", [platform === "macos" ? "metaKey" : "ctrlKey"]: true,
+      bubbles: true, cancelable: true
+    });
+    await act(async () => window.dispatchEvent(event));
+    return event;
+  }
+
+  it("Ctrl+W closes the only clean Windows drawing through the tab-close path", async () => {
+    await mountForShortcutPlatform("windows");
+    const closedTab = tabs()[0];
+    const event = new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(tabs()[0]).not.toBe(closedTab);
+    await expectPristineUntitled();
+  });
+
+  it("Ctrl+W prompts for the only dirty Windows drawing; Cancel retains it and Don't Save replaces it", async () => {
+    await closeWithShortcut("windows");
+    await paste("Windows drawing to close");
     const before = bridge().snapshot().document;
-    const invoke = vi.spyOn(runtime().host, "invokeCommand");
-    for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
-      const event = new KeyboardEvent("keydown", { key: "w", ...modifiers, bubbles: true, cancelable: true });
-      await act(async () => window.dispatchEvent(event));
-      expect(event.defaultPrevented).toBe(false);
-    }
-    expect(invoke).not.toHaveBeenCalled();
+    const closedTab = tabs()[0];
+
+    const cancelEvent = new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(cancelEvent));
+    expect(cancelEvent.defaultPrevented).toBe(true);
+    expect(pendingPrompt?.prompt.message).toContain("Save the changes to Untitled?");
+    await modalButton("Cancel");
+    expect(tabs()[0]).toBe(closedTab);
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+
+    const discardEvent = new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(discardEvent));
+    expect(discardEvent.defaultPrevented).toBe(true);
+    await modalButton("Don't Save");
+    expect(tabs()[0]).not.toBe(closedTab);
+    await expectPristineUntitled();
+  });
+
+  it("Ctrl+W keeps the existing multi-tab close behavior on Windows", async () => {
+    await closeWithShortcut("windows");
+    await paste("First Windows drawing");
+    const first = bridge().snapshot().document;
+    await command("document.new");
+    const secondTab = tabs()[1];
+
+    const event = new KeyboardEvent("keydown", { key: "w", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(tabs()).toHaveLength(1);
+    expect(tabs()[0]).not.toBe(secondTab);
+    expect(bridge().snapshot().document).toEqual(first);
+  });
+
+  it("Cmd+W leaves the last macOS drawing to Close Window", async () => {
+    await closeWithShortcut("macos");
+    await paste("Retained by Close Window");
+    const before = bridge().snapshot().document;
+    const event = new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(false);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(pendingPrompt).toBeUndefined();
     expect(bridge().snapshot().document).toEqual(before);
-    const saved = await flush();
-    expect(native.quit).toHaveBeenCalledOnce();
-    expect(saved.tabs![0]).toMatchObject({ dirty: true });
-    expect(saved.tabs![0]!.contents).toContain("Retained by window close");
   });
 
   it("a Save that completes after switching updates its original tab", async () => {
@@ -986,7 +1041,7 @@ describe("documents in one window", () => {
     expect(drawnText()).toContain("Save this original drawing");
   });
 
-  it("Ctrl+Tab and Ctrl+Shift+Tab cycle and wrap on both platforms; one tab leaves CmdOrCtrl+W unclaimed", async () => {
+  it("Ctrl+Tab and Ctrl+Shift+Tab cycle and wrap on both platforms", async () => {
     for (const platform of ["macos", "windows"] as const) {
       const registry = createDesktopShortcutRegistry(createDocumentTabActions(true), platform);
       expect(registry.resolve({ key: "Tab", ctrlKey: true })).toBe("document.nextTab");

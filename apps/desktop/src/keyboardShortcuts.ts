@@ -36,6 +36,21 @@ export interface DesktopShortcutRegistryOptions {
 }
 
 /**
+ * Windows keeps a document window open after closing its final drawing, replacing that drawing
+ * through the ordinary close-tab path. macOS leaves its final Cmd+W to the native Close Window
+ * action instead. Keep the platform explicit so tests can cover both policies from one host.
+ */
+export function enableWindowsLastDocumentCloseAction(
+  commands: readonly CommandSpec[],
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
+): CommandSpec[] {
+  if (platform !== "windows") return [...commands];
+  return commands.map((command) => command.id === "document.closeTab"
+    ? { ...command, enabled: true, disabledReason: undefined }
+    : command);
+}
+
+/**
  * The commands the document window binds keys for. One function so the app and its tests build the
  * same list: the tests used to check `allShellCommands`, which the app never fed to its registry, so
  * a command missing here (Copy As) passed every test and only worked on macOS — where WebKit hands an

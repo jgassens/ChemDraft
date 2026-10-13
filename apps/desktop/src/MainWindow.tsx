@@ -756,6 +756,7 @@ import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
   detectDesktopShortcutPlatform,
+  enableWindowsLastDocumentCloseAction,
   isBrowserReloadChord
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
@@ -2791,12 +2792,12 @@ export function MainWindow({
   const canUndo = documentHistory.past.length > 0;
   const canRedo = documentHistory.future.length > 0;
   const quickActions = useMemo(
-    () => createQuickActions(document, selectedMolecule, {
+    () => enableWindowsLastDocumentCloseAction(createQuickActions(document, selectedMolecule, {
       canUndo,
       canRedo,
       hasMultipleTabs: documentTabs.length > 1,
       hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0
-    }),
+    })),
     [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
   );
   const layerActions = useMemo(() => createLayerActions(document), [document]);
