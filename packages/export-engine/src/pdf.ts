@@ -16,17 +16,30 @@ export interface PdfExportOptions {
   domParser?: DOMParser;
   compress?: boolean;
   includePageGuides?: boolean;
+  outputWidth?: number;
+  outputHeight?: number;
 }
 
 export async function exportDocumentToPdf(
   document: ChemDraftDocument,
   options: PdfExportOptions = {}
 ): Promise<BinaryExportResult> {
+  for (const dimension of [options.outputWidth, options.outputHeight]) {
+    if (dimension !== undefined && (!Number.isFinite(dimension) || dimension <= 0)) {
+      throw new Error("Cannot export PDF: output dimensions must be finite positive numbers.");
+    }
+  }
   const pageIndex = options.pageIndex ?? 0;
   const page = document.pages[pageIndex];
 
   if (!page) {
     throw new Error(`Cannot export PDF: page index ${pageIndex} does not exist.`);
+  }
+
+  const widthPt = cssPxToPdfPt(options.outputWidth ?? page.width);
+  const heightPt = cssPxToPdfPt(options.outputHeight ?? page.height);
+  if (Math.max(widthPt, heightPt) > 14400) {
+    throw new Error("Cannot export PDF: physical page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.");
   }
 
   const descriptor = getExportFormatDescriptor("pdf");
@@ -35,8 +48,7 @@ export async function exportDocumentToPdf(
     includePageGuides: options.includePageGuides
   });
   const svgElement = parseSvgElement(svgResult.contents, options.domParser);
-  const widthPt = cssPxToPdfPt(page.width);
-  const heightPt = cssPxToPdfPt(page.height);
+
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
     unit: "pt",

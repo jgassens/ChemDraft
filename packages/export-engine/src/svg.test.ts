@@ -12,6 +12,32 @@ import { exportDocumentToSvg } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
+it("writes explicitly requested physical units without changing viewBox geometry", () => {
+  const document = createEmptyDocument({ title: "Physical SVG", now: timestamp });
+  const result = exportDocumentToSvg(document, { outputWidth: 85, outputHeight: 42.5, outputUnit: "mm" });
+  expect(result.contents).toContain('width="85mm" height="42.5mm"');
+  expect(result.contents).toContain(`viewBox="0 0 ${document.pages[0].width} ${document.pages[0].height}"`);
+});
+
+it("keeps the no-size-request SVG bytes identical to the page-layout output", () => {
+  const document = createEmptyDocument({ title: "Default SVG", now: timestamp });
+  expect(exportDocumentToSvg(document).contents).toBe([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056" role="img" aria-label="Default SVG">',
+    '  <rect width="816" height="1056" fill="#ffffff" />',
+    "</svg>"
+  ].join("\n"));
+});
+
+it("changes output resolution without changing document geometry", () => {
+  const document = createEmptyDocument({ title: "Sized export", now: timestamp });
+  const before = JSON.stringify(document);
+  const result = exportDocumentToSvg(document, { outputWidth: 1920, outputHeight: 1080, background: "transparent" });
+  expect(result.contents).toContain('width="1920" height="1080"');
+  expect(result.contents).toContain(`viewBox="0 0 ${document.pages[0].width} ${document.pages[0].height}"`);
+  expect(result.contents).not.toContain('fill="#ffffff"');
+  expect(JSON.stringify(document)).toBe(before);
+});
+
 function nativeBondMolecule(): MoleculeObject {
   return {
     id: "mol_svg_hardened",

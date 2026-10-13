@@ -18550,7 +18550,7 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
 
 export function exportPhase4Svg(
   document: ChemDraftDocument,
-  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex" | "background"> = {}
+  options: Pick<SvgExportOptions, "includeWarnings" | "includePageGuides" | "pageIndex" | "background" | "outputWidth" | "outputHeight" | "outputUnit"> = {}
 ): SvgExportResult {
   return exportDocumentToSvg(document, {
     ...options,
@@ -18560,7 +18560,7 @@ export function exportPhase4Svg(
 
 export async function exportPhase4Pdf(
   document: ChemDraftDocument,
-  options: Pick<PdfExportOptions, "compress" | "includePageGuides" | "pageIndex"> = {}
+  options: Pick<PdfExportOptions, "compress" | "includePageGuides" | "pageIndex" | "outputWidth" | "outputHeight"> = {}
 ): Promise<BinaryExportResult> {
   const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
   return exportDocumentToPdf(document, options);
