@@ -274,3 +274,12 @@ and Art toolbars open, including at 125%/150% display scale:
   informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
 - Windows document-window close still flushes the session and quits (without a new dirty-tab
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
+
+- Export preview and presets (macOS and Windows): export molecules, text, arrows, and an
+  object crossing the page edge. Compare preview with saved SVG, PDF, and PNG; check clipping
+  warnings. Switch slide/poster/publication presets and edit linked pixel/physical dimensions.
+  The 7200 px poster preset must keep preview rendering at most 800 px on its longest side;
+  only the saved export uses the requested size. Choose content crop and transparent PNG,
+  verify JPEG numeric quality changes the preview, and check PNG density/PDF physical dimensions.
+  Close during rendering and switch formats rapidly: stale previews must never replace the
+  current format, and updates remain debounced.

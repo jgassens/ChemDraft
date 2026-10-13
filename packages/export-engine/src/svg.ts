@@ -18,6 +18,8 @@ export interface SvgExportOptions {
    * background rect entirely so downstream raster/PNG export can preserve transparency.
    */
   background?: string;
+  outputWidth?: number;
+  outputHeight?: number;
 }
 
 export interface SvgExportResult {
@@ -27,6 +29,11 @@ export interface SvgExportResult {
 }
 
 export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExportOptions = {}): SvgExportResult {
+  for (const dimension of [options.outputWidth, options.outputHeight]) {
+    if (dimension !== undefined && (!Number.isFinite(dimension) || dimension <= 0)) {
+      throw new Error("Cannot export SVG: output dimensions must be finite positive numbers.");
+    }
+  }
   const pageIndex = options.pageIndex ?? 0;
   const page = document.pages[pageIndex];
 
@@ -58,7 +65,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   return {
     format: "svg",
     contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${svgSize.width}" height="${svgSize.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${options.outputWidth ?? svgSize.width}" height="${options.outputHeight ?? svgSize.height}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
       backgroundMarkup,
       pageGuideMarkup,
       body,

@@ -12,6 +12,16 @@ import { exportDocumentToSvg } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
+it("changes output resolution without changing document geometry", () => {
+  const document = createEmptyDocument({ title: "Sized export", now: timestamp });
+  const before = JSON.stringify(document);
+  const result = exportDocumentToSvg(document, { outputWidth: 1920, outputHeight: 1080, background: "transparent" });
+  expect(result.contents).toContain('width="1920" height="1080"');
+  expect(result.contents).toContain(`viewBox="0 0 ${document.pages[0].width} ${document.pages[0].height}"`);
+  expect(result.contents).not.toContain('fill="#ffffff"');
+  expect(JSON.stringify(document)).toBe(before);
+});
+
 function nativeBondMolecule(): MoleculeObject {
   return {
     id: "mol_svg_hardened",

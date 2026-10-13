@@ -16,6 +16,13 @@ import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../lay
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("uses custom output dimensions for the physical PDF page", async () => {
+    const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, outputWidth: 960, outputHeight: 480 }));
+    expect(new TextDecoder().decode(result.bytes)).toContain("/MediaBox [0 0 720. 360.]");
+    await expect(exportDocumentToPdf(document, { outputWidth: 0 })).rejects.toThrow("finite positive");
+  });
+
   it("exports the active page as PDF bytes through the SVG renderer", async () => {
     const document = createEmptyDocument({ title: "PDF Export", now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
