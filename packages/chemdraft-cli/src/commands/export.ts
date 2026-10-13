@@ -19,6 +19,7 @@ import {
   type BuiltSmilesDocument
 } from "../document";
 import { installNodeEngines } from "../engine";
+import { installPdfTextMetrics } from "../pdfTextMetrics";
 import {
   CliUsageError,
   cliExitCode,
@@ -178,9 +179,13 @@ async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promis
     globalKeys.map((key) => [key, Object.getOwnPropertyDescriptor(writableGlobal, key)])
   );
   const previousGetBBox = Object.getOwnPropertyDescriptor(dom.window.SVGElement.prototype, "getBBox");
+  const previousGetComputedTextLength = Object.getOwnPropertyDescriptor(dom.window.SVGElement.prototype, "getComputedTextLength");
   const previousGetContext = Object.getOwnPropertyDescriptor(dom.window.HTMLCanvasElement.prototype, "getContext");
+  let textMetrics: ReturnType<typeof installPdfTextMetrics> | undefined;
 
   try {
+    const measurements = installPdfTextMetrics(dom.window.SVGElement.prototype);
+    textMetrics = measurements;
     const define = (key: string, value: unknown) =>
       Object.defineProperty(writableGlobal, key, { configurable: true, writable: true, value });
     define("window", dom.window);
@@ -195,7 +200,16 @@ async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promis
     define("navigator", dom.window.navigator);
     Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", {
       configurable: true,
-      value: () => ({ x: 0, y: 0, width: 80, height: 16 })
+      value: function (this: SVGElement) {
+        if (this.localName === "text" || this.localName === "tspan") return measurements.textBox(this);
+        // svg2pdf 2.7 only calls DOM getBBox on its synthetic text-measurement element.
+        // Shapes/groups use svg2pdf's own geometry, so this legacy fallback is not consulted.
+        return { x: 0, y: 0, width: 80, height: 16 };
+      }
+    });
+    Object.defineProperty(dom.window.SVGElement.prototype, "getComputedTextLength", {
+      configurable: true,
+      value: function (this: SVGElement) { return measurements.textWidth(this); }
     });
     Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", {
       configurable: true,
@@ -204,6 +218,12 @@ async function withInstalledPdfDom<T>(callback: (domParser: DOMParser) => Promis
     return await callback(new dom.window.DOMParser());
   } finally {
     try {
+      textMetrics?.restore();
+      if (previousGetComputedTextLength) {
+        Object.defineProperty(dom.window.SVGElement.prototype, "getComputedTextLength", previousGetComputedTextLength);
+      } else {
+        Reflect.deleteProperty(dom.window.SVGElement.prototype, "getComputedTextLength");
+      }
       if (previousGetContext) {
         Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", previousGetContext);
       } else {
