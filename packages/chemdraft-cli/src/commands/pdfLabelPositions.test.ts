@@ -12,6 +12,7 @@ import { runRenderDocumentCommand } from "./renderDocument";
 
 const exporterRequire = createRequire(createRequire(import.meta.url).resolve("@chemdraft/export-engine/pdf"));
 const { jsPDF } = exporterRequire("jspdf");
+const { svg2pdf } = exporterRequire("svg2pdf.js");
 let directory: string;
 beforeAll(async () => {
   installNodeEngines();
@@ -27,7 +28,16 @@ function multiply(a: Matrix, b: Matrix): Matrix {
     a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]];
 }
 
-interface TextPosition { text: string; x: number; y: number; width: number; anchor?: string }
+interface TextPosition { text: string; x: number; y: number; width: number; anchor?: string; fontName?: string }
+
+// Standard PDF fonts omit /Widths. Read their built-in width tables directly,
+// independently of the DOM measuring helper and jsPDF's string/kerning routines.
+function glyphAdvance(text: string, font: { metadata: { Unicode: { widths: Record<number, number> & { fof: number } } } }, size: number) {
+  const widths = font.metadata.Unicode.widths;
+  let advance = 0;
+  for (let i = 0; i < text.length; i++) advance += (widths[text.charCodeAt(i)] || widths[0] || widths.fof) / widths.fof;
+  return advance * size;
+}
 
 // Read the actual PDF content stream, retaining the graphics-state transforms. The fixtures
 // have unrotated text; coordinates are converted from PDF points back to page CSS pixels.
@@ -71,10 +81,10 @@ function pdfTextPositions(bytes: Buffer, pageHeight: number): TextPosition[] {
         const matrix = multiply(ctm, textMatrix);
         const selected = fonts.get(font);
         expect(selected, `PDF font ${font}`).toBeDefined();
-        metrics.setFont(...selected!);
-        metrics.setFontSize(size);
+        const selectedFont = metrics.getFont(...selected!);
         result.push({ text, x: matrix[4] / 0.75, y: pageHeight - matrix[5] / 0.75,
-          width: metrics.getTextWidth(text) * Math.hypot(matrix[0], matrix[1]) / 0.75 });
+          fontName: selectedFont.postScriptName,
+          width: glyphAdvance(text, selectedFont, size) * Math.hypot(matrix[0], matrix[1]) / 0.75 });
       }
     }
   }
@@ -168,9 +178,9 @@ it("measures inherited text/tspan styles and restores shims and the jsPDF hook a
     const text = root.querySelector("text") as unknown as SVGTextElement;
     const tspan = root.querySelector("tspan") as unknown as SVGTSpanElement;
     pdf.setFont("helvetica", "normal"); pdf.setFontSize(18);
-    const naWidth = pdf.getTextWidth("Na");
+    const naWidth = glyphAdvance("Na", pdf.getFont(), 18);
     pdf.setFont("helvetica", "bold"); pdf.setFontSize(12);
-    const plusWidth = pdf.getTextWidth("+");
+    const plusWidth = glyphAdvance("+", pdf.getFont(), 12);
     expect(tspan.getComputedTextLength()).toBeCloseTo(plusWidth, 6);
     expect(tspan.getBBox().width).toBeCloseTo(plusWidth, 6);
     expect(text.getBBox().width).toBeCloseTo(naWidth + plusWidth, 6);
@@ -183,4 +193,52 @@ it("measures inherited text/tspan styles and restores shims and the jsPDF hook a
   // JSDOM originally has neither method, so teardown must delete them, even on failure.
   expect(Object.getOwnPropertyDescriptor(prototype!, "getBBox")).toBeUndefined();
   expect(Object.getOwnPropertyDescriptor(prototype!, "getComputedTextLength")).toBeUndefined();
+});
+
+it.each([
+  ["ToToTo", "400", 83.52, "Helvetica"],
+  ["MMMM", "500", 85.44, "Times-Roman"],
+  ["MMMM", "800", 85.44, "Times-Roman"]
+] as const)("centres Arial 24px %s with weight %s using emitted glyph advances", async (text, weight, expectedWidth, expectedFont) => {
+  await withPdfDom(async (parser) => {
+    const pdf = new jsPDF({ unit: "pt", format: [300, 150], orientation: "landscape" });
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><g transform="scale(0.75)"><text x="100" y="60" font-family="Arial" font-size="24" font-weight="${weight}" text-anchor="middle">${text}</text></g></svg>`, "image/svg+xml");
+    const label = svg.querySelector("text") as unknown as SVGTextElement;
+    expect(label.getBBox().width).toBeCloseTo(expectedWidth, 6);
+    await svg2pdf(svg.documentElement, pdf);
+    const runs = pdfTextPositions(Buffer.from(pdf.output("arraybuffer")), 200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.text).toBe(text);
+    expect(runs[0]!.fontName).toBe(expectedFont);
+    expect(runs[0]!.width).toBeCloseTo(expectedWidth, 6);
+    expect(runs[0]!.x + runs[0]!.width / 2).toBeCloseTo(100, 6);
+  });
+});
+
+it.each(["500", "800"])("uses a registered %snormal style before aliases and later families", async (weight) => {
+  await withPdfDom(async (parser) => {
+    // A standard-font registration exercises custom family/style lookup without
+    // bundling a font fixture. The quoted comma also exercises the family parser.
+    // Mark the test registration as a standard font before jsPDF's TTF loader
+    // runs; it is an alias of a built-in PDF font, not an external font file.
+    const registration = ["addFont", ({ font }: { font: { isStandardFont: boolean } }) => { font.isStandardFont = true; }];
+    // jsPDF subscribes API events in reverse order when constructing an instance.
+    jsPDF.API.events.push(registration);
+    let pdf;
+    try {
+      pdf = new jsPDF({ unit: "pt", format: [300, 150], orientation: "landscape" });
+      pdf.addFont("Helvetica-Bold", "Registered, Family", `${weight}normal`, "WinAnsiEncoding");
+    } finally {
+      jsPDF.API.events.splice(jsPDF.API.events.indexOf(registration), 1);
+    }
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><g transform="scale(0.75)"><text x="100" y="60" font-family="'Registered, Family', Arial, serif" font-size="24" font-weight="${weight}" text-anchor="middle">MMMM</text></g></svg>`, "image/svg+xml");
+    const expectedWidth = glyphAdvance("MMMM", pdf.getFont("Registered, Family", `${weight}normal`), 24);
+    expect((svg.querySelector("text") as unknown as SVGTextElement).getBBox().width).toBeCloseTo(expectedWidth, 6);
+    await svg2pdf(svg.documentElement, pdf);
+    const runs = pdfTextPositions(Buffer.from(pdf.output("arraybuffer")), 200);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.fontName).toBe("Helvetica-Bold");
+    expect(runs[0]!.width).toBeCloseTo(expectedWidth, 6);
+    expect(runs[0]!.x + runs[0]!.width / 2).toBeCloseTo(100, 6);
+  });
 });

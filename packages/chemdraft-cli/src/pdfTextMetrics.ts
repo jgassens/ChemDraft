@@ -3,11 +3,15 @@ import { createRequire } from "node:module";
 // Resolve the exporter's existing dependency, including its Node entry point. The CLI must
 // measure with the same jsPDF build that renders the PDF, without adding another font engine.
 const exporterRequire = createRequire(createRequire(import.meta.url).resolve("@chemdraft/export-engine/pdf"));
+const svg2pdfRequire = createRequire(exporterRequire.resolve("svg2pdf.js"));
+const fontFamilyParser = svg2pdfRequire("font-family-papandreou") as { parse(value: string): string[] };
+
+interface PdfFont { fontStyle: string }
 
 interface PdfMetrics {
   getFontList(): Record<string, string[]>;
-  getFont(family?: string, style?: string): unknown;
-  getStringUnitWidth(text: string, options: { font: unknown; fontSize: number; charSpace: number }): number;
+  getFont(family?: string, style?: string): PdfFont;
+  getStringUnitWidth(text: string, options: { font: PdfFont; fontSize: number; charSpace: number; doKerning: false }): number;
 }
 
 const fontAliases: Readonly<Record<string, string>> = {
@@ -16,10 +20,12 @@ const fontAliases: Readonly<Record<string, string>> = {
   serif: "times", cursive: "times", fantasy: "times"
 };
 
+function ownAttribute(element: Element, name: string): string | undefined {
+  return (element as SVGElement).style?.getPropertyValue(name) || element.getAttribute(name) || undefined;
+}
+
 function inheritedAttribute(element: Element | null, name: string): string | undefined {
-  if (!element) return undefined;
-  const inline = (element as SVGElement).style?.getPropertyValue(name);
-  return inline || element.getAttribute(name) || inheritedAttribute(element.parentElement, name);
+  return element ? ownAttribute(element, name) || inheritedAttribute(element.parentElement, name) : undefined;
 }
 
 function fontSize(element: Element | null): number {
@@ -37,7 +43,7 @@ function fontSize(element: Element | null): number {
 /** Installed only while withPdfDom owns the serialized headless export. */
 export function installPdfTextMetrics() {
   const { jsPDF } = exporterRequire("jspdf") as {
-    jsPDF: { API: { events: [string, (this: PdfMetrics) => void][] } };
+    jsPDF: { version: string; API: { events: [string, (this: PdfMetrics) => void][] } };
   };
   let pdf: PdfMetrics | undefined;
   // Capture the actual export instance so registered/embedded fonts, too, use their own
@@ -45,26 +51,68 @@ export function installPdfTextMetrics() {
   const listener: [string, (this: PdfMetrics) => void] = ["initialized", function () { pdf = this; }];
   jsPDF.API.events.push(listener);
 
+  // Mirror svg2pdf's combineFontStyleAndFontWeight, findFirstAvailableFontFamily,
+  // and applyAttributes. An alias wins even without the requested style; jsPDF
+  // then supplies its own Times fallback. Reuse svg2pdf's family-list parser.
+  const isJsPDF23 = jsPDF.version.split(".").slice(0, 2).join(".") === "2.3";
+  function fontStyle(style: string, weight: string): string {
+    // svg2pdf compares numeric CSS weights with loose equality.
+    const numericWeight = Number(weight);
+    if (isJsPDF23) {
+      return numericWeight === 400 ? (style === "italic" ? "italic" : "normal")
+        : numericWeight === 700 && style !== "italic" ? "bold" : style + weight;
+    }
+    return numericWeight === 400 || weight === "normal" ? (style === "italic" ? "italic" : "normal")
+      : (numericWeight === 700 || weight === "bold") && style === "normal" ? "bold"
+        : (numericWeight === 700 ? "bold" : weight) + style;
+  }
+
+  function runFont(element: Element): PdfFont {
+    // svg2pdf's hidden DOM measuring node already carries one resolved family,
+    // not a CSS family list (a registered name may itself contain a comma).
+    const parent = element.parentElement;
+    if (parent?.localName === "svg" && parent.parentElement === element.ownerDocument.body
+      && parent.style.visibility === "hidden") {
+      const family = ownAttribute(element, "font-family") ?? "times";
+      return pdf!.getFont(fontAliases[family] ?? family,
+        fontStyle(ownAttribute(element, "font-style") ?? "normal", ownAttribute(element, "font-weight") ?? "normal"));
+    }
+    const ancestors: Element[] = [];
+    for (let node: Element | null = element; node; node = node.parentElement) ancestors.unshift(node);
+    let family = "times", style = "normal", weight = "normal";
+    let font = pdf!.getFont(family, style);
+    const available = pdf!.getFontList();
+    for (const node of ancestors) {
+      const nextStyle = ownAttribute(node, "font-style") ?? style;
+      const nextWeight = ownAttribute(node, "font-weight") ?? weight;
+      const requestedStyle = fontStyle(nextStyle, nextWeight);
+      let nextFamily = family;
+      const declaredFamily = ownAttribute(node, "font-family");
+      if (declaredFamily) {
+        nextFamily = fontFamilyParser.parse(declaredFamily).map((candidate) => {
+          if (available[candidate]?.includes(requestedStyle)) return candidate;
+          const lower = candidate.toLowerCase();
+          return Object.hasOwn(fontAliases, lower) ? lower : undefined;
+        }).find((candidate) => candidate !== undefined) ?? "times";
+      }
+      if (nextFamily !== family || nextStyle !== style || nextWeight !== weight) {
+        font = pdf!.getFont(fontAliases[nextFamily] ?? nextFamily,
+          nextStyle !== style || nextWeight !== weight ? requestedStyle : font.fontStyle);
+      }
+      family = nextFamily; style = nextStyle; weight = nextWeight;
+    }
+    return font;
+  }
+
   function textWidth(element: Element): number {
     if (!pdf) throw new Error("Cannot measure PDF text before jsPDF is initialized.");
     const size = fontSize(element);
-    const weight = inheritedAttribute(element, "font-weight") ?? "normal";
-    const italic = inheritedAttribute(element, "font-style") === "italic";
-    const bold = weight === "bold" || weight === "700";
-    const style = (bold ? "bold" : "") + (italic ? "italic" : "") || "normal";
-    const available = pdf.getFontList();
-    const families = (inheritedAttribute(element, "font-family") ?? "times")
-      .split(",").map((family) => family.trim().replace(/^['"]|['"]$/g, ""));
-    let family = "times";
-    for (const candidate of families) {
-      if (available[candidate]?.includes(style)) { family = candidate; break; }
-      const alias = fontAliases[candidate.toLowerCase()];
-      if (alias) { family = alias; break; }
-    }
-    const font = pdf.getFont(family, style);
+    const font = runFont(element);
     return Array.from(element.childNodes).reduce((width, node) => {
       if (node.nodeType === 3) {
-        return width + pdf!.getStringUnitWidth(node.textContent ?? "", { font, fontSize: size, charSpace: 0 }) * size;
+        // pdf.text emits unkerned Tj; embedded TrueType widthOfString likewise
+        // sums glyph advances without kerning. Match both paths.
+        return width + pdf!.getStringUnitWidth(node.textContent ?? "", { font, fontSize: size, charSpace: 0, doKerning: false }) * size;
       }
       if (node.nodeType === 1 && (node as Element).localName === "tspan") {
         return width + textWidth(node as Element);
