@@ -1395,6 +1395,29 @@ fn utility_windows_top_to_bottom<R: Runtime>(
     }
 }
 
+/// Main-thread-only: capture ownership before orderOut can detach document children.
+fn utility_is_document_child<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    main: &tauri::WebviewWindow<R>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let native = unsafe { pointer.as_ref() }
+            .ok_or_else(|| "Could not snapshot native ChemDraft utility parent.".to_string())?;
+        let owner = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        Ok(native
+            .parentWindow()
+            .is_some_and(|parent| std::ptr::eq(&*parent, owner)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Windows ownership is retained by hide/show; restoration never changes the owner HWND.
+        let _ = (window, main);
+        Ok(false)
+    }
+}
+
 /// Async for the same reason as window creation: never take WINDOW_CREATION on the main thread.
 /// The actual hide/show transaction runs on the main thread, serializing it with late flyout and
 /// tooltip reveals. Future in-app dialogs should acquire/release this same counter.
@@ -1430,19 +1453,21 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let document_minimized = app
+            let main = app
                 .get_webview_window(MAIN_WINDOW_LABEL)
-                .is_some_and(|main| main.is_minimized().unwrap_or(true));
+                .ok_or_else(|| "ChemDraft utility suspension owner disappeared.".to_string())?;
+            let document_minimized = main.is_minimized().unwrap_or(true);
             let mut snapshot: Vec<_> = windows
                 .iter()
                 .map(|window| {
-                    (
+                    Ok((
                         window.label().to_string(),
                         window.is_visible().unwrap_or(false),
                         document_minimized || window.is_minimized().unwrap_or(true),
-                    )
+                        utility_is_document_child(window, &main)?,
+                    ))
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
             // Only the first acquisition reads the native order. A nested prompt must keep the
             // first snapshot, including while waiting for a minimized document to return.
             let top_to_bottom = if UTILITY_SUSPENSION
@@ -1455,7 +1480,7 @@ async fn suspend_toolset_windows(
                 let visible_windows: Vec<_> = windows
                     .iter()
                     .filter(|window| {
-                        snapshot.iter().any(|(label, visible, minimized)| {
+                        snapshot.iter().any(|(label, visible, minimized, _)| {
                             label == window.label() && *visible && !*minimized
                         })
                     })
@@ -1473,7 +1498,7 @@ async fn suspend_toolset_windows(
                 }
             };
             // Preserve the previous panel/toolbar/flyout/tooltip order if the native query fails.
-            snapshot.sort_by_key(|(label, _, _)| utility_restore_priority(label));
+            snapshot.sort_by_key(|(label, _, _, _)| utility_restore_priority(label));
             if !UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1707,11 +1732,17 @@ fn restore_utility_window<R: Runtime>(
             anchor.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let anchor = unsafe { anchor_pointer.as_ref() }
             .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
-        // Ordering out can detach children. Reattach above the owner (which orders hidden children
-        // in relative to that owner), then put the child at its recorded position among siblings.
-        if native
-            .parentWindow()
-            .is_none_or(|parent| !std::ptr::eq(&*parent, owner))
+        // Ordering out can detach children. Reattach only original document children; toolbars
+        // stay unparented so dragging the document does not move them after a suspension cycle.
+        // Both children and unparented utilities use the recorded relative stacking position below.
+        let was_document_child = UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .was_document_child(window.label());
+        if was_document_child
+            && native
+                .parentWindow()
+                .is_none_or(|parent| !std::ptr::eq(&*parent, owner))
         {
             unsafe {
                 owner.addChildWindow_ordered(native, objc2_app_kit::NSWindowOrderingMode::Above)

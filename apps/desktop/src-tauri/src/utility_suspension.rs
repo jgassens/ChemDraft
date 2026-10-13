@@ -17,6 +17,8 @@ pub(crate) struct UtilitySuspension {
     restoring_windows: bool,
     visibility: HashMap<String, bool>,
     restore: HashSet<String>,
+    /// Original macOS parent relationships, retained through nested prompts and restore retries.
+    document_children: HashSet<String>,
     /// Bottom to top, retained for the whole cycle, including already-restored siblings.
     restore_order: Vec<String>,
     recovery_positions: HashMap<String, HashSet<(i32, i32)>>,
@@ -34,7 +36,7 @@ impl UtilitySuspension {
 
     pub(crate) fn begin(
         &mut self,
-        windows: impl IntoIterator<Item = (String, bool, bool)>,
+        windows: impl IntoIterator<Item = (String, bool, bool, bool)>,
         top_to_bottom: Option<Vec<String>>,
     ) -> bool {
         let already_active = self.active();
@@ -42,7 +44,10 @@ impl UtilitySuspension {
         if already_active {
             return false;
         }
-        for (label, visible, minimized) in windows {
+        for (label, visible, minimized, was_document_child) in windows {
+            if was_document_child {
+                self.document_children.insert(label.clone());
+            }
             self.visibility.insert(label.clone(), visible);
             if visible && !minimized {
                 self.restore.insert(label.clone());
@@ -60,6 +65,11 @@ impl UtilitySuspension {
                 .collect();
         }
         true
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn was_document_child(&self, label: &str) -> bool {
+        self.document_children.contains(label)
     }
 
     pub(crate) fn defer_panel(&mut self, label: String, request: super::OpenPluginPanelRequest) {
@@ -106,6 +116,7 @@ impl UtilitySuspension {
             self.restoring = false;
             self.restoring_windows = false;
             self.visibility.clear();
+            self.document_children.clear();
             self.restore.clear();
             self.restore_order.clear();
             self.recovery_positions.clear();
@@ -190,6 +201,7 @@ impl UtilitySuspension {
         if self.depth == 0 && self.restore.is_empty() {
             self.restoring = false;
             self.visibility.clear();
+            self.document_children.clear();
             self.restore_order.clear();
         }
     }
@@ -199,12 +211,54 @@ impl UtilitySuspension {
 mod tests {
     use super::*;
 
-    fn snapshot() -> Vec<(String, bool, bool)> {
+    #[test]
+    fn original_parent_relationship_survives_nested_prompts_and_restore_retries() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [
+                ("Art".into(), true, false, false),
+                ("Rings".into(), true, false, false),
+                ("panel".into(), true, false, true),
+                ("hidden-panel".into(), false, false, true),
+            ],
+            Some(vec!["Rings".into(), "panel".into(), "Art".into()]),
+        );
+        // A nested snapshot after hide has detached the panel must not overwrite its parent.
+        assert!(!state.begin([("panel".into(), false, false, false)], None));
+        assert!(state.release(false).is_none());
+        state.release(false).unwrap();
+        state.start_restore();
+        state.restored("Rings");
+        state.finish_restore();
+        assert!(!state.was_document_child("Art"));
+        assert!(!state.was_document_child("Rings"));
+        assert!(state.was_document_child("panel"));
+        // A reusable panel closed and explicitly reopened during the cycle keeps its parent too.
+        state.closed("hidden-panel");
+        state.defer_show("hidden-panel".into());
+        assert!(state.was_document_child("hidden-panel"));
+        state.defer_show("new-panel".into());
+        assert!(!state.was_document_child("new-panel"));
+        for label in state.pending_restore().unwrap() {
+            state.restored(&label);
+        }
+        state.finish_restore();
+        assert!(!state.was_document_child("panel"));
+        assert!(!state.was_document_child("hidden-panel"));
+
+        // The next cycle records a fresh relationship, and quitting clears it as well.
+        state.begin([("Art".into(), true, false, true)], None);
+        assert!(state.was_document_child("Art"));
+        state.release(true);
+        assert!(!state.was_document_child("Art"));
+    }
+
+    fn snapshot() -> Vec<(String, bool, bool, bool)> {
         vec![
-            ("toolbar".into(), true, false),
-            ("popover".into(), true, false),
-            ("hidden".into(), false, false),
-            ("minimized".into(), true, true),
+            ("toolbar".into(), true, false, false),
+            ("popover".into(), true, false, false),
+            ("hidden".into(), false, false, false),
+            ("minimized".into(), true, true, false),
         ]
     }
 
@@ -213,11 +267,11 @@ mod tests {
         let mut state = UtilitySuspension::default();
         state.begin(
             [
-                ("toolset-rings".into(), true, false),
-                ("plugin-panel-report".into(), true, false),
-                ("toolset-art".into(), true, false),
-                ("hidden".into(), false, false),
-                ("minimized".into(), true, true),
+                ("toolset-rings".into(), true, false, false),
+                ("plugin-panel-report".into(), true, false, false),
+                ("toolset-art".into(), true, false, false),
+                ("hidden".into(), false, false, false),
+                ("minimized".into(), true, true, false),
             ],
             Some(vec![
                 "hidden".into(),
@@ -261,7 +315,10 @@ mod tests {
     fn minimized_art_retry_stays_below_already_restored_rings_and_foreign_windows() {
         let mut state = UtilitySuspension::default();
         state.begin(
-            [("Art".into(), true, false), ("Rings".into(), true, false)],
+            [
+                ("Art".into(), true, false, false),
+                ("Rings".into(), true, false, false),
+            ],
             Some(vec!["Rings".into(), "Art".into()]),
         );
         state.release(false).unwrap();
@@ -298,7 +355,7 @@ mod tests {
         ] {
             let mut state = UtilitySuspension::default();
             state.begin(
-                ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false)),
+                ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false, false)),
                 Some(vec!["Top".into(), "Middle".into(), "Bottom".into()]),
             );
             state.release(false).unwrap();
@@ -333,7 +390,7 @@ mod tests {
     fn retry_uses_nearest_available_restored_sibling_or_document() {
         let mut state = UtilitySuspension::default();
         state.begin(
-            ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false)),
+            ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false, false)),
             Some(vec!["Top".into(), "Middle".into(), "Bottom".into()]),
         );
         state.release(false).unwrap();
@@ -360,7 +417,10 @@ mod tests {
     fn repeated_reveal_of_restored_window_keeps_its_original_position() {
         let mut state = UtilitySuspension::default();
         state.begin(
-            [("Art".into(), true, false), ("Rings".into(), true, false)],
+            [
+                ("Art".into(), true, false, false),
+                ("Rings".into(), true, false, false),
+            ],
             Some(vec!["Rings".into(), "Art".into()]),
         );
         state.release(false).unwrap();
@@ -429,7 +489,7 @@ mod tests {
     fn overlapping_dialogs_share_the_first_snapshot_and_restore_only_after_the_last() {
         let mut state = UtilitySuspension::default();
         state.begin(snapshot(), None);
-        assert!(!state.begin([("late tooltip".into(), true, false)], None));
+        assert!(!state.begin([("late tooltip".into(), true, false, false)], None));
         assert!(state.release(false).is_none());
         assert!(state.active());
         let labels = state.release(false).unwrap();
@@ -494,7 +554,7 @@ mod tests {
         assert!(state.visible("toolbar", false));
         assert_eq!(state.pending_restore().unwrap().len(), labels.len());
         state.defer_show("plugin-panel-late".into());
-        assert!(!state.begin([("toolbar".into(), false, false)], None));
+        assert!(!state.begin([("toolbar".into(), false, false, false)], None));
         assert!(state.pending_restore().is_none());
         let labels = state.release(false).unwrap();
         assert_eq!(labels.len(), 3);
@@ -510,7 +570,7 @@ mod tests {
     #[test]
     fn buffered_windows_recovery_moves_after_finish_do_not_write_toolbar_state() {
         let mut state = UtilitySuspension::default();
-        state.begin([("toolbar".into(), true, false)], None);
+        state.begin([("toolbar".into(), true, false, false)], None);
         state.release(false).unwrap();
         state.start_restore();
         state.recovery_move("toolbar", (1800, 200));
