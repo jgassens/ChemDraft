@@ -631,10 +631,10 @@ function exportMoleculeObject(
             sourceObjectId: molecule.id
           });
     }
-    // A side-dependent label ("SCN") means what it was written as, by the side its bond came from
-    // then (`labelBondSide`). The visible CDXML has only the drawing: when the molecule has been
-    // turned round since, a reader without ChemDraft's embedded document reads the drawn side, the
-    // other isomer. Say so, naming the atom (AGENTS.md §7: warn, never degrade quietly).
+    // A side-dependent label ("SCN") has its recorded reading from the side its bond came from
+    // (`labelBondSide`). The visible CDXML has only the drawing, so a reader without ChemDraft's
+    // embedded document reads the drawn side, which can be the other isomer. Say so, naming the
+    // atom (AGENTS.md §7: warn, never degrade quietly).
     const record = atom.labelBondSide;
     const recordedNeighbour = record ? molecule.atoms.find((candidate) => candidate.id === record.atomId) : undefined;
     const drawnSide = recordedNeighbour ? drawnLabelBondSide(atom, [recordedNeighbour]) : undefined;
@@ -642,8 +642,8 @@ function exportMoleculeObject(
       warnings.push({
         code: "cdxml.label_bond_side_turned",
         message: record.side === "left"
-          ? `Label "${atom.element}" on atom ${atom.id} was written with its bond on the left, as its cyano group; its bond is now drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps it as written.`
-          : `Label "${atom.element}" on atom ${atom.id} was written with its bond on the right, as the N-bonded isomer (a bare formula); its bond is now drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft's embedded document keeps it as written.`,
+          ? `Label "${atom.element}" on atom ${atom.id} is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps the recorded reading.`
+          : `Label "${atom.element}" on atom ${atom.id} is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft's embedded document keeps the recorded reading.`,
         sourceObjectId: molecule.id
       });
     }

@@ -1,5 +1,7 @@
 import type { CommandSpec } from "./commands";
 import { canonicalCommandId } from "./renamedCommands";
+import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { modifierLabels } from "./modifierLabels";
 
 export type DrawingToolKind = "selection" | "bond" | "atom" | "ring" | "text" | "arrow" | "charge" | "bracket" | "art";
 export type ToolActivationOutcome = "activated" | "unavailable" | "ignored";
@@ -309,7 +311,7 @@ export const coreDrawingToolDefinitions = [
     title: "Symbol Tool Group",
     kind: "text",
     category: "annotation",
-    icon: "charge",
+    icon: "text",
     usageHint: usageHint("click canvas to stamp °", "long-press button for other symbols", "Esc exits")
   },
   {
@@ -423,11 +425,16 @@ export function getDrawingToolDefinition(commandId: string): DrawingToolDefiniti
   return drawingToolDefinitionByCommandId.get(commandId);
 }
 
-export function drawingToolStatusLabel(commandId: string, title?: string): string {
+export function drawingToolStatusLabel(
+  commandId: string,
+  title?: string,
+  platform: ShortcutPlatform = detectShortcutPlatform()
+): string {
   const definition = getDrawingToolDefinition(commandId);
   const statusTitle = compactToolStatusTitle(title ?? definition?.title ?? "Tool");
-  return definition?.usageHint
-    ? `${statusTitle}: ${formatDrawingToolUsageHint(definition.usageHint)}`
+  const usageHint = definition && drawingToolUsageHint(definition, platform);
+  return usageHint
+    ? `${statusTitle}: ${formatDrawingToolUsageHint(usageHint)}`
     : `${title ?? definition?.title ?? commandId} active`;
 }
 
@@ -492,7 +499,8 @@ export function getDrawingToolCommandSpecs(commands: readonly CommandSpec[]): Co
 
 export function activateDrawingToolCommand(
   currentState: ActiveToolState,
-  command: CommandSpec
+  command: CommandSpec,
+  platform: ShortcutPlatform = detectShortcutPlatform()
 ): ToolActivationResult {
   // A renamed id activates whatever replaced it. The legacy semantic-arrow ids can still arrive
   // from a menu, a shortcut, or persisted state that predates the rename, and following them
@@ -538,7 +546,7 @@ export function activateDrawingToolCommand(
       lastCommandId: normalizedCommand.id
     },
     outcome: "activated",
-    status: drawingToolStatusLabel(normalizedCommand.id, normalizedCommand.title)
+    status: drawingToolStatusLabel(normalizedCommand.id, normalizedCommand.title, platform)
   };
 }
 
@@ -590,6 +598,21 @@ function compactToolStatusTitle(title: string): string {
 
 function usageHint(action: string, optionalActions: string, endActions: string): DrawingToolUsageHint {
   return { action, optionalActions, endActions };
+}
+
+function drawingToolUsageHint(
+  definition: DrawingToolDefinition,
+  platform: ShortcutPlatform
+): DrawingToolUsageHint | undefined {
+  const labels = modifierLabels(platform);
+  switch (definition.commandId) {
+    case "tool.lasso":
+      return usageHint("drag around objects", `${labels.option} subtracts`, "Esc exits");
+    case "tool.art.eyedropper":
+      return usageHint("click source art", `${labels.optionGlyph} copies full appearance`, "Esc exits");
+    default:
+      return definition.usageHint;
+  }
 }
 
 function dedupeCommandSpecs(commands: readonly CommandSpec[]): CommandSpec[] {

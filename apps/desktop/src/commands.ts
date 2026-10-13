@@ -43,6 +43,7 @@ import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./open
 export interface CommandAvailability {
   canUndo?: boolean;
   canRedo?: boolean;
+  hasMultipleTabs?: boolean;
   /**
    * A lasso/marquee fragment is selected. Such a selection lives outside
    * `document.selection.objectIds` (it names atoms and bonds, not objects), so Cut/Copy have to
@@ -66,6 +67,26 @@ export interface CommandSpec extends CommandDefinition {
   disabledReason?: string;
 }
 
+export function activateDocumentTabCommandId(id: string): string {
+  return `document.activateTab.${id}`;
+}
+
+export function closeDocumentTabCommandId(id: string): string {
+  return `document.closeTab.${id}`;
+}
+
+export function createDocumentTabActions(hasMultipleTabs: boolean): CommandSpec[] {
+  const availability = {
+    enabled: hasMultipleTabs,
+    disabledReason: hasMultipleTabs ? undefined : "Only one document is open"
+  };
+  return [
+    { id: "document.closeTab", title: "Close Document Tab", icon: "close", shortcut: "CmdOrCtrl+W", source: "core", ...availability },
+    { id: "document.nextTab", title: "Next Document Tab", icon: "nextTab", shortcut: "Ctrl+Tab", source: "core", ...availability },
+    { id: "document.previousTab", title: "Previous Document Tab", icon: "previousTab", shortcut: "Ctrl+Shift+Tab", source: "core", ...availability }
+  ];
+}
+
 export function createQuickActions(
   document: ChemDraftDocument,
   selectedMolecule: MoleculeObject | undefined,
@@ -75,6 +96,7 @@ export function createQuickActions(
     document.selection.objectIds.length > 0 || availability.hasMoleculeFragmentSelection === true;
   const textLabelDisabledReason = selectedTextToAtomLabelDisabledReason(document);
   return [
+    ...createDocumentTabActions(availability.hasMultipleTabs === true),
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
     { id: "document.save", title: "Save Native Document", icon: "save", shortcut: "Cmd+S", source: "core" },

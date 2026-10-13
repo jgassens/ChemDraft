@@ -382,6 +382,17 @@ describe("ChemDraft agent skill drift guard", () => {
     expect(unread).toEqual([]);
   });
 
+  it("documents recipe 11's native grouping and editable fill limitation", () => {
+    const recipes = read(join(skillRoot, "references", "recipes.md")).split("## 11.")[1]!;
+    const art = read(join(skillRoot, "references", "art.md")).split("### 7.")[1]!;
+    for (const text of [recipes, art]) {
+      expect(text).toContain("native group");
+      expect(text).toContain("Arrange > Ungroup");
+      expect(text).toContain("do not follow atom edits");
+    }
+    expect(read(join(skillRoot, "scripts", "ring-style.mjs"))).toContain("childObjectIds:");
+  });
+
   it("keeps setup's CLI and MCP counts aligned with source registrations", () => {
     const setup = read(join(skillRoot, "references", "setup.md"));
     expect(setup).toContain(`CLI help lists ${flags.size} commands`);

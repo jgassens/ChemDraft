@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
+import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import { StructureRecognitionInstallDialog, formatDiskBytes } from "./StructureRecognitionInstallDialog";
@@ -72,21 +73,34 @@ function button(label: string): HTMLButtonElement {
   return match;
 }
 
+function fakeConsent() {
+  let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+  const restore = setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; }));
+  onTestFinished(restore);
+  return {
+    prompt: () => pending!.prompt,
+    choose: async (id: string) => { await act(async () => pending!.resolve(id)); }
+  };
+}
+
 describe("StructureRecognitionInstallDialog", () => {
-  it("names the plugin, install contents, disk sizes, privacy boundary, and explicit choices", () => {
+  it("names the plugin, install contents, disk sizes, privacy boundary, and explicit choices", async () => {
+    const consent = fakeConsent();
     const callbacks = renderDialog(request());
 
-    expect(document.body.textContent).toContain("Requested by MolScribe OCSR");
-    expect(document.body.textContent).toContain("a private Python, PyTorch and a 1.1 GB model");
-    expect(document.body.textContent).toContain("Space needed: 2 GB. Free space: 3 GB.");
-    expect(document.body.textContent).toContain("Images never leave it.");
-    expect(document.querySelector('[data-testid="recognition-install-experimental-note"]')?.textContent).toContain(
-      "Experimental"
-    );
-
-    act(() => button("Install").click());
+    const prompt = consent.prompt();
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(prompt.message).toContain("Requested by MolScribe OCSR");
+    expect(prompt.message).toContain("a private Python, PyTorch and a 1.1 GB model");
+    expect(prompt.message).toContain("Space needed: 2 GB. Free space: 3 GB.");
+    expect(prompt.message).toContain("Images never leave it.");
+    expect(prompt.message).toContain("Experimental");
+    expect(prompt.choices).toEqual([
+      { id: "install", label: "Install" }, { id: "decline", label: "Cancel", cancel: true }
+    ]);
+    await consent.choose("install");
     expect(callbacks.onInstall).toHaveBeenCalledWith(7);
-    act(() => button("Not now").click());
+    await consent.choose("decline");
     expect(callbacks.onDecline).toHaveBeenCalledWith(7);
   });
 
@@ -144,7 +158,7 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(document.body.textContent).toContain("isn’t supported");
     expect(document.querySelector("h2")?.textContent).toBe("Recognition engine unavailable");
     expect(() => button("Install")).toThrow();
-    expect(button("Not now")).toBeDefined();
+    expect(button("OK")).toBeDefined();
   });
 
   it("shows the status detail for an unsupported computer, such as an Intel Mac", () => {
@@ -164,7 +178,8 @@ describe("StructureRecognitionInstallDialog", () => {
     );
   });
 
-  it("explains an engine that must be installed again in plain words and offers Install engine again", () => {
+  it("explains an engine that must be installed again in plain words and offers Install engine again", async () => {
+    const consent = fakeConsent();
     const callbacks = renderDialog(
       request({
         status: {
@@ -176,15 +191,16 @@ describe("StructureRecognitionInstallDialog", () => {
       })
     );
 
-    expect(document.body.textContent).toContain("The recognition engine needs to be updated.");
-    expect(document.body.textContent).not.toMatch(/missing field|line \d+ column|receipt/);
-    act(() => button("Install engine again").click());
+    expect(consent.prompt().message).toContain("The recognition engine needs to be updated.");
+    expect(consent.prompt().message).not.toMatch(/missing field|line \d+ column|receipt/);
+    expect(consent.prompt().choices[0].label).toBe("Install engine again");
+    await consent.choose("install");
     expect(callbacks.onInstall).toHaveBeenCalledWith(7);
   });
 
-  it("maps Escape to decline before install and cancel during install", () => {
+  it("maps Escape to decline before install and cancel during install", async () => {
     const callbacks = renderDialog(request());
-    act(() => button("Install").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await act(async () => button("Install").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(callbacks.onDecline).toHaveBeenCalledWith(7);
     expect(callbacks.onCancel).not.toHaveBeenCalled();
   });
@@ -205,11 +221,11 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(callbacks.onDecline).not.toHaveBeenCalled();
   });
 
-  it("keeps the keyboard on the dialog when Install swaps the footer out from under the focused button", () => {
+  it("keeps the keyboard on the dialog when Install swaps the footer out from under the focused button", async () => {
     const callbacks = renderDialog(request());
     const install = button("Install");
     act(() => install.focus());
-    act(() => install.click());
+    await act(async () => install.click());
     expect(callbacks.onInstall).toHaveBeenCalledWith(7);
 
     // The controller marks the request installing: the focused Install button unmounts.
@@ -231,14 +247,14 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(callbacks.onCancel).toHaveBeenCalledWith(7);
   });
 
-  it("keeps focus when an install fails and the footer swaps back", () => {
+  it("keeps focus when an install fails and the footer swaps back", async () => {
     const callbacks = renderDialog(
       request({ installing: true, ownsInstall: true, progress: { phase: "checkingDisk", message: "m" } })
     );
     expect(document.activeElement).toBe(button("Cancel"));
     rerenderDialog(request({ error: { code: "network", message: "offline" } }), callbacks);
     expect(dialog().contains(document.activeElement)).toBe(true);
-    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(callbacks.onDecline).toHaveBeenCalledWith(7);
   });
 

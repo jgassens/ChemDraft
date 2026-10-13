@@ -416,9 +416,13 @@ function pointerTargetForEvent({
   return elementFromPoint?.(point.x, point.y) ?? pageElement;
 }
 
+function canvasPointerObject(target: Element): Element | null {
+  return target.closest("[data-object-id], [data-page-svg-object-visual]");
+}
+
 function stablePointerTarget(target: EventTarget, pageElement: HTMLElement): EventTarget {
   if (typeof Element !== "undefined" && target instanceof Element) {
-    return target.closest("[data-object-id]") ?? target.closest(".page") ?? target;
+    return canvasPointerObject(target) ?? target.closest(".page") ?? target;
   }
 
   return pageElement;
@@ -482,7 +486,8 @@ function targetLabel(target: EventTarget): string {
     return "unknown";
   }
 
-  const objectId = target.closest("[data-object-id]")?.getAttribute("data-object-id");
+  const object = canvasPointerObject(target);
+  const objectId = object?.getAttribute("data-object-id") ?? object?.getAttribute("data-page-svg-object-visual");
   const hitTarget = target.closest("[data-hit-target]")?.getAttribute("data-hit-target");
   if (objectId && hitTarget) {
     return `${objectId}:${hitTarget}`;

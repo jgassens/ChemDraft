@@ -172,3 +172,105 @@ scrolls in a small window at 125% and 150% display scale.
 Status row: at the 900×640 minimum window, open a file with warnings under a long name; the status text ends
 in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
 in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.
+
+1. **Document tabs, on macOS and Windows:** start with one document and confirm the tab strip is visible.
+   File ▸ New and the + button after the last tab add and activate an Untitled tab inside the same
+   document window. Tab to + and activate it with Enter and Space; confirm its "New tab" accessible
+   name and tooltip. With many tabs, scroll the tabs and confirm + stays visible. The strip stays
+   below the toolbar and above the canvas rulers, clear of the status row at minimum window
+   size and 125%/150% display scale. Open, file drop and OS open-with reuse a never-edited,
+   never-saved Untitled; otherwise they add a tab, and reopening a file activates its existing tab
+   without replacing edits. Give three tabs different drawings, selections (including atom/bond
+   fragments), undo/redo histories, warnings, zoom and scroll; switch by click and Ctrl+Tab /
+   Ctrl+Shift+Tab and verify every state follows its tab. Check inspector/style controls, native
+   palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
+   by their button and CmdOrCtrl+W: the native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes.
+   Cancel keeps the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
+   inactive tab too; a clean tab's × closes without prompting. Close the only tab by ×, both clean
+   and dirty: Cancel keeps a dirty drawing, Save closes only on success, and closing leaves one fresh
+   pristine Untitled with no undo history. With one tab, CmdOrCtrl+W and the window close still close
+   the window without prompting and keep the work in the session; with multiple tabs CmdOrCtrl+W
+   closes the active tab with the dirty prompt. On macOS, the native menu reads Close Window for one
+   tab and Close Tab for multiple tabs. Relaunch with only a pristine blank Untitled: the strip is
+   visible with one fresh tab, and no restored-session announcement appears.
+   Quit immediately after an edit with three tabs (one untitled and dirty, one pristine Untitled),
+   then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
+   prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after
+   switching tabs; both must use the active document. Keep the worktree label visible throughout.
+   Queue a recognition proposal, switch tabs (also during recognition), and check its document name
+   in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
+   Accept must explain that its document was closed and keep the proposal pending; Reject must work
+   from any tab.
+
+
+Kept drawings at launch — run on **macOS and Windows**: with ChemDraft quit, back up the dev
+build's `document-session.json`, then change one saved tab's document schema in its `contents`
+to `chemdraft.document.v999` (leave the session envelope version unchanged). For a CDXML native
+payload, change the Value of the `org.chemdraft/schema-version` objecttag; for legacy JSON,
+change `schema`.
+Relaunch: readable tabs open and one native summary box says “1 drawing didn't open”, explains
+why the drawing is kept, and lists its name. Repeat with several tabs: one summary box lists all
+names and offers exactly Save Drawing…, Delete and Cancel. Its message says “Cancel keeps the
+drawings for the next launch.” Cancel, Escape (including macOS) and closing the box keep all
+drawings; relaunch asks again and retries their contents. Save Drawing… opens a native save panel
+for each drawing, suggesting its name and extension, and writes its exact saved text to the path
+chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
+box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
+box without losing the drawing. Delete opens a second native confirmation saying “Delete the
+kept drawing? This cannot be undone.” Its default button and Escape are Cancel. Cancel returns
+to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
+hidden through the entire sequence, including save panels, failed saves and both confirmation
+boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
+Restore a kept drawing's supported schema and relaunch: it opens normally without a prompt.
+
+Native simple prompts — run every item on **macOS and Windows** with the floating Drawing, Rings,
+and Art toolbars open, including at 125%/150% display scale:
+
+- For every prompt below, confirm the message box uses the OS appearance, stays above the floating
+  toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
+  exactly Cancel, and Escape (on macOS too) and closing the box choose it; a notice has one OK
+  button that Return dismisses. No button appears twice. Enter must never choose a destructive
+  action. Repeat in the web preview with `?agentBridge=1`:
+  the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+- With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
+  open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:
+  nothing happens and the active drawing tool stays unchanged. Close the box: exactly the previously
+  visible windows return at their original positions; hidden or minimized windows stay that way.
+  Repeat with overlapping prompts: windows return only after the last box closes. Inspect
+  `toolbar-state.json` during the box: temporary hides and frames must not be saved. Disconnect the
+  monitor holding a toolbar while the box is open: closing it recovers that toolbar onto a visible
+  monitor. Quit while a box is open: dismissing it must not resurrect floating windows.
+  Open/save panels (including Save As, exports, template, image and plugin pickers) keep toolbars,
+  popovers, the tooltip and plugin panels hidden until the last box/panel closes. A close prompt →
+  Save panel → canceled-save re-ask keeps them hidden throughout, then restores them on every ending.
+- Close a dirty foreground or background tab: Save / Don’t Save / Cancel. Cancel retains drawing,
+  selection, dirty state, and history; Don’t Save removes only that tab (or leaves a fresh Untitled
+  when it was the last one). Save closes only after success. Cancel the save picker, simulate a write
+  failure, and edit during a slow save: the tab remains open and the next prompt includes the reason.
+  Queue an OS open-with while prompted: it waits, and Save still writes the prompted drawing.
+- Import oversized CDXML or paste oversized content: "Change the page to … to fit the imported
+  content?" Use the recommended page (e.g. Use A3 Page) / Cancel. Escape keeps the original page and overflow; resize remains one undoable layout operation and
+  preserves chemical identity and editable objects.
+- Apply a whole-molecule appearance change to a molecule with per-ring attributes:
+  Keep Overrides / Clear Overrides / Cancel. Cancel changes nothing; Keep retains ring attributes;
+  Clear removes them for the selected molecule with the existing labelled undo entry. Undo restores
+  the attributes. Enter must not choose Clear Overrides.
+- Request the local recognition engine: Install / Cancel (or Install engine again / Cancel).
+  Escape declines without installing; Install starts only on that choice. The progress dialog stays
+  in-app, keeps byte/phase feedback, and Cancel still stops only an install owned by that request.
+  An unsupported-computer notice has only OK and never installs anything.
+- Uninstall the recognition plugin, then answer "Also remove the recognition engine?" with
+  Keep Engine / Remove Engine / Cancel. Keep Engine is the default; it, Cancel and Escape leave the
+  engine on disk; Remove Engine deletes only the engine and reports the same result.
+- Open an image request with no available source: OK acknowledges the specific reason and
+  cancels that request; no image acquisition or recognition runs.
+- Open a file whose visible CDXML disagrees with its embedded document: Import Visible CDXML /
+  Restore Embedded / Cancel chooses the same document as before; Cancel and Escape restore the
+  embedded document. Open the same file again while its choice is still showing (wait more than
+  two seconds): after answering, there is one tab for the file, never two.
+  If no visible subset can be read: Restore Embedded / Cancel, and Escape cancels the open.
+- Crash-report consent: Email Report / Cancel. Escape creates no email draft; Email Report opens
+  the same reviewable draft. On Windows, check app-update consent (Install and Restart / Cancel) and
+  informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
+- Windows document-window close still flushes the session and quits (without a new dirty-tab
+  prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.

@@ -565,8 +565,8 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
   await (options?.strict ? write : write.catch(() => undefined));
 }
 
-/** Emitted by Rust to the document window when the app is about to quit (off macOS: closing the
- *  document window, or File ▸ Exit). The listener flushes the pending session autosave and then
+/** Emitted by Rust before application-menu Quit / Cmd+Q on macOS, or closing the document
+ *  window / File ▸ Exit elsewhere. The listener flushes the pending session autosave and then
  *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 
@@ -604,14 +604,15 @@ export async function setToolbarsMenu(
   // Rust rebuilds the whole menu bar here, which recreates the Show Rulers / Show Crosshairs check
   // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
   rulersVisible: boolean,
-  crosshairsVisible: boolean
+  crosshairsVisible: boolean,
+  hasMultipleDocumentTabs = false
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
 }
 
 /**

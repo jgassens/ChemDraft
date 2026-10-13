@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-dialogs",
+  "description": "Allow only the document window to show native open and save panels and message boxes, on macOS and Windows. Every caller of the dialog plugin (file open and save, plugin package and image pickers, spectrum export, and nativePrompt) runs in the main window; nativePrompt also temporarily suspends floating toolset windows there. Palettes, popovers, Preferences, the Spin 3D debugger and plugin panels route through it.",
+  "windows": ["main"],
+  "permissions": ["dialog:allow-open", "dialog:allow-save", "dialog:allow-message", "allow-suspend-toolset-windows"]
+}

@@ -360,7 +360,7 @@ export async function saveTextFileHere(
 ): Promise<SaveTextFileResult> {
   if (isDesktopRuntime()) {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("../nativeFileDialog");
       const path = await save({
         title: options.title,
         defaultPath: filename,

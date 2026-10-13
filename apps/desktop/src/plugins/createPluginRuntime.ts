@@ -67,6 +67,10 @@ export interface DesktopPluginRuntimeOptions {
    * pushing onto it. Without one, the runtime falls back to {@link documentIdentityKey}.
    */
   getActiveDocumentKey?: () => string | undefined;
+  /** Desktop tab ownership, captured when a command starts even if its proposal arrives later. */
+  getActiveDocumentTab?: () => Pick<ProposalDocumentTab, "id">;
+  /** Reads the latest title of an open tab at display time. */
+  getDocumentTabTitle?: (tabId: string) => string | undefined;
   /**
    * Builds an immutable selection snapshot from current desktop state. `warnings` is the collector of
    * the command invocation that asked (see {@link DesktopPluginRuntime.invokeCommand}); it is
@@ -155,6 +159,9 @@ export interface DesktopPluginRuntime {
   prompts: PluginPromptTextController;
   images: PluginImageRequestController;
   recognition: StructureRecognitionController;
+  proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
+  /** Retain the final title while pending proposals or running commands reference a closed tab. */
+  closeProposalDocumentTab(tabId: string, title: string): void;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -176,6 +183,11 @@ export interface DesktopPluginRuntime {
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
   onDidChange(listener: () => void): () => void;
+}
+
+export interface ProposalDocumentTab {
+  id: string;
+  title: string;
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
@@ -227,9 +239,47 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
+  const proposalTabs = new Map<string, string>();
+  const closedTabTitles = new Map<string, string>();
+  const runningTabCommands = new Map<string, number>();
+  const pruneClosedTabTitles = () => {
+    const pendingTabs = new Set(proposalTabs.values());
+    for (const id of closedTabTitles.keys()) {
+      if (!pendingTabs.has(id) && !runningTabCommands.has(id)) closedTabTitles.delete(id);
+    }
+  };
+  let proposingTabId: string | undefined;
   class DesktopPluginHost extends PluginHost {
+    override async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
+      const tabId = options.getActiveDocumentTab?.().id;
+      if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
+      try {
+        return await super.invokeCommand<Result>(commandId);
+      } finally {
+        if (tabId) {
+          const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
+          if (remaining > 0) runningTabCommands.set(tabId, remaining);
+          else runningTabCommands.delete(tabId);
+        }
+        pruneClosedTabTitles();
+      }
+    }
+
     override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken);
+      const tabId = options.getActiveDocumentTab?.().id;
+      const proposePatch = context.documents.proposePatch;
+      context.documents.proposePatch = (proposal) => {
+        // The host enqueues synchronously before returning its promise. Scope the queue notification
+        // to this context, so concurrent commands and late results retain their own source tab.
+        const previous = proposingTabId;
+        proposingTabId = tabId;
+        try {
+          return proposePatch(proposal);
+        } finally {
+          proposingTabId = previous;
+        }
+      };
       const collector = armedSelectionWarnings;
       armedSelectionWarnings = undefined;
       const selection = context.selection;
@@ -257,7 +307,21 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
     getSelection: readSelection ? () => readSelection(readingSelectionWarnings) : undefined,
     createStorage: options.createStorage,
-    onProposedPatchesChanged: options.onProposedPatchesChanged,
+    onProposedPatchesChanged: () => {
+      const pending = host.listProposedPatches("pending");
+      const pendingIds = new Set(pending.map((proposal) => proposal.id));
+      for (const id of proposalTabs.keys()) {
+        if (!pendingIds.has(id)) proposalTabs.delete(id);
+      }
+      for (const proposal of pending) {
+        if (proposalTabs.has(proposal.id)) continue;
+        // Trusted desktop callers of host.proposePatch have no invocation context.
+        const tabId = proposingTabId ?? options.getActiveDocumentTab?.().id;
+        if (tabId) proposalTabs.set(proposal.id, tabId);
+      }
+      pruneClosedTabTitles();
+      options.onProposedPatchesChanged?.();
+    },
     applyDocumentPatch: options.applyDocumentPatch,
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
@@ -284,6 +348,16 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     prompts,
     images,
     recognition,
+    proposalDocumentTab(proposalId) {
+      const id = proposalTabs.get(proposalId);
+      if (id === undefined) return undefined;
+      const title = options.getDocumentTabTitle?.(id) ?? closedTabTitles.get(id);
+      return title === undefined ? undefined : { id, title };
+    },
+    closeProposalDocumentTab(tabId, title) {
+      closedTabTitles.set(tabId, title);
+      pruneClosedTabTitles();
+    },
     registerPlugin(candidate, registerOptions = {}) {
       // Validate before touching the shared command registry, then apply the desktop capability policy.
       // This keeps `hasPermission()` honest: an unavailable permission can never reach a registered

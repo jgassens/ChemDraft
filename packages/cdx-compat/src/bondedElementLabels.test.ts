@@ -126,7 +126,7 @@ describe("CDXML import keeps a numeric element an element, and a text label a la
   });
 });
 
-describe("CDXML export of a cyano label turned round since it was written", () => {
+describe("CDXML export of a cyano label whose recorded reading differs from its drawn side", () => {
   // SCN on atom a3, bonded to c1 at x = 30. The record says which side its bond came from when it
   // was written; the visible CDXML carries only the drawing.
   const scn = (side: "left" | "right", labelX: number) => documentWith(
@@ -139,16 +139,15 @@ describe("CDXML export of a cyano label turned round since it was written", () =
   const turnedWarnings = (document: ReturnType<typeof scn>) =>
     exportDocumentToCdxml(document).warnings.filter((warning) => warning.code === "cdxml.label_bond_side_turned");
 
-  it("names the atom and how the visible layer will read when the drawing no longer matches", () => {
-    // Written with its bond on the left (a thiocyanate), now drawn with its neighbour on its right.
+  it("states the recorded reading and how the visible layer reads the drawn side", () => {
+    // Recorded with its bond on the left (a thiocyanate), drawn with its neighbour on its right.
     const turned = turnedWarnings(scn("left", 0));
     expect(turned).toHaveLength(1);
-    expect(turned[0]!.message).toContain('Label "SCN" on atom a3');
-    expect(turned[0]!.message).toContain("imports as an unrecognized group");
-    // And the other way round: written on the right, now drawn with its bond on the left.
+    expect(turned[0]!.message).toBe('Label "SCN" on atom a3 is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft\'s embedded document keeps the recorded reading.');
+    // And the other way round: recorded on the right, drawn with its bond on the left.
     const otherWay = turnedWarnings(scn("right", 60));
     expect(otherWay).toHaveLength(1);
-    expect(otherWay[0]!.message).toContain("reads as its cyano group");
+    expect(otherWay[0]!.message).toBe('Label "SCN" on atom a3 is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft\'s embedded document keeps the recorded reading.');
   });
 
   it("says nothing when the drawing still shows the side it was written with", () => {

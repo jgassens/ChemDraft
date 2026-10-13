@@ -5,7 +5,7 @@ import {
   type PluginProvidedImage
 } from "@chemdraft/plugin-api";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../nativeFileDialog";
 import { readFile, stat } from "@tauri-apps/plugin-fs";
 
 import { isTauriHost } from "./pluginStagingFs";
