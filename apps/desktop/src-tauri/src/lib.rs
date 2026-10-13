@@ -755,6 +755,18 @@ pub fn run() {
                 schedule_suspended_utility_restore(window.app_handle());
             }
 
+            if is_suspended_utility_label(window.label())
+                && matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                )
+            {
+                UTILITY_SUSPENSION
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .closed(window.label());
+            }
+
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
             // the same path as its own close control: hidden, not destroyed, and the main document
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
@@ -1275,6 +1287,108 @@ fn is_suspended_utility_label(label: &str) -> bool {
     label.starts_with("toolset-") || is_plugin_panel_window_label(label)
 }
 
+fn utility_restore_priority(label: &str) -> u8 {
+    if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
+        3
+    } else if label.starts_with("toolset-popover-") {
+        2
+    } else if is_plugin_panel_window_label(label) {
+        0
+    } else {
+        1
+    }
+}
+
+/// Main-thread-only, inside suspend_toolset_windows' run_on_main_thread_blocking transaction.
+/// Read before hiding anything. A partial native list is a failure too: silently mixing it with
+/// registry order would scramble siblings. The caller logs and keeps the old fallback ordering.
+fn utility_windows_top_to_bottom<R: Runtime>(
+    windows: &[tauri::WebviewWindow<R>],
+) -> Result<Vec<String>, String> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "AppKit stacking order must be read on the main thread.".to_string())?;
+        let mut labels = HashMap::new();
+        for window in windows {
+            let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+            let native = unsafe { pointer.as_ref() }
+                .ok_or_else(|| "Could not access a native ChemDraft utility window.".to_string())?;
+            labels.insert(native.windowNumber(), window.label().to_string());
+        }
+        let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        // SAFETY: orderedWindows returns NSArray<NSWindow> in front-to-back order. Its binding is
+        // behind NSApplicationScripting, which we do not otherwise need; all AppKit access here
+        // is on the main thread, and Retained keeps the returned snapshot alive while iterating.
+        let ordered: objc2::rc::Retained<objc2_foundation::NSArray<NSWindow>> =
+            unsafe { objc2::msg_send![&*application, orderedWindows] };
+        let mut order = Vec::new();
+        for native in ordered.iter() {
+            if let Some(label) = labels.remove(&native.windowNumber()) {
+                order.push(label);
+            }
+        }
+        if !labels.is_empty() {
+            return Err(format!(
+                "NSApp orderedWindows omitted {} visible utility window(s).",
+                labels.len()
+            ));
+        }
+        Ok(order)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{Foundation::HWND, UI::WindowsAndMessaging::EnumWindows};
+
+        struct Snapshot {
+            labels: HashMap<usize, String>,
+            order: Vec<String>,
+        }
+        unsafe extern "system" fn collect(hwnd: HWND, data: isize) -> i32 {
+            // SAFETY: EnumWindows invokes this synchronously with our live Snapshot pointer.
+            let snapshot = unsafe { &mut *(data as *mut Snapshot) };
+            if let Some(label) = snapshot.labels.remove(&(hwnd as usize)) {
+                snapshot.order.push(label);
+            }
+            1
+        }
+
+        let mut snapshot = Snapshot {
+            labels: HashMap::new(),
+            order: Vec::new(),
+        };
+        for window in windows {
+            let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+            snapshot
+                .labels
+                .insert(hwnd.0 as usize, window.label().to_string());
+        }
+        // SAFETY: EnumWindows enumerates top-level windows (including the document's owned
+        // utilities) from top to bottom. The callback only records matching handles; it neither
+        // mutates windows nor changes focus. Snapshot outlives the synchronous enumeration.
+        if unsafe { EnumWindows(Some(collect), &mut snapshot as *mut Snapshot as isize) } == 0 {
+            return Err(format!(
+                "EnumWindows failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if !snapshot.labels.is_empty() {
+            return Err(format!(
+                "EnumWindows omitted {} visible utility window(s).",
+                snapshot.labels.len()
+            ));
+        }
+        Ok(snapshot.order)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err("Native utility stacking order is unavailable on this platform.".to_string())
+    }
+}
+
 /// Async for the same reason as window creation: never take WINDOW_CREATION on the main thread.
 /// The actual hide/show transaction runs on the main thread, serializing it with late flyout and
 /// tooltip reveals. Future in-app dialogs should acquire/release this same counter.
@@ -1313,7 +1427,7 @@ async fn suspend_toolset_windows(
             let document_minimized = app
                 .get_webview_window(MAIN_WINDOW_LABEL)
                 .is_some_and(|main| main.is_minimized().unwrap_or(true));
-            let snapshot: Vec<_> = windows
+            let mut snapshot: Vec<_> = windows
                 .iter()
                 .map(|window| {
                     (
@@ -1323,10 +1437,41 @@ async fn suspend_toolset_windows(
                     )
                 })
                 .collect();
+            // Only the first acquisition reads the native order. A nested prompt must keep the
+            // first snapshot, including while waiting for a minimized document to return.
+            let top_to_bottom = if UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active()
+            {
+                None
+            } else {
+                let visible_windows: Vec<_> = windows
+                    .iter()
+                    .filter(|window| {
+                        snapshot.iter().any(|(label, visible, minimized)| {
+                            label == window.label() && *visible && !*minimized
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                match utility_windows_top_to_bottom(&visible_windows) {
+                    Ok(order) => Some(order),
+                    Err(error) => {
+                        eprintln!(
+                            "Could not read ChemDraft floating window stacking order; using the \
+                             default restore order: {error}"
+                        );
+                        None
+                    }
+                }
+            };
+            // Preserve the previous panel/toolbar/flyout/tooltip order if the native query fails.
+            snapshot.sort_by_key(|(label, _, _)| utility_restore_priority(label));
             if !UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .begin(snapshot)
+                .begin(snapshot, top_to_bottom)
             {
                 return Ok(());
             }
@@ -1402,7 +1547,7 @@ fn restore_utility_labels<R: Runtime>(
     app: &tauri::AppHandle<R>,
     labels: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let Some(mut labels) = labels else {
+    let Some(labels) = labels else {
         return Ok(());
     };
     if quit_in_progress() {
@@ -1422,18 +1567,7 @@ fn restore_utility_labels<R: Runtime>(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .start_restore();
-    // Restore panels and toolbars first, then their flyouts, and the shared tooltip last.
-    labels.sort_by_key(|label| {
-        if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
-            3
-        } else if label.starts_with("toolset-popover-") {
-            2
-        } else if is_plugin_panel_window_label(label) {
-            0
-        } else {
-            1
-        }
-    });
+    // The snapshot supplies bottom-to-top order; do not regroup native siblings by window type.
     let mut result = Ok(());
     for label in labels {
         if quit_in_progress() {
@@ -1512,7 +1646,10 @@ fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Resul
         // Tao retains MARKER_DONT_FOCUS for their lifetime, so set_visible uses SW_SHOWNOACTIVATE
         // even after a panel has received focus explicitly. Going through Tauri also updates Tao's
         // VISIBLE flag, so subsequent hide/show calls still work. Do not build panels focused(true).
-        window.show().map_err(|error| error.to_string())
+        window.show().map_err(|error| error.to_string())?;
+        // SW_SHOWNOACTIVATE may keep a hidden window's old position. Explicitly raise each
+        // restored sibling in snapshot order using SWP_NOACTIVATE, without changing ownership.
+        raise_among_owned_windows(window)
     }
 }
 
@@ -1978,8 +2115,8 @@ mod plugin_panel_label_tests {
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
-        state.lock().unwrap().begin([]);
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
+        state.lock().unwrap().begin([], None);
         let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
             "panelId": "panel.test", "title": "Analyze", "focus": true
         }))
@@ -2024,7 +2161,7 @@ mod plugin_panel_label_tests {
     fn quit_drops_new_and_previously_deferred_panel_requests() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
         let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
             "panelId": "panel.test", "title": "Analyze"
         }))
@@ -2036,7 +2173,7 @@ mod plugin_panel_label_tests {
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || false, |_| panic!("quit request was queued"))
             .unwrap();
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
         dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || true, |_| panic!("quitting")).unwrap();

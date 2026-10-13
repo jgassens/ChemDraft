@@ -9,6 +9,8 @@ pub(crate) struct UtilitySuspension {
     restoring_windows: bool,
     visibility: HashMap<String, bool>,
     restore: HashSet<String>,
+    /// Bottom to top: showing/raising in this order leaves the original frontmost window last.
+    restore_order: Vec<String>,
     recovery_positions: HashMap<String, HashSet<(i32, i32)>>,
     deferred_panels: HashMap<String, super::OpenPluginPanelRequest>,
 }
@@ -25,6 +27,7 @@ impl UtilitySuspension {
     pub(crate) fn begin(
         &mut self,
         windows: impl IntoIterator<Item = (String, bool, bool)>,
+        top_to_bottom: Option<Vec<String>>,
     ) -> bool {
         let already_active = self.active();
         self.depth += 1;
@@ -34,8 +37,19 @@ impl UtilitySuspension {
         for (label, visible, minimized) in windows {
             self.visibility.insert(label.clone(), visible);
             if visible && !minimized {
-                self.restore.insert(label);
+                self.restore.insert(label.clone());
+                self.restore_order.push(label);
             }
+        }
+        if let Some(order) = top_to_bottom {
+            let fallback = std::mem::take(&mut self.restore_order);
+            let mut seen = HashSet::new();
+            self.restore_order = order
+                .into_iter()
+                .rev()
+                .chain(fallback)
+                .filter(|label| self.restore.contains(label) && seen.insert(label.clone()))
+                .collect();
         }
         true
     }
@@ -63,7 +77,18 @@ impl UtilitySuspension {
     /// Enroll a requested reveal in restoration, without constructing or parenting a window.
     pub(crate) fn defer_show(&mut self, label: String) {
         self.visibility.insert(label.clone(), true);
-        self.restore.insert(label);
+        if self.restore.insert(label.clone()) {
+            self.restore_order.push(label);
+        }
+    }
+
+    /// A native close can hide a reusable panel rather than destroying it. Neither kind of close
+    /// should bring the window back when the prompt ends.
+    pub(crate) fn closed(&mut self, label: &str) {
+        self.restore.remove(label);
+        self.restore_order.retain(|entry| entry != label);
+        self.visibility.remove(label);
+        self.deferred_panels.remove(label);
     }
 
     /// Keep restoration active after the last prompt ends, including while the owner is minimized.
@@ -74,6 +99,7 @@ impl UtilitySuspension {
             self.restoring_windows = false;
             self.visibility.clear();
             self.restore.clear();
+            self.restore_order.clear();
             self.recovery_positions.clear();
             self.deferred_panels.clear();
             return None;
@@ -90,8 +116,13 @@ impl UtilitySuspension {
 
     /// Used by owner/utility restore events without releasing another prompt acquisition.
     pub(crate) fn pending_restore(&self) -> Option<Vec<String>> {
-        (self.depth == 0 && self.restoring && !self.restoring_windows)
-            .then(|| self.restore.iter().cloned().collect())
+        (self.depth == 0 && self.restoring && !self.restoring_windows).then(|| {
+            self.restore_order
+                .iter()
+                .filter(|label| self.restore.contains(*label))
+                .cloned()
+                .collect()
+        })
     }
 
     pub(crate) fn start_restore(&mut self) {
@@ -131,6 +162,7 @@ impl UtilitySuspension {
         if self.depth == 0 && self.restore.is_empty() {
             self.restoring = false;
             self.visibility.clear();
+            self.restore_order.clear();
         }
     }
 }
@@ -149,9 +181,74 @@ mod tests {
     }
 
     #[test]
+    fn native_order_restores_bottom_first_instead_of_snapshot_or_window_type_order() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [
+                ("toolset-rings".into(), true, false),
+                ("plugin-panel-report".into(), true, false),
+                ("toolset-art".into(), true, false),
+                ("hidden".into(), false, false),
+                ("minimized".into(), true, true),
+            ],
+            Some(vec![
+                "hidden".into(),
+                "toolset-rings".into(),
+                "minimized".into(),
+                "plugin-panel-report".into(),
+                "toolset-art".into(),
+            ]),
+        );
+        let expected = vec!["toolset-art", "plugin-panel-report", "toolset-rings"];
+        assert_eq!(state.release(false).unwrap(), expected);
+        // Waiting for the owner to return must not discard or reorder the snapshot.
+        state.finish_restore();
+        assert_eq!(state.pending_restore().unwrap(), expected);
+    }
+
+    #[test]
+    fn closed_window_is_skipped_without_reordering_surviving_siblings() {
+        let mut state = UtilitySuspension::default();
+        state.begin(snapshot(), Some(vec!["toolbar".into(), "popover".into()]));
+        state.closed("popover");
+        assert_eq!(state.release(false).unwrap(), vec!["toolbar"]);
+        state.restored("toolbar");
+        state.finish_restore();
+        assert!(!state.active());
+    }
+
+    #[test]
+    fn nested_acquisition_keeps_first_order_and_deferred_reveals_come_last_once() {
+        let mut state = UtilitySuspension::default();
+        state.begin(snapshot(), Some(vec!["toolbar".into(), "popover".into()]));
+        assert!(!state.begin(snapshot(), Some(vec!["popover".into(), "toolbar".into()]),));
+        state.defer_show("late-panel".into());
+        state.defer_show("late-panel".into());
+        assert!(state.release(false).is_none());
+        assert_eq!(
+            state.release(false).unwrap(),
+            vec!["popover", "toolbar", "late-panel"]
+        );
+    }
+
+    #[test]
+    fn unavailable_order_uses_supplied_fallback_and_a_new_snapshot_replaces_old_order() {
+        let mut state = UtilitySuspension::default();
+        state.begin(snapshot(), None);
+        let labels = state.release(false).unwrap();
+        assert_eq!(labels, vec!["toolbar", "popover"]);
+        for label in labels {
+            state.restored(&label);
+        }
+        state.finish_restore();
+        state.begin(snapshot(), Some(vec!["toolbar".into(), "popover".into()]));
+        assert_eq!(state.release(false).unwrap(), vec!["popover", "toolbar"]);
+    }
+
+    #[test]
     fn restores_only_the_original_visible_non_minimized_set() {
         let mut state = UtilitySuspension::default();
-        assert!(state.begin(snapshot()));
+        assert!(state.begin(snapshot(), None));
         assert!(state.visible("toolbar", false));
         assert!(state.visible("minimized", false));
         assert!(!state.visible("hidden", false));
@@ -167,8 +264,8 @@ mod tests {
     #[test]
     fn overlapping_dialogs_share_the_first_snapshot_and_restore_only_after_the_last() {
         let mut state = UtilitySuspension::default();
-        state.begin(snapshot());
-        assert!(!state.begin([("late tooltip".into(), true, false)]));
+        state.begin(snapshot(), None);
+        assert!(!state.begin([("late tooltip".into(), true, false)], None));
         assert!(state.release(false).is_none());
         assert!(state.active());
         let labels = state.release(false).unwrap();
@@ -183,7 +280,7 @@ mod tests {
     #[test]
     fn quitting_refuses_restoration_and_discards_the_snapshot() {
         let mut state = UtilitySuspension::default();
-        state.begin(snapshot());
+        state.begin(snapshot(), None);
         assert!(state.release(true).is_none());
         assert!(!state.active());
         assert!(state.release(false).is_none());
@@ -193,7 +290,7 @@ mod tests {
     fn state_save_and_pending_shows_remain_suppressed_through_monitor_recovery() {
         let mut state = UtilitySuspension::default();
         assert!(!state.active());
-        state.begin(snapshot());
+        state.begin(snapshot(), None);
         assert!(state.active());
         let labels = state.release(false).unwrap();
         assert!(state.active());
@@ -207,7 +304,7 @@ mod tests {
     #[test]
     fn panel_requested_during_a_prompt_is_restored_even_without_an_original_window() {
         let mut state = UtilitySuspension::default();
-        state.begin(snapshot());
+        state.begin(snapshot(), None);
         state.defer_show("plugin-panel-new".into());
         assert!(state.visible("plugin-panel-new", false));
         let labels = state.release(false).unwrap();
@@ -225,7 +322,7 @@ mod tests {
     #[test]
     fn minimized_owner_keeps_obligations_until_unminimize_and_a_new_prompt_keeps_the_snapshot() {
         let mut state = UtilitySuspension::default();
-        state.begin(snapshot());
+        state.begin(snapshot(), None);
         let labels = state.release(false).unwrap();
         // No shows while the owner is minimized. Even finish_restore cannot discard that work.
         state.finish_restore();
@@ -233,7 +330,7 @@ mod tests {
         assert!(state.visible("toolbar", false));
         assert_eq!(state.pending_restore().unwrap().len(), labels.len());
         state.defer_show("plugin-panel-late".into());
-        assert!(!state.begin([("toolbar".into(), false, false)]));
+        assert!(!state.begin([("toolbar".into(), false, false)], None));
         assert!(state.pending_restore().is_none());
         let labels = state.release(false).unwrap();
         assert_eq!(labels.len(), 3);
@@ -249,7 +346,7 @@ mod tests {
     #[test]
     fn buffered_windows_recovery_moves_after_finish_do_not_write_toolbar_state() {
         let mut state = UtilitySuspension::default();
-        state.begin([("toolbar".into(), true, false)]);
+        state.begin([("toolbar".into(), true, false)], None);
         state.release(false).unwrap();
         state.start_restore();
         state.recovery_move("toolbar", (1800, 200));
@@ -285,7 +382,7 @@ mod tests {
     #[test]
     fn quitting_discards_deferred_panels_and_waiting_restoration() {
         let mut state = UtilitySuspension::default();
-        state.begin(snapshot());
+        state.begin(snapshot(), None);
         state.release(false).unwrap();
         state.defer_show("plugin-panel-late".into());
         state.release(true);
