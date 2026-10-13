@@ -1,5 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
+/// An explicit document-group anchor, never the desktop's global frontmost position.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RestorePlacement {
+    Below(String),
+    Above(String),
+    AboveDocument,
+}
+
 /// Shared by native prompts and, in future, in-app modal dialogs. A suspension is temporary;
 /// logical toolbar visibility and persisted frames must remain unchanged throughout restoration.
 #[derive(Default)]
@@ -9,7 +17,7 @@ pub(crate) struct UtilitySuspension {
     restoring_windows: bool,
     visibility: HashMap<String, bool>,
     restore: HashSet<String>,
-    /// Bottom to top: showing/raising in this order leaves the original frontmost window last.
+    /// Bottom to top, retained for the whole cycle, including already-restored siblings.
     restore_order: Vec<String>,
     recovery_positions: HashMap<String, HashSet<(i32, i32)>>,
     deferred_panels: HashMap<String, super::OpenPluginPanelRequest>,
@@ -77,7 +85,7 @@ impl UtilitySuspension {
     /// Enroll a requested reveal in restoration, without constructing or parenting a window.
     pub(crate) fn defer_show(&mut self, label: String) {
         self.visibility.insert(label.clone(), true);
-        if self.restore.insert(label.clone()) {
+        if self.restore.insert(label.clone()) && !self.restore_order.contains(&label) {
             self.restore_order.push(label);
         }
     }
@@ -127,6 +135,26 @@ impl UtilitySuspension {
 
     pub(crate) fn start_restore(&mut self) {
         self.restoring_windows = true;
+    }
+
+    /// Retries must use the original order, not just the still-pending subset. Prefer the nearest
+    /// restored sibling above us; if none is available, use the nearest below, then the owner.
+    /// The caller checks actual visibility too: a restored sibling may since have closed/minimized.
+    pub(crate) fn restore_placement(
+        &self,
+        label: &str,
+        available: impl Fn(&str) -> bool,
+    ) -> RestorePlacement {
+        if let Some(index) = self.restore_order.iter().position(|entry| entry == label) {
+            let restored = |entry: &&String| !self.restore.contains(*entry) && available(entry);
+            if let Some(above) = self.restore_order[index + 1..].iter().find(restored) {
+                return RestorePlacement::Below(above.clone());
+            }
+            if let Some(below) = self.restore_order[..index].iter().rev().find(restored) {
+                return RestorePlacement::Above(below.clone());
+            }
+        }
+        RestorePlacement::AboveDocument
     }
 
     pub(crate) fn restored(&mut self, label: &str) {
@@ -181,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn native_order_restores_bottom_first_instead_of_snapshot_or_window_type_order() {
+    fn native_order_records_bottom_to_top_instead_of_snapshot_or_window_type_order() {
         let mut state = UtilitySuspension::default();
         state.begin(
             [
@@ -204,6 +232,142 @@ mod tests {
         // Waiting for the owner to return must not discard or reorder the snapshot.
         state.finish_restore();
         assert_eq!(state.pending_restore().unwrap(), expected);
+    }
+
+    /// Model relative native insertion, with another app and its dialog above the document group.
+    fn place(state: &mut UtilitySuspension, stack: &mut Vec<String>, label: &str) {
+        let placement =
+            state.restore_placement(label, |sibling| stack.iter().any(|s| s == sibling));
+        let (anchor, below) = match placement {
+            RestorePlacement::Below(sibling) => (sibling, true),
+            RestorePlacement::Above(sibling) => (sibling, false),
+            RestorePlacement::AboveDocument => ("document".into(), false),
+        };
+        stack.retain(|entry| entry != label);
+        let index = stack.iter().position(|entry| entry == &anchor).unwrap();
+        stack.insert(index + usize::from(below), label.into());
+        state.restored(label);
+    }
+
+    fn document_stack() -> Vec<String> {
+        vec![
+            "foreign-dialog".into(),
+            "foreign-app".into(),
+            "document".into(),
+        ]
+    }
+
+    #[test]
+    fn minimized_art_retry_stays_below_already_restored_rings_and_foreign_windows() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [("Art".into(), true, false), ("Rings".into(), true, false)],
+            Some(vec!["Rings".into(), "Art".into()]),
+        );
+        state.release(false).unwrap();
+        let mut stack = document_stack();
+        state.start_restore();
+        // Art became minimized during the prompt; Rings is the only successful first-pass show.
+        place(&mut state, &mut stack, "Rings");
+        state.finish_restore();
+        assert_eq!(state.pending_restore().unwrap(), vec!["Art"]);
+        assert_eq!(
+            state.restore_placement("Art", |_| true),
+            RestorePlacement::Below("Rings".into())
+        );
+        state.start_restore();
+        place(&mut state, &mut stack, "Art");
+        state.finish_restore();
+        assert_eq!(
+            stack,
+            vec!["foreign-dialog", "foreign-app", "Rings", "Art", "document"]
+        );
+        assert!(!state.active());
+    }
+
+    #[test]
+    fn three_windows_in_two_passes_keep_order_for_every_first_pass_subset() {
+        // Cover retries above, below and between restored siblings, including two pending windows.
+        for first_pass in [
+            vec!["Top"],
+            vec!["Middle"],
+            vec!["Bottom"],
+            vec!["Top", "Middle"],
+            vec!["Top", "Bottom"],
+            vec!["Middle", "Bottom"],
+        ] {
+            let mut state = UtilitySuspension::default();
+            state.begin(
+                ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false)),
+                Some(vec!["Top".into(), "Middle".into(), "Bottom".into()]),
+            );
+            state.release(false).unwrap();
+            let mut stack = document_stack();
+            state.start_restore();
+            for label in first_pass {
+                place(&mut state, &mut stack, label);
+            }
+            state.finish_restore();
+            let retry = state.pending_restore().unwrap();
+            state.start_restore();
+            for label in retry.into_iter().rev() {
+                place(&mut state, &mut stack, &label);
+            }
+            state.finish_restore();
+            assert_eq!(
+                stack,
+                vec![
+                    "foreign-dialog",
+                    "foreign-app",
+                    "Top",
+                    "Middle",
+                    "Bottom",
+                    "document"
+                ]
+            );
+            assert!(!state.active());
+        }
+    }
+
+    #[test]
+    fn retry_uses_nearest_available_restored_sibling_or_document() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            ["Top", "Middle", "Bottom"].map(|label| (label.into(), true, false)),
+            Some(vec!["Top".into(), "Middle".into(), "Bottom".into()]),
+        );
+        state.release(false).unwrap();
+        state.restored("Top");
+        state.restored("Bottom");
+        state.finish_restore();
+        assert_eq!(
+            state.restore_placement("Middle", |_| true),
+            RestorePlacement::Below("Top".into())
+        );
+        assert_eq!(
+            state.restore_placement("Middle", |label| label != "Top"),
+            RestorePlacement::Above("Bottom".into())
+        );
+        state.closed("Top");
+        state.closed("Bottom");
+        assert_eq!(
+            state.restore_placement("Middle", |_| true),
+            RestorePlacement::AboveDocument
+        );
+    }
+
+    #[test]
+    fn repeated_reveal_of_restored_window_keeps_its_original_position() {
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [("Art".into(), true, false), ("Rings".into(), true, false)],
+            Some(vec!["Rings".into(), "Art".into()]),
+        );
+        state.release(false).unwrap();
+        state.restored("Art");
+        state.finish_restore();
+        state.defer_show("Art".into());
+        assert_eq!(state.pending_restore().unwrap(), vec!["Art", "Rings"]);
     }
 
     #[test]

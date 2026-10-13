@@ -1569,21 +1569,34 @@ fn restore_utility_labels<R: Runtime>(
     {
         return Ok(());
     }
+    // AppKit palettes use the floating level and hide on deactivation. Ordering them in while
+    // inactive could expose that level above another app even with a relative anchor. Keep the
+    // obligations until the document/utility Focused(true) event retries. Windows utilities are
+    // non-topmost owned windows and can safely restore behind the foreground app using HWNDs.
+    #[cfg(target_os = "macos")]
+    if !foreground_belongs_to_app() {
+        return Ok(());
+    }
     UTILITY_SUSPENSION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .start_restore();
-    // The snapshot supplies bottom-to-top order; do not regroup native siblings by window type.
+    // Restore top-down so each next window can go directly below its restored sibling. Retried
+    // windows also use the full cycle's order, including siblings restored in an earlier pass.
     let mut result = Ok(());
-    for label in labels {
+    for label in labels.into_iter().rev() {
         if quit_in_progress() {
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
-        if app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .is_none_or(|main| main.is_minimized().unwrap_or(true))
-        {
+        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            break;
+        };
+        if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
+            break;
+        }
+        #[cfg(target_os = "macos")]
+        if !foreground_belongs_to_app() {
             break;
         }
         let Some(window) = app.get_webview_window(&label) else {
@@ -1603,7 +1616,7 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             recover_offscreen_toolset_window(app, &window);
         }
-        let shown = restore_utility_window(&window);
+        let shown = restore_utility_in_document_group(&window);
         if let Err(error) = shown {
             result = Err(error);
         } else {
@@ -1632,30 +1645,140 @@ fn buffer_utility_recovery_position<R: Runtime>(window: &tauri::WebviewWindow<R>
     }
 }
 
-fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+/// Main-thread-only. Also used by deferred panel creation, so a worker retry uses the same retained
+/// sibling order as an existing window's Resized retry, without an app-wide reveal in between.
+fn restore_utility_in_document_group<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let app = window.app_handle();
+    let main = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "ChemDraft utility restore owner disappeared.".to_string())?;
+    if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
+        return Err("ChemDraft utility restore owner is not visible; retrying.".into());
+    }
+    #[cfg(target_os = "macos")]
+    if !foreground_belongs_to_app() {
+        return Err("ChemDraft utility restore is waiting for app activation.".into());
+    }
+    let placement = UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .restore_placement(window.label(), |sibling| {
+            app.get_webview_window(sibling).is_some_and(|sibling| {
+                sibling.is_visible().unwrap_or(false) && !sibling.is_minimized().unwrap_or(true)
+            })
+        });
+    let (anchor, below) = match placement {
+        utility_suspension::RestorePlacement::Below(sibling) => {
+            (app.get_webview_window(&sibling), true)
+        }
+        utility_suspension::RestorePlacement::Above(sibling) => {
+            (app.get_webview_window(&sibling), false)
+        }
+        utility_suspension::RestorePlacement::AboveDocument => (Some(main.clone()), false),
+    };
+    let anchor =
+        anchor.ok_or_else(|| "ChemDraft utility restore anchor disappeared.".to_string())?;
+    restore_utility_window(window, &main, &anchor, below)
+}
+
+fn restore_utility_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    main: &tauri::WebviewWindow<R>,
+    anchor: &tauri::WebviewWindow<R>,
+    below: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if is_plugin_panel_window_label(window.label()) {
-            return configure_analysis_window_on_main_thread(window, false);
-        }
         // Already on the main thread. Preserve each panel's traits (in particular the tooltip's
-        // click-through setting) and order it in without activating it.
+        // click-through setting). orderWindow:relativeTo: shows without making the window key,
+        // and anchors it to the document group rather than using orderFront's app-wide raise.
         let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let native = unsafe { pointer.as_ref() }
             .ok_or_else(|| "Could not restore native ChemDraft utility window.".to_string())?;
-        native.orderFront(None);
+        if is_plugin_panel_window_label(window.label()) {
+            configure_analysis_window_traits(window, native)?;
+        }
+        let main_pointer = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let owner = unsafe { main_pointer.as_ref() }
+            .ok_or_else(|| "Could not access native ChemDraft document window.".to_string())?;
+        let anchor_pointer =
+            anchor.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let anchor = unsafe { anchor_pointer.as_ref() }
+            .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
+        // Ordering out can detach children. Reattach above the owner (which orders hidden children
+        // in relative to that owner), then put the child at its recorded position among siblings.
+        if native
+            .parentWindow()
+            .is_none_or(|parent| !std::ptr::eq(&*parent, owner))
+        {
+            unsafe {
+                owner.addChildWindow_ordered(native, objc2_app_kit::NSWindowOrderingMode::Above)
+            };
+        }
+        native.orderWindow_relativeTo(
+            if below {
+                objc2_app_kit::NSWindowOrderingMode::Below
+            } else {
+                objc2_app_kit::NSWindowOrderingMode::Above
+            },
+            anchor.windowNumber(),
+        );
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindow, SetWindowPos, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+            SWP_NOSIZE,
+        };
+        let _ = main;
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as _;
+        let anchor = anchor.hwnd().map_err(|error| error.to_string())?.0 as _;
+        // SetWindowPos inserts BELOW its HWND anchor. To go above a lower sibling/the document,
+        // use its current predecessor, keeping the group's position below foreign windows/dialogs.
+        // SAFETY: live top-level HWNDs, queried/reordered on the main thread without activation.
+        let insert_after = if below {
+            anchor
+        } else {
+            unsafe { GetWindow(anchor, GW_HWNDPREV) }
+        };
+        if insert_after.is_null() {
+            // A null insert-after means HWND_TOP, not "no sibling". Refuse that global raise. An
+            // owned utility normally already precedes its owner, even while hidden; retain the
+            // obligation if that relationship is temporarily unavailable rather than moving apps.
+            return Err(
+                "ChemDraft utility restore has no window above its anchor; retrying.".into(),
+            );
+        }
+        if insert_after != hwnd
+            && unsafe {
+                SetWindowPos(
+                    hwnd,
+                    insert_after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
+                )
+            } == 0
+        {
+            return Err(format!(
+                "Could not restore ChemDraft utility stacking order: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         // All utilities, including explicitly requested analysis panels, are BUILT focused(false).
         // Tao retains MARKER_DONT_FOCUS for their lifetime, so set_visible uses SW_SHOWNOACTIVATE
-        // even after a panel has received focus explicitly. Going through Tauri also updates Tao's
-        // VISIBLE flag, so subsequent hide/show calls still work. Do not build panels focused(true).
-        window.show().map_err(|error| error.to_string())?;
-        // SW_SHOWNOACTIVATE may keep a hidden window's old position. Explicitly raise each
-        // restored sibling in snapshot order using SWP_NOACTIVATE, without changing ownership.
-        raise_among_owned_windows(window)
+        // and keeps the z-order we just set. Going through Tauri also updates Tao's VISIBLE flag.
+        window.show().map_err(|error| error.to_string())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (main, anchor, below);
+        window.show().map_err(|error| error.to_string())
     }
 }
 
@@ -2365,7 +2488,7 @@ async fn open_plugin_panel_window(
         &UTILITY_SUSPENSION,
         request,
         quit_in_progress(),
-        |request| build_or_show_plugin_panel(&app, request),
+        |request| build_or_show_plugin_panel(&app, request, false),
     )
 }
 
@@ -2406,8 +2529,17 @@ fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
     {
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return Ok(());
+        };
+        if !run_on_main_thread_blocking(&main, foreground_belongs_to_app)? {
+            return Ok(());
+        }
+    }
     resume_deferred_plugin_panels(&UTILITY_SUSPENSION, quit_in_progress, |request| {
-        build_or_show_plugin_panel(app, request)
+        build_or_show_plugin_panel(app, request, true)
     })
 }
 
@@ -2463,13 +2595,20 @@ fn resume_deferred_plugin_panels(
 fn build_or_show_plugin_panel<R: Runtime>(
     app: &tauri::AppHandle<R>,
     request: OpenPluginPanelRequest,
+    restoring: bool,
 ) -> Result<(), String> {
     if quit_in_progress() {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     let label = plugin_panel_window_label(&request.panel_id);
-    let presentation = request.presentation(false);
+    let presentation = request.presentation(restoring);
     if let Some(window) = app.get_webview_window(&label) {
+        if restoring {
+            let target = window.clone();
+            return run_on_main_thread_blocking(&window, move || {
+                restore_utility_in_document_group(&target)
+            })?;
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -2503,14 +2642,24 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .decorations(false)
     .shadow(false)
     .skip_taskbar(true);
-    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
+    // until the main-thread restore checks activation and attaches it relative to the document.
+    if !(restoring && cfg!(target_os = "macos")) {
+        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            builder = builder.parent(&main).map_err(|error| error.to_string())?;
+        }
     }
     if let Some(position) = position {
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
 
+    if restoring {
+        let target = window.clone();
+        return run_on_main_thread_blocking(&window, move || {
+            restore_utility_in_document_group(&target)
+        })?;
+    }
     configure_analysis_window(&window, presentation.focus_after_show)?;
     Ok(())
 }
@@ -2683,6 +2832,22 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
         return Err("Could not access native ChemDraft analysis window.".to_string());
     };
+    configure_analysis_window_traits(window, ns_window)?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    // Explicit panel opens keep their existing reveal behavior; suspension restores use only
+    // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
+    ns_window.orderFront(None);
+    attach_to_main_window(window.app_handle(), ns_window);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_analysis_window_traits<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    ns_window: &NSWindow,
+) -> Result<(), String> {
     // Normal level + a native parent keeps the window with its document without making it globally
     // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
     ns_window.setLevel(NSNormalWindowLevel);
@@ -2691,14 +2856,7 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     ns_window.setIgnoresMouseEvents(false);
     window
         .set_focusable(true)
-        .map_err(|error| error.to_string())?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
-    // orderFront shows the window without making it key, so this is also the unfocused show.
-    ns_window.orderFront(None);
-    attach_to_main_window(window.app_handle(), ns_window);
-    Ok(())
+        .map_err(|error| error.to_string())
 }
 
 /// Makes `child` a child window of the main document window again, if it is not one already.
