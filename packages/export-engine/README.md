@@ -23,8 +23,10 @@ and weights at least 600 use bold/bold-italic.
 Noto supplies Latin/Greek, Unicode subscript/superscript digits and signs; its
 subscript digits extend below the baseline (about −0.13…0.31 em) and superscript
 digits sit above it (about 0.41…0.85 em). DejaVu covers Noto's missing chemistry
-symbols `→←↔⇌⇋∞≠≤≥⊕⊖` and any other cmap gap. Coverage is checked from each face's
-cmap, not inferred from a family name. The canvas defaults to Arial / Helvetica,
+symbols `→←↔⇌⇋∞≠≤≥⊕⊖` and any other cmap gap. Coverage uses compact per-face ranges
+generated from the vendored cmaps, with tests checking every face against its bytes.
+Regenerate after a font swap with `node packages/export-engine/scripts/generate-font-coverage.mjs`.
+The canvas defaults to Arial / Helvetica,
 so embedded Unicode text may differ in spacing. Other user-selected fonts also
 use this Noto/DejaVu combination outside the standard-font character set. Unsupported glyphs and non-BMP
 characters fail explicitly instead of disappearing during PDF serialization.
@@ -41,8 +43,9 @@ because jsPDF's unconditional Arabic hook replaces it with a space. Chemistry
 characters, Greek letters and arrows retain their original Unicode.
 
 The lossless base64 font modules load dynamically only during a PDF export that
-needs them, one face per required family/style. Fallback data loads only on a
-primary cmap gap, and only used faces are registered. jsPDF's Identity-H TrueType writer embeds
+needs them, one face per required family/style. Run segmentation reads only coverage
+metadata: fallback-only text never loads primary font data, and only used faces
+are loaded and registered. jsPDF's Identity-H TrueType writer embeds
 only used glyph outlines and writes a ToUnicode CMap for copying and searching.
 In browsers, temporary FontFace registrations let svg2pdf measure with the same
 font; these registrations are removed after conversion, including on failure.

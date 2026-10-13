@@ -1,4 +1,5 @@
 import type { jsPDF } from "jspdf";
+import { fontCoverage } from "./fonts/coverage";
 
 type Face = "normal" | "bold" | "italic" | "bolditalic";
 type Family = "ChemDraftNotoSans" | "ChemDraftDejaVuSans";
@@ -34,20 +35,8 @@ const loadFace = {
 /** Keep standard-font elements; split embedded text runs by actual cmap coverage. */
 export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => void> {
   const fonts = new Map<string, {
-    family: Family; face: Face; data: string; bytes: Uint8Array<ArrayBuffer>;
-    covers: (code: number) => boolean; used: boolean;
+    family: Family; face: Face;
   }>();
-  const getFace = async (family: Family, face: Face) => {
-    const key = `${family}-${face}`;
-    let font = fonts.get(key);
-    if (!font) {
-      const { default: data } = await loadFace[family][face]();
-      const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
-      font = { family, face, data, bytes, covers: bmpCoverage(bytes), used: false };
-      fonts.set(key, font);
-    }
-    return font;
-  };
   for (const text of svg.querySelectorAll("text")) {
     const content = text.textContent ?? "";
     const unsupported = content.match(arabicText) ?? content.match(rtlText);
@@ -75,19 +64,18 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
       for (const node of Array.from(element.childNodes).filter((child) => child.nodeType === 3)) {
         const content = node.textContent ?? "";
         if (!content) continue;
-        const primary = await getFace("ChemDraftNotoSans", face);
         const segments: { family: Family; text: string }[] = [];
         for (const character of content) {
           const code = character.codePointAt(0)!;
-          let font = primary;
-          if (!primary.covers(code)) font = await getFace("ChemDraftDejaVuSans", face);
-          if (!font.covers(code)) {
+          const family: Family = covers(fontCoverage.ChemDraftNotoSans[face], code)
+            ? "ChemDraftNotoSans" : "ChemDraftDejaVuSans";
+          if (!covers(fontCoverage[family][face], code)) {
             throw new Error(`Cannot export PDF: embedded font ${face} does not support U+${code.toString(16).toUpperCase().padStart(4, "0")}.`);
           }
-          font.used = true;
+          fonts.set(`${family}-${face}`, { family, face });
           const previous = segments.at(-1);
-          if (previous?.family === font.family) previous.text += character;
-          else segments.push({ family: font.family, text: character });
+          if (previous?.family === family) previous.text += character;
+          else segments.push({ family, text: character });
         }
         for (const segment of segments) {
           const span = svg.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "tspan");
@@ -113,8 +101,9 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
   const fontSet = globalThis.document?.fonts;
   const release = () => { for (const font of browserFonts) fontSet?.delete(font); };
   try {
-    for (const { family, face, data, bytes, used } of fonts.values()) {
-      if (!used) continue;
+    for (const { family, face } of fonts.values()) {
+      const { default: data } = await loadFace[family][face]();
+      const bytes = Uint8Array.from(atob(data), (character) => character.charCodeAt(0));
       const filename = `${family}-${face}.ttf`;
       pdf.addFileToVFS(filename, data);
       // Identity-H activates jsPDF's TrueType subset writer and ToUnicode CMap.
@@ -144,41 +133,18 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
   }
 }
 
-// Inspect the vendored TTF's Windows Unicode BMP cmap before registering it:
-// a fallback-only run must not embed an unused primary face (or vice versa).
-function bmpCoverage(bytes: Uint8Array): (code: number) => boolean {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let i = 0; i < view.getUint16(4); i++) {
-    const record = 12 + i * 16;
-    if (view.getUint32(record) !== 0x636d6170) continue; // cmap
-    const cmap = view.getUint32(record + 8);
-    for (let j = 0; j < view.getUint16(cmap + 2); j++) {
-      const encoding = cmap + 4 + j * 8;
-      if (view.getUint16(encoding) !== 3 || view.getUint16(encoding + 2) !== 1) continue;
-      const table = cmap + view.getUint32(encoding + 4);
-      if (view.getUint16(table) !== 4) continue;
-      const count = view.getUint16(table + 6) / 2;
-      const starts = table + 16 + count * 2;
-      const deltas = starts + count * 2;
-      const ranges = deltas + count * 2;
-      return (code) => {
-        if (code > 0xffff) return false;
-        if (code <= 32) return true;
-        for (let segment = 0; segment < count; segment++) {
-          const end = view.getUint16(table + 14 + segment * 2);
-          if (code > end) continue;
-          const start = view.getUint16(starts + segment * 2);
-          if (code < start) return false;
-          const address = ranges + segment * 2;
-          const range = view.getUint16(address);
-          const glyph = range ? view.getUint16(address + range + 2 * (code - start)) : code;
-          return (range && !glyph) ? false : ((glyph + view.getInt16(deltas + segment * 2)) & 0xffff) !== 0;
-        }
-        return false;
-      };
-    }
+// Preserve the existing handling of whitespace/control characters in embedded runs.
+function covers(ranges: readonly number[], code: number): boolean {
+  if (code <= 32) return true;
+  let low = 0;
+  let high = ranges.length / 2 - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    if (code < ranges[middle * 2]!) high = middle - 1;
+    else if (code > ranges[middle * 2 + 1]!) low = middle + 1;
+    else return true;
   }
-  throw new Error("Cannot export PDF: embedded font has no Unicode BMP cmap.");
+  return false;
 }
 
 function inheritedAttribute(element: Element, name: string): string | null {

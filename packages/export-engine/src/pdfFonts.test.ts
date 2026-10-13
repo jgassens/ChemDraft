@@ -3,6 +3,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { glyphBounds, sfntName, unicodeCmap } from "./pdf.testUtils";
 import { preparePdfFonts } from "./pdfFonts";
+import { fontCoverage } from "./fonts/coverage";
 
 const fonts = {
   regular: () => import("./fonts/DejaVuSans"),
@@ -21,6 +22,23 @@ const primaryFonts = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("vendored PDF font cmap coverage", () => {
+  it.each([
+    ["ChemDraftNotoSans", Object.values(primaryFonts)],
+    ["ChemDraftDejaVuSans", Object.values(fonts)]
+  ] as const)("matches generated metadata to every vendored %s face", async (family, loaders) => {
+    const faces = ["normal", "bold", "italic", "bolditalic"] as const;
+    for (const [index, load] of loaders.entries()) {
+      const { default: data } = await load();
+      const expected = [...unicodeCmap(Buffer.from(data, "base64")).keys()].sort((a, b) => a - b);
+      const ranges = fontCoverage[family][faces[index]!];
+      const actual: number[] = [];
+      expect(ranges.length % 2).toBe(0);
+      for (let i = 0; i < ranges.length; i += 2) {
+        for (let code = ranges[i]!; code <= ranges[i + 1]!; code++) actual.push(code);
+      }
+      expect(actual, `${family}-${faces[index]} coverage; regenerate with node packages/export-engine/scripts/generate-font-coverage.mjs`).toEqual(expected);
+    }
+  }, 60_000);
   it.each(Object.entries(primaryFonts))("locks Noto's script digit placement in the %s face", async (_name, load) => {
     const { default: data } = await load();
     const bytes = Buffer.from(data, "base64");
