@@ -7,6 +7,7 @@ import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult } from "./results";
 import { exportDocumentToSvg } from "./svg";
+import { preparePdfFonts } from "./pdfFonts";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 
@@ -43,13 +44,18 @@ export async function exportDocumentToPdf(
     compress: options.compress ?? true
   });
 
-  await svg2pdf(svgElement, pdf, {
-    x: 0,
-    y: 0,
-    width: widthPt,
-    height: heightPt,
-    loadExternalStyleSheets: false
-  });
+  const releaseFonts = await preparePdfFonts(svgElement, pdf);
+  try {
+    await svg2pdf(svgElement, pdf, {
+      x: 0,
+      y: 0,
+      width: widthPt,
+      height: heightPt,
+      loadExternalStyleSheets: false
+    });
+  } finally {
+    releaseFonts();
+  }
 
   return {
     format: "pdf",
