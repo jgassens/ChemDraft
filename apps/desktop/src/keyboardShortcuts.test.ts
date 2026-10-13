@@ -8,6 +8,7 @@ import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
+  enableWindowsLastDocumentCloseAction,
   isBrowserReloadChord
 } from "./keyboardShortcuts";
 import { desktopToolsetRegistry, getToolsetCommandSpecs } from "./toolsets";
@@ -93,5 +94,21 @@ describe("isBrowserReloadChord", () => {
   it("never fires on macOS, where WKWebView has no reload accelerator", () => {
     expect(isBrowserReloadChord({ key: "F5" }, "macos")).toBe(false);
     expect(isBrowserReloadChord({ key: "r", ctrlKey: true }, "macos")).toBe(false);
+  });
+});
+
+describe("last document close command", () => {
+  it("enables Close Document Tab only on Windows", () => {
+    const document = createPhase4Document();
+    const actions = createQuickActions(document, undefined, { hasMultipleTabs: false });
+    const closeKey = { key: "w", ctrlKey: true };
+
+    const windows = enableWindowsLastDocumentCloseAction(actions, "windows");
+    expect(createDesktopShortcutRegistry(windows, "windows").resolve(closeKey)).toBe("document.closeTab");
+    expect(windows.find((action) => action.id === "document.closeTab")).toMatchObject({ enabled: true });
+
+    const macos = enableWindowsLastDocumentCloseAction(actions, "macos");
+    expect(createDesktopShortcutRegistry(macos, "macos").resolve({ key: "w", metaKey: true })).toBeUndefined();
+    expect(macos.find((action) => action.id === "document.closeTab")).toMatchObject({ enabled: false });
   });
 });
