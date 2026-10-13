@@ -41,7 +41,7 @@ function glyphAdvance(text: string, font: { metadata: { Unicode: { widths: Recor
 
 // Read the actual PDF content stream, retaining the graphics-state transforms. The fixtures
 // have unrotated text; coordinates are converted from PDF points back to page CSS pixels.
-function pdfTextPositions(bytes: Buffer, pageHeight: number): TextPosition[] {
+function pdfTextPositions(bytes: Buffer, pageHeight: number, pointsPerUnit = 0.75): TextPosition[] {
   const source = bytes.toString("latin1");
   const metrics = new jsPDF({ unit: "pt" });
   const result: TextPosition[] = [];
@@ -82,9 +82,9 @@ function pdfTextPositions(bytes: Buffer, pageHeight: number): TextPosition[] {
         const selected = fonts.get(font);
         expect(selected, `PDF font ${font}`).toBeDefined();
         const selectedFont = metrics.getFont(...selected!);
-        result.push({ text, x: matrix[4] / 0.75, y: pageHeight - matrix[5] / 0.75,
+        result.push({ text, x: matrix[4] / pointsPerUnit, y: pageHeight - matrix[5] / pointsPerUnit,
           fontName: selectedFont.postScriptName,
-          width: glyphAdvance(text, selectedFont, size) * Math.hypot(matrix[0], matrix[1]) / 0.75 });
+          width: glyphAdvance(text, selectedFont, size) * Math.hypot(matrix[0], matrix[1]) / pointsPerUnit });
       }
     }
   }
@@ -239,6 +239,26 @@ it.each(["500", "800"])("uses a registered %snormal style before aliases and lat
     expect(runs).toHaveLength(1);
     expect(runs[0]!.fontName).toBe("Helvetica-Bold");
     expect(runs[0]!.width).toBeCloseTo(expectedWidth, 6);
+    expect(runs[0]!.x + runs[0]!.width / 2).toBeCloseTo(100, 6);
+  });
+});
+
+it.each([
+  ['font-weight="500"', 'font-family="monospace"', "Courier", 57.6],
+  ['font-family="serif" font-weight="700"', 'font-family="monospace"', "Courier-Bold", 57.6],
+  ['font-family="monospace" font-weight="500"', 'font-family="Arial"', "Helvetica", 79.68]
+] as const)("preserves the effective PDF style from %s across %s", async (inherited, family, expectedFont, expectedWidth) => {
+  await withPdfDom(async (parser) => {
+    const pdf = new jsPDF({ unit: "pt", format: [300, 150], orientation: "landscape" });
+    const svg = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><g ${inherited}><text x="100" y="60" ${family} font-size="24" text-anchor="middle">MMMM</text></g></svg>`, "image/svg+xml");
+    await svg2pdf(svg.documentElement, pdf);
+    // The reader derives width from the font actually emitted in the content
+    // stream, using its glyph table rather than the measurement helper.
+    const runs = pdfTextPositions(Buffer.from(pdf.output("arraybuffer")), 150, 1);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.fontName).toBe(expectedFont);
+    expect(runs[0]!.width).toBeCloseTo(expectedWidth, 6);
+    expect(runs[0]!.x).toBeCloseTo(100 - expectedWidth / 2, 6);
     expect(runs[0]!.x + runs[0]!.width / 2).toBeCloseTo(100, 6);
   });
 });

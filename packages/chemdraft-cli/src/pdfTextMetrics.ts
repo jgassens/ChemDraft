@@ -73,9 +73,11 @@ export function installPdfTextMetrics() {
     const parent = element.parentElement;
     if (parent?.localName === "svg" && parent.parentElement === element.ownerDocument.body
       && parent.style.visibility === "hidden") {
-      const family = ownAttribute(element, "font-family") ?? "times";
-      return pdf!.getFont(fontAliases[family] ?? family,
-        fontStyle(ownAttribute(element, "font-style") ?? "normal", ownAttribute(element, "font-weight") ?? "normal"));
+      // RenderedNode.render applies attributes before TextNode.renderCore measures
+      // text (svg2pdf 2.7). The node's requested CSS style may have fallen back in
+      // jsPDF, and a later family-only setFont keeps that effective PDF style.
+      // Read the rendering state rather than re-requesting the unsupported style.
+      return pdf!.getFont();
     }
     const ancestors: Element[] = [];
     for (let node: Element | null = element; node; node = node.parentElement) ancestors.unshift(node);
