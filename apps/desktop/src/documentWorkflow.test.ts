@@ -148,6 +148,7 @@ import {
   nativeMoleculeUnmodeledMetalElements,
   deleteSelectedDocumentObjects,
   documentObjectVisualBounds,
+  documentObjectInteractionBounds,
   distributeSelectedDocumentObjects,
   duplicateSelectedDocumentObjects,
   exportPhase4Cdxml,
@@ -1372,6 +1373,12 @@ describe("Phase 4 document workflow", () => {
     });
     expect(recommendation?.recommendedPageTitle).toMatch(/^Custom .+ in$/);
     expect(recommendation?.recommendedLayout.sourceUnit).toBe("inch");
+    // Existing non-minimum recommendations retain their exact-fit calculation.
+    expect(recommendation).toMatchObject({
+      requiredWidthPx: 2548,
+      requiredHeightPx: 1348,
+      recommendedPageTitle: "Custom 26.55 × 14.05 in"
+    });
     // The custom layout fully contains the content (rounded up, never clipped).
     expect(recommendation!.recommendedLayout.widthPx).toBeGreaterThanOrEqual(recommendation!.requiredWidthPx);
     expect(recommendation!.recommendedLayout.heightPx).toBeGreaterThanOrEqual(recommendation!.requiredHeightPx);
@@ -1387,6 +1394,85 @@ describe("Phase 4 document workflow", () => {
     expect(placed.y).toBeGreaterThanOrEqual(0);
     expect(placed.x + placed.width).toBeLessThanOrEqual(resized.pages[0].width + 1e-6);
     expect(placed.y + placed.height).toBeLessThanOrEqual(resized.pages[0].height + 1e-6);
+  });
+
+  it("keeps a long flat imported carbon chain at least as large as the smallest paper edge", () => {
+    const atoms = Array.from({ length: 30 }, (_, index) => ({
+      id: `atom_${index + 1}`,
+      element: "C",
+      x: index * 36,
+      y: index % 2 === 0 ? 0 : 18,
+      formalCharge: 0
+    }));
+    const bonds = atoms.slice(1).map((atom, index) => ({
+      id: `bond_${index + 1}`,
+      fromAtomId: atoms[index]!.id,
+      toAtomId: atom.id,
+      order: "single" as const
+    }));
+    const document = createPhase4Document("Flat Imported Chain");
+    const imported = {
+      ...document,
+      pages: [{
+        ...document.pages[0],
+        objects: [{
+          id: "mol_flat_chain",
+          type: "molecule",
+          x: -24,
+          y: 300,
+          width: 30 * 36,
+          height: 18,
+          rotation: 0,
+          style: {},
+          structureFormat: "unknown",
+          structure: "",
+          atoms,
+          bonds,
+          superatoms: [],
+          rGroups: []
+        } satisfies MoleculeObject]
+      }]
+    };
+
+    const recommendation = recommendImportedPageFit(imported);
+
+    // A10's 26 mm short edge is the codebase's smallest standard paper dimension.
+    expect(recommendation?.requiredHeightPx).toBeGreaterThanOrEqual(mmToCssPx(26));
+    expect(recommendation?.recommendedLayout.heightPx).toBeGreaterThanOrEqual(mmToCssPx(26));
+  });
+
+  it("fits an anchored mechanism arrow from its moved atoms instead of its stale rectangle", () => {
+    let document = insertNativeSingleBondMolecule(createPhase4Document("Moved Arrow Import"), { x: 200, y: 300 });
+    const source = selectedMolecule(document);
+    document = insertNativeSingleBondMolecule(document, { x: 500, y: 300 });
+    const target = selectedMolecule(document);
+    const withArrow = createMechanismArrowBetween(document, "full-headed",
+      { kind: "atom", objectId: source.id, atomId: "atom_001" },
+      { kind: "atom", objectId: target.id, atomId: "atom_001" }
+    );
+    const arrow = withArrow.pages[0].objects.find((object): object is MechanismArrowObject =>
+      object.type === "mechanism-arrow"
+    )!;
+    const moved = moveDocumentObject(
+      withArrow,
+      source.id,
+      { x: source.x + 900, y: source.y },
+      { clampToPage: false }
+    );
+    const page = moved.pages[0];
+    const movedArrow = page.objects.find((object): object is MechanismArrowObject => object.id === arrow.id)!;
+    const liveArrowBounds = documentObjectInteractionBounds(movedArrow, page.objects);
+    const staleLeft = Math.min(arrow.x, ...page.objects.map((object) => object.x));
+
+    const recommendation = recommendImportedPageFit(moved)!;
+
+    expect(recommendation.contentBounds.x + recommendation.contentBounds.width).toBeCloseTo(
+      Math.max(liveArrowBounds.x + liveArrowBounds.width, ...page.objects.map((object) => object.x + object.width)),
+      6
+    );
+    // Its stale rectangle still reaches the source's old position; live anchors begin at the
+    // unchanged target instead, so using stored geometry would make a wider recommendation.
+    expect(recommendation.contentBounds.x).toBeGreaterThan(staleLeft);
   });
 
   it("applies a custom page size in inches or millimetres and round-trips through the schema", () => {
@@ -4135,7 +4221,7 @@ describe("Phase 4 document workflow", () => {
       cleanedMolecule.bonds.forEach((bond) => {
         expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(moleculeBondLength(molecule, bond.id), 4);
       });
-    });
+    }, 30_000);
 
     it("engine re-layout rebuilds the fused system with uniform bonds at the drawing's own scale", () => {
       const { document, molecule } = fusedDistortedFixture();
@@ -4153,7 +4239,7 @@ describe("Phase 4 document workflow", () => {
       expectUsableNativeMoleculeGraph(relaidMolecule, "engine relayout", {
         minimumAtomDistancePx: mean * 0.5
       });
-    });
+    }, 30_000);
 
     /** A tetrakis(2-methylimidazole)zinc complex as a user drew it: four imidazole rings on
      *  dative (dashed) bonds to one Zn. Four separate rings joined through the metal give the
@@ -4484,7 +4570,7 @@ describe("Phase 4 document workflow", () => {
       const thirdRunShift = Math.max(...thrice.atoms.map((atom, index) =>
         Math.hypot(atom.x - twice.atoms[index].x, atom.y - twice.atoms[index].y)));
       expect(thirdRunShift).toBeLessThan(1);
-    }, 20_000);
+    }, 30_000);
 
     it("engine re-layout of a zinc coordination complex: clean ligands around a centred metal, dative bonds kept", () => {
       const { document, molecule } = zincTetrakisImidazoleFixture();

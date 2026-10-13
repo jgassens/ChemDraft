@@ -18064,6 +18064,9 @@ export function openNativeDocument(contents: string): ChemDraftOpenResult {
 }
 
 const importedPageFitPaddingPx = 24;
+// A10's 26 mm short edge is the smallest built-in paper dimension; it also leaves room for
+// this fit's 48 px total padding, unlike the sub-inch slivers a flat drawing could otherwise make.
+const importedPageFitMinimumSizePx = PageSizePresets.find((preset) => preset.id === "a10")!.widthPx;
 
 /** Round a page dimension UP to a tidy value in its unit, so the page always fully contains
  *  the content (rounding down could clip it): 0.01" for inches, 1 mm / 1 px otherwise. */
@@ -18100,8 +18103,14 @@ export function recommendImportedPageFit(document: ChemDraftDocument): ImportedP
   if (overflowLeftPx <= 0 && overflowTopPx <= 0 && overflowRightPx <= 0 && overflowBottomPx <= 0) {
     return undefined;
   }
-  const requiredWidthPx = contentBounds.width + importedPageFitPaddingPx * 2;
-  const requiredHeightPx = contentBounds.height + importedPageFitPaddingPx * 2;
+  const requiredWidthPx = Math.max(
+    importedPageFitMinimumSizePx,
+    contentBounds.width + importedPageFitPaddingPx * 2
+  );
+  const requiredHeightPx = Math.max(
+    importedPageFitMinimumSizePx,
+    contentBounds.height + importedPageFitPaddingPx * 2
+  );
 
   // Size a custom page to the content, in the current page's unit (rounded up so nothing clips).
   const unit = pageLayoutSourceUnit(page.layout);
@@ -18210,8 +18219,11 @@ export function setDocumentPageOrientation(
 }
 
 function boundsForPageObjects(objects: readonly DocumentObject[]): PageObjectBounds {
-  const xs = objects.flatMap((object) => [object.x, object.x + object.width]);
-  const ys = objects.flatMap((object) => [object.y, object.y + object.height]);
+  // Match selection bounds: anchored mechanism arrows render from their current anchors, not
+  // their stored rectangle, which is stale after an anchored atom moves.
+  const resolvedBounds = objects.map((object) => documentObjectInteractionBounds(object, objects));
+  const xs = resolvedBounds.flatMap((bounds) => [bounds.x, bounds.x + bounds.width]);
+  const ys = resolvedBounds.flatMap((bounds) => [bounds.y, bounds.y + bounds.height]);
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
   const maxX = Math.max(...xs);
