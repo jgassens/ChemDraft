@@ -1,12 +1,4 @@
-import { useEffect, type ReactElement } from "react";
-import { MainWindow } from "./MainWindow";
-import { PaletteWindow } from "./PaletteWindow";
-import { PalettePopoverWindow } from "./PalettePopoverWindow";
-import { PaletteTooltipWindow } from "./PaletteTooltipWindow";
-import { PluginPanelWindow } from "./plugins/PluginPanelWindow";
-import { Spin3dDebuggerWindow } from "./Spin3dDebuggerWindow";
-import { PreferencesWindow } from "./PreferencesWindow";
-import { SPIN3D_DEBUGGER_WINDOW_KIND } from "./conformerDebug";
+import { lazy, Suspense, useEffect, type ReactElement } from "react";
 import {
   PREFERENCES_WINDOW_KIND,
   routeToolsetCommand,
@@ -15,32 +7,54 @@ import {
 } from "./window-manager";
 import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
 
+const MainWindow = lazy(() => import("./MainWindow").then(m => ({ default: m.MainWindow })));
+const PaletteWindow = lazy(() => import("./PaletteWindow").then(m => ({ default: m.PaletteWindow })));
+const PalettePopoverWindow = lazy(() => import("./PalettePopoverWindow").then(m => ({ default: m.PalettePopoverWindow })));
+const PaletteTooltipWindow = lazy(() => import("./PaletteTooltipWindow").then(m => ({ default: m.PaletteTooltipWindow })));
+const PluginPanelWindow = lazy(() => import("./plugins/PluginPanelWindow").then(m => ({ default: m.PluginPanelWindow })));
+const Spin3dDebuggerWindow = lazy(() => import("./Spin3dDebuggerWindow").then(m => ({ default: m.Spin3dDebuggerWindow })));
+const PreferencesWindow = lazy(() => import("./PreferencesWindow").then(m => ({ default: m.PreferencesWindow })));
+const DialogWindow = lazy(() => import("./dialogs/DialogWindow").then(m => ({ default: m.DialogWindow })));
+
 export function App() {
+  const dialog = dialogRoute();
+  if (dialog !== undefined) {
+    return <Suspense fallback={<p role="status">Opening dialog…</p>}>
+      <SecondaryWindowEditHistory dialog />
+      <DialogWindow hostId={dialog} />
+    </Suspense>;
+  }
   const secondaryWindow = secondaryWindowContent();
   if (secondaryWindow) {
     return (
-      <>
+      <Suspense fallback={null}>
         <SecondaryWindowEditHistory />
         {secondaryWindow}
-      </>
+      </Suspense>
     );
   }
 
-  return <MainWindow />;
+  return <Suspense fallback={null}><MainWindow /></Suspense>;
 }
 
 /**
  * Edit ▸ Undo / Redo reach whichever window is key. Here that is a secondary window: undo its own
  * focused text field, or hand the command to the main window's document history.
  */
-function SecondaryWindowEditHistory(): null {
-  useEffect(() => installSecondaryWindowEditHistory({ forwardToMain: routeToolsetCommand }), []);
+function SecondaryWindowEditHistory({ dialog = false }: { dialog?: boolean }): null {
+  useEffect(() => installSecondaryWindowEditHistory({ forwardToMain: dialog ? () => {} : routeToolsetCommand }), [dialog]);
   return null;
+}
+
+export function dialogRoute(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("window") === "dialog" ? params.get("hostId") ?? "" : undefined;
 }
 
 function secondaryWindowContent(): ReactElement | undefined {
   if (isSpin3dDebuggerRoute()) {
-    return <Spin3dDebuggerWindow />;
+    return <Suspense fallback={<p role="status">Opening 3D Debugger…</p>}><Spin3dDebuggerWindow /></Suspense>;
   }
 
   if (isPreferencesRoute()) {
@@ -94,7 +108,7 @@ export function isSpin3dDebuggerRoute(): boolean {
   }
 
   const params = new URLSearchParams(window.location.search);
-  return params.get("window") === SPIN3D_DEBUGGER_WINDOW_KIND;
+  return params.get("window") === "spin3d-debugger";
 }
 
 export function isPreferencesRoute(): boolean {

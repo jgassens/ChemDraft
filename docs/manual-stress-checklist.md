@@ -274,3 +274,27 @@ and Art toolbars open, including at 125%/150% display scale:
   informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
 - Windows document-window close still flushes the session and quits (without a new dirty-tab
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
+
+## Native Custom Page Size (macOS and Windows)
+
+- From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred
+  over the document with a movable native title bar, and the title/form name the originating drawing.
+  On Windows verify no separate taskbar entry; on macOS verify a normal focusable document child,
+  not a sheet. Confirm no utility-window menu is attached.
+- Leave it open and draw, use shortcuts and floating toolbars, then switch tabs. Apply to the
+  original drawing while another tab is active; the visible drawing must stay unchanged. Return
+  to the original drawing and Undo once: restore its former page size and margins. Close that tab
+  while the dialog is open: its dialog must close too.
+- Move it beyond the document bounds and onto another monitor (including mixed DPI), close and
+  reopen: remember its position without recentering. Remove that monitor and reopen: recover onto
+  the document monitor with the whole title bar reachable. Minimize/restore the owner and repeat.
+- Open a native message box and a file picker with Page Size open, including nested boxes. Verify
+  it hides with the toolbars and returns in the preserved #140 stacking order, without changing
+  remembered toolbar visibility or frames. Close the dialog during suspension: it must stay closed.
+- Check first-field focus, invalid dimensions, valid Enter, IME composition Enter, Escape,
+  title-bar close, Cmd/Ctrl+W, field-local Undo/Redo, and reload prevention. Test screen-reader labels.
+- Quit while it is open and while it is still starting: quit promptly after session flush, with
+  no dialog restored during teardown. On macOS document Close must dismiss it before hiding the
+  document; reopening the document must not resurrect the dismissed dialog.
+- In the browser preview, check the same form/validation in the documented in-page fallback.
+  Force native creation failure on desktop: show an error and never display the browser overlay.

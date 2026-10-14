@@ -7547,3 +7547,14 @@ textarea:focus-visible,
 .web-floating-palette > .palette-title {
   background: linear-gradient(to bottom, var(--cd-bg-panel-raised), var(--cd-bg-panel));
 }
+/* Page Size is a native modeless window on desktop; this same body serves the browser fallback. */
+.cd-page-size-form { padding: 18px; background: var(--cd-bg-panel); color: var(--cd-text-primary); box-sizing: border-box; min-height: 100vh; font-size: 13px; }
+.cd-page-size-form h2 { font-size: 16px; margin: 0 0 12px; }
+.cd-page-size-form p { color: var(--cd-text-secondary); }
+.cd-page-size-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.cd-page-size-fields label { display: flex; flex-direction: column; gap: 4px; }
+.cd-page-size-fields input { width: 90px; }
+.cd-page-size-fields input, .cd-page-size-fields select { padding: 6px; background: var(--cd-bg-panel); color: var(--cd-text-primary); border: 1px solid var(--cd-border-subtle); border-radius: 6px; }
+.cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.cd-page-size-form button { padding: 6px 14px; }
+.cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }

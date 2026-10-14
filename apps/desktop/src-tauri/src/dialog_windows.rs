@@ -1,0 +1,1026 @@
+//! Document-owned, modeless native dialog host. Webviews receive drafts, never document authority.
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
+use tauri::{Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+const MAX_BYTES: usize = 16 * 1024;
+const OWNER_EVENT: &str = "chemdraft://dialog-owner";
+const HOST_EVENT: &str = "chemdraft://dialog-host";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Message {
+    protocol_version: u32,
+    owner_window_id: String,
+    document_tab_id: String,
+    dialog_kind: String,
+    session_id: String,
+    request_id: String,
+    snapshot_revision: u64,
+    #[serde(rename = "type")]
+    message_type: String,
+    data: Value,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Snapshot {
+    title: String,
+    width: f64,
+    height: f64,
+    unit: String,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum Action {
+    Apply {
+        width: f64,
+        height: f64,
+        unit: String,
+    },
+    Cancel,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Receipt {
+    status: String,
+    error: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Closed {
+    reason: String,
+}
+
+fn token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+}
+fn valid_size(width: f64, height: f64, unit: &str) -> bool {
+    width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+        && width <= 100000.0
+        && height <= 100000.0
+        && matches!(unit, "inch" | "mm" | "css-px")
+}
+fn valid_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "apply"
+            | "cancel"
+            | "close"
+            | "destroy"
+            | "ownerTabClose"
+            | "ownerClose"
+            | "quit"
+            | "error"
+    )
+}
+impl Message {
+    fn validate(&self) -> Result<(), String> {
+        if serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > MAX_BYTES
+            || self.protocol_version != 1
+            || self.owner_window_id != super::MAIN_WINDOW_LABEL
+            || self.dialog_kind != "pageSize"
+            || !token(&self.document_tab_id)
+            || !token(&self.session_id)
+            || !token(&self.request_id)
+            || self.snapshot_revision == 0
+            || self.snapshot_revision > 9_007_199_254_740_991
+        {
+            return Err("Invalid dialog envelope or payload limit exceeded".into());
+        }
+        let valid = match self.message_type.as_str() {
+            "snapshot" => serde_json::from_value::<Snapshot>(self.data.clone()).is_ok_and(|s| {
+                !s.title.is_empty()
+                    && s.title.encode_utf16().count() <= 256
+                    && valid_size(s.width, s.height, &s.unit)
+            }),
+            "action" => {
+                serde_json::from_value::<Action>(self.data.clone()).is_ok_and(|a| match a {
+                    Action::Cancel => true,
+                    Action::Apply {
+                        width,
+                        height,
+                        unit,
+                    } => valid_size(width, height, &unit),
+                })
+            }
+            "request" | "ready" => self.data.as_object().is_some_and(|d| d.is_empty()),
+            "result" => serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
+                matches!(r.status.as_str(), "applied" | "cancelled" | "error")
+                    && self.data.get("error").is_none_or(|e| e.is_string())
+                    && r.error.is_none_or(|e| e.encode_utf16().count() <= 2048)
+            }),
+            "closed" => serde_json::from_value::<Closed>(self.data.clone())
+                .is_ok_and(|c| valid_reason(&c.reason)),
+            _ => false,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err("Invalid dialog kind payload".into())
+        }
+    }
+    fn same_session(&self, other: &Self) -> bool {
+        self.owner_window_id == other.owner_window_id
+            && self.document_tab_id == other.document_tab_id
+            && self.dialog_kind == other.dialog_kind
+            && self.session_id == other.session_id
+            && self.snapshot_revision == other.snapshot_revision
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Registration {
+    host_id: String,
+    window_label: String,
+}
+struct Session {
+    registration: Registration,
+    snapshot: Message,
+    ready: bool,
+    // Request IDs are scoped to a session and bounded; a sender cannot grow this without limit.
+    actions: HashMap<String, Message>,
+    receipts: HashMap<String, Message>,
+    transient_until: Instant,
+    pending_move: Option<(u64, SavedPosition)>,
+    move_revision: u64,
+}
+#[derive(Default)]
+struct Registry {
+    sessions: HashMap<String, Session>,
+    next_slot: u64,
+}
+static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
+
+pub(crate) fn is_dialog_label(label: &str) -> bool {
+    label
+        .strip_prefix("dialog-main-pageSize-")
+        .is_some_and(|slot| {
+            !slot.is_empty() && slot.len() <= 20 && slot.bytes().all(|c| c.is_ascii_digit())
+        })
+}
+fn authorize(
+    session: &Session,
+    sender: &str,
+    owner: bool,
+    message: Option<&Message>,
+) -> Result<(), String> {
+    let expected = if owner {
+        &session.snapshot.owner_window_id
+    } else {
+        &session.registration.window_label
+    };
+    if sender != expected || message.is_some_and(|m| !m.same_session(&session.snapshot)) {
+        return Err(
+            "Dialog caller, session, or revision does not match its registered native window"
+                .into(),
+        );
+    }
+    Ok(())
+}
+fn delivery(session: &Session, sender: &str, message: &Message) -> Value {
+    json!({ "senderWindowId": sender, "windowLabel": session.registration.window_label, "message": message })
+}
+fn register(
+    registry: &mut Registry,
+    message: Message,
+    quitting: bool,
+) -> Result<(Registration, bool), String> {
+    if quitting {
+        return Err(super::QUITTING_WINDOW_REFUSAL.into());
+    }
+    message.validate()?;
+    if message.message_type != "snapshot" {
+        return Err("A dialog opens with a snapshot".into());
+    }
+    if let Some(session) = registry
+        .sessions
+        .values()
+        .find(|s| s.snapshot.same_session(&message))
+    {
+        return Ok((session.registration.clone(), false));
+    }
+    if registry.sessions.len() >= 16 {
+        return Err("Too many dialog windows are open".into());
+    }
+    if registry.sessions.values().any(|s| {
+        s.snapshot.document_tab_id == message.document_tab_id
+            && s.snapshot.dialog_kind == message.dialog_kind
+    }) {
+        return Err("A dialog for this drawing is already open".into());
+    }
+    registry.next_slot += 1;
+    let registration = Registration {
+        host_id: format!("h{:016x}", registry.next_slot),
+        window_label: format!("dialog-main-{}-{}", message.dialog_kind, registry.next_slot),
+    };
+    registry.sessions.insert(
+        registration.host_id.clone(),
+        Session {
+            registration: registration.clone(),
+            snapshot: message,
+            ready: false,
+            actions: HashMap::new(),
+            receipts: HashMap::new(),
+            transient_until: Instant::now() + Duration::from_millis(500),
+            pending_move: None,
+            move_revision: 0,
+        },
+    );
+    Ok((registration, true))
+}
+
+/// Async, serialized, worker construction. Never take WINDOW_CREATION on the event thread.
+#[tauri::command]
+pub(crate) async fn dialog_open(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    message: Message,
+) -> Result<Registration, String> {
+    if window.label() != super::MAIN_WINDOW_LABEL
+        || app.get_webview_window(super::MAIN_WINDOW_LABEL).is_none()
+    {
+        return Err("Unknown dialog owner".into());
+    }
+    let _creation = super::lock_window_creation()?;
+    if !window.is_visible().unwrap_or(false) {
+        return Err("The document window is hidden; no dialog can open".into());
+    }
+    let (registration, build) = register(
+        &mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
+        message.clone(),
+        super::quit_in_progress(),
+    )?;
+    if !build {
+        return Ok(registration);
+    }
+    let snapshot: Snapshot = serde_json::from_value(message.data).map_err(|e| e.to_string())?;
+    let builder = WebviewWindowBuilder::new(
+        &app,
+        &registration.window_label,
+        WebviewUrl::App(format!("/?window=dialog&hostId={}", registration.host_id).into()),
+    )
+    .title(format!("Custom Page Size — {}", snapshot.title))
+    .inner_size(420.0, 300.0)
+    .min_inner_size(360.0, 260.0)
+    .visible(false)
+    .focused(false)
+    .focusable(true)
+    .skip_taskbar(true)
+    .shadow(true)
+    .decorations(true)
+    .resizable(true);
+    // On Windows .parent is a top-level OWNER, never a child control. AppKit attaches at reveal.
+    #[cfg(windows)]
+    let builder = builder.parent(&window).map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    let builder = builder;
+    if let Err(error) = builder.build() {
+        REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sessions
+            .remove(&registration.host_id);
+        return Err(format!(
+            "Could not create native Custom Page Size window: {error}"
+        ));
+    }
+    // Owner close/quit does not wait on the construction lock. Discard a late build whose
+    // registered session was already settled, rather than leaving an orphan hidden webview.
+    if !REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .contains_key(&registration.host_id)
+    {
+        if let Some(window) = app.get_webview_window(&registration.window_label) {
+            let _ = window.destroy();
+        }
+        return Err("Dialog owner closed during window creation".into());
+    }
+    if super::quit_in_progress() {
+        close_session(&app, &registration.host_id, "quit");
+        return Err(super::QUITTING_WINDOW_REFUSAL.into());
+    }
+    Ok(registration)
+}
+
+#[tauri::command]
+pub(crate) fn dialog_request(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    host_id: String,
+    protocol_version: u32,
+    request_id: String,
+) -> Result<(), String> {
+    if protocol_version != 1 || !token(&request_id) || !token(&host_id) {
+        return Err("Invalid dialog bootstrap request".into());
+    }
+    let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let session = registry
+        .sessions
+        .get(&host_id)
+        .ok_or("Unknown dialog host")?;
+    authorize(session, window.label(), false, None)?;
+    session.snapshot.validate()?;
+    app.emit_to(
+        window.label(),
+        HOST_EVENT,
+        delivery(session, super::MAIN_WINDOW_LABEL, &session.snapshot),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut request = session.snapshot.clone();
+    request.message_type = "request".into();
+    request.request_id = request_id;
+    request.data = json!({});
+    app.emit_to(
+        super::MAIN_WINDOW_LABEL,
+        OWNER_EVENT,
+        delivery(session, window.label(), &request),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn dialog_send(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    host_id: String,
+    message: Message,
+) -> Result<(), String> {
+    message.validate()?;
+    if !matches!(message.message_type.as_str(), "ready" | "action") {
+        return Err("Dialog can send only ready or a typed action".into());
+    }
+    let _creation = super::lock_window_creation()?;
+    let (payload, reveal) = {
+        let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let session = registry
+            .sessions
+            .get_mut(&host_id)
+            .ok_or("Unknown dialog host")?;
+        authorize(session, window.label(), false, Some(&message))?;
+        let reveal = message.message_type == "ready" && !session.ready;
+        if message.message_type == "action" {
+            if !session.ready {
+                return Err("Dialog is not ready".into());
+            }
+            if let Some(receipt) = session.receipts.get(&message.request_id) {
+                return app
+                    .emit_to(
+                        window.label(),
+                        HOST_EVENT,
+                        delivery(session, super::MAIN_WINDOW_LABEL, receipt),
+                    )
+                    .map_err(|e| e.to_string());
+            }
+            if let Some(previous) = session.actions.get(&message.request_id) {
+                if previous.data != message.data {
+                    return Err("A dialog request ID cannot be reused for another action".into());
+                }
+                // In-flight duplicates wait for the original owner result, without a second mutation.
+                return Ok(());
+            }
+            if session.actions.len() >= 128 {
+                return Err("Dialog action limit exceeded".into());
+            }
+            session
+                .actions
+                .insert(message.request_id.clone(), message.clone());
+        }
+        if reveal {
+            session.ready = true;
+        }
+        (delivery(session, window.label(), &message), reveal)
+    };
+    // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
+    app.emit_to(super::MAIN_WINDOW_LABEL, OWNER_EVENT, payload)
+        .map_err(|e| e.to_string())?;
+    if reveal {
+        let target = window.clone();
+        if let Err(error) =
+            super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
+                .and_then(|result| result)
+        {
+            eprintln!("Could not reveal native Custom Page Size: {error}");
+            close_session(&app, &host_id, "error");
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn dialog_publish(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    host_id: String,
+    message: Message,
+) -> Result<(), String> {
+    message.validate()?;
+    if !matches!(message.message_type.as_str(), "snapshot" | "result") {
+        return Err("Owner can publish only snapshot or result".into());
+    }
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let session = registry
+        .sessions
+        .get_mut(&host_id)
+        .ok_or("Unknown dialog host")?;
+    authorize(session, window.label(), true, Some(&message))?;
+    if message.message_type == "result" {
+        if !session.actions.contains_key(&message.request_id) {
+            return Err("Unknown dialog action receipt".into());
+        }
+        if let Some(previous) = session.receipts.get(&message.request_id) {
+            return app
+                .emit_to(
+                    &session.registration.window_label,
+                    HOST_EVENT,
+                    delivery(session, window.label(), previous),
+                )
+                .map_err(|e| e.to_string());
+        }
+        session
+            .receipts
+            .insert(message.request_id.clone(), message.clone());
+    } else {
+        session.snapshot = message.clone();
+    }
+    app.emit_to(
+        &session.registration.window_label,
+        HOST_EVENT,
+        delivery(session, window.label(), &message),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn dialog_close(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    host_id: String,
+    reason: String,
+) -> Result<(), String> {
+    if !valid_reason(&reason) {
+        return Err("Invalid dialog close reason".into());
+    }
+    {
+        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(session) = registry.sessions.get(&host_id) {
+            authorize(session, window.label(), true, None)?;
+        } else if window.label() != super::MAIN_WINDOW_LABEL {
+            return Err("Unknown dialog owner".into());
+        }
+    }
+    close_session(&app, &host_id, &reason);
+    Ok(())
+}
+fn notify_closed<R: Runtime>(app: &tauri::AppHandle<R>, session: &Session, reason: &str) {
+    super::UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .closed(&session.registration.window_label);
+    let mut closed = session.snapshot.clone();
+    closed.message_type = "closed".into();
+    closed.data = json!({"reason": reason});
+    let _ = app.emit_to(
+        &session.snapshot.owner_window_id,
+        OWNER_EVENT,
+        delivery(session, super::MAIN_WINDOW_LABEL, &closed),
+    );
+}
+fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &str) {
+    let session = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .remove(host_id);
+    if let Some(mut session) = session {
+        flush_position(app, &mut session);
+        notify_closed(app, &session, reason);
+        if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+            let _ = window.destroy();
+        }
+    }
+}
+pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+    let sessions = std::mem::take(&mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).sessions);
+    for mut session in sessions.into_values() {
+        flush_position(app, &mut session);
+        notify_closed(app, &session, reason);
+        if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+            let _ = window.destroy();
+        }
+    }
+}
+
+fn reveal_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    if super::quit_in_progress() {
+        return Err(super::QUITTING_WINDOW_REFUSAL.into());
+    }
+    place_window(window)?;
+    if super::utility_windows_suspended() {
+        super::UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .defer_show(window.label().into());
+        return Ok(());
+    }
+    if window
+        .app_handle()
+        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .is_none_or(|owner| !owner.is_visible().unwrap_or(false))
+    {
+        return Err("Dialog owner is hidden".into());
+    }
+    window.show().map_err(|e| e.to_string())?;
+    configure_on_main(window)?;
+    window.set_focus().map_err(|e| e.to_string())
+}
+/// Called by reveal and by the existing relative-order utility restore (already on main).
+pub(crate) fn configure_on_main<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSNormalWindowLevel, NSWindow};
+        let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+        let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
+        native.setLevel(NSNormalWindowLevel);
+        native.setHidesOnDeactivate(false);
+        native.setCanHide(true);
+        native.setIgnoresMouseEvents(false);
+        super::attach_webview_window_to_main(window);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SavedPosition {
+    monitor: String,
+    x: f64,
+    y: f64,
+    offset_x: f64,
+    offset_y: f64,
+}
+#[derive(Clone, Debug)]
+struct WorkArea {
+    id: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+impl WorkArea {
+    fn from_monitor(m: &tauri::Monitor) -> Self {
+        let area = m.work_area();
+        let scale = m.scale_factor();
+        Self {
+            id: m
+                .name()
+                .cloned()
+                .unwrap_or_else(|| format!("{},{}", m.position().x, m.position().y)),
+            x: f64::from(area.position.x) / scale,
+            y: f64::from(area.position.y) / scale,
+            width: f64::from(area.size.width) / scale,
+            height: f64::from(area.size.height) / scale,
+            scale,
+        }
+    }
+    fn clamp(&self, x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+        // Keep the entire title bar reachable; also keep the whole dialog in the work area if it fits.
+        (
+            x.clamp(self.x, self.x + (self.width - width).max(0.0)),
+            y.clamp(
+                self.y,
+                self.y + (self.height - height.min(self.height)).max(0.0),
+            ),
+        )
+    }
+}
+fn position_for(
+    saved: Option<&SavedPosition>,
+    monitors: &[WorkArea],
+    owner: &WorkArea,
+    owner_rect: (f64, f64, f64, f64),
+    size: (f64, f64),
+) -> (f64, f64, f64) {
+    if let Some(saved) = saved {
+        if let Some(m) = monitors.iter().find(|m| m.id == saved.monitor) {
+            let (x, y) = m.clamp(
+                m.x + saved.offset_x * (m.width - size.0).max(0.0),
+                m.y + saved.offset_y * (m.height - size.1).max(0.0),
+                size.0,
+                size.1,
+            );
+            return (x * m.scale, y * m.scale, m.scale);
+        }
+    }
+    let (x, y, width, height) = owner_rect;
+    let (x, y) = owner.clamp(
+        x + (width - size.0) / 2.0,
+        y + (height - size.1) / 2.0,
+        size.0,
+        size.1,
+    );
+    (x * owner.scale, y * owner.scale, owner.scale)
+}
+fn saved_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    let folder = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    Ok(folder.join("dialog-positions.json"))
+}
+fn read_positions<R: Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, SavedPosition> {
+    saved_path(app)
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+        .filter(|bytes| bytes.len() <= MAX_BYTES)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    let app = window.app_handle();
+    let owner = app
+        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .ok_or("Unknown dialog owner")?;
+    let monitor = owner
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("Document monitor unavailable")?;
+    let work = WorkArea::from_monitor(&monitor);
+    let monitors: Vec<_> = owner
+        .available_monitors()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(WorkArea::from_monitor)
+        .collect();
+    let position = owner.inner_position().map_err(|e| e.to_string())?;
+    let owner_size = owner.inner_size().map_err(|e| e.to_string())?;
+    let frame = window.outer_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let size = (
+        f64::from(frame.width) / scale,
+        f64::from(frame.height) / scale,
+    );
+    let positions = read_positions(app);
+    let saved = positions.get("pageSize").filter(|p| {
+        [p.x, p.y, p.offset_x, p.offset_y]
+            .iter()
+            .all(|v| v.is_finite())
+    });
+    let (x, y, destination_scale) = position_for(
+        saved,
+        &monitors,
+        &work,
+        (
+            f64::from(position.x) / work.scale,
+            f64::from(position.y) / work.scale,
+            f64::from(owner_size.width) / work.scale,
+            f64::from(owner_size.height) / work.scale,
+        ),
+        size,
+    );
+    // Explicit destination scale, rather than set_position(LogicalPosition) using the old monitor.
+    window
+        .set_size(tauri::PhysicalSize::new(
+            (420.0 * destination_scale) as u32,
+            (300.0 * destination_scale) as u32,
+        ))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
+        .map_err(|e| e.to_string())?;
+    mark_transient(window.label());
+    Ok(())
+}
+pub(crate) fn mark_transient(label: &str) {
+    if let Some(session) = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .values_mut()
+        .find(|s| s.registration.window_label == label)
+    {
+        session.transient_until = Instant::now() + Duration::from_millis(500);
+    }
+}
+fn should_persist(
+    visible: bool,
+    minimized: bool,
+    quitting: bool,
+    suspended: bool,
+    ready: bool,
+    transient: bool,
+) -> bool {
+    visible && !minimized && !quitting && !suspended && ready && !transient
+}
+fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let app = window.app_handle();
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = registry
+        .sessions
+        .values_mut()
+        .find(|s| s.registration.window_label == window.label())
+    else {
+        return;
+    };
+    if !should_persist(
+        window.is_visible().unwrap_or(false),
+        window.is_minimized().unwrap_or(true)
+            || app
+                .get_webview_window(super::MAIN_WINDOW_LABEL)
+                .is_none_or(|owner| {
+                    owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
+                }),
+        super::quit_in_progress(),
+        super::utility_windows_suspended(),
+        session.ready,
+        Instant::now() < session.transient_until,
+    ) {
+        return;
+    }
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    if !super::UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .persist_move(window.label(), (position.x, position.y))
+    {
+        return;
+    }
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let m = WorkArea::from_monitor(&monitor);
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let x = f64::from(position.x) / m.scale;
+    let y = f64::from(position.y) / m.scale;
+    let saved = SavedPosition {
+        monitor: m.id,
+        x,
+        y,
+        offset_x: ((x - m.x) / (m.width - f64::from(size.width) / m.scale).max(1.0))
+            .clamp(0.0, 1.0),
+        offset_y: ((y - m.y) / (m.height - f64::from(size.height) / m.scale).max(1.0))
+            .clamp(0.0, 1.0),
+    };
+    session.move_revision += 1;
+    let revision = session.move_revision;
+    session.pending_move = Some((revision, saved));
+    let label = window.label().to_string();
+    let app = app.clone();
+    // Debounce IO off the event thread. A native close flushes the last genuine move below.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(s) = registry
+            .sessions
+            .values_mut()
+            .find(|s| s.registration.window_label == label)
+        else {
+            return;
+        };
+        if s.pending_move.as_ref().is_some_and(|(r, _)| *r == revision) {
+            flush_position(&app, s);
+        }
+    });
+}
+fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
+    if let Some((_, saved)) = session.pending_move.take() {
+        let mut positions = read_positions(app);
+        positions.insert(session.snapshot.dialog_kind.clone(), saved);
+        if let (Ok(path), Ok(bytes)) = (saved_path(app), serde_json::to_vec(&positions)) {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+}
+/// Native close/destroy settles even if the renderer crashes or never executes cleanup.
+pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
+    if !is_dialog_label(window.label()) {
+        return;
+    }
+    match event {
+        WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+            let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+            let key = registry
+                .sessions
+                .iter()
+                .find(|(_, s)| s.registration.window_label == window.label())
+                .map(|(k, _)| k.clone());
+            let session = key.and_then(|k| registry.sessions.remove(&k));
+            drop(registry);
+            if let Some(mut session) = session {
+                flush_position(window.app_handle(), &mut session);
+                notify_closed(
+                    window.app_handle(),
+                    &session,
+                    if matches!(event, WindowEvent::Destroyed) {
+                        "destroy"
+                    } else {
+                        "close"
+                    },
+                );
+            }
+        }
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                persist_move(&webview);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {
+        let dialog = "dialog-main-pageSize-1";
+        let toolbar = "toolset-core-main";
+        assert!(super::super::is_suspended_utility_label(dialog));
+        assert!(super::super::utility_window_has_document_parent(dialog));
+        let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
+        suspension.begin(
+            [
+                (dialog.into(), true, false, true),
+                (toolbar.into(), true, false, false),
+            ],
+            Some(vec![toolbar.into(), dialog.into()]),
+        );
+        assert!(suspension.visible(toolbar, false));
+        assert_eq!(
+            suspension.release(false),
+            Some(vec![dialog.into(), toolbar.into()])
+        );
+        suspension.closed(dialog);
+        assert_eq!(suspension.pending_restore(), Some(vec![toolbar.into()]));
+        assert_eq!(suspension.release(true), None);
+        assert_eq!(suspension.pending_restore(), None);
+    }
+    fn snapshot() -> Message {
+        serde_json::from_value(json!({"protocolVersion":1,"ownerWindowId":"main","documentTabId":"tab-1","dialogKind":"pageSize","sessionId":"session-1","requestId":"request-1","snapshotRevision":1,"type":"snapshot","data":{"title":"Drawing","width":8.5,"height":11,"unit":"inch"}})).unwrap()
+    }
+    #[test]
+    fn validates_kind_label_owner_and_payload() {
+        let mut m = snapshot();
+        assert!(m.validate().is_ok());
+        for kind in ["export", "pageSize/../main", "unknown"] {
+            m.dialog_kind = kind.into();
+            assert!(m.validate().is_err());
+        }
+        m = snapshot();
+        m.owner_window_id = "preferences".into();
+        assert!(m.validate().is_err());
+        m = snapshot();
+        m.data["title"] = json!("x".repeat(MAX_BYTES));
+        assert!(m.validate().is_err());
+        m = snapshot();
+        m.data["callback"] = json!("command");
+        assert!(m.validate().is_err());
+        m = snapshot();
+        m.data["title"] = json!("😀".repeat(128));
+        assert!(m.validate().is_ok());
+        m.data["title"] = json!("😀".repeat(129));
+        assert!(m.validate().is_err());
+        m = snapshot();
+        m.message_type = "result".into();
+        m.data = json!({"status": "error", "error": null});
+        assert!(m.validate().is_err());
+        assert!(is_dialog_label("dialog-main-pageSize-12"));
+        for label in [
+            "dialog-main-export-0",
+            "dialog-other-pageSize-0",
+            "dialog-main-pageSize-../",
+            "main",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+        let mut registry = Registry::default();
+        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let s = &registry.sessions[&r.host_id];
+        assert!(authorize(s, &r.window_label, false, Some(&snapshot())).is_ok());
+        assert!(authorize(s, "main", false, None).is_err());
+        let mut stale = snapshot();
+        stale.session_id = "stale".into();
+        assert!(authorize(s, &r.window_label, false, Some(&stale)).is_err());
+        stale = snapshot();
+        stale.snapshot_revision += 1;
+        assert!(authorize(s, &r.window_label, false, Some(&stale)).is_err());
+    }
+    #[test]
+    fn quit_refuses_and_concurrent_same_session_builds_once() {
+        assert!(register(&mut Registry::default(), snapshot(), true).is_err());
+        let registry = std::sync::Arc::new(Mutex::new(Registry::default()));
+        let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let registry = registry.clone();
+                let builds = builds.clone();
+                std::thread::spawn(move || {
+                    let (r, build) =
+                        register(&mut registry.lock().unwrap(), snapshot(), false).unwrap();
+                    if build {
+                        builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    r.window_label
+                })
+            })
+            .collect();
+        let labels: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(labels.iter().all(|l| l == &labels[0]));
+        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn geometry_centers_clamps_and_recovers_monitor_loss_using_destination_scale() {
+        let owner = WorkArea {
+            id: "owner".into(),
+            x: 0.0,
+            y: 30.0,
+            width: 1000.0,
+            height: 700.0,
+            scale: 2.0,
+        };
+        let other = WorkArea {
+            id: "other".into(),
+            x: 1000.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+            scale: 1.5,
+        };
+        assert_eq!(
+            position_for(
+                None,
+                &[],
+                &owner,
+                (100.0, 100.0, 800.0, 600.0),
+                (420.0, 330.0)
+            ),
+            (580.0, 470.0, 2.0)
+        );
+        let saved = SavedPosition {
+            monitor: "other".into(),
+            x: 0.0,
+            y: 0.0,
+            offset_x: 2.0,
+            offset_y: -1.0,
+        };
+        assert_eq!(
+            position_for(
+                Some(&saved),
+                &[other],
+                &owner,
+                (0.0, 0.0, 800.0, 600.0),
+                (420.0, 330.0)
+            ),
+            (2070.0, 0.0, 1.5)
+        );
+        assert_eq!(
+            position_for(
+                Some(&saved),
+                &[],
+                &owner,
+                (900.0, 650.0, 800.0, 600.0),
+                (420.0, 330.0)
+            ),
+            (1160.0, 800.0, 2.0)
+        );
+    }
+    #[test]
+    fn persistence_excludes_hidden_minimized_teardown_suspension_and_restore_moves() {
+        assert!(should_persist(true, false, false, false, true, false));
+        for flags in [
+            (false, false, false, false, true, false),
+            (true, true, false, false, true, false),
+            (true, false, true, false, true, false),
+            (true, false, false, true, true, false),
+            (true, false, false, false, false, false),
+            (true, false, false, false, true, true),
+        ] {
+            assert!(!should_persist(
+                flags.0, flags.1, flags.2, flags.3, flags.4, flags.5
+            ));
+        }
+    }
+}

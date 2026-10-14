@@ -1,3 +1,4 @@
+mod dialog_windows;
 mod export;
 mod fonts;
 mod installed_plugins;
@@ -201,6 +202,8 @@ trait QuitHost: Clone + Send + 'static {
 
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
+        // Native sessions settle before the final document flush, even with an unresponsive renderer.
+        dialog_windows::dismiss_owned(self, "quit");
         self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
@@ -706,6 +709,7 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
                         }
@@ -724,6 +728,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -750,6 +755,9 @@ pub fn run() {
             }
 
             // Owned windows may finish unminimizing after their owner's Resized event.
+            if dialog_windows::is_dialog_label(window.label()) {
+                dialog_windows::on_window_event(window, event);
+            }
             if is_suspended_utility_label(window.label())
                 && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(true))
             {
@@ -911,6 +919,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             plugin_package::read_plugin_package,
+            dialog_windows::dialog_open,
+            dialog_windows::dialog_request,
+            dialog_windows::dialog_send,
+            dialog_windows::dialog_publish,
+            dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
@@ -1288,7 +1301,9 @@ fn utility_windows_suspended() -> bool {
 
 fn is_suspended_utility_label(label: &str) -> bool {
     // Plugin panels float above their owner too: Windows owned windows and macOS child windows.
-    label.starts_with("toolset-") || is_plugin_panel_window_label(label)
+    label.starts_with("toolset-")
+        || is_plugin_panel_window_label(label)
+        || dialog_windows::is_dialog_label(label)
 }
 
 fn utility_restore_priority(label: &str) -> u8 {
@@ -1296,7 +1311,7 @@ fn utility_restore_priority(label: &str) -> u8 {
         3
     } else if label.starts_with("toolset-popover-") {
         2
-    } else if is_plugin_panel_window_label(label) {
+    } else if is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label) {
         0
     } else {
         1
@@ -1643,11 +1658,18 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             recover_offscreen_toolset_window(app, &window);
         }
+        if dialog_windows::is_dialog_label(&label) {
+            dialog_windows::mark_transient(&label);
+            buffer_utility_recovery_position(&window);
+        }
         let shown = restore_utility_in_document_group(&window);
         if let Err(error) = shown {
             result = Err(error);
         } else {
             if toolset_id_for_window_label(app, &label).is_some() {
+                buffer_utility_recovery_position(&window);
+            }
+            if dialog_windows::is_dialog_label(&label) {
                 buffer_utility_recovery_position(&window);
             }
             UTILITY_SUSPENSION
@@ -1726,6 +1748,9 @@ fn restore_utility_window<R: Runtime>(
             .ok_or_else(|| "Could not restore native ChemDraft utility window.".to_string())?;
         if is_plugin_panel_window_label(window.label()) {
             configure_analysis_window_traits(window, native)?;
+        }
+        if dialog_windows::is_dialog_label(window.label()) {
+            dialog_windows::configure_on_main(window)?;
         }
         let main_pointer = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let owner = unsafe { main_pointer.as_ref() }
@@ -2269,7 +2294,7 @@ fn is_plugin_panel_window_label(label: &str) -> bool {
 /// Normal document parenting policy, shared by plugin-panel creation and suspended restoration.
 /// Palettes/popovers stay unparented on macOS; their Windows ownership is set separately.
 fn utility_window_has_document_parent(label: &str) -> bool {
-    is_plugin_panel_window_label(label)
+    is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label)
 }
 
 #[cfg(test)]
@@ -5514,7 +5539,11 @@ enum CloseWindowRoute {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn close_window_route(tauri_label: Option<&str>) -> CloseWindowRoute {
     match tauri_label {
-        Some(label) if is_plugin_panel_window_label(label) => CloseWindowRoute::TauriClose,
+        Some(label)
+            if is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label) =>
+        {
+            CloseWindowRoute::TauriClose
+        }
         _ => CloseWindowRoute::PerformClose,
     }
 }
