@@ -9,6 +9,14 @@ keeps the app open. The modal uses `role="dialog"` and `aria-modal="true"` so ut
 windows hide. PR #99's grace period and exit watchdog remain; the grace pauses only
 after the mounted dialog is acknowledged, and cancelled requests invalidate old timers.
 Session restoration and Discard's session retention are unchanged.
+The 2026-10-14 review fixes save dirty documents by ID, permit Save As before shutdown,
+re-arm the flush grace after Save/Discard, scope prompt commands to the document window,
+reveal hidden/minimized documents, identify requests across late Cancel replies, handle
+AppKit Dock Quit while leaving system termination non-blocking, and explicitly acquire
+native utility suspension for the quit modal.
+Independent review additionally blocks native commands, queued opens, and plugin writes during
+the quit interaction, disables competing choices while Cancel is pending, lets an existing OS
+tab-close alert resolve before requesting quit again, and keeps/raises a waiting macOS prompt.
 
 Completed implementation slices, newest first. These moved out of `PLANS.md` on 2026-07-30 so that
 file could go back to describing only the work in flight; the records themselves are unchanged apart

@@ -327,6 +327,12 @@ help or menu text, sample files, command IDs, or trade dress. Menu and dense ico
 dominant page workspace, icon-first palettes owned by the document window, panels hidden until needed.
 Never show fake chemistry: workspace objects are real `chem-core` objects or an honest disabled state.
 
+**Tools and dialogs float (owner rule, 2026-10-14).** Every tool palette, panel and dialog is its own native window
+that the user can move anywhere, off the document window and onto another monitor; never an overlay fixed inside
+the document viewport. Dialogs are owned by the document window (no Windows taskbar entry, §1), open centred over it
+the first time, and hide the floating toolbars while open through the shared utility suspension. Simple
+confirmations use native message boxes. Existing in-viewport dialogs are being migrated; add no new ones.
+
 ## 13. Security, errors, and performance
 
 - **Security.** Plugins get no file, network, native, model, clipboard, or remote-recognition access

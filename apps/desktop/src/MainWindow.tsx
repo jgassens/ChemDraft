@@ -1,5 +1,7 @@
-import { handleQuitRequest, loadAskToSaveBeforeQuit } from "./quitSettings";
+import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
+import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
@@ -700,6 +702,13 @@ import {
   saveDocumentSession,
   listenForQuitFlushRequest,
   confirmQuitAfterFlush,
+  listenForQuitPromptRequest,
+  listenForQuitSettings,
+  setQuitPromptEnabled,
+  prepareQuitPrompt,
+  resumeQuitAfterPrompt,
+  confirmPromptedQuit,
+  requestQuitAfterClose,
   reportQuitPromptShowing,
   cancelQuit,
   sendToolsetLayoutEdit,
@@ -1628,7 +1637,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.13.14.00-codex";
+const CURRENT_BUILD_STAMP = "10.14.10.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1895,6 +1904,7 @@ export function MainWindow({
   initialActiveToolCommandId,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useInAppModalUtilitySuspension();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
@@ -2157,7 +2167,15 @@ export function MainWindow({
     pageFit?: ImportedPageFitPromptState;
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
+  const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
+  const quitRequestRef = useRef<number | undefined>(undefined);
+  const quitPromptBusyRef = useRef(false);
+  const [quitSaveBusy, setQuitSaveBusy] = useState(false);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const quitInteractionRef = useRef(false);
+  const quitMutationFrozenRef = useRef(false);
+  const pendingQuitAfterCloseRef = useRef(false);
+  const [quitAfterCloseReady, setQuitAfterCloseReady] = useState(0);
   const [keptDrawingsPrompt, setKeptDrawingsPrompt] = useState<"notice">();
   const keptDrawingsPromptRef = useRef(keptDrawingsPrompt);
   keptDrawingsPromptRef.current = keptDrawingsPrompt;
@@ -3015,6 +3033,7 @@ export function MainWindow({
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
   ): boolean => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3044,6 +3063,7 @@ export function MainWindow({
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string
   ): boolean => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3077,6 +3097,7 @@ export function MainWindow({
     nextDocument: ChemDraftDocument,
     undoLabel?: string
   ) => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
@@ -6242,6 +6263,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget]);
 
   const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
@@ -6261,6 +6283,7 @@ export function MainWindow({
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string }> => {
     try {
       const parsed = await depictSmilesForPaste(smilesText);
+      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
       const nextDocument = insertSmilesMolecule(
@@ -6292,6 +6315,7 @@ export function MainWindow({
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
       void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason }) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
           setStatus(reason
@@ -6329,6 +6353,7 @@ export function MainWindow({
         return;
       }
       void pendingList.then((parsed) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!parsed) {
           pasteAsText();
           return;
@@ -6343,6 +6368,7 @@ export function MainWindow({
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);
       }).catch((error: unknown) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         pasteAsText();
         const failures = error instanceof SmilesListPasteError ? error.failures : [];
         const firstReason = failures[0]?.error ?? "an unexpected error occurred";
@@ -6355,6 +6381,7 @@ export function MainWindow({
   }, [applySyncClipboardPayload, commitDocumentChange, pastePointForViewport, renderPastedSmiles, resetPasteUiState]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const placement = nextSelectionClipboardPastePlacement(
       payload,
       selectionClipboardPasteStateRef.current,
@@ -6387,6 +6414,7 @@ export function MainWindow({
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
     wholeObjectIds: readonly string[]
   ) => {
+    if (quitInteractionRef.current) { setStatus("Cut cancelled while quitting"); return; }
     const currentDocument = documentRef.current;
     // Use the selection that produced the successful clipboard write. It may include both
     // whole objects and fragments, and the user may have changed selection while it was writing.
@@ -6551,6 +6579,7 @@ export function MainWindow({
 
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const selectionPayload = rawPayload.textItems
       .map((item) => parseSelectionClipboardPayload(item.text))
       .find((payload) => payload !== undefined);
@@ -8180,7 +8209,7 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ) => {
-    if (closeTabPromptRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       return;
@@ -8198,6 +8227,10 @@ export function MainWindow({
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
+    if (quitInteractionRef.current) {
+      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+      return;
+    }
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -8249,7 +8282,7 @@ export function MainWindow({
   openDocumentContentsRef.current = openDocumentContents;
 
   useEffect(() => {
-    if (closeTabPrompt || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
+    if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
     const opens = pendingDocumentOpensRef.current.splice(0);
     void (async () => {
       for (const request of opens) {
@@ -8260,7 +8293,7 @@ export function MainWindow({
         }
       }
     })();
-  }, [closeTabPrompt, keptDrawingsPrompt]);
+  }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -8312,7 +8345,7 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenCurrentWindowEvent<{ paths: string[] }>("tauri://drag-drop", (event) => {
-      if (!disposed && !closeTabPromptRef.current) void openDroppedDocumentPaths(event.payload.paths);
+      if (!disposed && !closeTabPromptRef.current && !quitInteractionRef.current) void openDroppedDocumentPaths(event.payload.paths);
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -8636,8 +8669,6 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
-  const [quitPromptOpen, setQuitPromptOpen] = useState(false);
-  const [quitSaveBusy, setQuitSaveBusy] = useState(false);
 
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
@@ -8648,13 +8679,8 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void listenForQuitFlushRequest(async () => {
-      await handleQuitRequest(loadAskToSaveBeforeQuit(),
-        documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
-          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty === true),
-        () => setQuitPromptOpen(true), async () => {
-          await writeDocumentSessionNow();
-          await confirmQuitAfterFlush();
-        });
+      await writeDocumentSessionNow();
+      await confirmQuitAfterFlush();
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -8667,6 +8693,58 @@ export function MainWindow({
       unlisten?.();
     };
   }, [writeDocumentSessionNow]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false;
+    const listeners: (() => void)[] = [];
+    const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
+    void (async () => {
+      keep(await listenForQuitPromptRequest(async (requestId) => {
+        if (disposed || (quitRequestRef.current !== undefined && requestId <= quitRequestRef.current)) return;
+        quitRequestRef.current = requestId;
+        quitMutationFrozenRef.current = false;
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+        quitInteractionRef.current = true;
+        if (closeTabPromptRef.current) {
+          // React cleanup cannot dismiss an OS alert. Retire this native quit deadline and
+          // finish the existing close choice first, then request a fresh, visible quit prompt.
+          if (await cancelQuit(requestId) && quitRequestRef.current === requestId) {
+            pendingQuitAfterCloseRef.current = true;
+            setQuitAfterCloseReady((value) => value + 1);
+          }
+          return;
+        }
+        snapshotDocumentTab();
+        const dirty = documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
+        if (!dirty) {
+          quitMutationFrozenRef.current = true;
+          if (await resumeQuitAfterPrompt(requestId)) {
+            await writeDocumentSessionNow();
+            await confirmPromptedQuit(requestId);
+          }
+          return;
+        }
+        if (await prepareQuitPrompt(requestId) && quitRequestRef.current === requestId && !disposed) {
+          setQuitPromptOpen(requestId);
+        }
+      }));
+      keep(await listenForQuitSettings((enabled) => { void setQuitPromptEnabled(enabled); }));
+      if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
+    })().catch((error: unknown) => { setStatus("Quit preference unavailable: " + String(error)); });
+    return () => { disposed = true; listeners.forEach((listener) => listener()); };
+  }, [snapshotDocumentTab, writeDocumentSessionNow]);
+
+  useEffect(() => {
+    if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
+    pendingQuitAfterCloseRef.current = false;
+    void requestQuitAfterClose().catch((error: unknown) => {
+      quitInteractionRef.current = false;
+      setStatus("Could not resume quit after closing the tab prompt: " + String(error));
+    });
+  }, [closeTabPrompt, quitAfterCloseReady]);
 
   // Windows app updates (appUpdates.ts). One flow at a time: a menu click during the launch check, or
   // a double click, must not raise a second prompt or start a second download.
@@ -8900,11 +8978,13 @@ export function MainWindow({
     return false;
   }, keptDrawingsPromptReady ? keptDrawingsPrompt : undefined, true, async () => "cancel");
 
-  const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
-    const savingTabId = activeDocumentTabIdRef.current;
-    const savingDocument = documentRef.current;
-    const savingFileState = fileStateRef.current;
-    const payload = createNativeSavePayload(documentForFlush());
+  const saveDocumentTabById = useCallback(async (savingTabId: string, forceSaveAs: boolean): Promise<boolean> => {
+    const active = savingTabId === activeDocumentTabIdRef.current;
+    const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
+    const savingDocument = active ? documentRef.current : snapshot?.history.present;
+    const savingFileState = active ? fileStateRef.current : snapshot?.file;
+    if (!savingDocument || !savingFileState) return false;
+    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
     const finishSave = (path?: string) => {
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
@@ -8952,43 +9032,102 @@ export function MainWindow({
     }
   }, [documentForFlush]);
 
-  // Effects run after the modal is committed to the DOM; only now pause native grace.
+  const saveCurrentDocument = useCallback((forceSaveAs: boolean) =>
+    saveDocumentTabById(activeDocumentTabIdRef.current, forceSaveAs), [saveDocumentTabById]);
+
+  // Own a native suspension through the modal and its nested Save As panels.
   useEffect(() => {
-    if (!quitPromptOpen) return;
-    void reportQuitPromptShowing().then((accepted) => {
-      if (!accepted) setQuitPromptOpen(false);
-    }).catch(() => setQuitPromptOpen(false));
+    if (quitPromptOpen === undefined) return;
+    const requestId = quitPromptOpen;
+    let disposed = false;
+    const suspension = acquireNativeUtilitySuspension();
+    const retirePrompt = () => {
+      void cancelQuit(requestId).then((cancelled) => {
+        if (!cancelled) return;
+        if (quitRequestRef.current === requestId) {
+          quitInteractionRef.current = false;
+          quitMutationFrozenRef.current = false;
+        }
+        setQuitPromptOpen((current) => current === requestId ? undefined : current);
+      }).catch((error: unknown) => {
+        // Keep the dialog available for retry; never hide an acknowledged prompt on failed IPC.
+        setStatus("Could not cancel quit: " + String(error));
+      });
+    };
+    void suspension.then(async () => {
+      if (disposed) return;
+      if (!await reportQuitPromptShowing(requestId)) retirePrompt();
+    }).catch((error: unknown) => {
+      setStatus("Quit prompt unavailable: " + String(error));
+      retirePrompt();
+    });
+    return () => {
+      disposed = true;
+      void suspension.then((release) => release(), () => {});
+    };
   }, [quitPromptOpen]);
 
-  const cancelQuitPrompt = useCallback(async () => {
-    await cancelQuit();
-    setQuitPromptOpen(false);
+  const cancelQuitPrompt = useCallback(async (requestId = quitRequestRef.current) => {
+    if (requestId === undefined) return;
+    if (quitRequestRef.current === requestId) {
+      quitPromptBusyRef.current = true;
+      setQuitSaveBusy(true);
+    }
+    try {
+      if (await cancelQuit(requestId)) {
+        if (quitRequestRef.current === requestId) {
+          quitInteractionRef.current = false;
+          quitMutationFrozenRef.current = false;
+        }
+        setQuitPromptOpen((current) => current === requestId ? undefined : current);
+      }
+    } catch (error) {
+      setStatus("Could not cancel quit: " + String(error));
+    } finally {
+      if (quitRequestRef.current === requestId) {
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+      }
+    }
   }, []);
 
   const finishPromptedQuit = useCallback(async (save: boolean) => {
+    const requestId = quitRequestRef.current;
+    if (requestId === undefined || quitPromptBusyRef.current) return;
+    quitPromptBusyRef.current = true;
+    quitMutationFrozenRef.current = true;
     setQuitSaveBusy(true);
     try {
       if (save) {
         for (const tab of documentTabsRef.current) {
           const file = tab.id === activeDocumentTabIdRef.current ? fileStateRef.current :
             documentTabSnapshotsRef.current.get(tab.id)?.file;
-          if (!file?.dirty) continue;
-          activateDocumentTab(tab.id);
-          if (!await saveCurrentDocument(false) || fileStateRef.current.dirty) {
-            await cancelQuitPrompt();
+          if (file?.dirty && !await saveDocumentTabById(tab.id, false)) {
+            await cancelQuitPrompt(requestId);
             return;
           }
         }
+        if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
+          setStatus("A document changed while saving. Quit cancelled; save again before quitting.");
+          await cancelQuitPrompt(requestId);
+          return;
+        }
       }
+      // Re-arm grace before session IPC so a stalled flush still arms #99's exit watchdog.
+      if (!await resumeQuitAfterPrompt(requestId)) return;
       await writeDocumentSessionNow();
-      await confirmQuitAfterFlush();
+      await confirmPromptedQuit(requestId);
     } catch (error) {
-      setStatus(`Quit failed: ${error instanceof Error ? error.message : String(error)}`);
-      await cancelQuitPrompt();
+      setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
+      await cancelQuitPrompt(requestId);
     } finally {
-      setQuitSaveBusy(false);
+      if (quitRequestRef.current === requestId) {
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+      }
     }
-  }, [activateDocumentTab, saveCurrentDocument, writeDocumentSessionNow, cancelQuitPrompt]);
+  }, [saveDocumentTabById, writeDocumentSessionNow, cancelQuitPrompt]);
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
@@ -10003,6 +10142,7 @@ export function MainWindow({
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
     applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+      if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
       // The host checked the document key before calling; a write that waits for a gesture checks again
@@ -10012,6 +10152,7 @@ export function MainWindow({
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
       return gate.run(() => {
+        if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
@@ -10460,7 +10601,7 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
-    if (keptDrawingsPromptRef.current) return;
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);

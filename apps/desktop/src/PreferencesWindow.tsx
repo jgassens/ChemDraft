@@ -14,7 +14,7 @@ import {
   type KeybindingScheme,
   type KeybindingSettings
 } from "./keybindingSettings";
-import { broadcastKeybindingSettings, broadcastSpin3dSettings } from "./window-manager";
+import { broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
   value: T;
@@ -141,6 +141,7 @@ export function PreferencesWindow() {
           <input type="checkbox" checked={askToSave} onChange={(event) => {
             setAskToSave(event.target.checked);
             saveAskToSaveBeforeQuit(event.target.checked);
+            void broadcastQuitSettings(event.target.checked);
           }} />
           Ask to save unsaved changes before quitting
         </label>

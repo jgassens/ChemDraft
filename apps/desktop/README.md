@@ -5,6 +5,9 @@ When enabled, quitting with dirty tabs offers Save / Discard / Cancel. Save writ
 dirty tab; a cancelled or failed save keeps the app open. Discard retains the existing
 session-recovery behavior. Without a response from the document window, quitting retains
 the bounded native grace period; it pauses only once the save dialog is actually showing.
+Save and Discard re-arm that grace before flushing the session. Prompt controls are restricted
+to the document window. On macOS, Dock Quit also checks the preference and reveals hidden
+documents for the prompt; system logout, restart, and shutdown remain non-blocking.
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 

@@ -9,11 +9,3 @@ export function saveAskToSaveBeforeQuit(enabled: boolean): void {
   try { globalThis.localStorage?.setItem(STORAGE_KEY, String(enabled)); }
   catch { /* Persistence is best effort, as for other preferences. */ }
 }
-
-export async function handleQuitRequest(
-  askToSave: boolean, hasChanges: boolean,
-  showPrompt: () => void, flushAndQuit: () => Promise<void>
-): Promise<void> {
-  if (askToSave && hasChanges) showPrompt();
-  else await flushAndQuit();
-}

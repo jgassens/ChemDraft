@@ -587,16 +587,48 @@ export async function confirmQuitAfterFlush(): Promise<void> {
   await invoke("quit_after_flush").catch(() => undefined);
 }
 
-export async function reportQuitPromptShowing(): Promise<boolean> {
-  if (!isDesktopRuntime()) return false;
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("quit_prompt_showing");
+export const QUIT_PROMPT_REQUEST_EVENT = "chemdraft://prompt-before-quit";
+const QUIT_SETTINGS_EVENT = "chemdraft://quit-settings";
+export async function listenForQuitPromptRequest(handler: (requestId: number) => Promise<void>): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => {};
+  return listenCurrentWindowEvent<number>(QUIT_PROMPT_REQUEST_EVENT, (event) => {
+    if (Number.isSafeInteger(event.payload) && event.payload > 0) void handler(event.payload).catch(() => {});
+  });
 }
-
-export async function cancelQuit(): Promise<void> {
+export async function broadcastQuitSettings(enabled: boolean): Promise<void> {
+  dispatchDomToolsetEvent(QUIT_SETTINGS_EVENT, enabled);
+  if (isDesktopRuntime()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(QUIT_SETTINGS_EVENT, enabled);
+  }
+}
+export async function listenForQuitSettings(handler: (enabled: boolean) => void): Promise<Unlisten> {
+  const dom = listenForDomToolsetEvent(QUIT_SETTINGS_EVENT, (event) => {
+    if (typeof event.detail === "boolean") handler(event.detail);
+  });
+  if (!isDesktopRuntime()) return dom;
+  const native = await listenTauriEvent<boolean>(QUIT_SETTINGS_EVENT, (event) => {
+    if (typeof event.payload === "boolean") handler(event.payload);
+  });
+  return () => { dom(); native(); };
+}
+async function quitPromptCommand<T>(command: string, requestId: number): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, { requestId });
+}
+export async function setQuitPromptEnabled(enabled: boolean): Promise<void> {
   if (!isDesktopRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("cancel_quit");
+  await invoke("set_quit_prompt_enabled", { enabled });
+}
+export const prepareQuitPrompt = (id: number): Promise<boolean> => quitPromptCommand("prepare_quit_prompt", id);
+export const reportQuitPromptShowing = (id: number): Promise<boolean> => quitPromptCommand("quit_prompt_showing", id);
+export const cancelQuit = (id: number): Promise<boolean> => quitPromptCommand("cancel_quit", id);
+export const resumeQuitAfterPrompt = (id: number): Promise<boolean> => quitPromptCommand("resume_quit_after_prompt", id);
+export const confirmPromptedQuit = (id: number): Promise<void> => quitPromptCommand("confirm_prompted_quit", id);
+export async function requestQuitAfterClose(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("request_quit_after_close");
 }
 
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */

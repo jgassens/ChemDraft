@@ -1,8 +1,11 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+#[cfg(target_os = "macos")]
+mod macos_quit;
 mod ocsr_engine;
 mod opsin;
+mod plugin_package;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
@@ -122,6 +125,23 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 
 /// The app's quit flow. Tests run their own `QuitFlow` with a fake host and short timings.
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
+const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuitPromptPhase {
+    Idle,
+    AwaitingWindow,
+    Showing,
+    Flushing,
+}
+
+// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
+// system termination: never block logout/shutdown/restart with a save prompt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
+    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+}
 
 /// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
 /// once `quitting` is set, the exit watchdog remains unchanged.
@@ -133,7 +153,7 @@ struct QuitFlow {
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
     /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
-    prompt: Mutex<(u64, bool)>,
+    prompt: Mutex<(u64, QuitPromptPhase)>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -146,7 +166,7 @@ impl QuitFlow {
     ) -> Self {
         Self {
             requested: AtomicBool::new(false),
-            prompt: Mutex::new((0, false)),
+            prompt: Mutex::new((0, QuitPromptPhase::Idle)),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -194,6 +214,10 @@ fn forced_exit_message(reason: QuitReason, waited: Duration) -> String {
 trait QuitHost: Clone + Send + 'static {
     /// Asks the document window to flush its session; false when there is none to ask.
     fn ask_document_to_flush(&self) -> bool;
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        let _ = request_id;
+        self.ask_document_to_flush()
+    }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Ends the process now, from the watchdog thread.
@@ -205,6 +229,13 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
         self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
+                .is_ok()
+    }
+
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
+            && self
+                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
                 .is_ok()
     }
 
@@ -256,22 +287,39 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
+        // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
+        if prompt_waits_for_user(&QUIT) {
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                let reveal = window.clone();
+                let _ = window.run_on_main_thread(move || {
+                    let _ = reveal.unminimize();
+                    let _ = reveal.show();
+                    let _ = reveal.set_focus();
+                });
+            }
+        }
+        request_prompted_quit_with(&QUIT, app);
+    } else {
+        request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    }
 }
 
+fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
+    matches!(
+        flow.prompt.lock().unwrap().1,
+        QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+    )
+}
+
+// The preference-off path is the original #99 flow.
 fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
-    let mut prompt = flow.prompt.lock().unwrap();
     if flow.requested.swap(true, Ordering::SeqCst) {
-        // A second Cmd+Q bypasses the wait. Keep repeated Windows closes idempotent.
-        if force_repeated_quit && !prompt.1 {
+        if force_repeated_quit {
             quit_now_with(flow, host, QuitReason::RepeatedRequest);
         }
         return;
     }
-    prompt.0 += 1;
-    prompt.1 = false;
-    let generation = prompt.0;
-    drop(prompt);
     if !host.ask_document_to_flush() {
         quit_now_with(flow, host, QuitReason::NoDocument);
         return;
@@ -279,11 +327,65 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
+        quit_now_with(flow, &host, QuitReason::GraceExpired);
+    });
+}
+
+fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.1 != QuitPromptPhase::Idle
+        || flow.requested.load(Ordering::SeqCst)
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return None;
+    }
+    prompt.0 += 1;
+    prompt.1 = QuitPromptPhase::AwaitingWindow;
+    let request_id = prompt.0;
+    drop(prompt);
+    if !host.ask_document_to_prompt(request_id) {
+        quit_now_with(flow, host, QuitReason::NoDocument);
+    } else {
+        arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
+    }
+    Some(request_id)
+}
+
+fn arm_prompt_grace<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+    phase: QuitPromptPhase,
+) {
+    let host = host.clone();
+    thread::spawn(move || {
+        thread::sleep(flow.flush_grace);
         let prompt = flow.prompt.lock().unwrap();
-        if prompt.0 == generation && !prompt.1 && flow.requested.load(Ordering::SeqCst) {
+        if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
             quit_now_with(flow, &host, QuitReason::GraceExpired);
         }
     });
+}
+
+fn resume_prompted_quit_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Flushing;
+    flow.requested.store(true, Ordering::SeqCst);
+    arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
+    true
 }
 
 /// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
@@ -313,34 +415,134 @@ async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
 }
 
-/// Pause only after the document window has mounted its modal prompt.
-fn acknowledge_quit_prompt(flow: &QuitFlow) -> bool {
+fn authorize_quit_window(label: &str) -> Result<(), String> {
+    if label == MAIN_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("Only the document window can control quit prompts.".into())
+    }
+}
+
+fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> bool {
     let mut prompt = flow.prompt.lock().unwrap();
-    if !flow.requested.load(Ordering::SeqCst) || flow.quitting.load(Ordering::SeqCst) {
+    if !visible
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
         return false;
     }
-    prompt.1 = true;
+    prompt.1 = QuitPromptPhase::Showing;
     true
 }
 
-fn cancel_quit_with(flow: &QuitFlow) {
+fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> bool {
     let mut prompt = flow.prompt.lock().unwrap();
-    if !flow.quitting.load(Ordering::SeqCst) {
-        prompt.0 += 1;
-        prompt.1 = false;
-        flow.requested.store(false, Ordering::SeqCst);
+    if request_id == 0
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::Idle | QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
     }
+    prompt.1 = QuitPromptPhase::Idle;
+    true
 }
 
 #[tauri::command]
-async fn quit_prompt_showing() -> bool {
-    acknowledge_quit_prompt(&QUIT)
+async fn set_quit_prompt_enabled(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    ASK_TO_SAVE_ON_QUIT.store(enabled, Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
-async fn cancel_quit() {
-    cancel_quit_with(&QUIT);
+async fn prepare_quit_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+        || QUIT.quitting.load(Ordering::SeqCst)
+    {
+        return Ok(false);
+    }
+    let reveal = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+            || QUIT.quitting.load(Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        // Awaiting the prompt is not shutdown: file panels and utility suspension are permitted.
+        reveal.unminimize().map_err(|e| e.to_string())?;
+        reveal.show().map_err(|e| e.to_string())?;
+        reveal.set_focus().map_err(|e| e.to_string())?;
+        let _ = app;
+        Ok(true)
+    })?
 }
+
+#[tauri::command]
+async fn quit_prompt_showing(
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
+}
+
+#[tauri::command]
+async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(cancel_quit_with(&QUIT, request_id))
+}
+
+#[tauri::command]
+async fn request_quit_after_close(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    request_quit(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_quit_after_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
+}
+
+#[tauri::command]
+async fn confirm_prompted_quit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    let prompt = QUIT.prompt.lock().unwrap();
+    if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
+        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(())
+}
+
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
@@ -744,8 +946,10 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if let Err(error) = window.hide() {
-                            eprintln!("Could not hide ChemDraft main window: {error}");
+                        if !prompt_waits_for_user(&QUIT) {
+                            if let Err(error) = window.hide() {
+                                eprintln!("Could not hide ChemDraft main window: {error}");
+                            }
                         }
                     }
                     // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
@@ -792,6 +996,20 @@ pub fn run() {
                 && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(true))
             {
                 schedule_suspended_utility_restore(window.app_handle());
+            }
+
+            // A window closed during a prompt must not come back. Plugin panels are hidden on close
+            // (below), never destroyed, so their CloseRequested counts; a toolbar's close request
+            // could still be refused, so for toolbars only Destroyed does.
+            if is_suspended_utility_label(window.label())
+                && (matches!(event, WindowEvent::Destroyed)
+                    || (is_plugin_panel_window_label(window.label())
+                        && matches!(event, WindowEvent::CloseRequested { .. })))
+            {
+                UTILITY_SUSPENSION
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .closed(window.label());
             }
 
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
@@ -880,6 +1098,10 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             problem_reports::install_panic_hook(app);
+            #[cfg(target_os = "macos")]
+            if let Err(error) = macos_quit::install(app) {
+                eprintln!("Could not install ChemDraft AppKit quit handler: {error}");
+            }
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
@@ -934,6 +1156,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            plugin_package::read_plugin_package,
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
@@ -960,6 +1183,11 @@ pub fn run() {
             hide_toolset_tooltip_window,
             set_current_window_global_position,
             quit_after_flush,
+            set_quit_prompt_enabled,
+            prepare_quit_prompt,
+            resume_quit_after_prompt,
+            confirm_prompted_quit,
+            request_quit_after_close,
             quit_prompt_showing,
             cancel_quit,
             close_toolset_popover,
@@ -1017,12 +1245,9 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // tao 0.35.3's AppDelegate has applicationWillTerminate: but no
-                // applicationShouldTerminate:. AppKit termination (Dock Quit, logout/restart,
-                // AppleScript quit, Sparkle) therefore delivers only Exit via AppState::exit ->
-                // LoopDestroyed in tauri-runtime-wry 2.11.2. It is too late to await a webview
-                // flush here; retain the existing idempotent cleanup. Menu Quit uses our custom
-                // item instead of muda's terminate: selector, so it avoids this bypass.
+                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
+                // only when the preference is enabled. System termination and preference-off
+                // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
@@ -1316,6 +1541,135 @@ fn is_suspended_utility_label(label: &str) -> bool {
     label.starts_with("toolset-") || is_plugin_panel_window_label(label)
 }
 
+fn utility_restore_priority(label: &str) -> u8 {
+    if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
+        3
+    } else if label.starts_with("toolset-popover-") {
+        2
+    } else if is_plugin_panel_window_label(label) {
+        0
+    } else {
+        1
+    }
+}
+
+/// Main-thread-only, inside suspend_toolset_windows' run_on_main_thread_blocking transaction.
+/// Read before hiding anything. A partial native list is a failure too: silently mixing it with
+/// registry order would scramble siblings. The caller logs and keeps the old fallback ordering.
+fn utility_windows_top_to_bottom<R: Runtime>(
+    windows: &[tauri::WebviewWindow<R>],
+) -> Result<Vec<String>, String> {
+    if windows.is_empty() {
+        return Ok(Vec::new());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        MainThreadMarker::new()
+            .ok_or_else(|| "AppKit stacking order must be read on the main thread.".to_string())?;
+        let mut labels = HashMap::new();
+        for window in windows {
+            let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+            let native = unsafe { pointer.as_ref() }
+                .ok_or_else(|| "Could not access a native ChemDraft utility window.".to_string())?;
+            labels.insert(native.windowNumber(), window.label().to_string());
+        }
+        // Not NSApp.orderedWindows: it lists only scriptable windows and leaves panels out, and
+        // these are panels by style. +[NSWindow windowNumbersWithOptions:0] is the window server's
+        // front-to-back order of this app's on-screen windows on the active space, across window
+        // levels. SAFETY: a class method returning an autoreleased NSArray<NSNumber> (or nil),
+        // called on the main thread; Retained keeps the snapshot alive while it is read.
+        let numbers: Option<
+            objc2::rc::Retained<objc2_foundation::NSArray<objc2_foundation::NSNumber>>,
+        > = unsafe { objc2::msg_send![objc2::class!(NSWindow), windowNumbersWithOptions: 0usize] };
+        let numbers =
+            numbers.ok_or_else(|| "NSWindow windowNumbersWithOptions returned nil.".to_string())?;
+        let mut order = Vec::new();
+        for number in numbers.iter() {
+            if let Some(label) = labels.remove(&number.integerValue()) {
+                order.push(label);
+            }
+        }
+        if !labels.is_empty() {
+            return Err(format!(
+                "NSWindow windowNumbersWithOptions omitted {} visible utility window(s).",
+                labels.len()
+            ));
+        }
+        Ok(order)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{Foundation::HWND, UI::WindowsAndMessaging::EnumWindows};
+
+        struct Snapshot {
+            labels: HashMap<usize, String>,
+            order: Vec<String>,
+        }
+        unsafe extern "system" fn collect(hwnd: HWND, data: isize) -> i32 {
+            // SAFETY: EnumWindows invokes this synchronously with our live Snapshot pointer.
+            let snapshot = unsafe { &mut *(data as *mut Snapshot) };
+            if let Some(label) = snapshot.labels.remove(&(hwnd as usize)) {
+                snapshot.order.push(label);
+            }
+            1
+        }
+
+        let mut snapshot = Snapshot {
+            labels: HashMap::new(),
+            order: Vec::new(),
+        };
+        for window in windows {
+            let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+            snapshot
+                .labels
+                .insert(hwnd.0 as usize, window.label().to_string());
+        }
+        // SAFETY: EnumWindows enumerates top-level windows (including the document's owned
+        // utilities) from top to bottom. The callback only records matching handles; it neither
+        // mutates windows nor changes focus. Snapshot outlives the synchronous enumeration.
+        if unsafe { EnumWindows(Some(collect), &mut snapshot as *mut Snapshot as isize) } == 0 {
+            return Err(format!(
+                "EnumWindows failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if !snapshot.labels.is_empty() {
+            return Err(format!(
+                "EnumWindows omitted {} visible utility window(s).",
+                snapshot.labels.len()
+            ));
+        }
+        Ok(snapshot.order)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err("Native utility stacking order is unavailable on this platform.".to_string())
+    }
+}
+
+/// Main-thread-only: capture ownership before orderOut can detach document children.
+fn utility_is_document_child<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    main: &tauri::WebviewWindow<R>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let native = unsafe { pointer.as_ref() }
+            .ok_or_else(|| "Could not snapshot native ChemDraft utility parent.".to_string())?;
+        let owner = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        Ok(native
+            .parentWindow()
+            .is_some_and(|parent| std::ptr::eq(&*parent, owner)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Windows ownership is retained by hide/show; restoration never changes the owner HWND.
+        let _ = (window, main);
+        Ok(false)
+    }
+}
+
 /// Async for the same reason as window creation: never take WINDOW_CREATION on the main thread.
 /// The actual hide/show transaction runs on the main thread, serializing it with late flyout and
 /// tooltip reveals. Future in-app dialogs should acquire/release this same counter.
@@ -1351,23 +1705,56 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let document_minimized = app
+            let main = app
                 .get_webview_window(MAIN_WINDOW_LABEL)
-                .is_some_and(|main| main.is_minimized().unwrap_or(true));
-            let snapshot: Vec<_> = windows
+                .ok_or_else(|| "ChemDraft utility suspension owner disappeared.".to_string())?;
+            let document_minimized = main.is_minimized().unwrap_or(true);
+            let mut snapshot: Vec<_> = windows
                 .iter()
                 .map(|window| {
-                    (
+                    Ok((
                         window.label().to_string(),
                         window.is_visible().unwrap_or(false),
                         document_minimized || window.is_minimized().unwrap_or(true),
-                    )
+                        utility_is_document_child(window, &main)?,
+                    ))
                 })
-                .collect();
+                .collect::<Result<_, String>>()?;
+            // Only the first acquisition reads the native order. A nested prompt must keep the
+            // first snapshot, including while waiting for a minimized document to return.
+            let top_to_bottom = if UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active()
+            {
+                None
+            } else {
+                let visible_windows: Vec<_> = windows
+                    .iter()
+                    .filter(|window| {
+                        snapshot.iter().any(|(label, visible, minimized, _)| {
+                            label == window.label() && *visible && !*minimized
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                match utility_windows_top_to_bottom(&visible_windows) {
+                    Ok(order) => Some(order),
+                    Err(error) => {
+                        eprintln!(
+                            "Could not read ChemDraft floating window stacking order; using the \
+                             default restore order: {error}"
+                        );
+                        None
+                    }
+                }
+            };
+            // Preserve the previous panel/toolbar/flyout/tooltip order if the native query fails.
+            snapshot.sort_by_key(|(label, _, _, _)| utility_restore_priority(label));
             if !UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .begin(snapshot)
+                .begin(snapshot, top_to_bottom)
             {
                 return Ok(());
             }
@@ -1443,7 +1830,7 @@ fn restore_utility_labels<R: Runtime>(
     app: &tauri::AppHandle<R>,
     labels: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let Some(mut labels) = labels else {
+    let Some(labels) = labels else {
         return Ok(());
     };
     if quit_in_progress() {
@@ -1459,32 +1846,34 @@ fn restore_utility_labels<R: Runtime>(
     {
         return Ok(());
     }
+    // AppKit palettes use the floating level and hide on deactivation. Ordering them in while
+    // inactive could expose that level above another app even with a relative anchor. Keep the
+    // obligations until the document/utility Focused(true) event retries. Windows utilities are
+    // non-topmost owned windows and can safely restore behind the foreground app using HWNDs.
+    #[cfg(target_os = "macos")]
+    if !foreground_belongs_to_app() {
+        return Ok(());
+    }
     UTILITY_SUSPENSION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .start_restore();
-    // Restore panels and toolbars first, then their flyouts, and the shared tooltip last.
-    labels.sort_by_key(|label| {
-        if label == TOOLSET_TOOLTIP_WINDOW_LABEL {
-            3
-        } else if label.starts_with("toolset-popover-") {
-            2
-        } else if is_plugin_panel_window_label(label) {
-            0
-        } else {
-            1
-        }
-    });
+    // Restore top-down so each next window can go directly below its restored sibling. Retried
+    // windows also use the full cycle's order, including siblings restored in an earlier pass.
     let mut result = Ok(());
-    for label in labels {
+    for label in labels.into_iter().rev() {
         if quit_in_progress() {
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
-        if app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .is_none_or(|main| main.is_minimized().unwrap_or(true))
-        {
+        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            break;
+        };
+        if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
+            break;
+        }
+        #[cfg(target_os = "macos")]
+        if !foreground_belongs_to_app() {
             break;
         }
         let Some(window) = app.get_webview_window(&label) else {
@@ -1504,7 +1893,7 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             recover_offscreen_toolset_window(app, &window);
         }
-        let shown = restore_utility_window(&window);
+        let shown = restore_utility_in_document_group(&window);
         if let Err(error) = shown {
             result = Err(error);
         } else {
@@ -1533,26 +1922,145 @@ fn buffer_utility_recovery_position<R: Runtime>(window: &tauri::WebviewWindow<R>
     }
 }
 
-fn restore_utility_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+/// Main-thread-only. Also used by deferred panel creation, so a worker retry uses the same retained
+/// sibling order as an existing window's Resized retry, without an app-wide reveal in between.
+fn restore_utility_in_document_group<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let app = window.app_handle();
+    let main = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "ChemDraft utility restore owner disappeared.".to_string())?;
+    if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
+        return Err("ChemDraft utility restore owner is not visible; retrying.".into());
+    }
+    #[cfg(target_os = "macos")]
+    if !foreground_belongs_to_app() {
+        return Err("ChemDraft utility restore is waiting for app activation.".into());
+    }
+    let placement = UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .restore_placement(window.label(), |sibling| {
+            app.get_webview_window(sibling).is_some_and(|sibling| {
+                sibling.is_visible().unwrap_or(false) && !sibling.is_minimized().unwrap_or(true)
+            })
+        });
+    let (anchor, below) = match placement {
+        utility_suspension::RestorePlacement::Below(sibling) => {
+            (app.get_webview_window(&sibling), true)
+        }
+        utility_suspension::RestorePlacement::Above(sibling) => {
+            (app.get_webview_window(&sibling), false)
+        }
+        utility_suspension::RestorePlacement::AboveDocument => (Some(main.clone()), false),
+    };
+    let anchor =
+        anchor.ok_or_else(|| "ChemDraft utility restore anchor disappeared.".to_string())?;
+    restore_utility_window(window, &main, &anchor, below)
+}
+
+fn restore_utility_window<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    main: &tauri::WebviewWindow<R>,
+    anchor: &tauri::WebviewWindow<R>,
+    below: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        if is_plugin_panel_window_label(window.label()) {
-            return configure_analysis_window_on_main_thread(window, false);
-        }
         // Already on the main thread. Preserve each panel's traits (in particular the tooltip's
-        // click-through setting) and order it in without activating it.
+        // click-through setting). orderWindow:relativeTo: shows without making the window key,
+        // and anchors it to the document group rather than using orderFront's app-wide raise.
         let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let native = unsafe { pointer.as_ref() }
             .ok_or_else(|| "Could not restore native ChemDraft utility window.".to_string())?;
-        native.orderFront(None);
+        if is_plugin_panel_window_label(window.label()) {
+            configure_analysis_window_traits(window, native)?;
+        }
+        let main_pointer = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let owner = unsafe { main_pointer.as_ref() }
+            .ok_or_else(|| "Could not access native ChemDraft document window.".to_string())?;
+        let anchor_pointer =
+            anchor.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let anchor = unsafe { anchor_pointer.as_ref() }
+            .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
+        // Ordering out can detach children. Preserve recorded relationships for original windows;
+        // newly deferred windows use the normal creation policy (panels parented, toolbars not).
+        // Both children and unparented utilities use the retained relative stacking position below.
+        let restore_as_document_child = UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .restore_as_document_child(window.label());
+        if restore_as_document_child
+            && native
+                .parentWindow()
+                .is_none_or(|parent| !std::ptr::eq(&*parent, owner))
+        {
+            unsafe {
+                owner.addChildWindow_ordered(native, objc2_app_kit::NSWindowOrderingMode::Above)
+            };
+        }
+        native.orderWindow_relativeTo(
+            if below {
+                objc2_app_kit::NSWindowOrderingMode::Below
+            } else {
+                objc2_app_kit::NSWindowOrderingMode::Above
+            },
+            anchor.windowNumber(),
+        );
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindow, SetWindowPos, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+            SWP_NOSIZE,
+        };
+        let _ = main;
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as _;
+        let anchor = anchor.hwnd().map_err(|error| error.to_string())?.0 as _;
+        // SetWindowPos inserts BELOW its HWND anchor. To go above a lower sibling/the document,
+        // use its current predecessor, keeping the group's position below foreign windows/dialogs.
+        // SAFETY: live top-level HWNDs, queried/reordered on the main thread without activation.
+        let insert_after = if below {
+            anchor
+        } else {
+            unsafe { GetWindow(anchor, GW_HWNDPREV) }
+        };
+        if insert_after.is_null() {
+            // A null insert-after means HWND_TOP, not "no sibling". Refuse that global raise. An
+            // owned utility normally already precedes its owner, even while hidden; retain the
+            // obligation if that relationship is temporarily unavailable rather than moving apps.
+            return Err(
+                "ChemDraft utility restore has no window above its anchor; retrying.".into(),
+            );
+        }
+        if insert_after != hwnd
+            && unsafe {
+                SetWindowPos(
+                    hwnd,
+                    insert_after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
+                )
+            } == 0
+        {
+            return Err(format!(
+                "Could not restore ChemDraft utility stacking order: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         // All utilities, including explicitly requested analysis panels, are BUILT focused(false).
         // Tao retains MARKER_DONT_FOCUS for their lifetime, so set_visible uses SW_SHOWNOACTIVATE
-        // even after a panel has received focus explicitly. Going through Tauri also updates Tao's
-        // VISIBLE flag, so subsequent hide/show calls still work. Do not build panels focused(true).
+        // and keeps the z-order we just set. Going through Tauri also updates Tao's VISIBLE flag.
+        window.show().map_err(|error| error.to_string())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (main, anchor, below);
         window.show().map_err(|error| error.to_string())
     }
 }
@@ -1608,10 +2116,16 @@ fn quit_in_progress() -> bool {
 /// build ran in turn. The flag is read after the lock, so a request queued behind a build in
 /// progress is refused too.
 fn lock_window_creation() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    lock_window_creation_with(&QUIT)
+}
+
+fn lock_window_creation_with(
+    flow: &QuitFlow,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
     let guard = WINDOW_CREATION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if quit_in_progress() {
+    if flow.requested.load(Ordering::SeqCst) || flow.quitting.load(Ordering::SeqCst) {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     Ok(guard)
@@ -2008,6 +2522,12 @@ fn is_plugin_panel_window_label(label: &str) -> bool {
         && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
 }
 
+/// Normal document parenting policy, shared by plugin-panel creation and suspended restoration.
+/// Palettes/popovers stay unparented on macOS; their Windows ownership is set separately.
+fn utility_window_has_document_parent(label: &str) -> bool {
+    is_plugin_panel_window_label(label)
+}
+
 #[cfg(test)]
 mod plugin_panel_label_tests {
     use super::{
@@ -2019,8 +2539,8 @@ mod plugin_panel_label_tests {
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
-        state.lock().unwrap().begin([]);
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
+        state.lock().unwrap().begin([], None);
         let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
             "panelId": "panel.test", "title": "Analyze", "focus": true
         }))
@@ -2065,7 +2585,7 @@ mod plugin_panel_label_tests {
     fn quit_drops_new_and_previously_deferred_panel_requests() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
         let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
             "panelId": "panel.test", "title": "Analyze"
         }))
@@ -2077,7 +2597,7 @@ mod plugin_panel_label_tests {
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || false, |_| panic!("quit request was queued"))
             .unwrap();
-        state.lock().unwrap().begin([]);
+        state.lock().unwrap().begin([], None);
         dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || true, |_| panic!("quitting")).unwrap();
@@ -2263,7 +2783,7 @@ async fn open_plugin_panel_window(
         &UTILITY_SUSPENSION,
         request,
         quit_in_progress(),
-        |request| build_or_show_plugin_panel(&app, request),
+        |request| build_or_show_plugin_panel(&app, request, false),
     )
 }
 
@@ -2304,8 +2824,17 @@ fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
     {
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
+    {
+        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+            return Ok(());
+        };
+        if !run_on_main_thread_blocking(&main, foreground_belongs_to_app)? {
+            return Ok(());
+        }
+    }
     resume_deferred_plugin_panels(&UTILITY_SUSPENSION, quit_in_progress, |request| {
-        build_or_show_plugin_panel(app, request)
+        build_or_show_plugin_panel(app, request, true)
     })
 }
 
@@ -2361,13 +2890,20 @@ fn resume_deferred_plugin_panels(
 fn build_or_show_plugin_panel<R: Runtime>(
     app: &tauri::AppHandle<R>,
     request: OpenPluginPanelRequest,
+    restoring: bool,
 ) -> Result<(), String> {
     if quit_in_progress() {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     let label = plugin_panel_window_label(&request.panel_id);
-    let presentation = request.presentation(false);
+    let presentation = request.presentation(restoring);
     if let Some(window) = app.get_webview_window(&label) {
+        if restoring {
+            let target = window.clone();
+            return run_on_main_thread_blocking(&window, move || {
+                restore_utility_in_document_group(&target)
+            })?;
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -2399,16 +2935,27 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .visible(presentation.visible_on_build)
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping panels need a visible edge, matching the palette popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true);
-    if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        builder = builder.parent(&main).map_err(|error| error.to_string())?;
+    // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
+    // until the main-thread restore checks activation and attaches it relative to the document.
+    if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
+        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            builder = builder.parent(&main).map_err(|error| error.to_string())?;
+        }
     }
     if let Some(position) = position {
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
 
+    if restoring {
+        let target = window.clone();
+        return run_on_main_thread_blocking(&window, move || {
+            restore_utility_in_document_group(&target)
+        })?;
+    }
     configure_analysis_window(&window, presentation.focus_after_show)?;
     Ok(())
 }
@@ -2581,6 +3128,22 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
         return Err("Could not access native ChemDraft analysis window.".to_string());
     };
+    configure_analysis_window_traits(window, ns_window)?;
+    if focus {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    // Explicit panel opens keep their existing reveal behavior; suspension restores use only
+    // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
+    ns_window.orderFront(None);
+    attach_to_main_window(window.app_handle(), ns_window);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_analysis_window_traits<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    ns_window: &NSWindow,
+) -> Result<(), String> {
     // Normal level + a native parent keeps the window with its document without making it globally
     // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
     ns_window.setLevel(NSNormalWindowLevel);
@@ -2589,14 +3152,7 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     ns_window.setIgnoresMouseEvents(false);
     window
         .set_focusable(true)
-        .map_err(|error| error.to_string())?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
-    // orderFront shows the window without making it key, so this is also the unfocused show.
-    ns_window.orderFront(None);
-    attach_to_main_window(window.app_handle(), ns_window);
-    Ok(())
+        .map_err(|error| error.to_string())
 }
 
 /// Makes `child` a child window of the main document window again, if it is not one already.
@@ -5537,7 +6093,8 @@ fn ensure_toolset_window<R: Runtime>(
     .focusable(toolset_window_focusable())
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping palettes need a visible edge, matching the popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
@@ -6809,17 +7366,66 @@ mod tests {
     const NEVER: Duration = Duration::from_secs(3600);
 
     #[test]
-    fn only_an_acknowledged_prompt_pauses_the_grace_and_repeated_mac_quit() {
-        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
+    fn visible_prompt_pauses_grace_without_blocking_save_as_or_utility_suspension() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
         let host = StuckAppHost::new(true);
-        assert!(!acknowledge_quit_prompt(flow));
-        request_quit_with(flow, &host, true);
-        assert!(acknowledge_quit_prompt(flow));
-        request_quit_with(flow, &host, true);
-        thread::sleep(Duration::from_millis(160));
+        assert!(!acknowledge_quit_prompt(flow, 1, true));
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!acknowledge_quit_prompt(flow, id, false));
+        assert!(lock_window_creation_with(flow).is_ok());
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(prompt_waits_for_user(flow));
+        assert!(request_prompted_quit_with(flow, &host).is_none());
+        assert!(lock_window_creation_with(flow).is_ok());
+        thread::sleep(Duration::from_millis(600));
         assert_eq!(host.calls(), ["ask to flush"]);
         assert!(!flow.quitting.load(Ordering::SeqCst));
-        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert!(cancel_quit_with(flow, id));
+        assert!(!prompt_waits_for_user(flow));
+        assert!(lock_window_creation_with(flow).is_ok());
+    }
+
+    #[test]
+    fn cancel_then_new_quit_ignores_old_cancel_ack_and_timer() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let first = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, first, true));
+        assert!(cancel_quit_with(flow, first));
+        // A lost cancellation reply may be retried, but must never affect a newer request.
+        assert!(cancel_quit_with(flow, first));
+        let next = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!cancel_quit_with(flow, first));
+        assert!(!acknowledge_quit_prompt(flow, first, true));
+        assert!(acknowledge_quit_prompt(flow, next, true));
+        thread::sleep(Duration::from_millis(600));
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stalled_flush_after_save_or_discard_is_bounded_and_arms_one_watchdog() {
+        for _choice in ["Save", "Discard"] {
+            let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+            let host = StuckAppHost::new(true);
+            let id = request_prompted_quit_with(flow, &host).unwrap();
+            assert!(acknowledge_quit_prompt(flow, id, true));
+            assert!(resume_prompted_quit_with(flow, &host, id));
+            assert!(!resume_prompted_quit_with(flow, &host, id));
+            assert!(lock_window_creation_with(flow).is_err());
+            assert_eq!(
+                host.wait_for_calls(3),
+                ["ask to flush", "exit", "force exit"]
+            );
+            assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn unanswered_opt_in_window_still_quits() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_prompted_quit_with(flow, &host);
         assert_eq!(
             host.wait_for_calls(3),
             ["ask to flush", "exit", "force exit"]
@@ -6827,35 +7433,49 @@ mod tests {
     }
 
     #[test]
-    fn cancel_keeps_the_app_open_and_a_new_unanswered_request_is_bounded() {
-        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
-        assert!(acknowledge_quit_prompt(flow));
-        cancel_quit_with(flow);
-        thread::sleep(Duration::from_millis(160));
-        assert_eq!(host.calls(), ["ask to flush"]);
-        assert!(!flow.requested.load(Ordering::SeqCst));
-        assert!(!flow.quitting.load(Ordering::SeqCst));
-        request_quit_with(flow, &host, false);
-        assert_eq!(
-            host.wait_for_calls(4),
-            ["ask to flush", "ask to flush", "exit", "force exit"]
-        );
-        assert!(!acknowledge_quit_prompt(flow));
+    fn quit_prompt_commands_and_capabilities_are_document_only() {
+        assert!(authorize_quit_window("main").is_ok());
+        for label in [
+            "preferences",
+            "toolset-bonds",
+            "spin3d-debugger",
+            "plugin-panel-x",
+        ] {
+            assert!(authorize_quit_window(label).is_err());
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        let default = include_str!("../capabilities/default.json");
+        for permission in [
+            "allow-cancel-quit",
+            "allow-quit-prompt-showing",
+            "allow-prepare-quit-prompt",
+            "allow-resume-quit-after-prompt",
+            "allow-confirm-prompted-quit",
+            "allow-set-quit-prompt-enabled",
+        ] {
+            assert!(!default.contains(permission));
+        }
     }
 
     #[test]
-    fn cancellation_invalidates_the_previous_timer_before_another_request() {
-        let flow = test_quit_flow(Duration::from_millis(80), Duration::from_millis(20));
-        let host = StuckAppHost::new(true);
-        request_quit_with(flow, &host, false);
-        cancel_quit_with(flow);
-        request_quit_with(flow, &host, false);
-        assert!(acknowledge_quit_prompt(flow));
-        thread::sleep(Duration::from_millis(160));
-        assert_eq!(host.calls(), ["ask to flush", "ask to flush"]);
-        assert!(!flow.quitting.load(Ordering::SeqCst));
+    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
+        assert!(should_prompt_appkit_quit(true, false, 0));
+        assert!(should_prompt_appkit_quit(
+            true,
+            false,
+            u32::from_be_bytes(*b"quit")
+        ));
+        assert!(!should_prompt_appkit_quit(false, false, 0));
+        assert!(!should_prompt_appkit_quit(true, true, 0));
+        for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
+            assert!(!should_prompt_appkit_quit(
+                true,
+                false,
+                u32::from_be_bytes(reason)
+            ));
+        }
     }
 
     #[test]
@@ -7240,9 +7860,10 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}",
+            "{}{}{}",
             include_str!("../capabilities/default.json"),
-            include_str!("../capabilities/document-dialogs.json")
+            include_str!("../capabilities/document-dialogs.json"),
+            include_str!("../capabilities/quit-prompt.json")
         );
 
         let handler_start = lib_source
@@ -7287,7 +7908,7 @@ mod tests {
             assert!(
                 capability.contains(&format!("\"{permission}\"")),
                 "command `{command}` is registered but `{permission}` is not granted in \
-                 capabilities/default.json, so every invoke is denied and the JS silently swallows it"
+                 the app's capabilities, so every invoke is denied and the JS silently swallows it"
             );
         }
     }

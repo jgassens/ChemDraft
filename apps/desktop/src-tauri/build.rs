@@ -13,6 +13,7 @@ fn main() {
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "read_plugin_package",
             "open_toolset_window",
             "close_toolset_window",
             "suspend_toolset_windows",
@@ -35,6 +36,11 @@ fn main() {
             "quit_after_flush",
             "quit_prompt_showing",
             "cancel_quit",
+            "set_quit_prompt_enabled",
+            "prepare_quit_prompt",
+            "resume_quit_after_prompt",
+            "confirm_prompted_quit",
+            "request_quit_after_close",
             "close_toolset_popover",
             "set_toolset_window_focusable",
             "route_toolset_command",

@@ -19,6 +19,7 @@ Key architecture notes:
 - `native-art-toolbar-chrome-plan.md`
 - `ocsr-engine.md` — Local structure-recognition engine boundary.
 - `pointer-picking-hardening.md`
+- `plugin-package-reading.md` — Reading a picked plugin ZIP and its checksum natively; threat model.
 - `plugin-runtime.md` — Plugin host, panels, and worker lifecycle.
 - `toolbar-command-map.md` — Custom toolbar asset-to-command mapping.
 - `toolbars-and-toolsets.md`

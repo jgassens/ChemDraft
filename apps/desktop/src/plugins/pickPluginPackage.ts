@@ -5,14 +5,14 @@
  * stays testable without a file dialog, and so the UI can *show* what a package declares before any of
  * it is staged.
  *
- * The `.sha256` sidecar is read when it sits next to the archive, as `plugin:package` writes it. It is
- * **optional and integrity-only** (ADR-0029 §4): its absence is not suspicious and never blocks an
- * install, because every entry is proven against the archive's own CRC-32 regardless. Nothing here
- * establishes authenticity, and nothing here is a trust gate.
+ * Per ADR-0029 section 4, the exact adjacent `<archive>.sha256` is optional: absence is not
+ * suspicious and never blocks an install. Native code reads the chosen archive and that one sibling
+ * without granting the webview sibling access. The checksum is integrity-only, and a present one
+ * must verify. Every entry is proven against the archive's own CRC-32, with or without a sidecar.
  */
 
 import { open } from "../nativeFileDialog";
-import { readFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 
 import { inspectPluginPackage, type PluginPackageInspection } from "./installPluginPackage";
 
@@ -41,9 +41,18 @@ export async function pickPluginPackage(options: { hostApiVersion?: string } = {
     return undefined;
   }
 
-  const zipBytes = await readFile(selection);
-  const sidecarPath = `${selection}.sha256`;
-  const sidecar = (await exists(sidecarPath)) ? await readTextFile(sidecarPath) : undefined;
+  const response = await invoke<ArrayBuffer>("read_plugin_package", { zipPath: selection });
+  // Native framing: u32 little-endian UTF-8 checksum length (zero = absent), checksum, ZIP.
+  if (!(response instanceof ArrayBuffer) || response.byteLength < 4) {
+    throw new Error("Plugin package binary response is missing its checksum header.");
+  }
+  const checksumLength = new DataView(response).getUint32(0, true);
+  if (checksumLength > 4096 || checksumLength > response.byteLength - 4) {
+    throw new Error("Plugin package binary response has an invalid checksum length.");
+  }
+  const sidecar = checksumLength === 0 ? undefined : new TextDecoder("utf-8", { fatal: true })
+    .decode(new Uint8Array(response, 4, checksumLength));
+  const zipBytes = new Uint8Array(response, 4 + checksumLength);
 
   const inspection = await inspectPluginPackage({
     zipBytes,
