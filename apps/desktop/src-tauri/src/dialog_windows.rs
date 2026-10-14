@@ -14,6 +14,20 @@ const MAX_BYTES: usize = 16 * 1024;
 const MAX_CHANNEL_BYTES: usize = 4096;
 const OVERSIZED_ERROR: &str = "Dialog operation failed; error details exceeded the delivery limit.";
 
+struct DialogKindSpec {
+    maximizable: bool,
+    resizable: bool,
+}
+fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
+    match kind {
+        "pageSize" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: false,
+        }),
+        _ => Err("Unknown dialog kind".into()),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Message {
@@ -339,6 +353,7 @@ pub(crate) async fn dialog_open(
         }
         return Ok(registration);
     }
+    let spec = kind_spec(&message.dialog_kind)?;
     let snapshot: Snapshot = serde_json::from_value(message.data).map_err(|e| e.to_string())?;
     let builder = WebviewWindowBuilder::new(
         &app,
@@ -354,7 +369,8 @@ pub(crate) async fn dialog_open(
     .skip_taskbar(true)
     .shadow(true)
     .decorations(true)
-    .resizable(true)
+    .maximizable(spec.maximizable)
+    .resizable(spec.resizable)
     .minimizable(false);
     // On Windows .parent is a top-level OWNER, never a child control. AppKit attaches at reveal.
     #[cfg(windows)]
@@ -804,12 +820,20 @@ pub(crate) fn mark_transient(label: &str) {
 fn should_persist(
     visible: bool,
     minimized: bool,
+    expanded: (bool, bool), // (maximized, fullscreen)
     quitting: bool,
     suspended: bool,
     ready: bool,
     transient: bool,
 ) -> bool {
-    visible && !minimized && !quitting && !suspended && ready && !transient
+    visible
+        && !minimized
+        && !expanded.0
+        && !expanded.1
+        && !quitting
+        && !suspended
+        && ready
+        && !transient
 }
 fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     let app = window.app_handle();
@@ -829,6 +853,10 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
                 .is_none_or(|owner| {
                     owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
                 }),
+        (
+            window.is_maximized().unwrap_or(true),
+            window.is_fullscreen().unwrap_or(true),
+        ),
         super::quit_in_progress(),
         super::utility_windows_suspended(),
         session.ready,
@@ -1410,7 +1438,15 @@ mod tests {
     }
     #[test]
     fn persistence_excludes_hidden_minimized_teardown_suspension_and_restore_moves() {
-        assert!(should_persist(true, false, false, false, true, false));
+        assert!(should_persist(
+            true,
+            false,
+            (false, false),
+            false,
+            false,
+            true,
+            false
+        ));
         for flags in [
             (false, false, false, false, true, false),
             (true, true, false, false, true, false),
@@ -1420,7 +1456,28 @@ mod tests {
             (true, false, false, false, true, true),
         ] {
             assert!(!should_persist(
-                flags.0, flags.1, flags.2, flags.3, flags.4, flags.5
+                flags.0,
+                flags.1,
+                (false, false),
+                flags.2,
+                flags.3,
+                flags.4,
+                flags.5
+            ));
+        }
+    }
+    #[test]
+    fn page_size_window_is_not_maximizable_or_resizable() {
+        let spec = kind_spec("pageSize").unwrap();
+        assert!(!spec.maximizable);
+        assert!(!spec.resizable);
+        assert!(kind_spec("unknown").is_err());
+    }
+    #[test]
+    fn persistence_excludes_maximized_and_fullscreen_frames() {
+        for expanded in [(true, false), (false, true), (true, true)] {
+            assert!(!should_persist(
+                true, false, expanded, false, false, true, false
             ));
         }
     }

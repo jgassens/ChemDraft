@@ -63,7 +63,9 @@ retried automatically. While a terminal action is pending, another form action i
 
 Construction is async on a worker, serialized through `lock_window_creation()`, and refused after
 quit begins. Builds are hidden, `focused(false)`, focusable, decorated, shadowed, and skip the
-taskbar. Dialogs are non-minimizable on both platforms; reopening also unminimizes before showing
+taskbar. The host's per-kind spec controls maximizable and resizable properties; Custom Page Size
+is neither maximizable nor resizable on either platform. Dialogs are non-minimizable on both
+platforms; reopening also unminimizes before showing
 and focusing as a fallback, preserving the draft and position. Windows uses a top-level document
 owner. macOS attaches a normal-level, focusable child
 only at reveal and after utility restoration, never a sheet or nonactivating panel. No menu is
@@ -80,8 +82,8 @@ then sets client size at its DPI, measures the resulting outer frame and clamps 
 This avoids Windows WM_DPICHANGED scaling an already destination-sized client twice.
 `dialog-positions.json` remembers logical
 position, monitor identity and normalized work-area offsets per kind. Removed monitors recover
-onto the owner's monitor. Genuine moves are debounced; hidden/minimized/initial/restoration/quit
-moves are excluded. One bounded-notification worker debounces movement bursts, takes pending
+onto the owner's monitor. Genuine moves are debounced; hidden, minimized, maximized, fullscreen,
+initial, restoration and quit moves are excluded. One bounded-notification worker debounces movement bursts, takes pending
 positions under the registry lock, then reads/writes outside that lock. Final close flushes share
 an IO mutex with the worker so an older worker snapshot cannot overwrite the final position.
 Warm snapshot replay does not replace a draft or recentre a moved window.
