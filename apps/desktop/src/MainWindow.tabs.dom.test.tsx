@@ -871,6 +871,37 @@ describe("documents in one window", () => {
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
 
+  it.each(["MacIntel", "Win32"])("Export and its nested picker share utility suspension on %s", async (platform) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    native.suspendUtilities = true;
+    await remount();
+    native.toolsetWindows.set("visible-toolbar", true);
+    native.toolsetWindows.set("hidden-toolbar", false);
+    native.toolsetWindows.set("plugin-panel", true);
+    await command("export.open");
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Export"]')!;
+    expect(dialog).not.toBeNull();
+    expect(native.suspensionDepth).toBe(1);
+    expect(native.visibilityChanges).toEqual(["hide"]);
+    expect([...native.toolsetWindows.values()]).toEqual([false, false, false]);
+
+    let finishPanel!: (path: string | null) => void;
+    native.savePicker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
+    const choose = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Choose...")!;
+    await act(async () => choose.click());
+    await vi.waitFor(() => expect(finishPanel).toBeDefined());
+    expect(native.suspensionDepth).toBe(2);
+    await act(async () => finishPanel(null));
+    expect(native.suspensionDepth).toBe(1);
+    expect(native.visibilityChanges).toEqual(["hide"]);
+    await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close export"]')!.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Export"]')).toBeNull();
+    expect(native.suspensionDepth).toBe(0);
+    expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    expect([...native.toolsetWindows.values()]).toEqual([true, false, true]);
+  });
+
   it.each(["document.open", "document.save", "document.saveAs"])(
     "%s suspends the standalone document file panel until cancellation", async (commandId) => {
       native.suspendUtilities = true;

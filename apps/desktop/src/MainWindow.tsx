@@ -1,4 +1,5 @@
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
@@ -1892,6 +1893,7 @@ export function MainWindow({
   initialActiveToolCommandId,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useInAppModalUtilitySuspension();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
