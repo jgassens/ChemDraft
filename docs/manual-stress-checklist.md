@@ -274,3 +274,22 @@ and Art toolbars open, including at 125%/150% display scale:
   informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
 - Windows document-window close still flushes the session and quits (without a new dirty-tab
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
+- On both platforms, leave “Ask to save unsaved changes before quitting” off and verify the
+  existing quit/session-recovery flow. Turn it on: clean tabs quit without a prompt, and a dirty
+  foreground or background tab opens Save / Discard / Cancel with floating palettes hidden.
+  Cancel and Escape keep the app open; Save writes all dirty tabs before quitting. Cancel a save
+  picker or fail a write: the app stays open. Discard quits with existing session recovery.
+  Leave the prompt open beyond three seconds, then cancel and quit again. A document window
+  that never answers the quit event must still quit after the native grace period.
+- Keep dirty tabs A and B open, request closing B, then Quit before answering its close prompt:
+  Save must write both documents to their own paths. Repeat with untitled tabs and cancel each
+  Save As picker. Delay a Cancel reply and request Quit again: the newer prompt must remain.
+  Stall the session flush after Save and after Discard: quit must still use the bounded grace
+  and Windows exit watchdog. Toolbar/Preferences/debugger calls to prompt-control commands
+  must be refused. On macOS, hide the dirty document with the red button and use app-menu or
+  Dock Quit: the window must reappear with a visible prompt. Repeat minimized, with the
+  preference off, and during system logout/restart/shutdown (which must not wait for a prompt).
+  If an OS tab-close alert is already visible, answer it first; only afterward should the quit
+  modal appear. While cancelling or saving, native Undo and queued OS opens must not mutate
+  the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
+  must be raised again. Cancel must balance suspension even when its acquisition is still pending.

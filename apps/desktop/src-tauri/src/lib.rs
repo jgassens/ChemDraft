@@ -1,6 +1,8 @@
 mod export;
 mod fonts;
 mod installed_plugins;
+#[cfg(target_os = "macos")]
+mod macos_quit;
 mod ocsr_engine;
 mod opsin;
 mod plugin_package;
@@ -123,17 +125,35 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 
 /// The app's quit flow. Tests run their own `QuitFlow` with a fake host and short timings.
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
+const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
 
-/// A quit's state and timings. Nothing ever clears `requested` or `quitting`: no quit is
-/// cancelled once asked for. The app never prompts to save, a relaunch is a new process, and the
-/// Windows updater's `install()` ends the process itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuitPromptPhase {
+    Idle,
+    AwaitingWindow,
+    Showing,
+    Flushing,
+}
+
+// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
+// system termination: never block logout/shutdown/restart with a save prompt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
+    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+}
+
+/// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
+/// once `quitting` is set, the exit watchdog remains unchanged.
 struct QuitFlow {
-    /// Set once a quit has been requested, so repeated close clicks don't re-request it.
+    /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
     /// Set once the quit is decided (`quit_now`); the app's is `APP_QUITTING`.
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
+    /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
+    prompt: Mutex<(u64, QuitPromptPhase)>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -146,6 +166,7 @@ impl QuitFlow {
     ) -> Self {
         Self {
             requested: AtomicBool::new(false),
+            prompt: Mutex::new((0, QuitPromptPhase::Idle)),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -193,6 +214,10 @@ fn forced_exit_message(reason: QuitReason, waited: Duration) -> String {
 trait QuitHost: Clone + Send + 'static {
     /// Asks the document window to flush its session; false when there is none to ask.
     fn ask_document_to_flush(&self) -> bool;
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        let _ = request_id;
+        self.ask_document_to_flush()
+    }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Ends the process now, from the watchdog thread.
@@ -204,6 +229,13 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
         self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
+                .is_ok()
+    }
+
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
+            && self
+                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
                 .is_ok()
     }
 
@@ -251,16 +283,38 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 }
 
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
-/// webview and the app never prompts to save, so exiting straight away dropped anything edited in
+/// webview, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
+        // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
+        if prompt_waits_for_user(&QUIT) {
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                let reveal = window.clone();
+                let _ = window.run_on_main_thread(move || {
+                    let _ = reveal.unminimize();
+                    let _ = reveal.show();
+                    let _ = reveal.set_focus();
+                });
+            }
+        }
+        request_prompted_quit_with(&QUIT, app);
+    } else {
+        request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    }
 }
 
+fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
+    matches!(
+        flow.prompt.lock().unwrap().1,
+        QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+    )
+}
+
+// The preference-off path is the original #99 flow.
 fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
     if flow.requested.swap(true, Ordering::SeqCst) {
-        // A second Cmd+Q bypasses the wait. Keep repeated Windows closes idempotent.
         if force_repeated_quit {
             quit_now_with(flow, host, QuitReason::RepeatedRequest);
         }
@@ -275,6 +329,63 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
         thread::sleep(flow.flush_grace);
         quit_now_with(flow, &host, QuitReason::GraceExpired);
     });
+}
+
+fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.1 != QuitPromptPhase::Idle
+        || flow.requested.load(Ordering::SeqCst)
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return None;
+    }
+    prompt.0 += 1;
+    prompt.1 = QuitPromptPhase::AwaitingWindow;
+    let request_id = prompt.0;
+    drop(prompt);
+    if !host.ask_document_to_prompt(request_id) {
+        quit_now_with(flow, host, QuitReason::NoDocument);
+    } else {
+        arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
+    }
+    Some(request_id)
+}
+
+fn arm_prompt_grace<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+    phase: QuitPromptPhase,
+) {
+    let host = host.clone();
+    thread::spawn(move || {
+        thread::sleep(flow.flush_grace);
+        let prompt = flow.prompt.lock().unwrap();
+        if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
+            quit_now_with(flow, &host, QuitReason::GraceExpired);
+        }
+    });
+}
+
+fn resume_prompted_quit_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Flushing;
+    flow.requested.store(true, Ordering::SeqCst);
+    arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
+    true
 }
 
 /// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
@@ -303,6 +414,135 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
 }
+
+fn authorize_quit_window(label: &str) -> Result<(), String> {
+    if label == MAIN_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("Only the document window can control quit prompts.".into())
+    }
+}
+
+fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if !visible
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Showing;
+    true
+}
+
+fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if request_id == 0
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::Idle | QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Idle;
+    true
+}
+
+#[tauri::command]
+async fn set_quit_prompt_enabled(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    ASK_TO_SAVE_ON_QUIT.store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn prepare_quit_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+        || QUIT.quitting.load(Ordering::SeqCst)
+    {
+        return Ok(false);
+    }
+    let reveal = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+            || QUIT.quitting.load(Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        // Awaiting the prompt is not shutdown: file panels and utility suspension are permitted.
+        reveal.unminimize().map_err(|e| e.to_string())?;
+        reveal.show().map_err(|e| e.to_string())?;
+        reveal.set_focus().map_err(|e| e.to_string())?;
+        let _ = app;
+        Ok(true)
+    })?
+}
+
+#[tauri::command]
+async fn quit_prompt_showing(
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
+}
+
+#[tauri::command]
+async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(cancel_quit_with(&QUIT, request_id))
+}
+
+#[tauri::command]
+async fn request_quit_after_close(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    request_quit(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_quit_after_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
+}
+
+#[tauri::command]
+async fn confirm_prompted_quit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    let prompt = QUIT.prompt.lock().unwrap();
+    if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
+        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(())
+}
+
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
@@ -706,8 +946,10 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if let Err(error) = window.hide() {
-                            eprintln!("Could not hide ChemDraft main window: {error}");
+                        if !prompt_waits_for_user(&QUIT) {
+                            if let Err(error) = window.hide() {
+                                eprintln!("Could not hide ChemDraft main window: {error}");
+                            }
                         }
                     }
                     // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
@@ -856,6 +1098,10 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             problem_reports::install_panic_hook(app);
+            #[cfg(target_os = "macos")]
+            if let Err(error) = macos_quit::install(app) {
+                eprintln!("Could not install ChemDraft AppKit quit handler: {error}");
+            }
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
@@ -937,6 +1183,13 @@ pub fn run() {
             hide_toolset_tooltip_window,
             set_current_window_global_position,
             quit_after_flush,
+            set_quit_prompt_enabled,
+            prepare_quit_prompt,
+            resume_quit_after_prompt,
+            confirm_prompted_quit,
+            request_quit_after_close,
+            quit_prompt_showing,
+            cancel_quit,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
@@ -992,12 +1245,9 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // tao 0.35.3's AppDelegate has applicationWillTerminate: but no
-                // applicationShouldTerminate:. AppKit termination (Dock Quit, logout/restart,
-                // AppleScript quit, Sparkle) therefore delivers only Exit via AppState::exit ->
-                // LoopDestroyed in tauri-runtime-wry 2.11.2. It is too late to await a webview
-                // flush here; retain the existing idempotent cleanup. Menu Quit uses our custom
-                // item instead of muda's terminate: selector, so it avoids this bypass.
+                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
+                // only when the preference is enabled. System termination and preference-off
+                // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
@@ -1866,10 +2116,16 @@ fn quit_in_progress() -> bool {
 /// build ran in turn. The flag is read after the lock, so a request queued behind a build in
 /// progress is refused too.
 fn lock_window_creation() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    lock_window_creation_with(&QUIT)
+}
+
+fn lock_window_creation_with(
+    flow: &QuitFlow,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
     let guard = WINDOW_CREATION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if quit_in_progress() {
+    if flow.requested.load(Ordering::SeqCst) || flow.quitting.load(Ordering::SeqCst) {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     Ok(guard)
@@ -7110,6 +7366,119 @@ mod tests {
     const NEVER: Duration = Duration::from_secs(3600);
 
     #[test]
+    fn visible_prompt_pauses_grace_without_blocking_save_as_or_utility_suspension() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        assert!(!acknowledge_quit_prompt(flow, 1, true));
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!acknowledge_quit_prompt(flow, id, false));
+        assert!(lock_window_creation_with(flow).is_ok());
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(prompt_waits_for_user(flow));
+        assert!(request_prompted_quit_with(flow, &host).is_none());
+        assert!(lock_window_creation_with(flow).is_ok());
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        assert!(cancel_quit_with(flow, id));
+        assert!(!prompt_waits_for_user(flow));
+        assert!(lock_window_creation_with(flow).is_ok());
+    }
+
+    #[test]
+    fn cancel_then_new_quit_ignores_old_cancel_ack_and_timer() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let first = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, first, true));
+        assert!(cancel_quit_with(flow, first));
+        // A lost cancellation reply may be retried, but must never affect a newer request.
+        assert!(cancel_quit_with(flow, first));
+        let next = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!cancel_quit_with(flow, first));
+        assert!(!acknowledge_quit_prompt(flow, first, true));
+        assert!(acknowledge_quit_prompt(flow, next, true));
+        thread::sleep(Duration::from_millis(600));
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stalled_flush_after_save_or_discard_is_bounded_and_arms_one_watchdog() {
+        for _choice in ["Save", "Discard"] {
+            let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+            let host = StuckAppHost::new(true);
+            let id = request_prompted_quit_with(flow, &host).unwrap();
+            assert!(acknowledge_quit_prompt(flow, id, true));
+            assert!(resume_prompted_quit_with(flow, &host, id));
+            assert!(!resume_prompted_quit_with(flow, &host, id));
+            assert!(lock_window_creation_with(flow).is_err());
+            assert_eq!(
+                host.wait_for_calls(3),
+                ["ask to flush", "exit", "force exit"]
+            );
+            assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn unanswered_opt_in_window_still_quits() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_prompted_quit_with(flow, &host);
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn quit_prompt_commands_and_capabilities_are_document_only() {
+        assert!(authorize_quit_window("main").is_ok());
+        for label in [
+            "preferences",
+            "toolset-bonds",
+            "spin3d-debugger",
+            "plugin-panel-x",
+        ] {
+            assert!(authorize_quit_window(label).is_err());
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        let default = include_str!("../capabilities/default.json");
+        for permission in [
+            "allow-cancel-quit",
+            "allow-quit-prompt-showing",
+            "allow-prepare-quit-prompt",
+            "allow-resume-quit-after-prompt",
+            "allow-confirm-prompted-quit",
+            "allow-set-quit-prompt-enabled",
+        ] {
+            assert!(!default.contains(permission));
+        }
+    }
+
+    #[test]
+    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
+        assert!(should_prompt_appkit_quit(true, false, 0));
+        assert!(should_prompt_appkit_quit(
+            true,
+            false,
+            u32::from_be_bytes(*b"quit")
+        ));
+        assert!(!should_prompt_appkit_quit(false, false, 0));
+        assert!(!should_prompt_appkit_quit(true, true, 0));
+        for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
+            assert!(!should_prompt_appkit_quit(
+                true,
+                false,
+                u32::from_be_bytes(reason)
+            ));
+        }
+    }
+
+    #[test]
     fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
@@ -7491,9 +7860,10 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}",
+            "{}{}{}",
             include_str!("../capabilities/default.json"),
-            include_str!("../capabilities/document-dialogs.json")
+            include_str!("../capabilities/document-dialogs.json"),
+            include_str!("../capabilities/quit-prompt.json")
         );
 
         let handler_start = lib_source
@@ -7538,7 +7908,7 @@ mod tests {
             assert!(
                 capability.contains(&format!("\"{permission}\"")),
                 "command `{command}` is registered but `{permission}` is not granted in \
-                 capabilities/default.json, so every invoke is denied and the JS silently swallows it"
+                 the app's capabilities, so every invoke is denied and the JS silently swallows it"
             );
         }
     }

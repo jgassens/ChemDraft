@@ -2595,7 +2595,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
-    expect(mainWindowSource).toContain("createNativeSavePayload(documentForFlush())");
+    expect(mainWindowSource).toContain("createNativeSavePayload(active ? documentForFlush() : savingDocument)");
     expect(mainWindowSource).toContain("createDialogExportResult(documentForFlush(), dialog)");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
