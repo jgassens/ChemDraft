@@ -349,7 +349,12 @@ mod tests {
         for path in [
             Path::new("relative.zip").to_path_buf(),
             fixture.0.join("other.sha256"),
-            fixture.0.join("../other.zip"),
+            // Keep this absolute traversal path non-verbatim; the fixture is canonicalized.
+            PathBuf::from(if cfg!(windows) {
+                r"C:\plugins\..\other.zip"
+            } else {
+                "/plugins/../other.zip"
+            }),
         ] {
             assert!(sibling_checksum_path(&path).is_err());
         }
