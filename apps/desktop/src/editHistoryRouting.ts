@@ -113,6 +113,18 @@ export function performTextFieldHistory(direction: EditHistoryDirection, doc: Do
   return doc.execCommand(direction);
 }
 
+/** Select the focused editor's contents without changing document object selection. */
+export function performFocusedFieldSelectAll(doc: Document): boolean {
+  const field = doc.activeElement;
+  if (!isTextEditingElement(field)) return false;
+  if (field?.tagName.toLowerCase() === "input" || field?.tagName.toLowerCase() === "textarea") {
+    (field as HTMLInputElement | HTMLTextAreaElement).select();
+  } else if (typeof doc.execCommand === "function") {
+    doc.execCommand("selectAll");
+  }
+  return true;
+}
+
 /**
  * Edit ▸ Undo / Redo in a secondary window. Rust sends the routed menu command to the key window, so
  * a palette's color hex box or the customize gallery's search gets its own text undo — the drawing
@@ -127,6 +139,13 @@ export function installSecondaryWindowEditHistory(options: {
   const listener = (event: Event) => {
     const commandId = (event as CustomEvent<{ commandId?: unknown } | undefined>).detail?.commandId;
     if (typeof commandId !== "string") {
+      return;
+    }
+    if (commandId === "edit.selectAll") {
+      if (!performFocusedFieldSelectAll(target.document)) {
+        void Promise.resolve(options.forwardToMain(forceDocumentHistoryCommandId(commandId)))
+          .catch((error: unknown) => console.error("Could not forward Select All to the document window.", error));
+      }
       return;
     }
     const direction = editHistoryDirection(commandId);

@@ -312,6 +312,7 @@ const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
+    "edit.selectAll",
     "clipboard.copyAs.smiles",
     "clipboard.copyAs.inchi",
     "clipboard.copyAs.inchiKey",
@@ -4754,12 +4755,15 @@ fn is_edit_history_command(command_id: &str) -> bool {
 }
 
 /// Which window a routed menu command is delivered to. Everything goes to the main document window,
-/// except Undo / Redo: those follow the key window, as AppKit's predefined items did, so ⌘Z in a
-/// palette's text field undoes that text. The secondary window forwards to the main window itself
+/// except Select All and Undo / Redo, which follow the key window. As with AppKit's
+/// predefined items, ⌘Z in a palette's text field undoes that text. The secondary window forwards
+/// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
 fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
     match focused_label {
-        Some(label) if is_edit_history_command(command_id) => label,
+        Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
+            label
+        }
         _ => MAIN_WINDOW_LABEL,
     }
 }
@@ -5393,6 +5397,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         ],
                     )?,
                     &PredefinedMenuItem::paste(app, None)?,
+                    &MenuItem::with_id(
+                        app,
+                        "edit.selectAll",
+                        "Select All",
+                        true,
+                        Some("CmdOrCtrl+A"),
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
                     &MenuItem::with_id(
@@ -7751,10 +7762,9 @@ mod tests {
         expect_false(is_edit_history_command("edit.selectAll"));
     }
 
-    /// ⌘Z in a palette's text field must undo that text, not the drawing: Undo / Redo follow the key
-    /// window, while every other routed command still goes to the document window.
+    /// Text editing actions follow the key window; other routed commands target the document.
     #[test]
-    fn undo_redo_follow_the_key_window_and_other_commands_go_to_main() {
+    fn text_edit_commands_follow_the_key_window_and_other_commands_go_to_main() {
         assert_eq!(
             menu_command_target_label("edit.undo", Some("toolset-core-main")),
             "toolset-core-main"
@@ -7773,7 +7783,7 @@ mod tests {
         );
         assert_eq!(
             menu_command_target_label("edit.selectAll", Some("toolset-core-main")),
-            MAIN_WINDOW_LABEL
+            "toolset-core-main"
         );
         assert_eq!(
             menu_command_target_label("clipboard.copyAs.smiles", Some("preferences")),
@@ -7786,6 +7796,24 @@ mod tests {
         expect_false(is_routed_menu_command("clipboard.cut"));
         expect_false(is_routed_menu_command("clipboard.copy"));
         expect_false(is_routed_menu_command("clipboard.paste"));
+    }
+
+    #[test]
+    fn select_all_targets_the_focused_dialog_without_touching_document_selection() {
+        let dialog = "dialog-main-pageSize-12";
+        assert!(is_routed_menu_command("edit.selectAll"));
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", Some(dialog)),
+            dialog
+        );
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", Some(MAIN_WINDOW_LABEL)),
+            MAIN_WINDOW_LABEL
+        );
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", None),
+            MAIN_WINDOW_LABEL
+        );
     }
 
     #[test]

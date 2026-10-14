@@ -1,8 +1,6 @@
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
-export const DIALOG_OWNER_EVENT = "chemdraft://dialog-owner";
-export const DIALOG_HOST_EVENT = "chemdraft://dialog-host";
 export type DialogKind = "pageSize";
 export type DialogPlatform = "macos" | "windows" | "linux";
 export type PageUnit = "inch" | "mm" | "css-px";
@@ -59,11 +57,8 @@ export function sameDialog(message: DialogEnvelope, snapshot: DialogEnvelope): b
   return message.ownerWindowId === snapshot.ownerWindowId && message.documentTabId === snapshot.documentTabId &&
     message.dialogKind === snapshot.dialogKind && message.sessionId === snapshot.sessionId && message.snapshotRevision === snapshot.snapshotRevision;
 }
-/** Rust stamps the calling native label, rather than trusting a label supplied by the webview. */
-export function validateDialogDelivery(value: unknown, sender: string, snapshot: DialogEnvelope, label: string,
-  platform: DialogPlatform = detectDialogPlatform()): DialogMessage | undefined {
-  // Both platforms have exactly the same transport policy; ownership differs only in native code.
-  if (!["macos", "windows", "linux"].includes(platform)) return undefined;
+/** Envelope consistency check for Rust channel deliveries. Sender fields alone are not authentication. */
+export function validateDialogDelivery(value: unknown, sender: string, snapshot: DialogEnvelope, label: string): DialogMessage | undefined {
   const message = parseDialogMessage(value);
   if (!message || !sameDialog(message, snapshot)) return undefined;
   const expected = message.type === "snapshot" || message.type === "result" || message.type === "closed" ? snapshot.ownerWindowId : label;

@@ -20,11 +20,11 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
-  it("gives draft windows only validated host transport and receive-only event permissions", () => {
+  it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
     expect(host.windows).toEqual(["dialog-main-pageSize-*"]);
     expect(host.permissions.slice().sort()).toEqual([
-      "allow-dialog-request", "allow-dialog-send", "core:event:allow-listen", "core:event:allow-unlisten"
+      "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
     expect(owner.windows).toEqual(["main"]);

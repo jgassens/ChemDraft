@@ -233,6 +233,26 @@ describe("documents in one window", () => {
     await command("page.setSizeCustom"); await command("document.new"); await closeTab(0);
     expect(native.dialogClose).toHaveBeenCalledExactlyOnceWith("opaque", "ownerTabClose");
   });
+  it("replacing a pristine tab settles its Page Size draft before a late Apply can reach the new file", async () => {
+    await command("page.setSizeCustom");
+    await pageSizeMessage("ready", {});
+    const oldSession = native.dialogSnapshot!;
+    await open("Replacement drawing");
+    expect(tabs()).toHaveLength(1);
+    expect(native.dialogClose).toHaveBeenCalledExactlyOnceWith("opaque", "ownerTabClose");
+    const opened = bridge().snapshot();
+    await pageSizeMessage("action", { action: "apply", width: 200, height: 300, unit: "mm" });
+    expect(bridge().snapshot().document).toEqual(opened.document);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    await command("page.setSizeCustom");
+    expect(native.dialogSnapshot!.documentTabId).toBe(oldSession.documentTabId);
+    expect(native.dialogSnapshot!.sessionId).not.toBe(oldSession.sessionId);
+    await act(async () => native.dialogListener!({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1",
+      message: { ...oldSession, type: "closed", data: { reason: "destroy" } } }));
+    await pageSizeMessage("ready", {});
+    await pageSizeMessage("action", { action: "apply", width: 100, height: 150, unit: "mm" });
+    expect(bridge().snapshot().document.pages[0]!.layout.sourceWidth).toBe(100);
+  });
   it("the browser fallback renders the shared Page Size form and applies the existing page logic", async () => {
     native.desktop = false;
     await command("page.setSizeCustom");

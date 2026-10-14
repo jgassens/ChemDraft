@@ -6,11 +6,9 @@ use std::{
     sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{ipc::Channel, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const MAX_BYTES: usize = 16 * 1024;
-const OWNER_EVENT: &str = "chemdraft://dialog-owner";
-const HOST_EVENT: &str = "chemdraft://dialog-host";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -149,12 +147,14 @@ struct Session {
     registration: Registration,
     snapshot: Message,
     ready: bool,
+    owner_channel: Option<Channel<Value>>,
+    host_channel: Option<Channel<Value>>,
+    terminal_request: Option<String>,
     // Request IDs are scoped to a session and bounded; a sender cannot grow this without limit.
     actions: HashMap<String, Message>,
     receipts: HashMap<String, Message>,
     transient_until: Instant,
-    pending_move: Option<(u64, SavedPosition)>,
-    move_revision: u64,
+    pending_move: Option<(Instant, SavedPosition)>,
 }
 #[derive(Default)]
 struct Registry {
@@ -191,6 +191,42 @@ fn authorize(
 }
 fn delivery(session: &Session, sender: &str, message: &Message) -> Value {
     json!({ "senderWindowId": sender, "windowLabel": session.registration.window_label, "message": message })
+}
+fn send_owner(session: &Session, sender: &str, message: &Message) -> Result<(), String> {
+    session
+        .owner_channel
+        .as_ref()
+        .ok_or("Dialog owner channel missing")?
+        .send(delivery(session, sender, message))
+        .map_err(|e| e.to_string())
+}
+fn send_host(session: &Session, message: &Message) -> Result<(), String> {
+    session
+        .host_channel
+        .as_ref()
+        .ok_or("Dialog host channel missing")?
+        .send(delivery(session, super::MAIN_WINDOW_LABEL, message))
+        .map_err(|e| e.to_string())
+}
+/// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
+fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if let Some(previous) = session.actions.get(&message.request_id) {
+        if previous.data != message.data {
+            return Err("A dialog request ID cannot be reused for another action".into());
+        }
+        return Ok(false);
+    }
+    if session.terminal_request.is_some() {
+        return Err("A terminal dialog action is already pending".into());
+    }
+    if session.actions.len() >= 128 {
+        return Err("Dialog action limit exceeded".into());
+    }
+    session.terminal_request = Some(message.request_id.clone());
+    session
+        .actions
+        .insert(message.request_id.clone(), message.clone());
+    Ok(true)
 }
 fn register(
     registry: &mut Registry,
@@ -231,11 +267,13 @@ fn register(
             registration: registration.clone(),
             snapshot: message,
             ready: false,
+            owner_channel: None,
+            host_channel: None,
+            terminal_request: None,
             actions: HashMap::new(),
             receipts: HashMap::new(),
             transient_until: Instant::now() + Duration::from_millis(500),
             pending_move: None,
-            move_revision: 0,
         },
     );
     Ok((registration, true))
@@ -247,6 +285,7 @@ pub(crate) async fn dialog_open(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     message: Message,
+    channel: Channel<Value>,
 ) -> Result<Registration, String> {
     if window.label() != super::MAIN_WINDOW_LABEL
         || app.get_webview_window(super::MAIN_WINDOW_LABEL).is_none()
@@ -262,7 +301,22 @@ pub(crate) async fn dialog_open(
         message.clone(),
         super::quit_in_progress(),
     )?;
+    let ready = {
+        let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let session = registry
+            .sessions
+            .get_mut(&registration.host_id)
+            .ok_or("Unknown dialog host")?;
+        session.owner_channel = Some(channel);
+        session.ready && session.terminal_request.is_none()
+    };
     if !build {
+        if ready {
+            if let Some(target) = app.get_webview_window(&registration.window_label) {
+                super::run_on_main_thread_blocking(&window, move || show_on_main(&target))
+                    .and_then(|result| result)?;
+            }
+        }
         return Ok(registration);
     }
     let snapshot: Snapshot = serde_json::from_value(message.data).map_err(|e| e.to_string())?;
@@ -318,38 +372,30 @@ pub(crate) async fn dialog_open(
 
 #[tauri::command]
 pub(crate) fn dialog_request(
-    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     host_id: String,
     protocol_version: u32,
     request_id: String,
+    channel: Channel<Value>,
 ) -> Result<(), String> {
     if protocol_version != 1 || !token(&request_id) || !token(&host_id) {
         return Err("Invalid dialog bootstrap request".into());
     }
-    let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
     let session = registry
         .sessions
-        .get(&host_id)
+        .get_mut(&host_id)
         .ok_or("Unknown dialog host")?;
     authorize(session, window.label(), false, None)?;
     session.snapshot.validate()?;
-    app.emit_to(
-        window.label(),
-        HOST_EVENT,
-        delivery(session, super::MAIN_WINDOW_LABEL, &session.snapshot),
-    )
-    .map_err(|e| e.to_string())?;
+    // This channel belongs to the actual calling dialog, not to a payload label.
+    session.host_channel = Some(channel);
+    send_host(session, &session.snapshot)?;
     let mut request = session.snapshot.clone();
     request.message_type = "request".into();
     request.request_id = request_id;
     request.data = json!({});
-    app.emit_to(
-        super::MAIN_WINDOW_LABEL,
-        OWNER_EVENT,
-        delivery(session, window.label(), &request),
-    )
-    .map_err(|e| e.to_string())
+    send_owner(session, window.label(), &request)
 }
 
 #[tauri::command]
@@ -364,7 +410,7 @@ pub(crate) async fn dialog_send(
         return Err("Dialog can send only ready or a typed action".into());
     }
     let _creation = super::lock_window_creation()?;
-    let (payload, reveal) = {
+    let reveal = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let session = registry
             .sessions
@@ -377,36 +423,20 @@ pub(crate) async fn dialog_send(
                 return Err("Dialog is not ready".into());
             }
             if let Some(receipt) = session.receipts.get(&message.request_id) {
-                return app
-                    .emit_to(
-                        window.label(),
-                        HOST_EVENT,
-                        delivery(session, super::MAIN_WINDOW_LABEL, receipt),
-                    )
-                    .map_err(|e| e.to_string());
+                return send_host(session, receipt);
             }
-            if let Some(previous) = session.actions.get(&message.request_id) {
-                if previous.data != message.data {
-                    return Err("A dialog request ID cannot be reused for another action".into());
-                }
-                // In-flight duplicates wait for the original owner result, without a second mutation.
+            if !reserve_action(session, &message)? {
                 return Ok(());
             }
-            if session.actions.len() >= 128 {
-                return Err("Dialog action limit exceeded".into());
-            }
-            session
-                .actions
-                .insert(message.request_id.clone(), message.clone());
         }
         if reveal {
             session.ready = true;
         }
-        (delivery(session, window.label(), &message), reveal)
+        // Only this Rust-validated path can write the owner's private channel.
+        send_owner(session, window.label(), &message)?;
+        reveal
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
-    app.emit_to(super::MAIN_WINDOW_LABEL, OWNER_EVENT, payload)
-        .map_err(|e| e.to_string())?;
     if reveal {
         let target = window.clone();
         if let Err(error) =
@@ -423,7 +453,6 @@ pub(crate) async fn dialog_send(
 
 #[tauri::command]
 pub(crate) fn dialog_publish(
-    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     host_id: String,
     message: Message,
@@ -443,13 +472,12 @@ pub(crate) fn dialog_publish(
             return Err("Unknown dialog action receipt".into());
         }
         if let Some(previous) = session.receipts.get(&message.request_id) {
-            return app
-                .emit_to(
-                    &session.registration.window_label,
-                    HOST_EVENT,
-                    delivery(session, window.label(), previous),
-                )
-                .map_err(|e| e.to_string());
+            return send_host(session, previous);
+        }
+        if message.data["status"] == "error"
+            && session.terminal_request.as_ref() == Some(&message.request_id)
+        {
+            session.terminal_request = None;
         }
         session
             .receipts
@@ -457,12 +485,7 @@ pub(crate) fn dialog_publish(
     } else {
         session.snapshot = message.clone();
     }
-    app.emit_to(
-        &session.registration.window_label,
-        HOST_EVENT,
-        delivery(session, window.label(), &message),
-    )
-    .map_err(|e| e.to_string())
+    send_host(session, &message)
 }
 
 #[tauri::command]
@@ -486,7 +509,7 @@ pub(crate) async fn dialog_close(
     close_session(&app, &host_id, &reason);
     Ok(())
 }
-fn notify_closed<R: Runtime>(app: &tauri::AppHandle<R>, session: &Session, reason: &str) {
+fn notify_closed(session: &Session, reason: &str) {
     super::UTILITY_SUSPENSION
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -494,11 +517,7 @@ fn notify_closed<R: Runtime>(app: &tauri::AppHandle<R>, session: &Session, reaso
     let mut closed = session.snapshot.clone();
     closed.message_type = "closed".into();
     closed.data = json!({"reason": reason});
-    let _ = app.emit_to(
-        &session.snapshot.owner_window_id,
-        OWNER_EVENT,
-        delivery(session, super::MAIN_WINDOW_LABEL, &closed),
-    );
+    let _ = send_owner(session, super::MAIN_WINDOW_LABEL, &closed);
 }
 fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &str) {
     let session = REGISTRY
@@ -508,7 +527,7 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
         .remove(host_id);
     if let Some(mut session) = session {
         flush_position(app, &mut session);
-        notify_closed(app, &session, reason);
+        notify_closed(&session, reason);
         if let Some(window) = app.get_webview_window(&session.registration.window_label) {
             let _ = window.destroy();
         }
@@ -518,7 +537,7 @@ pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str)
     let sessions = std::mem::take(&mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).sessions);
     for mut session in sessions.into_values() {
         flush_position(app, &mut session);
-        notify_closed(app, &session, reason);
+        notify_closed(&session, reason);
         if let Some(window) = app.get_webview_window(&session.registration.window_label) {
             let _ = window.destroy();
         }
@@ -530,6 +549,13 @@ fn reveal_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), St
         return Err(super::QUITTING_WINDOW_REFUSAL.into());
     }
     place_window(window)?;
+    show_on_main(window)
+}
+/// Reopening focuses without replacing the draft, resizing, or moving a user-positioned dialog.
+fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    if super::quit_in_progress() {
+        return Err(super::QUITTING_WINDOW_REFUSAL.into());
+    }
     if super::utility_windows_suspended() {
         super::UTILITY_SUSPENSION
             .lock()
@@ -644,7 +670,6 @@ fn position_for(
 }
 fn saved_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
     let folder = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     Ok(folder.join("dialog-positions.json"))
 }
 fn read_positions<R: Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, SavedPosition> {
@@ -697,18 +722,51 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         ),
         size,
     );
-    // Explicit destination scale, rather than set_position(LogicalPosition) using the old monitor.
-    window
-        .set_size(tauri::PhysicalSize::new(
-            (420.0 * destination_scale) as u32,
-            (300.0 * destination_scale) as u32,
-        ))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
-        .map_err(|e| e.to_string())?;
+    let destination = saved
+        .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
+        .unwrap_or(&work);
+    // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
+    // client size at the destination DPI, then clamp using the measured final outer frame.
+    finish_placement(
+        (x, y, destination_scale),
+        destination,
+        |x, y| {
+            window
+                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
+                .map_err(|e| e.to_string())
+        },
+        |width, height| {
+            window
+                .set_size(tauri::PhysicalSize::new(width, height))
+                .map_err(|e| e.to_string())
+        },
+        || {
+            window
+                .outer_size()
+                .map(|s| (s.width, s.height))
+                .map_err(|e| e.to_string())
+        },
+    )?;
     mark_transient(window.label());
     Ok(())
+}
+fn finish_placement(
+    (x, y, scale): (f64, f64, f64),
+    work: &WorkArea,
+    mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
+    mut resize: impl FnMut(u32, u32) -> Result<(), String>,
+    mut measure: impl FnMut() -> Result<(u32, u32), String>,
+) -> Result<(), String> {
+    move_to(x, y)?;
+    resize((420.0 * scale) as u32, (300.0 * scale) as u32)?;
+    let (width, height) = measure()?;
+    let (x, y) = work.clamp(
+        x / scale,
+        y / scale,
+        f64::from(width) / scale,
+        f64::from(height) / scale,
+    );
+    move_to(x * scale, y * scale)
 }
 pub(crate) fn mark_transient(label: &str) {
     if let Some(session) = REGISTRY
@@ -784,36 +842,101 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         offset_y: ((y - m.y) / (m.height - f64::from(size.height) / m.scale).max(1.0))
             .clamp(0.0, 1.0),
     };
-    session.move_revision += 1;
-    let revision = session.move_revision;
-    session.pending_move = Some((revision, saved));
-    let label = window.label().to_string();
-    let app = app.clone();
-    // Debounce IO off the event thread. A native close flushes the last genuine move below.
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
-        let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(s) = registry
-            .sessions
-            .values_mut()
-            .find(|s| s.registration.window_label == label)
-        else {
-            return;
-        };
-        if s.pending_move.as_ref().is_some_and(|(r, _)| *r == revision) {
-            flush_position(&app, s);
-        }
+    session.pending_move = Some((Instant::now(), saved));
+    drop(registry);
+    let path = match saved_path(app) {
+        Ok(path) => path,
+        Err(_) => return,
+    };
+    // One process-wide worker, with at most one pending notification. No thread per Moved event.
+    let _ = POSITION_WORKER.try_send(path);
+}
+
+type PositionWrites = Vec<(String, SavedPosition)>;
+fn take_pending_positions(registry: &mut Registry) -> PositionWrites {
+    let mut moves: Vec<_> = registry
+        .sessions
+        .values_mut()
+        .filter_map(|s| {
+            s.pending_move
+                .take()
+                .map(|(at, saved)| (at, s.snapshot.dialog_kind.clone(), saved))
+        })
+        .collect();
+    // Several tabs can have the same kind open. Persist the most recent genuine move for that
+    // kind, rather than letting HashMap iteration choose which position survives the burst.
+    moves.sort_by_key(|(at, _, _)| *at);
+    moves
+        .into_iter()
+        .map(|(_, kind, saved)| (kind, saved))
+        .collect()
+}
+fn flush_pending_positions(registry: &Mutex<Registry>, write: impl FnOnce(PositionWrites)) {
+    let writes = take_pending_positions(&mut registry.lock().unwrap_or_else(|p| p.into_inner()));
+    write(writes);
+}
+static POSITION_IO: Mutex<()> = Mutex::new(());
+static POSITION_WORKER: LazyLock<std::sync::mpsc::SyncSender<std::path::PathBuf>> =
+    LazyLock::new(|| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            debounce_positions(receiver, Duration::from_millis(200), |path| {
+                // Serialize final close flushes with worker writes. Take the snapshot under REGISTRY,
+                // then release REGISTRY before any file reads or writes.
+                let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+                flush_pending_positions(&REGISTRY, |writes| write_positions(&path, writes));
+            });
+        });
+        sender
     });
+fn debounce_positions(
+    receiver: std::sync::mpsc::Receiver<std::path::PathBuf>,
+    delay: Duration,
+    mut flush: impl FnMut(std::path::PathBuf),
+) {
+    while let Ok(mut path) = receiver.recv() {
+        loop {
+            match receiver.recv_timeout(delay) {
+                Ok(next) => path = next,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    flush(path);
+                    return;
+                }
+            }
+        }
+        flush(path);
+    }
+}
+fn write_positions(path: &std::path::Path, writes: PositionWrites) {
+    if writes.is_empty() {
+        return;
+    }
+    if path
+        .parent()
+        .is_some_and(|parent| std::fs::create_dir_all(parent).is_err())
+    {
+        return;
+    }
+    let mut positions: HashMap<String, SavedPosition> = std::fs::read(path)
+        .ok()
+        .filter(|b| b.len() <= MAX_BYTES)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    positions.extend(writes);
+    if let Ok(bytes) = serde_json::to_vec(&positions) {
+        let _ = std::fs::write(path, bytes);
+    }
 }
 fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
     if let Some((_, saved)) = session.pending_move.take() {
-        let mut positions = read_positions(app);
-        positions.insert(session.snapshot.dialog_kind.clone(), saved);
-        if let (Ok(path), Ok(bytes)) = (saved_path(app), serde_json::to_vec(&positions)) {
-            let _ = std::fs::write(path, bytes);
+        let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+        if let Ok(path) = saved_path(app) {
+            write_positions(&path, vec![(session.snapshot.dialog_kind.clone(), saved)]);
         }
     }
 }
+
 /// Native close/destroy settles even if the renderer crashes or never executes cleanup.
 pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
     if !is_dialog_label(window.label()) {
@@ -832,7 +955,6 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
             if let Some(mut session) = session {
                 flush_position(window.app_handle(), &mut session);
                 notify_closed(
-                    window.app_handle(),
                     &session,
                     if matches!(event, WindowEvent::Destroyed) {
                         "destroy"
@@ -854,6 +976,146 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_action_is_reserved_across_distinct_request_ids() {
+        let mut registry = Registry::default();
+        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let session = registry.sessions.get_mut(&r.host_id).unwrap();
+        let mut action = snapshot();
+        action.message_type = "action".into();
+        action.data = json!({"action":"apply","width":10,"height":15,"unit":"mm"});
+        assert!(reserve_action(session, &action).unwrap());
+        assert!(!reserve_action(session, &action).unwrap());
+        action.request_id = "second".into();
+        assert!(reserve_action(session, &action).is_err());
+        session.terminal_request = None; // An error result releases the reservation.
+        assert!(reserve_action(session, &action).unwrap());
+    }
+    #[test]
+    fn placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        let frame = RefCell::new((420, 330));
+        let work = WorkArea {
+            id: "high-dpi".into(),
+            x: 1000.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+            scale: 2.0,
+        };
+        finish_placement(
+            (3000.0, 1000.0, 2.0),
+            &work,
+            |x, y| {
+                calls.borrow_mut().push(format!("move:{x},{y}"));
+                if calls.borrow().len() == 1 {
+                    // Simulate Windows WM_DPICHANGED rescaling the old client on the first move.
+                    let old = *frame.borrow();
+                    *frame.borrow_mut() = (old.0 * 2, old.1 * 2);
+                }
+                Ok(())
+            },
+            |w, h| {
+                calls.borrow_mut().push(format!("size:{w},{h}"));
+                *frame.borrow_mut() = (w + 32, h + 80);
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("measure".into());
+                Ok(*frame.borrow())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            ["move:3000,1000", "size:840,600", "measure", "move:2728,520"]
+        );
+        assert_eq!(*frame.borrow(), (872, 680));
+    }
+    #[test]
+    fn persistence_worker_coalesces_a_burst_and_writes_after_registry_unlock() {
+        use std::sync::mpsc;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let registry = std::sync::Arc::new(Mutex::new(Registry::default()));
+        let (r, _) = register(&mut registry.lock().unwrap(), snapshot(), false).unwrap();
+        let saved = SavedPosition {
+            monitor: "display".into(),
+            x: 1.0,
+            y: 2.0,
+            offset_x: 0.5,
+            offset_y: 0.5,
+        };
+        let writes = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let worker_registry = registry.clone();
+        let worker_writes = writes.clone();
+        // The same worker loop used in production processes the entire movement burst.
+        let worker = std::thread::spawn(move || {
+            debounce_positions(receiver, Duration::from_secs(5), |_| {
+                flush_pending_positions(&worker_registry, |snapshot| {
+                    assert!(
+                        worker_registry.try_lock().is_ok(),
+                        "file IO must not hold REGISTRY"
+                    );
+                    worker_writes.lock().unwrap().push(snapshot);
+                });
+            })
+        });
+        for revision in 1u32..=1000 {
+            registry
+                .lock()
+                .unwrap()
+                .sessions
+                .get_mut(&r.host_id)
+                .unwrap()
+                .pending_move = Some((
+                Instant::now(),
+                SavedPosition {
+                    x: f64::from(revision),
+                    ..saved.clone()
+                },
+            ));
+            let _ = sender.try_send(std::path::PathBuf::from("positions.json"));
+        }
+        drop(sender);
+        worker.join().unwrap();
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][0].1.x, 1000.0);
+        assert!(registry.lock().unwrap().sessions[&r.host_id]
+            .pending_move
+            .is_none());
+    }
+    #[test]
+    fn a_coalesced_kind_remembers_the_latest_move_across_tabs() {
+        let mut registry = Registry::default();
+        let (first, _) = register(&mut registry, snapshot(), false).unwrap();
+        let mut other = snapshot();
+        other.document_tab_id = "tab-2".into();
+        other.session_id = "session-2".into();
+        let (second, _) = register(&mut registry, other, false).unwrap();
+        let now = Instant::now();
+        let position = SavedPosition {
+            monitor: "display".into(),
+            x: 1.0,
+            y: 2.0,
+            offset_x: 0.5,
+            offset_y: 0.5,
+        };
+        registry
+            .sessions
+            .get_mut(&first.host_id)
+            .unwrap()
+            .pending_move = Some((now + Duration::from_millis(1), position.clone()));
+        registry
+            .sessions
+            .get_mut(&second.host_id)
+            .unwrap()
+            .pending_move = Some((now, SavedPosition { x: 3.0, ..position }));
+        let writes = take_pending_positions(&mut registry);
+        assert_eq!(writes.last().unwrap().1.x, 1.0);
+        assert!(registry.sessions.values().all(|s| s.pending_move.is_none()));
+    }
     #[test]
     fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {
         let dialog = "dialog-main-pageSize-1";

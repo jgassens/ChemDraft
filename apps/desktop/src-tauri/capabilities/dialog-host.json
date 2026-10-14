@@ -4,8 +4,6 @@
   "description": "Draft-only native dialogs: receive owner snapshots and send validated ready/action messages. No generic emit, command routing, filesystem, native dialogs, clipboard, capture, engine, or window creation privileges.",
   "windows": ["dialog-main-pageSize-*"],
   "permissions": [
-    "core:event:allow-listen",
-    "core:event:allow-unlisten",
     "allow-dialog-request",
     "allow-dialog-send"
   ]

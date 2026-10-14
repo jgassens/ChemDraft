@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
-import { DIALOG_HOST_EVENT, DIALOG_OWNER_EVENT, parseDialogMessage, type DialogMessage, type DialogRegistration, type DialogCloseReason } from "./dialogProtocol";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { parseDialogMessage, type DialogMessage, type DialogRegistration, type DialogCloseReason } from "./dialogProtocol";
 
+/** Only the per-invoke IPC channel supplies these deliveries; never subscribe to the event bus. */
 export interface DialogDelivery { senderWindowId: string; windowLabel: string; message: unknown }
 export interface DialogTransport {
   subscribe(handler: (delivery: DialogDelivery) => void): Promise<() => void>;
@@ -9,20 +9,33 @@ export interface DialogTransport {
   publish(hostId: string, message: DialogMessage): Promise<void>;
   close(hostId: string, reason: DialogCloseReason): Promise<void>;
 }
+let ownerHandler: ((delivery: DialogDelivery) => void) | undefined;
 export const nativeDialogTransport: DialogTransport = {
-  subscribe: handler => listenCurrentWindowEvent<DialogDelivery>(DIALOG_OWNER_EVENT, e => handler(e.payload)),
-  open: snapshot => invoke("dialog_open", { message: snapshot }),
+  subscribe: async handler => {
+    ownerHandler = handler;
+    return () => { if (ownerHandler === handler) ownerHandler = undefined; };
+  },
+  open: snapshot => {
+    const handler = ownerHandler;
+    if (!handler) return Promise.reject(new Error("Dialog owner is not subscribed"));
+    const channel = new Channel<DialogDelivery>();
+    channel.onmessage = delivery => { if (ownerHandler === handler) handler(delivery); };
+    return invoke("dialog_open", { message: snapshot, channel });
+  },
   publish: (hostId, message) => invoke("dialog_publish", { hostId, message }),
   close: (hostId, reason) => invoke("dialog_close", { hostId, reason })
 };
-/** Listener is attached before bootstrap, and bootstrap replays the retained owner snapshot. */
+/** Rust authenticates the calling window before retaining this channel or replaying a snapshot. */
 export async function subscribeDialogHost(hostId: string, handler: (message: DialogMessage) => void): Promise<() => void> {
-  const stop = await listenCurrentWindowEvent<DialogDelivery>(DIALOG_HOST_EVENT, e => {
-    const message = parseDialogMessage(e.payload.message);
-    if (message && e.payload.senderWindowId === message.ownerWindowId) handler(message);
-  });
+  let active = true;
+  const channel = new Channel<DialogDelivery>();
+  channel.onmessage = delivery => {
+    const message = parseDialogMessage(delivery.message);
+    if (active && message && delivery.senderWindowId === message.ownerWindowId) handler(message);
+  };
+  const stop = () => { active = false; };
   try {
-    await invoke("dialog_request", { hostId, protocolVersion: 1, requestId: crypto.randomUUID() });
+    await invoke("dialog_request", { hostId, protocolVersion: 1, requestId: crypto.randomUUID(), channel });
     return stop;
   } catch (error) { stop(); throw error; }
 }

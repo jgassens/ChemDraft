@@ -738,6 +738,7 @@ import {
   forceDocumentHistoryCommandId,
   isForcedDocumentHistoryCommandId,
   performTextFieldHistory,
+  performFocusedFieldSelectAll,
   resolveEditHistoryRoute,
   stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
@@ -8207,6 +8208,9 @@ export function MainWindow({
     snapshotDocumentTab();
     if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)) addDocumentTab(displayName);
     const id = activeDocumentTabIdRef.current;
+    // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
+    // synchronously before replacing the history; late actions must never target the opened file.
+    void dialogCoordinatorRef.current?.closeTab(id);
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -10532,6 +10536,7 @@ export function MainWindow({
       // knows about the forwarding wrapper.
       commandId = stripForcedDocumentHistorySuffix(commandId);
     }
+    if (commandId === "edit.selectAll" && !forcedDocumentHistory && performFocusedFieldSelectAll(globalThis.document)) return;
     const historyDirection = editHistoryDirection(commandId);
     if (historyDirection) {
       const history = documentHistoryRef.current;

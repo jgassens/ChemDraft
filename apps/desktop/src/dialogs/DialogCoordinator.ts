@@ -1,4 +1,4 @@
-import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogPlatform, type DialogRegistration, type PageSize } from "./dialogProtocol";
+import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize } from "./dialogProtocol";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 
 interface Session {
@@ -10,6 +10,7 @@ interface Session {
   ready: boolean;
   settledReason?: DialogCloseReason;
   inFlight: Map<string, Promise<void>>;
+  terminalRequestId?: string;
 }
 /** Document-owned authority. A future modal kind can acquire an input lease here; pageSize never does. */
 export class DialogCoordinator {
@@ -20,7 +21,7 @@ export class DialogCoordinator {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
     onError(message: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason): void;
-  }, private options: { readyTimeoutMs?: number; platform?: DialogPlatform } = {}) {}
+  }, private options: { readyTimeoutMs?: number } = {}) {}
 
   private ensureSubscription(): Promise<() => void> {
     return this.subscription ??= this.transport.subscribe(delivery => { void this.receive(delivery).catch(e => this.owner.onError(String(e))); })
@@ -28,10 +29,12 @@ export class DialogCoordinator {
   }
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
-    await this.ensureSubscription(); // Owner subscribes before creation/request/ready can arrive.
-    if (this.stopped) return;
     const existing = this.sessions.get(tabId);
-    if (existing) return; // One opening per originating tab. Never replace its local draft.
+    if (existing) {
+      // Reuse the retained snapshot and native window, preserving its local draft and position.
+      if (existing.registration && !existing.terminalRequestId) await this.transport.open(existing.snapshot);
+      return;
+    }
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: "pageSize", sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data };
     if (!parseDialogMessage(snapshot)) throw new Error("Invalid Custom Page Size snapshot");
@@ -39,6 +42,9 @@ export class DialogCoordinator {
       timer: setTimeout(() => { this.owner.onError("Custom Page Size did not become ready. Open it again to try again."); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
     this.sessions.set(tabId, session);
     try {
+      // Track the opening before the first await so tab close/dispose can cancel it.
+      await this.ensureSubscription();
+      if (session.settled || this.stopped) return;
       session.registration = await this.transport.open(snapshot);
       if (session.settled) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
     } catch (error) {
@@ -53,7 +59,7 @@ export class DialogCoordinator {
     if (!session || session.settled) return;
     // Native callbacks can arrive before the open IPC reply. Rust supplies the registered label.
     const label = session.registration?.windowLabel ?? delivery.windowLabel;
-    const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label, this.options.platform);
+    const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
       if (message.data.reason === "error") this.owner.onError("Custom Page Size could not show its native window. Open it again to try again.");
@@ -71,7 +77,9 @@ export class DialogCoordinator {
       if (!session.settled) await this.transport.publish(session.registration.hostId, previous);
       return;
     }
-    // Reserve before invoking the owner, including when it yields asynchronously.
+    if (session.terminalRequestId) return;
+    // Reserve the entire session before invoking the owner or awaiting the receipt.
+    session.terminalRequestId = message.requestId;
     const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: message.data.action === "apply" ? "applied" : "cancelled" } };
     session.receipts.set(message.requestId, receipt);
     let finished!: () => void;
@@ -79,6 +87,8 @@ export class DialogCoordinator {
     try {
       if (message.data.action === "apply") await this.owner.applyPageSize(message.documentTabId, message.data);
     } catch (error) {
+      session.terminalRequestId = undefined;
+      if (session.settled) return;
       receipt.data = { status: "error", error: String(error).slice(0, 2048) };
       await this.transport.publish(session.registration.hostId, receipt);
       return;
@@ -95,7 +105,7 @@ export class DialogCoordinator {
     session.settled = true;
     session.settledReason = reason;
     clearTimeout(session.timer);
-    this.sessions.delete(session.snapshot.documentTabId);
+    if (this.sessions.get(session.snapshot.documentTabId) === session) this.sessions.delete(session.snapshot.documentTabId);
     this.owner.onSettled?.(session.snapshot.documentTabId, reason);
     if (close && session.registration) {
       try { await this.transport.close(session.registration.hostId, reason); }

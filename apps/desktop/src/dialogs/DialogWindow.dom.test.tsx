@@ -3,19 +3,50 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DialogMessage } from "./dialogProtocol";
+import { installSecondaryWindowEditHistory } from "../editHistoryRouting";
+import { DOM_COMMAND_EVENT } from "../window-manager";
 const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
 vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
 import { DialogWindow } from "./DialogWindow";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
-let root: Root; let container: HTMLDivElement;
+let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.useFakeTimers(); vi.clearAllMocks(); host.send.mockResolvedValue(undefined);
   vi.stubGlobal("requestAnimationFrame", vi.fn(() => { throw new Error("hidden rAF must never be used"); }));
+  stopEditRouting = installSecondaryWindowEditHistory({ forwardToMain: () => {} });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
   await act(async () => host.receive!(snapshot));
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it("blocks same-turn repeated clicks before React commits the busy state", async () => {
+  const apply = container.querySelectorAll<HTMLButtonElement>("button")[1]!;
+  await act(async () => { apply.click(); apply.click(); });
+  expect(host.send).toHaveBeenCalledTimes(2); // ready plus exactly one action
+});
+it("keeps Apply disabled after success until native destruction", async () => {
+  const apply = container.querySelectorAll<HTMLButtonElement>("button")[1]!;
+  await act(async () => apply.click());
+  const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...snapshot, type: "result", requestId: action.requestId, data: { status: "applied" } }));
+  expect(apply.disabled).toBe(true);
+  await act(async () => { apply.click(); });
+  expect(host.send).toHaveBeenCalledTimes(2);
+});
+it("keeps Select All in the focused field for the macOS shortcut and native Edit menu", async () => {
+  vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+  const field = container.querySelector("input")!;
+  const select = vi.spyOn(field, "select");
+  const key = new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true });
+  await act(async () => field.dispatchEvent(key));
+  expect(key.defaultPrevented).toBe(true); expect(select).toHaveBeenCalledTimes(1);
+  await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })));
+  expect(select).toHaveBeenCalledTimes(2); expect(host.send).toHaveBeenCalledTimes(1);
+  field.blur();
+  await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })));
+  expect(select).toHaveBeenCalledTimes(2);
+  vi.restoreAllMocks();
+});
 it("reports ready after form commit, ignores stale snapshots/results, and times out an unacknowledged action without retry", async () => {
   expect(host.send).toHaveBeenCalledWith("opaque", expect.objectContaining({ type: "ready", snapshotRevision: 1 }));
   expect(document.activeElement).toBe(container.querySelector("input"));
