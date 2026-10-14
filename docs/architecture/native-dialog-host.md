@@ -67,11 +67,21 @@ taskbar. The host's per-kind spec controls maximizable and resizable properties;
 is neither maximizable nor resizable on either platform. Dialogs are non-minimizable on both
 platforms; reopening also unminimizes before showing
 and focusing as a fallback, preserving the draft and position. Windows uses a top-level document
-owner. macOS attaches a normal-level, focusable child
+owner. macOS attaches a focusable child at `toolset_utility_window_level()`
 only at reveal and after utility restoration, never a sheet or nonactivating panel. No menu is
 attached. Native close/destroy is authoritative; the document's macOS hide-on-Close hook also
 dismisses dialogs. Quit dismisses registered sessions before asking for the final document flush.
 Late construction after owner close is discarded.
+
+Dialogs share the floating toolbar level on macOS: normal level would always leave them behind
+toolbars regardless of focus. Reveal, retained-window reopen, and becoming key order the dialog
+front at that level. Windows uses relative `SetWindowPos` insertion above the highest visible
+document-owned utility sibling on reveal/reopen/activation, without TOPMOST or always-on-top.
+Toolbar levels and #140 ordering are unchanged. Toolbar flyouts and tooltips retain the utility
+level and their front/sibling raise on reveal, so they remain visible above the invoking toolbar.
+The front-raise path is suppressed throughout utility suspension/restoration; trait configuration
+does not raise. Restoration uses the captured order including dialogs, preserving a dialog above
+a toolbar even if that toolbar needs a later restore retry.
 
 Dialogs participate in `UTILITY_SUSPENSION` alongside panels and toolbars, using the existing #140
 relative stacking restore. A native message/file box hides them and restores only still-live
@@ -166,3 +176,23 @@ two existing ignores, and binary/doc-test targets passed. The Windows menu churn
 this macOS host. The temporary framework link and scratch Cargo target were removed after checks.
 Windows native build/tests and both platforms' hands-on checks remain required.
 Recommended next task: perform those native checks before integration, especially Windows mixed DPI.
+
+## Dialog stacking fix handoff
+
+The owner-observed macOS failure was a level mismatch: normal-level dialogs could never order
+above floating-level toolbars. Dialogs now reuse the toolbar level and raise on reveal, retained
+reopen and key activation. Windows explicitly reorders above visible owned utilities, avoiding
+TOPMOST even when a foreign topmost window precedes the utility group. Ownership, toolbar levels,
+flyout/tooltip reveal behavior and #140 relative restore remain intact. Regression coverage pins
+the level, raise call sites, owned/non-topmost Windows paths and dialog-above-toolbar restore retries.
+
+macOS fmt and all-target clippy (`-D warnings`) passed. The dialog Vitest suite passed 6 files,
+31 tests with `--configLoader native --maxWorkers 2` and dependency symlinks only. Full Rust tests
+passed 299 tests with 2 existing ignores but failed the existing OCSR loopback-bind test because
+the sandbox denied socket creation. Excluding only
+`ocsr_engine::install::tests::system_download_verifies_pinned_bytes_and_rejects_tampering` passed
+the remaining suite and binary/doc targets. Temporary Sparkle links and Cargo output were removed.
+`CURRENT_BUILD_STAMP` is unchanged. Windows native compilation and both platforms' real-window
+checks remain unverified. Before integration, run the standing Custom Page Size checklist: overlap
+the dialog with a toolbar/panel, click it, use the toolbar and its flyout/tooltip, reopen the dialog,
+then open/dismiss a native box and verify the prior stacking order survives.

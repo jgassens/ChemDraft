@@ -279,8 +279,13 @@ and Art toolbars open, including at 125%/150% display scale:
 
 - From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred
   over the document with a movable native title bar, and the title/form name the originating drawing.
-  On Windows verify no separate taskbar entry; on macOS verify a normal focusable document child,
+  On Windows verify no separate taskbar entry; on macOS verify a floating-level focusable document child,
   not a sheet. Confirm no utility-window menu is attached.
+- Drag the dialog over a floating toolbar and plugin panel, then click the dialog: it must come
+  in front. Click the toolbar: it must remain usable, including flyouts and tooltips above it.
+  Reopen the retained dialog: it must come forward. Repeat on macOS and Windows; neither platform
+  should gain global always-on-top behavior. With the dialog in front of a toolbar, open and dismiss
+  a native box: preserve that dialog-above-toolbar order.
 - Leave it open and draw, use shortcuts and floating toolbars, then switch tabs. Apply to the
   original drawing while another tab is active; the visible drawing must stay unchanged. Return
   to the original drawing and Undo once: restore its former page size and margins. Close that tab

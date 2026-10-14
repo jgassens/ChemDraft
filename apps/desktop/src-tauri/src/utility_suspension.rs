@@ -371,6 +371,49 @@ mod tests {
     }
 
     #[test]
+    fn dialog_above_toolbar_survives_native_box_and_toolbar_restore_retry() {
+        let dialog = "dialog-main-pageSize-1";
+        let toolbar = "toolset-art";
+        let panel = "plugin-panel-report";
+        let mut state = UtilitySuspension::default();
+        state.begin(
+            [
+                (toolbar.into(), true, false, false),
+                (dialog.into(), true, false, true),
+                (panel.into(), true, false, true),
+            ],
+            Some(vec![dialog.into(), toolbar.into(), panel.into()]),
+        );
+        assert_eq!(state.release(false).unwrap(), vec![panel, toolbar, dialog]);
+        let mut stack = document_stack();
+        state.start_restore();
+        place(&mut state, &mut stack, dialog);
+        place(&mut state, &mut stack, panel);
+        state.finish_restore();
+        assert!(state.restore_as_document_child(dialog));
+        assert_eq!(state.pending_restore().unwrap(), vec![toolbar]);
+        assert_eq!(
+            state.restore_placement(toolbar, |_| true),
+            RestorePlacement::Below(dialog.into())
+        );
+        state.start_restore();
+        place(&mut state, &mut stack, toolbar);
+        state.finish_restore();
+        assert_eq!(
+            stack,
+            vec![
+                "foreign-dialog",
+                "foreign-app",
+                dialog,
+                toolbar,
+                panel,
+                "document"
+            ]
+        );
+        assert!(!state.active());
+    }
+
+    #[test]
     fn minimized_art_retry_stays_below_already_restored_rings_and_foreign_windows() {
         let mut state = UtilitySuspension::default();
         state.begin(

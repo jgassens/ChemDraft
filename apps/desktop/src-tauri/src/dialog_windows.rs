@@ -610,7 +610,8 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     window.unminimize().map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     configure_on_main(window)?;
-    window.set_focus().map_err(|e| e.to_string())
+    window.set_focus().map_err(|e| e.to_string())?;
+    bring_to_front_on_main(window)
 }
 /// Called by reveal and by the existing relative-order utility restore (already on main).
 pub(crate) fn configure_on_main<R: Runtime>(
@@ -618,10 +619,10 @@ pub(crate) fn configure_on_main<R: Runtime>(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSNormalWindowLevel, NSWindow};
+        use objc2_app_kit::NSWindow;
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
-        native.setLevel(NSNormalWindowLevel);
+        native.setLevel(dialog_window_level());
         native.setHidesOnDeactivate(false);
         native.setCanHide(true);
         native.setIgnoresMouseEvents(false);
@@ -631,6 +632,86 @@ pub(crate) fn configure_on_main<R: Runtime>(
     {
         let _ = window;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn dialog_window_level() -> objc2_app_kit::NSWindowLevel {
+    super::toolset_utility_window_level()
+}
+
+/// Reveal/reopen and becoming key raise within the utility level. Restoration only configures
+/// traits: raising there would discard the captured dialog/toolbar sibling order.
+fn bring_to_front_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    if super::utility_windows_suspended() || !window.is_visible().unwrap_or(false) {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut objc2_app_kit::NSWindow;
+        let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
+        native.orderFront(None);
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindow, GetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOP,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, WS_EX_TOPMOST,
+        };
+        // Both dialogs and toolbars are non-topmost document-owned windows. Insert above the
+        // highest visible sibling using its predecessor, preserving the group's global position.
+        let siblings: Vec<_> = window
+            .app_handle()
+            .webview_windows()
+            .into_values()
+            .filter(|sibling| {
+                sibling.label() != window.label()
+                    && super::is_suspended_utility_label(sibling.label())
+                    && sibling.is_visible().unwrap_or(false)
+                    && !sibling.is_minimized().unwrap_or(true)
+            })
+            .collect();
+        if let Some(label) = super::utility_windows_top_to_bottom(&siblings)?.first() {
+            let sibling = window
+                .app_handle()
+                .get_webview_window(label)
+                .ok_or("Dialog stacking sibling disappeared")?;
+            let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as _;
+            let anchor = sibling.hwnd().map_err(|e| e.to_string())?.0 as _;
+            // SAFETY: live top-level HWNDs on the main thread; z-order only, no activation.
+            let mut predecessor = unsafe { GetWindow(anchor, GW_HWNDPREV) };
+            // Insertion after a topmost foreign window could promote this dialog to topmost.
+            // Use the ordinary top of the non-topmost band in that case instead.
+            if !predecessor.is_null()
+                && unsafe { GetWindowLongPtrW(predecessor, GWL_EXSTYLE) } & WS_EX_TOPMOST as isize
+                    != 0
+            {
+                predecessor = HWND_TOP;
+            }
+            // Null means the sibling is globally first: HWND_TOP is ordinary, never TOPMOST.
+            // This path only runs for an explicitly revealed or active dialog, not restoration.
+            if predecessor != hwnd
+                && unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        predecessor,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
+                    )
+                } == 0
+            {
+                return Err(format!(
+                    "Could not raise native dialog: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = window;
     Ok(())
 }
 
@@ -993,6 +1074,18 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
         return;
     }
     match event {
+        WindowEvent::Focused(true) => {
+            if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                let target = webview.clone();
+                if let Err(error) = super::run_on_main_thread_blocking(&webview, move || {
+                    bring_to_front_on_main(&target)
+                })
+                .and_then(|result| result)
+                {
+                    eprintln!("Could not raise focused native dialog: {error}");
+                }
+            }
+        }
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
             let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
             let key = registry
@@ -1143,6 +1236,90 @@ mod tests {
         let focus = reopen.find("window.set_focus()").unwrap();
         assert!(unminimize < show && show < focus);
     }
+    #[test]
+    fn reveal_reopen_and_key_raise_but_restore_only_configures_traits() {
+        // Native stacking cannot be exercised by the headless mock runtime. Pin the call sites
+        // alongside the real level assertion and the suspension order model tests.
+        let source = include_str!("dialog_windows.rs");
+        let section = |start, end| {
+            source
+                .split(start)
+                .nth(1)
+                .unwrap()
+                .split(end)
+                .next()
+                .unwrap()
+        };
+        assert!(section(
+            "fn reveal_on_main<R: Runtime>",
+            "fn show_on_main<R: Runtime>"
+        )
+        .contains("show_on_main(window)"));
+        assert!(section(
+            "fn show_on_main<R: Runtime>",
+            "pub(crate) fn configure_on_main"
+        )
+        .contains("bring_to_front_on_main(window)"));
+        assert!(section(
+            "WindowEvent::Focused(true) =>",
+            "WindowEvent::CloseRequested"
+        )
+        .contains("bring_to_front_on_main(&target)"));
+        let configure = section("pub(crate) fn configure_on_main", "fn dialog_window_level");
+        assert!(!configure.contains("orderFront") && !configure.contains("bring_to_front"));
+        let raise = section(
+            "fn bring_to_front_on_main<R: Runtime>",
+            "struct SavedPosition",
+        );
+        assert!(raise.contains("utility_windows_suspended()"));
+        assert!(raise.contains("native.orderFront(None)"));
+        assert!(raise.contains("GetWindow(anchor, GW_HWNDPREV)"));
+        assert!(raise.contains("GetWindowLongPtrW(predecessor, GWL_EXSTYLE)"));
+        assert!(raise.contains("predecessor = HWND_TOP"));
+        assert!(raise.contains("SetWindowPos("));
+        assert!(!raise.contains("HWND_TOPMOST") && !raise.contains(".always_on_top("));
+        let builder = section(
+            "let builder = WebviewWindowBuilder::new(",
+            "if let Err(error) = builder.build()",
+        );
+        assert!(builder.contains("builder.parent(&window)"));
+        let lib = include_str!("lib.rs");
+        let popover = lib
+            .split("fn show_toolset_popover_window(")
+            .nth(1)
+            .unwrap()
+            .split("fn hide_toolset_tooltip_window")
+            .next()
+            .unwrap();
+        assert!(popover.contains("raise_among_owned_windows(&window)"));
+        let tooltip = lib
+            .split("fn show_toolset_tooltip_window(")
+            .nth(1)
+            .unwrap()
+            .split("fn raise_among_owned_windows")
+            .next()
+            .unwrap();
+        assert!(tooltip.contains("ns_window.orderFront(None)"));
+        assert!(tooltip.contains("raise_among_owned_windows(&window)"));
+        let utilities = lib
+            .split("fn utility_window_builder<")
+            .nth(1)
+            .unwrap()
+            .split("fn toolset_state<")
+            .next()
+            .unwrap();
+        assert!(utilities.contains("builder.owner_raw(owner)"));
+        assert!(!lib.contains(".always_on_top(true)"));
+        assert!(lib.contains("ns_window.setLevel(toolset_utility_window_level())"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dialog_level_reaches_floating_toolbars() {
+        assert!(dialog_window_level() >= super::super::toolset_utility_window_level());
+        assert!(dialog_window_level() > objc2_app_kit::NSNormalWindowLevel);
+    }
+
     #[test]
     fn terminal_action_is_reserved_across_distinct_request_ids() {
         let mut registry = Registry::default();
