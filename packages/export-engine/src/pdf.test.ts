@@ -28,7 +28,12 @@ describe("exportDocumentToPdf", () => {
 
   it.each([96, 300, 600])("fits the entire drawing inside the DPI-derived physical PDF page at %s DPI", async (dpi) => {
     const original = createEmptyDocument({ now: timestamp });
-    const document = applyPatch({ ...original, pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }] }, { op: "addObject", pageId: "page_001", object: filledRingFixture() }, { now: timestamp });
+    // A plain four-bond ring: every drawing primitive is checked below.
+    const ring = { ...filledRingFixture(), style: { source: "chemdraft-native-drawing" } };
+    const document = applyPatch({
+      ...original,
+      pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }]
+    }, { op: "addObject", pageId: "page_001", object: ring }, { now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
       domParser, compress: false, outputWidth: 2008 / dpi * 96, outputHeight: 1004 / dpi * 96
     }));
@@ -38,11 +43,15 @@ describe("exportDocumentToPdf", () => {
     expect(widthPt).toBeCloseTo(2008 / dpi * 72, 6);
     expect(heightPt).toBeCloseTo(1004 / dpi * 72, 6);
     const points = pdfDrawingPoints(pdf);
-    expect(points.length).toBeGreaterThan(3);
-    expect(Math.min(...points.map(([x]) => x))).toBeCloseTo(0, 6);
-    expect(Math.max(...points.map(([x]) => x))).toBeCloseTo(widthPt, 6);
-    expect(Math.min(...points.map(([, y]) => y))).toBeCloseTo(0, 6);
-    expect(Math.max(...points.map(([, y]) => y))).toBeCloseTo(heightPt, 6);
+    // Fixed authored endpoints of all four bonds, independent of the exported SVG.
+    // Comparing every endpoint catches missing bonds, rather than only checking an outer box.
+    const endpoints = [[100, 100], [180, 100], [180, 100], [180, 180],
+      [180, 180], [100, 180], [100, 180], [100, 100]];
+    expect(points).toHaveLength(endpoints.length);
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index][0]).toBeCloseTo(x / 1000 * widthPt, 6);
+      expect(points[index][1]).toBeCloseTo(heightPt - y / 500 * heightPt, 6);
+    });
   });
 
   it("uses custom output dimensions for the physical PDF page", async () => {
@@ -441,21 +450,48 @@ function defineTestGlobal(target: Record<string, unknown>, key: string, value: u
   });
 }
 
-// Apply nested PDF graphics-state matrices to actual uncompressed drawing paths.
+// Read only painted strokes, excluding filled backgrounds and clipping paths.
+// Apply nested graphics-state matrices and verify active rectangular clips contain each stroke.
 function pdfDrawingPoints(pdf: string): Array<[number, number]> {
   type Matrix = [number, number, number, number, number, number];
   let matrix: Matrix = [1, 0, 0, 1, 0, 0];
-  const stack: Matrix[] = [];
+  type Clip = { left: number; top: number; right: number; bottom: number };
+  let clips: Clip[] = [];
+  let pendingClip = false;
+  const stack: Array<{ matrix: Matrix; clips: Clip[] }> = [];
   const points: Array<[number, number]> = [];
-  const point = (x: number, y: number) => points.push([
+  let path: Array<[number, number]> = [];
+  const point = (x: number, y: number) => path.push([
     matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]
   ]);
   const source = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map((match) => match[1]).join("\n");
   for (const line of source.split("\n")) {
     const parts = line.trim().split(/\s+/), op = parts.pop();
     const n = parts.map(Number);
-    if (op === "q") stack.push([...matrix]);
-    else if (op === "Q") matrix = stack.pop() ?? matrix;
+    if (op === "W" || op === "W*") pendingClip = true;
+    else if (op === "S" || op === "s") {
+      for (const [x, y] of path) for (const clip of clips) {
+        expect(x).toBeGreaterThanOrEqual(clip.left - 1e-6);
+        expect(x).toBeLessThanOrEqual(clip.right + 1e-6);
+        expect(y).toBeGreaterThanOrEqual(clip.top - 1e-6);
+        expect(y).toBeLessThanOrEqual(clip.bottom + 1e-6);
+      }
+      points.push(...path);
+      path = [];
+    } else if (["f", "f*", "n", "B", "B*", "b", "b*"].includes(op ?? "")) {
+      if (pendingClip) {
+        clips = [...clips, {
+          left: Math.min(...path.map(([x]) => x)), right: Math.max(...path.map(([x]) => x)),
+          top: Math.min(...path.map(([, y]) => y)), bottom: Math.max(...path.map(([, y]) => y))
+        }];
+        pendingClip = false;
+      }
+      path = [];
+    } else if (op === "q") stack.push({ matrix: [...matrix], clips: [...clips] });
+    else if (op === "Q") {
+      const saved = stack.pop();
+      if (saved) { matrix = saved.matrix; clips = saved.clips; }
+    }
     else if (op === "cm" && n.length === 6) {
       const [a,b,c,d,e,f] = matrix;
       matrix = [a*n[0]+c*n[1], b*n[0]+d*n[1], a*n[2]+c*n[3], b*n[2]+d*n[3], a*n[4]+c*n[5]+e, b*n[4]+d*n[5]+f];
