@@ -1761,7 +1761,8 @@ fn restore_utility_window<R: Runtime>(
         let anchor = unsafe { anchor_pointer.as_ref() }
             .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
         // Ordering out can detach children. Preserve recorded relationships for original windows;
-        // newly deferred windows use the normal creation policy (panels parented, toolbars not).
+        // newly deferred windows use the normal creation policy (panels parented, toolbars and
+        // dialogs unparented). Dialogs must never inherit the document's normal window level.
         // Both children and unparented utilities use the retained relative stacking position below.
         let restore_as_document_child = UTILITY_SUSPENSION
             .lock()
@@ -2292,10 +2293,18 @@ fn is_plugin_panel_window_label(label: &str) -> bool {
         && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
 }
 
+/// AppKit children inherit the document's level and deactivate visibility. Dialogs need the
+/// independent floating-window behavior of toolbars, even if an old snapshot recorded a parent.
+#[cfg(any(target_os = "macos", test))]
+fn should_attach_as_document_child(label: &str) -> bool {
+    !dialog_windows::is_dialog_label(label)
+}
+
 /// Normal document parenting policy, shared by plugin-panel creation and suspended restoration.
-/// Palettes/popovers stay unparented on macOS; their Windows ownership is set separately.
+/// Palettes/popovers/dialogs stay unparented on macOS; Windows utility ownership is set separately.
 fn utility_window_has_document_parent(label: &str) -> bool {
-    is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label)
+    is_plugin_panel_window_label(label)
+        || (cfg!(not(target_os = "macos")) && dialog_windows::is_dialog_label(label))
 }
 
 #[cfg(test)]
@@ -2905,7 +2914,7 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     // Explicit panel opens keep their existing reveal behavior; suspension restores use only
     // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
     ns_window.orderFront(None);
-    attach_to_main_window(window.app_handle(), ns_window);
+    attach_to_main_window(window.app_handle(), window.label(), ns_window);
     Ok(())
 }
 
@@ -2933,7 +2942,10 @@ fn configure_analysis_window_traits<R: Runtime>(
 /// click. Call it only once `child` is on screen: `addChildWindow:` orders a hidden child in. A
 /// hidden main window is left alone, because attaching to it would tie the child to its visibility.
 #[cfg(target_os = "macos")]
-fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, child: &NSWindow) {
+fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, child: &NSWindow) {
+    if !should_attach_as_document_child(label) {
+        return;
+    }
     let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
@@ -2962,7 +2974,7 @@ pub(crate) fn attach_webview_window_to_main<R: Runtime>(window: &tauri::WebviewW
         return;
     };
     if let Some(ns_window) = unsafe { (pointer as *mut NSWindow).as_ref() } {
-        attach_to_main_window(window.app_handle(), ns_window);
+        attach_to_main_window(window.app_handle(), window.label(), ns_window);
     }
 }
 

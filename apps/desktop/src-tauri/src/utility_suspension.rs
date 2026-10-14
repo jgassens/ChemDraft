@@ -68,10 +68,12 @@ impl UtilitySuspension {
 
     #[cfg(any(target_os = "macos", test))]
     pub(crate) fn restore_as_document_child(&self, label: &str) -> bool {
-        self.document_children
-            .get(label)
-            .copied()
-            .unwrap_or_else(|| super::utility_window_has_document_parent(label))
+        super::should_attach_as_document_child(label)
+            && self
+                .document_children
+                .get(label)
+                .copied()
+                .unwrap_or_else(|| super::utility_window_has_document_parent(label))
     }
 
     pub(crate) fn defer_panel(&mut self, label: String, request: super::OpenPluginPanelRequest) {
@@ -212,6 +214,48 @@ impl UtilitySuspension {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialogs_never_attach_or_restore_as_document_children() {
+        let dialogs = ["dialog-main-pageSize-0", "dialog-main-pageSize-42"];
+        let panels = ["plugin-panel-report", "plugin-panel-analysis"];
+        let mut state = UtilitySuspension::default();
+        for dialog in dialogs {
+            assert!(!super::super::should_attach_as_document_child(dialog));
+            #[cfg(target_os = "macos")]
+            assert!(!super::super::utility_window_has_document_parent(dialog));
+            // Newly deferred dialogs have no recorded relationship.
+            state.defer_show(dialog.into());
+            assert!(!state.restore_as_document_child(dialog));
+        }
+        for panel in panels {
+            assert!(super::super::should_attach_as_document_child(panel));
+            assert!(super::super::utility_window_has_document_parent(panel));
+            assert!(state.restore_as_document_child(panel));
+        }
+        // Even stale child records cannot re-parent dialogs. Panel records remain authoritative.
+        state.begin(
+            dialogs
+                .into_iter()
+                .map(|label| (label.into(), true, false, true))
+                .chain([
+                    (panels[0].into(), true, false, true),
+                    (panels[1].into(), true, false, false),
+                ]),
+            None,
+        );
+        state.release(false).unwrap();
+        state.start_restore();
+        for dialog in dialogs {
+            assert!(!state.restore_as_document_child(dialog));
+        }
+        assert!(state.restore_as_document_child(panels[0]));
+        assert!(!state.restore_as_document_child(panels[1]));
+        state.finish_restore();
+        for dialog in dialogs {
+            assert!(!state.restore_as_document_child(dialog));
+        }
+    }
 
     #[test]
     fn original_parent_relationship_survives_nested_prompts_and_restore_retries() {
@@ -379,7 +423,7 @@ mod tests {
         state.begin(
             [
                 (toolbar.into(), true, false, false),
-                (dialog.into(), true, false, true),
+                (dialog.into(), true, false, false),
                 (panel.into(), true, false, true),
             ],
             Some(vec![dialog.into(), toolbar.into(), panel.into()]),
@@ -390,7 +434,7 @@ mod tests {
         place(&mut state, &mut stack, dialog);
         place(&mut state, &mut stack, panel);
         state.finish_restore();
-        assert!(state.restore_as_document_child(dialog));
+        assert!(!state.restore_as_document_child(dialog));
         assert_eq!(state.pending_restore().unwrap(), vec![toolbar]);
         assert_eq!(
             state.restore_placement(toolbar, |_| true),

@@ -67,8 +67,12 @@ taskbar. The host's per-kind spec controls maximizable and resizable properties;
 is neither maximizable nor resizable on either platform. Dialogs are non-minimizable on both
 platforms; reopening also unminimizes before showing
 and focusing as a fallback, preserving the draft and position. Windows uses a top-level document
-owner. macOS attaches a focusable child at `toolset_utility_window_level()`
-only at reveal and after utility restoration, never a sheet or nonactivating panel. No menu is
+owner. macOS uses unparented, focusable floating-level windows at
+`toolset_utility_window_level()`, like toolbars, with `hidesOnDeactivate` enabled. They are never
+AppKit document children: adding a child makes it adopt the parent's normal level and keeps it
+visible with the document on deactivation. Reveal and utility restoration never attach dialogs;
+even a recorded child relationship is refused. Registry ownership still dismisses dialogs when
+the document is hidden/closed or the app quits, without relying on `parentWindow()`. No menu is
 attached. Native close/destroy is authoritative; the document's macOS hide-on-Close hook also
 dismisses dialogs. Quit dismisses registered sessions before asking for the final document flush.
 Late construction after owner close is discarded.
@@ -183,8 +187,9 @@ The owner-observed macOS failure was a level mismatch: normal-level dialogs coul
 above floating-level toolbars. Dialogs now reuse the toolbar level and raise on reveal, retained
 reopen and key activation. Windows explicitly reorders above visible owned utilities, avoiding
 TOPMOST even when a foreign topmost window precedes the utility group. Ownership, toolbar levels,
-flyout/tooltip reveal behavior and #140 relative restore remain intact. Regression coverage pins
-the level, raise call sites, owned/non-topmost Windows paths and dialog-above-toolbar restore retries.
+flyout/tooltip reveal behavior and #140 relative restore remain intact. Regression coverage checks
+the floating level, attachment/restore decisions and dialog-above-toolbar restore retries.
+Panels and analysis windows retain their child policy.
 
 macOS fmt and all-target clippy (`-D warnings`) passed. The dialog Vitest suite passed 6 files,
 31 tests with `--configLoader native --maxWorkers 2` and dependency symlinks only. Full Rust tests
@@ -196,3 +201,25 @@ the remaining suite and binary/doc targets. Temporary Sparkle links and Cargo ou
 checks remain unverified. Before integration, run the standing Custom Page Size checklist: overlap
 the dialog with a toolbar/panel, click it, use the toolbar and its flyout/tooltip, reopen the dialog,
 then open/dismiss a native box and verify the prior stacking order survives.
+
+## AppKit parenting correction
+
+Owner measurements after the level fix still showed the dialog at window layer 0: the subsequent
+`addChildWindow:ordered:` reset it to the document's level. Dialog configuration now leaves the
+window unparented. The shared attachment gate and suspension restore reject dialog labels, even
+when a snapshot records a prior child relationship. Plugin panels and analysis windows keep their
+existing attachment and recorded restore relationships. Placement and owner dismissal use the
+main-window label and dialog registry, independently of AppKit parenting.
+
+Source-text stacking assertions were replaced by decision tests for initial attachment policy,
+deferred dialogs, stale parent records and unchanged panel restoration. The floating-level test
+and dialog-above-toolbar restore retry test remain. Real-window verification must measure the
+dialog's layer, check Cmd-Tab hiding, and repeat reveal/reopen/native-prompt restoration.
+
+Correction validation on macOS: Rust fmt and all-target clippy with `-D warnings` passed. The full
+Rust suite passed 301 tests with two existing ignores; its sole failure was the existing OCSR
+download test's sandbox-denied loopback bind. Excluding only
+`ocsr_engine::install::tests::system_download_verifies_pinned_bytes_and_rejects_tampering` passed
+all remaining tests and binary/doc targets. Temporary Sparkle links and Cargo output were removed.
+Windows code and `CURRENT_BUILD_STAMP` are unchanged. Windows native compilation and both platforms'
+hands-on window checks remain unverified; rerun the full Rust suite outside the sandbox.

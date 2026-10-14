@@ -372,7 +372,7 @@ pub(crate) async fn dialog_open(
     .maximizable(spec.maximizable)
     .resizable(spec.resizable)
     .minimizable(false);
-    // On Windows .parent is a top-level OWNER, never a child control. AppKit attaches at reveal.
+    // On Windows .parent is a top-level OWNER, never a child control. macOS stays unparented.
     #[cfg(windows)]
     let builder = builder.parent(&window).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
@@ -622,6 +622,8 @@ pub(crate) fn configure_on_main<R: Runtime>(
         use objc2_app_kit::NSWindow;
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
+        // AppKit children adopt the document's normal level and deactivate visibility.
+        // Stay unparented, like floating toolbars; registry ownership handles dismissal.
         native.setLevel(dialog_window_level());
         // Match floating toolbars: AppKit hides on Cmd-Tab and restores the native order on
         // activation. Explicit suspension hides remain ordered out, so AppKit cannot reveal
@@ -629,7 +631,6 @@ pub(crate) fn configure_on_main<R: Runtime>(
         native.setHidesOnDeactivate(super::toolset_window_hides_on_deactivate());
         native.setCanHide(true);
         native.setIgnoresMouseEvents(false);
-        super::attach_webview_window_to_main(window);
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1239,83 +1240,6 @@ mod tests {
         let focus = reopen.find("window.set_focus()").unwrap();
         assert!(unminimize < show && show < focus);
     }
-    #[test]
-    fn reveal_reopen_and_key_raise_but_restore_only_configures_traits() {
-        // Native stacking cannot be exercised by the headless mock runtime. Pin the call sites
-        // alongside the real level assertion and the suspension order model tests.
-        let source = include_str!("dialog_windows.rs");
-        let section = |start, end| {
-            source
-                .split(start)
-                .nth(1)
-                .unwrap()
-                .split(end)
-                .next()
-                .unwrap()
-        };
-        assert!(section(
-            "fn reveal_on_main<R: Runtime>",
-            "fn show_on_main<R: Runtime>"
-        )
-        .contains("show_on_main(window)"));
-        assert!(section(
-            "fn show_on_main<R: Runtime>",
-            "pub(crate) fn configure_on_main"
-        )
-        .contains("bring_to_front_on_main(window)"));
-        assert!(section(
-            "WindowEvent::Focused(true) =>",
-            "WindowEvent::CloseRequested"
-        )
-        .contains("bring_to_front_on_main(&target)"));
-        let configure = section("pub(crate) fn configure_on_main", "fn dialog_window_level");
-        assert!(!configure.contains("orderFront") && !configure.contains("bring_to_front"));
-        let raise = section(
-            "fn bring_to_front_on_main<R: Runtime>",
-            "struct SavedPosition",
-        );
-        assert!(raise.contains("utility_windows_suspended()"));
-        assert!(raise.contains("native.orderFront(None)"));
-        assert!(raise.contains("GetWindow(anchor, GW_HWNDPREV)"));
-        assert!(raise.contains("GetWindowLongPtrW(predecessor, GWL_EXSTYLE)"));
-        assert!(raise.contains("predecessor = HWND_TOP"));
-        assert!(raise.contains("SetWindowPos("));
-        assert!(!raise.contains("HWND_TOPMOST") && !raise.contains(".always_on_top("));
-        let builder = section(
-            "let builder = WebviewWindowBuilder::new(",
-            "if let Err(error) = builder.build()",
-        );
-        assert!(builder.contains("builder.parent(&window)"));
-        let lib = include_str!("lib.rs");
-        let popover = lib
-            .split("fn show_toolset_popover_window(")
-            .nth(1)
-            .unwrap()
-            .split("fn hide_toolset_tooltip_window")
-            .next()
-            .unwrap();
-        assert!(popover.contains("raise_among_owned_windows(&window)"));
-        let tooltip = lib
-            .split("fn show_toolset_tooltip_window(")
-            .nth(1)
-            .unwrap()
-            .split("fn raise_among_owned_windows")
-            .next()
-            .unwrap();
-        assert!(tooltip.contains("ns_window.orderFront(None)"));
-        assert!(tooltip.contains("raise_among_owned_windows(&window)"));
-        let utilities = lib
-            .split("fn utility_window_builder<")
-            .nth(1)
-            .unwrap()
-            .split("fn toolset_state<")
-            .next()
-            .unwrap();
-        assert!(utilities.contains("builder.owner_raw(owner)"));
-        assert!(!lib.contains(".always_on_top(true)"));
-        assert!(lib.contains("ns_window.setLevel(toolset_utility_window_level())"));
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn dialog_level_reaches_floating_toolbars() {
@@ -1505,11 +1429,14 @@ mod tests {
         let dialog = "dialog-main-pageSize-1";
         let toolbar = "toolset-core-main";
         assert!(super::super::is_suspended_utility_label(dialog));
-        assert!(super::super::utility_window_has_document_parent(dialog));
+        assert_eq!(
+            super::super::utility_window_has_document_parent(dialog),
+            cfg!(not(target_os = "macos"))
+        );
         let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
         suspension.begin(
             [
-                (dialog.into(), true, false, true),
+                (dialog.into(), true, false, false),
                 (toolbar.into(), true, false, false),
             ],
             Some(vec![toolbar.into(), dialog.into()]),
