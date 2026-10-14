@@ -623,7 +623,10 @@ pub(crate) fn configure_on_main<R: Runtime>(
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
         native.setLevel(dialog_window_level());
-        native.setHidesOnDeactivate(false);
+        // Match floating toolbars: AppKit hides on Cmd-Tab and restores the native order on
+        // activation. Explicit suspension hides remain ordered out, so AppKit cannot reveal
+        // a dialog over a native prompt; only the guarded shared restore may show it again.
+        native.setHidesOnDeactivate(super::toolset_window_hides_on_deactivate());
         native.setCanHide(true);
         native.setIgnoresMouseEvents(false);
         super::attach_webview_window_to_main(window);
@@ -1459,6 +1462,43 @@ mod tests {
         let writes = take_pending_positions(&mut registry);
         assert_eq!(writes.last().unwrap().1.x, 1.0);
         assert!(registry.sessions.values().all(|s| s.pending_move.is_none()));
+    }
+    #[test]
+    fn dialog_deactivation_matches_toolbars_without_an_activation_reveal() {
+        let source = include_str!("dialog_windows.rs");
+        let configure = source
+            .split("pub(crate) fn configure_on_main")
+            .nth(1)
+            .unwrap()
+            .split("fn dialog_window_level")
+            .next()
+            .unwrap();
+        assert!(configure
+            .contains("native.setHidesOnDeactivate(super::toolset_window_hides_on_deactivate())"));
+        assert!(!configure.contains("window.show()") && !configure.contains("orderFront"));
+        #[cfg(target_os = "macos")]
+        assert!(super::super::toolset_window_hides_on_deactivate());
+    }
+    #[test]
+    fn dialog_activation_during_native_box_waits_for_last_release_and_quit_clears_it() {
+        let dialog = "dialog-main-pageSize-1";
+        let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
+        suspension.begin([(dialog.into(), true, false, true)], None);
+        // Focus/activation retries query pending_restore; an open native box has no reveal.
+        assert_eq!(suspension.pending_restore(), None);
+        suspension.defer_show(dialog.into()); // reopen while the box is open
+        assert_eq!(suspension.pending_restore(), None);
+        suspension.begin([], None); // nested native box
+        assert_eq!(suspension.release(false), None);
+        assert_eq!(suspension.pending_restore(), None);
+        assert_eq!(suspension.release(false), Some(vec![dialog.into()]));
+        // Release while inactive retains the obligation for a later activation retry.
+        assert_eq!(suspension.pending_restore(), Some(vec![dialog.into()]));
+        suspension.begin([], None); // another box before activation
+        assert_eq!(suspension.pending_restore(), None);
+        assert_eq!(suspension.release(true), None);
+        assert_eq!(suspension.pending_restore(), None);
+        assert!(!suspension.active());
     }
     #[test]
     fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {

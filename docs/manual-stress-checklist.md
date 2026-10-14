@@ -286,6 +286,13 @@ and Art toolbars open, including at 125%/150% display scale:
   Reopen the retained dialog: it must come forward. Repeat on macOS and Windows; neither platform
   should gain global always-on-top behavior. With the dialog in front of a toolbar, open and dismiss
   a native box: preserve that dialog-above-toolbar order.
+- On macOS, move an open dialog, then Cmd-Tab to another application: the dialog and toolbars
+  must hide. Cmd-Tab back: preserve the dialog's position and sibling stacking; reopen it and
+  click its fields to confirm focus still works. Repeat with a native confirmation box open:
+  the suspended dialog must stay hidden when returning, then restore in place only after the
+  box closes. Also dismiss the box while inactive and return: restoration must wait for activation.
+  Quit with the box open: no dialog may reappear during teardown. On Windows, verify the existing
+  document-owned dialog behavior with Alt-Tab and a native box remains unchanged.
 - Leave it open and draw, use shortcuts and floating toolbars, then switch tabs. Apply to the
   original drawing while another tab is active; the visible drawing must stay unchanged. Return
   to the original drawing and Undo once: restore its former page size and margins. Close that tab
