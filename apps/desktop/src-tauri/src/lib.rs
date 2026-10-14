@@ -3,6 +3,7 @@ mod fonts;
 mod installed_plugins;
 mod ocsr_engine;
 mod opsin;
+mod plugin_package;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
@@ -909,6 +910,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            plugin_package::read_plugin_package,
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
