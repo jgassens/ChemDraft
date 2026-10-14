@@ -9,6 +9,10 @@ use std::{
 use tauri::{ipc::Channel, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const MAX_BYTES: usize = 16 * 1024;
+// Tauri 2.11.2 queues JSON >= 8192 bytes app-wide, outside receiver authentication.
+// Measure the complete delivery after JSON escaping, well below that threshold.
+const MAX_CHANNEL_BYTES: usize = 4096;
+const OVERSIZED_ERROR: &str = "Dialog operation failed; error details exceeded the delivery limit.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -189,15 +193,31 @@ fn authorize(
     }
     Ok(())
 }
-fn delivery(session: &Session, sender: &str, message: &Message) -> Value {
-    json!({ "senderWindowId": sender, "windowLabel": session.registration.window_label, "message": message })
+fn delivery(session: &Session, sender: &str, message: &Message) -> Result<Value, String> {
+    let mut payload = json!({ "senderWindowId": sender, "windowLabel": session.registration.window_label, "message": message });
+    let serialized_size = |value: &Value| {
+        serde_json::to_vec(value)
+            .map(|bytes| bytes.len())
+            .map_err(|e| e.to_string())
+    };
+    if serialized_size(&payload)? > MAX_CHANNEL_BYTES
+        && message.message_type == "result"
+        && message.data.get("error").is_some_and(Value::is_string)
+    {
+        payload["message"]["data"]["error"] = json!(OVERSIZED_ERROR);
+    }
+    // Recheck after replacement: an oversized envelope or a future kind must fail closed.
+    if serialized_size(&payload)? > MAX_CHANNEL_BYTES {
+        return Err("Dialog channel delivery limit exceeded".into());
+    }
+    Ok(payload)
 }
 fn send_owner(session: &Session, sender: &str, message: &Message) -> Result<(), String> {
     session
         .owner_channel
         .as_ref()
         .ok_or("Dialog owner channel missing")?
-        .send(delivery(session, sender, message))
+        .send(delivery(session, sender, message)?)
         .map_err(|e| e.to_string())
 }
 fn send_host(session: &Session, message: &Message) -> Result<(), String> {
@@ -205,7 +225,7 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
         .host_channel
         .as_ref()
         .ok_or("Dialog host channel missing")?
-        .send(delivery(session, super::MAIN_WINDOW_LABEL, message))
+        .send(delivery(session, super::MAIN_WINDOW_LABEL, message)?)
         .map_err(|e| e.to_string())
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
@@ -334,7 +354,8 @@ pub(crate) async fn dialog_open(
     .skip_taskbar(true)
     .shadow(true)
     .decorations(true)
-    .resizable(true);
+    .resizable(true)
+    .minimizable(false);
     // On Windows .parent is a top-level OWNER, never a child control. AppKit attaches at reveal.
     #[cfg(windows)]
     let builder = builder.parent(&window).map_err(|e| e.to_string())?;
@@ -570,6 +591,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     {
         return Err("Dialog owner is hidden".into());
     }
+    window.unminimize().map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     configure_on_main(window)?;
     window.set_focus().map_err(|e| e.to_string())
@@ -976,6 +998,123 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_channel_message_stays_receiver_private_at_worst_case() {
+        let mut maximum = snapshot();
+        maximum.document_tab_id = "t".repeat(128);
+        maximum.session_id = "s".repeat(128);
+        maximum.request_id = "r".repeat(128);
+        maximum.snapshot_revision = 9_007_199_254_740_991;
+        let mut registry = Registry {
+            next_slot: u64::MAX - 1,
+            ..Registry::default()
+        };
+        let (registration, _) = register(&mut registry, maximum.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let deliveries = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let capture = || {
+            let deliveries = deliveries.clone();
+            Channel::new(move |body| {
+                let tauri::ipc::InvokeResponseBody::Json(bytes) = body else {
+                    panic!("dialog deliveries must be JSON");
+                };
+                assert!(bytes.len() <= MAX_CHANNEL_BYTES);
+                assert!(
+                    bytes.len() < 8192,
+                    "must never enter the app-wide fetch queue"
+                );
+                deliveries.lock().unwrap().push(bytes);
+                Ok(())
+            })
+        };
+        session.owner_channel = Some(capture());
+        session.host_channel = Some(capture());
+        for (kind, data) in [
+            (
+                "snapshot",
+                json!({"title":"\u{0001}".repeat(256),"width":f64::MIN_POSITIVE,"height":9.999999999999999e-100,"unit":"css-px"}),
+            ),
+            ("request", json!({})),
+            ("ready", json!({})),
+            (
+                "action",
+                json!({"action":"apply","width":f64::MIN_POSITIVE,"height":9.999999999999999e-100,"unit":"css-px"}),
+            ),
+            ("action", json!({"action":"cancel"})),
+            (
+                "result",
+                json!({"status":"error","error":"\u{0001}".repeat(2048)}),
+            ),
+            (
+                "result",
+                json!({"status":"applied","error":"\u{0001}".repeat(2048)}),
+            ),
+            (
+                "result",
+                json!({"status":"cancelled","error":"\u{0001}".repeat(2048)}),
+            ),
+            ("closed", json!({"reason":"ownerTabClose"})),
+        ] {
+            let message = Message {
+                message_type: kind.into(),
+                data,
+                ..maximum.clone()
+            };
+            message.validate().unwrap();
+            if kind == "result" {
+                // Allowed 2048-character errors expand to over 12 KiB in JSON.
+                assert!(serde_json::to_vec(&message).unwrap().len() >= 8192);
+            }
+            send_owner(session, &registration.window_label, &message).unwrap();
+            send_host(session, &message).unwrap();
+        }
+        let deliveries = deliveries.lock().unwrap();
+        assert_eq!(deliveries.len(), 18);
+        for bytes in deliveries.iter() {
+            let payload: Value = serde_json::from_str(bytes).unwrap();
+            if payload["message"]["type"] == "result" {
+                assert_eq!(payload["message"]["data"]["error"], OVERSIZED_ERROR);
+            }
+        }
+    }
+    #[test]
+    fn oversized_non_error_deliveries_and_envelopes_fail_closed() {
+        let mut registry = Registry::default();
+        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let session = registry.sessions.get_mut(&r.host_id).unwrap();
+        let mut message = snapshot();
+        message.data["title"] = json!("x".repeat(MAX_CHANNEL_BYTES));
+        assert!(delivery(session, "main", &message).is_err());
+        // Even replacing error text must not permit an oversized delivery envelope.
+        session.registration.window_label = "x".repeat(MAX_CHANNEL_BYTES);
+        message.message_type = "result".into();
+        message.data = json!({"status":"error","error":"\u{0001}".repeat(2048)});
+        assert!(delivery(session, "main", &message).is_err());
+    }
+    #[test]
+    fn dialogs_disable_minimize_and_reopen_unminimizes_before_show_and_focus() {
+        // Native builder/order contracts cannot be exercised by the headless mock runtime.
+        let source = include_str!("dialog_windows.rs");
+        let builder = source
+            .split("let builder = WebviewWindowBuilder::new(")
+            .nth(1)
+            .unwrap()
+            .split("if let Err(error) = builder.build()")
+            .next()
+            .unwrap();
+        assert!(builder.contains(".minimizable(false)"));
+        let reopen = source
+            .split("fn show_on_main<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("pub(crate) fn configure_on_main")
+            .next()
+            .unwrap();
+        let unminimize = reopen.find("window.unminimize()").unwrap();
+        let show = reopen.find("window.show()").unwrap();
+        let focus = reopen.find("window.set_focus()").unwrap();
+        assert!(unminimize < show && show < focus);
+    }
     #[test]
     fn terminal_action_is_reserved_across_distinct_request_ids() {
         let mut registry = Registry::default();

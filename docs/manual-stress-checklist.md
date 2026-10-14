@@ -293,7 +293,9 @@ and Art toolbars open, including at 125%/150% display scale:
   or press Enter repeatedly: one change and one Undo entry; Apply stays disabled through closure.
 - Move it beyond the document bounds and onto another monitor (including mixed DPI), close and
   reopen: remember its position without recentering. Remove that monitor and reopen: recover onto
-  the document monitor with the whole title bar reachable. Minimize/restore the owner and repeat.
+  the document monitor with the whole title bar reachable. Verify the dialog's minimize control is
+  disabled/absent on both platforms. Minimize/restore the owner and repeat; choose Custom Page Size
+  again and verify the retained dialog is visible and focused, never stranded minimized.
 - Windows mixed-DPI pass: use 100% and 150%/200% monitors, including a negative-coordinate display
   and a taskbar-reduced work area. Keep the owner on the 100% monitor, save the dialog near the
   bottom-right of the high-DPI display, close, and reopen. Verify its client is about 420 × 300

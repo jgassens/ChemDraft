@@ -29,7 +29,12 @@ failure reports an error in the document status; it never creates an in-page des
 ## Transport and lifecycle
 
 Every message has `protocolVersion`, `ownerWindowId`, `documentTabId`, `dialogKind`, `sessionId`,
-`requestId`, and `snapshotRevision`. Payloads are limited to 16 KiB; dimensions must be finite,
+`requestId`, and `snapshotRevision`. Incoming payloads are limited to 16 KiB. Every owner and dialog
+channel delivery is limited to 4096 bytes of final serialized JSON, including the delivery envelope
+and escape expansion. This keeps deliveries below Tauri 2.11.2's 8192-byte direct-delivery threshold:
+larger JSON enters an app-wide fetch queue that does not authenticate the requesting webview.
+Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
+is rejected, and the complete delivery is measured again after replacement. Dimensions must be finite,
 positive, at most 100000, in `inch`, `mm`, or `css-px`. Unknown kinds, fields, owners, stale sessions,
 and wrong callers fail closed. Bootstrap uses only the opaque `hostId`, protocol version, and a
 request ID; Rust derives its envelope from the actual registered calling window. Nothing about a
@@ -58,7 +63,9 @@ retried automatically. While a terminal action is pending, another form action i
 
 Construction is async on a worker, serialized through `lock_window_creation()`, and refused after
 quit begins. Builds are hidden, `focused(false)`, focusable, decorated, shadowed, and skip the
-taskbar. Windows uses a top-level document owner. macOS attaches a normal-level, focusable child
+taskbar. Dialogs are non-minimizable on both platforms; reopening also unminimizes before showing
+and focusing as a fallback, preserving the draft and position. Windows uses a top-level document
+owner. macOS attaches a normal-level, focusable child
 only at reveal and after utility restoration, never a sheet or nonactivating panel. No menu is
 attached. Native close/destroy is authoritative; the document's macOS hide-on-Close hook also
 dismisses dialogs. Quit dismisses registered sessions before asking for the final document flush.
