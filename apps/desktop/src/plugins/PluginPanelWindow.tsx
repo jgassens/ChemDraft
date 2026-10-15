@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
+import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
@@ -35,6 +37,11 @@ import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
  */
 export function PluginPanelWindow({ panelId }: { panelId: string }) {
+  const shell = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (shell.current) return installPluginPanelInputFocus(shell.current);
+  }, []);
+  useEffect(() => installPluginPanelPointerFeed(panelId), [panelId]);
   // The Rust window route still calls this query field `panelId`, but the value is the reversible
   // composite window id produced by panelBridge. Decode it before filtering any messages.
   const identity = parsePluginPanelWindowId(panelId);
@@ -117,6 +124,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
 
   return (
     <aside
+      ref={shell}
       className="plugin-panel-shell"
       aria-label={title}
       data-panel-id={identity?.panelId}

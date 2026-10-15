@@ -372,18 +372,13 @@ describe("ChemDraft desktop shell", () => {
     );
   });
 
-  it("focuses an analysis window only when the user asked for it", () => {
-    // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
+  it("opens analysis windows without focus and lends focus only to their editable controls", () => {
     expect(desktopNativeSource).toContain("focused_on_build: false,");
-    expect(desktopNativeSource).toContain("focus_after_show: self.focus && !deferred,");
     expect(desktopNativeSource).toContain(".focused(presentation.focused_on_build)");
-    expect(desktopNativeSource).toContain(
-      "configure_analysis_window(&window, presentation.focus_after_show)"
-    );
-    expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
-    expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
-    // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
-    expect(mainWindowSource).toContain("{ open: true, focus: true, width: 940, height: 660 }");
+    expect(desktopNativeSource).toContain("configure_analysis_window(&window)");
+    expect(desktopNativeSource).not.toContain("focus_after_show");
+    expect(desktopNativeSource).toContain("validate_plugin_panel_focus_caller(window.label())?");
+    expect(desktopNativeSource).toMatch(/async fn set_plugin_panel_input_focus\(/);
     expect(mainWindowSource).toContain("showProposalReview(false);");
     expect(mainWindowSource).toMatch(/title: panel\.report\.title \|\| panel\.title,\s*focus: false/);
   });

@@ -4,6 +4,7 @@ mod fonts;
 mod installed_plugins;
 mod ocsr_engine;
 mod opsin;
+mod panel_window;
 mod plugin_package;
 mod problem_reports;
 mod screen_capture;
@@ -784,6 +785,22 @@ pub fn run() {
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
             // window. Destroying it left the main window believing it was still open.
             if is_plugin_panel_window_label(window.label()) {
+                // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
+                // input lease too, on both platforms, without changing the resize gesture.
+                if matches!(event, WindowEvent::Resized(_))
+                    && window.is_focused().unwrap_or(false)
+                    && !window.is_minimized().unwrap_or(true)
+                {
+                    let _ = window.set_focusable(false);
+                    let _ = focus_main_document_window_impl(
+                        window.app_handle(),
+                        MainWindowFocusMode::OnlyIfAppActive,
+                    );
+                }
+                if matches!(event, WindowEvent::Focused(false)) {
+                    // Clicking the document or switching apps ends the input's focus lease.
+                    let _ = window.set_focusable(false);
+                }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     if APP_QUITTING.load(Ordering::SeqCst) {
                         return;
@@ -943,6 +960,7 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            set_plugin_panel_input_focus,
             open_toolset_popover,
             prewarm_toolset_popover,
             prewarm_toolset_tooltip,
@@ -2247,17 +2265,15 @@ struct OpenPluginPanelRequest {
     title: String,
     width: Option<f64>,
     height: Option<f64>,
-    /// True only when the user explicitly asked for this window (a menu command or a click). An
-    /// automatic show — a new proposal arriving, a plugin pushing its report — passes false so the
-    /// window appears without taking keyboard focus from the canvas. Missing means false.
-    #[serde(default)]
-    focus: bool,
+    /// Legacy reveal hint from the host. Opening a panel never grants keyboard focus;
+    /// only an editable control may request it through set_plugin_panel_input_focus.
+    #[serde(default, rename = "focus")]
+    _focus: bool,
 }
 
 struct PanelWindowPresentation {
     focused_on_build: bool,
     visible_on_build: bool,
-    focus_after_show: bool,
 }
 
 impl OpenPluginPanelRequest {
@@ -2266,7 +2282,6 @@ impl OpenPluginPanelRequest {
             // Tao's Windows show mode is a lifetime creation trait, not the current focus state.
             focused_on_build: false,
             visible_on_build: !deferred,
-            focus_after_show: self.focus && !deferred,
         }
     }
 }
@@ -2284,6 +2299,54 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 }
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
+
+/// The IPC injects the calling window; it never accepts a caller-selected target label.
+fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
+    if is_plugin_panel_window_label(label) {
+        Ok(())
+    } else {
+        Err("Only a ChemDraft panel window may request panel input focus.".into())
+    }
+}
+
+#[tauri::command]
+async fn set_plugin_panel_input_focus(
+    window: tauri::WebviewWindow,
+    editing: bool,
+) -> Result<(), String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if editing {
+            #[cfg(target_os = "macos")]
+            target
+                .set_focusable(true)
+                .map_err(|error| error.to_string())?;
+            #[cfg(not(target_os = "macos"))]
+            target
+                .set_focusable(false)
+                .map_err(|error| error.to_string())?;
+            // Windows keeps WS_EX_NOACTIVATE even while editing. Programmatic focus is allowed;
+            // ordinary mouse clicks still cannot activate this owned window.
+            target.set_focus().map_err(|error| error.to_string())?;
+            let webview: &tauri::Webview = target.as_ref();
+            webview.set_focus().map_err(|error| error.to_string())
+        } else {
+            let was_focused = target.is_focused().unwrap_or(false);
+            target
+                .set_focusable(false)
+                .map_err(|error| error.to_string())?;
+            // A blur caused by clicking the document/another app must not raise or activate it.
+            if was_focused {
+                focus_main_document_window_impl(
+                    target.app_handle(),
+                    MainWindowFocusMode::OnlyIfAppActive,
+                )?;
+            }
+            Ok(())
+        }
+    })?
+}
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
 const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
@@ -2348,7 +2411,7 @@ mod plugin_panel_label_tests {
             &state,
             || false,
             |request| {
-                assert!(!request.focus, "resume must not activate the panel");
+                assert!(!request._focus, "resume must not activate the panel");
                 assert_eq!(request.panel_id, "panel.test");
                 builds += 1;
                 Ok(())
@@ -2386,14 +2449,14 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn open_requests_focus_only_when_the_app_asks() {
+    fn legacy_open_focus_hints_are_accepted_without_granting_input_focus() {
         let automatic: OpenPluginPanelRequest =
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals"}"#).unwrap();
-        assert!(!automatic.focus);
+        assert!(!automatic._focus);
         let explicit: OpenPluginPanelRequest =
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
                 .unwrap();
-        assert!(explicit.focus);
+        assert!(explicit._focus);
     }
 
     #[test]
@@ -2409,7 +2472,6 @@ mod plugin_panel_label_tests {
                 // restoration of an Analyze panel that was explicitly focused after its build.
                 assert!(!presentation.focused_on_build);
                 assert_eq!(presentation.visible_on_build, !deferred);
-                assert_eq!(presentation.focus_after_show, focus && !deferred);
             }
         }
     }
@@ -2431,6 +2493,28 @@ mod plugin_panel_label_tests {
         ] {
             assert!(!is_plugin_panel_window_label(other), "{other}");
         }
+    }
+
+    #[test]
+    fn input_focus_command_accepts_only_its_injected_panel_caller() {
+        use super::validate_plugin_panel_focus_caller;
+        assert!(validate_plugin_panel_focus_caller(&plugin_panel_window_label("panel.a")).is_ok());
+        for label in ["main", "toolset-core-main", "preferences", "plugin-panel-"] {
+            assert!(
+                validate_plugin_panel_focus_caller(label).is_err(),
+                "{label}"
+            );
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/plugin-panel.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        assert!(permissions
+            .iter()
+            .any(|permission| permission == "allow-set-plugin-panel-input-focus"));
+        assert!(!permissions
+            .iter()
+            .any(|permission| permission == "core:window:allow-set-focus"
+                || permission == "core:webview:allow-set-webview-focus"));
     }
 
     #[test]
@@ -2645,7 +2729,7 @@ fn resume_deferred_plugin_panels(
                 .release(true);
             return Ok(());
         }
-        request.focus = false;
+        request._focus = false;
         if let Err(error) = builder(request.clone()) {
             suspension
                 .lock()
@@ -2686,10 +2770,10 @@ fn build_or_show_plugin_panel<R: Runtime>(
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
-        if presentation.focus_after_show || !cfg!(target_os = "macos") {
+        if !cfg!(target_os = "macos") {
             window.show().map_err(|error| error.to_string())?;
         }
-        configure_analysis_window(&window, presentation.focus_after_show)?;
+        configure_analysis_window(&window)?;
         return Ok(());
     }
 
@@ -2707,9 +2791,8 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .inner_size(width, height)
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
-    .focusable(true)
-    // Windows uses this creation trait for EVERY later show, not just the initial reveal. Focus
-    // explicit opens below instead, so restoration always uses Tao's non-activating show path.
+    .focusable(false)
+    // Windows uses this creation trait for EVERY later show, not just the initial reveal.
     .focused(presentation.focused_on_build)
     .visible(presentation.visible_on_build)
     .resizable(true)
@@ -2728,6 +2811,10 @@ fn build_or_show_plugin_panel<R: Runtime>(
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        panel_window::install_resize_hit_test(&target)
+    })??;
 
     if restoring {
         let target = window.clone();
@@ -2735,7 +2822,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
             restore_utility_in_document_group(&target)
         })?;
     }
-    configure_analysis_window(&window, presentation.focus_after_show)?;
+    configure_analysis_window(&window)?;
     Ok(())
 }
 
@@ -2882,35 +2969,27 @@ fn choose_analysis_window_position(
     best
 }
 
-/// Always focusable, so the user can click into the window. It is focused only when `focus` is
-/// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
+/// Non-activating by default. Only the caller-validated input focus command makes a panel key.
 ///
 /// Marshalled: `open_plugin_panel_window` is async (a worker thread, required for WebView2 on
 /// Windows), and every call below is raw AppKit, which is main-thread-only.
 #[cfg(target_os = "macos")]
-fn configure_analysis_window<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
-    focus: bool,
-) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let target = window.clone();
     run_on_main_thread_blocking(window, move || {
-        configure_analysis_window_on_main_thread(&target, focus)
+        configure_analysis_window_on_main_thread(&target)
     })?
 }
 
 #[cfg(target_os = "macos")]
 fn configure_analysis_window_on_main_thread<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
-    focus: bool,
 ) -> Result<(), String> {
     let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
         return Err("Could not access native ChemDraft analysis window.".to_string());
     };
     configure_analysis_window_traits(window, ns_window)?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
     // Explicit panel opens keep their existing reveal behavior; suspension restores use only
     // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
     ns_window.orderFront(None);
@@ -2923,14 +3002,16 @@ fn configure_analysis_window_traits<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     ns_window: &NSWindow,
 ) -> Result<(), String> {
-    // Normal level + a native parent keeps the window with its document without making it globally
-    // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
+    // Normal level + a native parent keeps this movable/resizable, non-activating panel with its
+    // document. Focusability is enabled only for an input's temporary keyboard-focus lease.
     ns_window.setLevel(NSNormalWindowLevel);
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
+    ns_window.setStyleMask(panel_window::macos_style(ns_window.styleMask()));
+    ns_window.setAcceptsMouseMovedEvents(true);
     window
-        .set_focusable(true)
+        .set_focusable(false)
         .map_err(|error| error.to_string())
 }
 
@@ -2979,16 +3060,10 @@ pub(crate) fn attach_webview_window_to_main<R: Runtime>(window: &tauri::WebviewW
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_analysis_window<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
-    focus: bool,
-) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     window
-        .set_focusable(true)
+        .set_focusable(false)
         .map_err(|error| error.to_string())?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 
@@ -6045,7 +6120,7 @@ fn start_palette_pointer_feed(app: tauri::AppHandle) {
             let front_window_number =
                 NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm);
 
-            let entries: Vec<(String, String)> = app_handle
+            let mut entries: Vec<(String, String)> = app_handle
                 .state::<ToolsetWindowDirectory>()
                 .labels
                 .lock()
@@ -6056,6 +6131,15 @@ fn start_palette_pointer_feed(app: tauri::AppHandle) {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Report windows now share the palettes' non-key hover limitation. Reuse the feed;
+            // their native label is the identity, so no plugin id or extra authority is needed.
+            entries.extend(
+                app_handle
+                    .webview_windows()
+                    .into_keys()
+                    .filter(|label| is_plugin_panel_window_label(label))
+                    .map(|label| (label.clone(), label)),
+            );
 
             let mut hovered: Option<(String, PalettePointerPayload)> = None;
             for (label, toolset_id) in entries {
@@ -7543,9 +7627,10 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}",
+            "{}{}{}",
             include_str!("../capabilities/default.json"),
-            include_str!("../capabilities/document-dialogs.json")
+            include_str!("../capabilities/document-dialogs.json"),
+            include_str!("../capabilities/plugin-panel.json")
         );
 
         let handler_start = lib_source
@@ -7590,7 +7675,7 @@ mod tests {
             assert!(
                 capability.contains(&format!("\"{permission}\"")),
                 "command `{command}` is registered but `{permission}` is not granted in \
-                 capabilities/default.json, so every invoke is denied and the JS silently swallows it"
+                 a window capability, so every invoke is denied"
             );
         }
     }

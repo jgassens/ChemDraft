@@ -9,9 +9,8 @@
     "core:window:allow-start-dragging",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
-    "core:window:allow-set-focus",
+    "allow-set-plugin-panel-input-focus",
     "core:window:allow-set-position",
-    "core:window:allow-set-size",
-    "core:webview:allow-set-webview-focus"
+    "core:window:allow-set-size"
   ]
 }

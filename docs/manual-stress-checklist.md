@@ -10,6 +10,19 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Plugin panel focus (both macOS and Windows): open/re-show a panel from Analyze or a plugin command;
+click a panel button, heading, chart, empty area and title/drag area, hover its controls and scroll.
+Buttons must run exactly once and hover feedback must work while the drawing keeps keyboard focus:
+press a drawing-tool shortcut after each click. Click a panel text/number field, textarea, select or
+editable text, type/change its value, then press Escape: the panel stays open and a drawing-tool
+shortcut works again. Single-line Enter commits and returns focus; multiline Enter stays in the
+field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
+on the document while editing: keyboard focus returns to the drawing. Move/resize and close a panel
+(including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
+remain intact. On Windows, resize from every edge and corner several pixels inside the visible frame,
+also on a second monitor at a different scale; the hit band matches the normal OS resize border
+without widening the visible frame. Confirm WebView2 buttons still receive clicks without activation.
+
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
 bracket kinds placed and resized, dagger and submenu symbol stamps, atom labels through `tool.atom`,
