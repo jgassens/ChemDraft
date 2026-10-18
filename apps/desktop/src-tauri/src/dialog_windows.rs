@@ -279,7 +279,7 @@ impl Message {
                 serde_json::from_value::<ExportReceipt>(self.data.clone()).is_ok_and(|r| {
                     matches!(
                         r.status.as_str(),
-                        "progress" | "picked" | "exported" | "cancelled" | "error"
+                        "accepted" | "progress" | "picked" | "exported" | "cancelled" | "error"
                     ) && optional_string_fields(
                         &self.data,
                         &["error", "notice", "destinationPath", "filename"],
@@ -306,8 +306,10 @@ impl Message {
             }
             "request" | "ready" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "result" => serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
-                matches!(r.status.as_str(), "applied" | "cancelled" | "error")
-                    && self.data.get("error").is_none_or(|e| e.is_string())
+                matches!(
+                    r.status.as_str(),
+                    "accepted" | "applied" | "cancelled" | "error"
+                ) && self.data.get("error").is_none_or(|e| e.is_string())
                     && r.error.is_none_or(|e| e.encode_utf16().count() <= 2048)
             }),
             "closed" => serde_json::from_value::<Closed>(self.data.clone())
@@ -694,8 +696,10 @@ pub(crate) fn dialog_publish(
         if !session.actions.contains_key(&message.request_id) {
             return Err("Unknown dialog action receipt".into());
         }
-        // Progress is a delivery, never a completed receipt or permission to submit again.
-        if message.dialog_kind == "export" && message.data["status"] == "progress" {
+        // Acceptance and progress never complete a receipt or release its reservation.
+        if message.data["status"] == "accepted"
+            || (message.dialog_kind == "export" && message.data["status"] == "progress")
+        {
             return send_host(session, &message);
         }
         if let Some(previous) = session.receipts.get(&message.request_id) {
@@ -1889,7 +1893,14 @@ mod tests {
         m.message_type = "action".into();
         m.data = json!({"action":"apply","width":1,"height":2,"unit":"mm"});
         assert!(m.validate().is_err());
-        for status in ["progress", "picked", "exported", "cancelled", "error"] {
+        for status in [
+            "accepted",
+            "progress",
+            "picked",
+            "exported",
+            "cancelled",
+            "error",
+        ] {
             m.message_type = "result".into();
             m.data = json!({"status":status,"notice":"Export result"});
             assert!(m.validate().is_ok());

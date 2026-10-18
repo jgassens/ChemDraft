@@ -99,6 +99,11 @@ export class DialogCoordinator {
     let finished!: () => void;
     session.inFlight.set(message.requestId, new Promise<void>(resolve => { finished = resolve; }));
     try {
+      // Acknowledge the validated reservation before any owner flush, picker, or write.
+      await this.transport.publish(session.registration.hostId, {
+        ...dialogEnvelope(message), type: "result", data: { status: "accepted" }
+      });
+      if (session.settled) return;
       if (message.data.action === "apply") await this.owner.applyPageSize(message.documentTabId, message.data);
       else if (message.data.action === "export" || message.data.action === "chooseDestination") {
         const callback = message.data.action === "export" ? this.owner.export : this.owner.chooseExportDestination;

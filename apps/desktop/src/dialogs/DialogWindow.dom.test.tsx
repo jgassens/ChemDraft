@@ -9,6 +9,8 @@ vi.mock("../window-manager", async original => ({ ...await original<typeof impor
 const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
 vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
 import { DialogWindow } from "./DialogWindow";
+import { DialogCoordinator } from "./DialogCoordinator";
+import type { DialogTransport } from "./dialogTransport";
 import { exportFixture } from "./exportTestFixtures";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
 let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
@@ -21,7 +23,40 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
-it.each(["Export", "Choose..."])("refreshes the pending %s deadline on matching progress, then reports ten seconds of silence", async control => {
+it.each(["Export", "Choose..."])("keeps pending %s busy for 60 seconds after owner acceptance without progress", async control => {
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  let finish!: () => void;
+  const work = vi.fn(() => new Promise<{ status: "cancelled" }>(resolve => { finish = () => resolve({ status: "cancelled" }); }));
+  const transport: DialogTransport = {
+    subscribe: async () => () => {},
+    open: async message => { host.receive!(message); return { hostId: "export-host", windowLabel: "dialog-main-export-1" }; },
+    publish: async (_id, message) => { host.receive!(message); },
+    close: async () => {}
+  };
+  const coordinator = new DialogCoordinator(transport, { applyPageSize: vi.fn(), onError: vi.fn(), export: work, chooseExportDestination: work });
+  const pending: Promise<void>[] = [];
+  host.send.mockImplementation((_id, message: DialogMessage) => {
+    const receipt = coordinator.receive({ message, senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1" });
+    pending.push(receipt);
+    return Promise.resolve();
+  });
+  try {
+    await act(async () => { await coordinator.openExport("tab", { title: "Origin", options: exportFixture() }); await import("./ExportForm"); });
+    const button = (text: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === text)!;
+    await act(async () => button(control).click());
+    expect(work).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(60000));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Exporting...").disabled).toBe(true);
+    expect(button("Cancel").disabled).toBe(false);
+    await act(async () => button("Cancel").click());
+    expect(host.send).toHaveBeenLastCalledWith("export-host", expect.objectContaining({ data: { action: "cancel" } }));
+    await act(async () => { finish(); await Promise.all(pending); });
+    expect(work).toHaveBeenCalledTimes(1);
+  } finally { await coordinator.dispose(); }
+});
+it.each(["Export", "Choose..."])("reports missing acceptance for %s after exactly ten seconds without retry", async control => {
   act(() => root.unmount()); root = createRoot(container);
   await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
   const exportSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-session", data: { title: "Origin", options: exportFixture() } };
@@ -29,16 +64,11 @@ it.each(["Export", "Choose..."])("refreshes the pending %s deadline on matching 
   const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === control)!;
   await act(async () => button.click());
   const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
-  for (const notice of ["Preparing export…", "Choose an export location…", "Writing export…"]) {
-    await act(async () => vi.advanceTimersByTimeAsync(9000));
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "progress", notice } }));
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.textContent).toContain(notice);
-  }
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: "unrelated", data: { status: "accepted" } }));
   await act(async () => vi.advanceTimersByTimeAsync(9999));
   expect(container.querySelector('[role="alert"]')).toBeNull();
-  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: "unrelated", data: { status: "progress", notice: "Unrelated" } }));
+  // Even phase progress is not acceptance.
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "progress", notice: "Preparing export…" } }));
   await act(async () => vi.advanceTimersByTimeAsync(1));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("did not acknowledge");
   expect(host.send.mock.calls.filter(([, m]) => m.type === "action")).toHaveLength(1);

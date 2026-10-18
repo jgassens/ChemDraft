@@ -35,7 +35,7 @@ describe("Export protocol and authority", () => {
       expect(parseDialogMessage({ ...action, data: { action: "apply", width: 1, height: 2, unit: "mm" } })).toBeUndefined();
       expect(parseDialogMessage({ ...action, data: { action: ["export"], options: exportFixture() } })).toBeUndefined();
       expect(parseDialogMessage({ ...action, type: "result", data: { status: ["exported"] } })).toBeUndefined();
-      for (const status of ["picked", "exported", "cancelled", "error"]) expect(parseDialogMessage({ ...action, type: "result", data: { status } })).toBeDefined();
+      for (const status of ["accepted", "progress", "picked", "exported", "cancelled", "error"]) expect(parseDialogMessage({ ...action, type: "result", data: { status } })).toBeDefined();
     } finally { await h.coordinator.dispose(); }
   });
   it("reserves an export across duplicate and distinct request IDs; success is shown and Close still works", async () => {
@@ -88,9 +88,11 @@ describe("Export protocol and authority", () => {
         throw new Error("Origin gone");
       });
       const pending = h.deliver("action", { action: "export", options: exportFixture() });
+      await Promise.resolve();
       await h.coordinator.closeTab("tab-origin"); finish(); await pending;
       expect(h.transport.close).toHaveBeenCalledWith("host", "ownerTabClose");
-      expect(h.transport.publish).not.toHaveBeenCalled();
+      expect(h.transport.publish).toHaveBeenCalledTimes(1);
+      expect(h.transport.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: { status: "accepted" } }));
     } finally { await h.coordinator.dispose(); }
   });
   it("retains independent Page Size and Export sessions on the same tab", async () => {
@@ -126,6 +128,25 @@ it.each(["preparing", "writing", "picking"])("cancel settles while %s and suppre
     expect(h.transport.close).toHaveBeenCalledWith("host", "cancel");
     finish(); await Promise.all([pending, duplicate]);
     expect(write).toHaveBeenCalledTimes(stage === "writing" ? 1 : 0);
-    expect(h.transport.publish).not.toHaveBeenCalled();
+    expect(h.transport.publish).toHaveBeenCalledTimes(1);
+    expect(h.transport.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: { status: "accepted" } }));
   } finally { finish?.(); await h.coordinator.dispose(); }
+});
+
+it.each(["export", "chooseDestination"])("accepts %s synchronously before owner work, and cancellation during delivery prevents starting it", async action => {
+  const h = await setup();
+  let accepted!: () => void;
+  vi.mocked(h.transport.publish).mockImplementationOnce(() => new Promise<void>(resolve => { accepted = resolve; }));
+  try {
+    const pending = h.deliver("action", { action, options: exportFixture() }, "press");
+    expect(h.transport.publish).toHaveBeenCalledExactlyOnceWith("host", expect.objectContaining({ requestId: "press", data: { status: "accepted" } }));
+    expect(h.owner.export).not.toHaveBeenCalled();
+    expect(h.owner.chooseExportDestination).not.toHaveBeenCalled();
+    await h.deliver("action", { action, options: exportFixture() }, "second-press");
+    await h.deliver("action", { action: "cancel" }, "cancel");
+    accepted(); await pending;
+    expect(h.owner.export).not.toHaveBeenCalled();
+    expect(h.owner.chooseExportDestination).not.toHaveBeenCalled();
+    expect(h.transport.publish).toHaveBeenCalledTimes(1);
+  } finally { accepted?.(); await h.coordinator.dispose(); }
 });

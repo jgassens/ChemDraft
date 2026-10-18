@@ -29,7 +29,7 @@ export type DialogMessage = DialogEnvelope & (
   | { dialogKind: "export"; type: "snapshot"; data: { title: string; options: ExportOptions } }
   | { type: "request" | "ready"; data: Record<string, never> }
   | { type: "action"; data: ({ action: "apply" } & PageSize) | { action: "cancel" } | { action: "export" | "chooseDestination"; options: ExportOptions } }
-  | { type: "result"; data: { status: "applied" | "progress" | ExportDialogResult["status"]; error?: string; destinationPath?: string; filename?: string; notice?: string } }
+  | { type: "result"; data: { status: "accepted" | "applied" | "progress" | ExportDialogResult["status"]; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
 );
 export interface DialogRegistration { hostId: string; windowLabel: string }
@@ -62,7 +62,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
         ? d.action === "apply" && keys(d, ["action", "width", "height", "unit"]) && validPageSize(d)
         : typeof d.action === "string" && ["export", "chooseDestination"].includes(d.action) && keys(d, ["action", "options"]) && validExportOptions(d.options); break;
       case "result": valid = keys(d, ["status"], value.dialogKind === "pageSize" ? ["error"] : ["error", "notice", "destinationPath", "filename"]) &&
-        typeof d.status === "string" && (value.dialogKind === "pageSize" ? ["applied", "cancelled", "error"] : ["progress", "picked", "exported", "cancelled", "error"]).includes(d.status) &&
+        typeof d.status === "string" && (value.dialogKind === "pageSize" ? ["accepted", "applied", "cancelled", "error"] : ["accepted", "progress", "picked", "exported", "cancelled", "error"]).includes(d.status) &&
         (d.error === undefined || (typeof d.error === "string" && d.error.length <= 2048)) &&
         (d.notice === undefined || (typeof d.notice === "string" && d.notice.length <= 1024)) &&
         (d.destinationPath === undefined || (typeof d.destinationPath === "string" && d.destinationPath.length <= 1024 && !d.destinationPath.includes("\0"))) &&

@@ -58,9 +58,12 @@ successful receipts keep Apply disabled until native destruction. Duplicate IDs 
 receipts without another mutation. Pending openings are registered before the first await, so
 tab close, document replacement and dispose cancel even a subscription still in flight.
 A startup missing ready fails after 10 seconds with no automatic retry.
-An action missing its matching receipt reports an error after 10 seconds and leaves Apply disabled
-until a failure receipt arrives or the user closes the native title bar; the operation is never
-retried automatically. While a terminal action is pending, another form action is ignored.
+The owner immediately publishes an `accepted` result after validating and reserving an action,
+before awaiting any flush, preparation, picker or write. The dialog's 10-second action deadline
+covers only this acceptance. After acceptance, completion has no deadline: busy state remains
+and Cancel stays available, even during a long picker or write. Progress is informational and
+does not refresh the deadline. Missing acceptance reports an error after 10 seconds without
+retrying or releasing the reservation. While an action is pending, only cancellation is allowed.
 
 Construction is async on a worker, serialized through `lock_window_creation()`, and refused after
 quit begins. Builds are hidden, `focused(false)`, focusable, decorated, shadowed, and skip the
@@ -152,7 +155,7 @@ displayed destination; even a stale/forged destination requires another panel un
 values match the owner-held grant. The writer uses the exact granted path, without appending an
 extension after the panel returns. Overlong path receipts fail visibly before a write.
 
-Results are `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
+Results are `accepted`, `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
 or warning notice data. Main returns preparation/picker/write progress without completing the
 request receipt or releasing its reservation. Failed operations and cancelled
 panels release the reservation for an explicit retry. Completed exports keep Export disabled and
