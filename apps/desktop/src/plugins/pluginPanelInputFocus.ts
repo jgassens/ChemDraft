@@ -142,8 +142,10 @@ export function installPluginPanelInputFocus(
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
     } else if (event.key === "Tab" && !event.defaultPrevented) {
+      const activeModal = control.closest<HTMLElement>('[aria-modal="true"]');
       const controls = [...shell.querySelectorAll<HTMLElement>("input, textarea, select, [contenteditable]")]
         .filter((candidate) => panelEditableControl(candidate) === candidate &&
+          (activeModal ? activeModal.contains(candidate) : !candidate.closest('[aria-modal="true"]')) &&
           (candidate.tabIndex >= 0 || (candidate.hasAttribute("contenteditable") && !candidate.hasAttribute("tabindex"))) &&
           !candidate.closest('[hidden], [inert]') && getComputedStyle(candidate).display !== "none" &&
           getComputedStyle(candidate).visibility !== "hidden")

@@ -273,6 +273,41 @@ describe("panel input keyboard focus", () => {
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true, false]);
   });
 
+  it("keeps Tab navigation inside the active portalled modal", async () => {
+    const shell = document.createElement("aside");
+    shell.innerHTML = '<select id="inline"><option>Inline</option></select>';
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    modal.innerHTML = '<select id="modal-first"><option>First</option></select><select id="modal-last"><option>Last</option></select>';
+    document.body.append(shell, modal);
+    const request = vi.fn(async (_editing: boolean) => undefined);
+    const listen = vi.spyOn(document.body, "addEventListener");
+    cleanup = installPluginPanelInputFocus(document.body, request);
+    const down = listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener;
+    const modalFirst = modal.querySelector<HTMLSelectElement>("#modal-first")!;
+    const modalLast = modal.querySelector<HTMLSelectElement>("#modal-last")!;
+
+    // Use the same trusted-pointer handler path as the lease tests; jsdom cannot synthesize trust.
+    down({ target: modalFirst, button: 0, isTrusted: true, pointerId: 1, clientX: 10, clientY: 10 } as unknown as Event);
+    modalFirst.focus();
+    await flush();
+    key(modalFirst, "Tab", true);
+    await flush();
+    expect(document.activeElement).not.toBe(shell.querySelector("#inline"));
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+
+    down({ target: modalFirst, button: 0, isTrusted: true, pointerId: 1, clientX: 10, clientY: 10 } as unknown as Event);
+    modalFirst.focus();
+    await flush();
+    key(modalFirst, "Tab");
+    await flush();
+    expect(document.activeElement).toBe(modalLast);
+    key(modalLast, "Tab");
+    await flush();
+    expect(document.activeElement).not.toBe(modalLast);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true, false]);
+  });
+
   it("returns focus on non-input click and still delivers button actions", async () => {
     const { shell, request } = mount("<input><button>Run</button>");
     pointerDown(shell.querySelector("input")!);
