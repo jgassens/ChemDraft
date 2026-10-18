@@ -144,12 +144,47 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
   it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
-    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(not(target_os = "macos"))]')[0]!;
+    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(windows)]')[0]!;
     expect(mac).toContain("makeKeyWindow()");
     expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
-    const windows = command.split('#[cfg(not(target_os = "macos"))]')[1]!;
-    expect(windows).toContain("target.set_focus()");
     expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("uses guarded thread-local activation for Windows input, release and resize presses", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
+    expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
+    expect(windows).toContain("return Ok(())");
+    expect(windows).not.toContain("target.set_focus()");
+    expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
+    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
+    expect(release).toContain("panel_window::focus_if_app_active(hwnd)");
+    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
+    expect(focus).toContain("GetForegroundWindow()");
+    expect(focus).toContain("IsWindowVisible(hwnd) == 0");
+    expect(focus).toContain("IsIconic(hwnd) != 0");
+    expect(focus).toContain("GetWindowThreadProcessId");
+    expect(focus).toContain("with_owned_foreground");
+    expect(focus).toContain("SetActiveWindow(hwnd)");
+    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
+    expect(panel.split("if message == WM_NCLBUTTONDOWN")[1]!.split("if message == WM_NCHITTEST")[0]!)
+      .toContain("focus_if_app_active(owner)");
+    expect(panel.split("if message == WM_ENTERSIZEMOVE")[1]!.split("let mut current_data")[0]!)
+      .toContain("focus_if_app_active(GetWindow(hwnd, GW_OWNER))");
+  });
+
+  it("exposes the Windows parent resize band after WebView2's fill-client resize", () => {
+    const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
+    expect(panel).toContain("controller.ParentWindow(&mut child)");
+    expect(panel).toContain("geometry::inset_client");
+    expect(panel).toMatch(/SetWindowPos\(\s*child\.0/);
+    expect(panel).toContain("controller.SetBounds(bounds)");
+    expect(panel).toContain("ScreenToClient(hwnd, &mut point)");
+    expect(panel).toMatch(/let result = DefSubclassProc[^;]+;[\s\S]*if \(message == WM_SIZE/);
   });
 
   it("grants and releases input focus for the full-size spectrum portal", async () => {
@@ -184,8 +219,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       panelId: VALIDATION_RESULT_WINDOW_ID,
       title: "Validation Result",
       width: 500,
-      height: 520,
-      focus: true
+      height: 520
     });
 
     expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
@@ -193,23 +227,27 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
         panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, VALIDATION_RESULT_WINDOW_ID),
         title: "Validation Result",
         width: 500,
-        height: 520,
-        focus: true
+        height: 520
       }
     });
   });
 
-  it("passes focus: false through for an automatic show so the canvas keeps the keyboard", async () => {
+  it.each([true, false])("drops the legacy focus=%s hint so opening always keeps the document focused", async (focus) => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     await openPluginPanelWindow({
       pluginId: ANALYSIS_WINDOW_OWNER_ID,
       panelId: PATCH_REVIEW_WINDOW_ID,
       title: "Plugin Proposals",
-      focus: false
+      focus
     });
 
     expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
-      request: expect.objectContaining({ focus: false })
+      request: {
+        panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID),
+        title: "Plugin Proposals",
+        width: undefined,
+        height: undefined
+      }
     });
   });
 

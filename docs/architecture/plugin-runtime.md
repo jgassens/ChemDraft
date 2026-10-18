@@ -89,18 +89,27 @@ The main window registers its analysis-window action listener once and reads
 its live handlers through a ref, so no action can fall into a re-registration
 gap when the document changes.
 
-**Focus.** `openPluginPanelWindow` carries an explicit `focus` flag. Only a
-window the user asked for (an Analyze menu command, the pending-proposals
-badge) takes keyboard focus; automatic shows — a proposal arriving, a plugin
-pushing its report — order the window front without making it key, so typing on
-the canvas is never interrupted. The window stays focusable for a click. The
+**Focus.** Opening or revealing a panel keeps keyboard focus in the document,
+including Analyze commands and automatic report updates. The old `focus` hint
+is ignored. Ordinary clicks, buttons, charts, hovering, scrolling and window
+drags behave like floating toolbars. A trusted click on an editable control
+borrows keyboard focus until Escape, committing single-line Enter, Tab out,
+clicking elsewhere or loss of window focus. A deliberate drag or double/triple
+click selecting non-empty report text borrows the same focus so native Cmd/Ctrl+C
+copies it; a plain click or scripted selection does not. Clicking elsewhere,
+clicking the document or Escape clears the text selection and returns focus.
+Windows only lends focus while ChemDraft already owns the foreground, using
+thread-local activation without synthesized input; background requests are dropped.
+macOS makes the nonactivating panel key without activating the application. The
 proposal window is marked open only once its native open succeeds, so a failed
 open leaves the pending-proposals badge in place.
 
 **Escape.** A report window closes on a bubbling window-level Escape unless the
 event was already `defaultPrevented`. An inner overlay (the linked figure's
 Full size view) handles Escape in the capture phase and prevents the default,
-so the first Escape closes the overlay and only a second closes the window.
+so the first Escape closes the overlay. An active input or text-selection lease
+respects that prevented event; the next Escape releases the lease without closing
+the panel. Without a lease, the next Escape closes the window.
 
 ## Menu integration + drift test
 

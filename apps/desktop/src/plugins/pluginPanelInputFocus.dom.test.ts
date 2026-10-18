@@ -4,10 +4,12 @@ import { installPluginPanelInputFocus, panelEditableControl } from "./pluginPane
 
 let cleanup: (() => void) | undefined;
 const pointerHandlers = new WeakMap<HTMLElement, EventListener>();
+const selectionHandlers = new WeakMap<HTMLElement, { up: EventListener; click: EventListener }>();
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
   document.body.replaceChildren();
+  document.getSelection()?.removeAllRanges();
 });
 
 async function flush(): Promise<void> {
@@ -20,8 +22,13 @@ function mount(html: string) {
   document.body.append(shell);
   const request = vi.fn(async (_editing: boolean) => undefined);
   const listen = vi.spyOn(shell, "addEventListener");
+  const listenWindow = vi.spyOn(window, "addEventListener");
   cleanup = installPluginPanelInputFocus(shell, request);
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
+  selectionHandlers.set(shell, {
+    up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
+    click: listen.mock.calls.find(([type]) => type === "click")?.[1] as EventListener
+  });
   return { shell, request };
 }
 
@@ -29,7 +36,21 @@ function pointerDown(target: Element): void {
   // jsdom cannot produce trusted pointer events. Exercise the installed handler with the browser
   // fields explicitly; the separate synthetic-event regression uses real dispatchEvent below.
   const shell = target.closest("aside")!;
-  pointerHandlers.get(shell)!({ target, button: 0, isTrusted: true } as unknown as Event);
+  pointerHandlers.get(shell)!({ target, button: 0, isTrusted: true, pointerId: 1, clientX: 10, clientY: 10 } as unknown as Event);
+}
+
+function selectText(target: Element, end = target): void {
+  const range = document.createRange();
+  range.setStart(target.firstChild!, 0);
+  range.setEnd(end.firstChild!, end.textContent!.length);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+}
+
+function pointerUp(target: Element, dragged = true, isTrusted = true): void {
+  selectionHandlers.get(target.closest("aside")!)!.up?.({
+    target, button: 0, isTrusted, pointerId: 1, clientX: dragged ? 50 : 10, clientY: 10
+  } as unknown as Event);
 }
 
 function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
@@ -39,6 +60,97 @@ function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
 }
 
 describe("panel input keyboard focus", () => {
+  it("retries on a new trusted click if the native request was dropped while background", async () => {
+    const { shell, request } = mount("<input>");
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    await flush();
+    // The native guard may drop that request, without this never-key panel receiving a blur.
+    pointerDown(input);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true]);
+  });
+
+  it("lets the full-size overlay consume Escape before releasing its input lease", async () => {
+    const { shell, request } = mount("<input>");
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    await flush();
+    const closeOverlay = (event: KeyboardEvent): void => { event.preventDefault(); };
+    shell.addEventListener("keydown", closeOverlay, { capture: true, once: true });
+    key(input, "Escape");
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(document.activeElement).toBe(input);
+    key(input, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it.each(["drag", "double", "triple"])("leases focus for a trusted %s selection and preserves native copy", async (gesture) => {
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>');
+    const text = shell.querySelector("p")!;
+    pointerDown(text);
+    selectText(text);
+    pointerUp(text, gesture === "drag");
+    if (gesture !== "drag") selectionHandlers.get(shell)!.click?.({
+      target: text, isTrusted: true, detail: gesture === "double" ? 2 : 3
+    } as unknown as Event);
+    // Native key acquisition may focus the body; this must not end the text lease.
+    shell.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    const copy = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
+    shell.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    expect(document.getSelection()?.toString()).toBe("Report text");
+    const escape = key(shell, "Escape");
+    await flush();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(document.getSelection()?.toString()).toBe("");
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it.each(["plain click", "empty drag", "synthetic up", "script", "outside text", "cross boundary"])(
+    "does not lease focus for %s", async (gesture) => {
+      const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div><h2>Window title</h2>');
+      const text = shell.querySelector("p")!;
+      const title = shell.querySelector("h2")!;
+      const target = gesture === "outside text" ? title : text;
+      if (gesture !== "script") pointerDown(target);
+      if (gesture !== "empty drag") selectText(target, gesture === "cross boundary" ? title : target);
+      document.dispatchEvent(new Event("selectionchange"));
+      pointerUp(target, gesture !== "plain click", gesture !== "synthetic up");
+      if (gesture === "synthetic up") target.dispatchEvent(new MouseEvent("click", { detail: 2, bubbles: true }));
+      await flush();
+      expect(request).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["panel click", "document click", "replacement", "collapsed selection"])(
+    "clears a report selection lease on %s", async (ending) => {
+      const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div><button>Run</button>');
+      const text = shell.querySelector("p")!;
+      pointerDown(text);
+      selectText(text);
+      pointerUp(text);
+      await flush();
+      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      if (ending === "panel click") pointerDown(shell.querySelector("button")!);
+      else if (ending === "document click") window.dispatchEvent(new Event("blur"));
+      else if (ending === "replacement") shell.innerHTML = "Replacement report";
+      else {
+        document.getSelection()?.collapse(text.firstChild, 0);
+        document.dispatchEvent(new Event("selectionchange"));
+      }
+      await flush();
+      expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+      expect(document.getSelection()?.toString()).toBe("");
+    }
+  );
+
   it("requires a trusted input pointer-down before programmatic focus may borrow the keyboard", async () => {
     const { shell, request } = mount("<input><select><option>One</option></select>");
     const input = shell.querySelector("input")!;

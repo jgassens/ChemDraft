@@ -23,17 +23,19 @@ async function requestNativeInputFocus(editing: boolean): Promise<void> {
   await invoke("set_plugin_panel_input_focus", { editing });
 }
 
-/** A trusted input click starts a lease; keyboard/programmatic transfers can only continue it. */
+/** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
   requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus
 ): () => void {
   let editing = false;
   let leasedControl: HTMLElement | undefined;
+  let selectionLease = false;
+  let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
   let revision = 0;
   let pending = Promise.resolve();
-  const setEditing = (next: boolean): void => {
-    if (editing === next) return;
+  const setEditing = (next: boolean, retry = false): void => {
+    if (editing === next && !retry) return;
     editing = next;
     const requestedRevision = ++revision;
     // Serialize IPC: a delayed pointer-down request must not refocus a field after Escape/blur.
@@ -45,41 +47,97 @@ export function installPluginPanelInputFocus(
   const finish = (): void => {
     setEditing(false);
     leasedControl = undefined;
+    selectionGesture = undefined;
+    if (selectionLease) document.getSelection()?.removeAllRanges();
+    selectionLease = false;
     const active = panelEditableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
   };
+  const reportText = (node: EventTarget | null): boolean => {
+    const element = node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
+    return !!element && shell.contains(element) &&
+      !!element.closest(".plugin-report, .plugin-panel-content") &&
+      !element.closest("button, a, input, textarea, select, [contenteditable], svg, canvas, [role=button]");
+  };
+  const hasReportSelection = (): boolean => {
+    const selection = document.getSelection();
+    return !!selection && !selection.isCollapsed && selection.toString().length > 0 &&
+      reportText(selection.anchorNode) && reportText(selection.focusNode);
+  };
+  const leaseSelection = (): void => {
+    if (!hasReportSelection()) return;
+    leasedControl = undefined;
+    selectionLease = true;
+    setEditing(true);
+  };
   const pointerDown = (event: PointerEvent): void => {
     if (!event.isTrusted || event.button !== 0) return;
+    selectionGesture = undefined;
     const control = panelEditableControl(event.target);
     if (control && shell.contains(control)) {
+      if (selectionLease) finish();
       leasedControl = control;
-      setEditing(true);
-    } else if (editing) finish();
+      // Native code can drop a request while another app is foreground. A later trusted click
+      // retries it even if this webview never received a native blur for the dropped request.
+      setEditing(true, true);
+    } else {
+      if (editing) finish();
+      if (reportText(event.target)) {
+        selectionGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
+      }
+    }
+  };
+  const pointerMove = (event: PointerEvent): void => {
+    if (event.isTrusted && selectionGesture?.pointerId === event.pointerId &&
+      (event.clientX !== selectionGesture.x || event.clientY !== selectionGesture.y)) {
+      selectionGesture.dragged = true;
+    }
+  };
+  const pointerUp = (event: PointerEvent): void => {
+    if (!event.isTrusted || event.button !== 0 || selectionGesture?.pointerId !== event.pointerId) return;
+    if (selectionGesture.dragged || event.clientX !== selectionGesture.x || event.clientY !== selectionGesture.y) {
+      leaseSelection();
+    }
+    // Keep the gesture through click: double/triple clicks select text without pointer movement.
+  };
+  const click = (event: MouseEvent): void => {
+    if (!event.isTrusted || !selectionGesture) return;
+    if (event.detail >= 2) leaseSelection();
+    selectionGesture = undefined;
+  };
+  const cancelSelectionGesture = (): void => { selectionGesture = undefined; };
+  const selectionChange = (): void => {
+    // selectionchange alone (including a script-created range) can never start a lease.
+    if (selectionLease && !hasReportSelection()) finish();
   };
   const focusIn = (event: FocusEvent): void => {
     const control = panelEditableControl(event.target);
     if (editing && control) leasedControl = control;
-    else if (editing) finish();
+    else if (editing && !selectionLease) finish();
   };
   const wheel = (event: WheelEvent): void => {
-    if (editing && !panelEditableControl(event.target)) finish();
+    if (editing && !selectionLease && !panelEditableControl(event.target)) finish();
   };
   const focusOut = (): void => {
     // Native loss of focus and DOM blur can occur before the next control's focusin.
     queueMicrotask(() => {
-      if (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement)) {
+      if (!selectionLease && (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement))) {
         finish();
       }
     });
   };
   const keyDown = (event: KeyboardEvent): void => {
     const control = panelEditableControl(event.target);
-    if (!editing || !control || event.isComposing) return;
-    if (event.key === "Escape") {
+    if (!editing || event.isComposing) return;
+    if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
       finish();
-    } else if (event.key === "Enter" &&
+    } else if (selectionLease && event.key === "Tab" && !event.defaultPrevented) {
+      event.preventDefault();
+      finish();
+    } else if (!control) return;
+    else if (event.key === "Enter" &&
       (control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) {
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
@@ -98,12 +156,18 @@ export function installPluginPanelInputFocus(
   };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
   const observer = new MutationObserver(() => {
-    if (editing && (!leasedControl || !shell.contains(leasedControl) ||
+    if (selectionLease) selectionChange();
+    else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
       panelEditableControl(leasedControl) !== leasedControl)) finish();
   });
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
     attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });
   shell.addEventListener("pointerdown", pointerDown, true);
+  window.addEventListener("pointermove", pointerMove, true);
+  window.addEventListener("pointerup", pointerUp, true);
+  window.addEventListener("pointercancel", cancelSelectionGesture, true);
+  shell.addEventListener("click", click);
+  document.addEventListener("selectionchange", selectionChange);
   shell.addEventListener("focusin", focusIn);
   shell.addEventListener("focusout", focusOut);
   shell.addEventListener("wheel", wheel, { capture: true, passive: true });
@@ -112,6 +176,11 @@ export function installPluginPanelInputFocus(
   return () => {
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
+    window.removeEventListener("pointermove", pointerMove, true);
+    window.removeEventListener("pointerup", pointerUp, true);
+    window.removeEventListener("pointercancel", cancelSelectionGesture, true);
+    shell.removeEventListener("click", click);
+    document.removeEventListener("selectionchange", selectionChange);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("focusout", focusOut);
     shell.removeEventListener("wheel", wheel, true);

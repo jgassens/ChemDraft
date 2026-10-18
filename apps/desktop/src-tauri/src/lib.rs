@@ -2266,7 +2266,7 @@ struct OpenPluginPanelRequest {
     width: Option<f64>,
     height: Option<f64>,
     /// Legacy reveal hint from the host. Opening a panel never grants keyboard focus;
-    /// only an editable control may request it through set_plugin_panel_input_focus.
+    /// only an input or deliberate report-text selection may lease it via set_plugin_panel_input_focus.
     #[serde(default, rename = "focus")]
     _focus: bool,
 }
@@ -2332,24 +2332,48 @@ async fn set_plugin_panel_input_focus(
                 // activate ChemDraft after the user has switched to another application.
                 panel.makeKeyWindow();
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(windows)]
+            {
+                // Never use Tao's force_window_active (including its synthetic Alt fallback).
+                // Keep NOACTIVATE throughout the lease and drop delayed background requests.
+                let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                if !panel_window::focus_if_app_active(hwnd) {
+                    return Ok(());
+                }
+            }
+            #[cfg(not(any(target_os = "macos", windows)))]
             {
                 target
                     .set_focusable(false)
                     .map_err(|error| error.to_string())?;
-                // Windows keeps WS_EX_NOACTIVATE even while editing. Programmatic focus is allowed;
-                // ordinary mouse clicks still cannot activate this owned window.
                 target.set_focus().map_err(|error| error.to_string())?;
             }
             let webview: &tauri::Webview = target.as_ref();
             webview.set_focus().map_err(|error| error.to_string())
         } else {
+            // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
+            // The foreground top-level window remains the authoritative Windows lease owner.
+            #[cfg(windows)]
+            let was_focused = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                    == target.hwnd().map_err(|error| error.to_string())?.0
+            };
+            #[cfg(not(windows))]
             let was_focused = target.is_focused().unwrap_or(false);
             target
                 .set_focusable(false)
                 .map_err(|error| error.to_string())?;
             // A blur caused by clicking the document/another app must not raise or activate it.
             if was_focused {
+                #[cfg(windows)]
+                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
+                    let hwnd = main.hwnd().map_err(|error| error.to_string())?.0;
+                    if panel_window::focus_if_app_active(hwnd) {
+                        let webview: &tauri::Webview = main.as_ref();
+                        webview.set_focus().map_err(|error| error.to_string())?;
+                    }
+                }
+                #[cfg(not(windows))]
                 focus_main_document_window_impl(
                     target.app_handle(),
                     MainWindowFocusMode::OnlyIfAppActive,

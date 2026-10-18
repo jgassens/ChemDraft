@@ -121,9 +121,8 @@ export interface OpenPluginPanelRequest extends PluginPanelIdentity {
   title: string;
   width?: number;
   height?: number;
-  /** True only when the user explicitly opened this window (menu command, click). Automatic shows
-   *  — a new proposal, a plugin pushing its report — pass false so the canvas keeps keyboard focus. */
-  focus: boolean;
+  /** @deprecated Ignored for legacy callers. Only trusted input/text selection leases take focus. */
+  focus?: boolean;
 }
 
 export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Promise<void> {
@@ -140,8 +139,7 @@ export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Pr
       panelId: pluginPanelWindowId(request.pluginId, request.panelId),
       title: request.title,
       width: request.width,
-      height: request.height,
-      focus: request.focus
+      height: request.height
     }
   });
 }

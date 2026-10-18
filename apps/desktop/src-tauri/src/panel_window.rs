@@ -1,5 +1,41 @@
 //! Native traits for panels: clicks never activate, explicit input focus may make them key.
 
+#[cfg(any(windows, test))]
+#[path = "panel_window_geometry.rs"]
+mod geometry;
+
+/// SetActiveWindow changes activation only within our UI thread; unlike tao's set_focus it
+/// never calls SetForegroundWindow or synthesizes Alt. A late IPC is dropped in the background.
+#[cfg(windows)]
+pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::{
+        System::Threading::GetCurrentProcessId,
+        UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        },
+    };
+    // windows-sys gates this user32 entry point behind the otherwise unused keyboard feature.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetActiveWindow(
+            hwnd: windows_sys::Win32::Foundation::HWND,
+        ) -> windows_sys::Win32::Foundation::HWND;
+    }
+    unsafe {
+        // Preserve Tao's visible/non-minimized gate, including utility suspension for dialogs.
+        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return false;
+        }
+        let foreground = GetForegroundWindow();
+        let mut process = 0;
+        let known =
+            !foreground.is_null() && GetWindowThreadProcessId(foreground, &mut process) != 0;
+        geometry::with_owned_foreground(known.then_some(process), GetCurrentProcessId(), || {
+            SetActiveWindow(hwnd);
+        })
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
@@ -19,6 +55,7 @@ fn extended_style(style: isize) -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
+    // Tao may rewrite TOOLWINDOW on show; document ownership still keeps panels off the taskbar.
     (style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize)
 }
 
@@ -26,9 +63,15 @@ fn extended_style(style: isize) -> isize {
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    use windows_sys::Win32::UI::{
-        Shell::SetWindowSubclass,
-        WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        UI::{
+            Shell::SetWindowSubclass,
+            WindowsAndMessaging::{
+                GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+                SWP_NOACTIVATE, SWP_NOZORDER,
+            },
+        },
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     // Main-thread-only. Same focus policy as Tao's focusable(false); keep it through input focus.
@@ -38,46 +81,80 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
             GWL_EXSTYLE,
             extended_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)),
         );
-        if SetWindowSubclass(hwnd, Some(resize_subclass), 1, 0) == 0 {
-            return Err(format!(
-                "Could not install panel resize border: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
     }
-    Ok(())
+    // Get WebView2's actual container, not an assumed first child. Both its HWND and controller
+    // must be inset: shrinking just the controller leaves a child HWND covering the resize band.
+    let parent = hwnd as usize;
+    window
+        .with_webview(move |webview| unsafe {
+            let controller = webview.controller();
+            let mut child = Default::default();
+            if let Err(error) = controller.ParentWindow(&mut child) {
+                eprintln!("Could not access panel WebView2 container: {error}");
+                return;
+            }
+            let update: ResizeWebview = Box::new(move |hwnd| {
+                let mut client = RECT::default();
+                if GetClientRect(hwnd, &mut client) == 0 {
+                    return;
+                }
+                let (bx, by) = resize_border(hwnd);
+                let inset = geometry::inset_client(client.right, client.bottom, bx, by);
+                let width = inset.right - inset.left;
+                let height = inset.bottom - inset.top;
+                SetWindowPos(
+                    child.0,
+                    std::ptr::null_mut(),
+                    inset.left,
+                    inset.top,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+                // Infer WebView2's windows::RECT without introducing another windows dependency.
+                let mut bounds = Default::default();
+                if controller.Bounds(&mut bounds).is_ok() {
+                    bounds.left = 0;
+                    bounds.top = 0;
+                    bounds.right = width;
+                    bounds.bottom = height;
+                    if let Err(error) = controller.SetBounds(bounds) {
+                        eprintln!("Could not inset panel WebView2 bounds: {error}");
+                    }
+                }
+            });
+            let hwnd = parent as windows_sys::Win32::Foundation::HWND;
+            update(hwnd);
+            let data = Box::into_raw(Box::new(update));
+            if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
+                drop(Box::from_raw(data));
+                eprintln!(
+                    "Could not install panel resize border: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(windows)]
-fn resize_hit(
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    border_x: i32,
-    border_y: i32,
-) -> Option<isize> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+type ResizeWebview = Box<dyn Fn(windows_sys::Win32::Foundation::HWND)>;
+
+#[cfg(windows)]
+unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> (i32, i32) {
+    use windows_sys::Win32::UI::{
+        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
+        WindowsAndMessaging::{IsZoomed, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME},
     };
-    if x < 0 || y < 0 || x >= width || y >= height {
-        return None;
+    if IsZoomed(hwnd) != 0 {
+        return (0, 0);
     }
-    let left = x < border_x;
-    let right = x >= width - border_x;
-    let top = y < border_y;
-    let bottom = y >= height - border_y;
-    match (left, right, top, bottom) {
-        (true, _, true, _) => Some(HTTOPLEFT as isize),
-        (_, true, true, _) => Some(HTTOPRIGHT as isize),
-        (true, _, _, true) => Some(HTBOTTOMLEFT as isize),
-        (_, true, _, true) => Some(HTBOTTOMRIGHT as isize),
-        (true, _, _, _) => Some(HTLEFT as isize),
-        (_, true, _, _) => Some(HTRIGHT as isize),
-        (_, _, true, _) => Some(HTTOP as isize),
-        (_, _, _, true) => Some(HTBOTTOM as isize),
-        _ => None,
-    }
+    let dpi = GetDpiForWindow(hwnd);
+    let padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    (
+        GetSystemMetricsForDpi(SM_CXFRAME, dpi) + padding,
+        GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding,
+    )
 }
 
 #[cfg(windows)]
@@ -87,17 +164,16 @@ unsafe extern "system" fn resize_subclass(
     wparam: usize,
     lparam: isize,
     id: usize,
-    _data: usize,
+    data: usize,
 ) -> isize {
     use windows_sys::Win32::{
-        Foundation::RECT,
+        Foundation::{POINT, RECT},
         UI::{
-            HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
-            Shell::{DefSubclassProc, RemoveWindowSubclass},
+            Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass},
             WindowsAndMessaging::{
-                GetWindow, GetWindowRect, IsZoomed, SetForegroundWindow, GW_OWNER, MA_NOACTIVATE,
-                SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, WM_MOUSEACTIVATE, WM_NCDESTROY,
-                WM_NCHITTEST, WM_NCLBUTTONDOWN,
+                GetClientRect, GetWindow, GW_OWNER, MA_NOACTIVATE, SIZE_MINIMIZED, WM_DPICHANGED,
+                WM_ENTERSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+                WM_SIZE,
             },
         },
     };
@@ -109,36 +185,58 @@ unsafe extern "system" fn resize_subclass(
         // Non-client resize presses do not reach the DOM hook. Return an input's keyboard focus
         // to the actual owner before starting the native drag, including a press without movement.
         let owner = GetWindow(hwnd, GW_OWNER);
-        if !owner.is_null() {
-            SetForegroundWindow(owner);
-        }
+        focus_if_app_active(owner);
     }
-    if message == WM_NCHITTEST && IsZoomed(hwnd) == 0 {
+    if message == WM_NCHITTEST {
         let mut rect = RECT::default();
-        if GetWindowRect(hwnd, &mut rect) != 0 {
-            let dpi = GetDpiForWindow(hwnd);
-            let padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-            let border_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + padding;
-            let border_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding;
-            // Signed screen coordinates also cover monitors left/above the primary display.
-            let x = (lparam as u16 as i16) as i32 - rect.left;
-            let y = ((lparam >> 16) as u16 as i16) as i32 - rect.top;
-            if let Some(hit) = resize_hit(
-                x,
-                y,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-                border_x,
-                border_y,
+        let mut point = POINT {
+            x: (lparam as u16 as i16) as i32,
+            y: ((lparam >> 16) as u16 as i16) as i32,
+        };
+        // ScreenToClient uses the same origin as the WebView inset and Tao's shadow top edge.
+        #[link(name = "user32")]
+        extern "system" {
+            fn ScreenToClient(hwnd: windows_sys::Win32::Foundation::HWND, point: *mut POINT)
+                -> i32;
+        }
+        if GetClientRect(hwnd, &mut rect) != 0 && ScreenToClient(hwnd, &mut point) != 0 {
+            let (bx, by) = resize_border(hwnd);
+            if let Some(hit) = geometry::resize_hit(
+                point.x,
+                point.y,
+                geometry::Rect {
+                    left: rect.left,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.bottom,
+                },
+                bx,
+                by,
             ) {
-                return hit;
+                return hit as isize;
             }
         }
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(resize_subclass), id);
+        let result = DefSubclassProc(hwnd, message, wparam, lparam);
+        drop(Box::from_raw(data as *mut ResizeWebview));
+        return result;
     }
-    DefSubclassProc(hwnd, message, wparam, lparam)
+    // Wry resets the child to fill the client during WM_SIZE. Run AFTER it, including DPI moves.
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if message == WM_ENTERSIZEMOVE {
+        // Wry's parent subclass focuses WebView2 on entering a resize/move loop.
+        focus_if_app_active(GetWindow(hwnd, GW_OWNER));
+    }
+    if (message == WM_SIZE && wparam != SIZE_MINIMIZED as usize) || message == WM_DPICHANGED {
+        // A lower procedure may destroy the window while processing a resize/DPI event.
+        let mut current_data = 0;
+        if GetWindowSubclass(hwnd, Some(resize_subclass), id, &mut current_data) != 0 {
+            (*(current_data as *const ResizeWebview))(hwnd);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -168,23 +266,22 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_resize_band_covers_all_edges_and_corners_without_changing_center() {
+    fn portable_resize_results_match_win32_hit_codes() {
+        use super::geometry::ResizeHit;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
         };
-        for (x, y, hit) in [
-            (4, 40, HTLEFT),
-            (96, 40, HTRIGHT),
-            (50, 4, HTTOP),
-            (50, 76, HTBOTTOM),
-            (4, 4, HTTOPLEFT),
-            (96, 4, HTTOPRIGHT),
-            (4, 76, HTBOTTOMLEFT),
-            (96, 76, HTBOTTOMRIGHT),
+        for (hit, native) in [
+            (ResizeHit::Left, HTLEFT),
+            (ResizeHit::Right, HTRIGHT),
+            (ResizeHit::Top, HTTOP),
+            (ResizeHit::Bottom, HTBOTTOM),
+            (ResizeHit::TopLeft, HTTOPLEFT),
+            (ResizeHit::TopRight, HTTOPRIGHT),
+            (ResizeHit::BottomLeft, HTBOTTOMLEFT),
+            (ResizeHit::BottomRight, HTBOTTOMRIGHT),
         ] {
-            assert_eq!(super::resize_hit(x, y, 100, 80, 8, 8), Some(hit as isize));
+            assert_eq!(hit as isize, native as isize);
         }
-        assert_eq!(super::resize_hit(50, 40, 100, 80, 8, 8), None);
-        assert_eq!(super::resize_hit(-1, 40, 100, 80, 8, 8), None);
     }
 }

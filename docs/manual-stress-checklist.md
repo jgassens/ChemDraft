@@ -21,14 +21,25 @@ on the document while editing: keyboard focus returns to the drawing. Move/resiz
 (including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
 remain intact. On Windows, resize from every edge and corner several pixels inside the visible frame,
 also on a second monitor at a different scale; the hit band matches the normal OS resize border
-without widening the visible frame. Confirm WebView2 buttons still receive clicks without activation.
+without widening the visible frame. Repeat after hide/show, live resize, and moving between
+100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
+buttons still receive clicks without activation and text/content is not clipped by the inset.
+During an input/text-selection lease, press a resize border without moving: drawing shortcuts resume.
 In both inline and Full size spectra, change frequency/comparison selects, then Escape/Enter/Tab out;
 replace the report while a select is focused and confirm drawing shortcuts work again. Without making
 the panel key, hover peaks/atoms to check linked highlighting and pan across peak hit areas (and out
 of the spectrum while captured): panning must continue until release. Programmatic `input.focus()`
-and dispatched pointer events must not start a keyboard lease. On macOS, with another app frontmost,
-click an exposed panel input and also switch apps before a delayed focus request executes: ChemDraft
-must never activate or come to the front.
+and dispatched pointer events must not start a keyboard lease. In Full size, focus a select and
+press Escape: the first closes only the overlay, preserving the report window. Drag-select report
+text and double/triple click a word/paragraph, then Cmd/Ctrl+C: paste into another app and confirm
+the report selection was copied. A plain text click keeps drawing shortcuts active. With text
+selected, Escape or a click elsewhere in the panel/document clears selection and returns drawing
+shortcuts; report replacement must also end the lease. Script-created ranges and synthetic drags
+must not start a lease. On both platforms, with another app frontmost, click an exposed panel input
+or select text, and also switch apps before a delayed focus request executes: ChemDraft must never
+activate or come to the front. On Windows repeat with a non-client edge/corner press/resize while
+the other app is foreground; it must stay foreground and receive no phantom Alt keystroke.
+After a background request is dropped, activate the document and click the same input again: typing works.
 
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
