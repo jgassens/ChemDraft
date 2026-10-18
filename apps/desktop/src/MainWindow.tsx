@@ -30023,7 +30023,9 @@ function downloadBlob(filename: string, blob: Blob): void {
 
 function createExportFilename(document: ChemDraftDocument, extension: string): string {
   const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
-  return `${baseName}.${extension}`;
+  // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
+  // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
+  return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;
 }
 
 function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {

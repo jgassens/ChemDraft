@@ -19,6 +19,13 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   const actionPending = useRef(false);
   const cancellationRequested = useRef(false);
   const pendingRequestId = useRef<string | undefined>(undefined);
+  const refreshActionDeadline = () => {
+    clearTimeout(actionTimer.current);
+    actionTimer.current = setTimeout(() => {
+      // Unknown completion must never retry a mutation automatically. Native title-bar close remains available.
+      setError("The drawing did not acknowledge this action. Close this window to continue; the action was not retried.");
+    }, 10000);
+  };
   useEffect(() => {
     const preventReload = (event: KeyboardEvent) => {
       const modifier = detectDialogPlatform() === "macos" ? event.metaKey : event.ctrlKey;
@@ -47,7 +54,12 @@ export function DialogWindow({ hostId }: { hostId: string }) {
           latest = message;
         }
       } else if (!cancellationRequested.current && latest && sameDialog(message, latest) && message.type === "result" && message.requestId === pendingRequestId.current) {
-        if (message.data.status === "progress") { setNotice(message.data.notice); return; }
+        if (message.data.status === "progress") {
+          refreshActionDeadline();
+          setError(undefined);
+          setNotice(message.data.notice);
+          return;
+        }
         clearTimeout(actionTimer.current);
         // A successful terminal receipt precedes native destruction. Never reopen Apply here.
         if (message.data.status !== "applied") { actionPending.current = false; setBusy(false); }
@@ -83,11 +95,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     setError(undefined); setNotice(undefined);
     const requestId = crypto.randomUUID();
     pendingRequestId.current = requestId;
-    clearTimeout(actionTimer.current);
-    actionTimer.current = setTimeout(() => {
-      // Unknown completion must never retry a mutation automatically. Native title-bar close remains available.
-      setError("The drawing did not acknowledge this action. Close this window to continue; the action was not retried.");
-    }, 10000);
+    refreshActionDeadline();
     void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data }).catch(e => {
       if (cancellationRequested.current) return;
       clearTimeout(actionTimer.current); actionPending.current = false; setBusy(false); setError(String(e));

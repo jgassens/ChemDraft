@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DialogMessage } from "./dialogProtocol";
 import { installSecondaryWindowEditHistory } from "../editHistoryRouting";
 import { DOM_COMMAND_EVENT } from "../window-manager";
+vi.mock("../window-manager", async original => ({ ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true }));
 const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
 vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
 import { DialogWindow } from "./DialogWindow";
@@ -20,6 +21,28 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it.each(["Export", "Choose..."])("refreshes the pending %s deadline on matching progress, then reports ten seconds of silence", async control => {
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  const exportSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-session", data: { title: "Origin", options: exportFixture() } };
+  await act(async () => { host.receive!(exportSnapshot); await import("./ExportForm"); });
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === control)!;
+  await act(async () => button.click());
+  const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  for (const notice of ["Preparing export…", "Choose an export location…", "Writing export…"]) {
+    await act(async () => vi.advanceTimersByTimeAsync(9000));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "progress", notice } }));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain(notice);
+  }
+  await act(async () => vi.advanceTimersByTimeAsync(9999));
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: "unrelated", data: { status: "progress", notice: "Unrelated" } }));
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("did not acknowledge");
+  expect(host.send.mock.calls.filter(([, m]) => m.type === "action")).toHaveLength(1);
+});
 it("blocks same-turn repeated clicks before React commits the busy state", async () => {
   const apply = container.querySelectorAll<HTMLButtonElement>("button")[1]!;
   await act(async () => { apply.click(); apply.click(); });

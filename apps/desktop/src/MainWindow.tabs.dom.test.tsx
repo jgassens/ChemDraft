@@ -989,6 +989,46 @@ describe("documents in one window", () => {
     expect(native.dialogClose).toHaveBeenCalledWith("opaque", "cancel");
   });
 
+  it.each(["x".repeat(255), "x".repeat(251) + "😀yz"])("opens Export with a bounded default filename for a long title (%s)", async title => {
+    act(() => root!.unmount()); container.innerHTML = "";
+    await mount(createPhase4Document(title));
+    await command("export.open");
+    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", dialogKind: "export" });
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    expect(snapshot.data.options.filename).toBe(title.replace(/[^a-z0-9._-]+/gi, "-").slice(0, 252) + ".pdf");
+    expect(snapshot.data.options.filename.length).toBeLessThanOrEqual(256);
+    expect(snapshot.data.options.filename).not.toMatch(/[\uD800-\uDFFF]/u);
+  });
+
+  it("Export commits the still-focused atom-label draft before rendering", async () => {
+    await mountHoverChain();
+    await command("export.open"); await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    expect(labelEditor()?.value).toBe("NMe");
+    expect(document.activeElement).toBe(labelEditor());
+    // Preview already changes the working chemistry. Also require the flush's close
+    // decision so this test catches exporting that preview without committing the draft.
+    const finishDraft = vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft");
+    const options = { ...snapshot.data.options, format: "cdxml", filename: "label.cdxml" };
+    native.savePicker.mockResolvedValueOnce("/tmp/label.cdxml");
+    await pageSizeMessage("action", { action: "export", options });
+    expect(finishDraft).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ draft: "NMe" }));
+    await vi.waitFor(() => expect(native.writeFile).toHaveBeenCalledWith("/tmp/label.cdxml", expect.any(String)));
+    const contents = native.writeFile.mock.calls.find(([path]) => path === "/tmp/label.cdxml")![1];
+    await labelKey("Enter");
+    expect(labelEditor()).toBeNull();
+    const exported = openNativeDocument(contents).document;
+    if (!exported) throw new Error("Exported atom-label document could not be reopened");
+    const committed = bridge().snapshot().document;
+    const molecule = (doc: typeof committed) => doc.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(molecule(exported)).toEqual(molecule(committed));
+    expect(contents).toContain("NMe");
+  });
+
   it("Export reads its originating tab's current contents and writes unchanged SVG bytes once", async () => {
     await command("export.open"); await pageSizeMessage("ready", {});
     const snapshot = native.dialogSnapshot!;
