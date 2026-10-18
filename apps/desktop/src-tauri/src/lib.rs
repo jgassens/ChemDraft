@@ -2319,16 +2319,28 @@ async fn set_plugin_panel_input_focus(
     run_on_main_thread_blocking(&window, move || {
         if editing {
             #[cfg(target_os = "macos")]
-            target
-                .set_focusable(true)
-                .map_err(|error| error.to_string())?;
+            {
+                target
+                    .set_focusable(true)
+                    .map_err(|error| error.to_string())?;
+                let pointer =
+                    target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+                let panel = unsafe { pointer.as_ref() }
+                    .ok_or_else(|| "Could not access native ChemDraft panel window.".to_string())?;
+                // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
+                // Only make this panel key: an exposed input click or delayed IPC must never
+                // activate ChemDraft after the user has switched to another application.
+                panel.makeKeyWindow();
+            }
             #[cfg(not(target_os = "macos"))]
-            target
-                .set_focusable(false)
-                .map_err(|error| error.to_string())?;
-            // Windows keeps WS_EX_NOACTIVATE even while editing. Programmatic focus is allowed;
-            // ordinary mouse clicks still cannot activate this owned window.
-            target.set_focus().map_err(|error| error.to_string())?;
+            {
+                target
+                    .set_focusable(false)
+                    .map_err(|error| error.to_string())?;
+                // Windows keeps WS_EX_NOACTIVATE even while editing. Programmatic focus is allowed;
+                // ordinary mouse clicks still cannot activate this owned window.
+                target.set_focus().map_err(|error| error.to_string())?;
+            }
             let webview: &tauri::Webview = target.as_ref();
             webview.set_focus().map_err(|error| error.to_string())
         } else {

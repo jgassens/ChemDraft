@@ -23,12 +23,13 @@ async function requestNativeInputFocus(editing: boolean): Promise<void> {
   await invoke("set_plugin_panel_input_focus", { editing });
 }
 
-/** Event delegation also covers controls mounted by later report snapshots and keyboard .focus(). */
+/** A trusted input click starts a lease; keyboard/programmatic transfers can only continue it. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
   requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus
 ): () => void {
   let editing = false;
+  let leasedControl: HTMLElement | undefined;
   let revision = 0;
   let pending = Promise.resolve();
   const setEditing = (next: boolean): void => {
@@ -43,16 +44,21 @@ export function installPluginPanelInputFocus(
   };
   const finish = (): void => {
     setEditing(false);
+    leasedControl = undefined;
     const active = panelEditableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
   };
   const pointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0) return;
-    if (panelEditableControl(event.target)) setEditing(true);
-    else if (editing) finish();
+    if (!event.isTrusted || event.button !== 0) return;
+    const control = panelEditableControl(event.target);
+    if (control && shell.contains(control)) {
+      leasedControl = control;
+      setEditing(true);
+    } else if (editing) finish();
   };
   const focusIn = (event: FocusEvent): void => {
-    if (panelEditableControl(event.target)) setEditing(true);
+    const control = panelEditableControl(event.target);
+    if (editing && control) leasedControl = control;
     else if (editing) finish();
   };
   const wheel = (event: WheelEvent): void => {
@@ -62,13 +68,13 @@ export function installPluginPanelInputFocus(
     // Native loss of focus and DOM blur can occur before the next control's focusin.
     queueMicrotask(() => {
       if (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement)) {
-        setEditing(false);
+        finish();
       }
     });
   };
   const keyDown = (event: KeyboardEvent): void => {
     const control = panelEditableControl(event.target);
-    if (!control || event.isComposing) return;
+    if (!editing || !control || event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
@@ -90,6 +96,13 @@ export function installPluginPanelInputFocus(
       else finish();
     }
   };
+  // Removing a focused node need not emit focusout (including a replaced report or closed portal).
+  const observer = new MutationObserver(() => {
+    if (editing && (!leasedControl || !shell.contains(leasedControl) ||
+      panelEditableControl(leasedControl) !== leasedControl)) finish();
+  });
+  observer.observe(shell, { childList: true, subtree: true, attributes: true,
+    attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });
   shell.addEventListener("pointerdown", pointerDown, true);
   shell.addEventListener("focusin", focusIn);
   shell.addEventListener("focusout", focusOut);
@@ -97,6 +110,7 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("keydown", keyDown);
   window.addEventListener("blur", finish);
   return () => {
+    observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("focusout", focusOut);

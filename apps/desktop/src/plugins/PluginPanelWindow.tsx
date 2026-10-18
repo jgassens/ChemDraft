@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
@@ -37,10 +37,8 @@ import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
  */
 export function PluginPanelWindow({ panelId }: { panelId: string }) {
-  const shell = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (shell.current) return installPluginPanelInputFocus(shell.current);
-  }, []);
+  // This webview belongs to the panel, including full-size figures portalled outside the aside.
+  useEffect(() => installPluginPanelInputFocus(document.body), []);
   useEffect(() => installPluginPanelPointerFeed(panelId), [panelId]);
   // The Rust window route still calls this query field `panelId`, but the value is the reversible
   // composite window id produced by panelBridge. Decode it before filtering any messages.
@@ -124,7 +122,6 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
 
   return (
     <aside
-      ref={shell}
       className="plugin-panel-shell"
       aria-label={title}
       data-panel-id={identity?.panelId}

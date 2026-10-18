@@ -22,6 +22,13 @@ on the document while editing: keyboard focus returns to the drawing. Move/resiz
 remain intact. On Windows, resize from every edge and corner several pixels inside the visible frame,
 also on a second monitor at a different scale; the hit band matches the normal OS resize border
 without widening the visible frame. Confirm WebView2 buttons still receive clicks without activation.
+In both inline and Full size spectra, change frequency/comparison selects, then Escape/Enter/Tab out;
+replace the report while a select is focused and confirm drawing shortcuts work again. Without making
+the panel key, hover peaks/atoms to check linked highlighting and pan across peak hit areas (and out
+of the spectrum while captured): panning must continue until release. Programmatic `input.focus()`
+and dispatched pointer events must not start a keyboard lease. On macOS, with another app frontmost,
+click an exposed panel input and also switch apps before a delayed focus request executes: ChemDraft
+must never activate or come to the front.
 
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both

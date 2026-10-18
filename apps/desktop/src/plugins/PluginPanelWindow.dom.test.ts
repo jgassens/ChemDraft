@@ -78,6 +78,7 @@ afterEach(() => {
   container = undefined;
   delete (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__;
   tauriInvoke.mockClear();
+  vi.restoreAllMocks();
   nativeSave.mockReset();
   tauriEvents.listeners.clear();
   tauriEvents.emitted.length = 0;
@@ -140,6 +141,42 @@ const INSPECTOR_REPORT: AnalysisReport = {
 };
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(not(target_os = "macos"))]')[0]!;
+    expect(mac).toContain("makeKeyWindow()");
+    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
+    const windows = command.split('#[cfg(not(target_os = "macos"))]')[1]!;
+    expect(windows).toContain("target.set_focus()");
+    expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("grants and releases input focus for the full-size spectrum portal", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const bodyListen = vi.spyOn(document.body, "addEventListener");
+    await mountWindow();
+    await broadcast(reportPayload());
+    const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")]
+      .find((button) => button.textContent === "Full size")!;
+    await act(async () => { fullSize.click(); });
+    const select = document.querySelector<HTMLSelectElement>(".lf-modal select")!;
+    expect(select).not.toBeNull();
+    expect(container!.contains(select)).toBe(false);
+    // jsdom has no trusted pointer source: invoke the installed browser listener explicitly.
+    const pointer = bodyListen.mock.calls.find(([type]) => type === "pointerdown")?.[1] as EventListener | undefined;
+    await act(async () => {
+      pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
+      select.focus();
+    });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true });
+    await act(async () => {
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false });
+    expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
+  });
+
   it("opens plugin and built-in analysis identities through the one existing native transport", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     await openPluginPanelWindow({

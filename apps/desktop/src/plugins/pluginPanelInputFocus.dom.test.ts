@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installPluginPanelInputFocus, panelEditableControl } from "./pluginPanelInputFocus";
 
 let cleanup: (() => void) | undefined;
+const pointerHandlers = new WeakMap<HTMLElement, EventListener>();
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
@@ -18,13 +19,17 @@ function mount(html: string) {
   shell.innerHTML = html;
   document.body.append(shell);
   const request = vi.fn(async (_editing: boolean) => undefined);
+  const listen = vi.spyOn(shell, "addEventListener");
   cleanup = installPluginPanelInputFocus(shell, request);
+  pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
   return { shell, request };
 }
 
 function pointerDown(target: Element): void {
-  // jsdom has no PointerEvent; pointerdown uses the same MouseEvent button/target fields.
-  target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+  // jsdom cannot produce trusted pointer events. Exercise the installed handler with the browser
+  // fields explicitly; the separate synthetic-event regression uses real dispatchEvent below.
+  const shell = target.closest("aside")!;
+  pointerHandlers.get(shell)!({ target, button: 0, isTrusted: true } as unknown as Event);
 }
 
 function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
@@ -34,6 +39,41 @@ function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
 }
 
 describe("panel input keyboard focus", () => {
+  it("requires a trusted input pointer-down before programmatic focus may borrow the keyboard", async () => {
+    const { shell, request } = mount("<input><select><option>One</option></select>");
+    const input = shell.querySelector("input")!;
+    input.focus();
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    input.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    pointerDown(input);
+    input.focus();
+    await flush();
+    shell.querySelector("select")!.focus();
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    shell.querySelector("select")!.blur();
+    await flush();
+    input.focus();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("releases the lease when a snapshot removes a focused control without focusout", async () => {
+    const { shell, request } = mount("<select><option>One</option></select>");
+    const select = shell.querySelector("select")!;
+    pointerDown(select);
+    select.focus();
+    await flush();
+    const focusout = vi.fn();
+    shell.addEventListener("focusout", focusout);
+    shell.innerHTML = "<p>Replacement report</p>";
+    await flush();
+    expect(focusout).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
   it.each([
     '<input type="text">', '<input type="number">', "<textarea></textarea>",
     "<select><option>One</option></select>", '<div contenteditable="true"><span>Text</span></div>',
@@ -70,6 +110,7 @@ describe("panel input keyboard focus", () => {
   it.each(["Escape", "Enter"])("returns focus on %s and preserves the commit/close behavior", async (value) => {
     const { shell, request } = mount("<input>");
     const input = shell.querySelector("input")!;
+    pointerDown(input);
     input.focus();
     await flush();
     const commit = vi.fn();
@@ -88,6 +129,7 @@ describe("panel input keyboard focus", () => {
   it("keeps multiline Enter and IME Enter/Escape in the input", async () => {
     const { shell, request } = mount("<textarea></textarea>");
     const input = shell.querySelector("textarea")!;
+    pointerDown(input);
     input.focus();
     await flush();
     key(input, "Enter");
@@ -101,6 +143,7 @@ describe("panel input keyboard focus", () => {
     const { shell, request } = mount('<input id="first"><button>Run</button><input disabled><input id="last">');
     const first = shell.querySelector<HTMLInputElement>("#first")!;
     const last = shell.querySelector<HTMLInputElement>("#last")!;
+    pointerDown(first);
     first.focus();
     await flush();
     key(first, "Tab");
@@ -110,6 +153,7 @@ describe("panel input keyboard focus", () => {
     key(last, "Tab");
     await flush();
     expect(request).toHaveBeenLastCalledWith(false);
+    pointerDown(first);
     first.focus();
     await flush();
     key(first, "Tab", true);
@@ -119,6 +163,7 @@ describe("panel input keyboard focus", () => {
 
   it("returns focus on non-input click and still delivers button actions", async () => {
     const { shell, request } = mount("<input><button>Run</button>");
+    pointerDown(shell.querySelector("input")!);
     shell.querySelector("input")!.focus();
     await flush();
     const button = shell.querySelector("button")!;
@@ -134,6 +179,7 @@ describe("panel input keyboard focus", () => {
   it.each(["dom", "native"])("releases the input lease after %s focus leaves the panel", async (kind) => {
     const { shell, request } = mount("<input>");
     const input = shell.querySelector("input")!;
+    pointerDown(input);
     input.focus();
     await flush();
     if (kind === "native") window.dispatchEvent(new Event("blur"));
@@ -146,6 +192,7 @@ describe("panel input keyboard focus", () => {
   it("does not apply a stale activation after a fast Escape", async () => {
     const { shell, request } = mount("<input>");
     const input = shell.querySelector("input")!;
+    pointerDown(input);
     input.focus();
     key(input, "Escape");
     await flush();
@@ -154,6 +201,7 @@ describe("panel input keyboard focus", () => {
 
   it("returns focus when scrolling the report outside an input without cancelling scrolling", async () => {
     const { shell, request } = mount("<input><div>Report</div>");
+    pointerDown(shell.querySelector("input")!);
     shell.querySelector("input")!.focus();
     await flush();
     const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true });
