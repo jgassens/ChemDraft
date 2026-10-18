@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { applyNativeChainTool, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
+import { exportPhase4Svg, applyNativeChainTool, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { createViewportState } from "@chemdraft/viewport-engine";
@@ -52,7 +52,7 @@ const native = vi.hoisted(() => ({
 }));
 vi.mock("./dialogs/dialogTransport", () => ({ nativeDialogTransport: {
   subscribe: async (handler: (delivery: DialogDelivery) => void) => { native.dialogListener = handler; return () => { native.dialogListener = undefined; }; },
-  open: async (snapshot: DialogMessage) => { native.dialogSnapshot = snapshot; return { hostId: "opaque", windowLabel: "dialog-main-pageSize-1" }; },
+  open: async (snapshot: DialogMessage) => { native.dialogSnapshot = snapshot; return { hostId: "opaque", windowLabel: `dialog-main-${snapshot.dialogKind}-1` }; },
   publish: native.dialogPublish, close: native.dialogClose
 } }));
 vi.mock("./documentWorkflow", async (original) => {
@@ -208,7 +208,7 @@ describe("documents in one window", () => {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
   async function pageSizeMessage(type: "ready" | "action", data: unknown) {
-    await act(async () => { native.dialogListener!({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1",
+    await act(async () => { native.dialogListener!({ senderWindowId: `dialog-main-${native.dialogSnapshot!.dialogKind}-1`, windowLabel: `dialog-main-${native.dialogSnapshot!.dialogKind}-1`,
       message: { ...native.dialogSnapshot!, type, data, requestId: crypto.randomUUID() } }); });
   }
   it("native Page Size stays modeless and applies to its originating inactive tab with one undo entry", async () => {
@@ -262,6 +262,24 @@ describe("documents in one window", () => {
     await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.cd-page-size-form button')).find(b => b.textContent === "Apply")!.click());
     expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe("custom");
     expect(container.querySelector(".cd-page-size-form")).toBeNull();
+  });
+  it("the browser keeps the shared Export form and shows its download receipt", async () => {
+    native.desktop = false;
+    vi.stubGlobal("URL", class extends URL { static createObjectURL = vi.fn(() => "blob:export"); static revokeObjectURL = vi.fn(); });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await command("export.open");
+    expect(native.dialogSnapshot).toBeUndefined();
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Export"]')!;
+    expect(dialog).not.toBeNull();
+    const select = dialog.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    await act(async () => { select.value = "svg"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === "Export")!.click());
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(dialog.textContent).toContain("Exported SVG");
+    expect(Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === "Exported")!.disabled).toBe(true);
+    expect(native.savePicker).not.toHaveBeenCalled();
+    await act(async () => Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === "Close")!.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Export"]')).toBeNull();
   });
   async function activate(index: number) {
     await act(async () => tabs()[index]!.click());
@@ -942,35 +960,90 @@ describe("documents in one window", () => {
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
 
-  it.each(["MacIntel", "Win32"])("Export and its nested picker share utility suspension on %s", async (platform) => {
+  it.each(["MacIntel", "Win32"])("modeless Export's own picker restores its live window on %s", async (platform) => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
     native.suspendUtilities = true;
     await remount();
     native.toolsetWindows.set("visible-toolbar", true);
     native.toolsetWindows.set("hidden-toolbar", false);
-    native.toolsetWindows.set("plugin-panel", true);
     await command("export.open");
-    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Export"]')!;
-    expect(dialog).not.toBeNull();
-    expect(native.suspensionDepth).toBe(1);
-    expect(native.visibilityChanges).toEqual(["hide"]);
-    expect([...native.toolsetWindows.values()]).toEqual([false, false, false]);
-
-    let finishPanel!: (path: string | null) => void;
-    native.savePicker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
-    const choose = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent === "Choose...")!;
-    await act(async () => choose.click());
-    await vi.waitFor(() => expect(finishPanel).toBeDefined());
-    expect(native.suspensionDepth).toBe(2);
-    await act(async () => finishPanel(null));
-    expect(native.suspensionDepth).toBe(1);
-    expect(native.visibilityChanges).toEqual(["hide"]);
-    await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close export"]')!.click());
     expect(container.querySelector('[role="dialog"][aria-label="Export"]')).toBeNull();
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "export" });
+    expect(native.suspensionDepth).toBe(0);
+    native.toolsetWindows.set("dialog-main-export-1", true);
+    await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    let finishPanel!: (path: string | null) => void;
+    native.savePicker.mockImplementationOnce(() => new Promise(resolve => { finishPanel = resolve; }));
+    await pageSizeMessage("action", { action: "chooseDestination", options: snapshot.data.options });
+    await vi.waitFor(() => expect(finishPanel).toBeDefined());
+    expect(native.suspensionDepth).toBe(1);
+    expect([...native.toolsetWindows.values()]).toEqual([false, false, false]);
+    await act(async () => finishPanel("/tmp/granted.pdf"));
+    await vi.waitFor(() => expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({ data: { status: "picked", destinationPath: "/tmp/granted.pdf", filename: "granted.pdf" } })));
     expect(native.suspensionDepth).toBe(0);
     expect(native.visibilityChanges).toEqual(["hide", "restore"]);
     expect([...native.toolsetWindows.values()]).toEqual([true, false, true]);
+    await pageSizeMessage("action", { action: "cancel" });
+    expect(native.dialogClose).toHaveBeenCalledWith("opaque", "cancel");
+  });
+
+  it("Export reads its originating tab's current contents and writes unchanged SVG bytes once", async () => {
+    await command("export.open"); await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    await paste("Edited while Export was open");
+    const origin = bridge().snapshot().document;
+    await command("document.new"); await paste("Other drawing");
+    const options = { ...snapshot.data.options, format: "svg", filename: "drawing.svg", destinationPath: undefined };
+    native.savePicker.mockResolvedValueOnce("/tmp/granted-without-extension");
+    const action = { ...snapshot, type: "action", data: { action: "export", options }, requestId: "export-press" };
+    await act(async () => {
+      const delivery = { senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1", message: action };
+      native.dialogListener!(delivery); native.dialogListener!(delivery);
+    });
+    await vi.waitFor(() => expect(native.writeFile.mock.calls.filter(([path]) => path.startsWith("/tmp/"))).toHaveLength(1));
+    expect(native.writeFile).toHaveBeenCalledWith("/tmp/granted-without-extension", exportPhase4Svg(origin, options.svg).contents);
+    expect(active()).toBe(1);
+    expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ status: "exported" }) }));
+  });
+
+  it("asks again after a chosen name or format changes, and sends write failures to Export", async () => {
+    await command("export.open"); await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    const options = { ...snapshot.data.options, format: "svg", filename: "drawing.svg" };
+    native.savePicker.mockResolvedValueOnce("/tmp/granted.svg");
+    await pageSizeMessage("action", { action: "chooseDestination", options });
+    native.savePicker.mockResolvedValueOnce("/tmp/new-grant.svg");
+    native.writeFile.mockRejectedValueOnce(new Error("Disk full"));
+    await pageSizeMessage("action", { action: "export", options: { ...options, filename: "renamed.svg", destinationPath: "/tmp/granted.svg" } });
+    await vi.waitFor(() => expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({ data: { status: "error", error: "Error: Disk full" } })));
+    expect(native.savePicker).toHaveBeenCalledTimes(2);
+    expect(native.writeFile).toHaveBeenCalledWith("/tmp/new-grant.svg", expect.any(String));
+  });
+  it("uses an unchanged destination grant directly, without another picker", async () => {
+    await command("export.open"); await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    const options = { ...snapshot.data.options, format: "svg", filename: "drawing.svg" };
+    native.savePicker.mockResolvedValueOnce("/tmp/exact-grant.svg");
+    await pageSizeMessage("action", { action: "chooseDestination", options });
+    await pageSizeMessage("action", { action: "export", options: { ...options, destinationPath: "/tmp/exact-grant.svg", filename: "exact-grant.svg" } });
+    await vi.waitFor(() => expect(native.writeFile).toHaveBeenCalledWith("/tmp/exact-grant.svg", expect.any(String)));
+    expect(native.savePicker).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["close", "replace"])("dismisses Export on originating document %s and rejects late submit", async kind => {
+    await command("export.open"); await pageSizeMessage("ready", {});
+    const snapshot = native.dialogSnapshot!;
+    if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+    if (kind === "close") { await command("document.new"); await closeTab(0); }
+    else await open("Replacement drawing");
+    expect(native.dialogClose).toHaveBeenCalledWith("opaque", "ownerTabClose");
+    await pageSizeMessage("action", { action: "export", options: { ...snapshot.data.options, format: "svg" } });
+    expect(native.writeFile.mock.calls.filter(([path]) => path.startsWith("/tmp/"))).toHaveLength(0); expect(native.savePicker).not.toHaveBeenCalled();
   });
 
   it.each(["document.open", "document.save", "document.saveAs"])(

@@ -8,6 +8,7 @@ import { DOM_COMMAND_EVENT } from "../window-manager";
 const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
 vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
 import { DialogWindow } from "./DialogWindow";
+import { exportFixture } from "./exportTestFixtures";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
 let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
 beforeEach(async () => {
@@ -69,4 +70,30 @@ it("prevents reload with no field focused and ignores same-revision replay", asy
   const reload = new KeyboardEvent("keydown", { key: "F5", cancelable: true }); window.dispatchEvent(reload); expect(reload.defaultPrevented).toBe(true);
   await act(async () => host.receive!({ ...snapshot, data: { ...snapshot.data, width: 20 } }));
   expect(container.querySelector("input")!.value).toBe("8.5"); expect(host.send).toHaveBeenCalledTimes(1);
+});
+it("renders Export failures and picker results in its form; success stays reserved with warnings and Close", async () => {
+  // New host mount, not a cross-session snapshot (which the host correctly rejects).
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  const exportedSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-session", data: { title: "Origin", options: exportFixture() } };
+  await act(async () => { host.receive!(exportedSnapshot); await import("./ExportForm"); });
+  const button = (text: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === text)!;
+  expect(host.send).toHaveBeenCalledWith("export-host", expect.objectContaining({ type: "ready", dialogKind: "export" }));
+  expect(document.activeElement).toBe(container.querySelector("#chemdraft-export-filename"));
+  await act(async () => { button("Export").click(); button("Export").click(); });
+  let action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: action.requestId, data: { status: "progress", notice: "Preparing export…" } }));
+  expect(container.textContent).toContain("Preparing export…"); expect(button("Exporting...").disabled).toBe(true);
+  await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: action.requestId, data: { status: "error", error: "Disk full" } }));
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe("Disk full"); expect(button("Export").disabled).toBe(false);
+  await act(async () => button("Choose...").click());
+  action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: action.requestId, data: { status: "picked", destinationPath: "C:\\Granted.pdf", filename: "Granted.pdf" } }));
+  expect(container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!.value).toBe("Granted.pdf"); expect(button("Export").disabled).toBe(false);
+  await act(async () => button("Export").click()); action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  expect(action.type === "action" && "options" in action.data && action.data.options.destinationPath).toBe("C:\\Granted.pdf");
+  await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: action.requestId, data: { status: "exported", notice: "Exported PDF with 1 warning(s)\nUnsupported artwork preserved approximately" } }));
+  expect(container.textContent).toContain("Unsupported artwork"); expect(button("Exported").disabled).toBe(true); expect(button("Close").disabled).toBe(false);
+  await act(async () => button("Close").click());
+  expect(host.send).toHaveBeenLastCalledWith("export-host", expect.objectContaining({ data: { action: "cancel" } }));
 });

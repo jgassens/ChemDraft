@@ -17,12 +17,25 @@ const OVERSIZED_ERROR: &str = "Dialog operation failed; error details exceeded t
 struct DialogKindSpec {
     maximizable: bool,
     resizable: bool,
+    title: &'static str,
+    size: (f64, f64),
+    min_size: (f64, f64),
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: false,
+            title: "Custom Page Size",
+            size: (420.0, 300.0),
+            min_size: (360.0, 260.0),
+        }),
+        "export" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Export",
+            size: (520.0, 620.0),
+            min_size: (420.0, 360.0),
         }),
         _ => Err("Unknown dialog kind".into()),
     }
@@ -67,6 +80,135 @@ struct Receipt {
     error: Option<String>,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportOptions {
+    format: String,
+    filename: String,
+    destination_path: Option<String>,
+    svg: SvgOptions,
+    pdf: PdfOptions,
+    raster: RasterOptions,
+    cdxml: CdxmlOptions,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SvgOptions {
+    include_warnings: bool,
+    include_page_guides: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PdfOptions {
+    compress: bool,
+    include_page_guides: bool,
+    page: String,
+    pdf_type: String,
+    background: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RasterOptions {
+    scale: f64,
+    background: String,
+    jpeg_quality: f64,
+    max_dimension_px: f64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CdxmlOptions {
+    creation_program: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportSnapshot {
+    title: String,
+    options: ExportOptions,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum ExportAction {
+    Export { options: ExportOptions },
+    ChooseDestination { options: ExportOptions },
+    Cancel,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportReceipt {
+    status: String,
+    error: Option<String>,
+    notice: Option<String>,
+    destination_path: Option<String>,
+    filename: Option<String>,
+}
+fn bounded_text(text: &str, max: usize) -> bool {
+    text.encode_utf16().count() <= max && !text.contains('\0')
+}
+impl ExportOptions {
+    fn valid(&self) -> bool {
+        // Reading the bool fields documents that both values are accepted after typed decoding.
+        let _ = (
+            self.svg.include_warnings,
+            self.svg.include_page_guides,
+            self.pdf.compress,
+            self.pdf.include_page_guides,
+        );
+        matches!(
+            self.format.as_str(),
+            "svg"
+                | "pdf"
+                | "png"
+                | "jpeg"
+                | "bmp"
+                | "gif"
+                | "tiff"
+                | "eps"
+                | "mol"
+                | "mol-v2000"
+                | "sdf"
+                | "sdf-v2000"
+                | "rxn"
+                | "rxn-v2000"
+                | "cml"
+                | "smiles"
+                | "connection-table"
+                | "rdf"
+                | "rdf-v2000"
+                | "cdxml"
+                | "cdx"
+                | "chemdraw-stationery"
+                | "chemdraw-3x"
+                | "tgf"
+                | "isis-skc"
+                | "msi-chemnote"
+                | "smd-42"
+                | "3mf-display"
+                | "3mf-printing"
+        ) && bounded_text(&self.filename, 256)
+            && !self.filename.trim().is_empty()
+            && !self.filename.contains(['/', '\\'])
+            && self
+                .destination_path
+                .as_ref()
+                .is_none_or(|p| bounded_text(p, 1024))
+            && self.pdf.page == "current"
+            && self.pdf.pdf_type == "vector"
+            && self.pdf.background == "white"
+            && self.raster.scale.is_finite()
+            && (1.0..=4.0).contains(&self.raster.scale)
+            && matches!(self.raster.background.as_str(), "white" | "transparent")
+            && self.raster.jpeg_quality.is_finite()
+            && (1.0..=100.0).contains(&self.raster.jpeg_quality)
+            && self.raster.max_dimension_px.is_finite()
+            && (1.0..=8192.0).contains(&self.raster.max_dimension_px)
+            && bounded_text(&self.cdxml.creation_program, 256)
+    }
+}
+fn optional_string_fields(data: &Value, names: &[&str]) -> bool {
+    names
+        .iter()
+        .all(|name| data.get(name).is_none_or(Value::is_string))
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Closed {
     reason: String,
@@ -105,7 +247,7 @@ impl Message {
         if serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > MAX_BYTES
             || self.protocol_version != 1
             || self.owner_window_id != super::MAIN_WINDOW_LABEL
-            || self.dialog_kind != "pageSize"
+            || kind_spec(&self.dialog_kind).is_err()
             || !token(&self.document_tab_id)
             || !token(&self.session_id)
             || !token(&self.request_id)
@@ -115,6 +257,38 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "export" => {
+                serde_json::from_value::<ExportSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    !s.title.is_empty()
+                        && s.title.encode_utf16().count() <= 256
+                        && s.options.valid()
+                        && optional_string_fields(&self.data["options"], &["destinationPath"])
+                })
+            }
+            "action" if self.dialog_kind == "export" => {
+                serde_json::from_value::<ExportAction>(self.data.clone()).is_ok_and(|a| match a {
+                    ExportAction::Cancel => true,
+                    ExportAction::Export { options }
+                    | ExportAction::ChooseDestination { options } => {
+                        options.valid()
+                            && optional_string_fields(&self.data["options"], &["destinationPath"])
+                    }
+                })
+            }
+            "result" if self.dialog_kind == "export" => {
+                serde_json::from_value::<ExportReceipt>(self.data.clone()).is_ok_and(|r| {
+                    matches!(
+                        r.status.as_str(),
+                        "progress" | "picked" | "exported" | "cancelled" | "error"
+                    ) && optional_string_fields(
+                        &self.data,
+                        &["error", "notice", "destinationPath", "filename"],
+                    ) && r.error.is_none_or(|s| s.encode_utf16().count() <= 2048)
+                        && r.notice.is_none_or(|s| s.encode_utf16().count() <= 1024)
+                        && r.destination_path.is_none_or(|s| bounded_text(&s, 1024))
+                        && r.filename.is_none_or(|s| s.encode_utf16().count() <= 256)
+                })
+            }
             "snapshot" => serde_json::from_value::<Snapshot>(self.data.clone()).is_ok_and(|s| {
                 !s.title.is_empty()
                     && s.title.encode_utf16().count() <= 256
@@ -184,6 +358,7 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registr
 pub(crate) fn is_dialog_label(label: &str) -> bool {
     label
         .strip_prefix("dialog-main-pageSize-")
+        .or_else(|| label.strip_prefix("dialog-main-export-"))
         .is_some_and(|slot| {
             !slot.is_empty() && slot.len() <= 20 && slot.bytes().all(|c| c.is_ascii_digit())
         })
@@ -250,7 +425,14 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
         }
         return Ok(false);
     }
-    if session.terminal_request.is_some() {
+    let completed_export = session
+        .terminal_request
+        .as_ref()
+        .and_then(|id| session.receipts.get(id))
+        .is_some_and(|r| r.data["status"] == "exported");
+    if session.terminal_request.is_some()
+        && !(completed_export && message.data["action"] == "cancel")
+    {
         return Err("A terminal dialog action is already pending".into());
     }
     if session.actions.len() >= 128 {
@@ -342,7 +524,13 @@ pub(crate) async fn dialog_open(
             .get_mut(&registration.host_id)
             .ok_or("Unknown dialog host")?;
         session.owner_channel = Some(channel);
-        session.ready && session.terminal_request.is_none()
+        session.ready
+            && (session.terminal_request.is_none()
+                || session
+                    .terminal_request
+                    .as_ref()
+                    .and_then(|id| session.receipts.get(id))
+                    .is_some_and(|r| r.data["status"] == "exported"))
     };
     if !build {
         if ready {
@@ -354,15 +542,17 @@ pub(crate) async fn dialog_open(
         return Ok(registration);
     }
     let spec = kind_spec(&message.dialog_kind)?;
-    let snapshot: Snapshot = serde_json::from_value(message.data).map_err(|e| e.to_string())?;
+    let title = message.data["title"]
+        .as_str()
+        .ok_or("Dialog title missing")?;
     let builder = WebviewWindowBuilder::new(
         &app,
         &registration.window_label,
         WebviewUrl::App(format!("/?window=dialog&hostId={}", registration.host_id).into()),
     )
-    .title(format!("Custom Page Size — {}", snapshot.title))
-    .inner_size(420.0, 300.0)
-    .min_inner_size(360.0, 260.0)
+    .title(format!("{} — {}", spec.title, title))
+    .inner_size(spec.size.0, spec.size.1)
+    .min_inner_size(spec.min_size.0, spec.min_size.1)
     .visible(false)
     .focused(false)
     .focusable(true)
@@ -384,7 +574,8 @@ pub(crate) async fn dialog_open(
             .sessions
             .remove(&registration.host_id);
         return Err(format!(
-            "Could not create native Custom Page Size window: {error}"
+            "Could not create native {} window: {error}",
+            spec.title
         ));
     }
     // Owner close/quit does not wait on the construction lock. Discard a late build whose
@@ -480,7 +671,7 @@ pub(crate) async fn dialog_send(
             super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
                 .and_then(|result| result)
         {
-            eprintln!("Could not reveal native Custom Page Size: {error}");
+            eprintln!("Could not reveal native dialog: {error}");
             close_session(&app, &host_id, "error");
             return Err(error);
         }
@@ -508,11 +699,17 @@ pub(crate) fn dialog_publish(
         if !session.actions.contains_key(&message.request_id) {
             return Err("Unknown dialog action receipt".into());
         }
+        // Progress is a delivery, never a completed receipt or permission to submit again.
+        if message.dialog_kind == "export" && message.data["status"] == "progress" {
+            return send_host(session, &message);
+        }
         if let Some(previous) = session.receipts.get(&message.request_id) {
             return send_host(session, previous);
         }
-        if message.data["status"] == "error"
-            && session.terminal_request.as_ref() == Some(&message.request_id)
+        if matches!(
+            message.data["status"].as_str(),
+            Some("error" | "picked" | "cancelled")
+        ) && session.terminal_request.as_ref() == Some(&message.request_id)
         {
             session.terminal_request = None;
         }
@@ -828,7 +1025,16 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         f64::from(frame.height) / scale,
     );
     let positions = read_positions(app);
-    let saved = positions.get("pageSize").filter(|p| {
+    let kind = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .values()
+        .find(|s| s.registration.window_label == window.label())
+        .map(|s| s.snapshot.dialog_kind.clone())
+        .ok_or("Unknown dialog window")?;
+    let spec = kind_spec(&kind)?;
+    let saved = positions.get(&kind).filter(|p| {
         [p.x, p.y, p.offset_x, p.offset_y]
             .iter()
             .all(|v| v.is_finite())
@@ -852,6 +1058,7 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
         (x, y, destination_scale),
+        spec.size,
         destination,
         |x, y| {
             window
@@ -875,13 +1082,17 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
 }
 fn finish_placement(
     (x, y, scale): (f64, f64, f64),
+    (client_width, client_height): (f64, f64),
     work: &WorkArea,
     mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
     mut resize: impl FnMut(u32, u32) -> Result<(), String>,
     mut measure: impl FnMut() -> Result<(u32, u32), String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
-    resize((420.0 * scale) as u32, (300.0 * scale) as u32)?;
+    resize(
+        (client_width * scale) as u32,
+        (client_height * scale) as u32,
+    )?;
     let (width, height) = measure()?;
     let (x, y) = work.clamp(
         x / scale,
@@ -1277,6 +1488,7 @@ mod tests {
         };
         finish_placement(
             (3000.0, 1000.0, 2.0),
+            (420.0, 300.0),
             &work,
             |x, y| {
                 calls.borrow_mut().push(format!("move:{x},{y}"));
@@ -1405,51 +1617,53 @@ mod tests {
     }
     #[test]
     fn dialog_activation_during_native_box_waits_for_last_release_and_quit_clears_it() {
-        let dialog = "dialog-main-pageSize-1";
-        let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
-        suspension.begin([(dialog.into(), true, false, true)], None);
-        // Focus/activation retries query pending_restore; an open native box has no reveal.
-        assert_eq!(suspension.pending_restore(), None);
-        suspension.defer_show(dialog.into()); // reopen while the box is open
-        assert_eq!(suspension.pending_restore(), None);
-        suspension.begin([], None); // nested native box
-        assert_eq!(suspension.release(false), None);
-        assert_eq!(suspension.pending_restore(), None);
-        assert_eq!(suspension.release(false), Some(vec![dialog.into()]));
-        // Release while inactive retains the obligation for a later activation retry.
-        assert_eq!(suspension.pending_restore(), Some(vec![dialog.into()]));
-        suspension.begin([], None); // another box before activation
-        assert_eq!(suspension.pending_restore(), None);
-        assert_eq!(suspension.release(true), None);
-        assert_eq!(suspension.pending_restore(), None);
-        assert!(!suspension.active());
+        for dialog in ["dialog-main-pageSize-1", "dialog-main-export-1"] {
+            let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
+            suspension.begin([(dialog.into(), true, false, true)], None);
+            // Focus/activation retries query pending_restore; an open native box has no reveal.
+            assert_eq!(suspension.pending_restore(), None);
+            suspension.defer_show(dialog.into()); // reopen while the box is open
+            assert_eq!(suspension.pending_restore(), None);
+            suspension.begin([], None); // nested native box
+            assert_eq!(suspension.release(false), None);
+            assert_eq!(suspension.pending_restore(), None);
+            assert_eq!(suspension.release(false), Some(vec![dialog.into()]));
+            // Release while inactive retains the obligation for a later activation retry.
+            assert_eq!(suspension.pending_restore(), Some(vec![dialog.into()]));
+            suspension.begin([], None); // another box before activation
+            assert_eq!(suspension.pending_restore(), None);
+            assert_eq!(suspension.release(true), None);
+            assert_eq!(suspension.pending_restore(), None);
+            assert!(!suspension.active());
+        }
     }
     #[test]
     fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {
-        let dialog = "dialog-main-pageSize-1";
-        let toolbar = "toolset-core-main";
-        assert!(super::super::is_suspended_utility_label(dialog));
-        assert_eq!(
-            super::super::utility_window_has_document_parent(dialog),
-            cfg!(not(target_os = "macos"))
-        );
-        let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
-        suspension.begin(
-            [
-                (dialog.into(), true, false, false),
-                (toolbar.into(), true, false, false),
-            ],
-            Some(vec![toolbar.into(), dialog.into()]),
-        );
-        assert!(suspension.visible(toolbar, false));
-        assert_eq!(
-            suspension.release(false),
-            Some(vec![dialog.into(), toolbar.into()])
-        );
-        suspension.closed(dialog);
-        assert_eq!(suspension.pending_restore(), Some(vec![toolbar.into()]));
-        assert_eq!(suspension.release(true), None);
-        assert_eq!(suspension.pending_restore(), None);
+        for dialog in ["dialog-main-pageSize-1", "dialog-main-export-1"] {
+            let toolbar = "toolset-core-main";
+            assert!(super::super::is_suspended_utility_label(dialog));
+            assert_eq!(
+                super::super::utility_window_has_document_parent(dialog),
+                cfg!(not(target_os = "macos"))
+            );
+            let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
+            suspension.begin(
+                [
+                    (dialog.into(), true, false, false),
+                    (toolbar.into(), true, false, false),
+                ],
+                Some(vec![toolbar.into(), dialog.into()]),
+            );
+            assert!(suspension.visible(toolbar, false));
+            assert_eq!(
+                suspension.release(false),
+                Some(vec![dialog.into(), toolbar.into()])
+            );
+            suspension.closed(dialog);
+            assert_eq!(suspension.pending_restore(), Some(vec![toolbar.into()]));
+            assert_eq!(suspension.release(true), None);
+            assert_eq!(suspension.pending_restore(), None);
+        }
     }
     fn snapshot() -> Message {
         serde_json::from_value(json!({"protocolVersion":1,"ownerWindowId":"main","documentTabId":"tab-1","dialogKind":"pageSize","sessionId":"session-1","requestId":"request-1","snapshotRevision":1,"type":"snapshot","data":{"title":"Drawing","width":8.5,"height":11,"unit":"inch"}})).unwrap()
@@ -1481,8 +1695,9 @@ mod tests {
         m.data = json!({"status": "error", "error": null});
         assert!(m.validate().is_err());
         assert!(is_dialog_label("dialog-main-pageSize-12"));
+        assert!(is_dialog_label("dialog-main-export-0"));
         for label in [
-            "dialog-main-export-0",
+            "dialog-main-export-../",
             "dialog-other-pageSize-0",
             "dialog-main-pageSize-../",
             "main",
@@ -1616,6 +1831,123 @@ mod tests {
         assert!(!spec.maximizable);
         assert!(!spec.resizable);
         assert!(kind_spec("unknown").is_err());
+    }
+    fn export_snapshot() -> Message {
+        let mut m = snapshot();
+        m.dialog_kind = "export".into();
+        m.data = json!({"title":"Drawing", "options": {
+            "format":"pdf", "filename":"Drawing.pdf",
+            "svg":{"includeWarnings":true,"includePageGuides":false},
+            "pdf":{"compress":true,"includePageGuides":false,"page":"current","pdfType":"vector","background":"white"},
+            "raster":{"scale":1,"background":"white","jpegQuality":90,"maxDimensionPx":8192},
+            "cdxml":{"creationProgram":"ChemDraft"}
+        }});
+        m
+    }
+    #[test]
+    fn export_kind_has_resizable_client_size_and_narrow_label() {
+        let spec = kind_spec("export").unwrap();
+        assert_eq!(spec.size, (520.0, 620.0));
+        assert_eq!(spec.min_size, (420.0, 360.0));
+        assert!(spec.resizable);
+        assert!(!spec.maximizable);
+        assert!(is_dialog_label("dialog-main-export-1"));
+        for label in [
+            "dialog-main-export-",
+            "dialog-main-export-../main",
+            "dialog-other-export-1",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+    }
+    #[test]
+    fn export_validates_options_actions_receipts_and_channel_caps() {
+        let snapshot = export_snapshot();
+        assert!(snapshot.validate().is_ok());
+        let mut registry = Registry::default();
+        let (r, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&r.host_id).unwrap();
+        for action in ["export", "chooseDestination"] {
+            let mut m = snapshot.clone();
+            m.message_type = "action".into();
+            m.data = json!({"action":action,"options":snapshot.data["options"]});
+            assert!(m.validate().is_ok());
+            assert!(
+                serde_json::to_vec(&delivery(session, &r.window_label, &m).unwrap())
+                    .unwrap()
+                    .len()
+                    <= MAX_CHANNEL_BYTES
+            );
+            m.data["options"]["raster"]["scale"] = json!(5);
+            assert!(m.validate().is_err());
+            m.data["options"] = snapshot.data["options"].clone();
+            m.data["options"]["destinationPath"] = Value::Null;
+            assert!(m.validate().is_err());
+            m.data["options"] = snapshot.data["options"].clone();
+            m.data["options"]["filename"] = json!("../Drawing.pdf");
+            assert!(m.validate().is_err());
+            m.data["options"] = snapshot.data["options"].clone();
+            m.data["options"]["command"] = json!("document.delete");
+            assert!(m.validate().is_err());
+        }
+        let mut m = snapshot.clone();
+        m.message_type = "action".into();
+        m.data = json!({"action":"apply","width":1,"height":2,"unit":"mm"});
+        assert!(m.validate().is_err());
+        for status in ["progress", "picked", "exported", "cancelled", "error"] {
+            m.message_type = "result".into();
+            m.data = json!({"status":status,"notice":"Export result"});
+            assert!(m.validate().is_ok());
+            assert!(delivery(session, "main", &m).is_ok());
+        }
+        m.data = json!({"status":"error","error":"\u{0001}".repeat(2048)});
+        let bounded = delivery(session, "main", &m).unwrap();
+        assert_eq!(bounded["message"]["data"]["error"], OVERSIZED_ERROR);
+    }
+    #[test]
+    fn completed_export_allows_only_cancel_and_replays_duplicates() {
+        let mut registry = Registry::default();
+        let mut m = export_snapshot();
+        let (r, _) = register(&mut registry, m.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&r.host_id).unwrap();
+        m.message_type = "action".into();
+        m.data = json!({"action":"export","options":m.data["options"]});
+        assert!(reserve_action(session, &m).unwrap());
+        assert!(!reserve_action(session, &m).unwrap());
+        let mut receipt = m.clone();
+        receipt.message_type = "result".into();
+        receipt.data = json!({"status":"exported","notice":"Exported PDF"});
+        session.receipts.insert(m.request_id.clone(), receipt);
+        m.request_id = "second-press".into();
+        assert!(reserve_action(session, &m).is_err());
+        m.data = json!({"action":"cancel"});
+        assert!(reserve_action(session, &m).unwrap());
+    }
+    #[test]
+    fn export_placement_resizes_at_destination_scale() {
+        use std::cell::RefCell;
+        let sizes = RefCell::new(Vec::new());
+        let work = WorkArea {
+            id: "display".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            scale: 1.5,
+        };
+        finish_placement(
+            (0.0, 0.0, 1.5),
+            kind_spec("export").unwrap().size,
+            &work,
+            |_, _| Ok(()),
+            |w, h| {
+                sizes.borrow_mut().push((w, h));
+                Ok(())
+            },
+            || Ok((780, 960)),
+        )
+        .unwrap();
+        assert_eq!(*sizes.borrow(), [(780, 930)]);
     }
     #[test]
     fn persistence_excludes_maximized_and_fullscreen_frames() {

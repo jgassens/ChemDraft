@@ -1,4 +1,4 @@
-# Native dialog host (stage 1)
+# Native dialog host (stages 1 and 2)
 
 `page.setSizeCustom` opens a modeless, movable, document-owned native window on macOS and Windows.
 The title and form identify the originating drawing. Drawing and floating toolbars remain usable.
@@ -18,7 +18,8 @@ failure reports an error in the document status; it never creates an in-page des
   only the form's keyboard behavior takes a platform parameter.
 - `dialogTransport.ts`: narrow IPC channel adapter; both owner and host install their channel
   callbacks before invoking creation/bootstrap. No dialog protocol event-bus subscriptions exist.
-- `DialogWindow.tsx` and `PageSizeForm.tsx`: snapshot rendering and local form drafts only.
+- `DialogWindow.tsx`, `PageSizeForm.tsx`, and `ExportForm.tsx`: trusted snapshot rendering and local
+  form drafts only. Export options have a strict shared TypeScript/Rust shape.
 - `App.tsx`: dialog routing precedes other routes. All window components are lazy imports, so the
   dialog entry does not initialize MainWindow, chemistry engines, or the plugin runtime.
 - `src-tauri/src/dialog_windows.rs`: registration, validation, native construction/reveal/ownership,
@@ -114,11 +115,83 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-Export, plugin prompts, report readers, plugin manager, toolbar customization and colour editors
+Plugin prompts, report readers, plugin manager, toolbar customization and colour editors
 are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
 coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
 Page Size has no such lease. Other kinds will need their own busy/progress contracts,
 snapshot revisions and cancellation semantics before they can use the host.
+
+## Stage 2: modeless Export
+
+`export.open` opens the second registered kind, `export`, labelled `dialog-main-export-<slot>`.
+It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
+retain a session for the same tab. Export starts at 520 × 620 logical pixels, has a 420 × 360
+minimum, resizes with its content scrolling, and cannot minimize or maximize. Its ownership,
+floating level, macOS unparented/hides-on-deactivate behavior, first centring, per-kind position
+persistence, and utility suspension are the same shared paths as Page Size. No AppKit child
+relationship or new global window privilege is introduced. Browser builds retain an in-page
+surface containing the very same Export form and validation.
+
+The trusted Export body loads lazily and sends ready only after its form commits and focuses the
+filename field; Page Size retains its existing commit-ready path. The snapshot contains only the
+originating drawing's title and small initial options. Typed actions
+are `chooseDestination`, `export` (each carrying validated options), and `cancel`. MainWindow owns
+all rendering, pending-edit flushes, current tab documents, file panels, writes, last-directory
+updates and status. Export snapshots the originating tab's document when Export is pressed,
+including edits made after opening; switching tabs does not redirect it. Tab close or document
+replacement settles the session before installing a new document. Async rendering/picker completion
+checks that session again before writing. A write already handed to the filesystem cannot be undone
+by closing its window.
+
+The save panel runs in the document window through `nativeFileDialog.save` and the shared utility
+suspension. Thus its filesystem grant belongs to the writer. The host receives no file-dialog or
+filesystem permission. Both platform branches recognize Export labels as suspended utilities;
+only live sessions return, in the captured stacking order and at their retained positions.
+MainWindow records the exact granted path, format and filename. Name/format changes clear the
+displayed destination; even a stale/forged destination requires another panel unless all three
+values match the owner-held grant. The writer uses the exact granted path, without appending an
+extension after the panel returns. Overlong path receipts fail visibly before a write.
+
+Results are `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
+or warning notice data. Main returns preparation/picker/write progress without completing the
+request receipt or releasing its reservation. Failed operations and cancelled
+panels release the reservation for an explicit retry. Completed exports keep Export disabled and
+show success and warning details inside the dialog until Close/Escape/Cmd-or-Ctrl+W/title-bar close.
+The original export functions, option mapping, PDF metadata generation, and rasterizer input are
+unchanged. Long warning details are explicitly marked as abbreviated; encoded notices are bounded
+before delivery, and Rust still enforces the complete 4096-byte serialized delivery cap.
+
+Request receipts cover both picker and export actions. Duplicate IDs replay the earlier receipt;
+distinct submissions while pending or after success cannot write again. Only cancel is allowed
+after the successful export receipt, and `export.open` can focus that retained receipt window.
+The dialog's synchronous pending guard prevents same-turn double clicks before React commits busy
+state. First-field focus, IME-safe Enter, Escape, platform-specific close shortcuts and Tab wrapping
+live in the shared Export form. Undo/Redo and Select All retain the host's local-field routing.
+
+Stage 2 regression coverage includes protocol/option validation, same-tab independent kinds,
+receipt deduplication, visible failures, origin edits/inactive tabs/close/replacement, exact granted
+paths, changed-name re-picking, both-platform picker suspension, keyboard/IME behavior, per-kind Rust
+spec/placement, and export parity (real SVG/CDXML/PDF bytes; mocked native raster bytes with identical
+SVG and raster options). Existing export fixtures remain unchanged. Hands-on acceptance is the
+standing checklist's **Native Export** section on both platforms. The build stamp is deliberately
+unchanged for the orchestrator to handle during integration.
+
+Stage 2 worker verification: root `pnpm -s lint`, the required dialog command with
+`--configLoader runner` (9 files, 52 tests), shell/tab/capability tests (3 files, 392 tests), the
+web build with runner config loading, Rust formatting, and `git diff --check` passed. No install,
+dependency changes or build-stamp change was made; missing package dependencies used the authorized
+read-only source symlinks. The broader desktop/export run passed 3839 tests and skipped two but
+initially failed three source assertions tied to the old form/allowlist (updated and passed in the
+focused rerun), plus the existing `abbreviationChemistry` RDKit loader failure through the external
+dependency symlinks. Export-engine fixtures were not changed.
+
+macOS clippy and Rust tests both stopped in `tauri-plugin-sparkle-updater`'s build script because
+this worktree lacks `Sparkle.framework`, before compiling ChemDraft. No framework workaround was
+applied. Native launch was not attempted because `run-app` would prepare that missing framework.
+Windows menu-churn smoke reported its macOS-host skip. Windows native compilation and all real
+window checks on **both** platforms remain unverified. Recommended next task: run native
+fmt/clippy/tests with the normal framework available, then the standing Native Export checklist on
+macOS and Windows, especially the save-panel round trip, ownership, focus, stacking and mixed DPI.
 
 ## Handoff verification
 
