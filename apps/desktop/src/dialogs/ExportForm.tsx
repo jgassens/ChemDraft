@@ -530,4 +530,3 @@ const exportDialogIconButtonStyle: CSSProperties = {
   padding: 0,
   width: 28
 };
-

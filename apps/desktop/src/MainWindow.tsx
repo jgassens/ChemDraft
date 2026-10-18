@@ -9077,9 +9077,7 @@ export function MainWindow({
       const notice = formatExportStatus(descriptor.menuLabel, result.format, result.warnings);
       if (live()) setExportTabStatus(tabId, notice);
       const details = [notice, ...result.warnings.map(warning => warning.message)].join("\n");
-      let bounded = details.slice(0, 1024);
-      while (new TextEncoder().encode(JSON.stringify(bounded)).length > 1000) bounded = bounded.slice(0, -1);
-      return { status: "exported", notice: bounded === details ? details : `${bounded}\nAdditional warning details omitted.` };
+      return { status: "exported", notice: boundExportNotice(details) };
     } catch (error) {
       if (live()) setExportTabStatus(tabId, `Export failed: ${String(error)}`);
       throw error;
@@ -29691,6 +29689,16 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
   return warnings.length > 0
     ? `Saved ${filename} with ${warnings.length} compatibility warning(s)`
     : `Saved ${filename}`;
+}
+
+/** Bound the complete JSON-encoded notice, leaving room for the delivery envelope. */
+export function boundExportNotice(details: string): string {
+  const fits = (text: string) => text.length <= 1024 && new TextEncoder().encode(JSON.stringify(text)).length <= 1000;
+  if (fits(details)) return details;
+  const suffix = "\nAdditional warning details omitted.";
+  const prefix = Array.from(details.slice(0, 1024));
+  while (!fits(prefix.join("") + suffix)) prefix.pop();
+  return prefix.join("") + suffix;
 }
 
 export function formatExportStatus(

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDefaultExportDialogState, createDialogExportResult } from "../MainWindow";
-import { applyNativeChainTool, createPhase4Document, exportPhase4Cdxml, exportPhase4Pdf, exportPhase4Svg } from "../documentWorkflow";
+import { boundExportNotice, createDefaultExportDialogState, createDialogExportResult, formatExportStatus } from "../MainWindow";
+import { applyNativeChainTool, createPhase4Document, exportPhase4Cdxml, exportPhase4Pdf, exportPhase4Svg, insertNativeBracket } from "../documentWorkflow";
+import { parseDialogMessage } from "./dialogProtocol";
 import { exportFixture } from "./exportTestFixtures";
 import { rasterizeSvgNative } from "../nativeRasterExport";
 const native = vi.hoisted(() => ({ raster: vi.fn() }));
@@ -48,4 +49,27 @@ describe("Export form preserves the existing export pipeline", () => {
     expect(result.kind === "binary" && result.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.warnings).toEqual([...svg.warnings, { message: "Raster warning" }]);
   });
+});
+
+it.each(["a", "\\\"\n", "🧪", "\u0001"])("bounds the full warning receipt including its suffix (%s)", character => {
+  const notice = boundExportNotice(character.repeat(1500));
+  expect(notice).toContain("Additional warning details omitted.");
+  expect(notice.length).toBeLessThanOrEqual(1024);
+  expect(new TextEncoder().encode(JSON.stringify(notice)).length).toBeLessThanOrEqual(1000);
+  const message = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "t".repeat(128), dialogKind: "export", sessionId: "s".repeat(128), requestId: "r".repeat(128), snapshotRevision: Number.MAX_SAFE_INTEGER, type: "result", data: { status: "exported", notice } };
+  expect(parseDialogMessage(message)).toBeDefined();
+  const delivery = { senderWindowId: "main", windowLabel: `dialog-main-export-${"h".repeat(128)}`, message };
+  expect(new TextEncoder().encode(JSON.stringify(delivery)).length).toBeLessThanOrEqual(4096);
+});
+
+it("retains an accepted, abbreviated success notice for six curly brackets exported to CDXML", async () => {
+  let document = createPhase4Document("Warning receipt");
+  for (let i = 0; i < 6; i++) document = insertNativeBracket(document, { x: 100 + i * 50, y: 100 }, "curly");
+  const result = await createDialogExportResult(document, { ...exportFixture(), format: "cdxml", busy: false });
+  expect(result.warnings.length).toBeGreaterThanOrEqual(6);
+  const details = [formatExportStatus("CDXML", result.format, result.warnings), ...result.warnings.map(warning => warning.message)].join("\n");
+  const notice = boundExportNotice(details);
+  expect(notice).toContain("Additional warning details omitted.");
+  expect(notice.length).toBeLessThanOrEqual(1024);
+  expect(parseDialogMessage({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "export", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "result", data: { status: "exported", notice } })).toBeDefined();
 });

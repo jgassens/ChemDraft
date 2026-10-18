@@ -425,17 +425,12 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
         }
         return Ok(false);
     }
-    let completed_export = session
-        .terminal_request
-        .as_ref()
-        .and_then(|id| session.receipts.get(id))
-        .is_some_and(|r| r.data["status"] == "exported");
-    if session.terminal_request.is_some()
-        && !(completed_export && message.data["action"] == "cancel")
-    {
+    let cancelling = message.data["action"] == "cancel";
+    // Closing must bypass pending work and the retry limit, while still reserving the session.
+    if session.terminal_request.is_some() && !cancelling {
         return Err("A terminal dialog action is already pending".into());
     }
-    if session.actions.len() >= 128 {
+    if session.actions.len() >= 128 && !cancelling {
         return Err("Dialog action limit exceeded".into());
     }
     session.terminal_request = Some(message.request_id.clone());
@@ -1922,6 +1917,23 @@ mod tests {
         assert!(reserve_action(session, &m).is_err());
         m.data = json!({"action":"cancel"});
         assert!(reserve_action(session, &m).unwrap());
+    }
+    #[test]
+    fn pending_export_allows_cancel_without_releasing_write_reservation() {
+        let mut registry = Registry::default();
+        let mut m = export_snapshot();
+        let (r, _) = register(&mut registry, m.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&r.host_id).unwrap();
+        m.message_type = "action".into();
+        m.data = json!({"action":"export","options":m.data["options"]});
+        assert!(reserve_action(session, &m).unwrap());
+        let mut cancel = m.clone();
+        cancel.request_id = "cancel-pending".into();
+        cancel.data = json!({"action":"cancel"});
+        assert!(reserve_action(session, &cancel).unwrap());
+        assert!(!reserve_action(session, &cancel).unwrap());
+        m.request_id = "second-export".into();
+        assert!(reserve_action(session, &m).is_err());
     }
     #[test]
     fn export_placement_resizes_at_destination_scale() {

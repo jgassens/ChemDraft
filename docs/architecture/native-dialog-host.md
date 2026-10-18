@@ -164,6 +164,12 @@ before delivery, and Rust still enforces the complete 4096-byte serialized deliv
 Request receipts cover both picker and export actions. Duplicate IDs replay the earlier receipt;
 distinct submissions while pending or after success cannot write again. Only cancel is allowed
 after the successful export receipt, and `export.open` can focus that retained receipt window.
+Cancel also bypasses pending-action reservations in the renderer, coordinator and Rust host.
+It settles the session immediately: preparation and picker completions cannot start a write,
+and a write already started may finish but cannot publish progress, errors or success to the
+closed dialog. The write reservation remains in force while cancellation is delivered.
+Warning abbreviation includes its suffix in both the 1024-character notice limit and the
+1000-byte JSON-encoded notice budget, leaving room for the complete 4096-byte channel delivery.
 The dialog's synchronous pending guard prevents same-turn double clicks before React commits busy
 state. First-field focus, IME-safe Enter, Escape, platform-specific close shortcuts and Tab wrapping
 live in the shared Export form. Undo/Redo and Select All retain the host's local-field routing.

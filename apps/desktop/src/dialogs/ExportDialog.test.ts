@@ -9,7 +9,7 @@ async function setup() {
   const transport: DialogTransport = { subscribe: vi.fn(async () => vi.fn()), open: vi.fn(async () => ({ hostId: "host", windowLabel: "dialog-main-export-1" })),
     publish: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   const owner = { applyPageSize: vi.fn(), onError: vi.fn(), export: vi.fn<(tab: string, options: ExportOptions, live: () => boolean) => Promise<ExportDialogResult>>(async () => ({ status: "exported", notice: "Exported PDF" })),
-    chooseExportDestination: vi.fn(async () => ({ status: "picked" as const, destinationPath: "C:\\Drawings\\Drawing.pdf", filename: "Drawing.pdf" })) };
+    chooseExportDestination: vi.fn<(tab: string, options: ExportOptions, live: () => boolean) => Promise<ExportDialogResult>>(async () => ({ status: "picked" as const, destinationPath: "C:\\Drawings\\Drawing.pdf", filename: "Drawing.pdf" })) };
   const coordinator = new DialogCoordinator(transport, owner);
   await coordinator.openExport("tab-origin", { title: "Drawing", options: exportFixture() });
   const snapshot = vi.mocked(transport.open).mock.calls[0]![0];
@@ -100,4 +100,32 @@ describe("Export protocol and authority", () => {
     await h.coordinator.closeTab("tab-origin"); expect(h.transport.close).toHaveBeenCalledTimes(2);
     await h.coordinator.dispose();
   });
+});
+
+it.each(["preparing", "writing", "picking"])("cancel settles while %s and suppresses pending results without a second write", async stage => {
+  const h = await setup();
+  const write = vi.fn();
+  let finish!: () => void;
+  let live!: () => boolean;
+  const work = async (_tab: string, _options: ExportOptions, isLive: () => boolean): Promise<ExportDialogResult> => {
+    live = isLive;
+    if (stage === "writing") write();
+    await new Promise<void>(resolve => { finish = resolve; });
+    if (stage === "preparing" && live()) write();
+    return { status: stage === "picking" ? "picked" : "exported", notice: "Late receipt" };
+  };
+  h.owner.export.mockImplementation(work);
+  h.owner.chooseExportDestination.mockImplementation(work);
+  try {
+    const action = { action: stage === "picking" ? "chooseDestination" : "export", options: exportFixture() };
+    const pending = h.deliver("action", action, "first");
+    const duplicate = h.deliver("action", action, "first");
+    await h.deliver("action", action, "second");
+    await h.deliver("action", { action: "cancel" }, "cancel");
+    expect(live()).toBe(false);
+    expect(h.transport.close).toHaveBeenCalledWith("host", "cancel");
+    finish(); await Promise.all([pending, duplicate]);
+    expect(write).toHaveBeenCalledTimes(stage === "writing" ? 1 : 0);
+    expect(h.transport.publish).not.toHaveBeenCalled();
+  } finally { finish?.(); await h.coordinator.dispose(); }
 });

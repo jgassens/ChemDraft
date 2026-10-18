@@ -83,13 +83,15 @@ export class DialogCoordinator {
       return;
     }
     if (message.type !== "action" || !session.ready || !session.registration) return;
+    // Cancellation invalidates owner work immediately, even while a receipt is pending.
+    if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
     const previous = session.receipts.get(message.requestId);
     if (previous) {
       await session.inFlight.get(message.requestId);
       if (!session.settled) await this.transport.publish(session.registration.hostId, previous);
       return;
     }
-    if (session.terminalRequestId && !(message.data.action === "cancel" && session.inFlight.size === 0)) return;
+    if (session.terminalRequestId) return;
     // Reserve the entire session before invoking the owner or awaiting the receipt.
     session.terminalRequestId = message.requestId;
     const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: message.data.action === "apply" ? "applied" : "cancelled" } };

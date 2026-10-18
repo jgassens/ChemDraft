@@ -17,6 +17,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   const [error, setError] = useState<string>();
   const actionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const actionPending = useRef(false);
+  const cancellationRequested = useRef(false);
   const pendingRequestId = useRef<string | undefined>(undefined);
   useEffect(() => {
     const preventReload = (event: KeyboardEvent) => {
@@ -45,7 +46,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
           else setExportDraft({ ...message.data.options, busy: false });
           latest = message;
         }
-      } else if (latest && sameDialog(message, latest) && message.type === "result" && message.requestId === pendingRequestId.current) {
+      } else if (!cancellationRequested.current && latest && sameDialog(message, latest) && message.type === "result" && message.requestId === pendingRequestId.current) {
         if (message.data.status === "progress") { setNotice(message.data.notice); return; }
         clearTimeout(actionTimer.current);
         // A successful terminal receipt precedes native destruction. Never reopen Apply here.
@@ -68,7 +69,15 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   }, [hostId, snapshot]);
   useEffect(() => { if (snapshot?.dialogKind === "pageSize") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
-    if (!snapshot || actionPending.current) return;
+    if (!snapshot) return;
+    if (data.action === "cancel") {
+      cancellationRequested.current = true;
+      clearTimeout(actionTimer.current);
+      pendingRequestId.current = undefined;
+      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data }).catch(e => setError(String(e)));
+      return;
+    }
+    if (actionPending.current || cancellationRequested.current) return;
     actionPending.current = true;
     setBusy(true);
     setError(undefined); setNotice(undefined);
@@ -80,6 +89,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       setError("The drawing did not acknowledge this action. Close this window to continue; the action was not retried.");
     }, 10000);
     void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data }).catch(e => {
+      if (cancellationRequested.current) return;
       clearTimeout(actionTimer.current); actionPending.current = false; setBusy(false); setError(String(e));
     });
   };

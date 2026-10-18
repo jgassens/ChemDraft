@@ -97,3 +97,24 @@ it("renders Export failures and picker results in its form; success stays reserv
   await act(async () => button("Close").click());
   expect(host.send).toHaveBeenLastCalledWith("export-host", expect.objectContaining({ data: { action: "cancel" } }));
 });
+
+it.each(["Cancel", "Escape", "close", "Ctrl+W"])("sends %s during a pending export and ignores its late receipt", async control => {
+  vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  const exportSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-session", data: { title: "Origin", options: exportFixture() } };
+  await act(async () => { host.receive!(exportSnapshot); await import("./ExportForm"); });
+  const button = (text: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(b => b.textContent === text)!;
+  await act(async () => { button("Export").click(); button("Export").click(); });
+  const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => {
+    if (control === "Cancel") button("Cancel").click();
+    else if (control === "close") container.querySelector<HTMLButtonElement>('[aria-label="Close export"]')!.click();
+    else container.querySelector('[role="dialog"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: control === "Escape" ? "Escape" : "w", ctrlKey: control === "Ctrl+W", bubbles: true, cancelable: true }));
+  });
+  expect(host.send).toHaveBeenLastCalledWith("export-host", expect.objectContaining({ data: { action: "cancel" } }));
+  expect(host.send.mock.calls.filter(([, m]) => m.type === "action" && m.data.action === "export")).toHaveLength(1);
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "exported", notice: "Late success" } }));
+  expect(container.textContent).not.toContain("Late success");
+  vi.restoreAllMocks();
+});
