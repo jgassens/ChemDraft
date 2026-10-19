@@ -276,7 +276,9 @@ and Art toolbars open, including at 125%/150% display scale:
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
 - On both platforms, leave “Ask to save unsaved changes before quitting” off and verify the
   existing quit/session-recovery flow. Turn it on: clean tabs quit without a prompt, and a dirty
-  foreground or background tab opens Save / Discard / Cancel with floating palettes hidden.
+  foreground or background tab opens a native Save / Don't Save / Cancel message box with
+  floating palettes hidden. If the native box cannot open, check the accessible in-window
+  fallback instead; it must expose the same choices and keep palettes hidden.
   Cancel and Escape keep the app open; Save writes all dirty tabs before quitting. Cancel a save
   picker or fail a write: the app stays open. Discard quits with existing session recovery.
   Leave the prompt open beyond three seconds, then cancel and quit again. A document window

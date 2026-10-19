@@ -156,7 +156,8 @@ describe("documents in one window", () => {
     vi.stubGlobal("localStorage", new MemoryStorage());
     saveAskToSaveBeforeQuit(false);
     native.promptShowing.mockImplementation(async () => {
-      expect(document.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]')).not.toBeNull();
+      expect(pendingPrompt?.prompt.title === "Save changes before quitting?" ||
+        document.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]') !== null).toBe(true);
       return true;
     });
     native.cancelQuit.mockResolvedValue(true);
@@ -275,9 +276,8 @@ describe("documents in one window", () => {
     return parseDocumentSessionEnvelope(native.session)!;
   }
   async function quitButton(label: string) {
-    const dialog = container.querySelector('[aria-labelledby="quit-prompt-title"]')!;
-    const button = [...dialog.querySelectorAll('button')].find((candidate) => candidate.textContent === label)!;
-    await act(async () => { button.click(); });
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+    await modalButton(label === "Discard" ? "Don't Save" : label);
   }
   async function modalButton(label: string) {
     expect(pendingPrompt).toBeDefined();
@@ -1188,7 +1188,7 @@ describe("documents in one window", () => {
     await quitButton("Cancel");
     await flush();
     await act(async () => { reply(true); });
-    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).not.toBeNull();
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
     expect(native.promptShowing).toHaveBeenLastCalledWith(2);
     expect(native.quit).not.toHaveBeenCalled();
   });
@@ -1239,16 +1239,15 @@ describe("documents in one window", () => {
     expect(native.quit).toHaveBeenCalledTimes(1);
   });
 
-  it("Cancel disables Save while its reply is pending", async () => {
+  it("Cancel consumes the native question while its reply is pending", async () => {
     await paste("Dirty drawing");
     saveAskToSaveBeforeQuit(true);
     await flush();
     let reply: (value: boolean) => void = () => {};
     native.cancelQuit.mockImplementationOnce(() => new Promise<boolean>((resolve) => { reply = resolve; }));
     await quitButton("Cancel");
-    const dialog = container.querySelector('[aria-labelledby="quit-prompt-title"]')!;
-    expect([...dialog.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
-    await quitButton("Save");
+    expect(pendingPrompt).toBeUndefined();
+    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
     expect(native.writeFile.mock.calls.filter(([path]) => path.endsWith(".chemdraft"))).toHaveLength(0);
     await act(async () => { reply(true); });
   });
@@ -1265,16 +1264,18 @@ describe("documents in one window", () => {
     expect(native.quit).not.toHaveBeenCalled();
   });
 
-  it("releases a pending native suspension exactly once after the prompt is cancelled", async () => {
+  it("opens only after utility suspension and releases it exactly once on Cancel", async () => {
     native.suspendUtilities = true;
     let finish: () => void = () => {};
     native.suspendPending = new Promise<void>((resolve) => { finish = resolve; });
     await paste("Dirty drawing");
     saveAskToSaveBeforeQuit(true);
     await flush();
-    await quitButton("Cancel");
-    await act(async () => { finish(); });
+    expect(pendingPrompt).toBeUndefined();
     expect(native.promptShowing).not.toHaveBeenCalled();
+    await act(async () => { finish(); });
+    expect(native.promptShowing).toHaveBeenCalledWith(1);
+    await quitButton("Cancel");
     expect(native.visibilityChanges).toEqual(["hide", "restore"]);
     expect(native.suspensionDepth).toBe(0);
   });
@@ -1347,7 +1348,7 @@ describe("documents in one window", () => {
     native.promptShowing.mockRejectedValueOnce(new Error("Acknowledgement reply lost"));
     native.cancelQuit.mockRejectedValueOnce(new Error("Cancel IPC unavailable"));
     await flush();
-    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).not.toBeNull();
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
     await quitButton("Cancel");
     expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
     expect(native.quit).not.toHaveBeenCalled();
@@ -1358,6 +1359,38 @@ describe("documents in one window", () => {
     await flush();
     expect(native.quit).toHaveBeenCalledTimes(1);
     expect(native.promptShowing).not.toHaveBeenCalled();
+  });
+
+  it("uses the native quit question without rendering an in-window dialog", async () => {
+    await paste("Dirty native prompt drawing");
+    saveAskToSaveBeforeQuit(true);
+    await flush();
+    expect(pendingPrompt?.prompt).toMatchObject({
+      title: "Save changes before quitting?", kind: "warning",
+      choices: [
+        { id: "save", label: "Save" },
+        { id: "discard", label: "Don't Save", destructive: true },
+        { id: "cancel", label: "Cancel", cancel: true }
+      ]
+    });
+    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
+    await quitButton("Cancel");
+  });
+
+  it("retains the accessible quit fallback when the native question cannot open", async () => {
+    const restore = setNativePromptProvider((prompt, fallback) => fallback(prompt));
+    try {
+      await paste("Dirty fallback drawing");
+      saveAskToSaveBeforeQuit(true);
+      await flush();
+      const dialog = container.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]')!;
+      expect(dialog).not.toBeNull();
+      expect(native.promptShowing).toHaveBeenCalledWith(1);
+      const cancel = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Cancel")!;
+      await act(async () => cancel.click());
+      expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
+      expect(native.quit).not.toHaveBeenCalled();
+    } finally { restore(); }
   });
 
   it("opt-in quit prompts for a dirty background tab and Cancel keeps it open", async () => {

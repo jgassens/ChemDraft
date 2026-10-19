@@ -14,6 +14,9 @@ re-arm the flush grace after Save/Discard, scope prompt commands to the document
 reveal hidden/minimized documents, identify requests across late Cancel replies, handle
 AppKit Dock Quit while leaving system termination non-blocking, and explicitly acquire
 native utility suspension for the quit modal.
+The 2026-10-19 presentation update uses `useNativePrompt` for a native Save / Don't Save /
+Cancel message box, retaining the accessible in-window fallback only if the box cannot open.
+The native quit state machine and its safeguards are unchanged.
 Independent review additionally blocks native commands, queued opens, and plugin writes during
 the quit interaction, disables competing choices while Cancel is pending, lets an existing OS
 tab-close alert resolve before requesting quit again, and keeps/raises a waiting macOS prompt.

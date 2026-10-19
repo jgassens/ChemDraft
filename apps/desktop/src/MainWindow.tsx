@@ -1637,7 +1637,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.14.10.00-codex";
+const CURRENT_BUILD_STAMP = "10.19.10.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2168,6 +2168,7 @@ export function MainWindow({
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
+  const [quitPromptReady, setQuitPromptReady] = useState<number>();
   const quitRequestRef = useRef<number | undefined>(undefined);
   const quitPromptBusyRef = useRef(false);
   const [quitSaveBusy, setQuitSaveBusy] = useState(false);
@@ -9056,7 +9057,7 @@ export function MainWindow({
     };
     void suspension.then(async () => {
       if (disposed) return;
-      if (!await reportQuitPromptShowing(requestId)) retirePrompt();
+      setQuitPromptReady(requestId);
     }).catch((error: unknown) => {
       setStatus("Quit prompt unavailable: " + String(error));
       retirePrompt();
@@ -9128,6 +9129,39 @@ export function MainWindow({
       }
     }
   }, [saveDocumentTabById, writeDocumentSessionNow, cancelQuitPrompt]);
+
+  const quitPrompt = useNativePrompt({
+    title: "Save changes before quitting?",
+    message: "Your documents have unsaved changes.",
+    kind: "warning",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async (choice) => {
+    const requestId = quitPromptOpen;
+    if (requestId === undefined || quitRequestRef.current !== requestId) return;
+    if (choice === "cancel") {
+      await cancelQuitPrompt(requestId);
+      return quitRequestRef.current === requestId && quitInteractionRef.current ? false : undefined;
+    }
+    await finishPromptedQuit(choice === "save");
+    // A failed cancellation must leave a question available for retry.
+    const dirty = documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+      ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
+    return quitRequestRef.current === requestId && quitInteractionRef.current &&
+      (!quitMutationFrozenRef.current || (choice === "save" && dirty)) ? false : undefined;
+  }, quitPromptReady === quitPromptOpen ? quitPromptOpen : undefined, false, undefined, async () => {
+    const requestId = quitPromptOpen;
+    if (requestId === undefined || quitRequestRef.current !== requestId) return;
+    try {
+      if (!await reportQuitPromptShowing(requestId)) await cancelQuitPrompt(requestId);
+    } catch (error) {
+      setStatus("Quit prompt unavailable: " + String(error));
+      await cancelQuitPrompt(requestId);
+    }
+  });
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
@@ -19145,12 +19179,12 @@ export function MainWindow({
           })
         : null}
 
-      {quitPromptOpen ? (
+      {quitPromptOpen && quitPrompt.visible ? (
         <div role="dialog" aria-modal="true" aria-labelledby="quit-prompt-title" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
             if (event.key === "Escape" && !quitSaveBusy) {
               event.preventDefault();
-              void cancelQuitPrompt();
+              quitPrompt.choose("cancel");
             }
             if (event.key === "Tab") {
               const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
@@ -19163,9 +19197,9 @@ export function MainWindow({
             <h2 id="quit-prompt-title" style={exportDialogTitleStyle}>Save changes before quitting?</h2>
             <p style={exportDialogHintStyle}>Your documents have unsaved changes.</p>
             <div style={exportDialogFooterStyle}>
-              <button type="button" disabled={quitSaveBusy} onClick={() => { void finishPromptedQuit(true); }}>Save</button>
-              <button type="button" disabled={quitSaveBusy} onClick={() => { void finishPromptedQuit(false); }}>Discard</button>
-              <button type="button" autoFocus disabled={quitSaveBusy} onClick={() => { void cancelQuitPrompt(); }}>Cancel</button>
+              <button type="button" disabled={quitSaveBusy} onClick={() => quitPrompt.choose("save")}>Save</button>
+              <button type="button" disabled={quitSaveBusy} onClick={() => quitPrompt.choose("discard")}>Don't Save</button>
+              <button type="button" autoFocus disabled={quitSaveBusy} onClick={() => quitPrompt.choose("cancel")}>Cancel</button>
             </div>
           </section>
         </div>
