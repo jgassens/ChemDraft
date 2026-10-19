@@ -1465,10 +1465,11 @@ type CdxmlDialogExportOptions = {
   creationProgram: string;
 };
 type ExportDialogState = {
-  presentation: { width: number; dpi: number; crop: "page" | "content"; background: "white" | "transparent" };
+  presentation: { width: number; height?: number; linked?: boolean; preset?: "custom" | "slide" | "poster" | "publication"; dpi: number; crop: "page" | "content"; background: "white" | "transparent" };
   format: ExportDialogFormat;
   filename: string;
   destinationPath?: string;
+  error?: string;
   svg: SvgDialogExportOptions;
   pdf: PdfDialogExportOptions;
   raster: RasterDialogExportOptions;
@@ -1625,7 +1626,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.14.12.40-codex";
+const CURRENT_BUILD_STAMP = "10.19.12.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -9017,12 +9018,15 @@ export function MainWindow({
         ? {
             ...current,
             destinationPath: path,
+            error: undefined,
             filename: nativePathBasename(path)
           }
         : current);
       setStatus(`Export location: ${nativePathBasename(path)}`);
     } catch (error) {
-      setStatus(`Export location failed: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `Export location failed: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message);
+      setExportDialog((current) => current ? { ...current, error: message } : current);
     }
   }, [exportDialog]);
 
@@ -9034,7 +9038,7 @@ export function MainWindow({
 
     const dialog = exportDialog;
     const descriptor = getExportFormatDescriptor(dialog.format);
-    setExportDialog({ ...dialog, busy: true });
+    setExportDialog({ ...dialog, busy: true, error: undefined });
 
     try {
       if (descriptor.status !== "implemented") {
@@ -9055,7 +9059,7 @@ export function MainWindow({
 
       const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename;
       const path = dialog.destinationPath
-        ? ensureExportFileExtension(dialog.destinationPath, descriptor.extensions)
+        ? dialog.destinationPath
         : await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions);
 
       if (!path) {
@@ -9069,8 +9073,9 @@ export function MainWindow({
       setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
       setExportDialog(undefined);
     } catch (error) {
-      setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
-      setExportDialog((current) => current ? { ...current, busy: false } : current);
+      const message = `${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message);
+      setExportDialog((current) => current ? { ...current, busy: false, error: message } : current);
     }
   }, [documentForFlush, exportDialog]);
 
@@ -19403,7 +19408,8 @@ export function MainWindow({
                 ? {
                     ...current,
                     filename,
-                    destinationPath: nativePathWithBasename(current.destinationPath, filename)
+                    destinationPath: filename === current.filename ? current.destinationPath : undefined,
+                    error: undefined
                   }
                 : current);
             }}
@@ -20132,9 +20138,29 @@ export function ExportDialog({
   const visual = state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format) !== undefined;
   const framed = useMemo(() => exportPresentationDocument(document, state.presentation.crop), [document, state.presentation.crop]);
   const ratio = framed.pages[0].height / framed.pages[0].width;
-  const width = sanitizedDialogNumber(state.presentation.width, 800, 1, 8192);
-  const height = Math.max(1, Math.round(width * ratio));
-  const dpi = sanitizedDialogNumber(state.presentation.dpi, 300, 36, 1200);
+  const width = state.presentation.width;
+  const height = exportDialogHeight(state.presentation, ratio);
+  const dpi = state.presentation.dpi;
+  const [pendingPreset, setPendingPreset] = useState<string | undefined>();
+  const [physicalDraft, setPhysicalDraft] = useState<{ axis: "width" | "height"; value: string } | undefined>();
+  const keyboardPreset = useRef(false);
+  const presetValue = state.presentation.preset ?? "custom";
+  useEffect(() => { setPendingPreset(undefined); }, [state.presentation]);
+  const changePresentation = (options: Partial<ExportDialogState["presentation"]>) => onPresentationChange({ ...options, ...(state.presentation.linked !== false && ("width" in options || "crop" in options) && !("height" in options) ? { height: undefined } : {}), preset: "custom" });
+  const numberValue = (value: number) => Number.isFinite(value) ? value : "";
+  const readNumber = (value: string) => value === "" ? NaN : Number(value);
+  const applyPreset = (value: string) => {
+    keyboardPreset.current = false;
+    setPendingPreset(undefined);
+    const presets = { slide: { width: 1920, dpi: 96 }, poster: { width: 7200, dpi: 300 }, publication: { width: 2008, dpi: 600 } };
+    const key = value as keyof typeof presets;
+    const preset = presets[key];
+    if (!preset) { onPresentationChange({ preset: "custom" }); return; }
+    const frame = exportPresentationDocument(document, "content");
+    const presetRatio = frame.pages[0].height / frame.pages[0].width;
+    onPresentationChange({ ...preset, width: Math.max(1, Math.floor(preset.width / Math.max(1, presetRatio))), height: undefined, linked: true, preset: key, crop: "content", background: "white" });
+    onRasterOptionsChange({ background: "white", maxDimensionPx: 8192, jpegQuality: 90 });
+  };
   useEffect(() => {
     if (!visual) { setPreview({ warnings: [] }); return; }
     let active = true;
@@ -20178,7 +20204,12 @@ export function ExportDialog({
         }
       }}
     >
-      <form style={exportDialogPanelStyle} onSubmit={onSubmit}>
+      <form style={exportDialogPanelStyle} onSubmit={(event) => { if (exportDisabled) { event.preventDefault(); return; } void onSubmit(event); }} onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.nativeEvent.isComposing && event.target instanceof HTMLInputElement && event.target.type !== "checkbox") {
+          event.preventDefault(); event.stopPropagation(); if (!exportDisabled) event.currentTarget.requestSubmit();
+        }
+      }}>
+        {state.error ? <p role="alert" style={exportDialogWarningStyle}>{state.error}</p> : null}
         <div style={exportDialogHeaderStyle}>
           <h2 style={exportDialogTitleStyle}>Export</h2>
           <button
@@ -20242,30 +20273,40 @@ export function ExportDialog({
         {visual ? <fieldset style={exportDialogFieldsetStyle}>
           <legend style={exportDialogLegendStyle}>Preview and size</legend>
           <label style={exportDialogLabelStyle}>Preset
-            <select disabled={state.busy} defaultValue="custom" style={exportDialogInputStyle} onChange={(event) => {
-              const presets: Record<string, { width: number; dpi: number }> = { slide: { width: 1920, dpi: 96 }, poster: { width: 7200, dpi: 300 }, publication: { width: 2008, dpi: 600 } };
-              const preset = presets[event.currentTarget.value];
-              if (preset) {
-                const presetFrame = exportPresentationDocument(document, "content");
-                const presetRatio = presetFrame.pages[0].height / presetFrame.pages[0].width;
-                onPresentationChange({ ...preset, width: Math.max(1, Math.floor(preset.width / Math.max(1, presetRatio))), crop: "content", background: "white" });
-                onRasterOptionsChange({ background: "white", maxDimensionPx: 8192, jpegQuality: 90 });
-              }
-            }}><option value="custom">Custom</option><option value="slide">Slide — 1920 px, 96 DPI</option><option value="poster">Poster — 24 in longest side, 300 DPI</option><option value="publication">Publication — 85 mm longest side, 600 DPI</option></select>
+            <select aria-label="Size preset" disabled={state.busy} value={pendingPreset ?? presetValue} style={exportDialogInputStyle}
+              onPointerDown={() => { keyboardPreset.current = false; }}
+              onKeyDown={(event) => {
+                if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) keyboardPreset.current = true;
+                if (event.key === "Enter" && keyboardPreset.current) { event.preventDefault(); event.stopPropagation(); applyPreset(event.currentTarget.value); }
+                if (event.key === "Escape" && keyboardPreset.current) { event.preventDefault(); event.stopPropagation(); keyboardPreset.current = false; setPendingPreset(undefined); }
+              }}
+              onBlur={(event) => { if (keyboardPreset.current) applyPreset(event.currentTarget.value); }}
+              onChange={(event) => { if (keyboardPreset.current) setPendingPreset(event.currentTarget.value); else applyPreset(event.currentTarget.value); }}
+            ><option value="custom">Custom</option><option value="slide">Slide - 1920 px longest side, 96 DPI</option><option value="poster">Poster - 24 in longest side, 300 DPI</option><option value="publication">Publication - 85 mm longest side, 600 DPI</option></select>
           </label>
           <label style={exportDialogLabelStyle}>Crop
-            <select disabled={state.busy} value={state.presentation.crop} onChange={(event) => onPresentationChange({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
+            <select disabled={state.busy} value={state.presentation.crop} onChange={(event) => changePresentation({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
           </label>
-          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={state.presentation.width} onChange={(event) => onPresentationChange({ width: Number(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Height (px, aspect ratio linked)<input disabled={state.busy} type="number" min={1} max={8192} value={height} onChange={(event) => onPresentationChange({ width: Math.round(Number(event.currentTarget.value) / ratio) })} /></label>
-          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} step="any" value={state.presentation.dpi} onChange={(event) => onPresentationChange({ dpi: Number(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="number" min={0} step="any" value={Number((width / dpi * 25.4).toFixed(2))} onChange={(event) => onPresentationChange({ width: Math.round(Number(event.currentTarget.value) / 25.4 * dpi) })} /></label>
-          <label style={exportDialogLabelStyle}>Physical height (mm)<input disabled={state.busy} type="number" min={0} step="any" value={Number((height / dpi * 25.4).toFixed(2))} onChange={(event) => onPresentationChange({ width: Math.round(Number(event.currentTarget.value) / 25.4 * dpi / ratio) })} /></label>
+          <label style={exportDialogLabelStyle}><input type="checkbox" disabled={state.busy} checked={state.presentation.linked !== false} onChange={(event) => changePresentation({ linked: event.currentTarget.checked, height: event.currentTarget.checked ? undefined : height })} />Link width and height</label>
+          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(width)} onChange={(event) => changePresentation({ width: readNumber(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Height (px){state.presentation.linked !== false ? " (aspect ratio linked)" : ""}<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(height)} onChange={(event) => changePresentation(state.presentation.linked === false ? { height: readNumber(event.currentTarget.value) } : { height: readNumber(event.currentTarget.value), width: Math.round(readNumber(event.currentTarget.value) / ratio) })} /></label>
+          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} step="any" value={numberValue(dpi)} onChange={(event) => changePresentation({ dpi: readNumber(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "width" ? physicalDraft.value : numberValue(Number((width / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
+            const value = event.currentTarget.value;
+            setPhysicalDraft({ axis: "width", value });
+            changePresentation({ width: Math.round(readNumber(value) / 25.4 * dpi) });
+          }} /></label>
+          <label style={exportDialogLabelStyle}>Physical height (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "height" ? physicalDraft.value : numberValue(Number((height / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
+            const value = event.currentTarget.value;
+            const pixels = Math.round(readNumber(value) / 25.4 * dpi);
+            setPhysicalDraft({ axis: "height", value });
+            changePresentation(state.presentation.linked === false ? { height: pixels } : { height: pixels, width: Math.round(pixels / ratio) });
+          }} /></label>
           {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
-          <p style={exportDialogHintStyle}>{width} × {height} px · {(width / dpi * 25.4).toFixed(1)} × {(height / dpi * 25.4).toFixed(1)} mm{state.format === "png" ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
+          <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
           {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={state.presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
           <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label="Actual export renderer preview">
-            {preview.url ? state.format === "pdf" ? <object data={preview.url} type="application/pdf" width="100%" height="220"><a href={preview.url} target="_blank" rel="noreferrer">Open PDF preview</a></object> : <img src={preview.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} /> : <p role="status">{preview.error ?? "Rendering preview…"}</p>}
+            {preview.url ? state.format === "pdf" ? <div><object tabIndex={-1} aria-hidden="true" data={preview.url} type="application/pdf" width="100%" height="220">PDF preview</object><a href={preview.url} target="_blank" rel="noreferrer">Open PDF preview</a></div> : <img src={preview.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} /> : <p role="status">{preview.error ?? "Rendering preview…"}</p>}
           </div>
           {preview.warnings.map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}
         </fieldset> : null}
@@ -20467,7 +20508,7 @@ export function ExportDialog({
 
 export function createDefaultExportDialogState(
   document: ChemDraftDocument,
-  destinationDirectory?: string
+  _destinationDirectory?: string
 ): ExportDialogState {
   const descriptor = getExportFormatDescriptor("pdf");
   const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
@@ -20475,7 +20516,7 @@ export function createDefaultExportDialogState(
     presentation: { width: Math.round(document.pages[0].width), dpi: 96, crop: "page", background: "white" },
     format: descriptor.id,
     filename,
-    destinationPath: nativePathJoin(destinationDirectory, filename),
+    destinationPath: undefined,
     svg: {
       includeWarnings: true,
       includePageGuides: false
@@ -20499,7 +20540,7 @@ export function createDefaultExportDialogState(
   };
 }
 
-function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
+export function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
   const descriptor = getExportFormatDescriptor(format);
   const rasterFormat = rasterExportFormatForDialogFormat(format);
   const filename = replaceExportFileExtension(state.filename, descriptor);
@@ -20507,7 +20548,8 @@ function updateExportDialogFormat(state: ExportDialogState, format: ExportDialog
     ...state,
     format,
     filename,
-    destinationPath: nativePathWithBasename(state.destinationPath, filename),
+    destinationPath: format === state.format ? state.destinationPath : undefined,
+    error: undefined,
     raster: {
       ...state.raster,
       background: rasterFormat === "png" ? state.raster.background : "white"
@@ -30305,10 +30347,14 @@ function exportPresentationDocument(document: ChemDraftDocument, crop: ExportDia
   return framed;
 }
 
+function exportDialogHeight(presentation: ExportDialogState["presentation"], ratio: number): number {
+  return presentation.linked === false || presentation.height !== undefined ? (presentation.height ?? NaN) : Math.max(1, Math.round(presentation.width * ratio));
+}
+
 function exportDialogSizeError(state: ExportDialogState, ratio: number): string | undefined {
   const { width, dpi } = state.presentation;
-  const height = Math.max(1, Math.round(width * ratio));
-  if (!Number.isInteger(width) || width < 1 || width > 8192 || !Number.isFinite(height) || height > 8192) {
+  const height = exportDialogHeight(state.presentation, ratio);
+  if (!Number.isInteger(width) || width < 1 || width > 8192 || !Number.isInteger(height) || height < 1 || height > 8192) {
     return "Export dimensions must be whole pixels from 1 to 8192 on each side. Reduce the width or height, or choose a size preset to fit the frame.";
   }
   if (!Number.isFinite(dpi) || dpi < 36 || dpi > 1200) {
@@ -30336,15 +30382,20 @@ export async function createDialogExportResult(
   let width = sanitizedDialogNumber(state.presentation.width, 800, 1, 8192);
   const ratio = document.pages[0].height / document.pages[0].width;
   // Cap renderer dimensions, not just the displayed image. Keep final export sizing intact.
-  if (preview) width = Math.min(width, 800 / Math.max(1, ratio));
-  const height = Math.max(1, Math.round(width * ratio));
+  const requestedHeight = exportDialogHeight(state.presentation, ratio);
+  let height = Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : 800;
+  if (preview) {
+    const scale = Math.min(1, 800 / Math.max(width, height));
+    width = Math.max(1, width * scale);
+    height = Math.max(1, height * scale);
+  }
   if (height > 8192 && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) throw new Error("Export height exceeds 8192 pixels. Reduce the width.");
   const dpi = preview ? 96 : sanitizedDialogNumber(state.presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
     const result = exportPhase4Svg(document, {
-      outputWidth: preview ? width : width / dpi * 25.4,
-      outputHeight: preview ? height : height / dpi * 25.4,
+      outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
+      outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
       outputUnit: preview ? undefined : "mm",
       background: state.presentation.background === "transparent" ? "transparent" : "#ffffff",
       includeWarnings: state.svg.includeWarnings,
@@ -30498,7 +30549,7 @@ async function pickNativeExportPath(
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
   });
-  return selected ? ensureExportFileExtension(selected, extensions) : undefined;
+  return selected ?? undefined;
 }
 
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {

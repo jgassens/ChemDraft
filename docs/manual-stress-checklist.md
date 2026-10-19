@@ -287,3 +287,8 @@ and Art toolbars open, including at 125%/150% display scale:
   Verify saved SVG millimeter dimensions and PDF drawing bounds match the displayed physical
   size. Request 8190 x 4095 px at 36 DPI in PDF: a specific 14400-point limit message must
   prevent export without clipping. Typing a filename must not rerun the content crop.
+  Verify Enter submits a valid export, unlink/relink dimensions, clear and retype numeric
+  values, and check manual edits select Custom. Navigate presets with arrow keys: dimensions
+  change only on Enter or leaving the field. Choose a file, change format/name, then cancel
+  and retry the new location picker; only explicitly chosen paths may be written, and
+  failures must show inside the dialog. Check one PDF-preview tab stop and rounded SVG units.

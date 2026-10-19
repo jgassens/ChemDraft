@@ -3,8 +3,8 @@ import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, type ChemDraftDocument, type TextObject } from "@chemdraft/chem-core";
-import { ExportDialog, createDefaultExportDialogState, createDialogExportResult } from "./MainWindow";
-import { copyAsScopedDocument, createPhase4Document } from "./documentWorkflow";
+import { ExportDialog, createDefaultExportDialogState, createDialogExportResult, updateExportDialogFormat } from "./MainWindow";
+import { copyAsScopedDocument, createPhase4Document, exportPhase4Pdf } from "./documentWorkflow";
 import { rasterizeSvgNative, type NativeRasterExportResult } from "./nativeRasterExport";
 
 vi.mock("./window-manager", async (original) => ({
@@ -12,7 +12,7 @@ vi.mock("./window-manager", async (original) => ({
 }));
 vi.mock("./documentWorkflow", async (original) => {
   const actual = await original<typeof import("./documentWorkflow")>();
-  return { ...actual, copyAsScopedDocument: vi.fn(actual.copyAsScopedDocument) };
+  return { ...actual, copyAsScopedDocument: vi.fn(actual.copyAsScopedDocument), exportPhase4Pdf: vi.fn(actual.exportPhase4Pdf) };
 });
 vi.mock("./nativeRasterExport", () => ({ rasterizeSvgNative: vi.fn() }));
 const raster: NativeRasterExportResult = { bytes: new Uint8Array([1]), width: 800, height: 400, warnings: [] };
@@ -21,6 +21,7 @@ const createUrl = vi.fn(() => "blob:preview");
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  createUrl.mockReset().mockReturnValue("blob:preview");
   vi.mocked(rasterizeSvgNative).mockReset().mockResolvedValue(raster);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   // Replace rather than mutate the original URL constructor.
@@ -59,7 +60,7 @@ async function mount(document: ChemDraftDocument, format: "png" | "svg" | "pdf" 
       onPresentationChange: (options) => setState((current) => ({ ...current, presentation: { ...current.presentation, ...options } })),
       onRasterOptionsChange: (options) => setState((current) => ({ ...current, raster: { ...current.raster, ...options } })),
       onFilenameChange: (filename) => setState((current) => ({ ...current, filename })),
-      onFormatChange: (format) => setState((current) => ({ ...current, format })),
+      onFormatChange: (format) => setState((current) => updateExportDialogFormat(current, format)),
       onCancel: vi.fn(), onChooseDestination: vi.fn(), onSvgOptionsChange: vi.fn(),
       onPdfOptionsChange: vi.fn(), onCdxmlOptionsChange: vi.fn(),
       onSubmit: (event) => { event.preventDefault(); submitted(); }
@@ -170,9 +171,9 @@ it("writes DPI-derived physical SVG dimensions while retaining the frame viewBox
   expect(result.kind).toBe("text");
   if (result.kind !== "text") throw new Error("Expected SVG");
   const svg = svgRoot(result.contents);
-  expect(parseFloat(svg.getAttribute("width")!)).toBeCloseTo(2008 / 600 * 25.4, 6);
+  expect(parseFloat(svg.getAttribute("width")!)).toBeCloseTo(2008 / 600 * 25.4, 4);
   expect(svg.getAttribute("width")).toMatch(/mm$/);
-  expect(parseFloat(svg.getAttribute("height")!)).toBeCloseTo(1004 / 600 * 25.4, 6);
+  expect(parseFloat(svg.getAttribute("height")!)).toBeCloseTo(1004 / 600 * 25.4, 4);
   expect(svg.getAttribute("height")).toMatch(/mm$/);
   expect(svg.getAttribute("viewBox")).toBe("0 0 1000 500");
 });
@@ -194,4 +195,151 @@ it("ignores an old preview that finishes after the newer preview", async () => {
   await act(async () => finishOld(raster));
   expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe("blob:new");
   expect(createUrl).toHaveBeenCalledTimes(1);
+});
+
+
+it("submits on Enter from the filename field exactly once, but not when invalid or composing", async () => {
+  const dialog = await mount(landscapeDocument());
+  const filename = dialog.host.querySelector("#chemdraft-export-filename")!;
+  await act(async () => filename.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(dialog.submitted).toHaveBeenCalledTimes(1);
+  await act(async () => filename.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true })));
+  expect(dialog.submitted).toHaveBeenCalledTimes(1);
+  await editInput(dialog.host, "Width (px)", "9000");
+  await act(async () => filename.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(dialog.submitted).toHaveBeenCalledTimes(1);
+});
+
+it("allows a blank width and reports the entered out-of-range size without clamping the hint", async () => {
+  const dialog = await mount(landscapeDocument());
+  await editInput(dialog.host, "Width (px)", "");
+  const width = [...dialog.host.querySelectorAll("label")].find((label) => label.textContent?.startsWith("Width (px)"))!.querySelector("input")!;
+  expect(width.value).toBe("");
+  expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+  await editInput(dialog.host, "Width (px)", "1000");
+  expect(width.value).toBe("1000");
+  await editInput(dialog.host, "Width (px)", "9000");
+  expect(dialog.host.textContent).toContain("9000");
+  expect(dialog.host.textContent).not.toContain("8192 ? 4096");
+});
+
+it("unlinks pixel and physical dimensions, exports both requested sides and still caps previews", async () => {
+  const document = landscapeDocument();
+  const dialog = await mount(document);
+  await dialog.preset("poster");
+  await act(async () => dialog.host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  await editInput(dialog.host, "Height (px)", "6000");
+  await editInput(dialog.host, "Width (px)", "3000");
+  expect(dialog.selected().presentation).toMatchObject({ width: 3000, height: 6000, linked: false, preset: "custom" });
+  expect(dialog.form.checkValidity()).toBe(true);
+  await tick();
+  const preview = svgRoot(vi.mocked(rasterizeSvgNative).mock.calls.at(-1)![0]);
+  expect(preview.getAttribute("width")).toBe("400");
+  expect(preview.getAttribute("height")).toBe("800");
+  await createDialogExportResult(document, dialog.selected());
+  const final = svgRoot(vi.mocked(rasterizeSvgNative).mock.calls.at(-1)![0]);
+  expect(final.getAttribute("width")).toBe("3000");
+  expect(final.getAttribute("height")).toBe("6000");
+  await editInput(dialog.host, "Physical height", "254");
+  expect(dialog.selected().presentation).toMatchObject({ width: 3000, height: 3000 });
+  await act(async () => dialog.host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  expect(dialog.selected().presentation.linked).toBe(true);
+  expect([...dialog.host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Height (px)"))!.querySelector("input")!.value).toBe("1500");
+});
+
+it("applies keyboard preset navigation only on commit and resets to Custom after manual edits", async () => {
+  const dialog = await mount(landscapeDocument());
+  const select = dialog.host.querySelector<HTMLSelectElement>('[aria-label="Size preset"]')!;
+  const original = dialog.selected().presentation.width;
+  await act(async () => {
+    select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    select.value = "slide";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(dialog.selected().presentation.width).toBe(original);
+  await act(async () => { select.value = "poster"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(dialog.selected().presentation.width).toBe(original);
+  await act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(dialog.selected().presentation.width).toBe(7200);
+  expect(dialog.submitted).not.toHaveBeenCalled();
+  await editInput(dialog.host, "Width (px)", "2000");
+  expect(select.value).toBe("custom");
+});
+
+it("displays export errors inside the dialog", async () => {
+  const dialog = await mount(landscapeDocument());
+  // Renderer failures are surfaced beside the live preview.
+  vi.mocked(rasterizeSvgNative).mockRejectedValueOnce(new Error("renderer refused"));
+  await tick();
+  expect(dialog.host.textContent).toContain("renderer refused");
+});
+
+
+it("keeps a single explicit PDF preview link in the tab order", async () => {
+  vi.mocked(exportPhase4Pdf).mockResolvedValueOnce({ format: "pdf", kind: "binary", bytes: new Uint8Array([1]), mimeType: "application/pdf", extension: "pdf", warnings: [] });
+  const dialog = await mount(landscapeDocument(), "pdf");
+  await tick();
+  expect(dialog.host.querySelector("object")!.tabIndex).toBe(-1);
+  const links = dialog.host.querySelectorAll('a[href="blob:preview"]');
+  expect(links).toHaveLength(1);
+  expect((links[0] as HTMLAnchorElement).tabIndex).toBe(0);
+});
+
+
+it("rejects fractional and out-of-range linked height without rounding it into a valid value", async () => {
+  const dialog = await mount(landscapeDocument());
+  await editInput(dialog.host, "Height (px)", "1.5");
+  expect(dialog.selected().presentation.height).toBe(1.5);
+  expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+  await editInput(dialog.host, "Height (px)", "8192.4");
+  expect(dialog.selected().presentation.height).toBe(8192.4);
+  expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+  await editInput(dialog.host, "Width (px)", "1000");
+  expect(dialog.selected().presentation.height).toBeUndefined();
+  expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("preserves physical-size textual drafts through sequential typing", async () => {
+  const dialog = await mount(landscapeDocument());
+  await dialog.preset("poster");
+  const input = [...dialog.host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Physical width"))!.querySelector("input")!;
+  for (const text of ["", "8", "85", "85.", "85.0", "85.01"]) {
+    await editInput(dialog.host, "Physical width", text);
+    expect(input.value).toBe(text);
+  }
+  expect(dialog.selected().presentation.width).toBe(1004);
+  await act(async () => { input.focus(); input.blur(); });
+  expect(input.value).toBe("85.01");
+});
+
+it("cancels a pending keyboard preset on Escape and commits it on blur", async () => {
+  const dialog = await mount(landscapeDocument());
+  const select = dialog.host.querySelector<HTMLSelectElement>('[aria-label="Size preset"]')!;
+  const width = dialog.selected().presentation.width;
+  const navigate = async () => { await act(async () => {
+    select.focus();
+    select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    select.value = "poster"; select.dispatchEvent(new Event("change", { bubbles: true }));
+  }); };
+  await navigate();
+  await act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  expect(select.value).toBe("custom");
+  expect(dialog.selected().presentation.width).toBe(width);
+  await navigate();
+  await act(async () => select.blur());
+  expect(dialog.selected().presentation.width).toBe(7200);
+});
+
+
+it("recomputes a linked height override when crop changes the frame ratio", async () => {
+  const dialog = await mount(tallDocument());
+  await editInput(dialog.host, "Height (px)", "600");
+  const width = dialog.selected().presentation.width;
+  const crop = [...dialog.host.querySelectorAll("select")].find((select) => select.querySelector('option[value="content"]'))!;
+  await act(async () => { crop.value = "content"; crop.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(dialog.selected().presentation.height).toBeUndefined();
+  const frame = copyAsScopedDocument({ ...tallDocument(), selection: { objectIds: [] } });
+  const expected = Math.round(width * frame.pages[0].height / frame.pages[0].width);
+  const height = [...dialog.host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Height (px)"))!.querySelector("input")!;
+  expect(Number(height.value)).toBe(expected);
 });

@@ -54,6 +54,24 @@ describe("exportDocumentToPdf", () => {
     });
   });
 
+
+  it("keeps all bond endpoints visible when independent output dimensions change the aspect ratio", async () => {
+    const original = createEmptyDocument({ now: timestamp });
+    const ring = { ...filledRingFixture(), style: { source: "chemdraft-native-drawing" } };
+    const document = applyPatch({ ...original, pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }] }, { op: "addObject", pageId: "page_001", object: ring }, { now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false, outputWidth: 960, outputHeight: 1920 }));
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    expect(pdf).toContain("/MediaBox [0 0 720. 1440.]");
+    const points = pdfDrawingPoints(pdf);
+    const endpoints = [[100, 100], [180, 100], [180, 100], [180, 180], [180, 180], [100, 180], [100, 180], [100, 100]];
+    expect(points).toHaveLength(8);
+    // Preserve the 2:1 source frame inside the 1:2 page: 720 x 360 pt, centred vertically.
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index][0]).toBeCloseTo(x * 0.72, 6);
+      expect(points[index][1]).toBeCloseTo(1440 - 540 - y * 0.72, 6);
+    });
+  });
+
   it("uses custom output dimensions for the physical PDF page", async () => {
     const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, outputWidth: 960, outputHeight: 480 }));

@@ -167,6 +167,70 @@ describe("documents in one window", () => {
     vi.useRealTimers();
   });
 
+
+  it.each(["Win32", "MacIntel"])("requests a fresh exact-file grant after an export format change (%s)", async (platform) => {
+    Object.defineProperty(window.navigator, "platform", { configurable: true, value: platform });
+    const paths = platform === "Win32" ? ["C:\\allowed\\figure.svg", "C:\\allowed\\figure.cdxml"] : ["/tmp/figure.svg", "/tmp/figure.cdxml"];
+    const grants = new Set<string>();
+    native.savePicker.mockImplementation(async () => {
+      const path = paths[grants.size]; grants.add(path); return path;
+    });
+    native.writeFile.mockImplementation(async (path) => { if (!grants.has(path)) throw new Error("forbidden path"); });
+    await command("export.open");
+    const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    await act(async () => { format.value = "svg"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+    const choose = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes("Choose"))!;
+    await act(async () => choose.click());
+    native.writeFile.mockClear();
+    expect(native.savePicker).toHaveBeenCalledTimes(1);
+    await act(async () => { format.value = "cdxml"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+    const filename = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+    await act(async () => filename.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(native.savePicker).toHaveBeenCalledTimes(2);
+    expect(native.writeFile).toHaveBeenCalledExactlyOnceWith(paths[1], expect.any(String));
+    expect(container.querySelector('[role="dialog"][aria-label="Export"]')).toBeNull();
+  });
+
+  it("invalidates a chosen export destination after renaming and shows write failures in the dialog", async () => {
+    native.savePicker.mockResolvedValueOnce("/tmp/first.svg").mockResolvedValueOnce(null).mockResolvedValueOnce("/tmp/renamed.svg");
+    await command("export.open");
+    const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    await act(async () => { format.value = "svg"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+    const choose = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes("Choose"))!;
+    await act(async () => choose.click());
+    native.writeFile.mockClear();
+    const filename = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filename, "renamed.svg");
+      filename.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const form = filename.closest("form")!;
+    await act(async () => form.requestSubmit());
+    expect(native.savePicker).toHaveBeenCalledTimes(2);
+    expect(native.writeFile).not.toHaveBeenCalled();
+    native.writeFile.mockRejectedValueOnce(new Error("disk full"));
+    await act(async () => form.requestSubmit());
+    expect(native.savePicker).toHaveBeenCalledTimes(3);
+    const dialog = container.querySelector('[role="dialog"][aria-label="Export"]')!;
+    expect(dialog.querySelector('[role="alert"]')!.textContent).toContain("SVG export failed: disk full");
+    expect((dialog.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+
+  it.each(["/tmp/exact-file", "C:\\allowed\\user-chosen.txt"])("writes only the exact export picker grant even without a matching extension: %s", async (path) => {
+    native.savePicker.mockResolvedValueOnce(path);
+    await command("export.open");
+    const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    await act(async () => { format.value = "svg"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+    const choose = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes("Choose"))!;
+    await act(async () => choose.click());
+    native.writeFile.mockClear();
+    native.writeFile.mockImplementation(async (requested) => { if (requested !== path) throw new Error("forbidden path"); });
+    const form = container.querySelector("#chemdraft-export-filename")!.closest("form")!;
+    await act(async () => form.requestSubmit());
+    expect(native.writeFile).toHaveBeenCalledExactlyOnceWith(path, expect.any(String));
+  });
+
   async function mount(initialDocument = createPhase4Document("Untitled")) {
     root = createRoot(container);
     await act(async () => {
