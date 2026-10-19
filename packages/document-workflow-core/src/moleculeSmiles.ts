@@ -6,7 +6,7 @@ import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chem
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 
-import { expandNativeMoleculeLabelGroups } from "./atoms";
+import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "./atoms";
 import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./smiles";
 
 export type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
@@ -62,13 +62,13 @@ export async function moleculeSmiles(
           fromDocFrame: true,
           warnings: writerWarnings,
           messageFormat: "SMILES",
+          spellLabel: nativeSingleHeavyElementLabelValence,
           kekuleBondOrders: nativeBondOrderResolution(expanded.molecule.atoms, expanded.molecule.bonds).kekuleOrders,
           placeholderAtoms: expanded.placeholderAtoms
         }).contents
       );
       if (identifiers?.smiles) {
         // Only report these losses when the engine's molfile route supplied the output.
-        // The native fallback can spell some condensed labels that V2000 cannot.
         warnings.push(...writerWarnings.map((message): ExportWarning => ({
           code: "export.smiles_v2000_loss",
           message,
@@ -98,6 +98,7 @@ export async function moleculeSmiles(
     expanded.expansions.length === 0 &&
     expanded.placeholderAtoms.size === 0 &&
     nativeMoleculeUnspellableLabels(molecule).length === 0 &&
+    !molecule.atoms.some((atom) => (atom.markRadicals ?? 0) > 0) &&
     molecule.structureFormat === "smiles" &&
     molecule.structure
   ) {

@@ -4,7 +4,7 @@ import {
   type MoleculeObject,
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
-import { expandNativeMoleculeLabelGroups } from "@chemdraft/document-workflow-core";
+import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
@@ -86,6 +86,7 @@ export async function exportStructureListSdf(
       warnings: writerWarnings,
       kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
       superatomGroups: expansions,
+      spellLabel: nativeSingleHeavyElementLabelValence,
       placeholderAtoms
     }).contents;
     warnings.push(...writerWarnings.map((message): ExportWarning => ({

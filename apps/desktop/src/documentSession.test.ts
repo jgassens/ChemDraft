@@ -239,7 +239,7 @@ describe("strict session flush (before the updater's installer ends the process)
   });
 
   it("proceeds when skipping the write loses nothing: a blank canvas, or a saved file with no edits", () => {
-    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, blank: true })).toBeUndefined();
+    expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, blank: true, fileState: { dirty: false } })).toBeUndefined();
     expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, fileState: { path: "C:/a.cdxml", dirty: false } }))
       .toBeUndefined();
   });

@@ -48,7 +48,8 @@ describe("art-engine native art planning", () => {
   it("keeps Stage 2 dependency licenses inside the approved set", () => {
     const artEnginePackage = require("../package.json") as { dependencies?: Record<string, string> };
     const pathCommanderPackage = require("svg-path-commander/package.json") as { license: string };
-    const domMatrixPackage = require("@thednp/dommatrix/package.json") as { license: string };
+    // It is svg-path-commander's dependency, not ours; resolve it from its actual owner under pnpm.
+    const domMatrixPackage = createRequire(require.resolve("svg-path-commander"))("@thednp/dommatrix/package.json") as { license: string };
     const flattenPackage = JSON.parse(readFileSync(
       require.resolve("@flatten-js/core").replace(/dist[\\/]main\.cjs$/, "package.json"),
       "utf8"

@@ -13,7 +13,8 @@ succeed, 1 when any attempted job fails, and 2 when arguments or batch input are
 
 Batch files are JSON arrays of named jobs. Names are trimmed and must match
 ^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$; names must be unique without regard to case. A batch may contain
-at most 500 jobs. Empty input is rejected; chemical input is limited to 5000 characters and 500
+at most 500 jobs. Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
+`LPT1`–`LPT9`) are rejected on every platform. Empty input is rejected; chemical input is limited to 5000 characters and 500
 heavy atoms. PNG output is limited to a width of 16–4000 pixels.
 
 User text files (batches, native documents, and the plugin trust file) accept UTF-8 with or

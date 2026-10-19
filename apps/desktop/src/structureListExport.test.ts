@@ -407,15 +407,17 @@ M  END
 });
 
 describe("SMILES export review regressions", () => {
-  it("surfaces V2000 label loss in a .smi export even when RDKit returns SMILES", async () => {
+  it("spells a condensed label in the molfile sent to the SMILES engine", async () => {
     const molecule = moleculeAt("condensed", 0, 0);
     molecule.atoms[1].element = "NH2";
-    vi.mocked(computeStructureIdentifiers).mockResolvedValue({ smiles: "*C" });
+    vi.mocked(computeStructureIdentifiers).mockImplementation(async (molfile) => {
+      const graph = parseMolfileGraph(molfile);
+      expect(graph?.atoms.map((atom) => atom.element)).toEqual(["C", "N"]);
+      return { smiles: "CN" };
+    });
     const result = await exportStructureListSmi(documentWith([molecule]));
-    expect(result.contents).toBe("*C\t1\n");
-    expect(result.warnings).toContainEqual(expect.objectContaining({
-      code: "export.smiles_v2000_loss", objectId: molecule.id, message: expect.stringContaining("NH2")
-    }));
+    expect(result.contents).toBe("CN\t1\n");
+    expect(result.warnings).toEqual([]);
   });
 
   it.each(exportListCases)("warns for substituted double-bond stereo in native fallback ($format)", async ({ exportList }) => {
