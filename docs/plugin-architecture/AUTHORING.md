@@ -300,13 +300,17 @@ module loads are blocked. `network.fetch` remains a declared future capability; 
 ambient browser network primitive. External access must eventually travel through a permission-gated
 host broker rather than bypassing the command context.
 
-Nested module workers are supported on both macOS and Windows. Use
+Nested module workers are supported on both macOS and Windows to depth 1: on Windows, a plugin
+worker can start a nested module worker, but a worker started from inside that nested worker
+(depth 2 or greater) is not supported. Use
 `new Worker(new URL("./assets/worker.js", import.meta.url), { type: "module" })` and keep the
 worker's assets co-located. On Windows, the host installs a compatibility shim before plugin
 code executes: same-origin module workers start through a small blob with a static import of
 the real absolute URL. The imported module retains its real `import.meta.url`, and worker
-options and native messaging APIs are preserved. macOS, web builds, classic workers, and
-cross-origin URLs retain their native behavior. This grants no additional permissions or network access.
+options and native messaging APIs are preserved. The shim is installed in the plugin worker, but
+not reinstalled by the nested worker's blob wrapper, which is why deeper nesting still fails.
+macOS and web builds retain their native behavior. Classic workers and cross-origin URLs are not
+shimmed. This grants no additional permissions or network access.
 
 ## Distribute
 

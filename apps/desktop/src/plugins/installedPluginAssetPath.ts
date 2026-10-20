@@ -2,10 +2,10 @@
  * The staged-plugin asset contract shared by the two servers that implement it.
  *
  * Installed plugin assets are served by `installed_plugins.rs` in the shipped app and by a Vite dev
- * middleware under `./run-app --dev`. Both must refuse exactly the same paths and send exactly the
- * same worker CSP: a dev-only gap would mean traversal is testable in one build and not the other,
- * and a CSP drift would silently hand development workers ambient network access the packaged app
- * denies. The decision lives here, as pure data, so both callers share it and a test can pin it.
+ * middleware under `./run-app --dev`. Both share the path-refusal rules and worker CSP, which live
+ * here as pure data and are covered by tests. The packaged Rust handler additionally substitutes a
+ * Windows worker bootstrap for the matching query; Vite dev serves the requested asset directly
+ * because its origin does not need the WebView2 workaround.
  *
  * This is the *second* line of defense. The archive reader (`pluginPackageArchive.ts`) already
  * refuses unsafe entry paths at install time; this refuses them again at serve time, because the

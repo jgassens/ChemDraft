@@ -221,6 +221,11 @@ evaluation can retain its blob until the creating worker exits. Platform selecti
 for tests and otherwise detected. macOS and web builds keep native worker construction, as do
 classic, cross-origin, opaque, and credential-bearing URLs.
 
+On Windows this supports one nested-worker level: the plugin worker can start a nested module
+worker, but a worker started from inside that nested worker (depth 2 or greater) is not supported.
+The blob wrapper does not reinstall the shim, so deeper nesting uses native construction and may
+fail under WebView2.
+
 The bootstrap response retains `INSTALLED_PLUGIN_WORKER_CSP` verbatim. Starting the plugin
 itself from a page-created blob would inherit the page's broader CSP, so that approach is avoided.
 Nested blobs inherit the installed worker's restrictive CSP; their static imports still obey
