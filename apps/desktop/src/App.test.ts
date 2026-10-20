@@ -258,6 +258,7 @@ const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 const toolbarTooltipSource = readFileSync(new URL("./toolbars/toolbarTooltip.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const exportFormSource = readFileSync(new URL("./dialogs/ExportForm.tsx", import.meta.url), "utf8");
 const desktopCapabilitiesSource = readFileSync(
   new URL("../src-tauri/capabilities/default.json", import.meta.url),
   "utf8"
@@ -1859,17 +1860,18 @@ describe("ChemDraft desktop shell", () => {
   it("routes desktop exports through native save and file-write helpers", () => {
     expect(mainWindowSource).toContain("async function pickNativeExportPath(");
     expect(mainWindowSource).toContain('if (action.id === "export.open")');
-    expect(mainWindowSource).toContain("<ExportDialog");
-    expect(mainWindowSource).toContain("Export as");
-    expect(mainWindowSource).toContain("Compress PDF");
-    expect(mainWindowSource).toContain("Include warning metadata");
-    expect(mainWindowSource).toContain("JPEG quality");
-    expect(mainWindowSource).toContain("Creation program");
+    expect(mainWindowSource).toContain("coordinator.openExport(tabId");
+    expect(mainWindowSource).toContain("<ExportForm");
+    expect(exportFormSource).toContain("Export as");
+    expect(exportFormSource).toContain("Compress PDF");
+    expect(exportFormSource).toContain("Include warning metadata");
+    expect(exportFormSource).toContain("JPEG quality");
+    expect(exportFormSource).toContain("Creation program");
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
-    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentForFlush(), dialog)");
-    expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
-    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(source, { ...options, busy: false })");
+    expect(mainWindowSource).toContain("nativePathJoin(lastExportDirectoryRef.current, options.filename)");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId))");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
     expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
     expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
@@ -2597,7 +2599,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
     expect(mainWindowSource).toContain("createNativeSavePayload(active ? documentForFlush() : savingDocument)");
-    expect(mainWindowSource).toContain("createDialogExportResult(documentForFlush(), dialog)");
+    expect(mainWindowSource).toContain("tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present");
+    expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false })");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
 
