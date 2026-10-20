@@ -10,6 +10,18 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Nested plugin workers (packaged macOS and Windows builds): install the NMR Shift Predictor package,
+select a molecule, and invoke prediction from real menu input. On Windows/WebView2, confirm the
+entry bootstrap loads with the unchanged installed-plugin CSP, the nested module imports from its
+real `http://tauri.localhost/installed-plugins/…` URL, its reference JSON resolves relative to that
+module, and prediction answers without `ERR_ABORTED` or `NMR_PROVIDER_FAILURE`. Repeat after
+disable/re-enable and uninstall/reinstall. Exercise nested worker `postMessage`, replies, name,
+credentials, error listeners, and termination; confirm blob URLs are released after module startup
+and on load failure. Probe external fetch/module imports: the installed worker and its blob child
+must still be blocked by CSP without host permission. On macOS, confirm the entry and nested
+worker still load directly from `tauri://localhost` with working prediction. In a Windows web
+preview, confirm construction remains native; classic and cross-origin calls must remain unchanged.
+
 Plugin panel focus (both macOS and Windows): open/re-show a panel from Analyze or a plugin command;
 click a panel button, heading, chart, empty area and title/drag area, hover its controls and scroll.
 Buttons must run exactly once and hover feedback must work; after each ordinary click the drawing

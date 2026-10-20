@@ -203,6 +203,30 @@ replacement all perform that teardown. Installed worker responses allow only
 same-origin code/data/network access; external network access cannot bypass the
 manifest capability layer.
 
+On Windows/WebView2, a nested module worker's main-script request to `http://tauri.localhost`
+can be aborted even when the server returns 200. Installed plugins therefore start through a
+host bootstrap selected by `__chemdraft_worker_bootstrap=windows` on their existing entry URL.
+The native handler validates and reads that entry as usual, then serves the dependency-free
+`workers/nestedModuleWorkerShim.js` and dynamically imports the original entry after installing
+the shim. Dynamic import ensures even transitive plugin dependencies see the shim before
+executing. On Windows, the bundled plugin worker uses a separate bootstrap that installs the
+same shim before importing its original worker entry; macOS and web builds retain the original entry.
+
+The shim proxies only construction of same-origin module workers on the Windows desktop
+custom origin. It returns a real native Worker with the original options, using a blob containing
+`import "<absolute URL>"; URL.revokeObjectURL(import.meta.url);`. The imported module keeps its
+real URL for sibling assets. The blob is revoked after module evaluation; construction or load
+errors also revoke it without consuming the native error event. A worker terminated before
+evaluation can retain its blob until the creating worker exits. Platform selection is injectable
+for tests and otherwise detected. macOS and web builds keep native worker construction, as do
+classic, cross-origin, opaque, and credential-bearing URLs.
+
+The bootstrap response retains `INSTALLED_PLUGIN_WORKER_CSP` verbatim. Starting the plugin
+itself from a page-created blob would inherit the page's broader CSP, so that approach is avoided.
+Nested blobs inherit the installed worker's restrictive CSP; their static imports still obey
+`script-src 'self'`, and worker construction still obeys `worker-src 'self' blob:`. Neither the
+bootstrap query nor the shim grants host capabilities or bypasses manifest permissions.
+
 ## Panel-close lifecycle (ADR-0012)
 
 `RegisterPluginOptions.onPanelClosed(panelId)` lets a plugin cancel in-flight work

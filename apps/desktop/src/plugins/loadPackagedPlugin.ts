@@ -36,6 +36,7 @@ import {
 } from "@chemdraft/plugin-api";
 
 import { PluginWorkerBridge } from "./PluginWorkerBridge";
+import { pluginWorkerBootstrapUrl } from "./pluginWorkerBootstrap";
 import { createWorkerRoutedOptions, type BundledPluginDescriptor } from "./registerBundledPlugins";
 
 export interface PackagedPluginLocation {
@@ -117,7 +118,7 @@ function defaultWorkerFactory(entryUrl: URL): PluginWorkerHandle {
         "drive an equivalent worker handle."
     );
   }
-  return new Worker(entryUrl, { type: "module" }) as unknown as PluginWorkerHandle;
+  return new Worker(pluginWorkerBootstrapUrl(entryUrl), { type: "module" }) as unknown as PluginWorkerHandle;
 }
 
 /**
