@@ -12,6 +12,7 @@ mod plugin_package;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
+mod window_drag;
 mod windows_clipboard;
 
 use std::{
@@ -1235,6 +1236,7 @@ pub fn run() {
             show_toolset_tooltip_window,
             hide_toolset_tooltip_window,
             set_current_window_global_position,
+            start_window_drag,
             quit_after_flush,
             set_quit_prompt_enabled,
             prepare_quit_prompt,
@@ -3812,6 +3814,12 @@ fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogical
         x: position.x,
         y: position.y,
     })
+}
+
+/// Starts a drag on the invoking window, retaining the original window-local grab point.
+#[tauri::command]
+fn start_window_drag(window: tauri::WebviewWindow, grab_x: f64, grab_y: f64) -> Result<(), String> {
+    window_drag::start(&window, grab_x, grab_y)
 }
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
@@ -8218,7 +8226,8 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
+            include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),

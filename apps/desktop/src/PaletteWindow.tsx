@@ -856,11 +856,11 @@ export function PaletteWindow({
 
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    beginPaletteWindowDrag(event.screenX, event.screenY, event.pointerId);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY, event.pointerId);
   };
 
   const startMouseDragFromPaletteSurface = (event: ReactMouseEvent<HTMLElement>) => {
-    if (event.button !== 0 || customizeThisPaletteRef.current) {
+    if (event.button !== 0 || customizeThisPaletteRef.current || dragRef.current?.pointerId !== undefined) {
       return;
     }
 
@@ -869,7 +869,7 @@ export function PaletteWindow({
     }
 
     event.preventDefault();
-    beginPaletteWindowDrag(event.screenX, event.screenY);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY);
   };
 
   const startDragFromTitle = (event: PointerEvent<HTMLElement>) => {
@@ -884,11 +884,11 @@ export function PaletteWindow({
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    beginPaletteWindowDrag(event.screenX, event.screenY, event.pointerId);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY, event.pointerId);
   };
 
   const startMouseDragFromTitle = (event: ReactMouseEvent<HTMLElement>) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || dragRef.current?.pointerId !== undefined) {
       return;
     }
 
@@ -898,16 +898,16 @@ export function PaletteWindow({
 
     event.preventDefault();
     event.stopPropagation();
-    beginPaletteWindowDrag(event.screenX, event.screenY);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY);
   };
 
-  const beginPaletteWindowDrag = (screenX: number, screenY: number, pointerId?: number) => {
-    // The OS owns the drag: startDragging() (and the title bar's data-tauri-drag-region)
-    // move the window natively and smoothly. We deliberately do NOT also set the window
-    // position from pointer deltas — doing both made the OS and JS fight over the position
-    // every frame, which is the jitter/skipping seen while dragging. Window geometry is
-    // persisted by the Rust WindowEvent::Moved handler, so nothing here needs to write it.
-    void startPaletteWindowDrag().catch(() => undefined);
+  const beginPaletteWindowDrag = (
+    grabX: number, grabY: number, screenX: number, screenY: number, pointerId?: number
+  ) => {
+    // One native entry point compensates for Windows IPC delay before handing off to the OS.
+    // Keep the grab point window-local: screen coordinates times DPR fail across mixed-DPI monitors.
+    // Geometry is still persisted only by the Rust WindowEvent::Moved handler.
+    void startPaletteWindowDrag(grabX, grabY).catch(() => undefined);
 
     dragRef.current = {
       pointerId,
@@ -1066,7 +1066,6 @@ export function PaletteWindow({
       <div
         className="palette-title"
         data-palette-title-drag-surface="true"
-        data-tauri-drag-region="true"
         onPointerDown={startDragFromTitle}
         onPointerMove={movePaletteWindow}
         onPointerUp={stopPaletteWindowDrag}

@@ -139,7 +139,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         data-palette-title-drag-surface="true"
         onPointerDown={(event) => {
           if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {
-            void startPaletteWindowDrag().catch(() => undefined);
+            void startPaletteWindowDrag(event.clientX, event.clientY).catch(() => undefined);
           }
         }}
       >
