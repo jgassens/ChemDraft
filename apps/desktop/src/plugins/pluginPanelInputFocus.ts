@@ -25,11 +25,18 @@ async function requestNativeInputFocus(editing: boolean): Promise<void> {
   await invoke("set_plugin_panel_input_focus", { editing });
 }
 
+async function listenNativePanelActivation(listener: () => void): Promise<() => void> {
+  if (!isDesktopRuntime()) return () => undefined;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().listen("chemdraft://plugin-panel-activated", listener);
+}
+
 /** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
   requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus,
-  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
+  subscribeActivation: (listener: () => void) => Promise<() => void> = listenNativePanelActivation
 ): () => void {
   let editing = false;
   let leasedControl: HTMLElement | undefined;
@@ -37,29 +44,53 @@ export function installPluginPanelInputFocus(
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
   let pointerClickTarget: EventTarget | null | undefined;
   let revision = 0;
-  let handBackRevision: number | undefined;
   let pending = Promise.resolve();
+  let leaseRequestRevision: number | undefined;
+  let blurredRevision: number | undefined;
+  let inputBlurredRevision: number | undefined;
+  let blurTimer: ReturnType<typeof setTimeout> | undefined;
+  let activationTimer: ReturnType<typeof setTimeout> | undefined;
+  let pointerActive = false;
+  let disposed = false;
+  // WebView2 can deliver blur/focus in separate tasks after SetActiveWindow + set_focus.
+  // Check settled focus, not the first transient blur, and never end a pending acquisition.
+  const checkWindowBlur = (): void => {
+    clearTimeout(blurTimer);
+    blurTimer = setTimeout(() => {
+      if (disposed || !editing || leaseRequestRevision !== undefined) return;
+      const lostWindow = blurredRevision === revision && !document.hasFocus();
+      const lostControl = inputBlurredRevision === revision && !selectionLease &&
+        (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement));
+      blurredRevision = undefined;
+      inputBlurredRevision = undefined;
+      if (lostWindow || lostControl) finish();
+    }, 32);
+  };
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
     editing = next;
     const requestedRevision = ++revision;
+    leaseRequestRevision = next ? requestedRevision : undefined;
     // Every request has a generation, including retries. Keep IPC serialized through native
     // completion: an old hand-back can never execute natively after a newer lease request.
     pending = pending.catch(() => undefined).then(async () => {
       if (requestedRevision !== revision) return;
-      if (!next) handBackRevision = requestedRevision;
       try {
         await requestFocus(next);
       } finally {
         // A stale completion cannot unprotect the newer lease from its delayed blur.
-        if (next && requestedRevision === revision) handBackRevision = undefined;
+        if (next && requestedRevision === revision) {
+          leaseRequestRevision = undefined;
+          if (blurredRevision === revision || inputBlurredRevision === revision) checkWindowBlur();
+        }
       }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
-  const staleHandBackBlur = (): boolean => platform === "windows" && editing &&
-    handBackRevision !== undefined && handBackRevision < revision;
   const finish = (): void => {
+    clearTimeout(blurTimer);
+    blurredRevision = undefined;
+    inputBlurredRevision = undefined;
     setEditing(false);
     leasedControl = undefined;
     selectionGesture = undefined;
@@ -93,6 +124,7 @@ export function installPluginPanelInputFocus(
   };
   const pointerDown = (event: PointerEvent): void => {
     if (!event.isTrusted || event.button !== 0) return;
+    pointerActive = true;
     pointerClickTarget = event.target;
     selectionGesture = undefined;
     const control = panelEditableControl(event.target);
@@ -117,6 +149,7 @@ export function installPluginPanelInputFocus(
   };
   const pointerUp = (event: PointerEvent): void => {
     if (!event.isTrusted) return;
+    pointerActive = false;
     if (event.button === 0 && selectionGesture?.pointerId === event.pointerId) {
       if (selectionGesture.dragged || event.clientX !== selectionGesture.x || event.clientY !== selectionGesture.y) {
         leaseSelection();
@@ -142,14 +175,36 @@ export function installPluginPanelInputFocus(
   };
   const cancelSelectionGesture = (event: PointerEvent): void => {
     if (!event.isTrusted) return;
+    pointerActive = false;
     pointerClickTarget = undefined;
     selectionGesture = undefined;
     returnPointerFocus();
   };
   const windowBlur = (): void => {
-    if (staleHandBackBlur()) return;
     // A hand-back without a lease must not erase the pending double/triple-click gesture.
-    if (platform !== "windows" || editing) finish();
+    if (platform !== "windows") finish();
+    else if (editing) {
+      blurredRevision = revision;
+      checkWindowBlur();
+    }
+  };
+  const checkActivation = (): void => {
+    if (platform !== "windows" || editing) return;
+    const activatedRevision = revision;
+    clearTimeout(activationTimer);
+    // Native activation can precede DOM pointerdown. Allow it to establish intent; every
+    // lease request, even one queued behind IPC, supersedes this activation check.
+    activationTimer = setTimeout(() => {
+      if (!disposed && revision === activatedRevision && !editing && !pointerActive && !selectionGesture) {
+        returnPointerFocus();
+      }
+    }, 32);
+  };
+  const windowFocus = (): void => {
+    // A queued focus notification is not proof that the document is still focused.
+    // Leave the loss recorded until the settled hasFocus() check observes recovery.
+    if (platform === "windows" && blurredRevision === revision) checkWindowBlur();
+    checkActivation();
   };
   const selectionChange = (): void => {
     // selectionchange alone (including a script-created range) can never start a lease.
@@ -157,19 +212,27 @@ export function installPluginPanelInputFocus(
   };
   const focusIn = (event: FocusEvent): void => {
     const control = panelEditableControl(event.target);
-    if (editing && control) leasedControl = control;
-    else if (editing && !selectionLease && !staleHandBackBlur()) finish();
+    if (editing && control) {
+      leasedControl = control;
+      inputBlurredRevision = undefined;
+    } else if (editing && !selectionLease) {
+      if (platform === "windows") focusOut();
+      else finish();
+    }
   };
   const wheel = (event: WheelEvent): void => {
     if (editing && !selectionLease && !panelEditableControl(event.target)) finish();
   };
   const focusOut = (): void => {
-    if (staleHandBackBlur()) return;
-    const blurredRevision = revision;
+    if (platform === "windows") {
+      if (editing) {
+        inputBlurredRevision = revision;
+        checkWindowBlur();
+      }
+      return;
+    }
     // Native loss of focus and DOM blur can occur before the next control's focusin.
     queueMicrotask(() => {
-      if (platform === "windows" && (blurredRevision !== revision || staleHandBackBlur())) return;
-      if (platform === "windows" && !editing) return;
       if (!selectionLease && (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement))) {
         finish();
       }
@@ -225,7 +288,19 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("wheel", wheel, { capture: true, passive: true });
   shell.addEventListener("keydown", keyDown);
   window.addEventListener("blur", windowBlur);
+  window.addEventListener("focus", windowFocus);
+  let unsubscribeActivation: (() => void) | undefined;
+  if (platform === "windows") {
+    void subscribeActivation(checkActivation).then((unsubscribe) => {
+      if (disposed) unsubscribe();
+      else unsubscribeActivation = unsubscribe;
+    }).catch((error: unknown) => console.error("Could not observe panel activation:", error));
+  }
   return () => {
+    disposed = true;
+    clearTimeout(activationTimer);
+    unsubscribeActivation?.();
+    window.removeEventListener("focus", windowFocus);
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
     window.removeEventListener("pointermove", pointerMove, true);

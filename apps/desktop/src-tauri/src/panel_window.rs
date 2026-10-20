@@ -37,7 +37,7 @@ pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) ->
 }
 
 /// Toolbar-style hand-back, without Tao's force_window_active / synthetic Alt fallback.
-/// Called only when a lease ends or a non-lease pointer gesture completes. Activation alone
+/// Called when a lease ends, a non-lease pointer gesture completes or idle activation settles. Activation alone
 /// is not enough: keyboard focus must also leave the panel's WebView2 child HWND.
 #[cfg(windows)]
 pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
@@ -89,15 +89,12 @@ fn extended_style(style: isize) -> isize {
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    use tauri::Manager;
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        UI::{
-            Shell::SetWindowSubclass,
-            WindowsAndMessaging::{
-                GetClientRect, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-                SWP_NOACTIVATE, SWP_NOZORDER,
-            },
+    use tauri::{Emitter, Manager};
+    use windows_sys::Win32::UI::{
+        Shell::SetWindowSubclass,
+        WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
         },
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
@@ -105,84 +102,56 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
         .app_handle()
         .get_webview_window(super::MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
-    // Main-thread-only. Same focus policy as Tao's focusable(false); keep it through input focus.
+    let parent = hwnd as usize;
+    let panel = window.clone();
+    let data = Box::into_raw(Box::new(PanelSubclass {
+        return_focus: std::rc::Rc::new(move || {
+            if let Err(error) = return_focus_to_document(parent as _, &document) {
+                eprintln!("Could not return panel keyboard focus: {error}");
+            }
+        }),
+        activated: std::rc::Rc::new(move || {
+            // Do not redirect in WM_ACTIVATE: it can precede an input's trusted pointerdown.
+            // The webview decides after a task, using its lease/request generations.
+            if let Err(error) =
+                panel.emit_to(panel.label(), "chemdraft://plugin-panel-activated", ())
+            {
+                eprintln!("Could not notify panel activation: {error}");
+            }
+        }),
+    }));
     unsafe {
         SetWindowLongPtrW(
             hwnd,
             GWL_EXSTYLE,
             extended_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)),
         );
+        if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
+            drop(Box::from_raw(data));
+            return Err(format!(
+                "Could not install panel resize border: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // Recalculate the native frame. Wry continues to fill the entire client; there is
+        // no exposed parent-client margin to paint (or turn black during live resizing).
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        );
     }
-    // Get WebView2's actual container, not an assumed first child. Both its HWND and controller
-    // must be inset: shrinking just the controller leaves a child HWND covering the resize band.
-    let parent = hwnd as usize;
-    window
-        .with_webview(move |webview| unsafe {
-            let controller = webview.controller();
-            let mut child = Default::default();
-            if let Err(error) = controller.ParentWindow(&mut child) {
-                eprintln!("Could not access panel WebView2 container: {error}");
-                return;
-            }
-            let update: ResizeWebview = Box::new(move |hwnd| {
-                let mut client = RECT::default();
-                if GetClientRect(hwnd, &mut client) == 0 {
-                    return;
-                }
-                let (bx, by) = resize_border(hwnd);
-                let inset = geometry::inset_client(client.right, client.bottom, bx, by);
-                let width = inset.right - inset.left;
-                let height = inset.bottom - inset.top;
-                SetWindowPos(
-                    child.0,
-                    std::ptr::null_mut(),
-                    inset.left,
-                    inset.top,
-                    width,
-                    height,
-                    SWP_NOACTIVATE | SWP_NOZORDER,
-                );
-                // Infer WebView2's windows::RECT without introducing another windows dependency.
-                let mut bounds = Default::default();
-                if controller.Bounds(&mut bounds).is_ok() {
-                    bounds.left = 0;
-                    bounds.top = 0;
-                    bounds.right = width;
-                    bounds.bottom = height;
-                    if let Err(error) = controller.SetBounds(bounds) {
-                        eprintln!("Could not inset panel WebView2 bounds: {error}");
-                    }
-                }
-            });
-            let hwnd = parent as windows_sys::Win32::Foundation::HWND;
-            update(hwnd);
-            let return_focus = std::rc::Rc::new(move || {
-                if let Err(error) = return_focus_to_document(parent as _, &document) {
-                    eprintln!("Could not return panel keyboard focus: {error}");
-                }
-            });
-            let data = Box::into_raw(Box::new(PanelSubclass {
-                update,
-                return_focus,
-            }));
-            if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
-                drop(Box::from_raw(data));
-                eprintln!(
-                    "Could not install panel resize border: {}",
-                    std::io::Error::last_os_error()
-                );
-            }
-        })
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 #[cfg(windows)]
-type ResizeWebview = Box<dyn Fn(windows_sys::Win32::Foundation::HWND)>;
-
-#[cfg(windows)]
 struct PanelSubclass {
-    update: ResizeWebview,
     return_focus: std::rc::Rc<dyn Fn()>,
+    activated: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -212,13 +181,13 @@ unsafe extern "system" fn resize_subclass(
     data: usize,
 ) -> isize {
     use windows_sys::Win32::{
-        Foundation::{POINT, RECT},
+        Foundation::RECT,
         UI::{
-            Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass},
+            Shell::{DefSubclassProc, RemoveWindowSubclass},
             WindowsAndMessaging::{
-                GetClientRect, MA_NOACTIVATE, SIZE_MINIMIZED, WM_DPICHANGED, WM_ENTERSIZEMOVE,
-                WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
-                WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SIZE,
+                GetWindowRect, IsZoomed, MA_NOACTIVATE, NCCALCSIZE_PARAMS, WA_INACTIVE,
+                WM_ACTIVATE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCCALCSIZE,
+                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
             },
         },
     };
@@ -239,23 +208,31 @@ unsafe extern "system" fn resize_subclass(
             return_focus();
         }
     }
+    if message == WM_NCCALCSIZE && IsZoomed(hwnd) == 0 {
+        // Reserve the system's non-client resize frame, outside the visible content.
+        // Tao's undecorated-shadow path retains left/right/bottom but covers the top with
+        // the child webview. Keep the same normal border on all four sides, no caption.
+        let rect = if wparam != 0 {
+            &mut (*(lparam as *mut NCCALCSIZE_PARAMS)).rgrc[0]
+        } else {
+            &mut *(lparam as *mut RECT)
+        };
+        let (bx, by) = resize_border(hwnd);
+        let client =
+            geometry::resize_client(rect.right - rect.left, rect.bottom - rect.top, bx, by);
+        rect.right = rect.left + client.right;
+        rect.bottom = rect.top + client.bottom;
+        rect.left += client.left;
+        rect.top += client.top;
+        return 0;
+    }
     if message == WM_NCHITTEST {
         let mut rect = RECT::default();
-        let mut point = POINT {
-            x: (lparam as u16 as i16) as i32,
-            y: ((lparam >> 16) as u16 as i16) as i32,
-        };
-        // ScreenToClient uses the same origin as the WebView inset and Tao's shadow top edge.
-        #[link(name = "user32")]
-        extern "system" {
-            fn ScreenToClient(hwnd: windows_sys::Win32::Foundation::HWND, point: *mut POINT)
-                -> i32;
-        }
-        if GetClientRect(hwnd, &mut rect) != 0 && ScreenToClient(hwnd, &mut point) != 0 {
+        if GetWindowRect(hwnd, &mut rect) != 0 {
             let (bx, by) = resize_border(hwnd);
             if let Some(hit) = geometry::resize_hit(
-                point.x,
-                point.y,
+                (lparam as u16 as i16) as i32,
+                ((lparam >> 16) as u16 as i16) as i32,
                 geometry::Rect {
                     left: rect.left,
                     top: rect.top,
@@ -275,19 +252,17 @@ unsafe extern "system" fn resize_subclass(
         drop(Box::from_raw(data as *mut PanelSubclass));
         return result;
     }
-    // Wry resets the child to fill the client during WM_SIZE. Run AFTER it, including DPI moves.
+    // Copy before calling lower procedures, which may destroy the window.
+    let activated = (message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE as usize)
+        .then(|| (*(data as *const PanelSubclass)).activated.clone());
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
     if let Some(return_focus) = return_focus {
         // Wry focuses WebView2 on entering a native move/resize loop. Hand back AFTER it,
         // and again after the gesture, including a title press that never becomes a drag.
         return_focus();
     }
-    if (message == WM_SIZE && wparam != SIZE_MINIMIZED as usize) || message == WM_DPICHANGED {
-        // A lower procedure may destroy the window while processing a resize/DPI event.
-        let mut current_data = 0;
-        if GetWindowSubclass(hwnd, Some(resize_subclass), id, &mut current_data) != 0 {
-            ((*(current_data as *const PanelSubclass)).update)(hwnd);
-        }
+    if let Some(activated) = activated {
+        activated();
     }
     result
 }

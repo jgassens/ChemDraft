@@ -25,12 +25,13 @@ shortcut works again. Single-line Enter commits and returns focus; multiline Ent
 field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
 on the document while editing: keyboard focus returns to the drawing. Move/resize and close a panel
 (including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
-remain intact. On Windows, resize from every edge and corner several pixels inside the visible frame,
-also on a second monitor at a different scale; the hit band matches the normal OS resize border
-without widening the visible frame. Repeat after hide/show, live resize, and moving between
+remain intact. On Windows, resize from every edge and corner using the normal invisible system
+border outside the visible content, also on a second monitor at a different scale. The panel must
+have a single frame like the toolbars, content reaching its edge, and no white inset or black
+left/right/bottom bands during or after resizing. Repeat after hide/show, live resize, and moving between
 100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
 buttons still receive exactly one trusted pointerdown/click and return keyboard focus, and
-text/content is not clipped by the inset. Repeat ordinary content clicks after ending an input
+text/content is not clipped. Repeat ordinary content clicks after ending an input
 lease; test right/middle presses too. Hover and wheel alone must not trigger a focus hand-back.
 On Windows, rapidly click ordinary content then an input while the first hand-back IPC is delayed:
 typing must stay in the input after the old request completes. Repeat with report-text selection.
@@ -44,7 +45,11 @@ of the spectrum while captured): panning must continue until release. Programmat
 and dispatched pointer events must not start a keyboard lease. In Full size, focus a select and
 press Escape: the first closes only the overlay, preserving the report window. Drag-select report
 text and double/triple click a word/paragraph, then Cmd/Ctrl+C: paste into another app and confirm
-the report selection was copied. A plain text click keeps drawing shortcuts active. With text
+the report selection was copied. On Windows at 200%, log window blur/focus around pointerup
+and double-click: the activation's transient blur/focus must not clear the selected range,
+including when native acquisition replies before or after the blur. Repeat for input typing
+and a select; then click the document or another app while acquisition is pending and after it
+settles: those genuine blurs must end the lease. A plain text click keeps drawing shortcuts active. With text
 selected, Escape or a click elsewhere in the panel/document clears selection and returns drawing
 shortcuts; report replacement must also end the lease. Script-created ranges and synthetic drags
 must not start a lease. On both platforms, with another app frontmost, click an exposed panel input
@@ -55,6 +60,12 @@ Also repeat ordinary content/title clicks and switch apps between pointer releas
 the guarded hand-back must not raise ChemDraft. With two panels open, a delayed hand-back from
 one must not interrupt an input lease in the other.
 After a background request is dropped, activate the document and click the same input again: typing works.
+On Windows, put File Explorer (then another application) in front and close it without clicking
+ChemDraft. If Windows activates an idle panel, the document must promptly receive keyboard focus
+and the next drawing shortcut. Repeat with two panels; another panel's input lease must not be
+interrupted. Repeat with delayed activation notification/hand-back while clicking an input or
+selecting text: an active or pending lease must supersede that hand-back. Switching to a third
+application before delivery must not bring ChemDraft forward.
 
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both

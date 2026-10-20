@@ -179,18 +179,24 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
     expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
       .toContain("return_focus()");
-    expect(panel.split("// Wry resets the child")[1]!.split("let mut current_data")[0]!)
+    expect(panel.split("let result = DefSubclassProc").at(-1)!)
       .toContain("return_focus()");
   });
 
-  it("exposes the Windows parent resize band after WebView2's fill-client resize", () => {
+  it("uses the native non-client resize frame without exposing an inset WebView2 margin", () => {
     const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
-    expect(panel).toContain("controller.ParentWindow(&mut child)");
-    expect(panel).toContain("geometry::inset_client");
-    expect(panel).toMatch(/SetWindowPos\(\s*child\.0/);
-    expect(panel).toContain("controller.SetBounds(bounds)");
-    expect(panel).toContain("ScreenToClient(hwnd, &mut point)");
-    expect(panel).toMatch(/let result = DefSubclassProc[^;]+;[\s\S]*if \(message == WM_SIZE/);
+    expect(panel).toContain("WM_NCCALCSIZE && IsZoomed(hwnd) == 0");
+    expect(panel).toContain("geometry::resize_client");
+    expect(panel).toContain("GetWindowRect(hwnd, &mut rect)");
+    expect(panel).toContain("SWP_FRAMECHANGED | SWP_NOACTIVATE");
+    expect(panel).not.toMatch(/controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
+  });
+
+  it("notifies the panel of native activation without an unconditional native focus redirect", () => {
+    const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
+    expect(panel).toContain('panel.emit_to(panel.label(), "chemdraft://plugin-panel-activated", ())');
+    expect(panel).toContain("message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE");
+    expect(panel).toContain("activated()");
   });
 
   it("grants and releases input focus for the full-size spectrum portal", async () => {

@@ -11,6 +11,8 @@ afterEach(() => {
   cleanup = undefined;
   document.body.replaceChildren();
   document.getSelection()?.removeAllRanges();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 async function flush(): Promise<void> {
@@ -24,13 +26,18 @@ function mount(html: string, platform: ShortcutPlatform = "macos") {
   const request = vi.fn(async (_editing: boolean): Promise<void> => undefined);
   const listen = vi.spyOn(shell, "addEventListener");
   const listenWindow = vi.spyOn(window, "addEventListener");
-  cleanup = installPluginPanelInputFocus(shell, request, platform);
+  let activate!: () => void;
+  const unsubscribe = vi.fn();
+  cleanup = installPluginPanelInputFocus(shell, request, platform, async (listener) => {
+    activate = listener;
+    return unsubscribe;
+  });
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
   selectionHandlers.set(shell, {
     up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
     click: listen.mock.calls.find(([type]) => type === "click")?.[1] as EventListener
   });
-  return { shell, request };
+  return { shell, request, activate: () => activate(), unsubscribe };
 }
 
 function pointerDown(target: Element): void {
@@ -103,6 +110,140 @@ describe("panel input keyboard focus", () => {
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
   });
 
+  it.each(["input", "select", "drag", "double", "triple"])(
+    "preserves a Windows %s lease through its own asynchronous activation blur/focus", async (kind) => {
+      vi.useFakeTimers();
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      const { shell, request, activate } = mount('<input><select><option>One</option></select><div class="plugin-report"><p>Report text</p></div>', "windows");
+      let complete!: () => void;
+      request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+      const input = kind === "input" || kind === "select";
+      const target = shell.querySelector<HTMLElement>(input ? kind : "p")!;
+      pointerDown(target);
+      if (input) target.focus();
+      else selectText(target);
+      pointerUp(target, kind === "drag");
+      click(target, kind === "double" ? 2 : kind === "triple" ? 3 : 1);
+      await flush();
+      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      // SetActiveWindow and WebView2 set_focus can produce native activation, DOM
+      // focusout and window blur before the acquisition IPC has replied.
+      activate();
+      if (input) target.blur();
+      hasFocus.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      await vi.advanceTimersByTimeAsync(64);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      complete();
+      await flush();
+      await vi.advanceTimersByTimeAsync(4);
+      hasFocus.mockReturnValue(true);
+      if (input) target.focus();
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(64);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      if (input) expect(document.activeElement).toBe(target);
+      else {
+        expect(document.getSelection()?.toString()).toBe("Report text");
+        const copy = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true });
+        target.dispatchEvent(copy);
+        expect(copy.defaultPrevented).toBe(false);
+      }
+      // The next genuine blur is still a lease boundary.
+      hasFocus.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      await vi.advanceTimersByTimeAsync(32);
+      expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+      if (!input) expect(document.getSelection()?.toString()).toBe("");
+    });
+
+  it.each(["pending", "settled"])("ends a Windows lease on genuine blur with a %s native request", async (timing) => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+    const text = shell.querySelector("p")!;
+    pointerDown(text);
+    selectText(text);
+    pointerUp(text);
+    click(text);
+    await flush();
+    if (timing === "settled") { complete(); await flush(); }
+    window.dispatchEvent(new Event("blur"));
+    await vi.advanceTimersByTimeAsync(64);
+    if (timing === "pending") {
+      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      complete();
+      await flush();
+      await vi.advanceTimersByTimeAsync(32);
+    }
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.getSelection()?.toString()).toBe("");
+  });
+
+  it("rechecks focus after a settled request's transient blur even without a focus event", async () => {
+    vi.useFakeTimers();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
+    const text = shell.querySelector("p")!;
+    pointerDown(text); selectText(text); pointerUp(text); click(text);
+    await flush();
+    hasFocus.mockReturnValue(false);
+    window.dispatchEvent(new Event("blur"));
+    await vi.advanceTimersByTimeAsync(4);
+    hasFocus.mockReturnValue(true);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(document.getSelection()?.toString()).toBe("Report text");
+  });
+
+  it.each(["native", "webview"])("hands idle Windows %s activation back without a click", async (source) => {
+    vi.useFakeTimers();
+    const { request, activate } = mount("<button>Run</button>", "windows");
+    if (source === "native") activate();
+    else window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(32);
+    expect(request).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it.each(["pending", "active"])("does not redirect Windows activation during a %s lease", async (timing) => {
+    vi.useFakeTimers();
+    const { shell, request, activate } = mount("<input>", "windows");
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+    activate(); // Delivered before the trusted input pointerdown.
+    pointerDown(shell.querySelector("input")!);
+    shell.querySelector("input")!.focus();
+    await flush();
+    if (timing === "active") { complete(); await flush(); }
+    activate();
+    await vi.advanceTimersByTimeAsync(64);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    complete();
+  });
+
+  it("does not redirect native activation during a report drag and cancels timers on teardown", async () => {
+    vi.useFakeTimers();
+    const { shell, request, activate, unsubscribe } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
+    const text = shell.querySelector("p")!;
+    activate();
+    pointerDown(text);
+    await vi.advanceTimersByTimeAsync(64);
+    expect(request).not.toHaveBeenCalled();
+    selectText(text); pointerUp(text); click(text);
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    key(text, "Escape");
+    await flush();
+    request.mockClear();
+    activate();
+    cleanup!(); cleanup = undefined;
+    await vi.advanceTimersByTimeAsync(64);
+    expect(request).not.toHaveBeenCalled();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   it("does not interrupt Windows chart drags, hover, wheel or synthetic clicks", async () => {
     const { shell, request } = mount("<canvas></canvas>", "windows");
     const chart = shell.querySelector("canvas")!;
@@ -147,6 +288,8 @@ describe("panel input keyboard focus", () => {
   });
 
   it.each(["before completion", "after completion"])("keeps a newer Windows lease across stale hand-back blur %s", async (timing) => {
+    vi.useFakeTimers();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const { shell, request } = mount("<button>Run</button><input>", "windows");
     let completeHandBack!: () => void;
     let completeLease!: () => void;
@@ -174,7 +317,9 @@ describe("panel input keyboard focus", () => {
     await flush();
     expect(document.activeElement).toBe(input);
     // Once the new lease has settled, a real loss of focus must still finish it.
+    hasFocus.mockReturnValue(false);
     window.dispatchEvent(new Event("blur"));
+    await vi.advanceTimersByTimeAsync(32);
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([false, true, false]);
   });

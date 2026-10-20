@@ -1,4 +1,4 @@
-//! Physical-pixel geometry shared by the parent hit test and the WebView2 inset.
+//! Physical-pixel geometry shared by the non-client frame and its resize hit test.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Rect {
@@ -43,7 +43,9 @@ pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option
     }
 }
 
-pub(super) fn inset_client(width: i32, height: i32, bx: i32, by: i32) -> Rect {
+/// The native client excludes only the system's non-client frame. The webview fills this
+/// rectangle; never apply this inset a second time to the child HWND/controller bounds.
+pub(super) fn resize_client(width: i32, height: i32, bx: i32, by: i32) -> Rect {
     let bx = bx.min(width / 2).max(0);
     let by = by.min(height / 2).max(0);
     Rect {
@@ -115,10 +117,27 @@ mod tests {
     }
 
     #[test]
+    fn non_client_frame_preserves_the_requested_client_size_at_each_scale() {
+        for border in [8, 12, 16, 24] {
+            let client = resize_client(380 + 2 * border, 520 + 2 * border, border, border);
+            assert_eq!(client.right - client.left, 380);
+            assert_eq!(client.bottom - client.top, 520);
+            assert_eq!(client.left, border);
+            assert_eq!(client.top, border);
+        }
+        let maximized = resize_client(380, 520, 0, 0);
+        assert_eq!(maximized.left, 0);
+        assert_eq!(maximized.top, 0);
+        assert_eq!(maximized.right, 380);
+        assert_eq!(maximized.bottom, 520);
+        assert_eq!(resize_hit(0, 0, maximized, 0, 0), None);
+    }
+
+    #[test]
     fn all_edges_and_corners_in_window_and_client_coordinates_at_multiple_dpis() {
         for (bx, by) in [(8, 8), (12, 12), (16, 16), (24, 24), (12, 8), (8, 12)] {
-            // Tao's shadowed undecorated window has client insets. The band follows the client
-            // origin rather than mixing it with window-relative top-edge coordinates.
+            // Window rectangles can start at negative coordinates on secondary monitors.
+            // Native frame and hit test must agree without consuming any client pixels.
             for (left, top) in [(0, 0), (8, 0), (12, 12), (-1800, -900)] {
                 let rect = Rect {
                     left,
@@ -140,8 +159,8 @@ mod tests {
                 }
                 assert_eq!(resize_hit(left + 200, top + 150, rect, bx, by), None);
                 assert_eq!(resize_hit(left - 1, top + 150, rect, bx, by), None);
-                let inset = inset_client(400, 300, bx, by);
-                // Every exposed client pixel hits an edge/corner; no child-covered pixel does.
+                let inset = resize_client(400, 300, bx, by);
+                // Every non-client frame pixel hits an edge/corner; no visible client pixel does.
                 for x in 0..400 {
                     for y in 0..300 {
                         let child_covers = x >= inset.left
@@ -157,7 +176,7 @@ mod tests {
             }
         }
         assert_eq!(
-            inset_client(4, 2, 16, 16),
+            resize_client(4, 2, 16, 16),
             Rect {
                 left: 2,
                 top: 1,

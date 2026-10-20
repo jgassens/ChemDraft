@@ -114,14 +114,30 @@ Click hand-back requires a matching trusted pointerdown in the same gesture; key
 activation never queues it. Focus requests carry monotonically increasing local generations
 and remain serialized through native completion. A dispatched hand-back's delayed blur cannot
 finish a newer lease while that lease is pending, and its completion cannot clear the newer
-lease's protection. The native command waits for its main-thread operation before replying,
+lease's protection. Windows input and selection leases also survive their **own** native
+activation: window blur and DOM focusout are rechecked after 32 ms, never while that
+generation's acquisition is queued or in flight. Completion schedules the deferred check;
+a returning focus cancels the relevant loss, while a genuinely unfocused document or
+departed input ends the lease. Selection ranges are cleared only when the lease really ends.
+The native command waits for its main-thread operation before replying,
 so an older hand-back cannot execute after a newer request from that panel has arrived.
 Native non-client presses and move/resize entry/exit use the same guarded helper,
 restoring webview focus after Wry's own focus handling as well. A transient Windows
 foreground change is possible, as with toolbars; the panel must not retain the
-keyboard after an ordinary click. An unconditional `WM_ACTIVATE`/`WM_SETFOCUS`
-redirect is deliberately avoided: native activation can precede the trusted DOM
-input event and its lease IPC, so redirecting there could cancel a valid input click.
+keyboard after an ordinary click. Native `WM_ACTIVATE` also notifies that panel's
+webview through `chemdraft://plugin-panel-activated`. After 32 ms, the webview hands
+back only if the request generation is unchanged, no lease is active or pending,
+and no pointer/selection gesture is underway. This covers activation after closing
+another application, including activation that never focuses the WebView2 child.
+The native foreground/document-group guard still runs when the hand-back executes.
+There is no unconditional native activation redirect that could precede an input's
+trusted DOM event and cancel its lease.
+
+Windows resizing uses the system-sized **non-client** frame on all four sides
+(`WM_NCCALCSIZE`), with screen-coordinate hit testing against the window rectangle.
+WebView2 fills the whole client: neither its container nor controller is inset.
+The system owns the resize border outside the content, so there is no exposed
+parent-client margin to paint on resize. Maximized layout remains Tao's responsibility.
 macOS makes the nonactivating panel key without activating the application. The
 proposal window is marked open only once its native open succeeds, so a failed
 open leaves the pending-proposals badge in place.
