@@ -34,6 +34,8 @@ export interface DocumentSessionEnvelope {
   blank: boolean;
   /** Absolute path of the associated file, when the document has ever been saved/opened. */
   path?: string;
+  /** Transient native restore result: access could not be renewed; preserve the path but use Save As. */
+  restoreSavePathError?: string;
   /** Name shown in the restore status line (file basename, or the document's save filename). */
   displayName: string;
   /** True when the session holds edits that were never written to `path`. */
@@ -229,6 +231,7 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
     payloadHash: candidate.payloadHash,
     blank: candidate.blank,
     ...(candidate.path !== undefined ? { path: candidate.path } : {}),
+    ...(typeof candidate.restoreSavePathError === "string" ? { restoreSavePathError: candidate.restoreSavePathError } : {}),
     displayName: candidate.displayName,
     dirty: candidate.dirty,
     savedAt: candidate.savedAt,
@@ -239,6 +242,20 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   };
   rawSessionTabs.set(parsed, raw);
   return parsed;
+}
+
+/** Keep the file association and drawing even when the native restore could not reauthorize it. */
+export function restoredDocumentFileState(session: DocumentSessionEnvelope): {
+  path?: string; dirty: boolean; restoreSavePathError?: string;
+} {
+  return { path: session.path, dirty: session.dirty,
+    ...(session.path && session.restoreSavePathError ? { restoreSavePathError: session.restoreSavePathError } : {}) };
+}
+
+export function restoredSavePathNotice(file: { path?: string; restoreSavePathError?: string }): string | undefined {
+  return file.path && file.restoreSavePathError
+    ? `Cannot save to the restored file "${file.path}": ${file.restoreSavePathError}. Choose a location with Save As.`
+    : undefined;
 }
 
 /** An old single-document empty canvas restores nothing — otherwise every fresh launch would announce

@@ -197,6 +197,14 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
    prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after
    switching tabs; both must use the active document. Keep the worktree label visible throughout.
+   On **macOS and Windows**, open a named `.chemdraft` (also a `.cdxml`) from outside the default
+   filesystem scopes, via a launch path argument / Open With. Edit it, close the window, and relaunch
+   with no arguments. Verify the restored tab is dirty and Cmd+S / Ctrl+S writes those edits to its
+   original path without a picker; reopen the file to confirm the bytes changed. Repeat via the
+   dirty-tab close prompt's Save. Then quit dirty again, move/delete the original file before
+   relaunch, and Save: a clear restored-file message and Save As picker appear, cancel keeps the
+   drawing dirty with its content, and choosing a new location saves it. Check the same fallback
+   for a restored path replaced by a directory or symbolic link; no linked target should be written.
    Queue a recognition proposal, switch tabs (also during recognition), and check its document name
    in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
    Accept must explain that its document was closed and keep the proposal pending; Reject must work

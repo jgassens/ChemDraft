@@ -7,6 +7,8 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  restoredDocumentFileState,
+  restoredSavePathNotice,
   unrestoredTabContents,
   unrestoredTabDisplayName,
   unrestoredTabsNotice,
@@ -111,6 +113,27 @@ describe("shouldRestoreDocumentSession", () => {
 
   it("restores any non-blank document", () => {
     expect(shouldRestoreDocumentSession(base)).toBe(true);
+  });
+});
+
+describe.each(["/Users/chemist/drawing.chemdraft", "D:\\drawings\\drawing.chemdraft", "/Users/chemist/drawing.cdxml"])("restored file access: %s", (path) => {
+  const session = buildDocumentSessionEnvelope(payload, { path, dirty: true }, "drawing.chemdraft", false);
+
+  it("preserves a named tab's path for Save without requiring Save As", () => {
+    const restored = restoredDocumentFileState(parseDocumentSessionEnvelope(session, true)!);
+    expect(restored).toEqual({ path, dirty: true });
+    expect(restoredSavePathNotice(restored)).toBeUndefined();
+  });
+
+  it("preserves content and file association when native access fails, explaining Save As", () => {
+    const parsed = parseDocumentSessionEnvelope({ ...session, restoreSavePathError: "the saved file is unavailable" }, true)!;
+    expect(parsed.contents).toBe(payload.contents);
+    const restored = restoredDocumentFileState(parsed);
+    expect(restored).toMatchObject({ path, dirty: true, restoreSavePathError: "the saved file is unavailable" });
+    expect(restoredSavePathNotice(restored)).toContain("Choose a location with Save As");
+    expect(restoredSavePathNotice(restored)).toContain(path);
+    // Persist original association, but access must be checked afresh by Rust on the next launch.
+    expect(buildDocumentSessionEnvelope(payload, restored, session.displayName, false)).not.toHaveProperty("restoreSavePathError");
   });
 });
 
