@@ -279,7 +279,9 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
     expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
       .toContain("return_focus()");
-    expect(panel.split("let result = DefSubclassProc").at(-1)!)
+    const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
+      .split("unsafe extern \"system\" fn")[0]!;
+    expect(resizeSubclass.split("let result = DefSubclassProc").at(-1)!)
       .toContain("return_focus()");
   });
 
@@ -291,7 +293,9 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("TAURI_DRAG_RESIZE_WINDOW");
     expect(panel).toContain("SetWindowSubclass(overlay, Some(overlay_subclass)");
     expect(panel).toContain("HTTRANSPARENT");
-    expect(panel).toContain("geometry::top_resize_height");
+    expect(panel).toContain("GetDpiForWindow(hwnd)");
+    expect(panel).toContain("GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding");
+    expect(panel).toContain("geometry::top_overlay_rect(");
     expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
   });
 
