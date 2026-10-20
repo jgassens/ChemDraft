@@ -216,9 +216,15 @@ mod tests {
         let files = Files::new();
         let target = files.file("drawing.chemdraft");
         let parent = target.parent().unwrap();
+        let parent_text = parent.to_string_lossy();
+        #[cfg(windows)]
+        let parent_text = parent_text.strip_prefix(r"\\?\").unwrap_or(&parent_text);
+        let separator = std::path::MAIN_SEPARATOR;
         let paths = [
-            parent.join("sub").join("..").join("drawing.chemdraft"),
-            parent.join(".").join("drawing.chemdraft"),
+            PathBuf::from(format!(
+                "{parent_text}{separator}sub{separator}..{separator}drawing.chemdraft"
+            )),
+            PathBuf::from(format!("{parent_text}{separator}.{separator}drawing.chemdraft")),
         ];
         for path in paths {
             let mut session = tab(&path);
@@ -235,9 +241,10 @@ mod tests {
         let target = files.file("drawing.chemdraft");
         let parent = target.parent().unwrap();
         let parent_text = parent.to_string_lossy();
+        let parent_text = parent_text.strip_prefix(r"\\?\").unwrap_or(&parent_text);
         let paths = [
-            PathBuf::from(format!(r"{parent_text}\\sub\\..\\drawing.chemdraft")),
-            PathBuf::from(format!(r"{parent_text}\\.\\drawing.chemdraft")),
+            PathBuf::from(format!(r"{parent_text}\sub\..\drawing.chemdraft")),
+            PathBuf::from(format!(r"{parent_text}\.\drawing.chemdraft")),
         ];
         for path in paths {
             let mut session = tab(&path);
