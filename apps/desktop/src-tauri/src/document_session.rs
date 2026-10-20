@@ -224,7 +224,9 @@ mod tests {
             PathBuf::from(format!(
                 "{parent_text}{separator}sub{separator}..{separator}drawing.chemdraft"
             )),
-            PathBuf::from(format!("{parent_text}{separator}.{separator}drawing.chemdraft")),
+            PathBuf::from(format!(
+                "{parent_text}{separator}.{separator}drawing.chemdraft"
+            )),
         ];
         for path in paths {
             let mut session = tab(&path);
