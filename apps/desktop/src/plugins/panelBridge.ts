@@ -29,6 +29,12 @@ export interface PluginPanelIdentity {
   pluginId: string;
 }
 
+/** Cleanup is immediate; cross-window readiness waits for the native subscription. */
+export interface PanelBridgeListener {
+  (): void;
+  readonly ready: Promise<void>;
+}
+
 export interface PluginPanelReportPayload extends PluginPanelIdentity {
   report: PluginPanelReport;
   /** Monotonic per-main-window counter so a late/stale broadcast never regresses a panel. */
@@ -336,7 +342,7 @@ export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSna
 
 export function listenForAnalysisWindowSnapshots(
   handler: (payload: AnalysisWindowSnapshotPayload) => void
-): () => void {
+): PanelBridgeListener {
   const domListener = (event: Event) => {
     const payload = (event as CustomEvent<unknown>).detail;
     if (isAnalysisWindowSnapshotPayload(payload)) {
@@ -375,7 +381,7 @@ export function listenForAnalysisWindowActions(handler: (action: AnalysisWindowA
 
 export function listenForPluginPanelReports(
   handler: (payload: PluginPanelReportPayload) => void
-): () => void {
+): PanelBridgeListener {
   const domListener = (event: Event) => {
     const payload = (event as CustomEvent<unknown>).detail;
     if (isPanelReportPayload(payload)) {
@@ -435,7 +441,7 @@ export async function broadcastPluginPanelStaleness(payload: PluginPanelStalenes
 
 export function listenForPluginPanelStaleness(
   handler: (payload: PluginPanelStalenessPayload) => void
-): () => void {
+): PanelBridgeListener {
   const domListener = (event: Event) => {
     const payload = (event as CustomEvent<unknown>).detail;
     if (isStalenessPayload(payload)) {
@@ -527,19 +533,21 @@ function listenForPanelIdentityEvent(
  * React may run an effect's setup and cleanup before a dynamic import/listen promise settles
  * (notably StrictMode's development probe). Returning cleanup synchronously lets that cleanup mark
  * the registration cancelled immediately; if the native listener finishes later, it is unlistened
- * before it can become an orphan.
+ * before it can become an orphan. The separate readiness promise lets a receiving page request a
+ * replay AFTER native subscription; installing the synchronous DOM listener alone is not enough.
  */
 function attachTauriListener<T>(
   eventName: string,
   domListener: EventListener,
   validate: (payload: unknown) => payload is T,
   handler: (payload: T) => void
-): () => void {
+): PanelBridgeListener {
   let cancelled = false;
   let unlistenTauri: (() => void) | undefined;
+  let ready = Promise.resolve();
 
   if (isDesktopRuntime()) {
-    void listenTauriEvent<T>(eventName, (event) => {
+    ready = listenTauriEvent<T>(eventName, (event) => {
       if (!cancelled && validate(event.payload)) {
         handler(event.payload);
       }
@@ -550,11 +558,13 @@ function attachTauriListener<T>(
         } else {
           unlistenTauri = unlisten;
         }
-      })
-      .catch(() => undefined);
+      });
+    // Existing fire-and-forget consumers still own cleanup synchronously. Readiness consumers
+    // receive the original rejection and must not announce readiness if attachment failed.
+    void ready.catch(() => undefined);
   }
 
-  return () => {
+  const stop = () => {
     if (cancelled) {
       return;
     }
@@ -563,6 +573,7 @@ function attachTauriListener<T>(
     unlistenTauri?.();
     unlistenTauri = undefined;
   };
+  return Object.assign(stop, { ready });
 }
 
 /** Stable in-memory key for a panel owned by one plugin. */

@@ -60,6 +60,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     if (!identity) {
       return;
     }
+    let disposed = false;
     const unlistenReports = listenForPluginPanelReports((next) => {
       if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
@@ -81,11 +82,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         current && current.revision > next.revision ? current : { revision: next.revision, stale: next.stale }
       );
     });
-    // Request only after both listeners exist: the response replays the report and its staleness
-    // verdict, so neither can be lost while a newly created webview is still mounting.
-    void requestPluginPanelReport(identity).catch(() => undefined);
+    // MainWindow caches the latest content before opening the window. Its first broadcast can
+    // precede this page, so announce readiness only after ALL native content subscriptions attach.
+    // The helpers' synchronous return owns cleanup, not readiness. Focus registration is separate.
+    void Promise.all([unlistenReports.ready, unlistenAnalysis.ready, unlistenStaleness.ready])
+      .then(() => {
+        if (!disposed) return requestPluginPanelReport(identity);
+      })
+      .catch(() => undefined);
 
     return () => {
+      disposed = true;
       unlistenReports();
       unlistenAnalysis();
       unlistenStaleness();

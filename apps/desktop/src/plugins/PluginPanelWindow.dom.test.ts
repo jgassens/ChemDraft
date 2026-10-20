@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { EventCallback } from "@tauri-apps/api/event";
 
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,6 +13,7 @@ import type { AnalysisReport } from "@chemdraft/analysis-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
+  ANALYSIS_WINDOW_SNAPSHOT_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -23,6 +25,9 @@ import {
   listenForPluginPanelReruns,
   openPluginPanelWindow,
   PLUGIN_PANEL_CLOSED_EVENT,
+  PLUGIN_PANEL_REPORT_EVENT,
+  PLUGIN_PANEL_REQUEST_EVENT,
+  PLUGIN_PANEL_STALENESS_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
   PROPOSAL_DECISION_TIMEOUT_MS,
   parsePluginPanelWindowId,
@@ -39,14 +44,26 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 const tauriEvents = vi.hoisted(() => {
   const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
   const emitted: { name: string; payload: unknown }[] = [];
+  const pending = new Map<string, (() => void)[]>();
+  const delayed = new Set<string>();
   let respond: ((name: string, payload: unknown) => void) | undefined;
   return {
     listeners,
     emitted,
+    delayed,
+    pending,
+    attachPending(name: string) {
+      for (const attach of pending.get(name) ?? []) attach();
+      pending.delete(name);
+    },
     setResponder(next: typeof respond) {
       respond = next;
     },
     listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      // Native IPC registration is asynchronous; events before it finishes are lost.
+      if (delayed.has(name)) await new Promise<void>((resolve) => {
+        pending.set(name, [...(pending.get(name) ?? []), resolve]);
+      });
       const set = listeners.get(name) ?? new Set();
       set.add(handler);
       listeners.set(name, set);
@@ -60,6 +77,17 @@ const tauriEvents = vi.hoisted(() => {
   };
 });
 vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit }));
+// Inject the native attachment at the bridge boundary while retaining safeTauriListen's real
+// readiness/cleanup logic. This also avoids dynamic-import mock resolution through linked deps.
+vi.mock("../window-manager/tauriEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../window-manager/tauriEvents")>();
+  return {
+    ...actual,
+    listenTauriEvent: (name: string, handler: EventCallback<unknown>) =>
+      actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
+        wrapped({ event: name, id: 1, payload })), handler).attached
+  };
+});
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen: tauriEvents.listen })
 }));
@@ -84,6 +112,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   nativeSave.mockReset();
   tauriEvents.listeners.clear();
+  tauriEvents.delayed.clear();
+  tauriEvents.pending.clear();
   tauriEvents.emitted.length = 0;
   tauriEvents.setResponder(undefined);
   window.history.replaceState(null, "", "/");
@@ -144,6 +174,73 @@ const INSPECTOR_REPORT: AnalysisReport = {
 };
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  const contentEvents = [
+    PLUGIN_PANEL_REPORT_EVENT,
+    ANALYSIS_WINDOW_SNAPSHOT_EVENT,
+    PLUGIN_PANEL_STALENESS_EVENT
+  ];
+
+  it.each(["plugin", "analysis"] as const)(
+    "replays the first %s content only after all native content listeners attach",
+    async (kind) => {
+      (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+      for (const name of contentEvents) tauriEvents.delayed.add(name);
+      // The focus subscription is independent of the content handshake, even if it never answers.
+      tauriEvents.delayed.add("chemdraft://plugin-panel-focus");
+      const identity = kind === "plugin"
+        ? { pluginId: PLUGIN_ID, panelId: PANEL_ID }
+        : { pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: MOLECULAR_INSPECTOR_WINDOW_ID };
+      const eventName = kind === "plugin" ? PLUGIN_PANEL_REPORT_EVENT : ANALYSIS_WINDOW_SNAPSHOT_EVENT;
+      const cached = kind === "plugin" ? reportPayload() : {
+        ...identity, revision: 1,
+        content: { kind: "molecularInspector", report: INSPECTOR_REPORT, busy: false, stale: false }
+      };
+      // MainWindow caches before publishing/opening. The first push has no mounted receiver.
+      await tauriEvents.emit(eventName, cached);
+      tauriEvents.setResponder((name, requested) => {
+        if (name !== PLUGIN_PANEL_REQUEST_EVENT) return;
+        expect(requested).toEqual(identity);
+        // Cross-webview replies use only the native bus: a same-page CustomEvent would mask the race.
+        void tauriEvents.emit(eventName, cached);
+        if (kind === "plugin") void tauriEvents.emit(PLUGIN_PANEL_STALENESS_EVENT, {
+          ...identity, revision: 1, stale: true
+        });
+      });
+      await mountWindow(pluginPanelWindowId(identity.pluginId, identity.panelId));
+      await vi.waitFor(() => {
+        expect([...tauriEvents.pending.keys()]).toEqual(expect.arrayContaining(contentEvents));
+      });
+      expect(container!.textContent).toContain(`Waiting for ${kind} content`);
+      const requests = () => tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_REQUEST_EVENT);
+      expect(requests()).toHaveLength(0);
+      for (const name of contentEvents.slice(0, -1)) {
+        await act(async () => tauriEvents.attachPending(name));
+        expect(requests()).toHaveLength(0);
+      }
+      await act(async () => tauriEvents.attachPending(PLUGIN_PANEL_STALENESS_EVENT));
+      expect(requests()).toHaveLength(1);
+      expect(container!.textContent).not.toContain("Waiting for");
+      expect(container!.textContent).toContain(kind === "plugin" ? "chemdraft.demo-engine" : "C9H8O4");
+      if (kind === "plugin") expect(container!.querySelector("[data-testid='plugin-panel-stale']")).not.toBeNull();
+    }
+  );
+
+  it("does not request replay from an unmounted page when native subscription finishes late", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    for (const name of contentEvents) tauriEvents.delayed.add(name);
+    await mountWindow();
+    await vi.waitFor(() => {
+      for (const name of contentEvents) expect(tauriEvents.pending.get(name)).toHaveLength(1);
+    });
+    act(() => root!.unmount());
+    root = undefined;
+    await act(async () => {
+      for (const name of contentEvents) tauriEvents.attachPending(name);
+    });
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_REQUEST_EVENT)).toHaveLength(0);
+    for (const name of contentEvents) expect(tauriEvents.listeners.get(name)?.size ?? 0).toBe(0);
+  });
+
   it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
     const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
