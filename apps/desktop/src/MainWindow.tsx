@@ -228,10 +228,7 @@ import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type Cl
 import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
-  exportFormatDescriptors,
   getExportFormatDescriptor,
-  type ExportFormatDescriptor,
-  type ExportFormatGroup,
   type ExportFormatId,
   type ExportResult
 } from "@chemdraft/export-engine";
@@ -762,6 +759,10 @@ import {
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
+import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
+import type { ExportDialogState, ExportOptions } from "./dialogs/exportOptions";
+import { exportOptions } from "./dialogs/exportOptionsValidation";
+import type { ExportDialogResult } from "./dialogs/dialogProtocol";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
 import { nativeDialogTransport } from "./dialogs/dialogTransport";
 import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
@@ -793,7 +794,7 @@ import {
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
-import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
+import { rasterizeSvgNative } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   applyTrackballDrag,
@@ -1448,37 +1449,6 @@ type LayerContextMenuItem = {
   commandId: string;
   label: string;
 };
-type ExportDialogFormat = ExportFormatId;
-type SvgDialogExportOptions = {
-  includeWarnings: boolean;
-  includePageGuides: boolean;
-};
-type PdfDialogExportOptions = {
-  compress: boolean;
-  includePageGuides: boolean;
-  page: "current";
-  pdfType: "vector";
-  background: "white";
-};
-type RasterDialogExportOptions = {
-  scale: number;
-  background: "white" | "transparent";
-  jpegQuality: number;
-  maxDimensionPx: number;
-};
-type CdxmlDialogExportOptions = {
-  creationProgram: string;
-};
-type ExportDialogState = {
-  format: ExportDialogFormat;
-  filename: string;
-  destinationPath?: string;
-  svg: SvgDialogExportOptions;
-  pdf: PdfDialogExportOptions;
-  raster: RasterDialogExportOptions;
-  cdxml: CdxmlDialogExportOptions;
-  busy: boolean;
-};
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
 };
@@ -1601,22 +1571,6 @@ const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
-const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
-  png: "png",
-  jpeg: "jpeg",
-  bmp: "bmp",
-  gif: "gif",
-  tiff: "tiff"
-};
-const exportFormatGroups: readonly ExportFormatGroup[] = ["graphics", "chemistry", "compatibility", "legacy", "model3d"];
-const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
-  graphics: "Graphics",
-  chemistry: "Chemistry",
-  compatibility: "Compatibility",
-  legacy: "Legacy",
-  model3d: "3D"
-};
-const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const OBJECT_DRAG_THRESHOLD = 4;
@@ -1625,7 +1579,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.15.11.40-opus";
+const CURRENT_BUILD_STAMP = "10.19.22.35-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2368,6 +2322,15 @@ export function MainWindow({
   const openWarningsRef = useRef(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
+  const [exportError, setExportError] = useState<string>();
+  const [exportNotice, setExportNotice] = useState<string>();
+  const [exportCompleted, setExportCompleted] = useState(false);
+  const browserExportTabRef = useRef<string | undefined>(undefined);
+  const browserExportSessionRef = useRef<string | undefined>(undefined);
+  const browserExportPendingRef = useRef(false);
+  const exportGrantsRef = useRef(new Map<string, { path: string; filename: string; format: string }>());
+  const exportToTabRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean, progress?: (notice: string) => Promise<void>) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
+  const chooseExportDestinationRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   tabPageFitRef.current = pageFitPrompt;
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
@@ -8084,6 +8047,8 @@ export function MainWindow({
     tabPageFitRef.current = snapshot.pageFit;
     setPageFitPrompt(snapshot.pageFit);
     setExportDialog(undefined);
+    browserExportTabRef.current = undefined;
+    browserExportSessionRef.current = undefined;
     setAnalysisReport(undefined);
     setObjectContextMenu(undefined);
     setArrowEditTargetId(undefined);
@@ -8125,6 +8090,8 @@ export function MainWindow({
     if (index < 0) return;
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     void dialogCoordinatorRef.current?.closeTab(id);
+    exportGrantsRef.current.delete(id);
+    if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     // Closing the last document keeps the window open with a fresh document identity and history.
     if (tabs.length === 1) {
       newDocumentTab();
@@ -8211,6 +8178,8 @@ export function MainWindow({
     // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
     // synchronously before replacing the history; late actions must never target the opened file.
     void dialogCoordinatorRef.current?.closeTab(id);
+    exportGrantsRef.current.delete(id);
+    if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -8333,7 +8302,10 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
-      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus
+      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus,
+      export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
+      chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
+      onSettled: (tabId, _reason, kind) => { if (kind === "export") exportGrantsRef.current.delete(tabId); }
     });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
@@ -9023,109 +8995,130 @@ export function MainWindow({
     }
   }, closeTabPrompt, true);
 
+  const setExportTabStatus = useCallback((tabId: string, message: string) => {
+    if (tabId === activeDocumentTabIdRef.current) setStatus(message);
+    else {
+      const snapshot = documentTabSnapshotsRef.current.get(tabId);
+      if (snapshot) documentTabSnapshotsRef.current.set(tabId, { ...snapshot, status: message });
+    }
+  }, []);
   const openExportDialog = useCallback(() => {
-    setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
+    const tabId = activeDocumentTabIdRef.current;
+    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current);
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Export could not open: the dialog host is unavailable."); return; }
+      const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+      void coordinator.openExport(tabId, { title, options: exportOptions(state) })
+        .catch(error => setStatus(`Export could not open: ${String(error)}`));
+    } else {
+      browserExportTabRef.current = tabId;
+      browserExportSessionRef.current = crypto.randomUUID();
+      setExportError(undefined); setExportNotice(undefined); setExportCompleted(false); setExportDialog(state);
+    }
     setStatus("Export ready");
   }, []);
 
-  const chooseExportDestination = useCallback(async () => {
-    if (!exportDialog || exportDialog.busy) {
-      return;
-    }
-
-    const descriptor = getExportFormatDescriptor(exportDialog.format);
-    if (descriptor.status !== "implemented") {
-      setStatus(`${descriptor.menuLabel} export is not available yet`);
-      return;
-    }
-
-    if (!isDesktopRuntime()) {
-      setStatus("Browser export will download the file");
-      return;
-    }
-
+  chooseExportDestinationRef.current = async (tabId, options, live) => {
     try {
-      const defaultPath = exportDialog.destinationPath ??
-        nativePathJoin(lastExportDirectoryRef.current, exportDialog.filename) ??
-        exportDialog.filename;
-      const path = await pickNativeExportPath(
-        defaultPath,
-        descriptor.menuLabel,
-        descriptor.extensions
-      );
-      if (!path) {
-        setStatus("Export location unchanged");
-        return;
-      }
-
+      const descriptor = getExportFormatDescriptor(options.format);
+      if (descriptor.status !== "implemented") throw new Error(`${descriptor.menuLabel} export is not available yet`);
+      if (!isDesktopRuntime()) return { status: "cancelled", notice: "Browser export will download the file" };
+      const defaultPath = options.destinationPath ?? nativePathJoin(lastExportDirectoryRef.current, options.filename) ?? options.filename;
+      // Runs in main, so the native panel's grant belongs to the writer. The shared wrapper
+      // suspends and restores live dialog windows on both platforms without changing placement.
+      const path = await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId));
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      if (!path) return { status: "cancelled", notice: "Export location unchanged" };
+      if (path.length > 1024 || nativePathBasename(path).length > 256 || new TextEncoder().encode(JSON.stringify([path, nativePathBasename(path)])).length > 2400) throw new Error("The chosen export path is too long for the dialog. Choose a shorter path.");
+      const filename = nativePathBasename(path);
+      exportGrantsRef.current.set(tabId, { path, filename, format: options.format });
       lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setExportDialog((current) => current
-        ? {
-            ...current,
-            destinationPath: path,
-            filename: nativePathBasename(path)
-          }
-        : current);
-      setStatus(`Export location: ${nativePathBasename(path)}`);
+      setExportTabStatus(tabId, `Export location: ${filename}`);
+      return { status: "picked", destinationPath: path, filename };
     } catch (error) {
-      setStatus(`Export location failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (live()) setExportTabStatus(tabId, `Export location failed: ${String(error)}`);
+      throw error;
     }
-  }, [exportDialog]);
+  };
 
+  exportToTabRef.current = async (tabId, options, live, progress) => {
+    try {
+      if (!live() || !documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed or replaced.");
+      const descriptor = getExportFormatDescriptor(options.format);
+      if (descriptor.status !== "implemented") throw new Error(`${descriptor.menuLabel} export is not available yet`);
+      // Snapshot at the press, including the current text draft. Inactive tabs were flushed
+      // when switched away from; never export the document that happens to be active instead.
+      const source = tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+      if (!source) throw new Error("The originating drawing is unavailable.");
+      await progress?.("Preparing export…");
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      const result = await createDialogExportResult(source, { ...options, busy: false });
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
+      if (!isDesktopRuntime()) downloadExportResult(filename, result);
+      else {
+        const grant = exportGrantsRef.current.get(tabId);
+        // A suggested path or a changed name/format is not a grant. Ask again in that case.
+        let path = grant && grant.path === options.destinationPath && grant.filename === options.filename && grant.format === options.format ? grant.path : undefined;
+        if (!path) {
+          await progress?.("Choose an export location…");
+          const picked = await chooseExportDestinationRef.current(tabId, { ...options, filename }, live);
+          path = picked.destinationPath;
+        }
+        if (!path) return { status: "cancelled", notice: `${descriptor.menuLabel} export canceled` };
+        if (!live()) throw new Error("The originating drawing was closed or replaced.");
+        // Write exactly the path granted by the panel, including its chosen extension.
+        await progress?.("Writing export…");
+        if (!live()) throw new Error("The originating drawing was closed or replaced.");
+        await writeNativeExportResult(path, result);
+        lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
+      }
+      const notice = formatExportStatus(descriptor.menuLabel, result.format, result.warnings);
+      if (live()) setExportTabStatus(tabId, notice);
+      const details = [notice, ...result.warnings.map(warning => warning.message)].join("\n");
+      return { status: "exported", notice: boundExportNotice(details) };
+    } catch (error) {
+      if (live()) setExportTabStatus(tabId, `Export failed: ${String(error)}`);
+      throw error;
+    }
+  };
+
+  const chooseExportDestination = useCallback(async () => {
+    if (!exportDialog || browserExportPendingRef.current) return;
+    try {
+      const result = await chooseExportDestinationRef.current(browserExportTabRef.current!, exportOptions(exportDialog), () => browserExportTabRef.current !== undefined);
+      setExportNotice(result.notice);
+    } catch (error) { setExportError(String(error)); }
+  }, [exportDialog]);
   const submitExportDialog = useCallback(async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    if (!exportDialog || exportDialog.busy) {
-      return;
-    }
-
-    const dialog = exportDialog;
-    const descriptor = getExportFormatDescriptor(dialog.format);
-    setExportDialog({ ...dialog, busy: true });
-
+    if (!exportDialog || browserExportPendingRef.current || exportDialog.busy) return;
+    browserExportPendingRef.current = true;
+    setExportError(undefined); setExportDialog({ ...exportDialog, busy: true });
+    const tabId = browserExportTabRef.current!;
+    const sessionId = browserExportSessionRef.current;
+    const live = () => browserExportTabRef.current === tabId && browserExportSessionRef.current === sessionId;
     try {
-      if (descriptor.status !== "implemented") {
-        setStatus(`${descriptor.menuLabel} export is not available yet`);
-        setExportDialog((current) => current ? { ...current, busy: false } : current);
-        return;
-      }
-
-      const result = await createDialogExportResult(documentForFlush(), dialog);
-      const filename = ensureExportFileExtension(dialog.filename, descriptor.extensions);
-
-      if (!isDesktopRuntime()) {
-        downloadExportResult(filename, result);
-        setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
-        setExportDialog(undefined);
-        return;
-      }
-
-      const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename;
-      const path = dialog.destinationPath
-        ? ensureExportFileExtension(dialog.destinationPath, descriptor.extensions)
-        : await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions);
-
-      if (!path) {
-        setStatus(`${descriptor.menuLabel} export canceled`);
-        setExportDialog((current) => current ? { ...current, busy: false } : current);
-        return;
-      }
-
-      await writeNativeExportResult(path, result);
-      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
-      setExportDialog(undefined);
+      const result = await exportToTabRef.current(tabId, exportOptions(exportDialog), live);
+      if (!live()) return;
+      setExportNotice(result.notice);
+      setExportCompleted(result.status === "exported");
+      // Keep the receipt visible in the shared form; completion disables further writes.
+      if (result.status !== "exported") setExportDialog(current => current ? { ...current, busy: false } : current);
     } catch (error) {
-      setStatus(`${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`);
-      setExportDialog((current) => current ? { ...current, busy: false } : current);
-    }
-  }, [documentForFlush, exportDialog]);
-
-  const cancelExportDialog = useCallback(() => {
-    if (!exportDialog?.busy) {
-      setExportDialog(undefined);
-      setStatus("Export canceled");
-    }
+      if (!live()) return;
+      const message = `Export failed: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message); setExportError(message);
+      setExportDialog(current => current ? { ...current, busy: false } : current);
+    } finally { browserExportPendingRef.current = false; }
   }, [exportDialog]);
+  const cancelExportDialog = useCallback(() => {
+    if (browserExportPendingRef.current) return;
+    browserExportTabRef.current = undefined;
+    browserExportSessionRef.current = undefined;
+    setExportDialog(undefined); setStatus("Export canceled");
+  }, []);
 
   // Plugin manager dialog (ADR-0027) + bundled-plugin diagnostics view toggles. Declared before the
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
@@ -19438,49 +19431,14 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
-        {exportDialog ? (
-          <ExportDialog
-            state={exportDialog}
-            onCancel={cancelExportDialog}
-            onChooseDestination={chooseExportDestination}
-            onFilenameChange={(filename) => {
-              setExportDialog((current) => current
-                ? {
-                    ...current,
-                    filename,
-                    destinationPath: nativePathWithBasename(current.destinationPath, filename)
-                  }
-                : current);
-            }}
-            onFormatChange={(format) => {
-              const descriptor = getExportFormatDescriptor(format);
-              setExportDialog((current) => current ? updateExportDialogFormat(current, format) : current);
-              setStatus(descriptor.status === "implemented"
-                ? `Export ready: ${descriptor.menuLabel}`
-                : `${descriptor.menuLabel} export is not available yet`);
-            }}
-            onSvgOptionsChange={(svg) => {
-              setExportDialog((current) => current
-                ? { ...current, svg: { ...current.svg, ...svg } }
-                : current);
-            }}
-            onPdfOptionsChange={(pdf) => {
-              setExportDialog((current) => current
-                ? { ...current, pdf: { ...current.pdf, ...pdf } }
-                : current);
-            }}
-            onRasterOptionsChange={(raster) => {
-              setExportDialog((current) => current
-                ? { ...current, raster: { ...current.raster, ...raster } }
-                : current);
-            }}
-            onCdxmlOptionsChange={(cdxml) => {
-              setExportDialog((current) => current
-                ? { ...current, cdxml: { ...current.cdxml, ...cdxml } }
-                : current);
-            }}
-            onSubmit={submitExportDialog}
-          />
+        {exportDialog && !isDesktopRuntime() ? (
+          <div style={exportDialogBackdropStyle}>
+            <div style={{ width: 480, maxWidth: "100%" }}>
+              <ExportForm state={exportDialog} onChange={setExportDialog} error={exportError} notice={exportNotice} completed={exportCompleted}
+                title={documentTabs.find(tab => tab.id === browserExportTabRef.current)?.title}
+                onCancel={cancelExportDialog} onChooseDestination={chooseExportDestination} onSubmit={submitExportDialog} />
+            </div>
+          </div>
         ) : null}
         {pageFitPrompt ? (
           <ImportedPageFitPrompt
@@ -20019,323 +19977,7 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
     : pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
 }
 
-interface ExportDialogProps {
-  state: ExportDialogState;
-  onCancel: () => void;
-  onChooseDestination: () => void | Promise<void>;
-  onFilenameChange: (filename: string) => void;
-  onFormatChange: (format: ExportDialogFormat) => void;
-  onSvgOptionsChange: (options: Partial<SvgDialogExportOptions>) => void;
-  onPdfOptionsChange: (options: Partial<PdfDialogExportOptions>) => void;
-  onRasterOptionsChange: (options: Partial<RasterDialogExportOptions>) => void;
-  onCdxmlOptionsChange: (options: Partial<CdxmlDialogExportOptions>) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void | Promise<void>;
-}
-
-function ExportDialog({
-  state,
-  onCancel,
-  onChooseDestination,
-  onFilenameChange,
-  onFormatChange,
-  onSvgOptionsChange,
-  onPdfOptionsChange,
-  onRasterOptionsChange,
-  onCdxmlOptionsChange,
-  onSubmit
-}: ExportDialogProps) {
-  const descriptor = getExportFormatDescriptor(state.format);
-  const implemented = descriptor.status === "implemented";
-  const rasterFormat = rasterExportFormatForDialogFormat(state.format);
-  const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
-  const exportDisabled = state.busy || state.filename.trim() === "" || !implemented;
-
-  return (
-    <div
-      aria-label="Export"
-      aria-modal="true"
-      role="dialog"
-      style={exportDialogBackdropStyle}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          onCancel();
-        }
-      }}
-    >
-      <form style={exportDialogPanelStyle} onSubmit={onSubmit}>
-        <div style={exportDialogHeaderStyle}>
-          <h2 style={exportDialogTitleStyle}>Export</h2>
-          <button
-            aria-label="Close export"
-            disabled={state.busy}
-            type="button"
-            style={exportDialogIconButtonStyle}
-            onClick={onCancel}
-          >
-            x
-          </button>
-        </div>
-
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-filename">
-          Save as
-        </label>
-        <input
-          id="chemdraft-export-filename"
-          disabled={state.busy}
-          value={state.filename}
-          style={exportDialogInputStyle}
-          onChange={(event) => onFilenameChange(event.currentTarget.value)}
-        />
-
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-format">
-          Export as
-        </label>
-        <select
-          id="chemdraft-export-format"
-          disabled={state.busy}
-          value={state.format}
-          style={exportDialogInputStyle}
-          onChange={(event) => {
-            onFormatChange(event.currentTarget.value as ExportDialogFormat);
-          }}
-        >
-          {exportFormatGroups.map((group) => (
-            <optgroup key={group} label={exportFormatGroupLabels[group]}>
-              {exportFormatDescriptors
-                .filter((candidate) => candidate.group === group)
-                .map((candidate) => {
-                  const rasterOnly = rasterExportFormatForDialogFormat(candidate.id) !== undefined;
-                  const unavailableInBrowser = rasterOnly && !isDesktopRuntime();
-                  return (
-                    <option key={candidate.id} value={candidate.id} disabled={unavailableInBrowser}>
-                      {candidate.label}
-                      {candidate.status === "implemented" ? "" : ` (${candidate.status})`}
-                      {unavailableInBrowser ? " (desktop only)" : ""}
-                    </option>
-                  );
-                })}
-            </optgroup>
-          ))}
-        </select>
-        {descriptor.warningSummary || !implemented ? (
-          <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
-            {descriptor.warningSummary ?? `${descriptor.menuLabel} export is not available yet.`}
-          </p>
-        ) : null}
-
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-destination">
-          Where
-        </label>
-        <div style={exportDialogDestinationRowStyle}>
-          <input
-            id="chemdraft-export-destination"
-            readOnly
-            value={destinationLabel}
-            style={{ ...exportDialogInputStyle, ...exportDialogDestinationInputStyle }}
-          />
-          <button
-            disabled={state.busy || !isDesktopRuntime() || !implemented}
-            type="button"
-            style={exportDialogButtonStyle}
-            onClick={() => {
-              void onChooseDestination();
-            }}
-          >
-            Choose...
-          </button>
-        </div>
-
-        {state.format === "svg" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>SVG</legend>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.svg.includeWarnings}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onSvgOptionsChange({ includeWarnings: event.currentTarget.checked })}
-              />
-              Include warning metadata
-            </label>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.svg.includePageGuides}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onSvgOptionsChange({ includePageGuides: event.currentTarget.checked })}
-              />
-              Include page guides
-            </label>
-          </fieldset>
-        ) : null}
-
-        {state.format === "pdf" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>PDF</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-type">
-              PDF type
-            </label>
-            <select
-              id="chemdraft-export-pdf-type"
-              disabled={state.busy}
-              value={state.pdf.pdfType}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="vector">Vector PDF</option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-page">
-              Page
-            </label>
-            <select
-              id="chemdraft-export-pdf-page"
-              disabled={state.busy}
-              value={state.pdf.page}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="current">Current page</option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-background">
-              Background
-            </label>
-            <select
-              id="chemdraft-export-pdf-background"
-              disabled={state.busy}
-              value={state.pdf.background}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="white">White page</option>
-            </select>
-
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.pdf.compress}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onPdfOptionsChange({ compress: event.currentTarget.checked })}
-              />
-              Compress PDF
-            </label>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.pdf.includePageGuides}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onPdfOptionsChange({ includePageGuides: event.currentTarget.checked })}
-              />
-              Include page guides
-            </label>
-          </fieldset>
-        ) : null}
-
-        {rasterFormat ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>{descriptor.menuLabel}</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-scale">
-              Scale
-            </label>
-            <select
-              id="chemdraft-export-raster-scale"
-              disabled={state.busy}
-              value={String(state.raster.scale)}
-              style={exportDialogInputStyle}
-              onChange={(event) => onRasterOptionsChange({ scale: Number(event.currentTarget.value) })}
-            >
-              <option value="1">1x</option>
-              <option value="2">2x</option>
-              <option value="3">3x</option>
-              <option value="4">4x</option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
-              Background
-            </label>
-            <select
-              id="chemdraft-export-raster-background"
-              disabled={state.busy}
-              value={state.raster.background}
-              style={exportDialogInputStyle}
-              onChange={(event) => {
-                const value = event.currentTarget.value === "transparent" ? "transparent" : "white";
-                onRasterOptionsChange({ background: value });
-              }}
-            >
-              <option value="white">White page</option>
-              <option value="transparent" disabled={rasterFormat !== "png"}>
-                Transparent
-              </option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-max">
-              Max dimension
-            </label>
-            <input
-              id="chemdraft-export-raster-max"
-              disabled={state.busy}
-              min={256}
-              max={8192}
-              step={256}
-              type="number"
-              value={state.raster.maxDimensionPx}
-              style={exportDialogInputStyle}
-              onChange={(event) => onRasterOptionsChange({ maxDimensionPx: Number(event.currentTarget.value) })}
-            />
-
-            {rasterFormat === "jpeg" ? (
-              <>
-                <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-jpeg-quality">
-                  JPEG quality
-                </label>
-                <input
-                  id="chemdraft-export-jpeg-quality"
-                  disabled={state.busy}
-                  min={1}
-                  max={100}
-                  step={1}
-                  type="range"
-                  value={state.raster.jpegQuality}
-                  style={exportDialogInputStyle}
-                  onChange={(event) => onRasterOptionsChange({ jpegQuality: Number(event.currentTarget.value) })}
-                />
-              </>
-            ) : null}
-          </fieldset>
-        ) : null}
-
-        {state.format === "cdxml" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>CDXML</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-cdxml-program">
-              Creation program
-            </label>
-            <input
-              id="chemdraft-export-cdxml-program"
-              disabled={state.busy}
-              value={state.cdxml.creationProgram}
-              style={exportDialogInputStyle}
-              onChange={(event) => onCdxmlOptionsChange({ creationProgram: event.currentTarget.value })}
-            />
-          </fieldset>
-        ) : null}
-
-        <div style={exportDialogFooterStyle}>
-          <button disabled={state.busy} type="button" style={exportDialogButtonStyle} onClick={onCancel}>
-            Cancel
-          </button>
-          <button disabled={exportDisabled} type="submit" style={exportDialogPrimaryButtonStyle}>
-            {state.busy ? "Exporting..." : "Export"}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function createDefaultExportDialogState(
+export function createDefaultExportDialogState(
   document: ChemDraftDocument,
   destinationDirectory?: string
 ): ExportDialogState {
@@ -20367,34 +20009,6 @@ function createDefaultExportDialogState(
     },
     busy: false
   };
-}
-
-function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
-  const descriptor = getExportFormatDescriptor(format);
-  const rasterFormat = rasterExportFormatForDialogFormat(format);
-  const filename = replaceExportFileExtension(state.filename, descriptor);
-  return {
-    ...state,
-    format,
-    filename,
-    destinationPath: nativePathWithBasename(state.destinationPath, filename),
-    raster: {
-      ...state.raster,
-      background: rasterFormat === "png" ? state.raster.background : "white"
-    }
-  };
-}
-
-function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {
-  return rasterExportFormatsByFormatId[format];
-}
-
-function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
-  const extension = descriptor.extensions[0] ?? descriptor.id;
-  const trimmed = filename.trim() || "Untitled";
-  const escapedExtensions = exportFormatOptionExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
-  return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
 }
 
 const exportDialogBackdropStyle: CSSProperties = {
@@ -20437,27 +20051,6 @@ const exportDialogTitleStyle: CSSProperties = {
   margin: 0
 };
 
-const exportDialogLabelStyle: CSSProperties = {
-  color: "#44515e",
-  fontSize: 12,
-  fontWeight: 600,
-  lineHeight: 1.2,
-  marginTop: 4
-};
-
-const exportDialogInputStyle: CSSProperties = {
-  background: "#ffffff",
-  border: "1px solid #aeb8c2",
-  borderRadius: 6,
-  boxSizing: "border-box",
-  color: "#18212a",
-  font: "inherit",
-  fontSize: 13,
-  minHeight: 30,
-  padding: "4px 8px",
-  width: "100%"
-};
-
 const exportDialogHintStyle: CSSProperties = {
   color: "#52606d",
   fontSize: 12,
@@ -20468,45 +20061,6 @@ const exportDialogHintStyle: CSSProperties = {
 const exportDialogWarningStyle: CSSProperties = {
   ...exportDialogHintStyle,
   color: "#875300"
-};
-
-const exportDialogDestinationRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "grid",
-  gap: 8,
-  gridTemplateColumns: "minmax(0, 1fr) auto"
-};
-
-const exportDialogDestinationInputStyle: CSSProperties = {
-  color: "#52606d",
-  overflow: "hidden",
-  textOverflow: "ellipsis"
-};
-
-const exportDialogFieldsetStyle: CSSProperties = {
-  border: "1px solid #c8d0d8",
-  borderRadius: 8,
-  display: "grid",
-  gap: 8,
-  margin: "8px 0 0",
-  padding: "10px 12px 12px"
-};
-
-const exportDialogLegendStyle: CSSProperties = {
-  color: "#44515e",
-  fontSize: 12,
-  fontWeight: 650,
-  padding: "0 4px"
-};
-
-const exportDialogCheckboxRowStyle: CSSProperties = {
-  alignItems: "center",
-  color: "#28343f",
-  display: "flex",
-  fontSize: 13,
-  gap: 8,
-  lineHeight: 1.2,
-  marginTop: 4
 };
 
 const exportDialogFooterStyle: CSSProperties = {
@@ -20532,15 +20086,6 @@ const exportDialogPrimaryButtonStyle: CSSProperties = {
   background: "#1967d2",
   borderColor: "#1967d2",
   color: "#ffffff"
-};
-
-const exportDialogIconButtonStyle: CSSProperties = {
-  ...exportDialogButtonStyle,
-  borderRadius: 999,
-  height: 28,
-  minHeight: 28,
-  padding: 0,
-  width: 28
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -30146,6 +29691,16 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
+/** Bound the complete JSON-encoded notice, leaving room for the delivery envelope. */
+export function boundExportNotice(details: string): string {
+  const fits = (text: string) => text.length <= 1024 && new TextEncoder().encode(JSON.stringify(text)).length <= 1000;
+  if (fits(details)) return details;
+  const suffix = "\nAdditional warning details omitted.";
+  const prefix = Array.from(details.slice(0, 1024));
+  while (!fits(prefix.join("") + suffix)) prefix.pop();
+  return prefix.join("") + suffix;
+}
+
 export function formatExportStatus(
   label: string,
   format: ExportFormatId,
@@ -30162,7 +29717,7 @@ export function formatExportStatus(
     : `Exported ${label}`;
 }
 
-async function createDialogExportResult(
+export async function createDialogExportResult(
   document: ChemDraftDocument,
   state: ExportDialogState
 ): Promise<ExportResult> {
@@ -30310,15 +29865,16 @@ async function pickNativeSavePath(
 async function pickNativeExportPath(
   defaultPath: string,
   formatLabel: string,
-  extensions: readonly string[]
+  extensions: readonly string[],
+  focusExportSessionId?: string
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  });
-  return selected ? ensureExportFileExtension(selected, extensions) : undefined;
+  }, focusExportSessionId);
+  return selected ?? undefined;
 }
 
 async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined> {
@@ -30468,7 +30024,9 @@ function downloadBlob(filename: string, blob: Blob): void {
 
 function createExportFilename(document: ChemDraftDocument, extension: string): string {
   const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
-  return `${baseName}.${extension}`;
+  // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
+  // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
+  return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;
 }
 
 function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {

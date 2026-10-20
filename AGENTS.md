@@ -330,8 +330,10 @@ Never show fake chemistry: workspace objects are real `chem-core` objects or an 
 **Tools and dialogs float (owner rule, 2026-10-14).** Every tool palette, panel and dialog is its own native window
 that the user can move anywhere, off the document window and onto another monitor; never an overlay fixed inside
 the document viewport. Dialogs are owned by the document window (no Windows taskbar entry, §1), open centred over it
-the first time, and hide the floating toolbars while open through the shared utility suspension. Simple
-confirmations use native message boxes. Existing in-viewport dialogs are being migrated; add no new ones.
+the first time and reopen where they were left, and use the shared dialog host
+(`docs/architecture/native-dialog-host.md`). Dialogs are modeless unless an answer is required: the floating
+toolbars stay usable beside them and a dialog can come in front of them. Simple confirmations use native message
+boxes. Existing in-viewport dialogs are being migrated; add no new ones.
 
 ## 13. Security, errors, and performance
 

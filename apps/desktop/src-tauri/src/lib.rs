@@ -1475,6 +1475,7 @@ async fn suspend_toolset_windows(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     suspended: bool,
+    focus_export_session_id: Option<String>,
 ) -> Result<(), String> {
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the document window can suspend floating windows.".into());
@@ -1571,7 +1572,11 @@ async fn suspend_toolset_windows(
             }
             Ok(())
         } else {
-            restore_suspended_utility_windows(&app)
+            restore_suspended_utility_windows(&app)?;
+            if let Some(session_id) = focus_export_session_id {
+                dialog_windows::focus_export_after_picker(&app, &session_id)?;
+            }
+            Ok(())
         }
     })??;
     restore_deferred_plugin_panels(&restore_app)

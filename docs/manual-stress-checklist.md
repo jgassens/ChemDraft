@@ -395,3 +395,58 @@ and Art toolbars open, including at 125%/150% display scale:
   document; reopening the document must not resurrect the dismissed dialog.
 - In the browser preview, check the same form/validation in the documented in-page fallback.
   Force native creation failure on desktop: show an error and never display the browser overlay.
+
+## Native Export (macOS and Windows)
+
+- Launch this worktree's labelled build. Choose Export and verify a movable native window centred
+  over the originating drawing on first opening, about 520 × 620 logical pixels. Resize to its
+  420 × 360 minimum: all controls and messages remain reachable by scrolling. There is no minimize
+  control and no utility-window menu; Windows has no separate taskbar entry. On macOS measure its
+  floating level and confirm it is unparented, matching Page Size.
+- Leave Export open and draw, use the floating toolbars and shortcuts, switch tabs, and export.
+  The file must contain the originating drawing as it was at the press, including edits made after
+  opening. Verify a live atom-label/text edit is included. The other tab must stay active and
+  unchanged. Close the originating tab, or open a saved file into its pristine tab: Export closes.
+  Repeat during startup, rendering, and a picker round trip; no stale write or late dialog appears.
+- Check filename, format, destination, SVG warnings/page guides, PDF compression/page guides,
+  raster scale/background/size/JPEG quality, CDXML creation program, and unavailable formats against
+  the existing export behavior. Compare files with the same options against main (PDF comparisons
+  must hold metadata date/ID constant); raster output must use the same SVG and raster options.
+- Move Export off the document and onto a second monitor. Reinvoke Export with a draft: focus the
+  same window without moving or resetting it. Close/reopen and verify its saved position. Repeat
+  across Windows 100% ↔ 150%/200% DPI, negative-coordinate monitors, work-area edges, monitor removal,
+  and owner minimize/restore. Page Size's saved position must be independent.
+- From Export itself choose a location. While the native save panel is open, Export and utilities
+  hide. Accept, cancel, then repeat with a panel failure: live Export returns at the same position,
+  in the preserved stacking order, and its fields/buttons work. Repeat after changing apps while
+  the panel is open. The hidden toolbar stays hidden; dialog moves never move toolbars. Close the
+  source document or quit during suspension: no closed Export window returns.
+- Choose a path, then change the filename or format. Export must ask for a new grant, and write
+  exactly the newly chosen path. Repeat with a path without an extension and with a different
+  extension: no silent `forbidden path` error or additional file. Check ordinary accepted grants
+  are used directly when options are unchanged.
+- Double-click Export, press Enter repeatedly, and simulate delayed rendering/writing: one press
+  writes at most one file. Success and warnings remain in Export, with Export disabled and Close
+  available. Force a denied/unwritable destination or full-disk error: the failure is visible
+  inside Export and an explicit retry works. Cancel a save panel: Export remains usable.
+- Verify filename focus on opening; valid Enter submits, invalid values and IME composition Enter
+  do not. Tab/Shift+Tab remain inside the native window. Escape, title-bar close and Cmd/Ctrl+W
+  cancel; field Undo/Redo and Select All stay local. F5 and Cmd/Ctrl+R must not reload the webview.
+- Overlap Export with toolbars/panels, click each, and use toolbar flyouts/tooltips. Reopen Export,
+  then open/dismiss a native message box or save panel: preserve the prior relative stacking.
+  Cmd-Tab on macOS hides Export with the utilities; switching back restores it without AppKit
+  attachment or a level change. Repeat Windows Alt-Tab and owner close/quit.
+- In the browser preview, verify the shared in-page Export form and validation; raster formats
+  remain desktop-only and supported exports download. On desktop force native creation failure:
+  report the error without an in-page fallback.
+
+### Export dialog regression checks (macOS and Windows)
+
+- At default size and minimum size, with PDF options and long warnings, scroll the body and verify
+  Cancel/Close and Export stay visible; repeat in the browser build.
+- With focus on a field and then on the page body, try Escape and Cmd/Ctrl+W before export, while
+  busy, after an error and after success. Each closes Export; success first focuses Close.
+- Open Choose from Export and both Save and Cancel the native picker. Export becomes key/active
+  again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
+  confirm no closed or newly reopened Export receives focus. Switch to another app before the
+  picker completes and confirm ChemDraft does not take foreground.
