@@ -30,6 +30,15 @@ export class DialogCoordinator {
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: "export" | "pageSize"): void;
   }, private options: { readyTimeoutMs?: number } = {}) {}
 
+  cancelExportPreviews(): void {
+    for (const session of this.sessions.values()) {
+      if (session.snapshot.dialogKind !== "export") continue;
+      session.previewRequestId = undefined;
+      session.pendingFrame = undefined;
+      session.frameKey = undefined;
+    }
+  }
+
   async updateExportFrame(tabId: string, frame: ExportFrame): Promise<void> {
     const session = this.sessions.get(`${tabId}:export`);
     if (!session || session.settled) return;

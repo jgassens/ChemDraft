@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { saveExportPreviewEnabled } from "../exportPreviewSettings";
+import { MemoryStorage } from "../testSupport/memoryStorage";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +10,7 @@ import type { ExportDialogState } from "./exportOptions";
 
 let root: Root; let container: HTMLDivElement;
 beforeEach(() => {
+  vi.stubGlobal("localStorage", new MemoryStorage());
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -86,6 +89,7 @@ it("keeps the action footer outside the scrollable form body", () => {
 });
 
 it("restores valid visual settings when switching from an invalid size draft to CDXML", () => {
+  saveExportPreviewEnabled(true);
   const presentation = { width: 1200, dpi: 300, crop: "content" as const, background: "white" as const, preset: "custom" as const };
   const submitted = vi.fn();
   let selected: ExportDialogState = { ...exportFixture(), format: "svg", busy: false, presentation };

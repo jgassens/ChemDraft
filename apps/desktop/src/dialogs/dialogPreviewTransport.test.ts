@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc.invoke, Channel: class { on
 import { subscribeDialogHost } from "./dialogTransport";
 const previewDelivery = () => ({ senderWindowId: "main", windowLabel: "dialog-main-export-1", message: { ...snapshot(), dialogKind: "export", type: "result", data: { status: "preview", preview: { url: "data:image/png;base64," + "A".repeat(20000), kind: "image", width: 500, height: 300, warnings: [] } } } });
 function chunks(value: unknown) {
-  const text = JSON.stringify(value), parts = text.match(/.{1,256}/gu)!;
+  const text = JSON.stringify(value), parts = text.match(/.{1,7000}/gu)!;
   return parts.map((text, index) => ({ previewChunk: { requestId: "request-1", index, total: parts.length, text } }));
 }
 describe("private preview chunks", () => {
@@ -13,6 +13,7 @@ describe("private preview chunks", () => {
     const handler = vi.fn(), stop = await subscribeDialogHost("host", handler);
     const channel = ipc.channels.at(-1)!;
     const parts = chunks(previewDelivery());
+    expect(parts).toHaveLength(3);
     channel.onmessage(parts[1]);
     expect(handler).not.toHaveBeenCalled();
     for (const part of parts) channel.onmessage(part);
@@ -26,6 +27,7 @@ describe("private preview chunks", () => {
     const handler = vi.fn(), stop = await subscribeDialogHost("host", handler);
     const channel = ipc.channels.at(-1)!;
     channel.onmessage(null);
+    channel.onmessage({ previewChunk: { requestId: "request-1", index: 0, total: 1, text: "x".repeat(7169) } });
     channel.onmessage({ previewChunk: { requestId: "request-1", index: 0, total: 10000000, text: "x" } });
     for (const value of [null, { ...previewDelivery(), senderWindowId: "other" }, { ...previewDelivery(), message: { ...previewDelivery().message, requestId: "wrong" } }, { ...previewDelivery(), message: { ...snapshot(), type: "result", data: { status: "applied" } } }]) {
       for (const part of chunks(value)) channel.onmessage(part);

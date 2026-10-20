@@ -143,7 +143,10 @@ it("rejects stale previews and allows export while a preview is pending", async 
     previewExport: async (_tab, _options, live) => new Promise(resolve => { pending.push({ resolve, live }); }) });
   await coordinator.openExport("tab-1", { title: "Drawing", options: exportFixture() });
   const send = (id: string, data: unknown, type = "action") => coordinator.receive({ senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1", message: { ...dialogEnvelope(snap), requestId: id, type, data } });
+  await coordinator.updateExportFrame("tab-1", { page: { width: 100, height: 100 }, content: { width: 80, height: 80 }, revision: 2 });
+  coordinator.cancelExportPreviews();
   await send("ready", {}, "ready");
+  expect(published).toHaveLength(0); // Disable discards a queued frame, without preview IPC.
   await coordinator.updateExportFrame("tab-1", { page: { width: 100, height: 100 }, content: { width: 80, height: 80 }, revision: 2 });
   expect(published.at(-1)).toMatchObject({ type: "result", data: { status: "frame", frame: { revision: 2 } } });
   published.length = 0;
@@ -156,8 +159,13 @@ it("rejects stale previews and allows export while a preview is pending", async 
   const preview = { url: "data:image/png;base64,AAAA", kind: "image" as const, width: 100, height: 100, warnings: [] };
   pending[0]!.resolve(preview); await first;
   expect(published).toHaveLength(0);
+  const disabled = send("preview-disabled", { action: "preview", options: exportFixture() });
+  coordinator.cancelExportPreviews();
+  expect(pending[2]!.live()).toBe(false);
+  pending[2]!.resolve(preview); await disabled;
+  expect(published).toHaveLength(0);
   const oversized = send("preview-large", { action: "preview", options: exportFixture() });
-  pending[2]!.resolve({ ...preview, url: "data:image/png;base64," + "A".repeat(5 * 1024 * 1024) });
+  pending[3]!.resolve({ ...preview, url: "data:image/png;base64," + "A".repeat(5 * 1024 * 1024) });
   await oversized;
   expect(published.at(-1)).toMatchObject({ type: "result", data: { status: "error", error: expect.stringContaining("Reduce the content or export size") } });
   await send("export", { action: "export", options: exportFixture() });

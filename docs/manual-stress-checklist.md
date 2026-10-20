@@ -406,12 +406,21 @@ and Art toolbars open, including at 125%/150% display scale:
   the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
   must be raised again. Cancel must balance suspension even when its acquisition is still pending.
 
-- Export preview and presets (macOS and Windows): export molecules, text, arrows, and an
+- Export preview and presets (macOS and Windows): with a fresh profile, verify Preferences >
+  Export preview and size presets is unchecked. Export must show the original Scale/Max dimension
+  controls and JPEG quality slider, prefill the last destination, and let Choose work with an empty
+  filename. Confirm no preview requests, frame computations, native rasterizations or preview IPC.
+  Toggle the preference on with Export already open: the preview and presets must appear live.
+  Toggle off while rendering and while Choose is open: legacy controls return and stale previews
+  must not appear. Reopen Export and restart to verify persistence. Compare saved files with equal
+  options in both modes (fix PDF time/ID when comparing bytes). With the preference on, export molecules, text, arrows, and an
   object crossing the page edge. Compare preview with saved SVG, PDF, and PNG; check clipping
   warnings. Switch slide/poster/publication presets and edit linked pixel/physical dimensions.
   The 7200 px poster preset must keep preview rendering at most 800 px on its longest side;
   only the saved export uses the requested size. Choose content crop and transparent PNG,
   verify JPEG numeric quality changes the preview, and check PNG density/PDF physical dimensions.
+  The PNG density hint must be absent until explicit sizing is set. Type an atom label without
+  committing it and verify the preview matches the pending edit and the final export.
   Close during rendering and switch formats rapidly: stale previews must never replace the
   current format, and updates remain debounced. Repeat each preset with an empty portrait
   Letter page and a tall drawing; submit after editing pixels and physical dimensions.

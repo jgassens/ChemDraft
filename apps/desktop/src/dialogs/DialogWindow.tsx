@@ -1,3 +1,4 @@
+import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
 import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
@@ -8,6 +9,9 @@ import { exportOptions } from "./exportOptionsValidation";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
+  const previewEnabled = useExportPreviewEnabled();
+  const previewEnabledRef = useRef(previewEnabled);
+  previewEnabledRef.current = previewEnabled;
   const [snapshot, setSnapshot] = useState<Extract<DialogMessage, { type: "snapshot" }>>();
   const [frame, setFrame] = useState<ExportFrame>();
   const [draft, setDraft] = useState<PageSizeDraft>();
@@ -18,6 +22,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   const [error, setError] = useState<string>();
   const previewPending = useRef<{ id: string; resolve(value: ExportPreviewResult): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined>(undefined);
   const clearPreview = () => { const pending = previewPending.current; previewPending.current = undefined; if (pending) { clearTimeout(pending.timer); pending.reject(new Error("Preview superseded")); } };
+  useEffect(() => { if (!previewEnabled) clearPreview(); }, [previewEnabled]);
   const actionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const actionPending = useRef(false);
   const cancellationRequested = useRef(false);
@@ -56,7 +61,9 @@ export function DialogWindow({ hostId }: { hostId: string }) {
           else { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;
         }
-      } else if (latest && sameDialog(message, latest) && message.type === "result" && message.data.status === "frame" && message.data.frame && !actionPending.current) {
+      } else if (latest && sameDialog(message, latest) && message.type === "result" && message.data.status === "frame" && message.data.frame) {
+        // Keep the newest frame even while Choose is pending. A frame may arrive before
+        // the picker receipt releases actionPending; dropping it loses that revision forever.
         clearPreview();
         setFrame(message.data.frame);
       } else if (latest && sameDialog(message, latest) && message.type === "result" && message.requestId === previewPending.current?.id) {
@@ -117,15 +124,18 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       clearTimeout(actionTimer.current); actionPending.current = false; setBusy(false); setError(String(e));
     });
   };
-  const renderPreview = (options: ExportOptions): Promise<ExportPreviewResult> => {
+  const renderPreview = (options: ExportOptions, signal?: AbortSignal): Promise<ExportPreviewResult> => {
     clearPreview();
-    if (!snapshot || actionPending.current || cancellationRequested.current) return Promise.reject(new Error("Preview unavailable"));
+    if (!previewEnabledRef.current || signal?.aborted || !snapshot || actionPending.current || cancellationRequested.current) return Promise.reject(new Error("Preview unavailable"));
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { if (previewPending.current?.id === requestId) { previewPending.current = undefined; reject(new Error("Preview timed out")); } }, 30000);
-      previewPending.current = { id: requestId, resolve, reject, timer };
+      const timer = setTimeout(() => { if (previewPending.current?.id === requestId) { const pending = previewPending.current; previewPending.current = undefined; pending.reject(new Error("Preview timed out")); } }, 30000);
+      const abort = () => { if (previewPending.current?.id === requestId) clearPreview(); };
+      signal?.addEventListener("abort", abort, { once: true });
+      const cleanup = () => { signal?.removeEventListener("abort", abort); clearTimeout(timer); };
+      previewPending.current = { id: requestId, resolve: value => { cleanup(); resolve(value); }, reject: error => { cleanup(); reject(error); }, timer };
       void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data: { action: "preview", options } }).catch(error => {
-        if (previewPending.current?.id === requestId) { clearTimeout(timer); previewPending.current = undefined; reject(error); }
+        if (previewPending.current?.id === requestId) { const pending = previewPending.current; previewPending.current = undefined; pending.reject(error); }
       });
     });
   };

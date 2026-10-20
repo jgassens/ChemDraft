@@ -97,7 +97,8 @@ struct ExportOptions {
 struct PresentationOptions {
     width: f64,
     height: Option<f64>,
-    linked: Option<bool>,
+    #[serde(rename = "linked")]
+    _linked: Option<bool>,
     preset: Option<String>,
     dpi: f64,
     crop: String,
@@ -105,7 +106,6 @@ struct PresentationOptions {
 }
 impl PresentationOptions {
     fn valid(&self) -> bool {
-        let _ = self.linked;
         (1.0..=8192.0).contains(&self.width)
             && self.width.fract() == 0.0
             && self
@@ -549,10 +549,33 @@ fn send_owner(session: &Session, sender: &str, message: &Message) -> Result<(), 
         .send(delivery(session, sender, message)?)
         .map_err(|e| e.to_string())
 }
+// Tauri 2 sends JSON >=8192 bytes through an app-wide fetch queue keyed by sequential IDs.
+// Keep document previews on the authenticated window's direct channel, rather than exposing
+// their contents through that queue. Pack by JSON-escaped UTF-8 bytes (not character count).
+const PREVIEW_CHUNK_TEXT_BYTES: usize = 7168;
+const PREVIEW_CHANNEL_BYTES: usize = 8191;
 fn preview_delivery_chunks(text: &str, request_id: &str) -> Vec<Value> {
-    let chars: Vec<char> = text.chars().collect();
-    let total = chars.len().div_ceil(256);
-    chars.chunks(256).enumerate().map(|(index, chunk)| json!({ "previewChunk": { "requestId": request_id, "index": index, "total": total, "text": chunk.iter().collect::<String>() } })).collect()
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut encoded_bytes = 0;
+    for ch in text.chars() {
+        let cost = match ch {
+            '\"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
+            ch if ch <= '\u{001f}' => 6,
+            ch => ch.len_utf8(),
+        };
+        if encoded_bytes + cost > PREVIEW_CHUNK_TEXT_BYTES {
+            parts.push(std::mem::take(&mut part));
+            encoded_bytes = 0;
+        }
+        part.push(ch);
+        encoded_bytes += cost;
+    }
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    let total = parts.len();
+    parts.into_iter().enumerate().map(|(index, text)| json!({ "previewChunk": { "requestId": request_id, "index": index, "total": total, "text": text } })).collect()
 }
 fn send_host(session: &Session, message: &Message) -> Result<(), String> {
     if message.is_preview() {
@@ -563,6 +586,10 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
             .ok_or("Dialog host channel missing")?;
         // Keep each authenticated private-channel delivery below Tauri's app-wide queue threshold.
         for chunk in preview_delivery_chunks(&text, &message.request_id) {
+            if serde_json::to_vec(&chunk).map_err(|e| e.to_string())?.len() > PREVIEW_CHANNEL_BYTES
+            {
+                return Err("Preview channel chunk limit exceeded".into());
+            }
             channel.send(chunk).map_err(|e| e.to_string())?;
         }
         return Ok(());
@@ -2291,9 +2318,14 @@ mod tests {
             "\\\"".repeat(4096)
         );
         let chunks = preview_delivery_chunks(&text, &"a".repeat(128));
+        assert!(chunks.len() < 10);
+        assert_eq!(
+            preview_delivery_chunks(&"A".repeat(MAX_PREVIEW_BYTES), "preview").len(),
+            MAX_PREVIEW_BYTES.div_ceil(PREVIEW_CHUNK_TEXT_BYTES)
+        );
         assert!(chunks
             .iter()
-            .all(|c| serde_json::to_vec(c).unwrap().len() <= MAX_CHANNEL_BYTES));
+            .all(|c| serde_json::to_vec(c).unwrap().len() <= PREVIEW_CHANNEL_BYTES));
         let restored: String = chunks
             .iter()
             .map(|c| c["previewChunk"]["text"].as_str().unwrap())

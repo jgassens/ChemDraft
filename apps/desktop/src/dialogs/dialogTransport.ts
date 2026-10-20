@@ -9,6 +9,9 @@ export interface DialogTransport {
   publish(hostId: string, message: DialogMessage): Promise<void>;
   close(hostId: string, reason: DialogCloseReason): Promise<void>;
 }
+// Keep in step with Rust: larger JSON enters Tauri's app-wide fetch queue.
+const PREVIEW_CHUNK_TEXT_BYTES = 7168;
+const PREVIEW_CHANNEL_BYTES = 8191;
 let ownerHandler: ((delivery: DialogDelivery) => void) | undefined;
 export const nativeDialogTransport: DialogTransport = {
   subscribe: async handler => {
@@ -34,7 +37,7 @@ export async function subscribeDialogHost(hostId: string, handler: (message: Dia
     if (!active || !delivery || typeof delivery !== "object" || Array.isArray(delivery)) return;
     if ("previewChunk" in delivery) {
       const c = delivery.previewChunk;
-      if (!c || typeof c.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(c.requestId) || !Number.isInteger(c.total) || c.total < 1 || c.total > Math.ceil(DIALOG_PREVIEW_MAX_BYTES / 256) + 8 || !Number.isInteger(c.index) || typeof c.text !== "string" || Array.from(c.text).length > 256) { partial = undefined; return; }
+      if (!c || typeof c.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(c.requestId) || !Number.isInteger(c.total) || c.total < 1 || c.total > Math.ceil((DIALOG_PREVIEW_MAX_BYTES + 1024) * 6 / PREVIEW_CHUNK_TEXT_BYTES) + 8 || !Number.isInteger(c.index) || typeof c.text !== "string" || new TextEncoder().encode(JSON.stringify(c.text)).byteLength - 2 > PREVIEW_CHUNK_TEXT_BYTES || new TextEncoder().encode(JSON.stringify(delivery)).byteLength > PREVIEW_CHANNEL_BYTES) { partial = undefined; return; }
       if (c.index === 0) partial = { id: c.requestId, total: c.total, next: 0, text: "" };
       if (!partial || partial.id !== c.requestId || partial.total !== c.total || partial.next !== c.index) { partial = undefined; return; }
       partial.text += c.text;

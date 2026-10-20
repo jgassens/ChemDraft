@@ -1,4 +1,6 @@
 ﻿// @vitest-environment jsdom
+import { saveExportPreviewEnabled } from "./exportPreviewSettings";
+import { MemoryStorage } from "./testSupport/memoryStorage";
 import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -22,6 +24,8 @@ const raster: NativeRasterExportResult = { bytes: new Uint8Array([1]), width: 80
 const mounted: Array<() => Promise<void>> = [];
 const createUrl = vi.fn(() => "blob:preview");
 beforeEach(() => {
+  vi.stubGlobal("localStorage", new MemoryStorage());
+  saveExportPreviewEnabled(true);
   vi.useFakeTimers();
   vi.clearAllMocks();
   createUrl.mockReset().mockReturnValue("blob:preview");
@@ -441,4 +445,19 @@ it("restarts a pending preview after a destination picker busy cycle", async () 
   const source = dialog.host.querySelector("img")!.getAttribute("src");
   await act(async () => finishOld({ ...raster, bytes: new Uint8Array([2]) }));
   expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe(source);
+});
+
+it("discards a superseded native render before encoding or transporting its preview bytes", async () => {
+  let finish!: (result: NativeRasterExportResult) => void;
+  vi.mocked(rasterizeSvgNative).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const document = landscapeDocument();
+  let live = true;
+  const encode = vi.spyOn(globalThis, "btoa");
+  const pending = createDialogExportPreview(document, { ...createDefaultExportDialogState(document), format: "png" }, () => live);
+  const rejected = expect(pending).rejects.toThrow("Preview was superseded");
+  live = false;
+  finish(raster);
+  await rejected;
+  expect(encode).not.toHaveBeenCalled();
+  encode.mockRestore();
 });

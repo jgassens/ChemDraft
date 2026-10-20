@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
 import { exportFormatDescriptors, getExportFormatDescriptor, type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { isDesktopRuntime } from "../window-manager";
 import type { NativeRasterExportFormat } from "../nativeRasterExport";
 import type { ExportOptions, ExportFrame, ExportPreviewResult, ExportDialogState, ExportDialogFormat, SvgDialogExportOptions, PdfDialogExportOptions, RasterDialogExportOptions, CdxmlDialogExportOptions } from "./exportOptions";
@@ -24,8 +25,9 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
 const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 interface ExportDialogProps {
   state: ExportDialogState;
+  previewEnabled: boolean;
   frame?: ExportFrame;
-  renderPreview?: (options: ExportOptions) => Promise<ExportPreviewResult>;
+  renderPreview?: (options: ExportOptions, signal?: AbortSignal) => Promise<ExportPreviewResult>;
   onPresentationChange: (options: Partial<NonNullable<ExportDialogState["presentation"]>>) => void;
   onCancel: () => void;
   onChooseDestination: () => void | Promise<void>;
@@ -44,7 +46,7 @@ interface ExportDialogProps {
 }
 
 function ExportFormBody({
-  state, frame, renderPreview, onPresentationChange,
+  state, previewEnabled, frame, renderPreview, onPresentationChange,
   onCancel,
   onChooseDestination,
   onFilenameChange,
@@ -76,13 +78,18 @@ function ExportFormBody({
   const visual = state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format) !== undefined;
   const dimensions = frame?.[presentation.crop] ?? frame?.page ?? { width: 800, height: 600 };
   const ratio = dimensions.height / dimensions.width;
-  const sizeError = visual ? exportDialogSizeError({ ...state, presentation }, ratio) : undefined;
+  const sizeError = previewEnabled && visual ? exportDialogSizeError({ ...state, presentation }, ratio) : undefined;
   const width = presentation.width;
   const height = exportDialogHeight(presentation, ratio);
   const dpi = presentation.dpi;
   const [pendingPreset, setPendingPreset] = useState<string | undefined>();
   const [physicalDraft, setPhysicalDraft] = useState<{ axis: "width" | "height"; value: string } | undefined>();
   const keyboardPreset = useRef(false);
+  useEffect(() => {
+    keyboardPreset.current = false;
+    setPendingPreset(undefined);
+    setPhysicalDraft(undefined);
+  }, [previewEnabled]);
   const presetValue = presentation.preset ?? "custom";
   useEffect(() => { setPendingPreset(undefined); }, [presentation]);
   const changePresentation = (options: Partial<NonNullable<ExportDialogState["presentation"]>>) => onPresentationChange({ ...options, ...(presentation.linked !== false && ("width" in options || "crop" in options) && !("height" in options) ? { height: undefined } : {}), preset: "custom" });
@@ -101,21 +108,23 @@ function ExportFormBody({
   const [preview, setPreview] = useState<{ result?: ExportPreviewResult; error?: string }>({});
   const previewRenderer = useRef(renderPreview);
   previewRenderer.current = renderPreview;
-  const previewKey = JSON.stringify({ format: state.format, presentation, svg: state.svg, pdf: state.pdf, raster: state.raster, frame });
-  const previewOptionsValid = validExportOptions(exportOptions({ ...state, filename: "Preview" }));
+  const previewKey = previewEnabled ? JSON.stringify({ format: state.format, presentation, svg: state.svg, pdf: state.pdf, raster: state.raster, frame }) : "";
+  const previewOptionsValid = previewEnabled && validExportOptions(exportOptions({ ...state, filename: "Preview" }));
   useEffect(() => {
+    if (!previewEnabled) return;
     let active = true;
+    const controller = new AbortController();
     setPreview({});
     if (state.busy || !visual || sizeError || !previewOptionsValid || !renderPreview) return;
     const timer = window.setTimeout(() => {
-      void previewRenderer.current?.(exportOptions({ ...state, presentation })).then(result => {
+      void previewRenderer.current?.(exportOptions(state), controller.signal).then(result => {
         if (active) setPreview({ result });
       }).catch((error: unknown) => {
         if (active) setPreview({ error: error instanceof Error ? error.message : String(error) });
       });
     }, 250);
-    return () => { active = false; window.clearTimeout(timer); };
-  }, [previewKey, state.busy, visual, sizeError, previewOptionsValid, !!renderPreview]);
+    return () => { active = false; controller.abort(); window.clearTimeout(timer); };
+  }, [previewEnabled, previewKey, state.busy, visual, sizeError, previewOptionsValid, !!renderPreview]);
   const descriptor = getExportFormatDescriptor(state.format);
   const implemented = descriptor.status === "implemented";
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
@@ -132,7 +141,7 @@ function ExportFormBody({
           const first = fields[0], last = fields.at(-1);
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-        } else if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type !== "checkbox") {
+        } else if (event.key === "Enter" && event.target instanceof HTMLInputElement && (!previewEnabled || event.target.type !== "checkbox")) {
           event.preventDefault(); if (!exportDisabled) event.currentTarget.querySelector("form")?.requestSubmit();
         }
       }}>
@@ -202,7 +211,7 @@ function ExportFormBody({
           </p>
         ) : null}
 
-        {visual ? <fieldset style={exportDialogFieldsetStyle}>
+        {previewEnabled && visual ? <fieldset style={exportDialogFieldsetStyle}>
           <legend style={exportDialogLegendStyle}>Preview and size</legend>
           <label style={exportDialogLabelStyle}>Preset
             <select aria-label="Size preset" disabled={state.busy} value={pendingPreset ?? presetValue} style={exportDialogInputStyle}
@@ -236,13 +245,13 @@ function ExportFormBody({
             changePresentation(presentation.linked === false ? { height: pixels } : { height: pixels, width: Math.round(pixels / ratio) });
           }} /></label>
           {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
-          <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
+          <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" && state.presentation ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
           {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
           <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label="Actual export renderer preview">
             {preview.result ? preview.result.kind === "pdf"
               ? <object tabIndex={0} aria-label="PDF export preview" data={preview.result.url} type="application/pdf" width="100%" height="220">PDF preview</object>
               : <img src={preview.result.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} />
-              : <p role="status">{preview.error ?? (sizeError ? "Correct the size to render a preview." : renderPreview ? "Rendering preview�" : "Preview unavailable")}</p>}
+              : <p role="status">{preview.error ?? (sizeError ? "Correct the size to render a preview." : renderPreview ? "Rendering preview…" : "Preview unavailable")}</p>}
           </div>
           {(preview.result?.warnings ?? []).map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}
         </fieldset> : null}
@@ -257,7 +266,7 @@ function ExportFormBody({
             style={{ ...exportDialogInputStyle, ...exportDialogDestinationInputStyle }}
           />
           <button
-            disabled={exportDisabled || !isDesktopRuntime()}
+            disabled={(previewEnabled ? exportDisabled : state.busy || !implemented) || !isDesktopRuntime()}
             type="button"
             style={exportDialogButtonStyle}
             onClick={() => {
@@ -358,6 +367,24 @@ function ExportFormBody({
         {rasterFormat ? (
           <fieldset style={exportDialogFieldsetStyle}>
             <legend style={exportDialogLegendStyle}>{descriptor.menuLabel}</legend>
+            {!previewEnabled ? <>
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-scale">
+              Scale
+            </label>
+            <select
+              id="chemdraft-export-raster-scale"
+              disabled={state.busy}
+              value={String(state.raster.scale)}
+              style={exportDialogInputStyle}
+              onChange={(event) => onRasterOptionsChange({ scale: Number(event.currentTarget.value) })}
+            >
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="3">3x</option>
+              <option value="4">4x</option>
+            </select>
+
+            </> : null}
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
               Background
             </label>
@@ -377,6 +404,23 @@ function ExportFormBody({
               </option>
             </select>
 
+            {!previewEnabled ? <>
+            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-max">
+              Max dimension
+            </label>
+            <input
+              id="chemdraft-export-raster-max"
+              disabled={state.busy}
+              min={256}
+              max={8192}
+              step={256}
+              type="number"
+              value={state.raster.maxDimensionPx}
+              style={exportDialogInputStyle}
+              onChange={(event) => onRasterOptionsChange({ maxDimensionPx: Number(event.currentTarget.value) })}
+            />
+
+            </> : null}
             {rasterFormat === "jpeg" ? (
               <>
                 <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-jpeg-quality">
@@ -388,7 +432,7 @@ function ExportFormBody({
                   min={1}
                   max={100}
                   step={1}
-                  type="number"
+                  type={previewEnabled ? "number" : "range"}
                   value={state.raster.jpegQuality}
                   style={exportDialogInputStyle}
                   onChange={(event) => onRasterOptionsChange({ jpegQuality: Number(event.currentTarget.value) })}
@@ -432,11 +476,20 @@ function ExportFormBody({
 export function ExportForm({ state: ownerState, onChange: publish, onReady, ...props }: {
   state: ExportDialogState; onChange(state: ExportDialogState): void; onReady?(): void;
 } & Pick<ExportDialogProps, "onCancel" | "onChooseDestination" | "onSubmit" | "title" | "error" | "notice" | "completed" | "platform" | "frame" | "renderPreview">) {
+  const previewEnabled = useExportPreviewEnabled();
   const [draft, setDraft] = useState<ExportDialogState>();
-  const state = draft ? { ...draft, busy: ownerState.busy } : ownerState;
+  // Turning the feature off returns to legacy options; no hidden size draft affects export.
+  useEffect(() => {
+    if (!previewEnabled) {
+      setDraft(undefined);
+      if (ownerState.presentation) publish({ ...ownerState, presentation: undefined });
+    }
+  }, [previewEnabled, ownerState, publish]);
+  const source = previewEnabled && draft ? { ...draft, busy: ownerState.busy } : ownerState;
+  const state = previewEnabled ? source : { ...source, presentation: undefined };
   const onChange = (next: ExportDialogState) => {
     const dimensions = props.frame?.[next.presentation?.crop ?? "page"] ?? props.frame?.page ?? { width: 800, height: 600 };
-    if (!validExportOptions(exportOptions(next)) || (next.presentation && exportDialogSizeError(next, dimensions.height / dimensions.width))) {
+    if (previewEnabled && (!validExportOptions(exportOptions(next)) || (next.presentation && exportDialogSizeError(next, dimensions.height / dimensions.width)))) {
       // Invalid drafts stay local: the native protocol accepts only valid options.
       setDraft(next);
     } else {
@@ -445,7 +498,7 @@ export function ExportForm({ state: ownerState, onChange: publish, onReady, ...p
     }
   };
   useEffect(() => { onReady?.(); }, [onReady]);
-  return <ExportFormBody {...props} state={state}
+  return <ExportFormBody {...props} state={state} previewEnabled={previewEnabled}
     onPresentationChange={presentation => onChange({ ...state, presentation: { ...(state.presentation ?? defaultExportPresentation(props.frame?.page ?? { width: 800, height: 600 })), ...presentation }, ...(presentation.preset && presentation.preset !== "custom" ? { raster: { ...state.raster, background: "white", maxDimensionPx: 8192, jpegQuality: 90 } } : {}) })}
     onFilenameChange={filename => onChange({ ...state, filename, destinationPath: undefined })}
     onFormatChange={format => {

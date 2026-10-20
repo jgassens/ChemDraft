@@ -30,18 +30,32 @@ failure reports an error in the document status; it never creates an in-page des
 ## Transport and lifecycle
 
 Every message has `protocolVersion`, `ownerWindowId`, `documentTabId`, `dialogKind`, `sessionId`,
-`requestId`, and `snapshotRevision`. Incoming payloads are limited to 16 KiB. Every owner and dialog
-channel delivery is limited to 4096 bytes of final serialized JSON, including the delivery envelope
+`requestId`, and `snapshotRevision`. Incoming payloads are limited to 16 KiB. Ordinary owner and dialog
+channel deliveries are limited to 4096 bytes of final serialized JSON, including the delivery envelope
 and escape expansion. This keeps deliveries below Tauri 2.11.2's 8192-byte direct-delivery threshold:
 larger JSON enters an app-wide fetch queue that does not authenticate the requesting webview.
 Export previews use a separate, bounded 5 MiB result containing an inline image or PDF. Rust
-splits that result into ordered private-channel chunks of at most 256 Unicode characters, keeping
-each serialized delivery below 4096 bytes. The host reassembles only one bounded preview at a time;
+packs that result into ordered private-channel chunks of at most 7168 JSON-escaped UTF-8 bytes,
+keeping each complete serialized delivery below 8192 bytes. A 256 KiB chunk would enter Tauri's
+app-wide unauthenticated fetch queue; that is why previews retain smaller direct-channel chunks.
+The host reassembles only one bounded preview at a time;
 malformed, incomplete, superseded and closed-session previews cannot replace the current preview.
+
+**Export preview and size presets** is a Preferences checkbox, off by default. Opening Export
+reads the saved localStorage preference. Preferences persists and broadcasts changes; same-origin
+storage notifications update open Export windows without giving draft windows generic native event
+permissions. Main also subscribes to the native preference broadcast. Off uses the original form,
+including Scale, Max dimension, JPEG quality slider and destination suggestion, and does no preview
+requests, frame computation, rendering or preview IPC. Turning it off clears optional sizing drafts,
+cancels outstanding preview requests and discards queued frames.
+The preference never enters the export engine: equal export options produce equal file bytes.
 Preview requests do not reserve an export or grant file access. Rendering remains in the owner
-window, debounced by the shared form and capped at 800 pixels on the longest side. Drawing edits
+window using the same pending-edit flush snapshot as the final export, debounced 250 ms by the
+shared form and capped at 800 pixels on the longest side. Drawing edits
 send frame revisions that refresh the preview while preserving the user's options. Frame updates
-wait through a pending destination picker and resume afterward. Oversized previews report a
+wait through a pending destination picker and resume afterward; the host retains a frame even if
+it arrives before the picker receipt. Superseded form requests abort their local wait and ignore
+stale render completions. A native rasterization already started cannot be interrupted. Oversized previews report a
 specific error; the final export remains a separate explicit action.
 Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
 is rejected, and the complete delivery is measured again after replacement. Dimensions must be finite,

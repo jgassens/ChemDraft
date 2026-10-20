@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { saveExportPreviewEnabled } from "../exportPreviewSettings";
+import { MemoryStorage } from "../testSupport/memoryStorage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { boundExportNotice, createDefaultExportDialogState, createDialogExportResult, formatExportStatus } from "../MainWindow";
 import { applyNativeChainTool, createPhase4Document, exportPhase4Cdxml, exportPhase4Pdf, exportPhase4Svg, insertNativeBracket } from "../documentWorkflow";
@@ -72,4 +74,19 @@ it("retains an accepted, abbreviated success notice for six curly brackets expor
   expect(notice).toContain("Additional warning details omitted.");
   expect(notice.length).toBeLessThanOrEqual(1024);
   expect(parseDialogMessage({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "export", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "result", data: { status: "exported", notice } })).toBeDefined();
+});
+
+it.each(["svg", "cdxml", "pdf", "png", "jpeg", "bmp", "gif", "tiff"] as const)("keeps %s file bytes identical across preference modes for equal options", async format => {
+  vi.stubGlobal("localStorage", new MemoryStorage());
+  vi.stubGlobal("getComputedStyle", window.getComputedStyle.bind(window));
+  vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+  vi.spyOn(Math, "random").mockReturnValue(0.42);
+  native.raster.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), warnings: [] });
+  const document = createPhase4Document("Preference parity");
+  const state = { ...exportFixture(), format, busy: false };
+  saveExportPreviewEnabled(false);
+  const legacy = await createDialogExportResult(document, state);
+  saveExportPreviewEnabled(true);
+  const enabled = await createDialogExportResult(document, state);
+  expect(enabled).toEqual(legacy);
 });

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PreferencesWindow } from "./PreferencesWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
@@ -25,6 +26,15 @@ const selected = (name: string, value: string) =>
   new RegExp(`data-selected="true"><input[^>]*name="${name}"[^>]*value="${value}"`);
 
 describe("PreferencesWindow", () => {
+  it("offers export preview off by default and reflects the saved opt-in", () => {
+    let markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(markup).toContain("Export preview and size presets");
+    expect(markup).toContain("Show a live preview and size presets in the Export window");
+    expect(markup).not.toMatch(/type="checkbox"[^>]*checked/);
+    saveExportPreviewEnabled(true);
+    markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(markup).toMatch(/type="checkbox"[^>]*checked/);
+  });
   it("offers an unchecked quit preference by default and reflects opt-in", () => {
     let markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(markup).toContain("Ask to save unsaved changes before quitting");

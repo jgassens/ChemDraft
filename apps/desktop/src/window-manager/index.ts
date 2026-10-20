@@ -1,3 +1,4 @@
+import { loadExportPreviewEnabled } from "../exportPreviewSettings";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
@@ -588,6 +589,7 @@ export async function confirmQuitAfterFlush(): Promise<void> {
 }
 
 export const QUIT_PROMPT_REQUEST_EVENT = "chemdraft://prompt-before-quit";
+const EXPORT_PREVIEW_SETTINGS_EVENT = "chemdraft://export-preview-settings";
 const QUIT_SETTINGS_EVENT = "chemdraft://quit-settings";
 export async function listenForQuitPromptRequest(handler: (requestId: number) => Promise<void>): Promise<Unlisten> {
   if (!isDesktopRuntime()) return () => {};
@@ -611,6 +613,32 @@ export async function listenForQuitSettings(handler: (enabled: boolean) => void)
     if (typeof event.payload === "boolean") handler(event.payload);
   });
   return () => { dom(); native(); };
+}
+export async function broadcastExportPreviewSettings(enabled: boolean): Promise<void> {
+  dispatchDomToolsetEvent(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
+  if (isDesktopRuntime()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
+  }
+}
+export async function listenForExportPreviewSettings(handler: (enabled: boolean) => void, nativeEvents = false): Promise<Unlisten> {
+  const dom = listenForDomToolsetEvent(EXPORT_PREVIEW_SETTINGS_EVENT, (event) => {
+    if (typeof event.detail === "boolean") handler(event.detail);
+  });
+  // Same-origin webviews share localStorage on both desktop platforms. Its storage event
+  // delivers changes to Export without granting the draft window generic event privileges.
+  const storage = (event: StorageEvent) => {
+    if (event.key === null || event.key === "chemdraft.export.preview-and-presets.v1") handler(loadExportPreviewEnabled());
+  };
+  window.addEventListener("storage", storage);
+  const stop = () => { dom(); window.removeEventListener("storage", storage); };
+  if (!nativeEvents || !isDesktopRuntime()) return stop;
+  try {
+    const native = await listenTauriEvent<boolean>(EXPORT_PREVIEW_SETTINGS_EVENT, (event) => {
+      if (typeof event.payload === "boolean") handler(event.payload);
+    });
+    return () => { stop(); native(); };
+  } catch { return stop; }
 }
 async function quitPromptCommand<T>(command: string, requestId: number): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");

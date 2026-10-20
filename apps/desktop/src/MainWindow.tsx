@@ -1,3 +1,4 @@
+import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
@@ -1594,7 +1595,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.20.12.01-codex";
+const CURRENT_BUILD_STAMP = "10.20.15.05-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2354,6 +2355,9 @@ export function MainWindow({
   const browserExportPendingRef = useRef(false);
   const exportGrantsRef = useRef(new Map<string, { path: string; filename: string; format: string }>());
   const exportToTabRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean, progress?: (notice: string) => Promise<void>) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
+  const exportPreviewEnabled = useExportPreviewEnabled(true);
+  const exportPreviewEnabledRef = useRef(exportPreviewEnabled);
+  exportPreviewEnabledRef.current = exportPreviewEnabled;
   const previewExportRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean) => Promise<ExportPreviewResult>>(async () => { throw new Error("Preview is unavailable"); });
   const chooseExportDestinationRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
@@ -9240,7 +9244,7 @@ export function MainWindow({
       const coordinator = dialogCoordinatorRef.current;
       if (!coordinator) { setStatus("Export could not open: the dialog host is unavailable."); return; }
       const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
-      void coordinator.openExport(tabId, { title, options: exportOptions(state), frame: exportDialogFrame(documentRef.current) })
+      void coordinator.openExport(tabId, { title, options: exportOptions(state), frame: exportPreviewEnabledRef.current ? exportDialogFrame(documentForFlush()) : undefined })
         .catch(error => setStatus(`Export could not open: ${String(error)}`));
     } else {
       browserExportTabRef.current = tabId;
@@ -9253,19 +9257,20 @@ export function MainWindow({
   useEffect(() => {
     const coordinator = dialogCoordinatorRef.current;
     if (!coordinator) return;
+    if (!exportPreviewEnabled) { coordinator.cancelExportPreviews(); return; }
     for (const tab of documentTabs) {
       if (!coordinator.exportSessionId(tab.id)) continue;
-      const source = tab.id === activeDocumentTabIdRef.current ? document : documentTabSnapshotsRef.current.get(tab.id)?.history.present;
+      const source = tab.id === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tab.id)?.history.present;
       if (source) void coordinator.updateExportFrame(tab.id, exportDialogFrame(source)).catch(error => setStatus(`Export preview update failed: ${String(error)}`));
     }
-  }, [document, documentTabs]);
+  }, [document, documentTabs, exportPreviewEnabled, activeAtomLabelEdit]);
 
   previewExportRef.current = async (tabId, options, live) => {
-    if (!live()) throw new Error("The originating drawing was closed.");
-    const source = tabId === activeDocumentTabIdRef.current ? documentRef.current : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    if (!exportPreviewEnabledRef.current || !live()) throw new Error("Preview is unavailable.");
+    const source = tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present;
     if (!source) throw new Error("The originating drawing was closed.");
-    const result = await createDialogExportPreview(source, options);
-    if (!live()) throw new Error("Preview was superseded.");
+    const result = await createDialogExportPreview(source, options, () => exportPreviewEnabledRef.current && live());
+    if (!exportPreviewEnabledRef.current || !live()) throw new Error("Preview was superseded.");
     return result;
   };
   chooseExportDestinationRef.current = async (tabId, options, live) => {
@@ -9332,6 +9337,12 @@ export function MainWindow({
       throw error;
     }
   };
+
+  const browserExportSource = exportPreviewEnabled && exportDialog
+    ? browserExportTabRef.current === activeDocumentTabIdRef.current
+      ? documentForFlush()
+      : documentTabSnapshotsRef.current.get(browserExportTabRef.current ?? "")?.history.present
+    : undefined;
 
   const chooseExportDestination = useCallback(async () => {
     if (!exportDialog || browserExportPendingRef.current) return;
@@ -19710,7 +19721,7 @@ export function MainWindow({
         {exportDialog && !isDesktopRuntime() ? (
           <div style={exportDialogBackdropStyle}>
             <div style={{ width: 480, maxWidth: "100%" }}>
-              <ExportForm state={exportDialog} frame={exportDialogFrame(document)} renderPreview={options => createDialogExportPreview(document, options)} onChange={setExportDialog} error={exportError} notice={exportNotice} completed={exportCompleted}
+              <ExportForm state={exportDialog} frame={browserExportSource ? exportDialogFrame(browserExportSource) : undefined} renderPreview={browserExportSource ? (options, signal) => createDialogExportPreview(browserExportSource, options, () => !signal?.aborted) : undefined} onChange={setExportDialog} error={exportError} notice={exportNotice} completed={exportCompleted}
                 title={documentTabs.find(tab => tab.id === browserExportTabRef.current)?.title}
                 onCancel={cancelExportDialog} onChooseDestination={chooseExportDestination} onSubmit={submitExportDialog} />
             </div>
@@ -20255,14 +20266,14 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
 
 export function createDefaultExportDialogState(
   document: ChemDraftDocument,
-  _destinationDirectory?: string
+  destinationDirectory?: string
 ): ExportDialogState {
   const descriptor = getExportFormatDescriptor("pdf");
   const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
   return {
     format: descriptor.id,
     filename,
-    destinationPath: undefined,
+    destinationPath: nativePathJoin(destinationDirectory, filename),
     svg: {
       includeWarnings: true,
       includePageGuides: false
@@ -30018,12 +30029,16 @@ export function exportDialogFrame(document: ChemDraftDocument): ExportFrame {
   return frame;
 }
 
-export async function createDialogExportPreview(document: ChemDraftDocument, options: ExportOptions): Promise<ExportPreviewResult> {
+export async function createDialogExportPreview(document: ChemDraftDocument, options: ExportOptions, live: () => boolean = () => true): Promise<ExportPreviewResult> {
+  if (!live()) throw new Error("Preview was superseded.");
   // Preview less portable raster formats through the same native renderer as opaque PNG.
   const state: ExportDialogState = options.format === "tiff" || options.format === "bmp" || options.format === "gif"
     ? { ...options, busy: false, format: "png", raster: { ...options.raster, background: "white" } }
     : { ...options, busy: false };
   const result = await createDialogExportResult(document, state, true);
+  // Native rasterization/PDF generation already in flight cannot be interrupted. Avoid
+  // base64 encoding or transporting its bytes after a newer request supersedes this one.
+  if (!live()) throw new Error("Preview was superseded.");
   const bytes = result.kind === "text" ? new TextEncoder().encode(result.contents) : result.bytes;
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));

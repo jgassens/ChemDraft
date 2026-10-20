@@ -8,11 +8,8 @@ in progress rather than a changelog.
 
 # In flight
 
-PR #141 export-dialog integration: move previews, size presets and dimension controls into the shared
-`dialogs/ExportForm.tsx` native/browser form, preserve owner-side export/file grants, and fix remaining
-review findings. Scope: export form, typed preview transport, owner integration, export-engine sizing
-and regression tests/docs. Run necessary tests and fresh independent reviews. No push or publication.
-This branch work remains under review; it is not marked shipped.
+Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
+`docs/shipped/README.md`.)
 
 ---
 
