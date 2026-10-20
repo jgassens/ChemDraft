@@ -6,7 +6,9 @@ import {
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
 import type { RegisterPluginOptions } from "@chemdraft/plugin-host";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
+import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import { PluginWorkerBridge } from "./PluginWorkerBridge";
 import { loadDisabledPluginIds } from "./pluginPreferences";
@@ -36,9 +38,19 @@ export interface BundledPluginRuntimeOptions {
 
 /** The desktop's real module-worker factories for the worker-isolated bundled plugins. Empty where
  *  `Worker` is unavailable, so tests and unrelated environments transparently take the in-process path. */
-export function defaultPluginWorkerFactories(): ReadonlyMap<string, PluginWorkerFactory> {
+export function defaultPluginWorkerFactories(
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
+): ReadonlyMap<string, PluginWorkerFactory> {
   const factories = new Map<string, PluginWorkerFactory>();
   if (typeof Worker === "undefined") {
+    return factories;
+  }
+  if (platform === "windows" && globalThis.location?.origin === "http://tauri.localhost") {
+    factories.set(massFragmentPluginId, () =>
+      new Worker(new URL("./workers/windowsMassFragmentPluginWorker.ts", import.meta.url), {
+        type: "module"
+      }) as unknown as PluginWorkerHandle
+    );
     return factories;
   }
   factories.set(

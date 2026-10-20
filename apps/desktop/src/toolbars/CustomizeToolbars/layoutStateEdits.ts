@@ -31,13 +31,24 @@ export function setToolsetOrientation<I extends string, A extends string>(
   orientation: "horizontal" | "vertical",
   gridLayout?: ToolsetGridLayout
 ): ToolsetLayoutState<I, A> {
+  const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
+  const currentGrid = gridLayout || override?.gridLayout
+    ? { ...gridLayout, ...override?.gridLayout }
+    : undefined;
+  // Inspector/control panels have no button grid to rotate.
+  if (!currentGrid || (currentGrid.rows === undefined && currentGrid.columns === undefined)) {
+    return state;
+  }
+  const currentOrientation = currentGrid.orientation ?? (currentGrid.rows !== undefined ? "horizontal" : "vertical");
+  if (currentOrientation === orientation) {
+    return state;
+  }
   return withOverride(state, toolsetId, (draft) => {
     draft.gridLayout = {
-      ...gridLayout,
-      ...draft.gridLayout,
+      ...currentGrid,
       orientation,
-      rows: orientation === "horizontal" ? 2 : undefined,
-      columns: orientation === "vertical" ? 2 : undefined
+      rows: currentGrid.columns,
+      columns: currentGrid.rows
     };
   });
 }

@@ -8,14 +8,16 @@ in progress rather than a changelog.
 
 # In flight
 
-Local resizable toolbar prototype on `resizable-palettes-prototype`, based on upstream `8a3781e`.
-All floating toolbars retain content-fit defaults until user resizing. Button grids then wrap;
-control panels retain grouped slider/input rows with a minimum width and scrolling. Preserve main's
-native window ownership, shading, and shared suspension. Build a local Windows NSIS installer,
-run independent fresh-agent reviews, and present the result for owner feedback.
+Resizable toolbar review fixes on `resizable-palettes-prototype`, integrated with upstream `085d99d`.
+Add an off-by-default preference preserving main's sizing path; reset saved and live frames;
+preserve authored layout and actual grid dimensions; save only completed user resizes in logical
+units; keep macOS drag layout stable and scope native permissions to real toolset windows.
+Preserve native window ownership, shading, and shared suspension. Conduct independent fresh-agent
+source reviews. The user has now authorized the necessary tests, builds and verification;
+run the regression suites and platform checks available on this Windows host.
 No commit, push, publication, or PR message without the user's explicit approval.
-Files: PaletteWindow, ToolPalette, toolbar layout edits, window-manager, narrow Rust persistence
-check/permissions, tests, the manual checklist, and `docs/resizable-palettes-prototype.md`.
+Files: PaletteWindow, ToolPalette, toolbar layout edits, Preferences/settings, MainWindow reset
+routing, window-manager, native resize provenance/permissions, regression tests and toolbar docs.
 This prototype is not marked shipped.
 
 ---

@@ -45,7 +45,7 @@ describe("DialogCoordinator", () => {
     let finish!: () => void;
     h.owner.applyPageSize.mockImplementation(() => new Promise<void>(r => { finish = r; }));
     let published!: () => void;
-    vi.mocked(h.transport.publish).mockImplementation(() => new Promise<void>(r => { published = r; }));
+    vi.mocked(h.transport.publish).mockImplementation(async (_id, message) => { if (message.type === "result" && message.data.status !== "accepted") await new Promise<void>(r => { published = r; }); });
     const action = h.message("action", { action: "apply", width: 10, height: 15, unit: "mm" });
     const first = h.deliver(action);
     await h.deliver({ ...action, requestId: "action-2" });
@@ -81,6 +81,7 @@ describe("DialogCoordinator", () => {
     h.owner.applyPageSize.mockImplementation(() => new Promise<void>(r => { finish = r; }));
     const m = h.message("action", { action: "apply", width: 10, height: 15, unit: "mm" });
     const first = h.deliver(m); const duplicate = h.deliver(m);
+    await Promise.resolve();
     expect(h.owner.applyPageSize).toHaveBeenCalledTimes(1); finish(); await Promise.all([first, duplicate]);
     expect(h.owner.applyPageSize).toHaveBeenCalledWith("tab-1", m.data);
     expect(h.owner.onSettled).toHaveBeenCalledTimes(1);
@@ -94,7 +95,7 @@ describe("DialogCoordinator", () => {
     const m = h.message("action", { action: "apply", width: 10, height: 15, unit: "inch" });
     await h.deliver(m); await h.deliver(m);
     expect(h.owner.applyPageSize).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(h.transport.publish).mock.calls[0]![1]).toEqual(vi.mocked(h.transport.publish).mock.calls[1]![1]);
+    expect(vi.mocked(h.transport.publish).mock.calls[1]![1]).toEqual(vi.mocked(h.transport.publish).mock.calls[2]![1]);
     await h.coordinator.dispose();
   });
   it.each<DialogCloseReason>(["cancel", "close", "destroy", "ownerTabClose", "ownerClose", "quit", "error"])("settles %s exactly once", async reason => {

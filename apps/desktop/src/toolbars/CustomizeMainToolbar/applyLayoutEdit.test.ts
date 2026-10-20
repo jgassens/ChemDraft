@@ -40,6 +40,30 @@ function payload(edit: ToolsetLayoutEditPayload["edit"]): ToolsetLayoutEditPaylo
 }
 
 describe("applyToolsetLayoutEdit", () => {
+  it("ignores rotation for a control panel without a grid", () => {
+    const state = emptyLayoutState();
+    expect(applyToolsetLayoutEdit(state, payload({ kind: "setOrientation", orientation: "vertical" }), context)).toBe(state);
+  });
+
+  it.each([1, 3, 5])("transposes a %i-row toolbar and restores it on rotation back", (rows) => {
+    const state: ToolsetLayoutState = {
+      ...emptyLayoutState(),
+      toolsetOverrides: [{ toolsetId: TOOLSET, itemOrder: { "core.main.selection": ["tool.bond", "tool.select"] } }]
+    };
+    const gridLayout = { orientation: "horizontal" as const, rows, cellHeight: 25, gap: 3 };
+    const vertical = applyToolsetLayoutEdit(state, payload({ kind: "setOrientation", orientation: "vertical" }), {
+      ...context, gridLayout
+    });
+    expect(vertical.toolsetOverrides[0].gridLayout).toEqual({ ...gridLayout, orientation: "vertical", rows: undefined, columns: rows });
+    expect(appliedItemIds(vertical)).toEqual(["tool.bond", "tool.select"]);
+    const horizontal = applyToolsetLayoutEdit(vertical, payload({ kind: "setOrientation", orientation: "horizontal" }), {
+      ...context, gridLayout: vertical.toolsetOverrides[0].gridLayout
+    });
+    expect(horizontal.toolsetOverrides[0].gridLayout).toEqual({ ...gridLayout, columns: undefined });
+    expect(appliedItemIds(horizontal)).toEqual(["tool.bond", "tool.select"]);
+    expect(state.toolsetOverrides[0].gridLayout).toBeUndefined();
+  });
+
   it("changes orientation without losing tools or existing customizations", () => {
     const state: ToolsetLayoutState = {
       ...emptyLayoutState(),

@@ -223,6 +223,7 @@ export function ToolPalette({
   mode = "docked",
   orientation: preferredOrientation = "vertical",
   responsive = false,
+  freezeResponsive = false,
   title = "Drawing tools",
   currentDistributeMode = "centers",
   onRequestFlyout,
@@ -237,6 +238,7 @@ export function ToolPalette({
   mode?: ToolPaletteMode;
   orientation?: ToolPaletteOrientation;
   responsive?: boolean;
+  freezeResponsive?: boolean;
   title?: string;
   currentDistributeMode?: ToolPaletteDistributeMode;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
@@ -259,22 +261,30 @@ export function ToolPalette({
   const [availableSize, setAvailableSize] = useState<{ width: number; height: number }>();
   useEffect(() => {
     const viewport = paletteRef.current?.parentElement;
-    if (!responsive || !viewport || typeof ResizeObserver === "undefined") return;
+    if (!responsive || freezeResponsive || !viewport || typeof ResizeObserver === "undefined") return;
+    let observing = true;
     const measure = () => {
+      if (!observing) return;
       setAvailableSize({ width: viewport.clientWidth, height: viewport.clientHeight });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(viewport);
-    return () => observer.disconnect();
-  }, [responsive]);
+    return () => {
+      observing = false;
+      observer.disconnect();
+    };
+  }, [responsive, freezeResponsive]);
   const orientation = preferredOrientation;
   const sourceItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
-  const effectiveItemGroups = responsive
-    ? sourceItemGroups.map((group) => group
-        .filter((item) => customize || item.kind !== "spacer")
-        .map((item) => ({ ...item, layout: { ...item.layout, column: undefined, row: undefined } })))
-    : sourceItemGroups;
+  // Explicit slots, intentional blanks and grid widgets are authored layouts. Keep their
+  // placements intact and let the window viewport scroll rather than repacking them.
+  const reflowGrid = responsive && !sourceItemGroups.flat().some((item) =>
+    item.kind === "spacer" || item.kind === "separator" || isGridWidgetItem(item) ||
+    item.layout.column !== undefined || item.layout.row !== undefined ||
+    item.layout.colSpan !== 1 || item.layout.rowSpan !== 1
+  );
+  const effectiveItemGroups = sourceItemGroups;
   const cellWidth = gridLayout?.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
   const cellHeight = gridLayout?.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
   const cellGap = gridLayout?.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
@@ -304,7 +314,7 @@ export function ToolPalette({
     />
   );
 
-  const gridStyle = toolPaletteGridStyle(responsive
+  const gridStyle = toolPaletteGridStyle(reflowGrid
     ? { ...gridLayout, orientation, columns: responsiveColumns }
     : gridLayout);
   // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
@@ -317,7 +327,7 @@ export function ToolPalette({
       id: customize?.groupIds[index],
       // Widgets with declared grid spans stay IN the grid (grid citizens, freely placeable); only
       // span-less widgets drop out to the appended-section path below.
-      items: group.filter((item) => !isToolbarWidgetItem(item) || (!responsive && isGridWidgetItem(item)))
+      items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item))
     }))
     .filter((group) => group.items.length > 0);
   const gridItemGroups = gridGroups.map((group) => group.items);
@@ -326,7 +336,7 @@ export function ToolPalette({
   const presentWidgets = effectiveItemGroups
     .flatMap((group, index) =>
       group
-        .filter((item) => isToolbarWidgetItem(item) && (responsive || !isGridWidgetItem(item)) && item.primary.type === "control")
+        .filter((item) => isToolbarWidgetItem(item) && !isGridWidgetItem(item) && item.primary.type === "control")
         .map((item) => ({
           widgetId: item.primary.type === "control" ? item.primary.controlId : item.id,
           groupId: customize?.groupIds[index]
@@ -408,7 +418,7 @@ export function ToolPalette({
     <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
         ref={paletteRef}
-        data-responsive-palette={responsive ? "true" : undefined}
+        data-responsive-palette={reflowGrid ? "true" : undefined}
         className={[
           "tool-palette",
           mode,

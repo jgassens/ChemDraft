@@ -80,6 +80,29 @@ describe("CustomizeToolbarsDialog", () => {
     container.remove();
   });
 
+  it("stages resets until Apply and reports only the selected frame", () => {
+    render({ ...emptyState, toolsetOverrides: [{ toolsetId: "core.main", title: "Renamed" }] });
+    clickButton((button) => button.title === "Reset Renamed");
+    expect(onApply).not.toHaveBeenCalled();
+    expect(applied().toolsetOverrides).toEqual([]);
+    expect(onApply.mock.calls.at(-1)?.[1]).toEqual(["core.main"]);
+  });
+
+  it("discards staged resets on Cancel", () => {
+    render();
+    clickButton((button) => button.textContent === "Reset All");
+    clickButton((button) => button.textContent === "Cancel");
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("applies Reset All with an explicit all-frame scope", () => {
+    render({ ...emptyState, toolsetOverrides: [{ toolsetId: "core.art", visible: true }] });
+    clickButton((button) => button.textContent === "Reset All");
+    expect(applied()).toEqual(emptyState);
+    expect(onApply.mock.calls.at(-1)?.[1]).toBe("all");
+  });
+
   it("renders a row per toolset with current visibility", () => {
     render();
     const rows = container.querySelectorAll("[data-toolset-id]");
@@ -110,7 +133,7 @@ describe("CustomizeToolbarsDialog", () => {
 
   it("keeps Escape inside a rename field from discarding the whole session's edits", () => {
     render();
-    // A live-applied edit first: hiding a toolbar. Escape in a text field must not roll it back.
+    // A staged edit first: hiding a toolbar. Escape in a text field must not roll it back.
     const artVisible = container.querySelector<HTMLInputElement>('[data-toolset-id="core.art"] .customize-toolset-visible');
     act(() => artVisible!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 

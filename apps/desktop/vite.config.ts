@@ -88,13 +88,17 @@ function buildStamp(): string {
  * Since a package must be same-origin with the document (report 0030), whichever server owns the
  * document must own `/installed-plugins/` too — so in dev, that is this middleware.
  *
- * It mirrors the Rust handler's contract exactly: same URL prefix, same app-data root, same refusal of
- * anything that is not a plain relative path inside it. Without it, installs would work in the shipped
- * app and mysteriously 404 under `./run-app --dev`.
+ * It serves the same URL prefix from the corresponding app-data root and applies the shared path
+ * refusal and CSP rules. Packaged Rust serving also recognizes the Windows worker-bootstrap query
+ * and substitutes the bootstrap script; dev intentionally serves the requested asset directly, since
+ * Vite's origin does not have the WebView2 main-script abort that requires that workaround.
+ * Without this middleware, installs would work in the shipped app and mysteriously 404 under
+ * `./run-app --dev`.
  */
 function serveInstalledPluginsInDev(): Plugin {
-  // Prefix, CSP, and the path-refusal rule are shared with the packaged app's contract and covered by
-  // `installedPluginAssetPath.test.ts`, so dev and production cannot drift apart silently.
+  // Prefix, CSP, and path-refusal rules are shared with the packaged app. The Windows bootstrap query
+  // substitution is intentionally specific to the packaged Rust handler; Vite's dev origin does not
+  // need it.
   const urlPrefix = INSTALLED_PLUGIN_URL_PREFIX;
   const installedPluginWorkerCsp = INSTALLED_PLUGIN_WORKER_CSP;
   // Mirrors `installed_plugins::installed_plugins_root`: app_data_dir() for the identifier the

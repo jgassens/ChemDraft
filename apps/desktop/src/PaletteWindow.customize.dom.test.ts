@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createPaletteRegistryFromLayoutState, PaletteWindow } from "./PaletteWindow";
+import { broadcastResizableToolbarSettings, resetPaletteFrames, saveResizableToolbarSettings } from "./resizableToolbarSettings";
 import {
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
@@ -21,14 +22,19 @@ const nativeSizing = vi.hoisted(() => ({
   setSize: vi.fn(async (_size: { width: number; height: number }): Promise<void> => undefined),
   setMinimum: vi.fn(async () => undefined),
   canSave: vi.fn(async () => true),
-  resize: vi.fn(async () => undefined)
+  resize: vi.fn(async () => undefined),
+  listener: undefined as undefined | ((payload: { phase: "start" | "end" | "cancel"; width: number; height: number }) => void)
 }));
 vi.mock("./window-manager", async (importOriginal) => ({
   ...await importOriginal<typeof import("./window-manager")>(),
   setCurrentWindowLogicalSize: nativeSizing.setSize,
   setPaletteMinimumSize: nativeSizing.setMinimum,
   startPaletteWindowResize: nativeSizing.resize,
-  canPersistCurrentToolsetSize: nativeSizing.canSave
+  canPersistCurrentToolsetSize: nativeSizing.canSave,
+  listenPaletteNativeResize: async (handler: NonNullable<typeof nativeSizing.listener>) => {
+    nativeSizing.listener = handler;
+    return () => { if (nativeSizing.listener === handler) nativeSizing.listener = undefined; };
+  }
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,8 +48,19 @@ describe("PaletteWindow customize mode bridge", () => {
   beforeEach(() => {
     nativeSizing.setSize.mockReset().mockResolvedValue(undefined);
     nativeSizing.canSave.mockReset().mockResolvedValue(true);
+    nativeSizing.setMinimum.mockClear();
+    nativeSizing.listener = undefined;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 700 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 90 });
     const storage = new Map<string, string>();
-    vi.stubGlobal("localStorage", { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+      get length() { return storage.size; },
+      key: (index: number) => [...storage.keys()][index] ?? null
+    });
+    saveResizableToolbarSettings({ enabled: true });
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 700, height: 90 } as DOMRect);
     container = document.createElement("div");
     document.body.append(container);
@@ -78,16 +95,93 @@ describe("PaletteWindow customize mode bridge", () => {
     });
   }
 
-  async function userResize(width: number, height: number) {
+  async function userResize(width: number, height: number, userInitiated = true) {
+    const start = { width: window.innerWidth, height: window.innerHeight };
     Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
-    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    await act(async () => {
+      if (userInitiated) nativeSizing.listener?.({ phase: "start", ...start });
+      window.dispatchEvent(new Event("resize"));
+      if (userInitiated) nativeSizing.listener?.({ phase: "end", width, height });
+    });
   }
+
+  it("keeps main's exact tiny content-fit request and ignores saved frames when disabled", async () => {
+    saveResizableToolbarSettings({ enabled: false });
+    localStorage.setItem("chemdraft.palette.frame.v1.core.main", '{"width":420,"height":240}');
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 58, height: 50 } as DOMRect);
+    await renderMainPalette();
+    expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 58, height: 50 });
+    expect(nativeSizing.setMinimum).not.toHaveBeenCalled();
+    expect(container.querySelector(".palette-resize-handle")).toBeNull();
+    expect(container.querySelector(".palette-orientation-toggle")).toBeNull();
+    await userResize(96, 56, false);
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBe('{"width":420,"height":240}');
+  });
+
+  it("does not opt into user sizing for monitor and display-scale resize events", async () => {
+    await renderMainPalette();
+    await userResize(701, 91, false);
+    await userResize(468, 61, false);
+    expect(nativeSizing.canSave).not.toHaveBeenCalled();
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+  });
+
+  it("resets an open toolbar and rejects a save that completes after the reset", async () => {
+    await renderMainPalette();
+    await userResize(420, 240);
+    let finish!: (value: boolean) => void;
+    nativeSizing.canSave.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    await userResize(460, 280);
+    await act(async () => { await resetPaletteFrames(["core.main"]); });
+    await act(async () => { finish(true); });
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+    expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 700, height: 90 });
+  });
+
+  it("removes a frame resurrected before the cross-window reset arrives", async () => {
+    await renderMainPalette();
+    await userResize(420, 240);
+    // The sender already deleted storage; an older eligibility response wrote during IPC transit.
+    localStorage.setItem("chemdraft.palette.frame.v1.core.main", '{"width":460,"height":280}');
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("chemdraft://palette-frame-reset", { detail: ["core.main"] }));
+    });
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+  });
+
+  it.each([{ scope: ["user.empty"] as readonly string[] }, { scope: "all" as const }])("resets a live no-grid toolbar to its original frame ($scope)", async ({ scope }) => {
+    const registry = createPaletteRegistryFromLayoutState({ version: 1, toolsetOverrides: [], userToolsets: [{ id: "user.empty", title: "Empty", source: "user", defaultVisible: true, defaultMode: "floating", groups: [{ id: "user.empty.items", items: [] }] }] }, []);
+    await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "user.empty", initialRegistry: registry })));
+    await userResize(420, 240);
+    await act(async () => { await resetPaletteFrames(scope); });
+    expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 700, height: 90 });
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+  });
+
+  it("disabling during an eligibility check rejects the late save and removes resize UI", async () => {
+    await renderMainPalette();
+    let finish!: (value: boolean) => void;
+    nativeSizing.canSave.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    await userResize(420, 240);
+    await act(async () => {
+      saveResizableToolbarSettings({ enabled: false });
+      await broadcastResizableToolbarSettings({ enabled: false });
+      finish(true);
+    });
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
+    expect(container.querySelector(".palette-resize-handle")).toBeNull();
+    expect(nativeSizing.setMinimum).toHaveBeenLastCalledWith();
+  });
 
   it("keeps the complete natural first-open frame without persisting a programmatic resize", async () => {
     await renderMainPalette();
     expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 700, height: 90 });
-    await userResize(700, 90);
+    await userResize(700, 90, false);
     expect(container.querySelector("[data-user-sized=true]")).toBeNull();
     expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
   });
@@ -96,7 +190,7 @@ describe("PaletteWindow customize mode bridge", () => {
     await renderMainPalette();
     await userResize(420, 240);
     expect(JSON.parse(localStorage.getItem("chemdraft.palette.frame.v1.core.main")!)).toEqual({ width: 420, height: 240 });
-    expect(container.querySelector("[data-responsive-palette=true]")).not.toBeNull();
+    expect(container.querySelector("[data-user-sized=true]")).not.toBeNull();
     const calls = nativeSizing.setSize.mock.calls.length;
     await act(async () => { await broadcastToolsetCommandSpecs(allShellCommands(createPhase4Document())); });
     expect(nativeSizing.setSize).toHaveBeenCalledTimes(calls);
@@ -110,7 +204,7 @@ describe("PaletteWindow customize mode bridge", () => {
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 58, height: 50 } as DOMRect);
     await renderMainPalette();
     expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 96, height: 56 });
-    await userResize(96, 56);
+    await userResize(96, 56, false);
     expect(container.querySelector("[data-user-sized=true]")).toBeNull();
     expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
   });
@@ -123,14 +217,14 @@ describe("PaletteWindow customize mode bridge", () => {
     expect(container.querySelector("[data-user-sized=true]")).toBeNull();
   });
 
-  it("ignores resize events until every programmatic size request settles", async () => {
+  it("serializes programmatic size requests and ignores their browser resize events", async () => {
     const finish: Array<() => void> = [];
     nativeSizing.setSize.mockImplementation(() => new Promise<void>((resolve) => finish.push(resolve)));
     await renderMainPalette();
     await act(async () => { await broadcastToolsetCommandSpecs(allShellCommands(createPhase4Document()).map((command) => ({ ...command, title: `${command.title} updated` }))); });
-    expect(finish.length).toBeGreaterThan(1);
+    expect(finish).toHaveLength(1);
     await act(async () => { finish[0](); });
-    await userResize(420, 240);
+    await userResize(420, 240, false);
     expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
     await act(async () => { finish.slice(1).forEach((resolve) => resolve()); });
   });
@@ -180,6 +274,45 @@ describe("PaletteWindow customize mode bridge", () => {
     });
     expect(nativeSizing.resize).not.toHaveBeenCalled();
     expect(nativeSizing.setSize).toHaveBeenLastCalledWith({ width: 800, height: 190 });
+  });
+
+  it("does not save or switch layout for a macOS grip click without a resize", async () => {
+    await renderMainPalette(undefined, "macos");
+    const grip = container.querySelector<HTMLButtonElement>(".palette-resize-handle")!;
+    Object.defineProperties(grip, { setPointerCapture: { value: vi.fn() }, hasPointerCapture: { value: () => true }, releasePointerCapture: { value: vi.fn() } });
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, screenX: 100, screenY: 100 }));
+      grip.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    expect(nativeSizing.canSave).not.toHaveBeenCalled();
+    expect(localStorage.getItem("chemdraft.palette.frame.v1.core.main")).toBeNull();
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+  });
+
+  it("keeps macOS grip layout stable and persists only after release", async () => {
+    await renderMainPalette(undefined, "macos");
+    const grip = container.querySelector<HTMLButtonElement>(".palette-resize-handle")!;
+    Object.defineProperties(grip, { setPointerCapture: { value: vi.fn() }, hasPointerCapture: { value: () => true }, releasePointerCapture: { value: vi.fn() } });
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.push(callback); return frames.length; });
+    nativeSizing.setSize.mockImplementation(async (size) => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: size.width });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: size.height });
+      window.dispatchEvent(new Event("resize"));
+    });
+    const storageWrites = vi.spyOn(localStorage, "setItem");
+    await act(async () => {
+      grip.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, screenX: 100, screenY: 100 }));
+      grip.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, screenX: 200, screenY: 200 }));
+      frames.shift()?.(0);
+    });
+    expect(nativeSizing.canSave).not.toHaveBeenCalled();
+    expect(storageWrites).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-user-sized=true]")).toBeNull();
+    await act(async () => { grip.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })); });
+    expect(nativeSizing.canSave).toHaveBeenCalledOnce();
+    expect(storageWrites).toHaveBeenCalledOnce();
+    expect(JSON.parse(localStorage.getItem("chemdraft.palette.frame.v1.core.main")!)).toEqual({ width: 800, height: 190 });
   });
 
   it.each(["vertical", "horizontal"] as const)("honours saved %s orientation despite the frame aspect ratio", async (orientation) => {

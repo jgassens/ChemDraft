@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resume-quit-after-prompt"
+description = "Enables the resume_quit_after_prompt command without any pre-configured scope."
+commands.allow = ["resume_quit_after_prompt"]
+
+[[permission]]
+identifier = "deny-resume-quit-after-prompt"
+description = "Denies the resume_quit_after_prompt command without any pre-configured scope."
+commands.deny = ["resume_quit_after_prompt"]

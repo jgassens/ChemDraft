@@ -1,9 +1,14 @@
 mod dialog_windows;
+mod document_session;
 mod export;
 mod fonts;
 mod installed_plugins;
+#[cfg(target_os = "macos")]
+mod macos_quit;
 mod ocsr_engine;
 mod opsin;
+mod palette_resize;
+mod panel_window;
 mod plugin_package;
 mod problem_reports;
 mod screen_capture;
@@ -124,17 +129,35 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 
 /// The app's quit flow. Tests run their own `QuitFlow` with a fake host and short timings.
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
+const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
 
-/// A quit's state and timings. Nothing ever clears `requested` or `quitting`: no quit is
-/// cancelled once asked for. The app never prompts to save, a relaunch is a new process, and the
-/// Windows updater's `install()` ends the process itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum QuitPromptPhase {
+    Idle,
+    AwaitingWindow,
+    Showing,
+    Flushing,
+}
+
+// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
+// system termination: never block logout/shutdown/restart with a save prompt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
+    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+}
+
+/// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
+/// once `quitting` is set, the exit watchdog remains unchanged.
 struct QuitFlow {
-    /// Set once a quit has been requested, so repeated close clicks don't re-request it.
+    /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
     /// Set once the quit is decided (`quit_now`); the app's is `APP_QUITTING`.
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
+    /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
+    prompt: Mutex<(u64, QuitPromptPhase)>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -147,6 +170,7 @@ impl QuitFlow {
     ) -> Self {
         Self {
             requested: AtomicBool::new(false),
+            prompt: Mutex::new((0, QuitPromptPhase::Idle)),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -194,6 +218,10 @@ fn forced_exit_message(reason: QuitReason, waited: Duration) -> String {
 trait QuitHost: Clone + Send + 'static {
     /// Asks the document window to flush its session; false when there is none to ask.
     fn ask_document_to_flush(&self) -> bool;
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        let _ = request_id;
+        self.ask_document_to_flush()
+    }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Ends the process now, from the watchdog thread.
@@ -207,6 +235,13 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
         self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
+                .is_ok()
+    }
+
+    fn ask_document_to_prompt(&self, request_id: u64) -> bool {
+        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
+            && self
+                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
                 .is_ok()
     }
 
@@ -254,16 +289,38 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 }
 
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
-/// webview and the app never prompts to save, so exiting straight away dropped anything edited in
+/// webview, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
+        // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
+        if prompt_waits_for_user(&QUIT) {
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                let reveal = window.clone();
+                let _ = window.run_on_main_thread(move || {
+                    let _ = reveal.unminimize();
+                    let _ = reveal.show();
+                    let _ = reveal.set_focus();
+                });
+            }
+        }
+        request_prompted_quit_with(&QUIT, app);
+    } else {
+        request_quit_with(&QUIT, app, cfg!(target_os = "macos"));
+    }
 }
 
+fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
+    matches!(
+        flow.prompt.lock().unwrap().1,
+        QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+    )
+}
+
+// The preference-off path is the original #99 flow.
 fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repeated_quit: bool) {
     if flow.requested.swap(true, Ordering::SeqCst) {
-        // A second Cmd+Q bypasses the wait. Keep repeated Windows closes idempotent.
         if force_repeated_quit {
             quit_now_with(flow, host, QuitReason::RepeatedRequest);
         }
@@ -278,6 +335,63 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
         thread::sleep(flow.flush_grace);
         quit_now_with(flow, &host, QuitReason::GraceExpired);
     });
+}
+
+fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.1 != QuitPromptPhase::Idle
+        || flow.requested.load(Ordering::SeqCst)
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return None;
+    }
+    prompt.0 += 1;
+    prompt.1 = QuitPromptPhase::AwaitingWindow;
+    let request_id = prompt.0;
+    drop(prompt);
+    if !host.ask_document_to_prompt(request_id) {
+        quit_now_with(flow, host, QuitReason::NoDocument);
+    } else {
+        arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
+    }
+    Some(request_id)
+}
+
+fn arm_prompt_grace<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+    phase: QuitPromptPhase,
+) {
+    let host = host.clone();
+    thread::spawn(move || {
+        thread::sleep(flow.flush_grace);
+        let prompt = flow.prompt.lock().unwrap();
+        if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
+            quit_now_with(flow, &host, QuitReason::GraceExpired);
+        }
+    });
+}
+
+fn resume_prompted_quit_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Flushing;
+    flow.requested.store(true, Ordering::SeqCst);
+    arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
+    true
 }
 
 /// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
@@ -306,6 +420,135 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
 }
+
+fn authorize_quit_window(label: &str) -> Result<(), String> {
+    if label == MAIN_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("Only the document window can control quit prompts.".into())
+    }
+}
+
+fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if !visible
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Showing;
+    true
+}
+
+fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> bool {
+    let mut prompt = flow.prompt.lock().unwrap();
+    if request_id == 0
+        || prompt.0 != request_id
+        || !matches!(
+            prompt.1,
+            QuitPromptPhase::Idle | QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
+        )
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return false;
+    }
+    prompt.1 = QuitPromptPhase::Idle;
+    true
+}
+
+#[tauri::command]
+async fn set_quit_prompt_enabled(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    ASK_TO_SAVE_ON_QUIT.store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn prepare_quit_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+        || QUIT.quitting.load(Ordering::SeqCst)
+    {
+        return Ok(false);
+    }
+    let reveal = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+            || QUIT.quitting.load(Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+        // Awaiting the prompt is not shutdown: file panels and utility suspension are permitted.
+        reveal.unminimize().map_err(|e| e.to_string())?;
+        reveal.show().map_err(|e| e.to_string())?;
+        reveal.set_focus().map_err(|e| e.to_string())?;
+        let _ = app;
+        Ok(true)
+    })?
+}
+
+#[tauri::command]
+async fn quit_prompt_showing(
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
+}
+
+#[tauri::command]
+async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(cancel_quit_with(&QUIT, request_id))
+}
+
+#[tauri::command]
+async fn request_quit_after_close(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    request_quit(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_quit_after_prompt(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
+    authorize_quit_window(window.label())?;
+    Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
+}
+
+#[tauri::command]
+async fn confirm_prompted_quit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<(), String> {
+    authorize_quit_window(window.label())?;
+    let prompt = QUIT.prompt.lock().unwrap();
+    if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
+        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(())
+}
+
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
@@ -478,6 +721,13 @@ struct ToolsetWindowDirectory {
 
 #[tauri::command]
 fn can_persist_toolset_size(window: tauri::WebviewWindow) -> bool {
+    can_save_palette_frame(&window)
+}
+
+fn can_save_palette_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    if !window.is_visible().unwrap_or(false) {
+        return false;
+    }
     let app = window.app_handle();
     toolset_size_may_be_saved(
         quit_in_progress(),
@@ -642,6 +892,7 @@ pub fn run() {
 
     let builder = builder
         .manage(PendingOpenDocument::default())
+        .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(ToolsetWindowDirectory::default())
@@ -677,6 +928,12 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
+            if is_plugin_panel_window_label(webview.label())
+                && matches!(payload.event(), PageLoadEvent::Started)
+            {
+                // Reset before the new page can install its focus listener or acquire a lease.
+                panel_window::reset_for_webview(&webview.window());
+            }
             if webview.label() == MAIN_WINDOW_LABEL
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
@@ -730,9 +987,11 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
-                        if let Err(error) = window.hide() {
-                            eprintln!("Could not hide ChemDraft main window: {error}");
+                        if !prompt_waits_for_user(&QUIT) {
+                            dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
+                            if let Err(error) = window.hide() {
+                                eprintln!("Could not hide ChemDraft main window: {error}");
+                            }
                         }
                     }
                     // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
@@ -804,6 +1063,34 @@ pub fn run() {
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
             // window. Destroying it left the main window believing it was still open.
             if is_plugin_panel_window_label(window.label()) {
+                // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
+                // input lease too, on both platforms, without changing the resize gesture.
+                if matches!(event, WindowEvent::Resized(_))
+                    && window.is_focused().unwrap_or(false)
+                    && !window.is_minimized().unwrap_or(true)
+                {
+                    if let Some(panel) = window.app_handle().get_webview_window(window.label()) {
+                        panel_window::activation(&panel, false);
+                    }
+                    let _ = window.set_focusable(false);
+                    #[cfg(windows)]
+                    if let (Ok(panel), Some(main)) = (
+                        window.hwnd(),
+                        window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
+                    ) {
+                        let _ = panel_window::return_focus_to_document(panel.0, &main);
+                    }
+                    #[cfg(not(windows))]
+                    let _ = focus_main_document_window_impl(
+                        window.app_handle(),
+                        MainWindowFocusMode::OnlyIfAppActive,
+                    );
+                }
+                // Focused is queued by Tao and may describe an older activation by delivery.
+                // Lease ownership is observed synchronously at the OS boundary instead.
+                if matches!(event, WindowEvent::Destroyed) {
+                    panel_window::forget(window);
+                }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     if APP_QUITTING.load(Ordering::SeqCst) {
                         return;
@@ -885,6 +1172,10 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             problem_reports::install_panic_hook(app);
+            #[cfg(target_os = "macos")]
+            if let Err(error) = macos_quit::install(app) {
+                eprintln!("Could not install ChemDraft AppKit quit handler: {error}");
+            }
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
@@ -915,6 +1206,7 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             observe_hide_for_document_key_restore(app.clone());
+            palette_resize::observe(app.clone());
 
             // The tooltip window is NOT built here: a palette prewarms it once it has painted
             // (prewarm_toolset_tooltip). Building it in setup put a hidden webview ahead of every
@@ -964,6 +1256,8 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            register_plugin_panel_input_focus,
+            set_plugin_panel_input_focus,
             open_toolset_popover,
             prewarm_toolset_popover,
             prewarm_toolset_tooltip,
@@ -972,6 +1266,13 @@ pub fn run() {
             hide_toolset_tooltip_window,
             set_current_window_global_position,
             quit_after_flush,
+            set_quit_prompt_enabled,
+            prepare_quit_prompt,
+            resume_quit_after_prompt,
+            confirm_prompted_quit,
+            request_quit_after_close,
+            quit_prompt_showing,
+            cancel_quit,
             close_toolset_popover,
             set_toolset_window_focusable,
             route_toolset_command,
@@ -1027,12 +1328,9 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // tao 0.35.3's AppDelegate has applicationWillTerminate: but no
-                // applicationShouldTerminate:. AppKit termination (Dock Quit, logout/restart,
-                // AppleScript quit, Sparkle) therefore delivers only Exit via AppState::exit ->
-                // LoopDestroyed in tauri-runtime-wry 2.11.2. It is too late to await a webview
-                // flush here; retain the existing idempotent cleanup. Menu Quit uses our custom
-                // item instead of muda's terminate: selector, so it avoids this bypass.
+                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
+                // only when the preference is enabled. System termination and preference-off
+                // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
             }
@@ -1465,10 +1763,12 @@ async fn suspend_toolset_windows(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     suspended: bool,
+    focus_export_session_id: Option<String>,
 ) -> Result<(), String> {
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the document window can suspend floating windows.".into());
     }
+    palette_resize::invalidate(&app);
     let _creation = match lock_window_creation() {
         Ok(guard) => guard,
         Err(error) => {
@@ -1561,7 +1861,11 @@ async fn suspend_toolset_windows(
             }
             Ok(())
         } else {
-            restore_suspended_utility_windows(&app)
+            restore_suspended_utility_windows(&app)?;
+            if let Some(session_id) = focus_export_session_id {
+                dialog_windows::focus_export_after_picker(&app, &session_id)?;
+            }
+            Ok(())
         }
     })??;
     restore_deferred_plugin_panels(&restore_app)
@@ -1914,10 +2218,16 @@ fn quit_in_progress() -> bool {
 /// build ran in turn. The flag is read after the lock, so a request queued behind a build in
 /// progress is refused too.
 fn lock_window_creation() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    lock_window_creation_with(&QUIT)
+}
+
+fn lock_window_creation_with(
+    flow: &QuitFlow,
+) -> Result<std::sync::MutexGuard<'static, ()>, String> {
     let guard = WINDOW_CREATION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if quit_in_progress() {
+    if flow.requested.load(Ordering::SeqCst) || flow.quitting.load(Ordering::SeqCst) {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     Ok(guard)
@@ -1946,6 +2256,7 @@ fn close_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    palette_resize::invalidate(&app);
     if utility_windows_suspended() {
         return toolset_state(&app, &toolset_id);
     }
@@ -2026,10 +2337,34 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })?;
-    fs::rename(&tmp, path).map_err(|error| {
+    #[cfg(windows)]
+    let replaced = replace_with_windows_retry(|| fs::rename(&tmp, path), std::thread::sleep);
+    #[cfg(not(windows))]
+    let replaced = fs::rename(&tmp, path);
+    replaced.map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })
+}
+
+/// Windows can temporarily deny replacement while a reader or another replacement holds the
+/// destination open. Retry only those OS errors, with at most ten attempts and 180 ms of backoff.
+/// Compile for tests on every host so injected Windows errors exercise the actual retry policy.
+#[cfg(any(windows, test))]
+fn replace_with_windows_retry(
+    mut rename: impl FnMut() -> std::io::Result<()>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> std::io::Result<()> {
+    for attempt in 0..10 {
+        match rename() {
+            // ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32).
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) && attempt < 9 => {
+                sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final attempt always returns")
 }
 
 #[tauri::command]
@@ -2065,22 +2400,49 @@ fn save_toolset_customization_state(
 }
 
 #[tauri::command]
-fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+fn load_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the main document window can restore the document session".into());
+    }
     let path = document_session_path(&app)?;
     let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Document session is invalid: {error}"))
+    let mut session = serde_json::from_str(&contents)
+        .map_err(|error| format!("Document session is invalid: {error}"))?;
+    document_session::restore_file_scopes(&mut session, |path| {
+        use tauri_plugin_fs::FsExt;
+        let scope = app
+            .try_fs_scope()
+            .ok_or("File access scope is unavailable")?;
+        scope.allow_file(path).map_err(|error| error.to_string())?;
+        if !scope.is_allowed(path) {
+            return Err("File access could not be restored".into());
+        }
+        if let Some(scopes) = app.try_state::<tauri::scope::Scopes>() {
+            scopes.allow_file(path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+    Ok(Some(session))
 }
 
 /// The working document's autosave (serialized contents + file association). JS owns the envelope
 /// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
 /// opaque JSON, exactly like the toolbar customization state.
 #[tauri::command]
-fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
+fn save_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the main document window can persist the document session".into());
+    }
     let path = document_session_path(&app)?;
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
@@ -2268,17 +2630,15 @@ struct OpenPluginPanelRequest {
     title: String,
     width: Option<f64>,
     height: Option<f64>,
-    /// True only when the user explicitly asked for this window (a menu command or a click). An
-    /// automatic show — a new proposal arriving, a plugin pushing its report — passes false so the
-    /// window appears without taking keyboard focus from the canvas. Missing means false.
-    #[serde(default)]
-    focus: bool,
+    /// Legacy reveal hint from the host. Opening a panel never grants keyboard focus;
+    /// only an input or deliberate report-text selection may lease it via set_plugin_panel_input_focus.
+    #[serde(default, rename = "focus")]
+    _focus: bool,
 }
 
 struct PanelWindowPresentation {
     focused_on_build: bool,
     visible_on_build: bool,
-    focus_after_show: bool,
 }
 
 impl OpenPluginPanelRequest {
@@ -2287,7 +2647,6 @@ impl OpenPluginPanelRequest {
             // Tao's Windows show mode is a lifetime creation trait, not the current focus state.
             focused_on_build: false,
             visible_on_build: !deferred,
-            focus_after_show: self.focus && !deferred,
         }
     }
 }
@@ -2305,6 +2664,138 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 }
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
+
+/// The IPC injects the calling window; it never accepts a caller-selected target label.
+fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
+    if is_plugin_panel_window_label(label) {
+        Ok(())
+    } else {
+        Err("Only a ChemDraft panel window may request panel input focus.".into())
+    }
+}
+
+#[tauri::command]
+fn register_plugin_panel_input_focus(window: tauri::WebviewWindow) -> Result<String, String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    Ok(panel_window::page_token(&window))
+}
+
+#[tauri::command]
+async fn set_plugin_panel_input_focus(
+    window: tauri::WebviewWindow,
+    page_token: String,
+    editing: bool,
+    generation: u64,
+) -> Result<bool, String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    // Register the pending generation BEFORE marshalling acquisition to the UI thread.
+    // A native loss while that operation is queued must cancel it, not be forgotten.
+    let Some(epoch) = panel_window::request(&window, generation, &page_token, editing) else {
+        return Ok(false);
+    };
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if !panel_window::is_current(&target, generation, epoch)
+            || (editing && !panel_window::acquired(&target, generation, epoch, true))
+        {
+            return Ok(false);
+        }
+        if editing {
+            let result = (|| -> Result<bool, String> {
+                #[cfg(target_os = "macos")]
+                {
+                    // makeKeyWindow must not lend a background app a persistent lease.
+                    let marker =
+                        MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+                    if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+                        return Ok(false);
+                    }
+                    target
+                        .set_focusable(true)
+                        .map_err(|error| error.to_string())?;
+                    let pointer =
+                        target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+                    let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
+                        "Could not access native ChemDraft panel window.".to_string()
+                    })?;
+                    // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
+                    // Only make this panel key: an exposed input click or delayed IPC must never
+                    // activate ChemDraft after the user has switched to another application.
+                    panel.makeKeyWindow();
+                }
+                #[cfg(windows)]
+                {
+                    // Never use Tao's force_window_active (including its synthetic Alt fallback).
+                    // Keep NOACTIVATE throughout the lease and drop delayed background requests.
+                    let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                    if !panel_window::focus_if_app_active(hwnd) {
+                        return Ok(false);
+                    }
+                }
+                #[cfg(not(any(target_os = "macos", windows)))]
+                {
+                    target
+                        .set_focusable(false)
+                        .map_err(|error| error.to_string())?;
+                    target.set_focus().map_err(|error| error.to_string())?;
+                }
+                let webview: &tauri::Webview = target.as_ref();
+                webview.set_focus().map_err(|error| error.to_string())?;
+                #[cfg(windows)]
+                return Ok(unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                        == target.hwnd().map_err(|error| error.to_string())?.0
+                });
+                #[cfg(target_os = "macos")]
+                return Ok(unsafe {
+                    &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
+                }
+                .isKeyWindow());
+                #[cfg(not(any(target_os = "macos", windows)))]
+                target.is_focused().map_err(|error| error.to_string())
+            })();
+            let held = panel_window::acquired(
+                &target,
+                generation,
+                epoch,
+                result.as_ref().copied().unwrap_or(false),
+            );
+            if !held && panel_window::is_current(&target, generation, epoch) {
+                let _ = target.set_focusable(false);
+            }
+            result.map(|_| held)
+        } else {
+            // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
+            // The foreground top-level window remains the authoritative Windows lease owner.
+            #[cfg(windows)]
+            let was_focused = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                    == target.hwnd().map_err(|error| error.to_string())?.0
+            };
+            #[cfg(not(windows))]
+            let was_focused = target.is_focused().unwrap_or(false);
+            target
+                .set_focusable(false)
+                .map_err(|error| error.to_string())?;
+            // A blur caused by clicking the document/another app must not raise or activate it.
+            if was_focused {
+                #[cfg(windows)]
+                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
+                    panel_window::return_focus_to_document(
+                        target.hwnd().map_err(|error| error.to_string())?.0,
+                        &main,
+                    )?;
+                }
+                #[cfg(not(windows))]
+                focus_main_document_window_impl(
+                    target.app_handle(),
+                    MainWindowFocusMode::OnlyIfAppActive,
+                )?;
+            }
+            Ok(false)
+        }
+    })?
+}
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
 const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
@@ -2369,7 +2860,7 @@ mod plugin_panel_label_tests {
             &state,
             || false,
             |request| {
-                assert!(!request.focus, "resume must not activate the panel");
+                assert!(!request._focus, "resume must not activate the panel");
                 assert_eq!(request.panel_id, "panel.test");
                 builds += 1;
                 Ok(())
@@ -2407,14 +2898,14 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn open_requests_focus_only_when_the_app_asks() {
+    fn legacy_open_focus_hints_are_accepted_without_granting_input_focus() {
         let automatic: OpenPluginPanelRequest =
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals"}"#).unwrap();
-        assert!(!automatic.focus);
+        assert!(!automatic._focus);
         let explicit: OpenPluginPanelRequest =
             serde_json::from_str(r#"{"panelId":"v1x61x62","title":"Proposals","focus":true}"#)
                 .unwrap();
-        assert!(explicit.focus);
+        assert!(explicit._focus);
     }
 
     #[test]
@@ -2430,7 +2921,6 @@ mod plugin_panel_label_tests {
                 // restoration of an Analyze panel that was explicitly focused after its build.
                 assert!(!presentation.focused_on_build);
                 assert_eq!(presentation.visible_on_build, !deferred);
-                assert_eq!(presentation.focus_after_show, focus && !deferred);
             }
         }
     }
@@ -2452,6 +2942,28 @@ mod plugin_panel_label_tests {
         ] {
             assert!(!is_plugin_panel_window_label(other), "{other}");
         }
+    }
+
+    #[test]
+    fn input_focus_command_accepts_only_its_injected_panel_caller() {
+        use super::validate_plugin_panel_focus_caller;
+        assert!(validate_plugin_panel_focus_caller(&plugin_panel_window_label("panel.a")).is_ok());
+        for label in ["main", "toolset-core-main", "preferences", "plugin-panel-"] {
+            assert!(
+                validate_plugin_panel_focus_caller(label).is_err(),
+                "{label}"
+            );
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/plugin-panel.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+        assert!(permissions
+            .iter()
+            .any(|permission| permission == "allow-set-plugin-panel-input-focus"));
+        assert!(!permissions
+            .iter()
+            .any(|permission| permission == "core:window:allow-set-focus"
+                || permission == "core:webview:allow-set-webview-focus"));
     }
 
     #[test]
@@ -2666,7 +3178,7 @@ fn resume_deferred_plugin_panels(
                 .release(true);
             return Ok(());
         }
-        request.focus = false;
+        request._focus = false;
         if let Err(error) = builder(request.clone()) {
             suspension
                 .lock()
@@ -2707,10 +3219,10 @@ fn build_or_show_plugin_panel<R: Runtime>(
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
-        if presentation.focus_after_show || !cfg!(target_os = "macos") {
+        if !cfg!(target_os = "macos") {
             window.show().map_err(|error| error.to_string())?;
         }
-        configure_analysis_window(&window, presentation.focus_after_show)?;
+        configure_analysis_window(&window)?;
         return Ok(());
     }
 
@@ -2728,9 +3240,8 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .inner_size(width, height)
     .min_inner_size(280.0, 200.0)
     .accept_first_mouse(true)
-    .focusable(true)
-    // Windows uses this creation trait for EVERY later show, not just the initial reveal. Focus
-    // explicit opens below instead, so restoration always uses Tao's non-activating show path.
+    .focusable(false)
+    // Windows uses this creation trait for EVERY later show, not just the initial reveal.
     .focused(presentation.focused_on_build)
     .visible(presentation.visible_on_build)
     .resizable(true)
@@ -2749,6 +3260,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
+    let target = window.clone();
+    let installed = run_on_main_thread_blocking(&window, move || {
+        panel_window::install_resize_hit_test(&target)
+    })
+    .and_then(|result| result);
+    panel_window::finish_installation(installed, || {
+        window.destroy().map_err(|error| error.to_string())
+    })?;
 
     if restoring {
         let target = window.clone();
@@ -2756,7 +3275,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
             restore_utility_in_document_group(&target)
         })?;
     }
-    configure_analysis_window(&window, presentation.focus_after_show)?;
+    configure_analysis_window(&window)?;
     Ok(())
 }
 
@@ -2903,35 +3422,27 @@ fn choose_analysis_window_position(
     best
 }
 
-/// Always focusable, so the user can click into the window. It is focused only when `focus` is
-/// true: an automatic re-show must never take keyboard focus from the canvas mid-typing.
+/// Non-activating by default. Only the caller-validated input focus command makes a panel key.
 ///
 /// Marshalled: `open_plugin_panel_window` is async (a worker thread, required for WebView2 on
 /// Windows), and every call below is raw AppKit, which is main-thread-only.
 #[cfg(target_os = "macos")]
-fn configure_analysis_window<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
-    focus: bool,
-) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let target = window.clone();
     run_on_main_thread_blocking(window, move || {
-        configure_analysis_window_on_main_thread(&target, focus)
+        configure_analysis_window_on_main_thread(&target)
     })?
 }
 
 #[cfg(target_os = "macos")]
 fn configure_analysis_window_on_main_thread<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
-    focus: bool,
 ) -> Result<(), String> {
     let ns_window_ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let Some(ns_window) = (unsafe { ns_window_ptr.as_ref() }) else {
         return Err("Could not access native ChemDraft analysis window.".to_string());
     };
     configure_analysis_window_traits(window, ns_window)?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
     // Explicit panel opens keep their existing reveal behavior; suspension restores use only
     // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
     ns_window.orderFront(None);
@@ -2944,14 +3455,16 @@ fn configure_analysis_window_traits<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     ns_window: &NSWindow,
 ) -> Result<(), String> {
-    // Normal level + a native parent keeps the window with its document without making it globally
-    // always-on-top. It remains an ordinary focusable, movable, resizable utility surface.
+    // Normal level + a native parent keeps this movable/resizable, non-activating panel with its
+    // document. Focusability is enabled only for an input's temporary keyboard-focus lease.
     ns_window.setLevel(NSNormalWindowLevel);
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
+    ns_window.setStyleMask(panel_window::macos_style(ns_window.styleMask()));
+    ns_window.setAcceptsMouseMovedEvents(true);
     window
-        .set_focusable(true)
+        .set_focusable(false)
         .map_err(|error| error.to_string())
 }
 
@@ -3000,16 +3513,10 @@ pub(crate) fn attach_webview_window_to_main<R: Runtime>(window: &tauri::WebviewW
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_analysis_window<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
-    focus: bool,
-) -> Result<(), String> {
+fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     window
-        .set_focusable(true)
+        .set_focusable(false)
         .map_err(|error| error.to_string())?;
-    if focus {
-        window.set_focus().map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 
@@ -5891,6 +6398,7 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
+    palette_resize::grant(app, &label)?;
     let window = match utility_window_builder(
         WebviewWindowBuilder::new(
             app,
@@ -5929,6 +6437,7 @@ fn ensure_toolset_window<R: Runtime>(
     };
 
     configure_toolset_utility_window(&window, true)?;
+    palette_resize::install(&window)?;
     Ok(())
 }
 
@@ -6066,7 +6575,7 @@ fn start_palette_pointer_feed(app: tauri::AppHandle) {
             let front_window_number =
                 NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(mouse, 0, mtm);
 
-            let entries: Vec<(String, String)> = app_handle
+            let mut entries: Vec<(String, String)> = app_handle
                 .state::<ToolsetWindowDirectory>()
                 .labels
                 .lock()
@@ -6077,6 +6586,15 @@ fn start_palette_pointer_feed(app: tauri::AppHandle) {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Report windows now share the palettes' non-key hover limitation. Reuse the feed;
+            // their native label is the identity, so no plugin id or extra authority is needed.
+            entries.extend(
+                app_handle
+                    .webview_windows()
+                    .into_keys()
+                    .filter(|label| is_plugin_panel_window_label(label))
+                    .map(|label| (label.clone(), label)),
+            );
 
             let mut hovered: Option<(String, PalettePointerPayload)> = None;
             for (label, toolset_id) in entries {
@@ -7193,6 +7711,119 @@ mod tests {
     const NEVER: Duration = Duration::from_secs(3600);
 
     #[test]
+    fn visible_prompt_pauses_grace_without_blocking_save_as_or_utility_suspension() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        assert!(!acknowledge_quit_prompt(flow, 1, true));
+        let id = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!acknowledge_quit_prompt(flow, id, false));
+        assert!(lock_window_creation_with(flow).is_ok());
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        assert!(prompt_waits_for_user(flow));
+        assert!(request_prompted_quit_with(flow, &host).is_none());
+        assert!(lock_window_creation_with(flow).is_ok());
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        assert!(cancel_quit_with(flow, id));
+        assert!(!prompt_waits_for_user(flow));
+        assert!(lock_window_creation_with(flow).is_ok());
+    }
+
+    #[test]
+    fn cancel_then_new_quit_ignores_old_cancel_ack_and_timer() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        let first = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(acknowledge_quit_prompt(flow, first, true));
+        assert!(cancel_quit_with(flow, first));
+        // A lost cancellation reply may be retried, but must never affect a newer request.
+        assert!(cancel_quit_with(flow, first));
+        let next = request_prompted_quit_with(flow, &host).unwrap();
+        assert!(!cancel_quit_with(flow, first));
+        assert!(!acknowledge_quit_prompt(flow, first, true));
+        assert!(acknowledge_quit_prompt(flow, next, true));
+        thread::sleep(Duration::from_millis(600));
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stalled_flush_after_save_or_discard_is_bounded_and_arms_one_watchdog() {
+        for _choice in ["Save", "Discard"] {
+            let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+            let host = StuckAppHost::new(true);
+            let id = request_prompted_quit_with(flow, &host).unwrap();
+            assert!(acknowledge_quit_prompt(flow, id, true));
+            assert!(resume_prompted_quit_with(flow, &host, id));
+            assert!(!resume_prompted_quit_with(flow, &host, id));
+            assert!(lock_window_creation_with(flow).is_err());
+            assert_eq!(
+                host.wait_for_calls(3),
+                ["ask to flush", "exit", "force exit"]
+            );
+            assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn unanswered_opt_in_window_still_quits() {
+        let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
+        let host = StuckAppHost::new(true);
+        request_prompted_quit_with(flow, &host);
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn quit_prompt_commands_and_capabilities_are_document_only() {
+        assert!(authorize_quit_window("main").is_ok());
+        for label in [
+            "preferences",
+            "toolset-bonds",
+            "spin3d-debugger",
+            "plugin-panel-x",
+        ] {
+            assert!(authorize_quit_window(label).is_err());
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        let default = include_str!("../capabilities/default.json");
+        for permission in [
+            "allow-cancel-quit",
+            "allow-quit-prompt-showing",
+            "allow-prepare-quit-prompt",
+            "allow-resume-quit-after-prompt",
+            "allow-confirm-prompted-quit",
+            "allow-set-quit-prompt-enabled",
+        ] {
+            assert!(!default.contains(permission));
+        }
+    }
+
+    #[test]
+    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
+        assert!(should_prompt_appkit_quit(true, false, 0));
+        assert!(should_prompt_appkit_quit(
+            true,
+            false,
+            u32::from_be_bytes(*b"quit")
+        ));
+        assert!(!should_prompt_appkit_quit(false, false, 0));
+        assert!(!should_prompt_appkit_quit(true, true, 0));
+        for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
+            assert!(!should_prompt_appkit_quit(
+                true,
+                false,
+                u32::from_be_bytes(reason)
+            ));
+        }
+    }
+
+    #[test]
     fn a_requested_quit_only_asks_for_the_flush_until_it_is_confirmed() {
         let flow = test_quit_flow(NEVER, Duration::from_millis(20));
         let host = StuckAppHost::new(true);
@@ -7486,6 +8117,63 @@ mod tests {
     }
 
     #[test]
+    fn atomic_replace_windows_retry_policy_is_bounded_and_selective() {
+        for code in [5, 32] {
+            let mut attempts = 0;
+            let mut delays = Vec::new();
+            let result = replace_with_windows_retry(
+                || {
+                    attempts += 1;
+                    Err(std::io::Error::from_raw_os_error(code))
+                },
+                |delay| delays.push(delay),
+            );
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(attempts, 10);
+            assert_eq!(delays, vec![std::time::Duration::from_millis(20); 9]);
+        }
+
+        for code in [2, 3, 17, 80, 112] {
+            let mut attempts = 0;
+            let result = replace_with_windows_retry(
+                || {
+                    attempts += 1;
+                    Err(std::io::Error::from_raw_os_error(code))
+                },
+                |_| panic!("non-contention errors must not back off"),
+            );
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(attempts, 1);
+        }
+
+        let mut attempts = 0;
+        let mut sleeps = 0;
+        replace_with_windows_retry(
+            || {
+                attempts += 1;
+                match attempts {
+                    1 => Err(std::io::Error::from_raw_os_error(5)),
+                    2 => Err(std::io::Error::from_raw_os_error(32)),
+                    _ => Ok(()),
+                }
+            },
+            |_| sleeps += 1,
+        )
+        .expect("replacement recovers after contention");
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeps, 2);
+
+        replace_with_windows_retry(|| Ok(()), |_| panic!("success must not back off"))
+            .expect("immediate success");
+        let error = replace_with_windows_retry(
+            || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            |_| panic!("an error without a Windows OS code must not retry"),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), None);
+    }
+
+    #[test]
     fn write_file_atomic_replaces_completely_creates_parents_and_leaves_no_temp() {
         let dir =
             std::env::temp_dir().join(format!("chemdraft-write-atomic-{}", std::process::id()));
@@ -7572,11 +8260,26 @@ mod tests {
     /// so it is deliberately not the thing asserted.)
     #[test]
     fn registered_commands_have_permissions_and_capability_grants() {
+        use tauri::ipc::RuntimeCapability;
+        // Toolbar resize grants are installed for exact real window labels at creation time.
+        // Inspect the actual builder, retaining the same positive permission cross-check.
+        let tauri::utils::acl::capability::CapabilityFile::Capability(resize_capability) =
+            super::palette_resize::capability("toolset-core-main").build()
+        else {
+            panic!("expected one toolset resize capability");
+        };
+        assert_eq!(resize_capability.windows, ["toolset-core-main"]);
+        assert!(resize_capability.webviews.is_empty());
+        assert!(resize_capability.local && resize_capability.remote.is_none());
+        let resize_grants = serde_json::to_string(&resize_capability).expect("resize capability");
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}",
+            "{}{}{}{}{}",
             include_str!("../capabilities/default.json"),
-            include_str!("../capabilities/document-dialogs.json")
+            include_str!("../capabilities/document-dialogs.json"),
+            include_str!("../capabilities/plugin-panel.json"),
+            include_str!("../capabilities/quit-prompt.json"),
+            resize_grants
         );
 
         let handler_start = lib_source
@@ -7621,7 +8324,7 @@ mod tests {
             assert!(
                 capability.contains(&format!("\"{permission}\"")),
                 "command `{command}` is registered but `{permission}` is not granted in \
-                 capabilities/default.json, so every invoke is denied and the JS silently swallows it"
+                 a window capability, so every invoke is denied and the JS silently swallows it"
             );
         }
     }

@@ -2381,7 +2381,7 @@ textarea:focus-visible,
   cursor: pointer;
 }
 .palette-orientation-toggle::after { content: "\21c4"; font-size: 13px; }
-.palette-window-shell .palette-title-label { clip-path: inset(0 18px 0 0); }
+.palette-window-shell[data-rotatable="true"] .palette-title-label { clip-path: inset(0 18px 0 0); }
 
 .palette-title {
   position: relative;
@@ -6102,6 +6102,10 @@ textarea:focus-visible,
   border: 1px solid var(--cd-border, #c8c4ba);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.plugin-panel-shell button.panel-synthetic-hover:not(:disabled):not(.palette-close-button) {
+  background: var(--cd-bg-hover);
 }
 
 .plugin-panel-content {
