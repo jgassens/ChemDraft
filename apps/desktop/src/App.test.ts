@@ -2583,7 +2583,8 @@ describe("ChemDraft desktop shell", () => {
     // is the flush (documentForFlush), which writes the document as an open label edit's close
     // would leave it. History snapshots strip live drafts before a seventh normalization;
     // restoring each document tab normalizes it through the same funnel once more.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(8);
+    // Modeless Page Size also commits into inactive tab histories through this funnel.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(9);
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,
@@ -2715,7 +2716,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("register(pageCustomSizeAction");
     expect(mainWindowSource).toContain("openCustomPageSizeDialog()");
     expect(mainWindowSource).toContain("setDocumentCustomPageSize(current, size)");
-    expect(mainWindowSource).toContain("<CustomPageSizeDialog");
+    expect(mainWindowSource).toContain("<PageSizeForm");
+    expect(mainWindowSource).toContain("coordinator.openPageSize");
   });
 
   it("ships only live customize-toolbar commands", () => {

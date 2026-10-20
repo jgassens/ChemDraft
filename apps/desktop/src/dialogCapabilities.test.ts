@@ -20,6 +20,16 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
+  it("gives draft windows only validated channel transport with no generic event permissions", () => {
+    const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
+    expect(host.windows).toEqual(["dialog-main-pageSize-*"]);
+    expect(host.permissions.slice().sort()).toEqual([
+      "allow-dialog-request", "allow-dialog-send"
+    ]);
+    const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
+    expect(owner.windows).toEqual(["main"]);
+    expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
+  });
   it("grant dialog permissions, aliases included, to the document window alone", () => {
     const granted = capabilities.filter(({ capability }) => dialogPermissions(capability).length > 0);
     expect(granted.map(({ name }) => name)).toEqual(["document-dialogs.json"]);

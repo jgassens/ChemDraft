@@ -180,9 +180,20 @@ describe("Edit ▸ Undo / Redo in a secondary window", () => {
     expect(execCommand).not.toHaveBeenCalled();
   });
 
+  it("Select All selects the focused secondary field and forwards only without a focused editor", () => {
+    const { forwardToMain } = install();
+    const field = document.createElement("input"); field.type = "number";
+    document.body.append(field); field.focus();
+    const select = vi.spyOn(field, "select");
+    chooseMenuItem("edit.selectAll");
+    expect(select).toHaveBeenCalledOnce(); expect(forwardToMain).not.toHaveBeenCalled();
+    field.blur(); chooseMenuItem("edit.selectAll");
+    expect(forwardToMain).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId("edit.selectAll"));
+  });
+
   it("ignores every other command, and stops listening once uninstalled", () => {
     const { execCommand, forwardToMain } = install();
-    chooseMenuItem("edit.selectAll");
+    chooseMenuItem("layout.group");
     uninstall?.();
     uninstall = undefined;
     chooseMenuItem("edit.undo");
