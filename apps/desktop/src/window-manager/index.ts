@@ -1,4 +1,4 @@
-import { loadExportPreviewEnabled } from "../exportPreviewSettings";
+import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportPreviewSettings";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
@@ -628,7 +628,7 @@ export async function listenForExportPreviewSettings(handler: (enabled: boolean)
   // Same-origin webviews share localStorage on both desktop platforms. Its storage event
   // delivers changes to Export without granting the draft window generic event privileges.
   const storage = (event: StorageEvent) => {
-    if (event.key === null || event.key === "chemdraft.export.preview-and-presets.v1") handler(loadExportPreviewEnabled());
+    if (event.key === null || event.key === EXPORT_PREVIEW_STORAGE_KEY) handler(loadExportPreviewEnabled());
   };
   window.addEventListener("storage", storage);
   const stop = () => { dom(); window.removeEventListener("storage", storage); };

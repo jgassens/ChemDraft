@@ -74,6 +74,24 @@ it("does not compute content frames or publish preview traffic with the preferen
   expect(native.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: expect.objectContaining({ status: "frame" }) }));
 });
 
+it.each([false, true])("uses the owner's preference (%s) for stale dialog presentation options", async enabled => {
+  await act(async () => { saveExportPreviewEnabled(true); await broadcastExportPreviewSettings(true); });
+  await command("export.open"); await send("ready", {});
+  if (!enabled) await act(async () => { saveExportPreviewEnabled(false); await broadcastExportPreviewSettings(false); });
+  const snapshot = native.snapshot!;
+  if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+  const svg = vi.spyOn(workflow, "exportPhase4Svg");
+  await send("action", { action: "export", options: { ...snapshot.data.options, format: "svg", filename: "drawing.svg",
+    presentation: { width: 1200, dpi: 300, crop: "content", background: "transparent" } } });
+  await vi.waitFor(() => expect(svg).toHaveBeenCalled());
+  const exportedOptions = svg.mock.calls.at(-1)![1];
+  if (enabled) expect(exportedOptions).toMatchObject({ outputWidth: 101.6, outputUnit: "mm", background: "transparent" });
+  else {
+    expect(exportedOptions).not.toHaveProperty("outputWidth");
+    expect(exportedOptions).not.toHaveProperty("background");
+  }
+});
+
 it("renders preview from the same pending atom-label flush as export without closing the edit", async () => {
   await act(async () => { saveExportPreviewEnabled(true); await broadcastExportPreviewSettings(true); });
   await command("export.open"); await send("ready", {}); await command("tool.bond");

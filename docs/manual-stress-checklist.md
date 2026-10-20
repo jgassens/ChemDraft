@@ -431,7 +431,9 @@ and Art toolbars open, including at 125%/150% display scale:
   values, and check manual edits select Custom. Navigate presets with arrow keys: dimensions
   change only on Enter or leaving the field. Choose a file, change format/name, then cancel
   and retry the new location picker; only explicitly chosen paths may be written, and
-  failures must show inside the dialog. Check one PDF-preview tab stop and rounded SVG units.
+  failures must show inside the dialog. Check rounded SVG units. With a ring and arrow, PDF
+  must show both in the image labelled “Preview of the PDF page layout”, with no embedded
+  PDF viewer or extra tab stop. Toggle PDF page guides and compare with the exported PDF.
   Repeat previews for BMP, GIF and TIFF. Keep Export open while editing its source drawing,
   including edits that preserve its bounds: the preview must refresh and keep the filename and
   size settings. Repeat while another drawing is active and while Choose is pending, then cancel

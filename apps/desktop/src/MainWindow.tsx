@@ -9307,6 +9307,9 @@ export function MainWindow({
       if (!source) throw new Error("The originating drawing is unavailable.");
       await progress?.("Preparing export…");
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      // The dialog may not have received the preference change yet. The owner decides
+      // whether sizing is enabled at export time, including after the progress await.
+      if (!exportPreviewEnabledRef.current) options = { ...options, presentation: undefined };
       const result = await createDialogExportResult(source, { ...options, busy: false });
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
       const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
@@ -30031,12 +30034,17 @@ export function exportDialogFrame(document: ChemDraftDocument): ExportFrame {
 
 export async function createDialogExportPreview(document: ChemDraftDocument, options: ExportOptions, live: () => boolean = () => true): Promise<ExportPreviewResult> {
   if (!live()) throw new Error("Preview was superseded.");
+  // Webviews cannot reliably embed PDFs. Show the SVG page layout used by the PDF
+  // writer, with PDF guides and its white background, without generating PDF bytes.
   // Preview less portable raster formats through the same native renderer as opaque PNG.
-  const state: ExportDialogState = options.format === "tiff" || options.format === "bmp" || options.format === "gif"
+  const state: ExportDialogState = options.format === "pdf"
+    ? { ...options, busy: false, format: "svg", svg: { includeWarnings: true, includePageGuides: options.pdf.includePageGuides },
+      presentation: options.presentation ? { ...options.presentation, background: "white" } : undefined }
+    : options.format === "tiff" || options.format === "bmp" || options.format === "gif"
     ? { ...options, busy: false, format: "png", raster: { ...options.raster, background: "white" } }
     : { ...options, busy: false };
   const result = await createDialogExportResult(document, state, true);
-  // Native rasterization/PDF generation already in flight cannot be interrupted. Avoid
+  // Native rasterization already in flight cannot be interrupted. Avoid
   // base64 encoding or transporting its bytes after a newer request supersedes this one.
   if (!live()) throw new Error("Preview was superseded.");
   const bytes = result.kind === "text" ? new TextEncoder().encode(result.contents) : result.bytes;
@@ -30050,7 +30058,7 @@ export async function createDialogExportPreview(document: ChemDraftDocument, opt
   const warnings = [...result.warnings.map(warning => warning.message), ...(clipped ? ["Objects extend beyond the export frame and may be clipped. Choose Content crop or adjust the page."] : [])];
   const boundedWarnings = warnings.slice(0, 99).map(warning => warning.replaceAll("\0", "").slice(0, 2048));
   if (warnings.length > 99) boundedWarnings.push("Additional warnings omitted. Review the final export warnings for details.");
-  return { url: `data:${result.mimeType};base64,${btoa(binary)}`, kind: state.format === "pdf" ? "pdf" : "image",
+  return { url: `data:${result.mimeType};base64,${btoa(binary)}`, kind: "image",
     width: Math.max(1, width * scale), height: Math.max(1, height * scale),
     warnings: boundedWarnings };
 }

@@ -48,6 +48,8 @@ permissions. Main also subscribes to the native preference broadcast. Off uses t
 including Scale, Max dimension, JPEG quality slider and destination suggestion, and does no preview
 requests, frame computation, rendering or preview IPC. Turning it off clears optional sizing drafts,
 cancels outstanding preview requests and discards queued frames.
+The owner also drops presentation options on export while its preference is off, so a
+dialog awaiting a storage notification cannot export stale sizing settings.
 The preference never enters the export engine: equal export options produce equal file bytes.
 Preview requests do not reserve an export or grant file access. Rendering remains in the owner
 window using the same pending-edit flush snapshot as the final export, debounced 250 ms by the
@@ -57,6 +59,9 @@ wait through a pending destination picker and resume afterward; the host retains
 it arrives before the picker receipt. Superseded form requests abort their local wait and ignore
 stale render completions. A native rasterization already started cannot be interrupted. Oversized previews report a
 specific error; the final export remains a separate explicit action.
+PDF previews show the PDF writer's shared SVG page layout in an image, labelled
+“Preview of the PDF page layout”, with PDF page-guide settings and a white background.
+They require no embedded PDF viewer in WKWebView or WebView2; final PDF generation is unchanged.
 Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
 is rejected, and the complete delivery is measured again after replacement. Dimensions must be finite,
 positive, at most 100000, in `inch`, `mm`, or `css-px`. Unknown kinds, fields, owners, stale sessions,

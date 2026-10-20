@@ -11,6 +11,9 @@ import { broadcastExportPreviewSettings } from "../window-manager";
 import { exportFixture } from "./exportTestFixtures";
 import type { DialogMessage } from "./dialogProtocol";
 import type { ExportDialogState, ExportPreviewResult } from "./exportOptions";
+import { createDialogExportPreview } from "../MainWindow";
+import { applyReactionArrowToolAtPoint, createPhase4Document, exportPhase4Svg, insertNativeTemplateMolecule } from "../documentWorkflow";
+import { parseDialogMessage } from "./dialogProtocol";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), channels: [] as { onmessage(value: unknown): void }[] }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -54,6 +57,30 @@ async function mountHost() {
   await act(async () => { deliver(exportSnapshot); await import("./ExportForm"); });
 }
 const previewCalls = () => ipc.invoke.mock.calls.filter(([command, args]) => command === "dialog_send" && args.message.data.action === "preview");
+
+it.each(["macos", "windows"] as const)("renders the PDF page layout as an SVG image on %s without a PDF viewer", async platform => {
+  saveExportPreviewEnabled(true);
+  const drawing = applyReactionArrowToolAtPoint(insertNativeTemplateMolecule(createPhase4Document("PDF layout"), { x: 100, y: 100 }, "benzene"), { x: 200, y: 130 }, "forward");
+  const options = { ...exportFixture(), svg: { includeWarnings: false, includePageGuides: false },
+    pdf: { ...exportFixture().pdf, includePageGuides: true },
+    presentation: { width: 1200, height: 600, linked: false, dpi: 300, crop: "page" as const, background: "transparent" as const } };
+  const result = await createDialogExportPreview(drawing, options);
+  expect(result.kind).toBe("image");
+  expect(result.url).toMatch(/^data:image\/svg\+xml;base64,/);
+  const svg = atob(result.url.split(",")[1]!);
+  expect(svg).toBe(exportPhase4Svg(drawing, { outputWidth: 800, outputHeight: 400, background: "#ffffff", includeWarnings: true, includePageGuides: true }).contents);
+  expect(svg).toContain("<line");
+  expect(parseDialogMessage({ ...exportSnapshot, type: "result", data: { status: "preview", preview: result } })).toBeDefined();
+  await act(async () => root.render(createElement(ExportForm, {
+    state: { ...options, busy: false }, platform, frame, renderPreview: () => Promise.resolve(result),
+    onChange: vi.fn(), onCancel: vi.fn(), onSubmit: vi.fn(), onChooseDestination: vi.fn()
+  })));
+  await tick();
+  const image = container.querySelector<HTMLImageElement>('img[alt="Preview of the PDF page layout"]');
+  expect(image?.getAttribute("src")).toBe(result.url);
+  expect(container.querySelector("object")).toBeNull();
+  expect(container.textContent).toContain("Preview of the PDF page layout");
+});
 
 it("defaults to main's controls and destination, permits Choose with an invalid filename, and sends zero preview IPC", async () => {
   await mountHost();

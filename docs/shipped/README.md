@@ -1,5 +1,16 @@
 # Shipped slices
 
+## Export dialog preview and size presets (2026-10-20)
+
+The movable Export dialog shares its form with the browser fallback. Preferences adds
+“Export preview and size presets”, off by default, with live updates in open dialogs.
+Enabled exports offer page/content cropping, linked or independent dimensions, DPI,
+background controls, renderer warnings, and slide/poster/publication size presets.
+PDF previews display the shared SVG page layout as an image on both platforms, labelled
+“Preview of the PDF page layout”; final PDF generation is unchanged. Preview delivery
+retains its 5 MiB cap and validation. The document owner ignores presentation options
+when its preference is off, including requests from a dialog with stale settings.
+
 ## Optional save prompt before quitting (2026-10-13)
 
 Preferences adds “Ask to save unsaved changes before quitting”, off by default. Disabled

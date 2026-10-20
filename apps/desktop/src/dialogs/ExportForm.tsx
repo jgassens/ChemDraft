@@ -137,7 +137,7 @@ function ExportFormBody({
       onKeyDown={event => {
         if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (event.key === "Tab") {
-          const fields = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input:not(:disabled),select:not(:disabled),button:not(:disabled),object[tabindex="0"]'));
+          const fields = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input:not(:disabled),select:not(:disabled),button:not(:disabled)'));
           const first = fields[0], last = fields.at(-1);
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -247,10 +247,9 @@ function ExportFormBody({
           {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
           <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" && state.presentation ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
           {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
-          <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label="Actual export renderer preview">
-            {preview.result ? preview.result.kind === "pdf"
-              ? <object tabIndex={0} aria-label="PDF export preview" data={preview.result.url} type="application/pdf" width="100%" height="220">PDF preview</object>
-              : <img src={preview.result.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} />
+          {state.format === "pdf" ? <p style={exportDialogHintStyle}>Preview of the PDF page layout</p> : null}
+          <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label={state.format === "pdf" ? "Preview of the PDF page layout" : "Actual export renderer preview"}>
+            {preview.result ? <img src={preview.result.url} alt={state.format === "pdf" ? "Preview of the PDF page layout" : "Export preview"} style={{ width: "100%", height: 220, objectFit: "contain" }} />
               : <p role="status">{preview.error ?? (sizeError ? "Correct the size to render a preview." : renderPreview ? "Rendering preview…" : "Preview unavailable")}</p>}
           </div>
           {(preview.result?.warnings ?? []).map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}

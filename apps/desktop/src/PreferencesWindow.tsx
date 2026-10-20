@@ -157,7 +157,7 @@ export function PreferencesWindow() {
             saveExportPreviewEnabled(event.target.checked);
             void broadcastExportPreviewSettings(event.target.checked);
           }} />
-          <span>Export preview and size presets<small>Show a live preview and size presets in the Export window</small></span>
+          <span className="preferences-radio-body"><span>Export preview and size presets</span><small>Show a live preview and size presets in the Export window</small></span>
         </label>
       </section>
 

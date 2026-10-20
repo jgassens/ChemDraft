@@ -30,6 +30,7 @@ describe("PreferencesWindow", () => {
     let markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(markup).toContain("Export preview and size presets");
     expect(markup).toContain("Show a live preview and size presets in the Export window");
+    expect(markup).toContain('<span class="preferences-radio-body"><span>Export preview and size presets</span><small>');
     expect(markup).not.toMatch(/type="checkbox"[^>]*checked/);
     saveExportPreviewEnabled(true);
     markup = renderToStaticMarkup(createElement(PreferencesWindow));

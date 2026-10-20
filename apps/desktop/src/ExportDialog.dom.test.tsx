@@ -282,11 +282,12 @@ it("displays export errors inside the dialog", async () => {
 });
 
 
-it("keeps a single PDF preview object in the tab order without external navigation", async () => {
+it("shows the PDF page-layout preview as one image without external navigation", async () => {
   vi.mocked(exportPhase4Pdf).mockResolvedValueOnce({ format: "pdf", kind: "binary", bytes: new Uint8Array([1]), mimeType: "application/pdf", extension: "pdf", warnings: [] });
   const dialog = await mount(landscapeDocument(), "pdf");
   await tick();
-  expect(dialog.host.querySelector("object")!.tabIndex).toBe(0);
+  expect(dialog.host.querySelector("object")).toBeNull();
+  expect(dialog.host.querySelectorAll('img[alt="Preview of the PDF page layout"]')).toHaveLength(1);
   expect(dialog.host.querySelector("a")).toBeNull();
 });
 
