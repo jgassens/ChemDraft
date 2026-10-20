@@ -136,6 +136,8 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  restoredDocumentFileState,
+  restoredSavePathNotice,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal,
   unrestoredTabContents,
@@ -1287,6 +1289,7 @@ type TextResizeState = {
 type NativeFileState = {
   path?: string;
   dirty: boolean;
+  restoreSavePathError?: string;
 };
 type ResolvedOpenDocument = {
   document: ChemDraftDocument;
@@ -1590,7 +1593,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.19.23.06-opus";
+const CURRENT_BUILD_STAMP = "10.20.07.22-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8543,15 +8546,16 @@ export function MainWindow({
           }
           for (const { id, session, resolved, opened, history } of restored) {
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
+            const savePathNotice = restoredSavePathNotice(session);
             documentTabSnapshotsRef.current.set(id, {
-              history, file: { path: session.path, dirty: session.dirty },
+              history, file: restoredDocumentFileState(session),
               viewport: session.view?.viewport ?? createViewportState(),
               scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
               warnings: session.openWarnings ?? {
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
               },
-              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}`
+              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}${savePathNotice ? `. ${savePathNotice}` : ""}`
             });
           }
           documentTabsRef.current = tabs;
@@ -9030,11 +9034,15 @@ export function MainWindow({
         finishSave();
         return true;
       }
-      let path = forceSaveAs ? undefined : savingFileState.path;
-      if (!path) path = await pickNativeSavePath(savingFileState.path ?? payload.filename);
+      const restoreNotice = restoredSavePathNotice(savingFileState);
+      if (restoreNotice) setStatus(restoreNotice);
+      let path = forceSaveAs || restoreNotice ? undefined : savingFileState.path;
+      if (!path) path = await pickNativeSavePath(savingFileState.path ?? payload.filename,
+        restoreNotice ? { title: "Save As — restored file unavailable", extension: "chemdraft" } : undefined);
       if (!path) {
-        if (savingTabId === activeDocumentTabIdRef.current) setStatus("Save canceled");
-        if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage("Save canceled. The tab is still open.");
+        const canceled = `${restoreNotice ? `${restoreNotice} ` : ""}Save canceled. The tab is still open.`;
+        if (savingTabId === activeDocumentTabIdRef.current) setStatus(restoreNotice ? canceled : "Save canceled");
+        if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage(canceled);
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);

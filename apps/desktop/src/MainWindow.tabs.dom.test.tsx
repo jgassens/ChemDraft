@@ -241,6 +241,66 @@ describe("documents in one window", () => {
     container.innerHTML = "";
     await mount();
   }
+
+  it.each(["/Users/chemist/drawing.chemdraft", "D:\\drawings\\drawing.chemdraft", "D:\\drawings\\drawing.cdxml"])(
+    "saves a restored dirty named tab directly to %s without a picker", async (path) => {
+      const payload = createNativeSavePayload(createPhase4Document("Restored drawing"));
+      native.session = buildDocumentTabsSession([
+        buildDocumentSessionEnvelope(payload, { path, dirty: true }, "drawing.chemdraft", false)
+      ], 0);
+      await remount();
+      native.writeFile.mockClear(); native.savePicker.mockClear();
+      await command("document.save");
+      expect(native.savePicker).not.toHaveBeenCalled();
+      expect(native.writeFile).toHaveBeenCalledExactlyOnceWith(path, expect.any(String));
+      expect(bridge().snapshot().file).toMatchObject({ path, dirty: false });
+    }
+  );
+
+  it.each(["the saved file is unavailable", "File access could not be restored"])(
+    "uses Save As for a restored path when %s, preserving content on cancel", async (reason) => {
+      const path = "D:\\drawings\\missing.chemdraft";
+      const payload = createNativeSavePayload(createPhase4Document("Restored drawing"));
+      native.session = { ...buildDocumentSessionEnvelope(payload, { path, dirty: true }, "missing.chemdraft", false),
+        restoreSavePathError: reason };
+      await remount();
+      const document = bridge().snapshot().document;
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(reason);
+      native.writeFile.mockClear(); native.savePicker.mockClear();
+      native.savePicker.mockResolvedValueOnce(null);
+      await command("document.save");
+      expect(native.writeFile).not.toHaveBeenCalled();
+      expect(native.savePicker).toHaveBeenCalledWith(expect.objectContaining({ title: "Save As — restored file unavailable" }));
+      expect(bridge().snapshot().file).toMatchObject({ path, dirty: true });
+      expect(bridge().snapshot().document).toEqual(document);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Choose a location with Save As");
+      const replacement = "D:\\drawings\\rescued.chemdraft";
+      native.savePicker.mockResolvedValueOnce(replacement);
+      await command("document.save");
+      expect(native.writeFile).toHaveBeenCalledExactlyOnceWith(replacement, expect.any(String));
+      expect(bridge().snapshot().file).toMatchObject({ path: replacement, dirty: false });
+      native.savePicker.mockClear();
+      await command("document.save");
+      expect(native.savePicker).not.toHaveBeenCalled();
+    }
+  );
+
+  it("uses the restored-path Save As fallback from the dirty-tab close prompt", async () => {
+    native.session = { ...buildDocumentSessionEnvelope(createNativeSavePayload(createPhase4Document("Kept drawing")),
+      { path: "D:\\missing.chemdraft", dirty: true }, "missing.chemdraft", false),
+      restoreSavePathError: "the saved file is unavailable" };
+    await remount();
+    await closeTab();
+    native.savePicker.mockResolvedValueOnce(null);
+    await modalButton("Save");
+    expect(tabs()).toHaveLength(1);
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    expect(pendingPrompt?.prompt.message).toContain("Choose a location with Save As");
+    native.savePicker.mockResolvedValueOnce("D:\\rescued.chemdraft");
+    await modalButton("Save");
+    expect(native.writeFile).toHaveBeenCalledWith("D:\\rescued.chemdraft", expect.any(String));
+    expect(bridge().snapshot().file).toEqual({ dirty: false });
+  });
   function bridge(): ChemDraftAgentBridge {
     return (window as Window & { __CHEMDRAFT_AGENT__: ChemDraftAgentBridge }).__CHEMDRAFT_AGENT__;
   }

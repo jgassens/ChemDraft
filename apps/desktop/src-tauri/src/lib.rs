@@ -1,4 +1,5 @@
 mod dialog_windows;
+mod document_session;
 mod export;
 mod fonts;
 mod installed_plugins;
@@ -2343,22 +2344,49 @@ fn save_toolset_customization_state(
 }
 
 #[tauri::command]
-fn load_document_session(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+fn load_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the main document window can restore the document session".into());
+    }
     let path = document_session_path(&app)?;
     let Some(contents) = read_optional_file(&path)? else {
         return Ok(None);
     };
 
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Document session is invalid: {error}"))
+    let mut session = serde_json::from_str(&contents)
+        .map_err(|error| format!("Document session is invalid: {error}"))?;
+    document_session::restore_file_scopes(&mut session, |path| {
+        use tauri_plugin_fs::FsExt;
+        let scope = app
+            .try_fs_scope()
+            .ok_or("File access scope is unavailable")?;
+        scope.allow_file(path).map_err(|error| error.to_string())?;
+        if !scope.is_allowed(path) {
+            return Err("File access could not be restored".into());
+        }
+        if let Some(scopes) = app.try_state::<tauri::scope::Scopes>() {
+            scopes.allow_file(path).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+    Ok(Some(session))
 }
 
 /// The working document's autosave (serialized contents + file association). JS owns the envelope
 /// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
 /// opaque JSON, exactly like the toolbar customization state.
 #[tauri::command]
-fn save_document_session(app: tauri::AppHandle, state: serde_json::Value) -> Result<(), String> {
+fn save_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the main document window can persist the document session".into());
+    }
     let path = document_session_path(&app)?;
     let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
     write_file_atomic(&path, &contents)
