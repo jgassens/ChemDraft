@@ -27,9 +27,12 @@ fn check_saved_file(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("the saved path is not absolute".into());
     }
-    if path.as_os_str().to_string_lossy().split(['/', '\\']).any(|part| {
-        matches!(part, "." | "..")
-    }) {
+    if path
+        .as_os_str()
+        .to_string_lossy()
+        .split(['/', '\\'])
+        .any(|part| matches!(part, "." | ".."))
+    {
         return Err("the saved path contains a dot component".into());
     }
     if !path
