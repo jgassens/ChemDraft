@@ -2305,10 +2305,34 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })?;
-    fs::rename(&tmp, path).map_err(|error| {
+    #[cfg(windows)]
+    let replaced = replace_with_windows_retry(|| fs::rename(&tmp, path), std::thread::sleep);
+    #[cfg(not(windows))]
+    let replaced = fs::rename(&tmp, path);
+    replaced.map_err(|error| {
         let _ = fs::remove_file(&tmp);
         error.to_string()
     })
+}
+
+/// Windows can temporarily deny replacement while a reader or another replacement holds the
+/// destination open. Retry only those OS errors, with at most ten attempts and 180 ms of backoff.
+/// Compile for tests on every host so injected Windows errors exercise the actual retry policy.
+#[cfg(any(windows, test))]
+fn replace_with_windows_retry(
+    mut rename: impl FnMut() -> std::io::Result<()>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> std::io::Result<()> {
+    for attempt in 0..10 {
+        match rename() {
+            // ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32).
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) && attempt < 9 => {
+                sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final attempt always returns")
 }
 
 #[tauri::command]
@@ -8046,6 +8070,63 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_replace_windows_retry_policy_is_bounded_and_selective() {
+        for code in [5, 32] {
+            let mut attempts = 0;
+            let mut delays = Vec::new();
+            let result = replace_with_windows_retry(
+                || {
+                    attempts += 1;
+                    Err(std::io::Error::from_raw_os_error(code))
+                },
+                |delay| delays.push(delay),
+            );
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(attempts, 10);
+            assert_eq!(delays, vec![std::time::Duration::from_millis(20); 9]);
+        }
+
+        for code in [2, 3, 17, 80, 112] {
+            let mut attempts = 0;
+            let result = replace_with_windows_retry(
+                || {
+                    attempts += 1;
+                    Err(std::io::Error::from_raw_os_error(code))
+                },
+                |_| panic!("non-contention errors must not back off"),
+            );
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(attempts, 1);
+        }
+
+        let mut attempts = 0;
+        let mut sleeps = 0;
+        replace_with_windows_retry(
+            || {
+                attempts += 1;
+                match attempts {
+                    1 => Err(std::io::Error::from_raw_os_error(5)),
+                    2 => Err(std::io::Error::from_raw_os_error(32)),
+                    _ => Ok(()),
+                }
+            },
+            |_| sleeps += 1,
+        )
+        .expect("replacement recovers after contention");
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeps, 2);
+
+        replace_with_windows_retry(|| Ok(()), |_| panic!("success must not back off"))
+            .expect("immediate success");
+        let error = replace_with_windows_retry(
+            || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            |_| panic!("an error without a Windows OS code must not retry"),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), None);
     }
 
     #[test]
