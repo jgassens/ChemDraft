@@ -1342,6 +1342,23 @@ fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum MainWindowFrameAction {
+    Keep,
+    Restore,
+    Center,
+}
+
+fn main_window_frame_action(visible: bool, has_saved_frame: bool) -> MainWindowFrameAction {
+    if visible {
+        MainWindowFrameAction::Keep
+    } else if has_saved_frame {
+        MainWindowFrameAction::Restore
+    } else {
+        MainWindowFrameAction::Center
+    }
+}
+
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
         Some(window) => window,
@@ -1369,10 +1386,27 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     // document opened from Explorer used to un-maximize the window.
     let already_on_screen = window.is_visible().unwrap_or(false);
     window.unminimize().map_err(|error| error.to_string())?;
-    if !already_on_screen && !restore_main_window_geometry(&window) {
-        window.center().map_err(|error| error.to_string())?;
+    // Fullscreen owns its frame even when hidden (macOS close then Dock reopen).
+    let keep_frame = already_on_screen || window.is_fullscreen().unwrap_or(false);
+    let geometry = if keep_frame {
+        None
+    } else {
+        load_toolset_layout_state(app).main_window
+    };
+    match main_window_frame_action(keep_frame, geometry.is_some()) {
+        MainWindowFrameAction::Keep => {}
+        MainWindowFrameAction::Restore => {
+            if !restore_main_window_geometry(&window, geometry.as_ref().expect("saved frame")) {
+                window.center().map_err(|error| error.to_string())?;
+            }
+        }
+        MainWindowFrameAction::Center => {
+            window.center().map_err(|error| error.to_string())?;
+        }
     }
-    window.show().map_err(|error| error.to_string())?;
+    if !already_on_screen {
+        window.show().map_err(|error| error.to_string())?;
+    }
     window.set_focus().map_err(|error| error.to_string())
 }
 
@@ -1452,7 +1486,10 @@ fn focus_main_document_window_impl<R: Runtime>(
         .set_focusable(true)
         .map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
-    window.show().map_err(|error| error.to_string())?;
+    // Startup/open paths already revealed the window after restoring its frame.
+    if !window.is_visible().unwrap_or(false) {
+        window.show().map_err(|error| error.to_string())?;
+    }
     focus_native_document_window(&window)?;
     window.set_focus().map_err(|error| error.to_string())?;
     Ok(true)
@@ -1544,8 +1581,8 @@ fn create_main_window<R: Runtime>(
         .min_inner_size(900.0, 640.0)
         .resizable(true)
         .accept_first_mouse(true)
-        .visible(true)
-        .center()
+        // Match the config window: ensure_main_window_visible places it before revealing it.
+        .visible(false)
         .build()
         .map_err(|error| error.to_string())
 }
@@ -7030,13 +7067,12 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     })
 }
 
-/// Apply the saved main-window frame. Returns false when nothing usable was saved — first launch,
-/// a degenerate frame, or a frame whose title bar is on no attached monitor — so the caller can
-/// fall back to centering.
-fn restore_main_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
-    let Some(geometry) = load_toolset_layout_state(window.app_handle()).main_window else {
-        return false;
-    };
+/// Apply a saved main-window frame. Returns false for a degenerate frame or a frame whose title
+/// bar is on no attached monitor, so the caller can fall back to centering.
+fn restore_main_window_geometry<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    geometry: &MainWindowGeometry,
+) -> bool {
     if !(geometry.width > 0.0
         && geometry.height > 0.0
         && geometry.x.is_finite()
@@ -7044,7 +7080,7 @@ fn restore_main_window_geometry<R: Runtime>(window: &tauri::WebviewWindow<R>) ->
     {
         return false;
     }
-    if !main_window_geometry_reachable(window, &geometry) {
+    if !main_window_geometry_reachable(window, geometry) {
         return false;
     }
     // macOS fullscreen owns the frame; report success so the caller doesn't center underneath it.
@@ -7290,6 +7326,29 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn main_window_starts_hidden_so_setup_can_place_it_before_showing() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("Tauri config");
+        let main = config["app"]["windows"]
+            .as_array()
+            .expect("config windows")
+            .iter()
+            .find(|window| window["label"] == MAIN_WINDOW_LABEL)
+            .expect("main window");
+        assert_eq!(main["visible"], false);
+    }
+
+    #[test]
+    fn hidden_launch_restores_or_centers_but_visible_opens_keep_the_live_frame() {
+        use MainWindowFrameAction::*;
+        assert_eq!(main_window_frame_action(false, true), Restore);
+        assert_eq!(main_window_frame_action(false, false), Center);
+        // Second launch / Explorer / Finder must not reset a live maximized frame.
+        assert_eq!(main_window_frame_action(true, true), Keep);
+        assert_eq!(main_window_frame_action(true, false), Keep);
+    }
 
     #[test]
     fn main_window_focus_mode_preserves_force_and_guards_inline_editors() {
