@@ -17,7 +17,7 @@ export async function open<T extends OpenDialogOptions>(options?: T): Promise<Op
   return withNativeUtilitySuspension(() => dialogs.open(options));
 }
 
-export async function save(options?: SaveDialogOptions): Promise<string | null> {
+export async function save(options?: SaveDialogOptions, focusExportSessionId?: string): Promise<string | null> {
   const dialogs = await prewarmNativeFileDialogs();
-  return withNativeUtilitySuspension(() => dialogs.save(options));
+  return withNativeUtilitySuspension(() => dialogs.save(options), focusExportSessionId);
 }

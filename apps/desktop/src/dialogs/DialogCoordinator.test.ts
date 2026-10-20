@@ -1,3 +1,4 @@
+import { exportFixture } from "./exportTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DialogCoordinator } from "./DialogCoordinator";
 import { dialogEnvelope, type DialogCloseReason, type DialogMessage } from "./dialogProtocol";
@@ -45,7 +46,7 @@ describe("DialogCoordinator", () => {
     let finish!: () => void;
     h.owner.applyPageSize.mockImplementation(() => new Promise<void>(r => { finish = r; }));
     let published!: () => void;
-    vi.mocked(h.transport.publish).mockImplementation(() => new Promise<void>(r => { published = r; }));
+    vi.mocked(h.transport.publish).mockImplementation(async (_id, message) => { if (message.type === "result" && message.data.status !== "accepted") await new Promise<void>(r => { published = r; }); });
     const action = h.message("action", { action: "apply", width: 10, height: 15, unit: "mm" });
     const first = h.deliver(action);
     await h.deliver({ ...action, requestId: "action-2" });
@@ -81,6 +82,7 @@ describe("DialogCoordinator", () => {
     h.owner.applyPageSize.mockImplementation(() => new Promise<void>(r => { finish = r; }));
     const m = h.message("action", { action: "apply", width: 10, height: 15, unit: "mm" });
     const first = h.deliver(m); const duplicate = h.deliver(m);
+    await Promise.resolve();
     expect(h.owner.applyPageSize).toHaveBeenCalledTimes(1); finish(); await Promise.all([first, duplicate]);
     expect(h.owner.applyPageSize).toHaveBeenCalledWith("tab-1", m.data);
     expect(h.owner.onSettled).toHaveBeenCalledTimes(1);
@@ -94,7 +96,7 @@ describe("DialogCoordinator", () => {
     const m = h.message("action", { action: "apply", width: 10, height: 15, unit: "inch" });
     await h.deliver(m); await h.deliver(m);
     expect(h.owner.applyPageSize).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(h.transport.publish).mock.calls[0]![1]).toEqual(vi.mocked(h.transport.publish).mock.calls[1]![1]);
+    expect(vi.mocked(h.transport.publish).mock.calls[1]![1]).toEqual(vi.mocked(h.transport.publish).mock.calls[2]![1]);
     await h.coordinator.dispose();
   });
   it.each<DialogCloseReason>(["cancel", "close", "destroy", "ownerTabClose", "ownerClose", "quit", "error"])("settles %s exactly once", async reason => {
@@ -129,4 +131,39 @@ describe("DialogCoordinator", () => {
     await h.coordinator.closeTab("tab-1"); finish({ hostId: "late", windowLabel: "dialog-main-pageSize-1" }); await opening;
     expect(h.transport.close).toHaveBeenCalledWith("late", "ownerTabClose"); expect(h.owner.onSettled).toHaveBeenCalledTimes(1); await h.coordinator.dispose();
   });
+});
+
+it("rejects stale previews and allows export while a preview is pending", async () => {
+  let snap!: DialogMessage;
+  const published: DialogMessage[] = [];
+  const transport: DialogTransport = { subscribe: async () => () => {}, open: async message => { snap = message; return { hostId: "host", windowLabel: "dialog-main-export-1" }; }, publish: async (_id, message) => { published.push(message); }, close: async () => {} };
+  const pending: { resolve(value: { url: string; kind: "image"; width: number; height: number; warnings: string[] }): void; live(): boolean }[] = [];
+  const exporter = vi.fn(async () => ({ status: "exported" as const }));
+  const coordinator = new DialogCoordinator(transport, { applyPageSize: () => {}, onError: vi.fn(), export: exporter,
+    previewExport: async (_tab, _options, live) => new Promise(resolve => { pending.push({ resolve, live }); }) });
+  await coordinator.openExport("tab-1", { title: "Drawing", options: exportFixture() });
+  const send = (id: string, data: unknown, type = "action") => coordinator.receive({ senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1", message: { ...dialogEnvelope(snap), requestId: id, type, data } });
+  await send("ready", {}, "ready");
+  await coordinator.updateExportFrame("tab-1", { page: { width: 100, height: 100 }, content: { width: 80, height: 80 }, revision: 2 });
+  expect(published.at(-1)).toMatchObject({ type: "result", data: { status: "frame", frame: { revision: 2 } } });
+  published.length = 0;
+  const first = send("preview-1", { action: "preview", options: exportFixture() });
+  const second = send("preview-2", { action: "preview", options: exportFixture() });
+  expect(pending[0]!.live()).toBe(false);
+  await coordinator.updateExportFrame("tab-1", { page: { width: 100, height: 100 }, content: { width: 80, height: 80 }, revision: 3 });
+  expect(pending[1]!.live()).toBe(false);
+  published.length = 0;
+  const preview = { url: "data:image/png;base64,AAAA", kind: "image" as const, width: 100, height: 100, warnings: [] };
+  pending[0]!.resolve(preview); await first;
+  expect(published).toHaveLength(0);
+  const oversized = send("preview-large", { action: "preview", options: exportFixture() });
+  pending[2]!.resolve({ ...preview, url: "data:image/png;base64," + "A".repeat(5 * 1024 * 1024) });
+  await oversized;
+  expect(published.at(-1)).toMatchObject({ type: "result", data: { status: "error", error: expect.stringContaining("Reduce the content or export size") } });
+  await send("export", { action: "export", options: exportFixture() });
+  expect(exporter).toHaveBeenCalledOnce();
+  expect(pending[1]!.live()).toBe(false);
+  pending[1]!.resolve(preview); await second;
+  expect(published.some(message => message.type === "result" && message.data.status === "preview")).toBe(false);
+  await coordinator.dispose();
 });

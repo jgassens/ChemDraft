@@ -6024,6 +6024,10 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+.plugin-panel-shell button.panel-synthetic-hover:not(:disabled):not(.palette-close-button) {
+  background: var(--cd-bg-hover);
+}
+
 .plugin-panel-content {
   flex: 1;
   overflow-y: auto;

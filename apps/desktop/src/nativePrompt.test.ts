@@ -21,6 +21,22 @@ const three: NativePromptOptions = {
 afterEach(() => { plugin.native = true; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
 
 describe("nativePrompt", () => {
+  it("reports opening only after invoking the native box, before its answer", async () => {
+    const calls: string[] = [];
+    let answer: (label: string) => void = () => {};
+    plugin.invoke.mockResolvedValue(undefined);
+    plugin.message.mockImplementation(() => {
+      calls.push("box");
+      return new Promise<string>((resolve) => { answer = resolve; });
+    });
+    const showing = vi.fn(() => { calls.push("showing"); });
+    const response = nativePrompt(three, undefined, undefined, showing);
+    await vi.waitFor(() => expect(showing).toHaveBeenCalledTimes(1));
+    expect(calls).toEqual(["box", "showing"]);
+    answer("Cancel");
+    expect(await response).toBe("cancel");
+  });
+
   it.each(["saved", "discard", "cancel", "panel cancelled then cancel", "panel throws then cancel"])(
     "keeps utilities hidden across the complete close chain and releases on ending: %s", async (ending) => {
       let depth = 0;

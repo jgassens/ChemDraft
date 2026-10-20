@@ -3,8 +3,11 @@ import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, type ChemDraftDocument, type TextObject } from "@chemdraft/chem-core";
-import { ExportDialog, createDefaultExportDialogState, createDialogExportResult, updateExportDialogFormat } from "./MainWindow";
-import { copyAsScopedDocument, createPhase4Document, exportPhase4Pdf } from "./documentWorkflow";
+import { createDefaultExportDialogState, createDialogExportResult, createDialogExportPreview, exportDialogFrame } from "./MainWindow";
+import { ExportForm } from "./dialogs/ExportForm";
+import { defaultExportPresentation } from "./dialogs/exportPresentation";
+import type { ExportDialogState } from "./dialogs/exportOptions";
+import { copyAsScopedDocument, createPhase4Document, exportPhase4Pdf, exportPhase4Svg } from "./documentWorkflow";
 import { rasterizeSvgNative, type NativeRasterExportResult } from "./nativeRasterExport";
 
 vi.mock("./window-manager", async (original) => ({
@@ -48,21 +51,19 @@ function tallDocument() {
   };
   return applyPatch(createPhase4Document(), { op: "addObject", pageId: "page_001", object });
 }
-async function mount(document: ChemDraftDocument, format: "png" | "svg" | "pdf" = "png", crop: "page" | "content" = "page") {
-  const initial: ReturnType<typeof createDefaultExportDialogState> = { ...createDefaultExportDialogState(document), format, presentation: { ...createDefaultExportDialogState(document).presentation, crop } };
+async function mount(document: ChemDraftDocument, format: "png" | "svg" | "pdf" | "bmp" | "gif" | "tiff" = "png", crop: "page" | "content" = "page") {
+  const frame = exportDialogFrame(document);
+  const initial: ExportDialogState & { presentation: NonNullable<ExportDialogState["presentation"]> } = { ...createDefaultExportDialogState(document), format, presentation: { ...defaultExportPresentation(frame.page), crop } };
   let selected = initial;
   const submitted = vi.fn();
+  let changeBusy!: (busy: boolean) => void;
   function Dialog() {
-    const [state, setState] = useState(initial);
-    selected = state;
-    return createElement(ExportDialog, {
-      document, state,
-      onPresentationChange: (options) => setState((current) => ({ ...current, presentation: { ...current.presentation, ...options } })),
-      onRasterOptionsChange: (options) => setState((current) => ({ ...current, raster: { ...current.raster, ...options } })),
-      onFilenameChange: (filename) => setState((current) => ({ ...current, filename })),
-      onFormatChange: (format) => setState((current) => updateExportDialogFormat(current, format)),
-      onCancel: vi.fn(), onChooseDestination: vi.fn(), onSvgOptionsChange: vi.fn(),
-      onPdfOptionsChange: vi.fn(), onCdxmlOptionsChange: vi.fn(),
+    const [state, setState] = useState<ExportDialogState>(initial);
+    selected = state as typeof initial;
+    changeBusy = busy => setState(current => ({ ...current, busy }));
+    return createElement(ExportForm, {
+      state, frame, renderPreview: (options) => createDialogExportPreview(document, options),
+      onChange: setState, onCancel: vi.fn(), onChooseDestination: vi.fn(),
       onSubmit: (event) => { event.preventDefault(); submitted(); }
     });
   }
@@ -74,7 +75,8 @@ async function mount(document: ChemDraftDocument, format: "png" | "svg" | "pdf" 
   const form = host.querySelector("form")!;
   const preset = [...host.querySelectorAll("select")].find((select) => select.querySelector('option[value="poster"]'))!;
   return {
-    host, form, submitted, selected: () => selected,
+    host, form, frame, submitted, selected: () => selected,
+    busy: async (busy: boolean) => { await act(async () => changeBusy(busy)); },
     preset: async (value: string) => { await act(async () => { preset.value = value; preset.dispatchEvent(new Event("change", { bubbles: true })); }); }
   };
 }
@@ -144,7 +146,7 @@ it("shows actionable size and PDF physical-limit errors beside the fields", asyn
   await editInput(pdf.host, "Width (px)", "8190");
   await editInput(pdf.host, "DPI", "36");
   expect(pdf.host.querySelector('[role="alert"]')!.textContent).toMatch(/14400.*increase DPI/);
-  await expect(createDialogExportResult(landscapeDocument(), pdf.selected())).rejects.toThrow("14400");
+  await expect(createDialogExportResult(landscapeDocument(), { ...pdf.selected(), presentation: { ...pdf.selected().presentation, width: 8190, dpi: 36 } })).rejects.toThrow("14400");
 });
 
 it("does not recrop after filename or pixel edits and reuses the frame for preview and final export", async () => {
@@ -191,10 +193,11 @@ it("ignores an old preview that finishes after the newer preview", async () => {
   await dialog.preset("poster");
   await tick();
   await act(async () => finishNew(raster));
-  expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe("blob:new");
+  const newestPreview = dialog.host.querySelector("img")!.getAttribute("src");
+  expect(newestPreview).toMatch(/^data:image/);
   await act(async () => finishOld(raster));
-  expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe("blob:new");
-  expect(createUrl).toHaveBeenCalledTimes(1);
+  expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe(newestPreview);
+
 });
 
 
@@ -275,24 +278,24 @@ it("displays export errors inside the dialog", async () => {
 });
 
 
-it("keeps a single explicit PDF preview link in the tab order", async () => {
+it("keeps a single PDF preview object in the tab order without external navigation", async () => {
   vi.mocked(exportPhase4Pdf).mockResolvedValueOnce({ format: "pdf", kind: "binary", bytes: new Uint8Array([1]), mimeType: "application/pdf", extension: "pdf", warnings: [] });
   const dialog = await mount(landscapeDocument(), "pdf");
   await tick();
-  expect(dialog.host.querySelector("object")!.tabIndex).toBe(-1);
-  const links = dialog.host.querySelectorAll('a[href="blob:preview"]');
-  expect(links).toHaveLength(1);
-  expect((links[0] as HTMLAnchorElement).tabIndex).toBe(0);
+  expect(dialog.host.querySelector("object")!.tabIndex).toBe(0);
+  expect(dialog.host.querySelector("a")).toBeNull();
 });
 
 
 it("rejects fractional and out-of-range linked height without rounding it into a valid value", async () => {
   const dialog = await mount(landscapeDocument());
   await editInput(dialog.host, "Height (px)", "1.5");
-  expect(dialog.selected().presentation.height).toBe(1.5);
+  expect([...dialog.host.querySelectorAll("label")].find(label => label.textContent?.startsWith("Height (px)"))!.querySelector("input")!.value).toBe("1.5");
+  expect(dialog.selected().presentation.height).toBeUndefined();
   expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
   await editInput(dialog.host, "Height (px)", "8192.4");
-  expect(dialog.selected().presentation.height).toBe(8192.4);
+  expect([...dialog.host.querySelectorAll("label")].find(label => label.textContent?.startsWith("Height (px)"))!.querySelector("input")!.value).toBe("8192.4");
+  expect(dialog.selected().presentation.height).toBeUndefined();
   expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
   await editInput(dialog.host, "Width (px)", "1000");
   expect(dialog.selected().presentation.height).toBeUndefined();
@@ -342,4 +345,100 @@ it("recomputes a linked height override when crop changes the frame ratio", asyn
   const expected = Math.round(width * frame.pages[0].height / frame.pages[0].width);
   const height = [...dialog.host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Height (px)"))!.querySelector("input")!;
   expect(Number(height.value)).toBe(expected);
+});
+
+it.each(["bmp", "gif", "tiff"] as const)("previews %s as browser-decodable PNG but keeps final format", async format => {
+  const document = landscapeDocument();
+  const dialog = await mount(document, format);
+  await tick();
+  expect(dialog.host.querySelector("img")!.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+  expect(vi.mocked(rasterizeSvgNative).mock.calls[0][1]).toBe("png");
+  await createDialogExportResult(document, dialog.selected());
+  expect(vi.mocked(rasterizeSvgNative).mock.calls.at(-1)![1]).toBe(format);
+});
+
+it("does not rerender previews when only the filename changes", async () => {
+  const dialog = await mount(landscapeDocument());
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+  const filename = dialog.host.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filename, "Renamed.png");
+    filename.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+});
+
+it("keeps blank and invalid numeric drafts local and skips their previews", async () => {
+  const dialog = await mount(landscapeDocument());
+  await tick();
+  const original = dialog.selected().presentation.width;
+  for (const value of ["", "9000", "1.5"]) {
+    await editInput(dialog.host, "Width (px)", value);
+    expect(dialog.selected().presentation.width).toBe(original);
+    expect((dialog.host.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+    await tick();
+  }
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+  await editInput(dialog.host, "Width (px)", "1000");
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(2);
+});
+
+it("refreshes a changed document revision with the same frame dimensions without resetting edits", async () => {
+  const dialog = await mount(landscapeDocument());
+  await dialog.preset("poster");
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+  dialog.frame.revision = 1;
+  const filename = dialog.host.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filename, "Keep this.png");
+    filename.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(2);
+  expect(dialog.selected().filename).toBe("Keep this.png");
+  expect(dialog.selected().presentation.preset).toBe("poster");
+  expect(dialog.selected().presentation.width).toBe(7200);
+});
+
+it("caches frames per document identity and changes revision for an immutable edit at the same dimensions", () => {
+  const document = landscapeDocument();
+  const original = exportDialogFrame(document);
+  expect(exportDialogFrame(document)).toBe(original);
+  const edited = { ...document, title: "Edited drawing" };
+  const next = exportDialogFrame(edited);
+  expect(next.page).toEqual(original.page);
+  expect(next.content).toEqual(original.content);
+  expect(next.revision).not.toBe(original.revision);
+  expect(exportDialogFrame(edited)).toBe(next);
+});
+
+it("preserves default SVG export bytes for an unsized custom page taller than 8192 pixels", async () => {
+  const document = landscapeDocument();
+  const page = { ...document.pages[0], width: 1000, height: 10000, layout: createCustomPageLayout(1000, 10000, "css-px") };
+  const tall = { ...document, pages: [page] };
+  const state = { ...createDefaultExportDialogState(tall), format: "svg" as const };
+  expect(state.presentation).toBeUndefined();
+  const result = await createDialogExportResult(tall, state);
+  expect(result.kind === "text" && result.contents).toBe(exportPhase4Svg(tall, state.svg).contents);
+});
+
+it("restarts a pending preview after a destination picker busy cycle", async () => {
+  let finishOld!: (result: NativeRasterExportResult) => void;
+  vi.mocked(rasterizeSvgNative).mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  const dialog = await mount(landscapeDocument());
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+  await dialog.busy(true);
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(1);
+  await dialog.busy(false);
+  await tick();
+  expect(rasterizeSvgNative).toHaveBeenCalledTimes(2);
+  const source = dialog.host.querySelector("img")!.getAttribute("src");
+  await act(async () => finishOld({ ...raster, bytes: new Uint8Array([2]) }));
+  expect(dialog.host.querySelector("img")!.getAttribute("src")).toBe(source);
 });

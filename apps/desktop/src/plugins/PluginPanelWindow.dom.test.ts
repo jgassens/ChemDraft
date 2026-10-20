@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { EventCallback } from "@tauri-apps/api/event";
 
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,6 +13,7 @@ import type { AnalysisReport } from "@chemdraft/analysis-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
+  ANALYSIS_WINDOW_SNAPSHOT_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -23,6 +25,9 @@ import {
   listenForPluginPanelReruns,
   openPluginPanelWindow,
   PLUGIN_PANEL_CLOSED_EVENT,
+  PLUGIN_PANEL_REPORT_EVENT,
+  PLUGIN_PANEL_REQUEST_EVENT,
+  PLUGIN_PANEL_STALENESS_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
   PROPOSAL_DECISION_TIMEOUT_MS,
   parsePluginPanelWindowId,
@@ -31,7 +36,7 @@ import {
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async () => undefined));
+const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -39,14 +44,26 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 const tauriEvents = vi.hoisted(() => {
   const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
   const emitted: { name: string; payload: unknown }[] = [];
+  const pending = new Map<string, (() => void)[]>();
+  const delayed = new Set<string>();
   let respond: ((name: string, payload: unknown) => void) | undefined;
   return {
     listeners,
     emitted,
+    delayed,
+    pending,
+    attachPending(name: string) {
+      for (const attach of pending.get(name) ?? []) attach();
+      pending.delete(name);
+    },
     setResponder(next: typeof respond) {
       respond = next;
     },
     listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      // Native IPC registration is asynchronous; events before it finishes are lost.
+      if (delayed.has(name)) await new Promise<void>((resolve) => {
+        pending.set(name, [...(pending.get(name) ?? []), resolve]);
+      });
       const set = listeners.get(name) ?? new Set();
       set.add(handler);
       listeners.set(name, set);
@@ -60,6 +77,20 @@ const tauriEvents = vi.hoisted(() => {
   };
 });
 vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit }));
+// Inject the native attachment at the bridge boundary while retaining safeTauriListen's real
+// readiness/cleanup logic. This also avoids dynamic-import mock resolution through linked deps.
+vi.mock("../window-manager/tauriEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../window-manager/tauriEvents")>();
+  return {
+    ...actual,
+    listenTauriEvent: (name: string, handler: EventCallback<unknown>) =>
+      actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
+        wrapped({ event: name, id: 1, payload })), handler).attached
+  };
+});
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ listen: tauriEvents.listen })
+}));
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
@@ -78,8 +109,11 @@ afterEach(() => {
   container = undefined;
   delete (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__;
   tauriInvoke.mockClear();
+  vi.restoreAllMocks();
   nativeSave.mockReset();
   tauriEvents.listeners.clear();
+  tauriEvents.delayed.clear();
+  tauriEvents.pending.clear();
   tauriEvents.emitted.length = 0;
   tauriEvents.setResponder(undefined);
   window.history.replaceState(null, "", "/");
@@ -140,6 +174,193 @@ const INSPECTOR_REPORT: AnalysisReport = {
 };
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  const contentEvents = [
+    PLUGIN_PANEL_REPORT_EVENT,
+    ANALYSIS_WINDOW_SNAPSHOT_EVENT,
+    PLUGIN_PANEL_STALENESS_EVENT
+  ];
+
+  it.each(["plugin", "analysis"] as const)(
+    "replays the first %s content only after all native content listeners attach",
+    async (kind) => {
+      (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+      for (const name of contentEvents) tauriEvents.delayed.add(name);
+      // The focus subscription is independent of the content handshake, even if it never answers.
+      tauriEvents.delayed.add("chemdraft://plugin-panel-focus");
+      const identity = kind === "plugin"
+        ? { pluginId: PLUGIN_ID, panelId: PANEL_ID }
+        : { pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: MOLECULAR_INSPECTOR_WINDOW_ID };
+      const eventName = kind === "plugin" ? PLUGIN_PANEL_REPORT_EVENT : ANALYSIS_WINDOW_SNAPSHOT_EVENT;
+      const cached = kind === "plugin" ? reportPayload() : {
+        ...identity, revision: 1,
+        content: { kind: "molecularInspector", report: INSPECTOR_REPORT, busy: false, stale: false }
+      };
+      // MainWindow caches before publishing/opening. The first push has no mounted receiver.
+      await tauriEvents.emit(eventName, cached);
+      tauriEvents.setResponder((name, requested) => {
+        if (name !== PLUGIN_PANEL_REQUEST_EVENT) return;
+        expect(requested).toEqual(identity);
+        // Cross-webview replies use only the native bus: a same-page CustomEvent would mask the race.
+        void tauriEvents.emit(eventName, cached);
+        if (kind === "plugin") void tauriEvents.emit(PLUGIN_PANEL_STALENESS_EVENT, {
+          ...identity, revision: 1, stale: true
+        });
+      });
+      await mountWindow(pluginPanelWindowId(identity.pluginId, identity.panelId));
+      await vi.waitFor(() => {
+        expect([...tauriEvents.pending.keys()]).toEqual(expect.arrayContaining(contentEvents));
+      });
+      expect(container!.textContent).toContain(`Waiting for ${kind} content`);
+      const requests = () => tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_REQUEST_EVENT);
+      expect(requests()).toHaveLength(0);
+      for (const name of contentEvents.slice(0, -1)) {
+        await act(async () => tauriEvents.attachPending(name));
+        expect(requests()).toHaveLength(0);
+      }
+      await act(async () => tauriEvents.attachPending(PLUGIN_PANEL_STALENESS_EVENT));
+      expect(requests()).toHaveLength(1);
+      expect(container!.textContent).not.toContain("Waiting for");
+      expect(container!.textContent).toContain(kind === "plugin" ? "chemdraft.demo-engine" : "C9H8O4");
+      if (kind === "plugin") expect(container!.querySelector("[data-testid='plugin-panel-stale']")).not.toBeNull();
+    }
+  );
+
+  it("does not request replay from an unmounted page when native subscription finishes late", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    for (const name of contentEvents) tauriEvents.delayed.add(name);
+    await mountWindow();
+    await vi.waitFor(() => {
+      for (const name of contentEvents) expect(tauriEvents.pending.get(name)).toHaveLength(1);
+    });
+    act(() => root!.unmount());
+    root = undefined;
+    await act(async () => {
+      for (const name of contentEvents) tauriEvents.attachPending(name);
+    });
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_REQUEST_EVENT)).toHaveLength(0);
+    for (const name of contentEvents) expect(tauriEvents.listeners.get(name)?.size ?? 0).toBe(0);
+  });
+
+  it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(windows)]')[0]!;
+    expect(mac).toContain("makeKeyWindow()");
+    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
+    expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("uses guarded thread-local activation for Windows input, release and resize presses", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
+    expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
+    expect(windows).toContain("return Ok(false)");
+    expect(windows).not.toContain("target.set_focus()");
+    expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
+    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
+    expect(release).toContain("panel_window::return_focus_to_document(");
+    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
+    expect(focus).toContain("GetForegroundWindow()");
+    expect(focus).toContain("IsWindowVisible(hwnd) == 0");
+    expect(focus).toContain("IsIconic(hwnd) != 0");
+    expect(focus).toContain("GetWindowThreadProcessId");
+    expect(focus).toContain("with_owned_foreground");
+    expect(focus).toContain("SetActiveWindow(hwnd)");
+    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
+    const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
+    expect(handBack).toContain("foreground_can_return_to_document");
+    expect(handBack).toContain("if focus_if_app_active(owner)");
+    expect(handBack).toContain("webview.set_focus()");
+    expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
+    expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
+    expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
+      .toContain("return_focus()");
+    const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
+      .split("unsafe extern \"system\" fn")[0]!;
+    expect(resizeSubclass.split("let result = DefSubclassProc").at(-1)!)
+      .toContain("return_focus()");
+  });
+
+  it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
+    const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
+    // A positive NCCALCSIZE top override restores WS_CAPTION on Windows 10.
+    expect(panel).not.toContain("WM_NCCALCSIZE");
+    expect(panel).not.toContain("SWP_FRAMECHANGED");
+    expect(panel).toContain("TAURI_DRAG_RESIZE_WINDOW");
+    expect(panel).toContain("SetWindowSubclass(overlay, Some(overlay_subclass)");
+    expect(panel).toContain("HTTRANSPARENT");
+    expect(panel).toContain("GetDpiForWindow(hwnd)");
+    expect(panel).toContain("GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding");
+    expect(panel).toContain("geometry::top_overlay_rect(");
+    expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
+  });
+
+  it("observes native top-level loss synchronously and tags the single focus event with its lease", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    expect(panel).toContain('"chemdraft://plugin-panel-focus"');
+    expect(panel).toContain("WM_ACTIVATEAPP");
+    expect(panel).toContain("lease.deactivate()");
+    expect(panel).toContain("generation");
+    expect(panel).not.toContain("WM_KILLFOCUS");
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    expect(mac).toContain("NSWindowDidBecomeKeyNotification");
+    expect(mac).toContain("NSWindowDidResignKeyNotification");
+    expect(mac).toContain("super::activation(&target, active)");
+  });
+
+  it("resets native generations before a reloaded panel webview can acquire focus", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
+    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("PageLoadEvent::Started");
+    expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const reset = panel.split("fn reset_for_webview")[1]!.split("#[derive")[0]!;
+    expect(reset).toContain(".reset()");
+    expect(reset).toContain("set_focusable(false)");
+    // The pure Rust regression also exercises generation reuse and an old UI task's epoch.
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    expect(command).toContain("panel_window::is_current(&target, generation, epoch)");
+  });
+
+  it("destroys a newly built panel if native focus/resize installation fails", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
+    const build = source.split("fn build_or_show_plugin_panel")[1]!.split("fn analysis_window_initial_position")[0]!;
+    expect(build).toMatch(/let installed = run_on_main_thread_blocking[\s\S]*install_resize_hit_test[\s\S]*\.and_then/);
+    expect(build).toMatch(/finish_installation\(installed, \|\| \{[\s\S]*window\.destroy\(\)[\s\S]*\}\)\?/);
+  });
+
+  it("grants and releases input focus for the full-size spectrum portal", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const bodyListen = vi.spyOn(document.body, "addEventListener");
+    await mountWindow();
+    await broadcast(reportPayload());
+    const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")]
+      .find((button) => button.textContent === "Full size")!;
+    await act(async () => { fullSize.click(); });
+    const select = document.querySelector<HTMLSelectElement>(".lf-modal select")!;
+    expect(select).not.toBeNull();
+    expect(container!.contains(select)).toBe(false);
+    // jsdom has no trusted pointer source: invoke the installed browser listener explicitly.
+    const pointer = bodyListen.mock.calls.find(([type]) => type === "pointerdown")?.[1] as EventListener | undefined;
+    await act(async () => {
+      pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
+      select.focus();
+    });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
+    await act(async () => {
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
+    expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
+  });
+
   it("opens plugin and built-in analysis identities through the one existing native transport", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     await openPluginPanelWindow({
@@ -147,8 +368,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       panelId: VALIDATION_RESULT_WINDOW_ID,
       title: "Validation Result",
       width: 500,
-      height: 520,
-      focus: true
+      height: 520
     });
 
     expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
@@ -156,23 +376,27 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
         panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, VALIDATION_RESULT_WINDOW_ID),
         title: "Validation Result",
         width: 500,
-        height: 520,
-        focus: true
+        height: 520
       }
     });
   });
 
-  it("passes focus: false through for an automatic show so the canvas keeps the keyboard", async () => {
+  it.each([true, false])("drops the legacy focus=%s hint so opening always keeps the document focused", async (focus) => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     await openPluginPanelWindow({
       pluginId: ANALYSIS_WINDOW_OWNER_ID,
       panelId: PATCH_REVIEW_WINDOW_ID,
       title: "Plugin Proposals",
-      focus: false
+      focus
     });
 
     expect(tauriInvoke).toHaveBeenCalledExactlyOnceWith("open_plugin_panel_window", {
-      request: expect.objectContaining({ focus: false })
+      request: {
+        panelId: pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID),
+        title: "Plugin Proposals",
+        width: undefined,
+        height: undefined
+      }
     });
   });
 

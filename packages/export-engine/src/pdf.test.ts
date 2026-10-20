@@ -20,6 +20,29 @@ import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../lay
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("does not count the white page background as drawing geometry", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    // This is the negative control for the bond endpoint assertions below:
+    // removing the molecule must leave no drawing points despite the painted background.
+    expect(pdfDrawingPoints(Buffer.from(result.bytes).toString("latin1"))).toEqual([]);
+  });
+
+  it("accepts the maximum 200-inch PDF page without silently reducing it", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser, outputWidth: 19200, outputHeight: 19200
+    }));
+    expect(Buffer.from(result.bytes).toString("latin1")).toContain("/MediaBox [0 0 14400. 14400.]");
+  });
+
+  it.each([0, -1, NaN, Infinity, -Infinity])("rejects invalid output dimensions (%s) before rendering", async (dimension) => {
+    const document = createEmptyDocument({ now: timestamp });
+    for (const options of [{ outputWidth: dimension }, { outputHeight: dimension }]) {
+      await expect(exportDocumentToPdf(document, options)).rejects.toThrow("finite positive");
+    }
+  });
+
   it("refuses 8190 by 4095 px at 36 DPI before rendering instead of clipping", async () => {
     const document = createEmptyDocument({ now: timestamp });
     await expect(exportDocumentToPdf(document, { outputWidth: 8190 / 36 * 96, outputHeight: 4095 / 36 * 96 }))

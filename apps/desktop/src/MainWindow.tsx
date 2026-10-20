@@ -1,3 +1,5 @@
+import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
+import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
@@ -134,6 +136,8 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  restoredDocumentFileState,
+  restoredSavePathNotice,
   shouldRestoreDocumentSession,
   strictSessionFlushRefusal,
   unrestoredTabContents,
@@ -228,10 +232,7 @@ import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type Cl
 import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
-  exportFormatDescriptors,
   getExportFormatDescriptor,
-  type ExportFormatDescriptor,
-  type ExportFormatGroup,
   type ExportFormatId,
   type ExportResult
 } from "@chemdraft/export-engine";
@@ -699,6 +700,15 @@ import {
   saveDocumentSession,
   listenForQuitFlushRequest,
   confirmQuitAfterFlush,
+  listenForQuitPromptRequest,
+  listenForQuitSettings,
+  setQuitPromptEnabled,
+  prepareQuitPrompt,
+  resumeQuitAfterPrompt,
+  confirmPromptedQuit,
+  requestQuitAfterClose,
+  reportQuitPromptShowing,
+  cancelQuit,
   sendToolsetLayoutEdit,
   listenForToolsetCommands,
   listenForToolsetWindowStates,
@@ -762,6 +772,11 @@ import {
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
+import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
+import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
+import { exportOptions } from "./dialogs/exportOptionsValidation";
+import type { ExportDialogResult } from "./dialogs/dialogProtocol";
+import { exportDialogHeight, exportDialogSizeError } from "./dialogs/exportPresentation";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
 import { nativeDialogTransport } from "./dialogs/dialogTransport";
 import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
@@ -793,7 +808,7 @@ import {
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
-import { rasterizeSvgNative, type NativeRasterExportFormat } from "./nativeRasterExport";
+import { rasterizeSvgNative } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
   applyTrackballDrag,
@@ -1275,6 +1290,7 @@ type TextResizeState = {
 type NativeFileState = {
   path?: string;
   dirty: boolean;
+  restoreSavePathError?: string;
 };
 type ResolvedOpenDocument = {
   document: ChemDraftDocument;
@@ -1448,38 +1464,6 @@ type LayerContextMenuItem = {
   commandId: string;
   label: string;
 };
-type ExportDialogFormat = ExportFormatId;
-type SvgDialogExportOptions = {
-  includeWarnings: boolean;
-  includePageGuides: boolean;
-};
-type PdfDialogExportOptions = {
-  compress: boolean;
-  includePageGuides: boolean;
-  page: "current";
-  pdfType: "vector";
-  background: "white";
-};
-type RasterDialogExportOptions = {
-  background: "white" | "transparent";
-  jpegQuality: number;
-  maxDimensionPx: number;
-};
-type CdxmlDialogExportOptions = {
-  creationProgram: string;
-};
-type ExportDialogState = {
-  presentation: { width: number; height?: number; linked?: boolean; preset?: "custom" | "slide" | "poster" | "publication"; dpi: number; crop: "page" | "content"; background: "white" | "transparent" };
-  format: ExportDialogFormat;
-  filename: string;
-  destinationPath?: string;
-  error?: string;
-  svg: SvgDialogExportOptions;
-  pdf: PdfDialogExportOptions;
-  raster: RasterDialogExportOptions;
-  cdxml: CdxmlDialogExportOptions;
-  busy: boolean;
-};
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
 };
@@ -1602,22 +1586,6 @@ const INTERACTIVE_3D_POST_OPEN_POLL_MS = 90;
 const FREEFORM_BOND_DRAG_THRESHOLD = 6;
 const DOUBLE_BOND_SIDE_DRAG_THRESHOLD = 4;
 const VIEW_ZOOM_COMMAND_FACTOR = 1.25;
-const rasterExportFormatsByFormatId: Partial<Record<ExportFormatId, NativeRasterExportFormat>> = {
-  png: "png",
-  jpeg: "jpeg",
-  bmp: "bmp",
-  gif: "gif",
-  tiff: "tiff"
-};
-const exportFormatGroups: readonly ExportFormatGroup[] = ["graphics", "chemistry", "compatibility", "legacy", "model3d"];
-const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
-  graphics: "Graphics",
-  chemistry: "Chemistry",
-  compatibility: "Compatibility",
-  legacy: "Legacy",
-  model3d: "3D"
-};
-const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 const PROJECTED_PLANE_TILT_DRAG_PX = 360;
 const OBJECT_ROTATE_TANGENTIAL_DEGREES_PER_PIXEL = 360 / PROJECTED_PLANE_TILT_DRAG_PX;
 const OBJECT_DRAG_THRESHOLD = 4;
@@ -1626,7 +1594,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.19.14.30-codex";
+const CURRENT_BUILD_STAMP = "10.20.12.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2157,7 +2125,16 @@ export function MainWindow({
     pageFit?: ImportedPageFitPromptState;
   }>());
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
+  const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
+  const [quitPromptReady, setQuitPromptReady] = useState<number>();
+  const quitRequestRef = useRef<number | undefined>(undefined);
+  const quitPromptBusyRef = useRef(false);
+  const [quitSaveBusy, setQuitSaveBusy] = useState(false);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
+  const quitInteractionRef = useRef(false);
+  const quitMutationFrozenRef = useRef(false);
+  const pendingQuitAfterCloseRef = useRef(false);
+  const [quitAfterCloseReady, setQuitAfterCloseReady] = useState(0);
   const [keptDrawingsPrompt, setKeptDrawingsPrompt] = useState<"notice">();
   const keptDrawingsPromptRef = useRef(keptDrawingsPrompt);
   keptDrawingsPromptRef.current = keptDrawingsPrompt;
@@ -2369,6 +2346,16 @@ export function MainWindow({
   const openWarningsRef = useRef(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
+  const [exportError, setExportError] = useState<string>();
+  const [exportNotice, setExportNotice] = useState<string>();
+  const [exportCompleted, setExportCompleted] = useState(false);
+  const browserExportTabRef = useRef<string | undefined>(undefined);
+  const browserExportSessionRef = useRef<string | undefined>(undefined);
+  const browserExportPendingRef = useRef(false);
+  const exportGrantsRef = useRef(new Map<string, { path: string; filename: string; format: string }>());
+  const exportToTabRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean, progress?: (notice: string) => Promise<void>) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
+  const previewExportRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean) => Promise<ExportPreviewResult>>(async () => { throw new Error("Preview is unavailable"); });
+  const chooseExportDestinationRef = useRef<(tabId: string, options: ExportOptions, live: () => boolean) => Promise<ExportDialogResult>>(async () => { throw new Error("Export is unavailable"); });
   const [pageFitPrompt, setPageFitPrompt] = useState<ImportedPageFitPromptState | undefined>();
   tabPageFitRef.current = pageFitPrompt;
   const [customPageSizeDialog, setCustomPageSizeDialog] = useState<CustomPageSizeDialogState | undefined>();
@@ -3015,6 +3002,7 @@ export function MainWindow({
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
   ): boolean => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3044,6 +3032,7 @@ export function MainWindow({
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string
   ): boolean => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3077,6 +3066,7 @@ export function MainWindow({
     nextDocument: ChemDraftDocument,
     undoLabel?: string
   ) => {
+    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
@@ -6242,6 +6232,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget]);
 
   const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
@@ -6261,6 +6252,7 @@ export function MainWindow({
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string }> => {
     try {
       const parsed = await depictSmilesForPaste(smilesText);
+      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
       const nextDocument = insertSmilesMolecule(
@@ -6292,6 +6284,7 @@ export function MainWindow({
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
       void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason }) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
           setStatus(reason
@@ -6329,6 +6322,7 @@ export function MainWindow({
         return;
       }
       void pendingList.then((parsed) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!parsed) {
           pasteAsText();
           return;
@@ -6343,6 +6337,7 @@ export function MainWindow({
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);
       }).catch((error: unknown) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         pasteAsText();
         const failures = error instanceof SmilesListPasteError ? error.failures : [];
         const firstReason = failures[0]?.error ?? "an unexpected error occurred";
@@ -6355,6 +6350,7 @@ export function MainWindow({
   }, [applySyncClipboardPayload, commitDocumentChange, pastePointForViewport, renderPastedSmiles, resetPasteUiState]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const placement = nextSelectionClipboardPastePlacement(
       payload,
       selectionClipboardPasteStateRef.current,
@@ -6387,6 +6383,7 @@ export function MainWindow({
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
     wholeObjectIds: readonly string[]
   ) => {
+    if (quitInteractionRef.current) { setStatus("Cut cancelled while quitting"); return; }
     const currentDocument = documentRef.current;
     // Use the selection that produced the successful clipboard write. It may include both
     // whole objects and fragments, and the user may have changed selection while it was writing.
@@ -6551,6 +6548,7 @@ export function MainWindow({
 
   const pasteClipboard = useCallback(async () => {
     const rawPayload = await readClipboardPayload();
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const selectionPayload = rawPayload.textItems
       .map((item) => parseSelectionClipboardPayload(item.text))
       .find((payload) => payload !== undefined);
@@ -8085,6 +8083,8 @@ export function MainWindow({
     tabPageFitRef.current = snapshot.pageFit;
     setPageFitPrompt(snapshot.pageFit);
     setExportDialog(undefined);
+    browserExportTabRef.current = undefined;
+    browserExportSessionRef.current = undefined;
     setAnalysisReport(undefined);
     setObjectContextMenu(undefined);
     setArrowEditTargetId(undefined);
@@ -8126,6 +8126,8 @@ export function MainWindow({
     if (index < 0) return;
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     void dialogCoordinatorRef.current?.closeTab(id);
+    exportGrantsRef.current.delete(id);
+    if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     // Closing the last document keeps the window open with a fresh document identity and history.
     if (tabs.length === 1) {
       newDocumentTab();
@@ -8181,7 +8183,7 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ) => {
-    if (closeTabPromptRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       return;
@@ -8199,6 +8201,10 @@ export function MainWindow({
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
+    if (quitInteractionRef.current) {
+      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+      return;
+    }
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -8212,6 +8218,8 @@ export function MainWindow({
     // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
     // synchronously before replacing the history; late actions must never target the opened file.
     void dialogCoordinatorRef.current?.closeTab(id);
+    exportGrantsRef.current.delete(id);
+    if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -8253,7 +8261,7 @@ export function MainWindow({
   openDocumentContentsRef.current = openDocumentContents;
 
   useEffect(() => {
-    if (closeTabPrompt || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
+    if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
     const opens = pendingDocumentOpensRef.current.splice(0);
     void (async () => {
       for (const request of opens) {
@@ -8264,7 +8272,7 @@ export function MainWindow({
         }
       }
     })();
-  }, [closeTabPrompt, keptDrawingsPrompt]);
+  }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -8334,7 +8342,11 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
-      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus
+      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus,
+      export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
+      previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
+      chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
+      onSettled: (tabId, _reason, kind) => { if (kind === "export") exportGrantsRef.current.delete(tabId); }
     });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
@@ -8355,7 +8367,7 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenCurrentWindowEvent<{ paths: string[] }>("tauri://drag-drop", (event) => {
-      if (!disposed && !closeTabPromptRef.current) void openDroppedDocumentPaths(event.payload.paths);
+      if (!disposed && !closeTabPromptRef.current && !quitInteractionRef.current) void openDroppedDocumentPaths(event.payload.paths);
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -8537,15 +8549,16 @@ export function MainWindow({
           }
           for (const { id, session, resolved, opened, history } of restored) {
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
+            const savePathNotice = restoredSavePathNotice(session);
             documentTabSnapshotsRef.current.set(id, {
-              history, file: { path: session.path, dirty: session.dirty },
+              history, file: restoredDocumentFileState(session),
               viewport: session.view?.viewport ?? createViewportState(),
               scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
               warnings: session.openWarnings ?? {
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
               },
-              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}`
+              status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}${savePathNotice ? `. ${savePathNotice}` : ""}`
             });
           }
           documentTabsRef.current = tabs;
@@ -8679,6 +8692,7 @@ export function MainWindow({
     return () => window.clearTimeout(handle);
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
+
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
@@ -8703,6 +8717,58 @@ export function MainWindow({
       unlisten?.();
     };
   }, [writeDocumentSessionNow]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false;
+    const listeners: (() => void)[] = [];
+    const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
+    void (async () => {
+      keep(await listenForQuitPromptRequest(async (requestId) => {
+        if (disposed || (quitRequestRef.current !== undefined && requestId <= quitRequestRef.current)) return;
+        quitRequestRef.current = requestId;
+        quitMutationFrozenRef.current = false;
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+        quitInteractionRef.current = true;
+        if (closeTabPromptRef.current) {
+          // React cleanup cannot dismiss an OS alert. Retire this native quit deadline and
+          // finish the existing close choice first, then request a fresh, visible quit prompt.
+          if (await cancelQuit(requestId) && quitRequestRef.current === requestId) {
+            pendingQuitAfterCloseRef.current = true;
+            setQuitAfterCloseReady((value) => value + 1);
+          }
+          return;
+        }
+        snapshotDocumentTab();
+        const dirty = documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
+        if (!dirty) {
+          quitMutationFrozenRef.current = true;
+          if (await resumeQuitAfterPrompt(requestId)) {
+            await writeDocumentSessionNow();
+            await confirmPromptedQuit(requestId);
+          }
+          return;
+        }
+        if (await prepareQuitPrompt(requestId) && quitRequestRef.current === requestId && !disposed) {
+          setQuitPromptOpen(requestId);
+        }
+      }));
+      keep(await listenForQuitSettings((enabled) => { void setQuitPromptEnabled(enabled); }));
+      if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
+    })().catch((error: unknown) => { setStatus("Quit preference unavailable: " + String(error)); });
+    return () => { disposed = true; listeners.forEach((listener) => listener()); };
+  }, [snapshotDocumentTab, writeDocumentSessionNow]);
+
+  useEffect(() => {
+    if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
+    pendingQuitAfterCloseRef.current = false;
+    void requestQuitAfterClose().catch((error: unknown) => {
+      quitInteractionRef.current = false;
+      setStatus("Could not resume quit after closing the tab prompt: " + String(error));
+    });
+  }, [closeTabPrompt, quitAfterCloseReady]);
 
   // Windows app updates (appUpdates.ts). One flow at a time: a menu click during the launch check, or
   // a double click, must not raise a second prompt or start a second download.
@@ -8936,11 +9002,13 @@ export function MainWindow({
     return false;
   }, keptDrawingsPromptReady ? keptDrawingsPrompt : undefined, true, async () => "cancel");
 
-  const saveCurrentDocument = useCallback(async (forceSaveAs: boolean): Promise<boolean> => {
-    const savingTabId = activeDocumentTabIdRef.current;
-    const savingDocument = documentRef.current;
-    const savingFileState = fileStateRef.current;
-    const payload = createNativeSavePayload(documentForFlush());
+  const saveDocumentTabById = useCallback(async (savingTabId: string, forceSaveAs: boolean): Promise<boolean> => {
+    const active = savingTabId === activeDocumentTabIdRef.current;
+    const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
+    const savingDocument = active ? documentRef.current : snapshot?.history.present;
+    const savingFileState = active ? fileStateRef.current : snapshot?.file;
+    if (!savingDocument || !savingFileState) return false;
+    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
     const finishSave = (path?: string) => {
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
@@ -8969,11 +9037,15 @@ export function MainWindow({
         finishSave();
         return true;
       }
-      let path = forceSaveAs ? undefined : savingFileState.path;
-      if (!path) path = await pickNativeSavePath(savingFileState.path ?? payload.filename);
+      const restoreNotice = restoredSavePathNotice(savingFileState);
+      if (restoreNotice) setStatus(restoreNotice);
+      let path = forceSaveAs || restoreNotice ? undefined : savingFileState.path;
+      if (!path) path = await pickNativeSavePath(savingFileState.path ?? payload.filename,
+        restoreNotice ? { title: "Save As — restored file unavailable", extension: "chemdraft" } : undefined);
       if (!path) {
-        if (savingTabId === activeDocumentTabIdRef.current) setStatus("Save canceled");
-        if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage("Save canceled. The tab is still open.");
+        const canceled = `${restoreNotice ? `${restoreNotice} ` : ""}Save canceled. The tab is still open.`;
+        if (savingTabId === activeDocumentTabIdRef.current) setStatus(restoreNotice ? canceled : "Save canceled");
+        if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage(canceled);
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);
@@ -8987,6 +9059,136 @@ export function MainWindow({
       return false;
     }
   }, [documentForFlush]);
+
+  const saveCurrentDocument = useCallback((forceSaveAs: boolean) =>
+    saveDocumentTabById(activeDocumentTabIdRef.current, forceSaveAs), [saveDocumentTabById]);
+
+  // Own a native suspension through the modal and its nested Save As panels.
+  useEffect(() => {
+    if (quitPromptOpen === undefined) return;
+    const requestId = quitPromptOpen;
+    let disposed = false;
+    const suspension = acquireNativeUtilitySuspension();
+    const retirePrompt = () => {
+      void cancelQuit(requestId).then((cancelled) => {
+        if (!cancelled) return;
+        if (quitRequestRef.current === requestId) {
+          quitInteractionRef.current = false;
+          quitMutationFrozenRef.current = false;
+        }
+        setQuitPromptOpen((current) => current === requestId ? undefined : current);
+      }).catch((error: unknown) => {
+        // Keep the dialog available for retry; never hide an acknowledged prompt on failed IPC.
+        setStatus("Could not cancel quit: " + String(error));
+      });
+    };
+    void suspension.then(async () => {
+      if (disposed) return;
+      setQuitPromptReady(requestId);
+    }).catch((error: unknown) => {
+      setStatus("Quit prompt unavailable: " + String(error));
+      retirePrompt();
+    });
+    return () => {
+      disposed = true;
+      void suspension.then((release) => release(), () => {});
+    };
+  }, [quitPromptOpen]);
+
+  const cancelQuitPrompt = useCallback(async (requestId = quitRequestRef.current) => {
+    if (requestId === undefined) return;
+    if (quitRequestRef.current === requestId) {
+      quitPromptBusyRef.current = true;
+      setQuitSaveBusy(true);
+    }
+    try {
+      if (await cancelQuit(requestId)) {
+        if (quitRequestRef.current === requestId) {
+          quitInteractionRef.current = false;
+          quitMutationFrozenRef.current = false;
+        }
+        setQuitPromptOpen((current) => current === requestId ? undefined : current);
+      }
+    } catch (error) {
+      setStatus("Could not cancel quit: " + String(error));
+    } finally {
+      if (quitRequestRef.current === requestId) {
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+      }
+    }
+  }, []);
+
+  const finishPromptedQuit = useCallback(async (save: boolean) => {
+    const requestId = quitRequestRef.current;
+    if (requestId === undefined || quitPromptBusyRef.current) return;
+    quitPromptBusyRef.current = true;
+    quitMutationFrozenRef.current = true;
+    setQuitSaveBusy(true);
+    try {
+      if (save) {
+        for (const tab of documentTabsRef.current) {
+          const file = tab.id === activeDocumentTabIdRef.current ? fileStateRef.current :
+            documentTabSnapshotsRef.current.get(tab.id)?.file;
+          if (file?.dirty && !await saveDocumentTabById(tab.id, false)) {
+            await cancelQuitPrompt(requestId);
+            return;
+          }
+        }
+        if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+          ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
+          setStatus("A document changed while saving. Quit cancelled; save again before quitting.");
+          await cancelQuitPrompt(requestId);
+          return;
+        }
+      }
+      // Re-arm grace before session IPC so a stalled flush still arms #99's exit watchdog.
+      if (!await resumeQuitAfterPrompt(requestId)) return;
+      await writeDocumentSessionNow();
+      await confirmPromptedQuit(requestId);
+    } catch (error) {
+      setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
+      await cancelQuitPrompt(requestId);
+    } finally {
+      if (quitRequestRef.current === requestId) {
+        quitPromptBusyRef.current = false;
+        setQuitSaveBusy(false);
+      }
+    }
+  }, [saveDocumentTabById, writeDocumentSessionNow, cancelQuitPrompt]);
+
+  const quitPrompt = useNativePrompt({
+    title: "Save changes before quitting?",
+    message: "Your documents have unsaved changes.",
+    kind: "warning",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ]
+  }, async (choice) => {
+    const requestId = quitPromptOpen;
+    if (requestId === undefined || quitRequestRef.current !== requestId) return;
+    if (choice === "cancel") {
+      await cancelQuitPrompt(requestId);
+      return quitRequestRef.current === requestId && quitInteractionRef.current ? false : undefined;
+    }
+    await finishPromptedQuit(choice === "save");
+    // A failed cancellation must leave a question available for retry.
+    const dirty = documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
+      ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
+    return quitRequestRef.current === requestId && quitInteractionRef.current &&
+      (!quitMutationFrozenRef.current || (choice === "save" && dirty)) ? false : undefined;
+  }, quitPromptReady === quitPromptOpen ? quitPromptOpen : undefined, false, undefined, async () => {
+    const requestId = quitPromptOpen;
+    if (requestId === undefined || quitRequestRef.current !== requestId) return;
+    try {
+      if (!await reportQuitPromptShowing(requestId)) await cancelQuitPrompt(requestId);
+    } catch (error) {
+      setStatus("Quit prompt unavailable: " + String(error));
+      await cancelQuitPrompt(requestId);
+    }
+  });
 
   const saveAndCloseDocumentTab = useCallback(async () => {
     const id = closeTabPromptRef.current;
@@ -9024,113 +9226,148 @@ export function MainWindow({
     }
   }, closeTabPrompt, true);
 
+  const setExportTabStatus = useCallback((tabId: string, message: string) => {
+    if (tabId === activeDocumentTabIdRef.current) setStatus(message);
+    else {
+      const snapshot = documentTabSnapshotsRef.current.get(tabId);
+      if (snapshot) documentTabSnapshotsRef.current.set(tabId, { ...snapshot, status: message });
+    }
+  }, []);
   const openExportDialog = useCallback(() => {
-    setExportDialog(createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current));
+    const tabId = activeDocumentTabIdRef.current;
+    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current);
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Export could not open: the dialog host is unavailable."); return; }
+      const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+      void coordinator.openExport(tabId, { title, options: exportOptions(state), frame: exportDialogFrame(documentRef.current) })
+        .catch(error => setStatus(`Export could not open: ${String(error)}`));
+    } else {
+      browserExportTabRef.current = tabId;
+      browserExportSessionRef.current = crypto.randomUUID();
+      setExportError(undefined); setExportNotice(undefined); setExportCompleted(false); setExportDialog(state);
+    }
     setStatus("Export ready");
   }, []);
 
-  const chooseExportDestination = useCallback(async () => {
-    if (!exportDialog || exportDialog.busy) {
-      return;
+  useEffect(() => {
+    const coordinator = dialogCoordinatorRef.current;
+    if (!coordinator) return;
+    for (const tab of documentTabs) {
+      if (!coordinator.exportSessionId(tab.id)) continue;
+      const source = tab.id === activeDocumentTabIdRef.current ? document : documentTabSnapshotsRef.current.get(tab.id)?.history.present;
+      if (source) void coordinator.updateExportFrame(tab.id, exportDialogFrame(source)).catch(error => setStatus(`Export preview update failed: ${String(error)}`));
     }
+  }, [document, documentTabs]);
 
-    const descriptor = getExportFormatDescriptor(exportDialog.format);
-    if (descriptor.status !== "implemented") {
-      setStatus(`${descriptor.menuLabel} export is not available yet`);
-      return;
-    }
-
-    if (!isDesktopRuntime()) {
-      setStatus("Browser export will download the file");
-      return;
-    }
-
+  previewExportRef.current = async (tabId, options, live) => {
+    if (!live()) throw new Error("The originating drawing was closed.");
+    const source = tabId === activeDocumentTabIdRef.current ? documentRef.current : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    if (!source) throw new Error("The originating drawing was closed.");
+    const result = await createDialogExportPreview(source, options);
+    if (!live()) throw new Error("Preview was superseded.");
+    return result;
+  };
+  chooseExportDestinationRef.current = async (tabId, options, live) => {
     try {
-      const defaultPath = exportDialog.destinationPath ??
-        nativePathJoin(lastExportDirectoryRef.current, exportDialog.filename) ??
-        exportDialog.filename;
-      const path = await pickNativeExportPath(
-        defaultPath,
-        descriptor.menuLabel,
-        descriptor.extensions
-      );
-      if (!path) {
-        setStatus("Export location unchanged");
-        return;
-      }
-
+      const descriptor = getExportFormatDescriptor(options.format);
+      if (descriptor.status !== "implemented") throw new Error(`${descriptor.menuLabel} export is not available yet`);
+      if (!isDesktopRuntime()) return { status: "cancelled", notice: "Browser export will download the file" };
+      const defaultPath = options.destinationPath ?? nativePathJoin(lastExportDirectoryRef.current, options.filename) ?? options.filename;
+      // Runs in main, so the native panel's grant belongs to the writer. The shared wrapper
+      // suspends and restores live dialog windows on both platforms without changing placement.
+      const path = await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId));
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      if (!path) return { status: "cancelled", notice: "Export location unchanged" };
+      if (path.length > 1024 || nativePathBasename(path).length > 256 || new TextEncoder().encode(JSON.stringify([path, nativePathBasename(path)])).length > 2400) throw new Error("The chosen export path is too long for the dialog. Choose a shorter path.");
+      const filename = nativePathBasename(path);
+      exportGrantsRef.current.set(tabId, { path, filename, format: options.format });
       lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setExportDialog((current) => current
-        ? {
-            ...current,
-            destinationPath: path,
-            error: undefined,
-            filename: nativePathBasename(path)
-          }
-        : current);
-      setStatus(`Export location: ${nativePathBasename(path)}`);
+      setExportTabStatus(tabId, `Export location: ${filename}`);
+      return { status: "picked", destinationPath: path, filename };
     } catch (error) {
-      const message = `Export location failed: ${error instanceof Error ? error.message : String(error)}`;
-      setStatus(message);
-      setExportDialog((current) => current ? { ...current, error: message } : current);
+      if (live()) setExportTabStatus(tabId, `Export location failed: ${String(error)}`);
+      throw error;
     }
-  }, [exportDialog]);
+  };
 
+  exportToTabRef.current = async (tabId, options, live, progress) => {
+    try {
+      if (!live() || !documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed or replaced.");
+      const descriptor = getExportFormatDescriptor(options.format);
+      if (descriptor.status !== "implemented") throw new Error(`${descriptor.menuLabel} export is not available yet`);
+      // Snapshot at the press, including the current text draft. Inactive tabs were flushed
+      // when switched away from; never export the document that happens to be active instead.
+      const source = tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+      if (!source) throw new Error("The originating drawing is unavailable.");
+      await progress?.("Preparing export…");
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      const result = await createDialogExportResult(source, { ...options, busy: false });
+      if (!live()) throw new Error("The originating drawing was closed or replaced.");
+      const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
+      if (!isDesktopRuntime()) downloadExportResult(filename, result);
+      else {
+        const grant = exportGrantsRef.current.get(tabId);
+        // A suggested path or a changed name/format is not a grant. Ask again in that case.
+        let path = grant && grant.path === options.destinationPath && grant.filename === options.filename && grant.format === options.format ? grant.path : undefined;
+        if (!path) {
+          await progress?.("Choose an export location…");
+          const picked = await chooseExportDestinationRef.current(tabId, { ...options, filename }, live);
+          path = picked.destinationPath;
+        }
+        if (!path) return { status: "cancelled", notice: `${descriptor.menuLabel} export canceled` };
+        if (!live()) throw new Error("The originating drawing was closed or replaced.");
+        // Write exactly the path granted by the panel, including its chosen extension.
+        await progress?.("Writing export…");
+        if (!live()) throw new Error("The originating drawing was closed or replaced.");
+        await writeNativeExportResult(path, result);
+        lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
+      }
+      const notice = formatExportStatus(descriptor.menuLabel, result.format, result.warnings);
+      if (live()) setExportTabStatus(tabId, notice);
+      const details = [notice, ...result.warnings.map(warning => warning.message)].join("\n");
+      return { status: "exported", notice: boundExportNotice(details) };
+    } catch (error) {
+      if (live()) setExportTabStatus(tabId, `Export failed: ${String(error)}`);
+      throw error;
+    }
+  };
+
+  const chooseExportDestination = useCallback(async () => {
+    if (!exportDialog || browserExportPendingRef.current) return;
+    try {
+      const result = await chooseExportDestinationRef.current(browserExportTabRef.current!, exportOptions(exportDialog), () => browserExportTabRef.current !== undefined);
+      setExportNotice(result.notice);
+    } catch (error) { setExportError(String(error)); }
+  }, [exportDialog]);
   const submitExportDialog = useCallback(async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    if (!exportDialog || exportDialog.busy) {
-      return;
-    }
-
-    const dialog = exportDialog;
-    const descriptor = getExportFormatDescriptor(dialog.format);
-    setExportDialog({ ...dialog, busy: true, error: undefined });
-
+    if (!exportDialog || browserExportPendingRef.current || exportDialog.busy) return;
+    browserExportPendingRef.current = true;
+    setExportError(undefined); setExportDialog({ ...exportDialog, busy: true });
+    const tabId = browserExportTabRef.current!;
+    const sessionId = browserExportSessionRef.current;
+    const live = () => browserExportTabRef.current === tabId && browserExportSessionRef.current === sessionId;
     try {
-      if (descriptor.status !== "implemented") {
-        setStatus(`${descriptor.menuLabel} export is not available yet`);
-        setExportDialog((current) => current ? { ...current, busy: false } : current);
-        return;
-      }
-
-      const result = await createDialogExportResult(documentForFlush(), dialog);
-      const filename = ensureExportFileExtension(dialog.filename, descriptor.extensions);
-
-      if (!isDesktopRuntime()) {
-        downloadExportResult(filename, result);
-        setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
-        setExportDialog(undefined);
-        return;
-      }
-
-      const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename;
-      const path = dialog.destinationPath
-        ? dialog.destinationPath
-        : await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions);
-
-      if (!path) {
-        setStatus(`${descriptor.menuLabel} export canceled`);
-        setExportDialog((current) => current ? { ...current, busy: false } : current);
-        return;
-      }
-
-      await writeNativeExportResult(path, result);
-      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
-      setStatus(formatExportStatus(descriptor.menuLabel, result.format, result.warnings));
-      setExportDialog(undefined);
+      const result = await exportToTabRef.current(tabId, exportOptions(exportDialog), live);
+      if (!live()) return;
+      setExportNotice(result.notice);
+      setExportCompleted(result.status === "exported");
+      // Keep the receipt visible in the shared form; completion disables further writes.
+      if (result.status !== "exported") setExportDialog(current => current ? { ...current, busy: false } : current);
     } catch (error) {
-      const message = `${descriptor.menuLabel} export failed: ${error instanceof Error ? error.message : String(error)}`;
-      setStatus(message);
-      setExportDialog((current) => current ? { ...current, busy: false, error: message } : current);
-    }
-  }, [documentForFlush, exportDialog]);
-
-  const cancelExportDialog = useCallback(() => {
-    if (!exportDialog?.busy) {
-      setExportDialog(undefined);
-      setStatus("Export canceled");
-    }
+      if (!live()) return;
+      const message = `Export failed: ${error instanceof Error ? error.message : String(error)}`;
+      setStatus(message); setExportError(message);
+      setExportDialog(current => current ? { ...current, busy: false } : current);
+    } finally { browserExportPendingRef.current = false; }
   }, [exportDialog]);
+  const cancelExportDialog = useCallback(() => {
+    if (browserExportPendingRef.current) return;
+    browserExportTabRef.current = undefined;
+    browserExportSessionRef.current = undefined;
+    setExportDialog(undefined); setStatus("Export canceled");
+  }, []);
 
   // Plugin manager dialog (ADR-0027) + bundled-plugin diagnostics view toggles. Declared before the
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
@@ -10005,6 +10242,7 @@ export function MainWindow({
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
     applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+      if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
       // The host checked the document key before calling; a write that waits for a gesture checks again
@@ -10014,6 +10252,7 @@ export function MainWindow({
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
       return gate.run(() => {
+        if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
@@ -10462,7 +10701,7 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
-    if (keptDrawingsPromptRef.current) return;
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
@@ -19007,6 +19246,31 @@ export function MainWindow({
           })
         : null}
 
+      {quitPromptOpen && quitPrompt.visible ? (
+        <div role="dialog" aria-modal="true" aria-labelledby="quit-prompt-title" style={exportDialogBackdropStyle}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !quitSaveBusy) {
+              event.preventDefault();
+              quitPrompt.choose("cancel");
+            }
+            if (event.key === "Tab") {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+              const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+              event.preventDefault();
+              buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+            }
+          }}>
+          <section style={exportDialogPanelStyle}>
+            <h2 id="quit-prompt-title" style={exportDialogTitleStyle}>Save changes before quitting?</h2>
+            <p style={exportDialogHintStyle}>Your documents have unsaved changes.</p>
+            <div style={exportDialogFooterStyle}>
+              <button type="button" disabled={quitSaveBusy} onClick={() => quitPrompt.choose("save")}>Save</button>
+              <button type="button" disabled={quitSaveBusy} onClick={() => quitPrompt.choose("discard")}>Don't Save</button>
+              <button type="button" autoFocus disabled={quitSaveBusy} onClick={() => quitPrompt.choose("cancel")}>Cancel</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {closeTabPrompt && closePrompt.visible ? (
         <div role="dialog" aria-modal="true" aria-label="Save changes before closing?" style={exportDialogBackdropStyle}
           onKeyDown={(event) => {
@@ -19443,52 +19707,14 @@ export function MainWindow({
             onStatus={setStatus}
           />
         ) : null}
-        {exportDialog ? (
-          <ExportDialog
-            state={exportDialog}
-            document={document}
-            onPresentationChange={(presentation) => setExportDialog((current) => current ? { ...current, presentation: { ...current.presentation, ...presentation } } : current)}
-            onCancel={cancelExportDialog}
-            onChooseDestination={chooseExportDestination}
-            onFilenameChange={(filename) => {
-              setExportDialog((current) => current
-                ? {
-                    ...current,
-                    filename,
-                    destinationPath: filename === current.filename ? current.destinationPath : undefined,
-                    error: undefined
-                  }
-                : current);
-            }}
-            onFormatChange={(format) => {
-              const descriptor = getExportFormatDescriptor(format);
-              setExportDialog((current) => current ? updateExportDialogFormat(current, format) : current);
-              setStatus(descriptor.status === "implemented"
-                ? `Export ready: ${descriptor.menuLabel}`
-                : `${descriptor.menuLabel} export is not available yet`);
-            }}
-            onSvgOptionsChange={(svg) => {
-              setExportDialog((current) => current
-                ? { ...current, svg: { ...current.svg, ...svg } }
-                : current);
-            }}
-            onPdfOptionsChange={(pdf) => {
-              setExportDialog((current) => current
-                ? { ...current, pdf: { ...current.pdf, ...pdf } }
-                : current);
-            }}
-            onRasterOptionsChange={(raster) => {
-              setExportDialog((current) => current
-                ? { ...current, raster: { ...current.raster, ...raster } }
-                : current);
-            }}
-            onCdxmlOptionsChange={(cdxml) => {
-              setExportDialog((current) => current
-                ? { ...current, cdxml: { ...current.cdxml, ...cdxml } }
-                : current);
-            }}
-            onSubmit={submitExportDialog}
-          />
+        {exportDialog && !isDesktopRuntime() ? (
+          <div style={exportDialogBackdropStyle}>
+            <div style={{ width: 480, maxWidth: "100%" }}>
+              <ExportForm state={exportDialog} frame={exportDialogFrame(document)} renderPreview={options => createDialogExportPreview(document, options)} onChange={setExportDialog} error={exportError} notice={exportNotice} completed={exportCompleted}
+                title={documentTabs.find(tab => tab.id === browserExportTabRef.current)?.title}
+                onCancel={cancelExportDialog} onChooseDestination={chooseExportDestination} onSubmit={submitExportDialog} />
+            </div>
+          </div>
         ) : null}
         {pageFitPrompt ? (
           <ImportedPageFitPrompt
@@ -20027,407 +20253,6 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
     : pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
 }
 
-interface ExportDialogProps {
-  document: ChemDraftDocument;
-  onPresentationChange: (options: Partial<ExportDialogState["presentation"]>) => void;
-  state: ExportDialogState;
-  onCancel: () => void;
-  onChooseDestination: () => void | Promise<void>;
-  onFilenameChange: (filename: string) => void;
-  onFormatChange: (format: ExportDialogFormat) => void;
-  onSvgOptionsChange: (options: Partial<SvgDialogExportOptions>) => void;
-  onPdfOptionsChange: (options: Partial<PdfDialogExportOptions>) => void;
-  onRasterOptionsChange: (options: Partial<RasterDialogExportOptions>) => void;
-  onCdxmlOptionsChange: (options: Partial<CdxmlDialogExportOptions>) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void | Promise<void>;
-}
-
-export function ExportDialog({
-  document,
-  onPresentationChange,
-  state,
-  onCancel,
-  onChooseDestination,
-  onFilenameChange,
-  onFormatChange,
-  onSvgOptionsChange,
-  onPdfOptionsChange,
-  onRasterOptionsChange,
-  onCdxmlOptionsChange,
-  onSubmit
-}: ExportDialogProps) {
-  const [preview, setPreview] = useState<{ url?: string; warnings: string[]; error?: string }>({ warnings: [] });
-  const visual = state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format) !== undefined;
-  const framed = useMemo(() => exportPresentationDocument(document, state.presentation.crop), [document, state.presentation.crop]);
-  const ratio = framed.pages[0].height / framed.pages[0].width;
-  const width = state.presentation.width;
-  const height = exportDialogHeight(state.presentation, ratio);
-  const dpi = state.presentation.dpi;
-  const [pendingPreset, setPendingPreset] = useState<string | undefined>();
-  const [physicalDraft, setPhysicalDraft] = useState<{ axis: "width" | "height"; value: string } | undefined>();
-  const keyboardPreset = useRef(false);
-  const presetValue = state.presentation.preset ?? "custom";
-  useEffect(() => { setPendingPreset(undefined); }, [state.presentation]);
-  const changePresentation = (options: Partial<ExportDialogState["presentation"]>) => onPresentationChange({ ...options, ...(state.presentation.linked !== false && ("width" in options || "crop" in options) && !("height" in options) ? { height: undefined } : {}), preset: "custom" });
-  const numberValue = (value: number) => Number.isFinite(value) ? value : "";
-  const readNumber = (value: string) => value === "" ? NaN : Number(value);
-  const applyPreset = (value: string) => {
-    keyboardPreset.current = false;
-    setPendingPreset(undefined);
-    const presets = { slide: { width: 1920, dpi: 96 }, poster: { width: 7200, dpi: 300 }, publication: { width: 2008, dpi: 600 } };
-    const key = value as keyof typeof presets;
-    const preset = presets[key];
-    if (!preset) { onPresentationChange({ preset: "custom" }); return; }
-    const frame = exportPresentationDocument(document, "content");
-    const presetRatio = frame.pages[0].height / frame.pages[0].width;
-    onPresentationChange({ ...preset, width: Math.max(1, Math.floor(preset.width / Math.max(1, presetRatio))), height: undefined, linked: true, preset: key, crop: "content", background: "white" });
-    onRasterOptionsChange({ background: "white", maxDimensionPx: 8192, jpegQuality: 90 });
-  };
-  useEffect(() => {
-    if (!visual) { setPreview({ warnings: [] }); return; }
-    let active = true;
-    let url: string | undefined;
-    setPreview({ warnings: [] });
-    const timer = window.setTimeout(() => {
-      // Desktop webviews cannot display TIFF in an img element. Preview the same
-      // native raster rendering as PNG, retaining TIFF's opaque white background.
-      const previewState: ExportDialogState = state.format === "tiff"
-        ? { ...state, format: "png", raster: { ...state.raster, background: "white" } }
-        : state;
-      void createDialogExportResult(document, previewState, true).then((result) => {
-        if (!active) return;
-        const blob = result.kind === "text"
-          ? new Blob([result.contents], { type: result.mimeType })
-          : new Blob([arrayBufferFromBytes(result.bytes)], { type: result.mimeType });
-        url = URL.createObjectURL(blob);
-        const page = framed.pages[0];
-        const clipped = page.objects.some((object) => object.x < 0 || object.y < 0 || object.x + object.width > page.width || object.y + object.height > page.height);
-        setPreview({ url, warnings: [...result.warnings.map((warning) => warning.message), ...(clipped ? ["Objects extend beyond the export frame and may be clipped. Choose Content crop or adjust the page."] : [])] });
-      }).catch((error: unknown) => { if (active) setPreview({ warnings: [], error: error instanceof Error ? error.message : String(error) }); });
-    }, 250);
-    return () => { active = false; window.clearTimeout(timer); if (url) URL.revokeObjectURL(url); };
-  }, [document, state.format, state.presentation, state.svg, state.pdf, state.raster]);
-  const descriptor = getExportFormatDescriptor(state.format);
-  const implemented = descriptor.status === "implemented";
-  const rasterFormat = rasterExportFormatForDialogFormat(state.format);
-  const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
-  const sizeError = visual ? exportDialogSizeError(state, ratio) : undefined;
-  const exportDisabled = state.busy || state.filename.trim() === "" || !implemented || sizeError !== undefined;
-
-  return (
-    <div
-      aria-label="Export"
-      aria-modal="true"
-      role="dialog"
-      style={exportDialogBackdropStyle}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          onCancel();
-        }
-      }}
-    >
-      <form style={exportDialogPanelStyle} onSubmit={(event) => { if (exportDisabled) { event.preventDefault(); return; } void onSubmit(event); }} onKeyDown={(event) => {
-        if (event.key === "Enter" && !event.nativeEvent.isComposing && event.target instanceof HTMLInputElement && event.target.type !== "checkbox") {
-          event.preventDefault(); event.stopPropagation(); if (!exportDisabled) event.currentTarget.requestSubmit();
-        }
-      }}>
-        {state.error ? <p role="alert" style={exportDialogWarningStyle}>{state.error}</p> : null}
-        <div style={exportDialogHeaderStyle}>
-          <h2 style={exportDialogTitleStyle}>Export</h2>
-          <button
-            aria-label="Close export"
-            disabled={state.busy}
-            type="button"
-            style={exportDialogIconButtonStyle}
-            onClick={onCancel}
-          >
-            x
-          </button>
-        </div>
-
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-filename">
-          Save as
-        </label>
-        <input
-          id="chemdraft-export-filename"
-          disabled={state.busy}
-          value={state.filename}
-          style={exportDialogInputStyle}
-          onChange={(event) => onFilenameChange(event.currentTarget.value)}
-        />
-
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-format">
-          Export as
-        </label>
-        <select
-          id="chemdraft-export-format"
-          disabled={state.busy}
-          value={state.format}
-          style={exportDialogInputStyle}
-          onChange={(event) => {
-            onFormatChange(event.currentTarget.value as ExportDialogFormat);
-          }}
-        >
-          {exportFormatGroups.map((group) => (
-            <optgroup key={group} label={exportFormatGroupLabels[group]}>
-              {exportFormatDescriptors
-                .filter((candidate) => candidate.group === group)
-                .map((candidate) => {
-                  const rasterOnly = rasterExportFormatForDialogFormat(candidate.id) !== undefined;
-                  const unavailableInBrowser = rasterOnly && !isDesktopRuntime();
-                  return (
-                    <option key={candidate.id} value={candidate.id} disabled={unavailableInBrowser}>
-                      {candidate.label}
-                      {candidate.status === "implemented" ? "" : ` (${candidate.status})`}
-                      {unavailableInBrowser ? " (desktop only)" : ""}
-                    </option>
-                  );
-                })}
-            </optgroup>
-          ))}
-        </select>
-        {descriptor.warningSummary || !implemented ? (
-          <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
-            {descriptor.warningSummary ?? `${descriptor.menuLabel} export is not available yet.`}
-          </p>
-        ) : null}
-
-        {visual ? <fieldset style={exportDialogFieldsetStyle}>
-          <legend style={exportDialogLegendStyle}>Preview and size</legend>
-          <label style={exportDialogLabelStyle}>Preset
-            <select aria-label="Size preset" disabled={state.busy} value={pendingPreset ?? presetValue} style={exportDialogInputStyle}
-              onPointerDown={() => { keyboardPreset.current = false; }}
-              onKeyDown={(event) => {
-                if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) keyboardPreset.current = true;
-                if (event.key === "Enter" && keyboardPreset.current) { event.preventDefault(); event.stopPropagation(); applyPreset(event.currentTarget.value); }
-                if (event.key === "Escape" && keyboardPreset.current) { event.preventDefault(); event.stopPropagation(); keyboardPreset.current = false; setPendingPreset(undefined); }
-              }}
-              onBlur={(event) => { if (keyboardPreset.current) applyPreset(event.currentTarget.value); }}
-              onChange={(event) => { if (keyboardPreset.current) setPendingPreset(event.currentTarget.value); else applyPreset(event.currentTarget.value); }}
-            ><option value="custom">Custom</option><option value="slide">Slide - 1920 px longest side, 96 DPI</option><option value="poster">Poster - 24 in longest side, 300 DPI</option><option value="publication">Publication - 85 mm longest side, 600 DPI</option></select>
-          </label>
-          <label style={exportDialogLabelStyle}>Crop
-            <select disabled={state.busy} value={state.presentation.crop} onChange={(event) => changePresentation({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
-          </label>
-          <label style={exportDialogLabelStyle}><input type="checkbox" disabled={state.busy} checked={state.presentation.linked !== false} onChange={(event) => changePresentation({ linked: event.currentTarget.checked, height: event.currentTarget.checked ? undefined : height })} />Link width and height</label>
-          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(width)} onChange={(event) => changePresentation({ width: readNumber(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Height (px){state.presentation.linked !== false ? " (aspect ratio linked)" : ""}<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(height)} onChange={(event) => changePresentation(state.presentation.linked === false ? { height: readNumber(event.currentTarget.value) } : { height: readNumber(event.currentTarget.value), width: Math.round(readNumber(event.currentTarget.value) / ratio) })} /></label>
-          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} step="any" value={numberValue(dpi)} onChange={(event) => changePresentation({ dpi: readNumber(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "width" ? physicalDraft.value : numberValue(Number((width / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
-            const value = event.currentTarget.value;
-            setPhysicalDraft({ axis: "width", value });
-            changePresentation({ width: Math.round(readNumber(value) / 25.4 * dpi) });
-          }} /></label>
-          <label style={exportDialogLabelStyle}>Physical height (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "height" ? physicalDraft.value : numberValue(Number((height / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
-            const value = event.currentTarget.value;
-            const pixels = Math.round(readNumber(value) / 25.4 * dpi);
-            setPhysicalDraft({ axis: "height", value });
-            changePresentation(state.presentation.linked === false ? { height: pixels } : { height: pixels, width: Math.round(pixels / ratio) });
-          }} /></label>
-          {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
-          <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
-          {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={state.presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
-          <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label="Actual export renderer preview">
-            {preview.url ? state.format === "pdf" ? <div><object tabIndex={-1} aria-hidden="true" data={preview.url} type="application/pdf" width="100%" height="220">PDF preview</object><a href={preview.url} target="_blank" rel="noreferrer">Open PDF preview</a></div> : <img src={preview.url} alt="Export preview" style={{ width: "100%", height: 220, objectFit: "contain" }} /> : <p role="status">{preview.error ?? "Rendering preview…"}</p>}
-          </div>
-          {preview.warnings.map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}
-        </fieldset> : null}
-        <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-destination">
-          Where
-        </label>
-        <div style={exportDialogDestinationRowStyle}>
-          <input
-            id="chemdraft-export-destination"
-            readOnly
-            value={destinationLabel}
-            style={{ ...exportDialogInputStyle, ...exportDialogDestinationInputStyle }}
-          />
-          <button
-            disabled={state.busy || !isDesktopRuntime() || !implemented}
-            type="button"
-            style={exportDialogButtonStyle}
-            onClick={() => {
-              void onChooseDestination();
-            }}
-          >
-            Choose...
-          </button>
-        </div>
-
-        {state.format === "svg" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>SVG</legend>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.svg.includeWarnings}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onSvgOptionsChange({ includeWarnings: event.currentTarget.checked })}
-              />
-              Include warning metadata
-            </label>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.svg.includePageGuides}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onSvgOptionsChange({ includePageGuides: event.currentTarget.checked })}
-              />
-              Include page guides
-            </label>
-          </fieldset>
-        ) : null}
-
-        {state.format === "pdf" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>PDF</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-type">
-              PDF type
-            </label>
-            <select
-              id="chemdraft-export-pdf-type"
-              disabled={state.busy}
-              value={state.pdf.pdfType}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="vector">Vector PDF</option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-page">
-              Page
-            </label>
-            <select
-              id="chemdraft-export-pdf-page"
-              disabled={state.busy}
-              value={state.pdf.page}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="current">Current page</option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-background">
-              Background
-            </label>
-            <select
-              id="chemdraft-export-pdf-background"
-              disabled={state.busy}
-              value={state.pdf.background}
-              style={exportDialogInputStyle}
-              onChange={() => undefined}
-            >
-              <option value="white">White page</option>
-            </select>
-
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.pdf.compress}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onPdfOptionsChange({ compress: event.currentTarget.checked })}
-              />
-              Compress PDF
-            </label>
-            <label style={exportDialogCheckboxRowStyle}>
-              <input
-                checked={state.pdf.includePageGuides}
-                disabled={state.busy}
-                type="checkbox"
-                onChange={(event) => onPdfOptionsChange({ includePageGuides: event.currentTarget.checked })}
-              />
-              Include page guides
-            </label>
-          </fieldset>
-        ) : null}
-
-        {rasterFormat ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>{descriptor.menuLabel}</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
-              Background
-            </label>
-            <select
-              id="chemdraft-export-raster-background"
-              disabled={state.busy}
-              value={state.raster.background}
-              style={exportDialogInputStyle}
-              onChange={(event) => {
-                const value = event.currentTarget.value === "transparent" ? "transparent" : "white";
-                onRasterOptionsChange({ background: value });
-              }}
-            >
-              <option value="white">White page</option>
-              <option value="transparent" disabled={rasterFormat !== "png"}>
-                Transparent
-              </option>
-            </select>
-
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-max">
-              Max dimension
-            </label>
-            <input
-              id="chemdraft-export-raster-max"
-              disabled={state.busy}
-              min={256}
-              max={8192}
-              step={256}
-              type="number"
-              value={state.raster.maxDimensionPx}
-              style={exportDialogInputStyle}
-              onChange={(event) => onRasterOptionsChange({ maxDimensionPx: Number(event.currentTarget.value) })}
-            />
-
-            {rasterFormat === "jpeg" ? (
-              <>
-                <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-jpeg-quality">
-                  JPEG quality
-                </label>
-                <input
-                  id="chemdraft-export-jpeg-quality"
-                  disabled={state.busy}
-                  min={1}
-                  max={100}
-                  step={1}
-                  type="number"
-                  value={state.raster.jpegQuality}
-                  style={exportDialogInputStyle}
-                  onChange={(event) => onRasterOptionsChange({ jpegQuality: Number(event.currentTarget.value) })}
-                />
-              </>
-            ) : null}
-          </fieldset>
-        ) : null}
-
-        {state.format === "cdxml" ? (
-          <fieldset style={exportDialogFieldsetStyle}>
-            <legend style={exportDialogLegendStyle}>CDXML</legend>
-            <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-cdxml-program">
-              Creation program
-            </label>
-            <input
-              id="chemdraft-export-cdxml-program"
-              disabled={state.busy}
-              value={state.cdxml.creationProgram}
-              style={exportDialogInputStyle}
-              onChange={(event) => onCdxmlOptionsChange({ creationProgram: event.currentTarget.value })}
-            />
-          </fieldset>
-        ) : null}
-
-        <div style={exportDialogFooterStyle}>
-          <button disabled={state.busy} type="button" style={exportDialogButtonStyle} onClick={onCancel}>
-            Cancel
-          </button>
-          <button disabled={exportDisabled} type="submit" style={exportDialogPrimaryButtonStyle}>
-            {state.busy ? "Exporting..." : "Export"}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
 export function createDefaultExportDialogState(
   document: ChemDraftDocument,
   _destinationDirectory?: string
@@ -20435,7 +20260,6 @@ export function createDefaultExportDialogState(
   const descriptor = getExportFormatDescriptor("pdf");
   const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
   return {
-    presentation: { width: Math.round(document.pages[0].width), dpi: 96, crop: "page", background: "white" },
     format: descriptor.id,
     filename,
     destinationPath: undefined,
@@ -20451,6 +20275,7 @@ export function createDefaultExportDialogState(
       background: "white"
     },
     raster: {
+      scale: 1,
       background: "white",
       jpegQuality: 90,
       maxDimensionPx: 8192
@@ -20460,35 +20285,6 @@ export function createDefaultExportDialogState(
     },
     busy: false
   };
-}
-
-export function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
-  const descriptor = getExportFormatDescriptor(format);
-  const rasterFormat = rasterExportFormatForDialogFormat(format);
-  const filename = replaceExportFileExtension(state.filename, descriptor);
-  return {
-    ...state,
-    format,
-    filename,
-    destinationPath: format === state.format ? state.destinationPath : undefined,
-    error: undefined,
-    raster: {
-      ...state.raster,
-      background: rasterFormat === "png" ? state.raster.background : "white"
-    }
-  };
-}
-
-function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {
-  return rasterExportFormatsByFormatId[format];
-}
-
-function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
-  const extension = descriptor.extensions[0] ?? descriptor.id;
-  const trimmed = filename.trim() || "Untitled";
-  const escapedExtensions = exportFormatOptionExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
-  return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
 }
 
 const exportDialogBackdropStyle: CSSProperties = {
@@ -20531,27 +20327,6 @@ const exportDialogTitleStyle: CSSProperties = {
   margin: 0
 };
 
-const exportDialogLabelStyle: CSSProperties = {
-  color: "#44515e",
-  fontSize: 12,
-  fontWeight: 600,
-  lineHeight: 1.2,
-  marginTop: 4
-};
-
-const exportDialogInputStyle: CSSProperties = {
-  background: "#ffffff",
-  border: "1px solid #aeb8c2",
-  borderRadius: 6,
-  boxSizing: "border-box",
-  color: "#18212a",
-  font: "inherit",
-  fontSize: 13,
-  minHeight: 30,
-  padding: "4px 8px",
-  width: "100%"
-};
-
 const exportDialogHintStyle: CSSProperties = {
   color: "#52606d",
   fontSize: 12,
@@ -20562,45 +20337,6 @@ const exportDialogHintStyle: CSSProperties = {
 const exportDialogWarningStyle: CSSProperties = {
   ...exportDialogHintStyle,
   color: "#875300"
-};
-
-const exportDialogDestinationRowStyle: CSSProperties = {
-  alignItems: "center",
-  display: "grid",
-  gap: 8,
-  gridTemplateColumns: "minmax(0, 1fr) auto"
-};
-
-const exportDialogDestinationInputStyle: CSSProperties = {
-  color: "#52606d",
-  overflow: "hidden",
-  textOverflow: "ellipsis"
-};
-
-const exportDialogFieldsetStyle: CSSProperties = {
-  border: "1px solid #c8d0d8",
-  borderRadius: 8,
-  display: "grid",
-  gap: 8,
-  margin: "8px 0 0",
-  padding: "10px 12px 12px"
-};
-
-const exportDialogLegendStyle: CSSProperties = {
-  color: "#44515e",
-  fontSize: 12,
-  fontWeight: 650,
-  padding: "0 4px"
-};
-
-const exportDialogCheckboxRowStyle: CSSProperties = {
-  alignItems: "center",
-  color: "#28343f",
-  display: "flex",
-  fontSize: 13,
-  gap: 8,
-  lineHeight: 1.2,
-  marginTop: 4
 };
 
 const exportDialogFooterStyle: CSSProperties = {
@@ -20626,15 +20362,6 @@ const exportDialogPrimaryButtonStyle: CSSProperties = {
   background: "#1967d2",
   borderColor: "#1967d2",
   color: "#ffffff"
-};
-
-const exportDialogIconButtonStyle: CSSProperties = {
-  ...exportDialogButtonStyle,
-  borderRadius: 999,
-  height: 28,
-  minHeight: 28,
-  padding: 0,
-  width: 28
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -30240,6 +29967,16 @@ function formatSaveStatus(filename: string, warnings: readonly { code: string; m
     : `Saved ${filename}`;
 }
 
+/** Bound the complete JSON-encoded notice, leaving room for the delivery envelope. */
+export function boundExportNotice(details: string): string {
+  const fits = (text: string) => text.length <= 1024 && new TextEncoder().encode(JSON.stringify(text)).length <= 1000;
+  if (fits(details)) return details;
+  const suffix = "\nAdditional warning details omitted.";
+  const prefix = Array.from(details.slice(0, 1024));
+  while (!fits(prefix.join("") + suffix)) prefix.pop();
+  return prefix.join("") + suffix;
+}
+
 export function formatExportStatus(
   label: string,
   format: ExportFormatId,
@@ -30259,7 +29996,7 @@ export function formatExportStatus(
 // The same identity-keyed frame serves dialog renders, debounced previews and final export.
 // Weak keys release cached frames with their source documents.
 const exportContentFrames = new WeakMap<ChemDraftDocument, ChemDraftDocument>();
-function exportPresentationDocument(document: ChemDraftDocument, crop: ExportDialogState["presentation"]["crop"]): ChemDraftDocument {
+function exportPresentationDocument(document: ChemDraftDocument, crop: "page" | "content"): ChemDraftDocument {
   if (crop === "page") return document;
   let framed = exportContentFrames.get(document);
   if (!framed) {
@@ -30269,23 +30006,38 @@ function exportPresentationDocument(document: ChemDraftDocument, crop: ExportDia
   return framed;
 }
 
-function exportDialogHeight(presentation: ExportDialogState["presentation"], ratio: number): number {
-  return presentation.linked === false || presentation.height !== undefined ? (presentation.height ?? NaN) : Math.max(1, Math.round(presentation.width * ratio));
+const exportFrameCache = new WeakMap<ChemDraftDocument, ExportFrame>();
+let exportFrameRevision = 0;
+export function exportDialogFrame(document: ChemDraftDocument): ExportFrame {
+  const cached = exportFrameCache.get(document);
+  if (cached) return cached;
+  const content = exportPresentationDocument(document, "content").pages[0];
+  const page = document.pages[0];
+  const frame = { page: { width: page.width, height: page.height }, content: { width: content.width, height: content.height }, revision: ++exportFrameRevision };
+  exportFrameCache.set(document, frame);
+  return frame;
 }
 
-function exportDialogSizeError(state: ExportDialogState, ratio: number): string | undefined {
-  const { width, dpi } = state.presentation;
-  const height = exportDialogHeight(state.presentation, ratio);
-  if (!Number.isInteger(width) || width < 1 || width > 8192 || !Number.isInteger(height) || height < 1 || height > 8192) {
-    return "Export dimensions must be whole pixels from 1 to 8192 on each side. Reduce the width or height, or choose a size preset to fit the frame.";
-  }
-  if (!Number.isFinite(dpi) || dpi < 36 || dpi > 1200) {
-    return "DPI must be between 36 and 1200. Enter a value in that range.";
-  }
-  if (state.format === "pdf" && Math.max(width, height) / dpi * 72 > 14400) {
-    return "PDF page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.";
-  }
-  return undefined;
+export async function createDialogExportPreview(document: ChemDraftDocument, options: ExportOptions): Promise<ExportPreviewResult> {
+  // Preview less portable raster formats through the same native renderer as opaque PNG.
+  const state: ExportDialogState = options.format === "tiff" || options.format === "bmp" || options.format === "gif"
+    ? { ...options, busy: false, format: "png", raster: { ...options.raster, background: "white" } }
+    : { ...options, busy: false };
+  const result = await createDialogExportResult(document, state, true);
+  const bytes = result.kind === "text" ? new TextEncoder().encode(result.contents) : result.bytes;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  const framed = exportPresentationDocument(document, options.presentation?.crop ?? "page").pages[0];
+  const width = options.presentation?.width ?? framed.width;
+  const height = options.presentation ? exportDialogHeight(options.presentation, framed.height / framed.width) : framed.height;
+  const scale = Math.min(1, 800 / Math.max(width, height));
+  const clipped = framed.objects.some(object => object.x < 0 || object.y < 0 || object.x + object.width > framed.width || object.y + object.height > framed.height);
+  const warnings = [...result.warnings.map(warning => warning.message), ...(clipped ? ["Objects extend beyond the export frame and may be clipped. Choose Content crop or adjust the page."] : [])];
+  const boundedWarnings = warnings.slice(0, 99).map(warning => warning.replaceAll("\0", "").slice(0, 2048));
+  if (warnings.length > 99) boundedWarnings.push("Additional warnings omitted. Review the final export warnings for details.");
+  return { url: `data:${result.mimeType};base64,${btoa(binary)}`, kind: state.format === "pdf" ? "pdf" : "image",
+    width: Math.max(1, width * scale), height: Math.max(1, height * scale),
+    warnings: boundedWarnings };
 }
 
 export async function createDialogExportResult(
@@ -30294,32 +30046,34 @@ export async function createDialogExportResult(
   preview = false
 ): Promise<ExportResult> {
   const descriptor = getExportFormatDescriptor(state.format);
+  const presentation = state.presentation ?? { width: document.pages[0].width, dpi: 96, crop: "page" as const, background: "white" as const };
+  const sized = state.presentation !== undefined;
   if (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format)) {
-    document = exportPresentationDocument(document, state.presentation.crop);
+    document = exportPresentationDocument(document, presentation.crop);
   }
-  if (!preview && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) {
+  if (sized && !preview && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) {
     const error = exportDialogSizeError(state, document.pages[0].height / document.pages[0].width);
     if (error) throw new Error(error);
   }
-  let width = sanitizedDialogNumber(state.presentation.width, 800, 1, 8192);
+  let width = sanitizedDialogNumber(presentation.width, 800, 1, 8192);
   const ratio = document.pages[0].height / document.pages[0].width;
   // Cap renderer dimensions, not just the displayed image. Keep final export sizing intact.
-  const requestedHeight = exportDialogHeight(state.presentation, ratio);
+  const requestedHeight = exportDialogHeight(presentation, ratio);
   let height = Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : 800;
   if (preview) {
     const scale = Math.min(1, 800 / Math.max(width, height));
     width = Math.max(1, width * scale);
     height = Math.max(1, height * scale);
   }
-  if (height > 8192 && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) throw new Error("Export height exceeds 8192 pixels. Reduce the width.");
-  const dpi = preview ? 96 : sanitizedDialogNumber(state.presentation.dpi, 96, 36, 1200);
+  if (sized && height > 8192 && (state.format === "svg" || state.format === "pdf" || rasterExportFormatForDialogFormat(state.format))) throw new Error("Export height exceeds 8192 pixels. Reduce the width.");
+  const dpi = preview ? 96 : sanitizedDialogNumber(presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
     const result = exportPhase4Svg(document, {
-      outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
+      ...(sized || preview ? { outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
       outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
-      outputUnit: preview ? undefined : "mm",
-      background: state.presentation.background === "transparent" ? "transparent" : "#ffffff",
+      outputUnit: preview ? undefined : "mm" as const } : {}),
+      ...(sized ? { background: presentation.background === "transparent" ? "transparent" as const : "#ffffff" } : {}),
       includeWarnings: state.svg.includeWarnings,
       includePageGuides: state.svg.includePageGuides
     });
@@ -30335,7 +30089,7 @@ export async function createDialogExportResult(
 
   if (state.format === "pdf") {
     return exportPhase4Pdf(document, {
-      outputWidth: width / dpi * 96, outputHeight: height / dpi * 96,
+      ...(sized || preview ? { outputWidth: width / dpi * 96, outputHeight: height / dpi * 96 } : {}),
       compress: state.pdf.compress,
       includePageGuides: state.pdf.includePageGuides
     });
@@ -30364,13 +30118,13 @@ export async function createDialogExportResult(
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
     // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
     const svgResult = exportPhase4Svg(document, {
-      outputWidth: width, outputHeight: height,
+      ...(sized || preview ? { outputWidth: width, outputHeight: height } : {}),
       includeWarnings: true,
       background: transparent ? "transparent" : "#ffffff"
     });
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
-      scale: 1,
-      cssPxPerInch: dpi,
+      scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
+      ...(sized || preview ? { cssPxPerInch: dpi } : {}),
       background: transparent ? "transparent" : "#ffffff",
       jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
       maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)
@@ -30463,14 +30217,15 @@ async function pickNativeSavePath(
 async function pickNativeExportPath(
   defaultPath: string,
   formatLabel: string,
-  extensions: readonly string[]
+  extensions: readonly string[],
+  focusExportSessionId?: string
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  });
+  }, focusExportSessionId);
   return selected ?? undefined;
 }
 
@@ -30621,7 +30376,9 @@ function downloadBlob(filename: string, blob: Blob): void {
 
 function createExportFilename(document: ChemDraftDocument, extension: string): string {
   const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
-  return `${baseName}.${extension}`;
+  // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
+  // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
+  return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;
 }
 
 function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {

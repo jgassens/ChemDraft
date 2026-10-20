@@ -78,6 +78,21 @@ File UI state is kept outside the native document:
 
 Dirty state is driven by document history commits. Viewport, palette, ruler, and other UI-only changes must not dirty the document.
 
+Session restore renews per-run fs/asset access natively while reading the app's own
+`document-session.json`. Only readable tab envelopes' saved paths are considered (including
+legacy single-document sessions and readable kept tabs retried on launch). The outer active-tab
+mirror and arbitrary objects in document contents never authorize paths. Each grant uses
+`allow_file` for one absolute, existing, regular `.chemdraft` or `.cdxml` file; directories,
+symlink components, Windows reparse points, and read-only files are refused. Both session IPC
+commands accept only the main document window, and no frontend path-grant command is exposed.
+
+A refused or failed grant adds a transient `restoreSavePathError` to the returned tab. Restore
+keeps its contents, dirty state, and original file association; Save (including a close prompt's
+Save) explains the failure and opens Save As. Cancel preserves the drawing and successful Save As
+replaces its association. Autosave does not persist this transient result: access is checked
+again on each launch. The filesystem checks are a restore-time safeguard, not a defense against
+another local process replacing a path after it was checked.
+
 ## 5. Visible CDXML Subset
 
 The current visible subset is progressive and warning-backed.
