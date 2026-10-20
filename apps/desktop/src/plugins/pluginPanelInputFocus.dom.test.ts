@@ -5,6 +5,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 let cleanup: (() => void) | undefined;
 const pointerHandlers = new WeakMap<HTMLElement, EventListener>();
+const keyHandlers = new WeakMap<HTMLElement, EventListener>();
 const selectionHandlers = new WeakMap<HTMLElement, { up: EventListener; click: EventListener }>();
 afterEach(() => {
   cleanup?.();
@@ -34,6 +35,7 @@ function mount(html: string, platform: ShortcutPlatform = "macos", ready: Promis
     return unsubscribe;
   });
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
+  keyHandlers.set(shell, listen.mock.calls.find(([type]) => type === "keydown")![1] as EventListener);
   selectionHandlers.set(shell, {
     up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
     click: listen.mock.calls.find(([type]) => type === "click")?.[1] as EventListener
@@ -71,6 +73,18 @@ function click(target: Element, detail = 1): void {
 function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
   const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
   target.dispatchEvent(event);
+  return event;
+}
+
+function trustedKey(target: Element, value: string, modifiers: KeyboardEventInit = {}): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", { key: value, cancelable: true, ...modifiers });
+  // jsdom cannot dispatch trusted keyboard events; call the installed handler as for pointers.
+  keyHandlers.get(target.closest("aside")!)!({
+    target, key: event.key, isTrusted: true, isComposing: event.isComposing,
+    ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey,
+    get defaultPrevented() { return event.defaultPrevented; },
+    preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation()
+  } as unknown as Event);
   return event;
 }
 
@@ -465,6 +479,58 @@ describe("panel input keyboard focus", () => {
     deactivate();
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
+  });
+
+  it.each(["macos", "windows"] as const)("releases selection leases on non-copy keys (%s)", async (platform) => {
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    const scrollKeys = ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End", "PageUp", "PageDown", " "];
+    for (const value of [...scrollKeys, "m", "1", "Tab", "Enter"]) {
+      request.mockClear();
+      pointerDown(text); selectText(text); pointerUp(text); click(text);
+      await flush();
+      const event = trustedKey(text, value);
+      await flush();
+      expect(document.getSelection()?.isCollapsed, value).toBe(true);
+      expect(request.mock.calls.map(([editing]) => editing), value).toEqual([true, false]);
+      expect(event.defaultPrevented, value).toBe(scrollKeys.includes(value));
+    }
+  });
+
+  it.each(["macos", "windows"] as const)("keeps selection leases for copy, select-all, extension and modifiers (%s)", async (platform) => {
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    pointerDown(text); selectText(text); pointerUp(text); click(text);
+    await flush();
+    for (const modifiers of [{ ctrlKey: true }, { metaKey: true }]) {
+      for (const value of ["c", "C", "a", "A"]) {
+        expect(trustedKey(text, value, modifiers).defaultPrevented).toBe(false);
+      }
+    }
+    for (const value of ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"]) {
+      expect(trustedKey(text, value, { shiftKey: true }).defaultPrevented).toBe(false);
+    }
+    for (const value of ["Shift", "Control", "Alt", "Meta"]) {
+      expect(trustedKey(text, value).defaultPrevented).toBe(false);
+    }
+    // Scripted key events cannot release a user's selection lease.
+    key(text, "ArrowRight");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(document.getSelection()?.toString()).toBe("Report text");
+  });
+
+  it.each(["macos", "windows"] as const)("keeps input leases on trusted arrows (%s)", async (platform) => {
+    const { shell, request } = mount("<input>", platform);
+    const input = shell.querySelector("input")!;
+    pointerDown(input); input.focus();
+    await flush();
+    for (const value of ["ArrowRight", "ArrowDown"]) {
+      expect(trustedKey(input, value).defaultPrevented).toBe(false);
+    }
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(document.activeElement).toBe(input);
   });
 
   it.each(["collapse", "outside", "control"])("ends a settled selection lease when its range changes: %s", async (change) => {

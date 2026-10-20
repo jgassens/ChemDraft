@@ -75,7 +75,8 @@ Panel keyboard focus is a native-ended lease. Repeated input clicks may queue ac
 but loss or failure of the outstanding lease cancels its queued retries; an older generation
 also ends a successor that has not settled yet. Once that successor settles, obsolete native
 events cannot end it. Report-text selection leases end when their range collapses or leaves
-report text. At the start of a panel webview load, native generations reset alongside the
+report text, or on a trusted key other than a copy/select-all, extension, or modifier key.
+At the start of a panel webview load, native generations reset alongside the
 JavaScript counter; a native epoch prevents queued work from the old page matching reused
 generations. A newly built panel whose native focus/resize hooks fail is destroyed and its
 open request fails.
@@ -107,6 +108,14 @@ clicking elsewhere or loss of window focus. A deliberate drag or double/triple
 click selecting non-empty report text borrows the same focus so native Cmd/Ctrl+C
 copies it; a plain click or scripted selection does not. Clicking elsewhere,
 clicking the document or Escape clears the text selection and returns focus.
+During a selection lease, Cmd/Ctrl+C, Cmd/Ctrl+A, Shift+arrow/Home/End and bare
+Shift/Control/Alt/Meta keep the lease. Any other trusted non-composing key (including
+plain arrows, Home/End/PageUp/PageDown, letters, digits, Tab, Enter and Space) clears
+the selection and returns focus for the following drawing shortcut. This does not
+depend on the browser collapsing the range: WebView2 may scroll instead. Only the
+scrolling keys (arrows, Home/End/PageUp/PageDown and Space) have their default action
+prevented on release to avoid moving the report. Escape retains its handling below;
+input leases retain their normal editing and navigation behavior.
 Windows only lends focus while ChemDraft already owns the foreground, using
 thread-local activation without synthesized input; background requests are dropped.
 WebView2 can activate the panel on a content click despite `WS_EX_NOACTIVATE` and

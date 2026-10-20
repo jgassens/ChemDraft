@@ -59,8 +59,12 @@ The selection must clear immediately on that event; it must survive DOM blur alo
 While the first input acquisition is delayed, click that input again and then click the document.
 The first native deactivation (or failed acquisition) must cancel the queued retry, with no focus
 stolen back. Repeat with the retry already pending when the first generation's loss arrives.
-After drag-selecting report text and copying it, collapse the selection with an arrow key:
-drawing shortcuts must resume. Moving the range outside report text must also end the lease.
+After drag-selecting report text and copying it, press Right or Down, then M: the selection
+must clear and drawing shortcuts must resume even on WebView2, without scrolling the report.
+Repeat with Home/End/PageUp/PageDown, letters, digits, Tab, Enter and Space as the release key.
+Cmd/Ctrl+C, Cmd/Ctrl+A, Shift+arrow/Home/End and bare modifier keys must keep the selection lease;
+arrows in an editable input must keep its input lease. Check on macOS and Windows.
+Moving the range outside report text must also end the lease.
 Reload a panel webview using developer tools after several input leases; a fresh input click must
 still acquire focus. Repeat with an old acquisition pending at reload. Inject a native resize-hook
 installation failure: opening must report the error and leave no live panel window.

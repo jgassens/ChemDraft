@@ -231,8 +231,17 @@ export function installPluginPanelInputFocus(
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
       finish();
-    } else if (selectionLease && event.key === "Tab" && !event.defaultPrevented) {
-      event.preventDefault();
+    } else if (selectionLease && event.isTrusted && event.key !== "Escape") {
+      const copyOrSelectAll = (event.ctrlKey || event.metaKey) && !event.altKey &&
+        ["c", "a"].includes(event.key.toLowerCase());
+      const extending = event.shiftKey &&
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key);
+      if (copyOrSelectAll || extending || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+      // WebView2 scrolls non-editable selections on arrows instead of collapsing them.
+      // End explicitly; suppress only scrolling defaults so the release does not move the report.
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", " "].includes(event.key)) {
+        event.preventDefault();
+      }
       finish();
     } else if (!control) return;
     else if (event.key === "Enter" &&
