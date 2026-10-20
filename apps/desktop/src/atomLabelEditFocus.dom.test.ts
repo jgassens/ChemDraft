@@ -22,7 +22,7 @@ const nativeFocus = vi.hoisted(() => ({
   windowSetFocus: vi.fn(),
   webviewSetFocus: vi.fn()
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeFocus.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeFocus.invoke, isTauri: () => false }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ label: "main", setFocus: nativeFocus.windowSetFocus })
 }));

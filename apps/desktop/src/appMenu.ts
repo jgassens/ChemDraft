@@ -266,6 +266,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
           ]
         },
         command("clipboard.paste", "Paste", { accelerator: "Cmd+V", nativePredefined: true }),
+        command("edit.selectAll", "Select All", { accelerator: "Cmd+A" }),
         separator(),
         command("layout.group", "Group", { accelerator: "Cmd+G" }),
         command("layout.ungroup", "Ungroup", { accelerator: "Shift+Cmd+G" })

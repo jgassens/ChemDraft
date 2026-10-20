@@ -54,6 +54,12 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("exposes routed Select All with the same command and accelerator as the native menu", () => {
+    const command = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT)).find(item => item.commandId === "edit.selectAll");
+    expect(command).toMatchObject({ label: "Select All", accelerator: "Cmd+A", enabled: true });
+    expect(command?.nativePredefined).toBeFalsy();
+    expect(parseNativeMenuCommandIds()).toContain("edit.selectAll");
+  });
   it.each(["MacIntel", "Win32"])("omits kept-drawing actions from the menu on %s", (platform) => {
     vi.stubGlobal("navigator", { platform });
     try {

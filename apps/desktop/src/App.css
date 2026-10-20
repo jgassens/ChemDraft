@@ -51,6 +51,9 @@
   --cd-focus-ring: 0 0 0 2px rgb(29 127 104 / 28%);
   --cd-shadow-floating: 0 8px 18px rgb(34 40 44 / 14%);
   --cd-shadow-panel: 0 10px 24px rgb(34 40 44 / 16%);
+  --cd-panel-edge-highlight: var(--cd-bg-control-translucent);
+  --cd-shadow-edge: inset 0 2px 0 var(--cd-panel-edge-highlight), inset 0 0 0 1px var(--cd-border-strong);
+  --cd-shadow-tab: 0 -1px 3px color-mix(in srgb, var(--cd-text-primary) 12%, transparent);
   /* One explicit overlay scale: panels < menus < context menus < blocking modals. */
   --cd-z-floating-panel: 1200;
   --cd-z-menu: 1300;
@@ -771,11 +774,18 @@ textarea:focus-visible,
   max-width: 240px;
   align-items: center;
   border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  box-shadow: inset 0 0 0 1px var(--cd-border-subtle);
 }
 
 .document-tab[data-active="true"] {
-  border-bottom-color: var(--cd-text-primary);
-  background: var(--cd-bg-control);
+  border-bottom-color: var(--cd-accent);
+  background: var(--cd-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--cd-border-subtle), var(--cd-shadow-tab);
+}
+
+.document-tab:not([data-active="true"]):hover {
+  background: var(--cd-bg-hover);
 }
 
 .document-tab button {
@@ -789,6 +799,10 @@ textarea:focus-visible,
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+.document-tab[data-active="true"] [role="tab"] {
+  color: var(--cd-accent-text);
 }
 
 .document-tab [role="tab"] > span:first-child {
@@ -7508,3 +7522,39 @@ textarea:focus-visible,
 .text-object-edit-preview {
   opacity: 0;
 }
+
+/* Frame depth stays inside the webview and follows any palette size or orientation.
+   Paint above opaque children without intercepting title, tool, or resize-handle hits. */
+.palette-window-shell,
+.plugin-panel-shell {
+  position: relative;
+}
+
+.palette-window-shell::after,
+.plugin-panel-shell::after,
+.web-floating-palette::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: var(--cd-shadow-edge);
+  pointer-events: none;
+}
+
+.palette-window-shell > .palette-title,
+.plugin-panel-shell > .plugin-panel-window-title,
+.web-floating-palette > .palette-title {
+  background: linear-gradient(to bottom, var(--cd-bg-panel-raised), var(--cd-bg-panel));
+}
+/* Page Size is a native modeless window on desktop; this same body serves the browser fallback. */
+.cd-page-size-form { padding: 18px; background: var(--cd-bg-panel); color: var(--cd-text-primary); box-sizing: border-box; min-height: 100vh; font-size: 13px; }
+.cd-page-size-form h2 { font-size: 16px; margin: 0 0 12px; }
+.cd-page-size-form p { color: var(--cd-text-secondary); }
+.cd-page-size-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.cd-page-size-fields label { display: flex; flex-direction: column; gap: 4px; }
+.cd-page-size-fields input { width: 90px; }
+.cd-page-size-fields input, .cd-page-size-fields select { padding: 6px; background: var(--cd-bg-panel); color: var(--cd-text-primary); border: 1px solid var(--cd-border-subtle); border-radius: 6px; }
+.cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.cd-page-size-form button { padding: 6px 14px; }
+.cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }

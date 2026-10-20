@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dialog-request"
+description = "Enables the dialog_request command without any pre-configured scope."
+commands.allow = ["dialog_request"]
+
+[[permission]]
+identifier = "deny-dialog-request"
+description = "Denies the dialog_request command without any pre-configured scope."
+commands.deny = ["dialog_request"]

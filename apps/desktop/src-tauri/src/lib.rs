@@ -1,8 +1,10 @@
+mod dialog_windows;
 mod export;
 mod fonts;
 mod installed_plugins;
 mod ocsr_engine;
 mod opsin;
+mod plugin_package;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
@@ -200,6 +202,8 @@ trait QuitHost: Clone + Send + 'static {
 
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
+        // Native sessions settle before the final document flush, even with an unresponsive renderer.
+        dialog_windows::dismiss_owned(self, "quit");
         self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
             && self
                 .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
@@ -308,6 +312,7 @@ const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
+    "edit.selectAll",
     "clipboard.copyAs.smiles",
     "clipboard.copyAs.inchi",
     "clipboard.copyAs.inchiKey",
@@ -705,6 +710,7 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
                         if let Err(error) = window.hide() {
                             eprintln!("Could not hide ChemDraft main window: {error}");
                         }
@@ -723,6 +729,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -749,6 +756,9 @@ pub fn run() {
             }
 
             // Owned windows may finish unminimizing after their owner's Resized event.
+            if dialog_windows::is_dialog_label(window.label()) {
+                dialog_windows::on_window_event(window, event);
+            }
             if is_suspended_utility_label(window.label())
                 && matches!(event, WindowEvent::Resized(_) | WindowEvent::Focused(true))
             {
@@ -909,6 +919,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            plugin_package::read_plugin_package,
+            dialog_windows::dialog_open,
+            dialog_windows::dialog_request,
+            dialog_windows::dialog_send,
+            dialog_windows::dialog_publish,
+            dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
@@ -1286,7 +1302,9 @@ fn utility_windows_suspended() -> bool {
 
 fn is_suspended_utility_label(label: &str) -> bool {
     // Plugin panels float above their owner too: Windows owned windows and macOS child windows.
-    label.starts_with("toolset-") || is_plugin_panel_window_label(label)
+    label.starts_with("toolset-")
+        || is_plugin_panel_window_label(label)
+        || dialog_windows::is_dialog_label(label)
 }
 
 fn utility_restore_priority(label: &str) -> u8 {
@@ -1294,7 +1312,7 @@ fn utility_restore_priority(label: &str) -> u8 {
         3
     } else if label.starts_with("toolset-popover-") {
         2
-    } else if is_plugin_panel_window_label(label) {
+    } else if is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label) {
         0
     } else {
         1
@@ -1641,11 +1659,18 @@ fn restore_utility_labels<R: Runtime>(
             buffer_utility_recovery_position(&window);
             recover_offscreen_toolset_window(app, &window);
         }
+        if dialog_windows::is_dialog_label(&label) {
+            dialog_windows::mark_transient(&label);
+            buffer_utility_recovery_position(&window);
+        }
         let shown = restore_utility_in_document_group(&window);
         if let Err(error) = shown {
             result = Err(error);
         } else {
             if toolset_id_for_window_label(app, &label).is_some() {
+                buffer_utility_recovery_position(&window);
+            }
+            if dialog_windows::is_dialog_label(&label) {
                 buffer_utility_recovery_position(&window);
             }
             UTILITY_SUSPENSION
@@ -1725,6 +1750,9 @@ fn restore_utility_window<R: Runtime>(
         if is_plugin_panel_window_label(window.label()) {
             configure_analysis_window_traits(window, native)?;
         }
+        if dialog_windows::is_dialog_label(window.label()) {
+            dialog_windows::configure_on_main(window)?;
+        }
         let main_pointer = main.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let owner = unsafe { main_pointer.as_ref() }
             .ok_or_else(|| "Could not access native ChemDraft document window.".to_string())?;
@@ -1733,7 +1761,8 @@ fn restore_utility_window<R: Runtime>(
         let anchor = unsafe { anchor_pointer.as_ref() }
             .ok_or_else(|| "Could not access native ChemDraft restore anchor.".to_string())?;
         // Ordering out can detach children. Preserve recorded relationships for original windows;
-        // newly deferred windows use the normal creation policy (panels parented, toolbars not).
+        // newly deferred windows use the normal creation policy (panels parented, toolbars and
+        // dialogs unparented). Dialogs must never inherit the document's normal window level.
         // Both children and unparented utilities use the retained relative stacking position below.
         let restore_as_document_child = UTILITY_SUSPENSION
             .lock()
@@ -2264,10 +2293,18 @@ fn is_plugin_panel_window_label(label: &str) -> bool {
         && label.starts_with(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
 }
 
+/// AppKit children inherit the document's level and deactivate visibility. Dialogs need the
+/// independent floating-window behavior of toolbars, even if an old snapshot recorded a parent.
+#[cfg(any(target_os = "macos", test))]
+fn should_attach_as_document_child(label: &str) -> bool {
+    !dialog_windows::is_dialog_label(label)
+}
+
 /// Normal document parenting policy, shared by plugin-panel creation and suspended restoration.
-/// Palettes/popovers stay unparented on macOS; their Windows ownership is set separately.
+/// Palettes/popovers/dialogs stay unparented on macOS; Windows utility ownership is set separately.
 fn utility_window_has_document_parent(label: &str) -> bool {
     is_plugin_panel_window_label(label)
+        || (cfg!(not(target_os = "macos")) && dialog_windows::is_dialog_label(label))
 }
 
 #[cfg(test)]
@@ -2677,7 +2714,8 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .visible(presentation.visible_on_build)
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping panels need a visible edge, matching the palette popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true);
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
@@ -2876,7 +2914,7 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
     // Explicit panel opens keep their existing reveal behavior; suspension restores use only
     // orderWindow:relativeTo: in restore_utility_window instead of this app-wide orderFront.
     ns_window.orderFront(None);
-    attach_to_main_window(window.app_handle(), ns_window);
+    attach_to_main_window(window.app_handle(), window.label(), ns_window);
     Ok(())
 }
 
@@ -2904,7 +2942,10 @@ fn configure_analysis_window_traits<R: Runtime>(
 /// click. Call it only once `child` is on screen: `addChildWindow:` orders a hidden child in. A
 /// hidden main window is left alone, because attaching to it would tie the child to its visibility.
 #[cfg(target_os = "macos")]
-fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, child: &NSWindow) {
+fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, child: &NSWindow) {
+    if !should_attach_as_document_child(label) {
+        return;
+    }
     let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
@@ -2933,7 +2974,7 @@ pub(crate) fn attach_webview_window_to_main<R: Runtime>(window: &tauri::WebviewW
         return;
     };
     if let Some(ns_window) = unsafe { (pointer as *mut NSWindow).as_ref() } {
-        attach_to_main_window(window.app_handle(), ns_window);
+        attach_to_main_window(window.app_handle(), window.label(), ns_window);
     }
 }
 
@@ -4726,12 +4767,15 @@ fn is_edit_history_command(command_id: &str) -> bool {
 }
 
 /// Which window a routed menu command is delivered to. Everything goes to the main document window,
-/// except Undo / Redo: those follow the key window, as AppKit's predefined items did, so ⌘Z in a
-/// palette's text field undoes that text. The secondary window forwards to the main window itself
+/// except Select All and Undo / Redo, which follow the key window. As with AppKit's
+/// predefined items, ⌘Z in a palette's text field undoes that text. The secondary window forwards
+/// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
 fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
     match focused_label {
-        Some(label) if is_edit_history_command(command_id) => label,
+        Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
+            label
+        }
         _ => MAIN_WINDOW_LABEL,
     }
 }
@@ -5365,6 +5409,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         ],
                     )?,
                     &PredefinedMenuItem::paste(app, None)?,
+                    &MenuItem::with_id(
+                        app,
+                        "edit.selectAll",
+                        "Select All",
+                        true,
+                        Some("CmdOrCtrl+A"),
+                    )?,
                     &PredefinedMenuItem::separator(app)?,
                     &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
                     &MenuItem::with_id(
@@ -5511,7 +5562,11 @@ enum CloseWindowRoute {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn close_window_route(tauri_label: Option<&str>) -> CloseWindowRoute {
     match tauri_label {
-        Some(label) if is_plugin_panel_window_label(label) => CloseWindowRoute::TauriClose,
+        Some(label)
+            if is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label) =>
+        {
+            CloseWindowRoute::TauriClose
+        }
         _ => CloseWindowRoute::PerformClose,
     }
 }
@@ -5834,7 +5889,8 @@ fn ensure_toolset_window<R: Runtime>(
     .focusable(toolset_window_focusable())
     .resizable(true)
     .decorations(false)
-    .shadow(false)
+    // Overlapping palettes need a visible edge, matching the popover's native shadow.
+    .shadow(true)
     .skip_taskbar(true)
     .position(position.x, position.y)
     .build()
@@ -7718,10 +7774,9 @@ mod tests {
         expect_false(is_edit_history_command("edit.selectAll"));
     }
 
-    /// ⌘Z in a palette's text field must undo that text, not the drawing: Undo / Redo follow the key
-    /// window, while every other routed command still goes to the document window.
+    /// Text editing actions follow the key window; other routed commands target the document.
     #[test]
-    fn undo_redo_follow_the_key_window_and_other_commands_go_to_main() {
+    fn text_edit_commands_follow_the_key_window_and_other_commands_go_to_main() {
         assert_eq!(
             menu_command_target_label("edit.undo", Some("toolset-core-main")),
             "toolset-core-main"
@@ -7740,7 +7795,7 @@ mod tests {
         );
         assert_eq!(
             menu_command_target_label("edit.selectAll", Some("toolset-core-main")),
-            MAIN_WINDOW_LABEL
+            "toolset-core-main"
         );
         assert_eq!(
             menu_command_target_label("clipboard.copyAs.smiles", Some("preferences")),
@@ -7753,6 +7808,24 @@ mod tests {
         expect_false(is_routed_menu_command("clipboard.cut"));
         expect_false(is_routed_menu_command("clipboard.copy"));
         expect_false(is_routed_menu_command("clipboard.paste"));
+    }
+
+    #[test]
+    fn select_all_targets_the_focused_dialog_without_touching_document_selection() {
+        let dialog = "dialog-main-pageSize-12";
+        assert!(is_routed_menu_command("edit.selectAll"));
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", Some(dialog)),
+            dialog
+        );
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", Some(MAIN_WINDOW_LABEL)),
+            MAIN_WINDOW_LABEL
+        );
+        assert_eq!(
+            menu_command_target_label("edit.selectAll", None),
+            MAIN_WINDOW_LABEL
+        );
     }
 
     #[test]

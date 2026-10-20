@@ -1,4 +1,5 @@
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
@@ -66,7 +67,6 @@ import {
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
   cssPxToPageSize,
-  pageSizeToCssPx,
   pageLayoutSourceUnit,
   type PageSizeUnit,
   type BondRef,
@@ -738,6 +738,7 @@ import {
   forceDocumentHistoryCommandId,
   isForcedDocumentHistoryCommandId,
   performTextFieldHistory,
+  performFocusedFieldSelectAll,
   resolveEditHistoryRoute,
   stripForcedDocumentHistorySuffix
 } from "./editHistoryRouting";
@@ -761,6 +762,9 @@ import {
 } from "./keyboardShortcuts";
 import { decodeDocumentBytes } from "./documentText";
 import { boundedHistoryPast } from "./documentHistoryBudget";
+import { DialogCoordinator } from "./dialogs/DialogCoordinator";
+import { nativeDialogTransport } from "./dialogs/dialogTransport";
+import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
 import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
 import {
   askToSendCrashReport,
@@ -1490,11 +1494,7 @@ export interface SelectionClipboardPasteState {
 }
 // Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
 // they are parsed + validated on Apply.
-type CustomPageSizeDialogState = {
-  width: string;
-  height: string;
-  unit: PageSizeUnit;
-};
+type CustomPageSizeDialogState = PageSizeDraft;
 type ObjectStyleRingOverrideMode = "prompt" | "keep" | "clear";
 type ObjectStyleCommandApplyResult = {
   document: ChemDraftDocument;
@@ -1626,7 +1626,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.19.12.00-codex";
+const CURRENT_BUILD_STAMP = "10.19.14.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1893,6 +1893,7 @@ export function MainWindow({
   initialActiveToolCommandId,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useInAppModalUtilitySuspension();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
@@ -2135,6 +2136,7 @@ export function MainWindow({
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
+  const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
   const activeDocumentTabIdRef = useRef("initial");
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
@@ -8123,6 +8125,7 @@ export function MainWindow({
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
+    void dialogCoordinatorRef.current?.closeTab(id);
     // Closing the last document keeps the window open with a fresh document identity and history.
     if (tabs.length === 1) {
       newDocumentTab();
@@ -8206,6 +8209,9 @@ export function MainWindow({
     snapshotDocumentTab();
     if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)) addDocumentTab(displayName);
     const id = activeDocumentTabIdRef.current;
+    // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
+    // synchronously before replacing the history; late actions must never target the opened file.
+    void dialogCoordinatorRef.current?.closeTab(id);
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -8286,14 +8292,53 @@ export function MainWindow({
     const unit: PageSizeUnit = layout ? pageLayoutSourceUnit(layout) : "inch";
     const width = layout?.sourceWidth ?? (layout ? cssPxToPageSize(layout.widthPx, unit) : 8.5);
     const height = layout?.sourceHeight ?? (layout ? cssPxToPageSize(layout.heightPx, unit) : 11);
+    const title = documentTabsRef.current.find(tab => tab.id === activeDocumentTabIdRef.current)?.title ?? "Untitled";
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Custom Page Size could not open: the dialog host is unavailable."); return; }
+      void coordinator.openPageSize(activeDocumentTabIdRef.current, { title, width, height, unit })
+        .catch(error => setStatus(`Custom Page Size could not open: ${String(error)}`));
+      return;
+    }
     setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
   }, []);
 
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
-    commitDocumentChange((current) => setDocumentCustomPageSize(current, size));
+    commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
     setCustomPageSizeDialog(undefined);
     setStatus(`Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`);
   }, [commitDocumentChange]);
+
+  const applyPageSizeToTabRef = useRef<(tabId: string, size: { width: number; height: number; unit: PageSizeUnit }) => void>(() => {});
+  applyPageSizeToTabRef.current = (tabId, size) => {
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    if (tabId === activeDocumentTabIdRef.current) {
+      // Avoid committing over a live canvas preview that would overwrite this transaction later.
+      if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then apply the page size again.");
+      applyCustomPageSize(size);
+      return;
+    }
+    const snapshot = documentTabSnapshotsRef.current.get(tabId);
+    if (!snapshot) throw new Error("The originating drawing is unavailable.");
+    const present = normalizeCommittedDocument(setDocumentCustomPageSize(snapshot.history.present, size));
+    documentUndoLabelsRef.current.set(present, "Set Custom Page Size");
+    documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+      history: { past: boundedHistoryPast([...snapshot.history.past, snapshot.history.present], present), present, future: [] },
+      file: { ...snapshot.file, dirty: true },
+      status: `Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`
+    });
+    nonPristineTabsRef.current.add(tabId);
+    // Trigger the existing autosave of all tabs, without switching the visible drawing.
+    setDocumentTabs([...documentTabsRef.current]);
+  };
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus
+    });
+    dialogCoordinatorRef.current = coordinator;
+    return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
+  }, []);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     for (const path of paths) {
@@ -8643,6 +8688,7 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void listenForQuitFlushRequest(async () => {
+      await dialogCoordinatorRef.current?.dispose("quit");
       await writeDocumentSessionNow();
       await confirmQuitAfterFlush();
     }).then((cleanup) => {
@@ -10495,6 +10541,7 @@ export function MainWindow({
       // knows about the forwarding wrapper.
       commandId = stripForcedDocumentHistorySuffix(commandId);
     }
+    if (commandId === "edit.selectAll" && !forcedDocumentHistory && performFocusedFieldSelectAll(globalThis.document)) return;
     const historyDirection = editHistoryDirection(commandId);
     if (historyDirection) {
       const history = documentHistoryRef.current;
@@ -19450,13 +19497,16 @@ export function MainWindow({
             onResize={acceptPageFitRecommendation}
           />
         ) : null}
-        {customPageSizeDialog ? (
-          <CustomPageSizeDialog
+        {customPageSizeDialog && !isDesktopRuntime() ? (
+          <div className="cd-page-size-web-fallback" style={exportDialogBackdropStyle}>
+          <PageSizeForm
+            title={documentTabs.find(tab => tab.id === activeDocumentTabId)?.title ?? "Untitled"}
             state={customPageSizeDialog}
             onChange={setCustomPageSizeDialog}
             onCancel={() => setCustomPageSizeDialog(undefined)}
             onApply={applyCustomPageSize}
           />
+          </div>
         ) : null}
         {moleculeStyleOverridePrompt ? (
           <MoleculeStyleOverridePrompt
@@ -19975,134 +20025,6 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
   return recommendation.recommendedPresetId === "custom"
     ? recommendation.recommendedPageTitle
     : pageFitPromptLayoutLabel(recommendation.recommendedPageTitle, recommendation.recommendedOrientation);
-}
-
-function formatPageSizeFieldValue(value: number): string {
-  return Number(value.toFixed(2)).toString();
-}
-
-function pageSizeUnitShortLabel(unit: PageSizeUnit): string {
-  return unit === "inch" ? "in" : unit === "mm" ? "mm" : "px";
-}
-
-const customPageFieldLabelStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  fontSize: 12,
-  color: "var(--cd-text-secondary)"
-};
-
-const customPageInputStyle: CSSProperties = {
-  width: 110,
-  padding: "6px 8px",
-  borderRadius: 6,
-  border: "1px solid var(--cd-border-subtle)",
-  background: "var(--cd-bg-panel)",
-  color: "var(--cd-text-primary)",
-  fontSize: 13
-};
-
-interface CustomPageSizeDialogProps {
-  state: CustomPageSizeDialogState;
-  onChange: (next: CustomPageSizeDialogState) => void;
-  onCancel: () => void;
-  onApply: (size: { width: number; height: number; unit: PageSizeUnit }) => void;
-}
-
-function CustomPageSizeDialog({ state, onChange, onCancel, onApply }: CustomPageSizeDialogProps) {
-  const width = Number.parseFloat(state.width);
-  const height = Number.parseFloat(state.height);
-  const valid = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0;
-  const selectUnit = state.unit === "mm" ? "mm" : "inch";
-
-  const changeUnit = (unit: PageSizeUnit) => {
-    if (unit === state.unit) {
-      return;
-    }
-    // Convert the entered values so the physical size is preserved across the unit switch.
-    const convert = (raw: string): string => {
-      const value = Number.parseFloat(raw);
-      return Number.isFinite(value)
-        ? formatPageSizeFieldValue(cssPxToPageSize(pageSizeToCssPx(value, state.unit), unit))
-        : raw;
-    };
-    onChange({ unit, width: convert(state.width), height: convert(state.height) });
-  };
-
-  const submit = () => {
-    if (valid) {
-      onApply({ width, height, unit: state.unit });
-    }
-  };
-  const onFieldKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      submit();
-    }
-  };
-
-  return (
-    <div aria-label="Custom page size" aria-modal="true" role="dialog" style={exportDialogBackdropStyle}>
-      <section style={exportDialogPanelStyle}>
-        <div style={exportDialogHeaderStyle}>
-          <h2 style={exportDialogTitleStyle}>Custom Page Size</h2>
-        </div>
-        <p style={exportDialogHintStyle}>Enter the page width and height. Margins are kept from the current page.</p>
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <label style={customPageFieldLabelStyle}>
-            Width
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={state.width}
-              style={customPageInputStyle}
-              onChange={(event) => onChange({ ...state, width: event.target.value })}
-              onKeyDown={onFieldKeyDown}
-              autoFocus
-            />
-          </label>
-          <span style={{ paddingBottom: 8, color: "var(--cd-text-secondary)" }}>×</span>
-          <label style={customPageFieldLabelStyle}>
-            Height
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={state.height}
-              style={customPageInputStyle}
-              onChange={(event) => onChange({ ...state, height: event.target.value })}
-              onKeyDown={onFieldKeyDown}
-            />
-          </label>
-          <label style={customPageFieldLabelStyle}>
-            Units
-            <select
-              value={selectUnit}
-              style={customPageInputStyle}
-              onChange={(event) => changeUnit(event.target.value as PageSizeUnit)}
-            >
-              <option value="inch">Inches</option>
-              <option value="mm">Millimeters</option>
-            </select>
-          </label>
-        </div>
-        <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            style={{ ...exportDialogPrimaryButtonStyle, opacity: valid ? 1 : 0.5, cursor: valid ? "pointer" : "not-allowed" }}
-            onClick={submit}
-            disabled={!valid}
-          >
-            Apply
-          </button>
-        </div>
-      </section>
-    </div>
-  );
 }
 
 interface ExportDialogProps {

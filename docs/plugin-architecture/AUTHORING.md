@@ -333,6 +333,11 @@ The checksum sidecar makes either archive independently verifiable. It is an **i
 a signature and not a trust decision — and a successful technical build does not override the license
 terms inside the archive.
 
+To install a package by hand, choose **Plugins ▸ Add plugin from package…** and pick the `.zip`. Keep
+the `.zip.sha256` beside it: ChemDraft reads it automatically and refuses the install if it is
+present but wrong. Without it the package still installs, unverified by checksum. See
+`docs/architecture/plugin-package-reading.md`.
+
 ## Official catalog, installs, and updates
 
 Plugins do not advertise themselves to ChemDraft, self-update, or carry install/update URLs in their

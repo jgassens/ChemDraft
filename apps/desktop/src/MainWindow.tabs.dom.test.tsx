@@ -22,6 +22,8 @@ import { createDocumentTabActions } from "./commands";
 import type { ChemDraftAgentBridge } from "./agentBridge";
 import * as atomLabelDraft from "./atomLabelDraft";
 import * as nativePaletteReconciliation from "./toolbars/reconcileNativePalettes";
+import type { DialogMessage } from "./dialogs/dialogProtocol";
+import type { DialogDelivery } from "./dialogs/dialogTransport";
 
 const native = vi.hoisted(() => ({
   desktop: true,
@@ -42,8 +44,17 @@ const native = vi.hoisted(() => ({
   picker: vi.fn<() => Promise<string | null>>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
-  writeFile: vi.fn<(path: string, contents: string) => Promise<void>>()
+  writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
+  dialogSnapshot: undefined as DialogMessage | undefined,
+  dialogListener: undefined as ((delivery: DialogDelivery) => void) | undefined,
+  dialogClose: vi.fn(),
+  dialogPublish: vi.fn()
 }));
+vi.mock("./dialogs/dialogTransport", () => ({ nativeDialogTransport: {
+  subscribe: async (handler: (delivery: DialogDelivery) => void) => { native.dialogListener = handler; return () => { native.dialogListener = undefined; }; },
+  open: async (snapshot: DialogMessage) => { native.dialogSnapshot = snapshot; return { hostId: "opaque", windowLabel: "dialog-main-pageSize-1" }; },
+  publish: native.dialogPublish, close: native.dialogClose
+} }));
 vi.mock("./documentWorkflow", async (original) => {
   const actual = await original<typeof import("./documentWorkflow")>();
   return { ...actual, createNativeSavePayload: vi.fn(actual.createNativeSavePayload), openNativeDocument: vi.fn(actual.openNativeDocument) };
@@ -129,6 +140,10 @@ describe("documents in one window", () => {
     vi.mocked(broadcastAnalysisWindowSnapshot).mockResolvedValue(undefined);
     vi.mocked(respondToProposalDecision).mockResolvedValue(undefined);
     native.desktop = true;
+    native.dialogSnapshot = undefined;
+    native.dialogListener = undefined;
+    native.dialogClose.mockReset().mockResolvedValue(undefined);
+    native.dialogPublish.mockReset().mockResolvedValue(undefined);
     native.suspendUtilities = false;
     native.suspensionDepth = 0;
     native.visibilityChanges = [];
@@ -256,6 +271,62 @@ describe("documents in one window", () => {
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
+  async function pageSizeMessage(type: "ready" | "action", data: unknown) {
+    await act(async () => { native.dialogListener!({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1",
+      message: { ...native.dialogSnapshot!, type, data, requestId: crypto.randomUUID() } }); });
+  }
+  it("native Page Size stays modeless and applies to its originating inactive tab with one undo entry", async () => {
+    const originalLayout = bridge().snapshot().document.pages[0]!.layout;
+    await command("page.setSizeCustom");
+    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", documentTabId: "initial", data: { title: "Untitled" } });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await command("document.new"); expect(active()).toBe(1);
+    const otherLayout = bridge().snapshot().document.pages[0]!.layout;
+    await pageSizeMessage("ready", {});
+    await pageSizeMessage("action", { action: "apply", width: 200, height: 300, unit: "mm" });
+    expect(active()).toBe(1); expect(bridge().snapshot().document.pages[0]!.layout).toEqual(otherLayout);
+    expect(native.dialogClose).toHaveBeenCalledExactlyOnceWith("opaque", "apply");
+    await activate(0);
+    expect(bridge().snapshot().document.pages[0]!.layout).toMatchObject({ presetId: "custom", sourceWidth: 200, sourceHeight: 300, sourceUnit: "mm" });
+    expect(bridge().snapshot().file.dirty).toBe(true);
+    await command("edit.undo"); expect(bridge().snapshot().document.pages[0]!.layout).toEqual(originalLayout);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Set Custom Page Size");
+    await command("edit.undo"); expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+  });
+  it("closing the originating tab closes Page Size while a different drawing is active", async () => {
+    await command("page.setSizeCustom"); await command("document.new"); await closeTab(0);
+    expect(native.dialogClose).toHaveBeenCalledExactlyOnceWith("opaque", "ownerTabClose");
+  });
+  it("replacing a pristine tab settles its Page Size draft before a late Apply can reach the new file", async () => {
+    await command("page.setSizeCustom");
+    await pageSizeMessage("ready", {});
+    const oldSession = native.dialogSnapshot!;
+    await open("Replacement drawing");
+    expect(tabs()).toHaveLength(1);
+    expect(native.dialogClose).toHaveBeenCalledExactlyOnceWith("opaque", "ownerTabClose");
+    const opened = bridge().snapshot();
+    await pageSizeMessage("action", { action: "apply", width: 200, height: 300, unit: "mm" });
+    expect(bridge().snapshot().document).toEqual(opened.document);
+    expect(bridge().snapshot().file.dirty).toBe(false);
+    await command("page.setSizeCustom");
+    expect(native.dialogSnapshot!.documentTabId).toBe(oldSession.documentTabId);
+    expect(native.dialogSnapshot!.sessionId).not.toBe(oldSession.sessionId);
+    await act(async () => native.dialogListener!({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1",
+      message: { ...oldSession, type: "closed", data: { reason: "destroy" } } }));
+    await pageSizeMessage("ready", {});
+    await pageSizeMessage("action", { action: "apply", width: 100, height: 150, unit: "mm" });
+    expect(bridge().snapshot().document.pages[0]!.layout.sourceWidth).toBe(100);
+  });
+  it("the browser fallback renders the shared Page Size form and applies the existing page logic", async () => {
+    native.desktop = false;
+    await command("page.setSizeCustom");
+    expect(native.dialogSnapshot).toBeUndefined();
+    expect(container.querySelector(".cd-page-size-form")).not.toBeNull();
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Drawing: Untitled");
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.cd-page-size-form button')).find(b => b.textContent === "Apply")!.click());
+    expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe("custom");
+    expect(container.querySelector(".cd-page-size-form")).toBeNull();
+  });
   async function activate(index: number) {
     await act(async () => tabs()[index]!.click());
   }
@@ -935,6 +1006,37 @@ describe("documents in one window", () => {
     await expectPristineUntitled(multiple ? "Untitled" : createPhase4Document().title);
   });
 
+  it.each(["MacIntel", "Win32"])("Export and its nested picker share utility suspension on %s", async (platform) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    native.suspendUtilities = true;
+    await remount();
+    native.toolsetWindows.set("visible-toolbar", true);
+    native.toolsetWindows.set("hidden-toolbar", false);
+    native.toolsetWindows.set("plugin-panel", true);
+    await command("export.open");
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-label="Export"]')!;
+    expect(dialog).not.toBeNull();
+    expect(native.suspensionDepth).toBe(1);
+    expect(native.visibilityChanges).toEqual(["hide"]);
+    expect([...native.toolsetWindows.values()]).toEqual([false, false, false]);
+
+    let finishPanel!: (path: string | null) => void;
+    native.savePicker.mockImplementationOnce(() => new Promise((resolve) => { finishPanel = resolve; }));
+    const choose = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Choose...")!;
+    await act(async () => choose.click());
+    await vi.waitFor(() => expect(finishPanel).toBeDefined());
+    expect(native.suspensionDepth).toBe(2);
+    await act(async () => finishPanel(null));
+    expect(native.suspensionDepth).toBe(1);
+    expect(native.visibilityChanges).toEqual(["hide"]);
+    await act(async () => dialog.querySelector<HTMLButtonElement>('[aria-label="Close export"]')!.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Export"]')).toBeNull();
+    expect(native.suspensionDepth).toBe(0);
+    expect(native.visibilityChanges).toEqual(["hide", "restore"]);
+    expect([...native.toolsetWindows.values()]).toEqual([true, false, true]);
+  });
+
   it.each(["document.open", "document.save", "document.saveAs"])(
     "%s suspends the standalone document file panel until cancellation", async (commandId) => {
       native.suspendUtilities = true;
@@ -1173,7 +1275,7 @@ describe("documents in one window", () => {
     expect(tabs()).toHaveLength(3);
   });
 
-  it("cancels page-size editing but retains pending plugin proposals when activating another tab", async () => {
+  it("retains modeless page-size editing and pending plugin proposals when activating another tab", async () => {
     await command("document.new");
     const runtime = vi.mocked(createPluginRuntime).mock.results[0]!.value;
     const proposal = {
@@ -1186,9 +1288,11 @@ describe("documents in one window", () => {
       return { ...proposal, status: "rejected" } as never;
     });
     await command("page.setSizeCustom");
-    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "pageSize" });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     await activate(0);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(native.dialogClose).not.toHaveBeenCalled();
     expect(pendingPrompt).toBeUndefined();
     expect(reject).not.toHaveBeenCalled();
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);

@@ -292,3 +292,57 @@ and Art toolbars open, including at 125%/150% display scale:
   change only on Enter or leaving the field. Choose a file, change format/name, then cancel
   and retry the new location picker; only explicitly chosen paths may be written, and
   failures must show inside the dialog. Check one PDF-preview tab stop and rounded SVG units.
+
+## Native Custom Page Size (macOS and Windows)
+
+- From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred
+  over the document with a movable native title bar, and the title/form name the originating drawing.
+  On Windows verify no separate taskbar entry; on macOS verify a floating-level focusable document child,
+  not a sheet. Confirm no utility-window menu is attached.
+- Drag the dialog over a floating toolbar and plugin panel, then click the dialog: it must come
+  in front. Click the toolbar: it must remain usable, including flyouts and tooltips above it.
+  Reopen the retained dialog: it must come forward. Repeat on macOS and Windows; neither platform
+  should gain global always-on-top behavior. With the dialog in front of a toolbar, open and dismiss
+  a native box: preserve that dialog-above-toolbar order.
+- On macOS, move an open dialog, then Cmd-Tab to another application: the dialog and toolbars
+  must hide. Cmd-Tab back: preserve the dialog's position and sibling stacking; reopen it and
+  click its fields to confirm focus still works. Repeat with a native confirmation box open:
+  the suspended dialog must stay hidden when returning, then restore in place only after the
+  box closes. Also dismiss the box while inactive and return: restoration must wait for activation.
+  Quit with the box open: no dialog may reappear during teardown. On Windows, verify the existing
+  document-owned dialog behavior with Alt-Tab and a native box remains unchanged.
+- Leave it open and draw, use shortcuts and floating toolbars, then switch tabs. Apply to the
+  original drawing while another tab is active; the visible drawing must stay unchanged. Return
+  to the original drawing and Undo once: restore its former page size and margins. Close that tab
+  while the dialog is open: its dialog must close too.
+- On a pristine Untitled tab, open Page Size, then open a saved file into that same tab. The old
+  dialog must settle without changing the file. Repeat with a tab closed immediately after choosing
+  Custom Page Size, while the dialog is still starting: no late window may appear.
+- Choose Custom Page Size twice for the same tab after moving it and editing a draft. The existing
+  window must come forward with field focus, its draft and its position intact. Double-click Apply
+  or press Enter repeatedly: one change and one Undo entry; Apply stays disabled through closure.
+- Move it beyond the document bounds and onto another monitor (including mixed DPI), close and
+  reopen: remember its position without recentering. Remove that monitor and reopen: recover onto
+  the document monitor with the whole title bar reachable. Verify the dialog's minimize control is
+  disabled/absent on both platforms. Minimize/restore the owner and repeat; choose Custom Page Size
+  again and verify the retained dialog is visible and focused, never stranded minimized.
+- Windows mixed-DPI pass: use 100% and 150%/200% monitors, including a negative-coordinate display
+  and a taskbar-reduced work area. Keep the owner on the 100% monitor, save the dialog near the
+  bottom-right of the high-DPI display, close, and reopen. Verify its client is about 420 × 300
+  logical pixels (not scaled twice), the full measured frame stays inside the work area, and the
+  title bar remains reachable. Repeat in the opposite direction with the owner on high DPI. Drag
+  rapidly across displays, close immediately, and reopen: retain the final genuine position.
+  Disconnect the remembered monitor and reopen: recover within the owner's work area. Repeat
+  after owner minimize/restore and after native-box suspension; no restore movement is saved.
+- Open a native message box and a file picker with Page Size open, including nested boxes. Verify
+  it hides with the toolbars and returns in the preserved #140 stacking order, without changing
+  remembered toolbar visibility or frames. Close the dialog during suspension: it must stay closed.
+- Check first-field focus, invalid dimensions, valid Enter, IME composition Enter, Escape,
+  title-bar close, Cmd/Ctrl+W, field-local Undo/Redo, and reload prevention. Test screen-reader labels.
+- With a dialog width/height field focused on macOS, use Cmd+A and Edit > Select All. Only that
+  field's contents are selected; the drawing selection stays unchanged. Repeat with no field focused.
+- Quit while it is open and while it is still starting: quit promptly after session flush, with
+  no dialog restored during teardown. On macOS document Close must dismiss it before hiding the
+  document; reopening the document must not resurrect the dismissed dialog.
+- In the browser preview, check the same form/validation in the documented in-page fallback.
+  Force native creation failure on desktop: show an error and never display the browser overlay.
