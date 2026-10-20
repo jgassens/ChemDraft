@@ -12,8 +12,14 @@ selection after tab switching/closing.
 
 Plugin panel focus (both macOS and Windows): open/re-show a panel from Analyze or a plugin command;
 click a panel button, heading, chart, empty area and title/drag area, hover its controls and scroll.
-Buttons must run exactly once and hover feedback must work while the drawing keeps keyboard focus:
-press a drawing-tool shortcut after each click. Click a panel text/number field, textarea, select or
+Buttons must run exactly once and hover feedback must work; after each ordinary click the drawing
+must have keyboard focus. On Windows at 200%, repeat with the Mass Analysis heading, table cell,
+value text, empty content, and title bar (press/release without moving, then drag). Use a 15 ms
+GetForegroundWindow logger alongside a Main toolbar button as the control: a transient panel
+foreground interval is allowed, but it must hand back to the document promptly after release,
+without a document click. Press a drawing-tool shortcut immediately after each click; foreground
+ownership alone is insufficient if keyboard focus remains in the panel's WebView2 child.
+Click a panel text/number field, textarea, select or
 editable text, type/change its value, then press Escape: the panel stays open and a drawing-tool
 shortcut works again. Single-line Enter commits and returns focus; multiline Enter stays in the
 field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
@@ -23,7 +29,9 @@ remain intact. On Windows, resize from every edge and corner several pixels insi
 also on a second monitor at a different scale; the hit band matches the normal OS resize border
 without widening the visible frame. Repeat after hide/show, live resize, and moving between
 100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
-buttons still receive clicks without activation and text/content is not clipped by the inset.
+buttons still receive exactly one trusted pointerdown/click and return keyboard focus, and
+text/content is not clipped by the inset. Repeat ordinary content clicks after ending an input
+lease; test right/middle presses too. Hover and wheel alone must not trigger a focus hand-back.
 During an input/text-selection lease, press a resize border without moving: drawing shortcuts resume.
 In both inline and Full size spectra, change frequency/comparison selects, then Escape/Enter/Tab out;
 replace the report while a select is focused and confirm drawing shortcuts work again. Without making
@@ -39,6 +47,9 @@ must not start a lease. On both platforms, with another app frontmost, click an 
 or select text, and also switch apps before a delayed focus request executes: ChemDraft must never
 activate or come to the front. On Windows repeat with a non-client edge/corner press/resize while
 the other app is foreground; it must stay foreground and receive no phantom Alt keystroke.
+Also repeat ordinary content/title clicks and switch apps between pointer release and IPC delivery;
+the guarded hand-back must not raise ChemDraft. With two panels open, a delayed hand-back from
+one must not interrupt an input lease in the other.
 After a background request is dropped, activate the document and click the same input again: typing works.
 
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per

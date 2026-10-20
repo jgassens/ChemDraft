@@ -1,4 +1,6 @@
 import { isDesktopRuntime } from "../window-manager";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 
 /** Only editable controls borrow the document's keyboard focus. Labels count as their control. */
 export function panelEditableControl(target: EventTarget | null): HTMLElement | undefined {
@@ -26,7 +28,8 @@ async function requestNativeInputFocus(editing: boolean): Promise<void> {
 /** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
-  requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus
+  requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus,
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
 ): () => void {
   let editing = false;
   let leasedControl: HTMLElement | undefined;
@@ -52,6 +55,12 @@ export function installPluginPanelInputFocus(
     selectionLease = false;
     const active = panelEditableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
+  };
+  const returnPointerFocus = (): void => {
+    // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
+    // toolbar command route, explicitly hand back after an ordinary interaction, even
+    // when there was no lease to finish. The native command checks foreground ownership.
+    if (platform === "windows" && !editing) setEditing(false, true);
   };
   const reportText = (node: EventTarget | null): boolean => {
     const element = node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
@@ -94,18 +103,36 @@ export function installPluginPanelInputFocus(
     }
   };
   const pointerUp = (event: PointerEvent): void => {
-    if (!event.isTrusted || event.button !== 0 || selectionGesture?.pointerId !== event.pointerId) return;
-    if (selectionGesture.dragged || event.clientX !== selectionGesture.x || event.clientY !== selectionGesture.y) {
-      leaseSelection();
+    if (!event.isTrusted) return;
+    if (event.button === 0 && selectionGesture?.pointerId === event.pointerId) {
+      if (selectionGesture.dragged || event.clientX !== selectionGesture.x || event.clientY !== selectionGesture.y) {
+        leaseSelection();
+      } else {
+        // A double/triple click's selection is decided in click. Do not enqueue a
+        // hand-back before that decision: its delayed blur could cancel the new lease.
+        return;
+      }
     }
+    // Decide selection first. Returning focus during a report-text drag can interrupt it.
+    returnPointerFocus();
     // Keep the gesture through click: double/triple clicks select text without pointer movement.
   };
   const click = (event: MouseEvent): void => {
-    if (!event.isTrusted || !selectionGesture) return;
-    if (event.detail >= 2) leaseSelection();
+    if (!event.isTrusted) return;
+    if (selectionGesture && event.detail >= 2) leaseSelection();
     selectionGesture = undefined;
+    // Covers activation performed by WebView2's default click handling after pointerup.
+    returnPointerFocus();
   };
-  const cancelSelectionGesture = (): void => { selectionGesture = undefined; };
+  const cancelSelectionGesture = (event: PointerEvent): void => {
+    if (!event.isTrusted) return;
+    selectionGesture = undefined;
+    returnPointerFocus();
+  };
+  const windowBlur = (): void => {
+    // A hand-back without a lease must not erase the pending double/triple-click gesture.
+    if (platform !== "windows" || editing) finish();
+  };
   const selectionChange = (): void => {
     // selectionchange alone (including a script-created range) can never start a lease.
     if (selectionLease && !hasReportSelection()) finish();
@@ -121,6 +148,7 @@ export function installPluginPanelInputFocus(
   const focusOut = (): void => {
     // Native loss of focus and DOM blur can occur before the next control's focusin.
     queueMicrotask(() => {
+      if (platform === "windows" && !editing) return;
       if (!selectionLease && (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement))) {
         finish();
       }
@@ -168,26 +196,26 @@ export function installPluginPanelInputFocus(
   window.addEventListener("pointermove", pointerMove, true);
   window.addEventListener("pointerup", pointerUp, true);
   window.addEventListener("pointercancel", cancelSelectionGesture, true);
-  shell.addEventListener("click", click);
+  shell.addEventListener("click", click, true);
   document.addEventListener("selectionchange", selectionChange);
   shell.addEventListener("focusin", focusIn);
   shell.addEventListener("focusout", focusOut);
   shell.addEventListener("wheel", wheel, { capture: true, passive: true });
   shell.addEventListener("keydown", keyDown);
-  window.addEventListener("blur", finish);
+  window.addEventListener("blur", windowBlur);
   return () => {
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
     window.removeEventListener("pointermove", pointerMove, true);
     window.removeEventListener("pointerup", pointerUp, true);
     window.removeEventListener("pointercancel", cancelSelectionGesture, true);
-    shell.removeEventListener("click", click);
+    shell.removeEventListener("click", click, true);
     document.removeEventListener("selectionchange", selectionChange);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("focusout", focusOut);
     shell.removeEventListener("wheel", wheel, true);
     shell.removeEventListener("keydown", keyDown);
-    window.removeEventListener("blur", finish);
+    window.removeEventListener("blur", windowBlur);
     finish();
   };
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installPluginPanelInputFocus, panelEditableControl } from "./pluginPanelInputFocus";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 let cleanup: (() => void) | undefined;
 const pointerHandlers = new WeakMap<HTMLElement, EventListener>();
@@ -13,17 +14,17 @@ afterEach(() => {
 });
 
 async function flush(): Promise<void> {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function mount(html: string) {
+function mount(html: string, platform: ShortcutPlatform = "macos") {
   const shell = document.createElement("aside");
   shell.innerHTML = html;
   document.body.append(shell);
   const request = vi.fn(async (_editing: boolean) => undefined);
   const listen = vi.spyOn(shell, "addEventListener");
   const listenWindow = vi.spyOn(window, "addEventListener");
-  cleanup = installPluginPanelInputFocus(shell, request);
+  cleanup = installPluginPanelInputFocus(shell, request, platform);
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
   selectionHandlers.set(shell, {
     up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
@@ -53,6 +54,10 @@ function pointerUp(target: Element, dragged = true, isTrusted = true): void {
   } as unknown as Event);
 }
 
+function click(target: Element, detail = 1): void {
+  selectionHandlers.get(target.closest("aside")!)!.click({ target, isTrusted: true, detail } as unknown as Event);
+}
+
 function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
   const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
   target.dispatchEvent(event);
@@ -60,6 +65,87 @@ function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
 }
 
 describe("panel input keyboard focus", () => {
+  it.each(["macos", "windows"] as const)("hands non-lease clicks back only on Windows (%s)", async (platform) => {
+    const { shell, request } = mount('<h2>Heading</h2><div class="plugin-report"><table><tbody><tr><td>Value</td></tr></tbody></table><p></p></div><button>Run</button><canvas></canvas>', platform);
+    for (const target of shell.querySelectorAll("h2, td, p, button, canvas")) {
+      request.mockClear();
+      const action = vi.fn();
+      target.addEventListener("click", action);
+      pointerDown(target);
+      await flush();
+      expect(request).not.toHaveBeenCalled();
+      pointerUp(target, false);
+      click(target);
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+      expect(action).toHaveBeenCalledOnce();
+      expect(request.mock.calls.map(([editing]) => editing)).toEqual(platform === "windows" ? [false] : []);
+    }
+  });
+
+  it.each(["input", "select", "drag", "double", "triple"])("Windows %s leases suppress pointer hand-back until Escape", async (kind) => {
+    const { shell, request } = mount('<input><select><option>One</option></select><div class="plugin-report"><p>Report text</p></div>', "windows");
+    const target = shell.querySelector(kind === "input" || kind === "select" ? kind : "p")!;
+    pointerDown(target);
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) target.focus();
+    await flush();
+    if (kind === "drag" || kind === "double" || kind === "triple") selectText(target);
+    pointerUp(target, kind === "drag");
+    // Include an IPC turn between up and click: a double/triple selection must not queue a
+    // false request whose delayed native blur would cancel its about-to-start lease.
+    await flush();
+    if (kind === "double" || kind === "triple") expect(request).not.toHaveBeenCalled();
+    click(target, kind === "double" ? 2 : kind === "triple" ? 3 : 1);
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    key(target, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("does not interrupt Windows chart drags, hover, wheel or synthetic clicks", async () => {
+    const { shell, request } = mount("<canvas></canvas>", "windows");
+    const chart = shell.querySelector("canvas")!;
+    pointerDown(chart);
+    for (const type of ["pointermove", "wheel", "pointerup", "click"]) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true });
+      chart.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    pointerUp(chart);
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("supersedes a queued Windows hand-back when the next gesture takes a lease", async () => {
+    const { shell, request } = mount("<button>Run</button><input>", "windows");
+    pointerDown(shell.querySelector("button")!);
+    pointerUp(shell.querySelector("button")!, false);
+    click(shell.querySelector("button")!);
+    pointerDown(shell.querySelector("input")!);
+    shell.querySelector("input")!.focus();
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("preserves a Windows selection gesture across blur when there is no lease to end", async () => {
+    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
+    const text = shell.querySelector("p")!;
+    pointerDown(text);
+    // The previous ordinary click's hand-back can produce both kinds of blur. Neither is
+    // an input/selection lease ending, and neither should erase this gesture's intent.
+    shell.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    window.dispatchEvent(new Event("blur"));
+    await flush();
+    selectText(text);
+    pointerUp(text);
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(document.getSelection()?.toString()).toBe("Report text");
+  });
+
   it("retries on a new trusted click if the native request was dropped while background", async () => {
     const { shell, request } = mount("<input>");
     const input = shell.querySelector("input")!;

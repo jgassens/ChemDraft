@@ -100,6 +100,22 @@ copies it; a plain click or scripted selection does not. Clicking elsewhere,
 clicking the document or Escape clears the text selection and returns focus.
 Windows only lends focus while ChemDraft already owns the foreground, using
 thread-local activation without synthesized input; background requests are dropped.
+WebView2 can activate the panel on a content click despite `WS_EX_NOACTIVATE` and
+`WM_MOUSEACTIVATE`. Windows therefore mirrors the toolbar's explicit hand-back:
+`PaletteWindow` → `sendPaletteCommand` / `routeToolsetCommand` → native
+`route_toolset_command` returns focus after dispatch. Panels use their existing
+caller-validated `set_plugin_panel_input_focus(false)` after trusted non-lease
+pointer releases/clicks, even when no lease was previously active. Unlike the
+toolbar's force-focus route, this hand-back uses guarded `SetActiveWindow` followed
+by document **webview** focus, never Tao's forced activation or synthetic Alt.
+Report-text drags finish before the hand-back decision; double/triple clicks decide
+selection before queuing it. Input and selection leases suppress this hand-back.
+Native non-client presses and move/resize entry/exit use the same guarded helper,
+restoring webview focus after Wry's own focus handling as well. A transient Windows
+foreground change is possible, as with toolbars; the panel must not retain the
+keyboard after an ordinary click. An unconditional `WM_ACTIVATE`/`WM_SETFOCUS`
+redirect is deliberately avoided: native activation can precede the trusted DOM
+input event and its lease IPC, so redirecting there could cancel a valid input click.
 macOS makes the nonactivating panel key without activating the application. The
 proposal window is marked open only once its native open succeeds, so a failed
 open leaves the pending-proposals badge in place.

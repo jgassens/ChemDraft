@@ -792,6 +792,14 @@ pub fn run() {
                     && !window.is_minimized().unwrap_or(true)
                 {
                     let _ = window.set_focusable(false);
+                    #[cfg(windows)]
+                    if let (Ok(panel), Some(main)) = (
+                        window.hwnd(),
+                        window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
+                    ) {
+                        let _ = panel_window::return_focus_to_document(panel.0, &main);
+                    }
+                    #[cfg(not(windows))]
                     let _ = focus_main_document_window_impl(
                         window.app_handle(),
                         MainWindowFocusMode::OnlyIfAppActive,
@@ -2367,11 +2375,10 @@ async fn set_plugin_panel_input_focus(
             if was_focused {
                 #[cfg(windows)]
                 if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
-                    let hwnd = main.hwnd().map_err(|error| error.to_string())?.0;
-                    if panel_window::focus_if_app_active(hwnd) {
-                        let webview: &tauri::Webview = main.as_ref();
-                        webview.set_focus().map_err(|error| error.to_string())?;
-                    }
+                    panel_window::return_focus_to_document(
+                        target.hwnd().map_err(|error| error.to_string())?.0,
+                        &main,
+                    )?;
                 }
                 #[cfg(not(windows))]
                 focus_main_document_window_impl(

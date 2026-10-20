@@ -1,4 +1,4 @@
-//! Native traits for panels: clicks never activate, explicit input focus may make them key.
+//! Native panel traits and guarded hand-back after WebView2 pointer activation.
 
 #[cfg(any(windows, test))]
 #[path = "panel_window_geometry.rs"]
@@ -36,6 +36,32 @@ pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) ->
     }
 }
 
+/// Toolbar-style hand-back, without Tao's force_window_active / synthetic Alt fallback.
+/// Called only when a lease ends or a non-lease pointer gesture completes. Activation alone
+/// is not enough: keyboard focus must also leave the panel's WebView2 child HWND.
+#[cfg(windows)]
+pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
+    panel: windows_sys::Win32::Foundation::HWND,
+    document: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let owner = document.hwnd().map_err(|error| error.to_string())?.0;
+    let foreground = unsafe { GetForegroundWindow() };
+    // Do not take focus from another ChemDraft panel/dialog either.
+    if !geometry::foreground_can_return_to_document(
+        foreground as usize,
+        panel as usize,
+        owner as usize,
+    ) {
+        return Ok(());
+    }
+    if focus_if_app_active(owner) {
+        let webview: &tauri::Webview<R> = document.as_ref();
+        webview.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
@@ -63,6 +89,7 @@ fn extended_style(style: isize) -> isize {
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    use tauri::Manager;
     use windows_sys::Win32::{
         Foundation::RECT,
         UI::{
@@ -74,6 +101,10 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
         },
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+    let document = window
+        .app_handle()
+        .get_webview_window(super::MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main document window is not available.".to_string())?;
     // Main-thread-only. Same focus policy as Tao's focusable(false); keep it through input focus.
     unsafe {
         SetWindowLongPtrW(
@@ -125,7 +156,15 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
             });
             let hwnd = parent as windows_sys::Win32::Foundation::HWND;
             update(hwnd);
-            let data = Box::into_raw(Box::new(update));
+            let return_focus = std::rc::Rc::new(move || {
+                if let Err(error) = return_focus_to_document(parent as _, &document) {
+                    eprintln!("Could not return panel keyboard focus: {error}");
+                }
+            });
+            let data = Box::into_raw(Box::new(PanelSubclass {
+                update,
+                return_focus,
+            }));
             if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
                 drop(Box::from_raw(data));
                 eprintln!(
@@ -139,6 +178,12 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 
 #[cfg(windows)]
 type ResizeWebview = Box<dyn Fn(windows_sys::Win32::Foundation::HWND)>;
+
+#[cfg(windows)]
+struct PanelSubclass {
+    update: ResizeWebview,
+    return_focus: std::rc::Rc<dyn Fn()>,
+}
 
 #[cfg(windows)]
 unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> (i32, i32) {
@@ -171,9 +216,9 @@ unsafe extern "system" fn resize_subclass(
         UI::{
             Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass},
             WindowsAndMessaging::{
-                GetClientRect, GetWindow, GW_OWNER, MA_NOACTIVATE, SIZE_MINIMIZED, WM_DPICHANGED,
-                WM_ENTERSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
-                WM_SIZE,
+                GetClientRect, MA_NOACTIVATE, SIZE_MINIMIZED, WM_DPICHANGED, WM_ENTERSIZEMOVE,
+                WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+                WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SIZE,
             },
         },
     };
@@ -181,11 +226,18 @@ unsafe extern "system" fn resize_subclass(
         // NOACTIVATE, not NOACTIVATEANDEAT: WebView2 must still receive the click.
         return MA_NOACTIVATE as isize;
     }
-    if message == WM_NCLBUTTONDOWN {
-        // Non-client resize presses do not reach the DOM hook. Return an input's keyboard focus
-        // to the actual owner before starting the native drag, including a press without movement.
-        let owner = GetWindow(hwnd, GW_OWNER);
-        focus_if_app_active(owner);
+    let non_client_press = matches!(
+        message,
+        WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN
+    );
+    // Copy the callback before DefSubclassProc: a nested move/resize loop may destroy the panel.
+    let return_focus = (non_client_press || matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE))
+        .then(|| (*(data as *const PanelSubclass)).return_focus.clone());
+    if non_client_press {
+        // A native border/title press ends a lease even without movement. No DOM event arrives.
+        if let Some(return_focus) = &return_focus {
+            return_focus();
+        }
     }
     if message == WM_NCHITTEST {
         let mut rect = RECT::default();
@@ -220,20 +272,21 @@ unsafe extern "system" fn resize_subclass(
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(resize_subclass), id);
         let result = DefSubclassProc(hwnd, message, wparam, lparam);
-        drop(Box::from_raw(data as *mut ResizeWebview));
+        drop(Box::from_raw(data as *mut PanelSubclass));
         return result;
     }
     // Wry resets the child to fill the client during WM_SIZE. Run AFTER it, including DPI moves.
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
-    if message == WM_ENTERSIZEMOVE {
-        // Wry's parent subclass focuses WebView2 on entering a resize/move loop.
-        focus_if_app_active(GetWindow(hwnd, GW_OWNER));
+    if let Some(return_focus) = return_focus {
+        // Wry focuses WebView2 on entering a native move/resize loop. Hand back AFTER it,
+        // and again after the gesture, including a title press that never becomes a drag.
+        return_focus();
     }
     if (message == WM_SIZE && wparam != SIZE_MINIMIZED as usize) || message == WM_DPICHANGED {
         // A lower procedure may destroy the window while processing a resize/DPI event.
         let mut current_data = 0;
         if GetWindowSubclass(hwnd, Some(resize_subclass), id, &mut current_data) != 0 {
-            (*(current_data as *const ResizeWebview))(hwnd);
+            ((*(current_data as *const PanelSubclass)).update)(hwnd);
         }
     }
     result

@@ -160,7 +160,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(windows).not.toContain("target.set_focus()");
     expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
     const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
-    expect(release).toContain("panel_window::focus_if_app_active(hwnd)");
+    expect(release).toContain("panel_window::return_focus_to_document(");
     expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
     const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
@@ -171,10 +171,16 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(focus).toContain("with_owned_foreground");
     expect(focus).toContain("SetActiveWindow(hwnd)");
     expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
-    expect(panel.split("if message == WM_NCLBUTTONDOWN")[1]!.split("if message == WM_NCHITTEST")[0]!)
-      .toContain("focus_if_app_active(owner)");
-    expect(panel.split("if message == WM_ENTERSIZEMOVE")[1]!.split("let mut current_data")[0]!)
-      .toContain("focus_if_app_active(GetWindow(hwnd, GW_OWNER))");
+    const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
+    expect(handBack).toContain("foreground_can_return_to_document");
+    expect(handBack).toContain("if focus_if_app_active(owner)");
+    expect(handBack).toContain("webview.set_focus()");
+    expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
+    expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
+    expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
+      .toContain("return_focus()");
+    expect(panel.split("// Wry resets the child")[1]!.split("let mut current_data")[0]!)
+      .toContain("return_focus()");
   });
 
   it("exposes the Windows parent resize band after WebView2's fill-client resize", () => {
