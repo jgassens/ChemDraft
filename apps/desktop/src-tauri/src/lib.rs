@@ -5,6 +5,7 @@ mod fonts;
 mod installed_plugins;
 #[cfg(target_os = "macos")]
 mod macos_quit;
+mod main_window_placement;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;
@@ -814,7 +815,7 @@ impl Default for ToolsetLayoutState {
 
 /// Main window frame in logical points: outer (top-left) position + inner content size, matching
 /// what `set_position`/`set_size` take, so a saved frame round-trips exactly.
-#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MainWindowGeometry {
     x: f64,
@@ -1365,49 +1366,52 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
-    // Tauri auto-creates the config "main" window at startup (title "ChemDraft" from tauri.conf.json),
-    // so create_main_window's set_title never runs on that path — apply the worktree-labeled title
-    // here on the window we actually resolved, so every worktree's window is distinguishable.
-    let _ = window.set_title(&main_window_title());
-    window
-        .set_decorations(true)
-        .map_err(|error| error.to_string())?;
-    configure_document_webview(&window)?;
-    window
-        .set_focusable(true)
-        .map_err(|error| error.to_string())?;
-    window
-        .set_skip_taskbar(false)
-        .map_err(|error| error.to_string())?;
-    // Apply the last-used frame only when bringing the window up from hidden (launch, macOS
-    // Reopen); center only when there is nothing to restore (first launch, or the saved frame is on
-    // a display that's gone). A window already on screen — a second launch or an open-document
-    // call — keeps its live frame: re-applying position/size clears tao's maximized state, so a
-    // document opened from Explorer used to un-maximize the window.
     let already_on_screen = window.is_visible().unwrap_or(false);
-    window.unminimize().map_err(|error| error.to_string())?;
-    // Fullscreen owns its frame even when hidden (macOS close then Dock reopen).
-    let keep_frame = already_on_screen || window.is_fullscreen().unwrap_or(false);
-    let geometry = if keep_frame {
-        None
-    } else {
-        load_toolset_layout_state(app).main_window
-    };
-    match main_window_frame_action(keep_frame, geometry.is_some()) {
-        MainWindowFrameAction::Keep => {}
-        MainWindowFrameAction::Restore => {
-            if !restore_main_window_geometry(&window, geometry.as_ref().expect("saved frame")) {
-                window.center().map_err(|error| error.to_string())?;
+    main_window_placement::reveal_after_preparation(
+        |errors| {
+            // Tauri auto-creates the config "main" window at startup (title "ChemDraft" from tauri.conf.json),
+            // so create_main_window's set_title never runs on that path — apply the worktree-labeled title
+            // here on the window we actually resolved, so every worktree's window is distinguishable.
+            errors.record("set title", window.set_title(&main_window_title()));
+            errors.record("set decorations", window.set_decorations(true));
+            errors.record("configure webview", configure_document_webview(&window));
+            errors.record("set focusable", window.set_focusable(true));
+            errors.record("set taskbar visibility", window.set_skip_taskbar(false));
+            // Apply the last-used frame only when bringing the window up from hidden (launch, macOS
+            // Reopen); center only when there is nothing to restore (first launch, or the saved frame is on
+            // a display that's gone). A window already on screen — a second launch or an open-document
+            // call — keeps its live frame: re-applying position/size clears tao's maximized state, so a
+            // document opened from Explorer used to un-maximize the window.
+            errors.record("unminimize", window.unminimize());
+            // Fullscreen owns its frame even when hidden (macOS close then Dock reopen).
+            let keep_frame = already_on_screen || window.is_fullscreen().unwrap_or(false);
+            let geometry = if keep_frame {
+                None
+            } else {
+                load_toolset_layout_state(app).main_window
+            };
+            match main_window_frame_action(keep_frame, geometry.is_some()) {
+                MainWindowFrameAction::Keep => false,
+                MainWindowFrameAction::Restore => restore_main_window_geometry(
+                    &window,
+                    geometry.as_ref().expect("saved frame"),
+                    errors,
+                ),
+                MainWindowFrameAction::Center => {
+                    errors.record("center", window.center());
+                    false
+                }
             }
-        }
-        MainWindowFrameAction::Center => {
-            window.center().map_err(|error| error.to_string())?;
-        }
-    }
-    if !already_on_screen {
-        window.show().map_err(|error| error.to_string())?;
-    }
-    window.set_focus().map_err(|error| error.to_string())
+        },
+        |maximize_on_show| {
+            if !already_on_screen {
+                main_window_placement::show(&window, maximize_on_show)
+            } else {
+                Ok(())
+            }
+        },
+        || window.set_focus().map_err(|error| error.to_string()),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -7010,8 +7014,8 @@ fn persist_toolset_position<R: Runtime>(
 enum MainWindowGeometryUpdate {
     /// Fullscreen or minimized: a transient OS state, not a user-chosen frame.
     Skip,
-    /// Maximized: not the user's frame either (on Windows it even starts off-screen, at the
-    /// invisible border), so record only the flag and keep the saved normal frame.
+    /// Maximized: save only a native normal frame if available, otherwise retain the saved one.
+    /// Never use the live maximized rect (on Windows it starts at the off-screen invisible border).
     MarkMaximized,
     /// A normal frame: save it, clearing the maximized flag.
     SaveFrame,
@@ -7021,10 +7025,11 @@ fn main_window_geometry_update(
     fullscreen: bool,
     minimized: bool,
     maximized: bool,
+    native_maximized: Option<bool>,
 ) -> MainWindowGeometryUpdate {
     if fullscreen || minimized {
         MainWindowGeometryUpdate::Skip
-    } else if maximized {
+    } else if native_maximized.unwrap_or(maximized) {
         MainWindowGeometryUpdate::MarkMaximized
     } else {
         MainWindowGeometryUpdate::SaveFrame
@@ -7032,70 +7037,119 @@ fn main_window_geometry_update(
 }
 
 fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
-    match main_window_geometry_update(
-        window.is_fullscreen().unwrap_or(false),
-        window.is_minimized().unwrap_or(false),
+    // Native placement is authoritative: tao can still report the old state on the first
+    // Moved/Resized event of a maximize (or restore). A failed native read must not save a live rect.
+    let native = main_window_placement::snapshot(window)?;
+    let update = main_window_geometry_update(
+        native.fullscreen || window.is_fullscreen().unwrap_or(false),
+        native.minimized || window.is_minimized().unwrap_or(false),
         window.is_maximized().unwrap_or(false),
-    ) {
-        MainWindowGeometryUpdate::Skip => return Ok(()),
-        MainWindowGeometryUpdate::MarkMaximized => {
-            return update_toolset_layout_state(window.app_handle(), |layout_state| {
-                if let Some(geometry) = layout_state.main_window.as_mut() {
-                    geometry.maximized = true;
-                }
-            });
-        }
-        MainWindowGeometryUpdate::SaveFrame => {}
-    }
-    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        native.maximized,
+    );
+    if update == MainWindowGeometryUpdate::Skip {
         return Ok(());
-    };
-    let scale_factor = window.scale_factor().unwrap_or(1.0);
-    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
+    }
+    let maximized = update == MainWindowGeometryUpdate::MarkMaximized;
+    // Windows supplies rcNormalPosition even while maximized. macOS supplies no normal rect:
+    // while zoomed, retain the last normal frame and update only the flag.
+    let normal_frame = if let Some(frame) = native.normal_frame {
+        Some(frame)
+    } else if !maximized {
+        let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+            return Ok(());
+        };
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        Some(MainWindowGeometry {
+            x: position.x as f64 / scale,
+            y: position.y as f64 / scale,
+            width: size.width as f64 / scale,
+            height: size.height as f64 / scale,
+            maximized: false,
+        })
     } else {
-        1.0
+        None
     };
     update_toolset_layout_state(window.app_handle(), |layout_state| {
-        layout_state.main_window = Some(MainWindowGeometry {
-            x: position.x as f64 / scale_factor,
-            y: position.y as f64 / scale_factor,
-            width: size.width as f64 / scale_factor,
-            height: size.height as f64 / scale_factor,
-            maximized: false,
-        });
+        update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
     })
 }
 
-/// Apply a saved main-window frame. Returns false for a degenerate frame or a frame whose title
-/// bar is on no attached monitor, so the caller can fall back to centering.
+fn update_main_window_geometry(
+    saved: &mut Option<MainWindowGeometry>,
+    update: MainWindowGeometryUpdate,
+    normal_frame: Option<MainWindowGeometry>,
+) {
+    if update == MainWindowGeometryUpdate::Skip {
+        return;
+    }
+    if let Some(frame) = normal_frame {
+        *saved = Some(frame);
+    }
+    if let Some(geometry) = saved.as_mut() {
+        geometry.maximized = update == MainWindowGeometryUpdate::MarkMaximized;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MainWindowRestoreStep {
+    Frame,
+    Center,
+    Maximize,
+}
+
+fn main_window_restore_steps(reachable: bool, maximized: bool) -> Vec<MainWindowRestoreStep> {
+    let mut steps = vec![if reachable {
+        MainWindowRestoreStep::Frame
+    } else {
+        MainWindowRestoreStep::Center
+    }];
+    if maximized {
+        steps.push(MainWindowRestoreStep::Maximize);
+    }
+    steps
+}
+
+/// Place the normal frame (or center), THEN request maximization at the caller's single reveal.
+/// On Windows, tao's maximize() would briefly show and re-hide a hidden window itself.
 fn restore_main_window_geometry<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     geometry: &MainWindowGeometry,
+    errors: &mut main_window_placement::SetupErrors,
 ) -> bool {
-    if !(geometry.width > 0.0
+    let reachable = geometry.width.is_finite()
+        && geometry.height.is_finite()
+        && geometry.width > 0.0
         && geometry.height > 0.0
         && geometry.x.is_finite()
-        && geometry.y.is_finite())
-    {
-        return false;
+        && geometry.y.is_finite()
+        && main_window_geometry_reachable(window, geometry);
+    for step in main_window_restore_steps(reachable, geometry.maximized) {
+        match step {
+            MainWindowRestoreStep::Frame => {
+                let positioned = errors.record(
+                    "restore position",
+                    window.set_position(tauri::LogicalPosition::new(geometry.x, geometry.y)),
+                );
+                let sized = errors.record(
+                    "restore size",
+                    window.set_size(tauri::LogicalSize::new(geometry.width, geometry.height)),
+                );
+                if positioned.is_none() || sized.is_none() {
+                    errors.record("center after restore failure", window.center());
+                }
+            }
+            MainWindowRestoreStep::Center => {
+                errors.record("center saved frame", window.center());
+            }
+            MainWindowRestoreStep::Maximize => return true,
+        }
     }
-    if !main_window_geometry_reachable(window, geometry) {
-        return false;
-    }
-    // macOS fullscreen owns the frame; report success so the caller doesn't center underneath it.
-    if window.is_fullscreen().unwrap_or(false) {
-        return true;
-    }
-    let restored = window
-        .set_position(tauri::LogicalPosition::new(geometry.x, geometry.y))
-        .and_then(|_| window.set_size(tauri::LogicalSize::new(geometry.width, geometry.height)))
-        .is_ok();
-    // Maximize after the normal frame is in place, so un-maximizing returns to it.
-    if restored && geometry.maximized {
-        let _ = window.maximize();
-    }
-    restored
+    false
 }
 
 /// True when the saved frame's title-bar strip lands on some attached monitor (compared in each
@@ -7485,15 +7539,18 @@ mod tests {
     #[test]
     fn a_maximized_main_window_records_the_flag_and_keeps_its_normal_frame() {
         use MainWindowGeometryUpdate::*;
-        assert_eq!(main_window_geometry_update(false, false, false), SaveFrame);
         assert_eq!(
-            main_window_geometry_update(false, false, true),
+            main_window_geometry_update(false, false, false, None),
+            SaveFrame
+        );
+        assert_eq!(
+            main_window_geometry_update(false, false, true, None),
             MarkMaximized
         );
         // Transient states win over maximized: a minimized maximized window saves nothing.
-        assert_eq!(main_window_geometry_update(false, true, true), Skip);
-        assert_eq!(main_window_geometry_update(true, false, true), Skip);
-        assert_eq!(main_window_geometry_update(true, false, false), Skip);
+        assert_eq!(main_window_geometry_update(false, true, true, None), Skip);
+        assert_eq!(main_window_geometry_update(true, false, true, None), Skip);
+        assert_eq!(main_window_geometry_update(true, false, false, None), Skip);
 
         // Layout files written before the flag existed still parse, as not maximized.
         let legacy: MainWindowGeometry =
@@ -7504,6 +7561,73 @@ mod tests {
             serde_json::from_str(r#"{"x":10,"y":20,"width":800,"height":600,"maximized":true}"#)
                 .expect("current geometry should parse");
         assert!(current.maximized);
+    }
+
+    #[test]
+    fn native_maximize_state_wins_before_tao_processes_the_event() {
+        use MainWindowGeometryUpdate::*;
+        // Windows GetWindowPlacement/IsZoomed (and AppKit isZoomed) see maximize before tao.
+        assert_eq!(
+            main_window_geometry_update(false, false, false, Some(true)),
+            MarkMaximized
+        );
+        // The same race in reverse must clear the flag after un-maximizing.
+        assert_eq!(
+            main_window_geometry_update(false, false, true, Some(false)),
+            SaveFrame
+        );
+        assert_eq!(
+            main_window_geometry_update(true, false, false, Some(true)),
+            Skip
+        );
+        assert_eq!(
+            main_window_geometry_update(false, true, false, Some(true)),
+            Skip
+        );
+    }
+
+    #[test]
+    fn maximizing_saves_only_the_native_normal_frame_or_retains_the_previous_one() {
+        let normal = MainWindowGeometry {
+            x: 100.0,
+            y: 80.0,
+            width: 1000.0,
+            height: 700.0,
+            maximized: false,
+        };
+        let maximized = MainWindowGeometry {
+            maximized: true,
+            ..normal
+        };
+        let update = main_window_geometry_update(false, false, false, Some(true));
+        // Windows: the native normal frame is usable even when no previous frame was saved.
+        let mut saved = None;
+        update_main_window_geometry(&mut saved, update, Some(normal));
+        assert_eq!(saved, Some(maximized));
+        // macOS: no native normal frame while zoomed, so keep the previous normal coordinates.
+        saved = Some(normal);
+        update_main_window_geometry(&mut saved, MainWindowGeometryUpdate::MarkMaximized, None);
+        assert_eq!(saved, Some(maximized));
+        update_main_window_geometry(&mut saved, MainWindowGeometryUpdate::Skip, Some(normal));
+        assert_eq!(saved, Some(maximized));
+        update_main_window_geometry(
+            &mut saved,
+            MainWindowGeometryUpdate::SaveFrame,
+            Some(normal),
+        );
+        assert_eq!(saved, Some(normal));
+    }
+
+    #[test]
+    fn restoring_maximized_places_a_normal_frame_or_centers_before_maximizing() {
+        use MainWindowRestoreStep::*;
+        assert_eq!(
+            main_window_restore_steps(false, true),
+            vec![Center, Maximize]
+        );
+        assert_eq!(main_window_restore_steps(true, true), vec![Frame, Maximize]);
+        assert_eq!(main_window_restore_steps(false, false), vec![Center]);
+        assert_eq!(main_window_restore_steps(true, false), vec![Frame]);
     }
 
     #[test]
@@ -8391,6 +8515,27 @@ mod tests {
         expect_false(title_bar_reachable_in_monitor(
             &geometry, 0.0, 0.0, 1728.0, 1117.0,
         ));
+    }
+
+    #[test]
+    fn a_previously_saved_maximized_rect_is_centered_then_maximized() {
+        // An older Windows save captured the invisible maximized border above the display.
+        let geometry = MainWindowGeometry {
+            x: -6.5,
+            y: -6.5,
+            width: 2079.0,
+            height: 1063.0,
+            maximized: true,
+        };
+        let reachable = title_bar_reachable_in_monitor(&geometry, 0.0, 0.0, 2066.0, 1050.0);
+        assert!(!reachable);
+        assert_eq!(
+            main_window_restore_steps(reachable, geometry.maximized),
+            vec![
+                MainWindowRestoreStep::Center,
+                MainWindowRestoreStep::Maximize
+            ],
+        );
     }
 
     #[test]

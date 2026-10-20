@@ -12,7 +12,10 @@ selection after tab switching/closing.
 
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
-centres. Repeat maximized, then restore to verify the normal frame; on macOS also repeat fullscreen
+centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back
+maximized, and un-maximizing must return to the recorded pre-maximize frame. Repeat with the saved
+normal frame on a disconnected display: relaunch must centre then maximize, without a cascade flash.
+On Windows repeat with top/left taskbars and different display scales. On macOS also repeat fullscreen
 and Dock reopen. Cold-open a file from Finder/Explorer, relaunch after an update, and open another
 file/launch again while running: the main window must appear, preserving its live frame and maximized
 state when already visible. Repeat with session recovery and crash-report consent pending.
