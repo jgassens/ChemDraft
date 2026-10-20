@@ -979,6 +979,7 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
             prewarm_toolset_popover,
@@ -2334,15 +2335,22 @@ fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn register_plugin_panel_input_focus(window: tauri::WebviewWindow) -> Result<String, String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    Ok(panel_window::page_token(&window))
+}
+
+#[tauri::command]
 async fn set_plugin_panel_input_focus(
     window: tauri::WebviewWindow,
+    page_token: String,
     editing: bool,
     generation: u64,
 ) -> Result<bool, String> {
     validate_plugin_panel_focus_caller(window.label())?;
     // Register the pending generation BEFORE marshalling acquisition to the UI thread.
     // A native loss while that operation is queued must cancel it, not be forgotten.
-    let Some(epoch) = panel_window::request(&window, generation, editing) else {
+    let Some(epoch) = panel_window::request(&window, generation, &page_token, editing) else {
         return Ok(false);
     };
     let target = window.clone();

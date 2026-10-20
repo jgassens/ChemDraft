@@ -28,11 +28,20 @@ export interface NativePanelFocusEvent {
 // Survives effect teardown/reinstall (including React StrictMode). Native bookkeeping
 // resets at PageLoadEvent::Started when a reload creates a fresh JS counter.
 let nextGeneration = 0;
+let pageToken: Promise<string> | undefined;
+
+function registerNativeInputFocus(): Promise<string> {
+  // Register once per JS page, including across StrictMode effect reinstalls. Never
+  // refresh a stale token: delayed requests must retain their originating page.
+  return pageToken ??= import("@tauri-apps/api/core").then(({ invoke }) =>
+    invoke<string>("register_plugin_panel_input_focus"));
+}
 
 async function requestNativeInputFocus(editing: boolean, generation: number): Promise<boolean> {
   if (!isDesktopRuntime()) return editing;
+  const token = await registerNativeInputFocus();
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation });
+  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token });
 }
 
 async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) => void): Promise<() => void> {
@@ -47,6 +56,10 @@ export function installPluginPanelInputFocus(
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
   subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus
 ): () => void {
+  if (requestFocus === requestNativeInputFocus && isDesktopRuntime()) {
+    void registerNativeInputFocus().catch((error: unknown) =>
+      console.error("Could not register panel input focus:", error));
+  }
   let editing = false;
   let leasedControl: HTMLElement | undefined;
   let selectionLease = false;

@@ -33,15 +33,31 @@ struct FocusEvent {
     generation: u64,
 }
 
+// Read synchronously during page registration, before any asynchronous focus IPC.
+// Send as a string so JavaScript treats the native epoch as an opaque token.
+pub(crate) fn page_token<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> String {
+    window
+        .state::<PanelFocusState>()
+        .0
+        .lock()
+        .unwrap()
+        .entry(window.label().to_string())
+        .or_default()
+        .epoch
+        .to_string()
+}
+
 pub(crate) fn request<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     generation: u64,
+    page_token: &str,
     editing: bool,
 ) -> Option<u64> {
     let state = window.state::<PanelFocusState>();
     let mut leases = state.0.lock().unwrap();
     let lease = leases.entry(window.label().to_string()).or_default();
-    lease.request(generation, editing).then_some(lease.epoch)
+    let epoch = page_token.parse().ok()?;
+    lease.request(generation, epoch, editing).then_some(epoch)
 }
 
 pub(crate) fn acquired<R: tauri::Runtime>(

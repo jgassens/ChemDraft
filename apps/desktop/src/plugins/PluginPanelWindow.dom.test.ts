@@ -31,7 +31,7 @@ import {
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async () => true));
+const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -252,11 +252,11 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number) });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number) });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 

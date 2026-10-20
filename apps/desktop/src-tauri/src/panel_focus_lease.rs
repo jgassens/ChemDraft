@@ -22,8 +22,8 @@ impl Lease {
         self.generation == generation && self.epoch == epoch
     }
 
-    pub fn request(&mut self, generation: u64, editing: bool) -> bool {
-        if generation <= self.generation {
+    pub fn request(&mut self, generation: u64, epoch: u64, editing: bool) -> bool {
+        if epoch != self.epoch || generation <= self.generation {
             return false;
         }
         self.generation = generation;
@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn genuine_loss_during_acquisition_cannot_be_undone_by_its_completion() {
         let mut lease = Lease::default();
-        assert!(lease.request(1, true));
+        assert!(lease.request(1, lease.epoch, true));
         assert_eq!(lease.deactivate(), Some(1));
         assert!(!lease.acquired(1, 0, true));
         assert_eq!(lease.deactivate(), None);
@@ -61,10 +61,10 @@ mod tests {
     #[test]
     fn dropped_acquisition_never_holds_a_lease() {
         let mut lease = Lease::default();
-        lease.request(1, true);
+        lease.request(1, lease.epoch, true);
         assert!(!lease.acquired(1, 0, false));
         assert_eq!(lease.deactivate(), None);
-        assert!(lease.request(2, true));
+        assert!(lease.request(2, lease.epoch, true));
         assert!(lease.acquired(2, 0, true));
         assert_eq!(lease.deactivate(), Some(2));
     }
@@ -72,24 +72,44 @@ mod tests {
     #[test]
     fn stale_requests_and_completions_cannot_change_a_new_lease() {
         let mut lease = Lease::default();
-        lease.request(1, true);
-        lease.request(2, false);
-        lease.request(3, true);
-        assert!(!lease.request(2, false));
+        lease.request(1, lease.epoch, true);
+        lease.request(2, lease.epoch, false);
+        lease.request(3, lease.epoch, true);
+        assert!(!lease.request(2, lease.epoch, false));
         assert!(!lease.acquired(1, 0, false));
         assert!(lease.acquired(3, 0, true));
         assert_eq!(lease.deactivate(), Some(3));
     }
 
     #[test]
+    fn old_page_request_executing_after_reset_cannot_acquire_or_block_new_page() {
+        let mut lease = Lease::default();
+        let old_page = lease.epoch;
+        assert!(lease.request(40, old_page, true));
+        // Generation 41 was dispatched by the old page, but its async command has
+        // not executed yet when navigation resets native bookkeeping.
+        lease.reset();
+        let new_page = lease.epoch;
+        assert!(!lease.request(41, old_page, true));
+        assert!(!lease.is_current(41, new_page));
+        assert!(!lease.acquired(41, old_page, true));
+        assert_eq!(lease.deactivate(), None);
+        assert!(lease.request(1, new_page, true));
+        assert!(lease.acquired(1, new_page, true));
+        // An old page's release cannot end the new page's lease either.
+        assert!(!lease.request(42, old_page, false));
+        assert_eq!(lease.deactivate(), Some(1));
+    }
+
+    #[test]
     fn reloaded_webview_can_restart_generations_without_reviving_old_work() {
         let mut lease = Lease::default();
-        assert!(lease.request(1, true));
+        assert!(lease.request(1, lease.epoch, true));
         let old_epoch = lease.epoch;
         lease.reset();
         assert_eq!(lease.deactivate(), None);
         assert!(!lease.is_current(1, old_epoch));
-        assert!(lease.request(1, true));
+        assert!(lease.request(1, lease.epoch, true));
         assert!(!lease.is_current(1, old_epoch));
         assert!(!lease.acquired(1, old_epoch, false));
         assert!(lease.acquired(1, lease.epoch, true));
