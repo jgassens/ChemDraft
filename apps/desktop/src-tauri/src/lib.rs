@@ -623,6 +623,7 @@ pub fn run() {
 
     let builder = builder
         .manage(PendingOpenDocument::default())
+        .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(ToolsetWindowDirectory::default())
@@ -791,6 +792,9 @@ pub fn run() {
                     && window.is_focused().unwrap_or(false)
                     && !window.is_minimized().unwrap_or(true)
                 {
+                    if let Some(panel) = window.app_handle().get_webview_window(window.label()) {
+                        panel_window::activation(&panel, false);
+                    }
                     let _ = window.set_focusable(false);
                     #[cfg(windows)]
                     if let (Ok(panel), Some(main)) = (
@@ -805,9 +809,10 @@ pub fn run() {
                         MainWindowFocusMode::OnlyIfAppActive,
                     );
                 }
-                if matches!(event, WindowEvent::Focused(false)) {
-                    // Clicking the document or switching apps ends the input's focus lease.
-                    let _ = window.set_focusable(false);
+                // Focused is queued by Tao and may describe an older activation by delivery.
+                // Lease ownership is observed synchronously at the OS boundary instead.
+                if matches!(event, WindowEvent::Destroyed) {
+                    panel_window::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     if APP_QUITTING.load(Ordering::SeqCst) {
@@ -2321,43 +2326,84 @@ fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
 async fn set_plugin_panel_input_focus(
     window: tauri::WebviewWindow,
     editing: bool,
-) -> Result<(), String> {
+    generation: u64,
+) -> Result<bool, String> {
     validate_plugin_panel_focus_caller(window.label())?;
+    // Register the pending generation BEFORE marshalling acquisition to the UI thread.
+    // A native loss while that operation is queued must cancel it, not be forgotten.
+    if !panel_window::request(&window, generation, editing) {
+        return Ok(false);
+    }
     let target = window.clone();
     run_on_main_thread_blocking(&window, move || {
+        if !panel_window::is_current(&target, generation)
+            || (editing && !panel_window::acquired(&target, generation, true))
+        {
+            return Ok(false);
+        }
         if editing {
-            #[cfg(target_os = "macos")]
-            {
-                target
-                    .set_focusable(true)
-                    .map_err(|error| error.to_string())?;
-                let pointer =
-                    target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
-                let panel = unsafe { pointer.as_ref() }
-                    .ok_or_else(|| "Could not access native ChemDraft panel window.".to_string())?;
-                // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
-                // Only make this panel key: an exposed input click or delayed IPC must never
-                // activate ChemDraft after the user has switched to another application.
-                panel.makeKeyWindow();
-            }
-            #[cfg(windows)]
-            {
-                // Never use Tao's force_window_active (including its synthetic Alt fallback).
-                // Keep NOACTIVATE throughout the lease and drop delayed background requests.
-                let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
-                if !panel_window::focus_if_app_active(hwnd) {
-                    return Ok(());
+            let result = (|| -> Result<bool, String> {
+                #[cfg(target_os = "macos")]
+                {
+                    // makeKeyWindow must not lend a background app a persistent lease.
+                    let marker =
+                        MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+                    if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+                        return Ok(false);
+                    }
+                    target
+                        .set_focusable(true)
+                        .map_err(|error| error.to_string())?;
+                    let pointer =
+                        target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+                    let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
+                        "Could not access native ChemDraft panel window.".to_string()
+                    })?;
+                    // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
+                    // Only make this panel key: an exposed input click or delayed IPC must never
+                    // activate ChemDraft after the user has switched to another application.
+                    panel.makeKeyWindow();
                 }
+                #[cfg(windows)]
+                {
+                    // Never use Tao's force_window_active (including its synthetic Alt fallback).
+                    // Keep NOACTIVATE throughout the lease and drop delayed background requests.
+                    let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                    if !panel_window::focus_if_app_active(hwnd) {
+                        return Ok(false);
+                    }
+                }
+                #[cfg(not(any(target_os = "macos", windows)))]
+                {
+                    target
+                        .set_focusable(false)
+                        .map_err(|error| error.to_string())?;
+                    target.set_focus().map_err(|error| error.to_string())?;
+                }
+                let webview: &tauri::Webview = target.as_ref();
+                webview.set_focus().map_err(|error| error.to_string())?;
+                #[cfg(windows)]
+                return Ok(unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                        == target.hwnd().map_err(|error| error.to_string())?.0
+                });
+                #[cfg(target_os = "macos")]
+                return Ok(unsafe {
+                    &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
+                }
+                .isKeyWindow());
+                #[cfg(not(any(target_os = "macos", windows)))]
+                target.is_focused().map_err(|error| error.to_string())
+            })();
+            let held = panel_window::acquired(
+                &target,
+                generation,
+                result.as_ref().copied().unwrap_or(false),
+            );
+            if !held && panel_window::is_current(&target, generation) {
+                let _ = target.set_focusable(false);
             }
-            #[cfg(not(any(target_os = "macos", windows)))]
-            {
-                target
-                    .set_focusable(false)
-                    .map_err(|error| error.to_string())?;
-                target.set_focus().map_err(|error| error.to_string())?;
-            }
-            let webview: &tauri::Webview = target.as_ref();
-            webview.set_focus().map_err(|error| error.to_string())
+            result.map(|_| held)
         } else {
             // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
             // The foreground top-level window remains the authoritative Windows lease owner.
@@ -2386,7 +2432,7 @@ async fn set_plugin_panel_input_focus(
                     MainWindowFocusMode::OnlyIfAppActive,
                 )?;
             }
-            Ok(())
+            Ok(false)
         }
     })?
 }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installPluginPanelInputFocus, panelEditableControl } from "./pluginPanelInputFocus";
+import { installPluginPanelInputFocus, panelEditableControl, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 let cleanup: (() => void) | undefined;
@@ -19,17 +19,18 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function mount(html: string, platform: ShortcutPlatform = "macos") {
+function mount(html: string, platform: ShortcutPlatform = "macos", ready: Promise<void> = Promise.resolve()) {
   const shell = document.createElement("aside");
   shell.innerHTML = html;
   document.body.append(shell);
-  const request = vi.fn(async (_editing: boolean): Promise<void> => undefined);
+  const request = vi.fn(async (editing: boolean, _generation: number): Promise<boolean> => editing);
   const listen = vi.spyOn(shell, "addEventListener");
   const listenWindow = vi.spyOn(window, "addEventListener");
-  let activate!: () => void;
+  let notify!: (event: NativePanelFocusEvent) => void;
   const unsubscribe = vi.fn();
   cleanup = installPluginPanelInputFocus(shell, request, platform, async (listener) => {
-    activate = listener;
+    notify = listener;
+    await ready;
     return unsubscribe;
   });
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
@@ -37,7 +38,9 @@ function mount(html: string, platform: ShortcutPlatform = "macos") {
     up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
     click: listen.mock.calls.find(([type]) => type === "click")?.[1] as EventListener
   });
-  return { shell, request, activate: () => activate(), unsubscribe };
+  return { shell, request, activate: () => notify({ kind: "activated", generation: 0 }),
+    deactivate: (generation = request.mock.calls.filter(([editing]) => editing).at(-1)?.[1] ?? 0) =>
+      notify({ kind: "deactivated", generation }), unsubscribe };
 }
 
 function pointerDown(target: Element): void {
@@ -72,6 +75,21 @@ function key(target: Element, value: string, shiftKey = false): KeyboardEvent {
 }
 
 describe("panel input keyboard focus", () => {
+  it("attaches the native listener before requesting a lease", async () => {
+    let attach!: () => void;
+    const ready = new Promise<void>((resolve) => { attach = resolve; });
+    const { shell, request, deactivate } = mount("<input>", "windows", ready);
+    pointerDown(shell.querySelector("input")!);
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    attach();
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+    deactivate();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
   it.each(["macos", "windows"] as const)("hands non-lease clicks back only on Windows (%s)", async (platform) => {
     const { shell, request } = mount('<h2>Heading</h2><div class="plugin-report"><table><tbody><tr><td>Value</td></tr></tbody></table><p></p></div><button>Run</button><canvas></canvas>', platform);
     for (const target of shell.querySelectorAll("h2, td, p, button, canvas")) {
@@ -104,7 +122,7 @@ describe("panel input keyboard focus", () => {
     if (kind === "double" || kind === "triple") expect(request).not.toHaveBeenCalled();
     click(target, kind === "double" ? 2 : kind === "triple" ? 3 : 1);
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     key(target, "Escape");
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
@@ -114,9 +132,9 @@ describe("panel input keyboard focus", () => {
     "preserves a Windows %s lease through its own asynchronous activation blur/focus", async (kind) => {
       vi.useFakeTimers();
       const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      const { shell, request, activate } = mount('<input><select><option>One</option></select><div class="plugin-report"><p>Report text</p></div>', "windows");
+      const { shell, request, activate, deactivate } = mount('<input><select><option>One</option></select><div class="plugin-report"><p>Report text</p></div>', "windows");
       let complete!: () => void;
-      request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+      request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = () => resolve(true); }));
       const input = kind === "input" || kind === "select";
       const target = shell.querySelector<HTMLElement>(input ? kind : "p")!;
       pointerDown(target);
@@ -125,7 +143,7 @@ describe("panel input keyboard focus", () => {
       pointerUp(target, kind === "drag");
       click(target, kind === "double" ? 2 : kind === "triple" ? 3 : 1);
       await flush();
-      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
       // SetActiveWindow and WebView2 set_focus can produce native activation, DOM
       // focusout and window blur before the acquisition IPC has replied.
       activate();
@@ -133,7 +151,7 @@ describe("panel input keyboard focus", () => {
       hasFocus.mockReturnValue(false);
       window.dispatchEvent(new Event("blur"));
       await vi.advanceTimersByTimeAsync(64);
-      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
       complete();
       await flush();
       await vi.advanceTimersByTimeAsync(4);
@@ -141,7 +159,7 @@ describe("panel input keyboard focus", () => {
       if (input) target.focus();
       window.dispatchEvent(new Event("focus"));
       await vi.advanceTimersByTimeAsync(64);
-      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
       if (input) expect(document.activeElement).toBe(target);
       else {
         expect(document.getSelection()?.toString()).toBe("Report text");
@@ -149,40 +167,34 @@ describe("panel input keyboard focus", () => {
         target.dispatchEvent(copy);
         expect(copy.defaultPrevented).toBe(false);
       }
-      // The next genuine blur is still a lease boundary.
+      // Only a native top-level loss is a lease boundary.
       hasFocus.mockReturnValue(false);
-      window.dispatchEvent(new Event("blur"));
-      await vi.advanceTimersByTimeAsync(32);
+      deactivate();
+      await flush();
       expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
       if (!input) expect(document.getSelection()?.toString()).toBe("");
     });
 
-  it.each(["pending", "settled"])("ends a Windows lease on genuine blur with a %s native request", async (timing) => {
-    vi.useFakeTimers();
-    vi.spyOn(document, "hasFocus").mockReturnValue(false);
-    const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
+  it.each(["macos", "windows"] as const)("native loss during acquisition survives a late successful reply (%s)", async (platform) => {
+    const { shell, request, deactivate, activate } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
     let complete!: () => void;
-    request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = () => resolve(true); }));
     const text = shell.querySelector("p")!;
-    pointerDown(text);
-    selectText(text);
-    pointerUp(text);
-    click(text);
+    pointerDown(text); selectText(text); pointerUp(text); click(text);
     await flush();
-    if (timing === "settled") { complete(); await flush(); }
-    window.dispatchEvent(new Event("blur"));
-    await vi.advanceTimersByTimeAsync(64);
-    if (timing === "pending") {
-      expect(request).toHaveBeenCalledExactlyOnceWith(true);
-      complete();
-      await flush();
-      await vi.advanceTimersByTimeAsync(32);
-    }
-    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    // Sol's P1: click document while the acquisition reply is pending, then delayed
+    // native focus makes hasFocus true again. The native loss must remain terminal.
+    deactivate();
     expect(document.getSelection()?.toString()).toBe("");
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    activate();
+    window.dispatchEvent(new Event("focus"));
+    complete();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
   });
 
-  it("rechecks focus after a settled request's transient blur even without a focus event", async () => {
+  it("preserves selection through activation blur lasting longer than 32 ms after completion", async () => {
     vi.useFakeTimers();
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div>', "windows");
@@ -191,27 +203,26 @@ describe("panel input keyboard focus", () => {
     await flush();
     hasFocus.mockReturnValue(false);
     window.dispatchEvent(new Event("blur"));
-    await vi.advanceTimersByTimeAsync(4);
+    await vi.advanceTimersByTimeAsync(1000);
     hasFocus.mockReturnValue(true);
     await vi.advanceTimersByTimeAsync(32);
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     expect(document.getSelection()?.toString()).toBe("Report text");
   });
 
-  it.each(["native", "webview"])("hands idle Windows %s activation back without a click", async (source) => {
+  it("hands idle native Windows activation back without DOM focus evidence", async () => {
     vi.useFakeTimers();
     const { request, activate } = mount("<button>Run</button>", "windows");
-    if (source === "native") activate();
-    else window.dispatchEvent(new Event("focus"));
+    activate();
     await vi.advanceTimersByTimeAsync(32);
-    expect(request).toHaveBeenCalledExactlyOnceWith(false);
+    expect(request).toHaveBeenCalledExactlyOnceWith(false, expect.any(Number));
   });
 
   it.each(["pending", "active"])("does not redirect Windows activation during a %s lease", async (timing) => {
     vi.useFakeTimers();
     const { shell, request, activate } = mount("<input>", "windows");
     let complete!: () => void;
-    request.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = () => resolve(true); }));
     activate(); // Delivered before the trusted input pointerdown.
     pointerDown(shell.querySelector("input")!);
     shell.querySelector("input")!.focus();
@@ -219,7 +230,7 @@ describe("panel input keyboard focus", () => {
     if (timing === "active") { complete(); await flush(); }
     activate();
     await vi.advanceTimersByTimeAsync(64);
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     complete();
   });
 
@@ -233,7 +244,7 @@ describe("panel input keyboard focus", () => {
     expect(request).not.toHaveBeenCalled();
     selectText(text); pointerUp(text); click(text);
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     key(text, "Escape");
     await flush();
     request.mockClear();
@@ -257,7 +268,7 @@ describe("panel input keyboard focus", () => {
     expect(request).not.toHaveBeenCalled();
     pointerUp(chart);
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(false);
+    expect(request).toHaveBeenCalledExactlyOnceWith(false, expect.any(Number));
   });
 
   it("supersedes a queued Windows hand-back when the next gesture takes a lease", async () => {
@@ -268,7 +279,7 @@ describe("panel input keyboard focus", () => {
     pointerDown(shell.querySelector("input")!);
     shell.querySelector("input")!.focus();
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
   });
 
   it("preserves a Windows selection gesture across blur when there is no lease to end", async () => {
@@ -283,18 +294,18 @@ describe("panel input keyboard focus", () => {
     selectText(text);
     pointerUp(text);
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     expect(document.getSelection()?.toString()).toBe("Report text");
   });
 
   it.each(["before completion", "after completion"])("keeps a newer Windows lease across stale hand-back blur %s", async (timing) => {
     vi.useFakeTimers();
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const { shell, request } = mount("<button>Run</button><input>", "windows");
+    const { shell, request, deactivate } = mount("<button>Run</button><input>", "windows");
     let completeHandBack!: () => void;
     let completeLease!: () => void;
-    request.mockImplementationOnce(() => new Promise<void>((resolve) => { completeHandBack = resolve; }));
-    request.mockImplementationOnce(() => new Promise<void>((resolve) => { completeLease = resolve; }));
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { completeHandBack = () => resolve(false); }));
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { completeLease = () => resolve(true); }));
     const button = shell.querySelector("button")!;
     pointerDown(button);
     click(button);
@@ -318,8 +329,7 @@ describe("panel input keyboard focus", () => {
     expect(document.activeElement).toBe(input);
     // Once the new lease has settled, a real loss of focus must still finish it.
     hasFocus.mockReturnValue(false);
-    window.dispatchEvent(new Event("blur"));
-    await vi.advanceTimersByTimeAsync(32);
+    deactivate();
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([false, true, false]);
   });
@@ -364,16 +374,47 @@ describe("panel input keyboard focus", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("retries on a new trusted click if the native request was dropped while background", async () => {
-    const { shell, request } = mount("<input>");
+  it.each(["macos", "windows"] as const)("ends a dropped background acquisition immediately (%s)", async (platform) => {
+    const { shell, request } = mount("<input>", platform);
+    request.mockResolvedValueOnce(false);
     const input = shell.querySelector("input")!;
-    pointerDown(input);
-    input.focus();
+    pointerDown(input); input.focus();
     await flush();
-    // The native guard may drop that request, without this never-key panel receiving a blur.
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(input);
+    pointerDown(input); input.focus();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true]);
+  });
+
+  it("a dropped background lease cannot suppress later idle activation", async () => {
+    vi.useFakeTimers();
+    const { shell, request, activate } = mount("<input>", "windows");
+    request.mockResolvedValueOnce(false);
+    const input = shell.querySelector("input")!;
+    pointerDown(input); pointerUp(input); click(input);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    request.mockClear();
+    activate();
+    await vi.advanceTimersByTimeAsync(64);
+    expect(request).toHaveBeenCalledExactlyOnceWith(false, expect.any(Number));
+  });
+
+  it("ignores native deactivation tagged with an older lease generation", async () => {
+    const { shell, request, deactivate } = mount("<input>", "windows");
+    const input = shell.querySelector("input")!;
+    pointerDown(input); input.focus();
+    await flush();
+    const old = request.mock.calls[0]![1];
     pointerDown(input);
+    await flush();
+    deactivate(old);
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true]);
+    deactivate();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
   });
 
   it("lets the full-size overlay consume Escape before releasing its input lease", async () => {
@@ -386,7 +427,7 @@ describe("panel input keyboard focus", () => {
     shell.addEventListener("keydown", closeOverlay, { capture: true, once: true });
     key(input, "Escape");
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     expect(document.activeElement).toBe(input);
     key(input, "Escape");
     await flush();
@@ -405,7 +446,7 @@ describe("panel input keyboard focus", () => {
     // Native key acquisition may focus the body; this must not end the text lease.
     shell.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     const copy = new KeyboardEvent("keydown", { key: "c", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
     shell.dispatchEvent(copy);
     expect(copy.defaultPrevented).toBe(false);
@@ -433,22 +474,18 @@ describe("panel input keyboard focus", () => {
     }
   );
 
-  it.each(["panel click", "document click", "replacement", "collapsed selection"])(
+  it.each(["panel click", "document click", "replacement"])(
     "clears a report selection lease on %s", async (ending) => {
-      const { shell, request } = mount('<div class="plugin-report"><p>Report text</p></div><button>Run</button>');
+      const { shell, request, deactivate } = mount('<div class="plugin-report"><p>Report text</p></div><button>Run</button>');
       const text = shell.querySelector("p")!;
       pointerDown(text);
       selectText(text);
       pointerUp(text);
       await flush();
-      expect(request).toHaveBeenCalledExactlyOnceWith(true);
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
       if (ending === "panel click") pointerDown(shell.querySelector("button")!);
-      else if (ending === "document click") window.dispatchEvent(new Event("blur"));
-      else if (ending === "replacement") shell.innerHTML = "Replacement report";
-      else {
-        document.getSelection()?.collapse(text.firstChild, 0);
-        document.dispatchEvent(new Event("selectionchange"));
-      }
+      else if (ending === "document click") deactivate();
+      else shell.innerHTML = "Replacement report";
       await flush();
       expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
       expect(document.getSelection()?.toString()).toBe("");
@@ -469,12 +506,12 @@ describe("panel input keyboard focus", () => {
     await flush();
     shell.querySelector("select")!.focus();
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     shell.querySelector("select")!.blur();
     await flush();
     input.focus();
     await flush();
-    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
   });
 
   it("releases the lease when a snapshot removes a focused control without focusout", async () => {
@@ -499,7 +536,7 @@ describe("panel input keyboard focus", () => {
     const control = shell.firstElementChild!;
     pointerDown(control.lastElementChild ?? control);
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
   });
 
   it.each([
@@ -520,7 +557,7 @@ describe("panel input keyboard focus", () => {
     pointerDown(shell.querySelector("label")!);
     shell.querySelector("input")!.focus();
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
   });
 
   it.each(["Escape", "Enter"])("returns focus on %s and preserves the commit/close behavior", async (value) => {
@@ -551,7 +588,7 @@ describe("panel input keyboard focus", () => {
     key(input, "Enter");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true }));
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     expect(document.activeElement).toBe(input);
   });
 
@@ -565,10 +602,10 @@ describe("panel input keyboard focus", () => {
     key(first, "Tab");
     await flush();
     expect(document.activeElement).toBe(last);
-    expect(request).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     key(last, "Tab");
     await flush();
-    expect(request).toHaveBeenLastCalledWith(false);
+    expect(request).toHaveBeenLastCalledWith(false, expect.any(Number));
     pointerDown(first);
     first.focus();
     await flush();
@@ -584,7 +621,7 @@ describe("panel input keyboard focus", () => {
     modal.setAttribute("aria-modal", "true");
     modal.innerHTML = '<select id="modal-first"><option>First</option></select><select id="modal-last"><option>Last</option></select>';
     document.body.append(shell, modal);
-    const request = vi.fn(async (_editing: boolean) => undefined);
+    const request = vi.fn(async (editing: boolean, _generation: number) => editing);
     const listen = vi.spyOn(document.body, "addEventListener");
     cleanup = installPluginPanelInputFocus(document.body, request);
     const down = listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener;
@@ -624,20 +661,21 @@ describe("panel input keyboard focus", () => {
     button.click();
     await flush();
     expect(action).toHaveBeenCalledOnce();
-    expect(request).toHaveBeenLastCalledWith(false);
+    expect(request).toHaveBeenLastCalledWith(false, expect.any(Number));
   });
 
-  it.each(["dom", "native"])("releases the input lease after %s focus leaves the panel", async (kind) => {
-    const { shell, request } = mount("<input>");
+  it.each(["macos", "windows"] as const)("ignores DOM blur and ends on native deactivation (%s)", async (platform) => {
+    const { shell, request, deactivate } = mount("<input>", platform);
     const input = shell.querySelector("input")!;
-    pointerDown(input);
-    input.focus();
+    pointerDown(input); input.focus();
     await flush();
-    if (kind === "native") window.dispatchEvent(new Event("blur"));
-    else input.blur();
+    input.blur();
+    window.dispatchEvent(new Event("blur"));
     await flush();
-    expect(request).toHaveBeenLastCalledWith(false);
-    expect(document.activeElement).not.toBe(input);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    deactivate();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
   });
 
   it("does not apply a stale activation after a fast Escape", async () => {
@@ -647,10 +685,10 @@ describe("panel input keyboard focus", () => {
     input.focus();
     key(input, "Escape");
     await flush();
-    expect(request).toHaveBeenCalledExactlyOnceWith(false);
+    expect(request).toHaveBeenCalledExactlyOnceWith(false, expect.any(Number));
   });
 
-  it("returns focus when scrolling the report outside an input without cancelling scrolling", async () => {
+  it("scrolling alone does not end a native lease or cancel scrolling", async () => {
     const { shell, request } = mount("<input><div>Report</div>");
     pointerDown(shell.querySelector("input")!);
     shell.querySelector("input")!.focus();
@@ -659,6 +697,6 @@ describe("panel input keyboard focus", () => {
     shell.querySelector("div")!.dispatchEvent(wheel);
     await flush();
     expect(wheel.defaultPrevented).toBe(false);
-    expect(request).toHaveBeenLastCalledWith(false);
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
   });
 });

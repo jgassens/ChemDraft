@@ -111,36 +111,49 @@ by document **webview** focus, never Tao's forced activation or synthetic Alt.
 Report-text drags finish before the hand-back decision; double/triple clicks decide
 selection before queuing it. Input and selection leases suppress this hand-back.
 Click hand-back requires a matching trusted pointerdown in the same gesture; keyboard
-activation never queues it. Focus requests carry monotonically increasing local generations
-and remain serialized through native completion. A dispatched hand-back's delayed blur cannot
-finish a newer lease while that lease is pending, and its completion cannot clear the newer
-lease's protection. Windows input and selection leases also survive their **own** native
-activation: window blur and DOM focusout are rechecked after 32 ms, never while that
-generation's acquisition is queued or in flight. Completion schedules the deferred check;
-a returning focus cancels the relevant loss, while a genuinely unfocused document or
-departed input ends the lease. Selection ranges are cleared only when the lease really ends.
-The native command waits for its main-thread operation before replying,
-so an older hand-back cannot execute after a newer request from that panel has arrived.
-Native non-client presses and move/resize entry/exit use the same guarded helper,
-restoring webview focus after Wry's own focus handling as well. A transient Windows
-foreground change is possible, as with toolbars; the panel must not retain the
-keyboard after an ordinary click. Native `WM_ACTIVATE` also notifies that panel's
-webview through `chemdraft://plugin-panel-activated`. After 32 ms, the webview hands
-back only if the request generation is unchanged, no lease is active or pending,
-and no pointer/selection gesture is underway. This covers activation after closing
-another application, including activation that never focuses the WebView2 child.
-The native foreground/document-group guard still runs when the hand-back executes.
-There is no unconditional native activation redirect that could precede an input's
-trusted DOM event and cancel its lease.
+activation never queues it. Focus requests carry monotonically increasing webview-local
+generations, including across effect remounts, and remain serialized through native completion.
+The caller-validated command returns a boolean: true only when that generation acquired
+keyboard focus, false when the foreground/visibility guard dropped it, activation failed,
+or a native deactivation cancelled it. JavaScript immediately ends a rejected lease.
 
-Windows resizing uses the system-sized **non-client** frame on all four sides
-(`WM_NCCALCSIZE`), with screen-coordinate hit testing against the window rectangle.
-WebView2 fills the whole client: neither its container nor controller is inset.
-The system owns the resize border outside the content, so there is no exposed
-parent-client margin to paint on resize. Maximized layout remains Tao's responsibility.
-macOS makes the nonactivating panel key without activating the application. The
-proposal window is marked open only once its native open succeeds, so a failed
-open leaves the pending-proposals badge in place.
+Native code owns lease validity. IPC registers the generation before queuing its main-thread
+acquisition, so a real deactivation while acquisition is queued cancels it before it can restore
+focus. Windows observes the panel's own WM_ACTIVATE and WM_ACTIVATEAPP; macOS observes
+NSWindowDidBecomeKeyNotification and NSWindowDidResignKeyNotification synchronously.
+The panel receives one chemdraft://plugin-panel-focus event with { kind, generation },
+subscribed through listenCurrentWindowEvent / safeTauriListen **before** acquiring.
+A deactivated event for the current lease is terminal, even if the acquisition reply arrives
+later reporting success. Notifications from an older generation cannot end a newer lease.
+Native activation requested by the lease is tagged with that generation; child-webview
+focusout/blur is not native window deactivation. No DOM blur timer, hasFocus() check, DOM
+focus recovery, or selectionchange guesses lease ownership. Escape, single-line Enter,
+Tab out, a trusted click elsewhere, removal/disablement of the leased control, or removal
+of the selected report text also explicitly end the lease. Hover and wheel alone do not.
+
+The native command waits for its main-thread operation before replying, so an older hand-back
+cannot execute after a newer request from that panel. Native non-client presses and
+move/resize entry/exit end the lease and use the same guarded helper, restoring webview
+focus after Wry's own focus handling as well. A transient Windows foreground change is
+possible, as with toolbars; the panel must not retain the keyboard after an ordinary click.
+For **idle activation only**, the webview defers hand-back 32 ms so an immediately following
+trusted pointerdown can establish intent. That check never ends a lease and uses only the
+request generation and pointer/selection gesture state. It covers activation after closing
+another application without interrupting an active/pending lease or a chart drag.
+The native foreground/document-group guard still runs when hand-back executes.
+
+Windows uses **one resize mechanism**: Tauri's existing TAURI_DRAG_RESIZE_WINDOW overlay,
+adapted to share screen-coordinate hit testing with its parent. There is no second resize
+window and no WM_NCCALCSIZE override. Tao keeps its zero top non-client inset on Windows 10
+(necessary while WS_CAPTION remains set), and its DPI-scaled one-pixel top inset on Windows 11.
+Hit testing measures that actual client origin and reserves only one DIP of client top edge
+for resizing. The rest of Tauri's original SM_CYFRAME strip returns HTTRANSPARENT so title
+presses reach WebView2's DOM drag handler; native edges/corners retain their proper directions.
+WebView2 fills the whole client, without a second inset or exposed parent-client margin.
+Tauri maintains the overlay's region through resize/DPI changes; maximized windows have no
+resize grip. macOS makes the nonactivating panel key without activating the application and
+rejects background acquisition. The proposal window is marked open only once its native open
+succeeds, so a failed open leaves the pending-proposals badge in place.
 
 **Escape.** A report window closes on a bubbling window-level Escape unless the
 event was already `defaultPrevented`. An inner overlay (the linked figure's

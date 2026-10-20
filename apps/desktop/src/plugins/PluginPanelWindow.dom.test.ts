@@ -31,7 +31,7 @@ import {
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async () => undefined));
+const tauriInvoke = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -60,6 +60,9 @@ const tauriEvents = vi.hoisted(() => {
   };
 });
 vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ listen: tauriEvents.listen })
+}));
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
@@ -156,7 +159,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
     const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
     expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
-    expect(windows).toContain("return Ok(())");
+    expect(windows).toContain("return Ok(false)");
     expect(windows).not.toContain("target.set_focus()");
     expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
     const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
@@ -183,20 +186,30 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       .toContain("return_focus()");
   });
 
-  it("uses the native non-client resize frame without exposing an inset WebView2 margin", () => {
+  it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
     const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
-    expect(panel).toContain("WM_NCCALCSIZE && IsZoomed(hwnd) == 0");
-    expect(panel).toContain("geometry::resize_client");
-    expect(panel).toContain("GetWindowRect(hwnd, &mut rect)");
-    expect(panel).toContain("SWP_FRAMECHANGED | SWP_NOACTIVATE");
-    expect(panel).not.toMatch(/controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
+    // A positive NCCALCSIZE top override restores WS_CAPTION on Windows 10.
+    expect(panel).not.toContain("WM_NCCALCSIZE");
+    expect(panel).not.toContain("SWP_FRAMECHANGED");
+    expect(panel).toContain("TAURI_DRAG_RESIZE_WINDOW");
+    expect(panel).toContain("SetWindowSubclass(overlay, Some(overlay_subclass)");
+    expect(panel).toContain("HTTRANSPARENT");
+    expect(panel).toContain("geometry::top_resize_height");
+    expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
   });
 
-  it("notifies the panel of native activation without an unconditional native focus redirect", () => {
-    const panel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window.rs"), "utf8");
-    expect(panel).toContain('panel.emit_to(panel.label(), "chemdraft://plugin-panel-activated", ())');
-    expect(panel).toContain("message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE");
-    expect(panel).toContain("activated()");
+  it("observes native top-level loss synchronously and tags the single focus event with its lease", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    expect(panel).toContain('"chemdraft://plugin-panel-focus"');
+    expect(panel).toContain("WM_ACTIVATEAPP");
+    expect(panel).toContain("lease.deactivate()");
+    expect(panel).toContain("generation");
+    expect(panel).not.toContain("WM_KILLFOCUS");
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    expect(mac).toContain("NSWindowDidBecomeKeyNotification");
+    expect(mac).toContain("NSWindowDidResignKeyNotification");
+    expect(mac).toContain("super::activation(&target, active)");
   });
 
   it("grants and releases input focus for the full-size spectrum portal", async () => {
@@ -216,11 +229,11 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number) });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number) });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 

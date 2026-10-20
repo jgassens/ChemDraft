@@ -1,4 +1,5 @@
 import { isDesktopRuntime } from "../window-manager";
+import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 
@@ -19,83 +20,71 @@ export function panelEditableControl(target: EventTarget | null): HTMLElement | 
   return editable === "" || editable === "true" || editable === "plaintext-only" ? control : undefined;
 }
 
-async function requestNativeInputFocus(editing: boolean): Promise<void> {
-  if (!isDesktopRuntime()) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_plugin_panel_input_focus", { editing });
+export interface NativePanelFocusEvent {
+  kind: "activated" | "deactivated";
+  generation: number;
 }
 
-async function listenNativePanelActivation(listener: () => void): Promise<() => void> {
+// Survives effect teardown/reinstall in the same webview (including React StrictMode).
+let nextGeneration = 0;
+
+async function requestNativeInputFocus(editing: boolean, generation: number): Promise<boolean> {
+  if (!isDesktopRuntime()) return editing;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation });
+}
+
+async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) => void): Promise<() => void> {
   if (!isDesktopRuntime()) return () => undefined;
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  return getCurrentWindow().listen("chemdraft://plugin-panel-activated", listener);
+  return listenCurrentWindowEvent<NativePanelFocusEvent>("chemdraft://plugin-panel-focus", ({ payload }) => listener(payload));
 }
 
 /** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
-  requestFocus: (editing: boolean) => Promise<void> = requestNativeInputFocus,
+  requestFocus: (editing: boolean, generation: number) => Promise<boolean> = requestNativeInputFocus,
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
-  subscribeActivation: (listener: () => void) => Promise<() => void> = listenNativePanelActivation
+  subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus
 ): () => void {
   let editing = false;
   let leasedControl: HTMLElement | undefined;
   let selectionLease = false;
+  let selectionNodes: Node[] = [];
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
   let pointerClickTarget: EventTarget | null | undefined;
   let revision = 0;
   let pending = Promise.resolve();
-  let leaseRequestRevision: number | undefined;
-  let blurredRevision: number | undefined;
-  let inputBlurredRevision: number | undefined;
-  let blurTimer: ReturnType<typeof setTimeout> | undefined;
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerActive = false;
   let disposed = false;
-  // WebView2 can deliver blur/focus in separate tasks after SetActiveWindow + set_focus.
-  // Check settled focus, not the first transient blur, and never end a pending acquisition.
-  const checkWindowBlur = (): void => {
-    clearTimeout(blurTimer);
-    blurTimer = setTimeout(() => {
-      if (disposed || !editing || leaseRequestRevision !== undefined) return;
-      const lostWindow = blurredRevision === revision && !document.hasFocus();
-      const lostControl = inputBlurredRevision === revision && !selectionLease &&
-        (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement));
-      blurredRevision = undefined;
-      inputBlurredRevision = undefined;
-      if (lostWindow || lostControl) finish();
-    }, 32);
-  };
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
     editing = next;
-    const requestedRevision = ++revision;
-    leaseRequestRevision = next ? requestedRevision : undefined;
+    const requestedRevision = revision = ++nextGeneration;
     // Every request has a generation, including retries. Keep IPC serialized through native
     // completion: an old hand-back can never execute natively after a newer lease request.
     pending = pending.catch(() => undefined).then(async () => {
       if (requestedRevision !== revision) return;
       try {
-        await requestFocus(next);
-      } finally {
-        // A stale completion cannot unprotect the newer lease from its delayed blur.
-        if (next && requestedRevision === revision) {
-          leaseRequestRevision = undefined;
-          if (blurredRevision === revision || inputBlurredRevision === revision) checkWindowBlur();
-        }
+        // Subscribe before acquiring: a native loss can precede the acquisition reply.
+        await subscribed;
+        if (requestedRevision !== revision) return;
+        const acquired = await requestFocus(next, requestedRevision);
+        if (next && requestedRevision === revision && !acquired) finish();
+      } catch (error) {
+        if (next && requestedRevision === revision) finish();
+        throw error;
       }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
   const finish = (): void => {
-    clearTimeout(blurTimer);
-    blurredRevision = undefined;
-    inputBlurredRevision = undefined;
     setEditing(false);
     leasedControl = undefined;
     selectionGesture = undefined;
     if (selectionLease) document.getSelection()?.removeAllRanges();
     selectionLease = false;
+    selectionNodes = [];
     const active = panelEditableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
   };
@@ -120,6 +109,8 @@ export function installPluginPanelInputFocus(
     if (!hasReportSelection()) return;
     leasedControl = undefined;
     selectionLease = true;
+    const selection = document.getSelection()!;
+    selectionNodes = [selection.anchorNode!, selection.focusNode!];
     setEditing(true);
   };
   const pointerDown = (event: PointerEvent): void => {
@@ -131,8 +122,7 @@ export function installPluginPanelInputFocus(
     if (control && shell.contains(control)) {
       if (selectionLease) finish();
       leasedControl = control;
-      // Native code can drop a request while another app is foreground. A later trusted click
-      // retries it even if this webview never received a native blur for the dropped request.
+      // Every trusted click gets a new generation, including retries after a rejected request.
       setEditing(true, true);
     } else {
       if (editing) finish();
@@ -180,14 +170,6 @@ export function installPluginPanelInputFocus(
     selectionGesture = undefined;
     returnPointerFocus();
   };
-  const windowBlur = (): void => {
-    // A hand-back without a lease must not erase the pending double/triple-click gesture.
-    if (platform !== "windows") finish();
-    else if (editing) {
-      blurredRevision = revision;
-      checkWindowBlur();
-    }
-  };
   const checkActivation = (): void => {
     if (platform !== "windows" || editing) return;
     const activatedRevision = revision;
@@ -200,43 +182,16 @@ export function installPluginPanelInputFocus(
       }
     }, 32);
   };
-  const windowFocus = (): void => {
-    // A queued focus notification is not proof that the document is still focused.
-    // Leave the loss recorded until the settled hasFocus() check observes recovery.
-    if (platform === "windows" && blurredRevision === revision) checkWindowBlur();
-    checkActivation();
-  };
-  const selectionChange = (): void => {
-    // selectionchange alone (including a script-created range) can never start a lease.
-    if (selectionLease && !hasReportSelection()) finish();
+  const nativeFocus = (event: NativePanelFocusEvent): void => {
+    if (disposed) return;
+    if (event.kind === "deactivated") {
+      // Loss is terminal even if a delayed acquisition reply says it acquired focus.
+      if (editing && event.generation === revision) finish();
+    } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
     const control = panelEditableControl(event.target);
-    if (editing && control) {
-      leasedControl = control;
-      inputBlurredRevision = undefined;
-    } else if (editing && !selectionLease) {
-      if (platform === "windows") focusOut();
-      else finish();
-    }
-  };
-  const wheel = (event: WheelEvent): void => {
-    if (editing && !selectionLease && !panelEditableControl(event.target)) finish();
-  };
-  const focusOut = (): void => {
-    if (platform === "windows") {
-      if (editing) {
-        inputBlurredRevision = revision;
-        checkWindowBlur();
-      }
-      return;
-    }
-    // Native loss of focus and DOM blur can occur before the next control's focusin.
-    queueMicrotask(() => {
-      if (!selectionLease && (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement))) {
-        finish();
-      }
-    });
+    if (editing && !selectionLease && control) leasedControl = control;
   };
   const keyDown = (event: KeyboardEvent): void => {
     pointerClickTarget = undefined;
@@ -271,8 +226,9 @@ export function installPluginPanelInputFocus(
   };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
   const observer = new MutationObserver(() => {
-    if (selectionLease) selectionChange();
-    else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
+    if (selectionLease) {
+      if (selectionNodes.some((node) => !shell.contains(node))) finish();
+    } else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
       panelEditableControl(leasedControl) !== leasedControl)) finish();
   });
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
@@ -282,37 +238,26 @@ export function installPluginPanelInputFocus(
   window.addEventListener("pointerup", pointerUp, true);
   window.addEventListener("pointercancel", cancelSelectionGesture, true);
   shell.addEventListener("click", click, true);
-  document.addEventListener("selectionchange", selectionChange);
   shell.addEventListener("focusin", focusIn);
-  shell.addEventListener("focusout", focusOut);
-  shell.addEventListener("wheel", wheel, { capture: true, passive: true });
   shell.addEventListener("keydown", keyDown);
-  window.addEventListener("blur", windowBlur);
-  window.addEventListener("focus", windowFocus);
-  let unsubscribeActivation: (() => void) | undefined;
-  if (platform === "windows") {
-    void subscribeActivation(checkActivation).then((unsubscribe) => {
-      if (disposed) unsubscribe();
-      else unsubscribeActivation = unsubscribe;
-    }).catch((error: unknown) => console.error("Could not observe panel activation:", error));
-  }
+  let unsubscribeFocus: (() => void) | undefined;
+  const subscribed = subscribeFocus(nativeFocus).then((unsubscribe) => {
+    if (disposed) unsubscribe();
+    else unsubscribeFocus = unsubscribe;
+  });
+  void subscribed.catch((error: unknown) => console.error("Could not observe panel focus:", error));
   return () => {
     disposed = true;
     clearTimeout(activationTimer);
-    unsubscribeActivation?.();
-    window.removeEventListener("focus", windowFocus);
+    unsubscribeFocus?.();
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
     window.removeEventListener("pointermove", pointerMove, true);
     window.removeEventListener("pointerup", pointerUp, true);
     window.removeEventListener("pointercancel", cancelSelectionGesture, true);
     shell.removeEventListener("click", click, true);
-    document.removeEventListener("selectionchange", selectionChange);
     shell.removeEventListener("focusin", focusIn);
-    shell.removeEventListener("focusout", focusOut);
-    shell.removeEventListener("wheel", wheel, true);
     shell.removeEventListener("keydown", keyDown);
-    window.removeEventListener("blur", windowBlur);
     finish();
   };
 }

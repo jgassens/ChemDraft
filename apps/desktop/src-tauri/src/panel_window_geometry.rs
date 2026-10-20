@@ -22,14 +22,29 @@ pub(super) enum ResizeHit {
 }
 
 /// `rect` and the point must use the same origin (screen, window, or client).
-pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option<ResizeHit> {
+pub(super) fn resize_hit(
+    x: i32,
+    y: i32,
+    rect: Rect,
+    bx: i32,
+    by: i32,
+    top_height: i32,
+) -> Option<ResizeHit> {
     if x < rect.left || y < rect.top || x >= rect.right || y >= rect.bottom {
         return None;
     }
     let left = x < rect.left + bx;
     let right = x >= rect.right - bx;
-    let top = y < rect.top + by;
+    let top = y < rect.top + top_height;
     let bottom = y >= rect.bottom - by;
+    // Full-height native side corners plus wider corner targets in the thin overlay grip.
+    // The title interior remains client space; only pixels on a resize edge participate.
+    if (left && y < rect.top + by) || (top && x < rect.left + 2 * bx) {
+        return Some(ResizeHit::TopLeft);
+    }
+    if (right && y < rect.top + by) || (top && x >= rect.right - 2 * bx) {
+        return Some(ResizeHit::TopRight);
+    }
     match (left, right, top, bottom) {
         (true, _, true, _) => Some(ResizeHit::TopLeft),
         (_, true, true, _) => Some(ResizeHit::TopRight),
@@ -43,17 +58,14 @@ pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option
     }
 }
 
-/// The native client excludes only the system's non-client frame. The webview fills this
-/// rectangle; never apply this inset a second time to the child HWND/controller bounds.
-pub(super) fn resize_client(width: i32, height: i32, bx: i32, by: i32) -> Rect {
-    let bx = bx.min(width / 2).max(0);
-    let by = by.min(height / 2).max(0);
-    Rect {
-        left: bx,
-        top: by,
-        right: width - bx,
-        bottom: height - by,
+/// Tao's actual client origin is authoritative: 0 top inset on Windows 10, one scaled
+/// pixel on Windows 11. Include just one DIP of client edge, not Tauri's whole SM_CYFRAME
+/// title strip. Maximized windows have no resize grip.
+pub(super) fn top_resize_height(client_top: i32, dpi: u32, border: i32) -> i32 {
+    if border == 0 {
+        return 0;
     }
+    client_top.max(0) + ((dpi as f64 / 96.0).round() as i32).max(1)
 }
 
 /// Missing foreground information fails closed; a delayed IPC cannot activate another process.
@@ -117,72 +129,46 @@ mod tests {
     }
 
     #[test]
-    fn non_client_frame_preserves_the_requested_client_size_at_each_scale() {
-        for border in [8, 12, 16, 24] {
-            let client = resize_client(380 + 2 * border, 520 + 2 * border, border, border);
-            assert_eq!(client.right - client.left, 380);
-            assert_eq!(client.bottom - client.top, 520);
-            assert_eq!(client.left, border);
-            assert_eq!(client.top, border);
-        }
-        let maximized = resize_client(380, 520, 0, 0);
-        assert_eq!(maximized.left, 0);
-        assert_eq!(maximized.top, 0);
-        assert_eq!(maximized.right, 380);
-        assert_eq!(maximized.bottom, 520);
-        assert_eq!(resize_hit(0, 0, maximized, 0, 0), None);
-    }
-
-    #[test]
-    fn all_edges_and_corners_in_window_and_client_coordinates_at_multiple_dpis() {
-        for (bx, by) in [(8, 8), (12, 12), (16, 16), (24, 24), (12, 8), (8, 12)] {
-            // Window rectangles can start at negative coordinates on secondary monitors.
-            // Native frame and hit test must agree without consuming any client pixels.
-            for (left, top) in [(0, 0), (8, 0), (12, 12), (-1800, -900)] {
+    fn windows_10_and_11_title_interior_passes_through_at_each_dpi() {
+        for dpi in [96, 120, 144, 192, 288] {
+            let dip = (dpi as f64 / 96.0).round() as i32;
+            let border = 8 * dip;
+            // Tao keeps WS_CAPTION on both, but only Win11 permits a positive top inset.
+            for client_top in [0, dip] {
+                let top = top_resize_height(client_top, dpi, border);
                 let rect = Rect {
-                    left,
-                    top,
-                    right: left + 400,
-                    bottom: top + 300,
+                    left: -1800,
+                    top: -900,
+                    right: -1400,
+                    bottom: -600,
                 };
-                for (x, y, expected) in [
-                    (0, 150, ResizeHit::Left),
-                    (399, 150, ResizeHit::Right),
-                    (200, 0, ResizeHit::Top),
-                    (200, 299, ResizeHit::Bottom),
-                    (0, 0, ResizeHit::TopLeft),
-                    (399, 0, ResizeHit::TopRight),
-                    (0, 299, ResizeHit::BottomLeft),
-                    (399, 299, ResizeHit::BottomRight),
+                assert_eq!(top, client_top + dip);
+                assert_eq!(
+                    resize_hit(-1600, -900 + client_top, rect, border, border, top),
+                    Some(ResizeHit::Top)
+                );
+                // Sol's reproduction: the rest of the first SM_CYFRAME pixels used to resize.
+                for y in (client_top + dip)..(client_top + 4 * dip) {
+                    assert_eq!(resize_hit(-1600, -900 + y, rect, border, border, top), None);
+                }
+                for (x, y, hit) in [
+                    (-1800, -900, ResizeHit::TopLeft),
+                    (-1401, -900, ResizeHit::TopRight),
+                    (-1800, -900 + border / 2, ResizeHit::TopLeft),
+                    (-1401, -900 + border / 2, ResizeHit::TopRight),
+                    (-1800 + border, -900 + client_top, ResizeHit::TopLeft),
+                    (-1401 - border, -900 + client_top, ResizeHit::TopRight),
+                    (-1800, -601, ResizeHit::BottomLeft),
+                    (-1401, -601, ResizeHit::BottomRight),
+                    (-1800, -750, ResizeHit::Left),
+                    (-1401, -750, ResizeHit::Right),
+                    (-1600, -601, ResizeHit::Bottom),
                 ] {
-                    assert_eq!(resize_hit(left + x, top + y, rect, bx, by), Some(expected));
+                    assert_eq!(resize_hit(x, y, rect, border, border, top), Some(hit));
                 }
-                assert_eq!(resize_hit(left + 200, top + 150, rect, bx, by), None);
-                assert_eq!(resize_hit(left - 1, top + 150, rect, bx, by), None);
-                let inset = resize_client(400, 300, bx, by);
-                // Every non-client frame pixel hits an edge/corner; no visible client pixel does.
-                for x in 0..400 {
-                    for y in 0..300 {
-                        let child_covers = x >= inset.left
-                            && x < inset.right
-                            && y >= inset.top
-                            && y < inset.bottom;
-                        assert_eq!(
-                            resize_hit(left + x, top + y, rect, bx, by).is_none(),
-                            child_covers
-                        );
-                    }
-                }
+                assert_eq!(resize_hit(-1801, -900, rect, border, border, top), None);
             }
+            assert_eq!(top_resize_height(0, dpi, 0), 0);
         }
-        assert_eq!(
-            resize_client(4, 2, 16, 16),
-            Rect {
-                left: 2,
-                top: 1,
-                right: 2,
-                bottom: 1
-            }
-        );
     }
 }

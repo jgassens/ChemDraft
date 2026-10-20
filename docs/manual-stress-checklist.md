@@ -25,8 +25,11 @@ shortcut works again. Single-line Enter commits and returns focus; multiline Ent
 field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
 on the document while editing: keyboard focus returns to the drawing. Move/resize and close a panel
 (including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
-remain intact. On Windows, resize from every edge and corner using the normal invisible system
-border outside the visible content, also on a second monitor at a different scale. The panel must
+remain intact. On Windows 10 and 11, resize from every edge and corner, including the thin
+one-DIP top grip, also on a second monitor at a different scale. Press within the rest of the
+first SM_CYFRAME client pixels: title text must receive its trusted DOM pointerdown and move
+the window rather than resize it. Windows 10 must never show a native caption above the DOM title.
+The panel must
 have a single frame like the toolbars, content reaching its edge, and no white inset or black
 left/right/bottom bands during or after resizing. Repeat after hide/show, live resize, and moving between
 100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
@@ -47,9 +50,12 @@ press Escape: the first closes only the overlay, preserving the report window. D
 text and double/triple click a word/paragraph, then Cmd/Ctrl+C: paste into another app and confirm
 the report selection was copied. On Windows at 200%, log window blur/focus around pointerup
 and double-click: the activation's transient blur/focus must not clear the selected range,
-including when native acquisition replies before or after the blur. Repeat for input typing
-and a select; then click the document or another app while acquisition is pending and after it
-settles: those genuine blurs must end the lease. A plain text click keeps drawing shortcuts active. With text
+including when native acquisition replies before or after the blur and WebView2 focus recovery
+takes more than 32 ms (repeat with 100 ms and 1 s delays). Repeat for input typing and a select;
+then click the document or another app while acquisition is pending and after it settles.
+Log the generation-tagged native chemdraft://plugin-panel-focus events: a genuine native
+deactivation must end the lease even if a delayed success reply or DOM focus arrives afterward.
+The selection must clear immediately on that event; it must survive DOM blur alone. A plain text click keeps drawing shortcuts active. With text
 selected, Escape or a click elsewhere in the panel/document clears selection and returns drawing
 shortcuts; report replacement must also end the lease. Script-created ranges and synthetic drags
 must not start a lease. On both platforms, with another app frontmost, click an exposed panel input
@@ -59,7 +65,11 @@ the other app is foreground; it must stay foreground and receive no phantom Alt 
 Also repeat ordinary content/title clicks and switch apps between pointer release and IPC delivery;
 the guarded hand-back must not raise ChemDraft. With two panels open, a delayed hand-back from
 one must not interrupt an input lease in the other.
-After a background request is dropped, activate the document and click the same input again: typing works.
+After a background request returns false, the input/selection lease must end immediately even
+without any DOM blur. Close the foreground application so Windows activates the idle panel:
+drawing shortcuts must work, with no stale lease suppressing hand-back. Then activate the document
+and click the same input again: typing works. Repeat while rapidly ending one lease and acquiring
+another: an older generation's deactivation must never clear the new input/selection.
 On Windows, put File Explorer (then another application) in front and close it without clicking
 ChemDraft. If Windows activates an idle panel, the document must promptly receive keyboard focus
 and the next drawing shortcut. Repeat with two panels; another panel's input lease must not be
