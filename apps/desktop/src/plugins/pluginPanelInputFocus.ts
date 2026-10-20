@@ -236,7 +236,7 @@ export function installPluginPanelInputFocus(
         ["c", "a"].includes(event.key.toLowerCase());
       const extending = event.shiftKey &&
         ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key);
-      if (copyOrSelectAll || extending || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+      if (copyOrSelectAll || extending || ["Shift", "Control", "Alt", "Meta", "AltGraph"].includes(event.key)) return;
       // WebView2 scrolls non-editable selections on arrows instead of collapsing them.
       // End explicitly; suppress only scrolling defaults so the release does not move the report.
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", " "].includes(event.key)) {

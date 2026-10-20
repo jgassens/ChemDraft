@@ -510,7 +510,7 @@ describe("panel input keyboard focus", () => {
     for (const value of ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"]) {
       expect(trustedKey(text, value, { shiftKey: true }).defaultPrevented).toBe(false);
     }
-    for (const value of ["Shift", "Control", "Alt", "Meta"]) {
+    for (const value of ["Shift", "Control", "Alt", "Meta", "AltGraph"]) {
       expect(trustedKey(text, value).defaultPrevented).toBe(false);
     }
     // Scripted key events cannot release a user's selection lease.
