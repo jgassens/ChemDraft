@@ -25,14 +25,23 @@ shortcut works again. Single-line Enter commits and returns focus; multiline Ent
 field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
 on the document while editing: keyboard focus returns to the drawing. Move/resize and close a panel
 (including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
-remain intact. On Windows 10 and 11, resize from every edge and corner, including the thin
-one-DIP top grip, also on a second monitor at a different scale. Press within the rest of the
-first SM_CYFRAME client pixels: title text must receive its trusted DOM pointerdown and move
-the window rather than resize it. Windows 10 must never show a native caption above the DOM title.
+remain intact. On Windows 10 and 11 at 100%, 150%, and 200%, resize from every edge and corner,
+also on a second monitor at a different scale. Measure the top target against
+`GetSystemMetricsForDpi(SM_CYSIZEFRAME, GetDpiForWindow(panel))` plus
+`GetSystemMetricsForDpi(SM_CXPADDEDBORDER, GetDpiForWindow(panel))`: the entire physical-pixel
+band from the outer window top must resize, including its last row and both top corners,
+with no gap where Tauri's original SM_CYFRAME overlay ended. Check the appropriate vertical
+or diagonal resize cursor. Immediately below that band, in the client title strip (including
+below the wider corner targets), title text must receive its trusted DOM pointerdown and
+move the window rather than resize it; the native left/right border still resizes sideways.
+Windows 10 must never show a native caption above the DOM title.
 The panel must
 have a single frame like the toolbars, content reaching its edge, and no white inset or black
 left/right/bottom bands during or after resizing. Repeat after hide/show, live resize, and moving between
 100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
+still paints beneath the enlarged top input band without a blank margin. Re-measure the top
+target and check the first draggable row after each DPI transition; if maximized, no edge
+may resize, and restoring must recover the current-DPI band. Confirm WebView2
 buttons still receive exactly one trusted pointerdown/click and return keyboard focus, and
 text/content is not clipped. Repeat ordinary content clicks after ending an input
 lease; test right/middle presses too. Hover and wheel alone must not trigger a focus hand-back.
