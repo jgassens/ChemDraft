@@ -35,18 +35,30 @@ export function installPluginPanelInputFocus(
   let leasedControl: HTMLElement | undefined;
   let selectionLease = false;
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
+  let pointerClickTarget: EventTarget | null | undefined;
   let revision = 0;
+  let handBackRevision: number | undefined;
   let pending = Promise.resolve();
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
     editing = next;
     const requestedRevision = ++revision;
-    // Serialize IPC: a delayed pointer-down request must not refocus a field after Escape/blur.
+    // Every request has a generation, including retries. Keep IPC serialized through native
+    // completion: an old hand-back can never execute natively after a newer lease request.
     pending = pending.catch(() => undefined).then(async () => {
-      if (requestedRevision === revision) await requestFocus(next);
+      if (requestedRevision !== revision) return;
+      if (!next) handBackRevision = requestedRevision;
+      try {
+        await requestFocus(next);
+      } finally {
+        // A stale completion cannot unprotect the newer lease from its delayed blur.
+        if (next && requestedRevision === revision) handBackRevision = undefined;
+      }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
+  const staleHandBackBlur = (): boolean => platform === "windows" && editing &&
+    handBackRevision !== undefined && handBackRevision < revision;
   const finish = (): void => {
     setEditing(false);
     leasedControl = undefined;
@@ -81,6 +93,7 @@ export function installPluginPanelInputFocus(
   };
   const pointerDown = (event: PointerEvent): void => {
     if (!event.isTrusted || event.button !== 0) return;
+    pointerClickTarget = event.target;
     selectionGesture = undefined;
     const control = panelEditableControl(event.target);
     if (control && shell.contains(control)) {
@@ -119,6 +132,9 @@ export function installPluginPanelInputFocus(
   };
   const click = (event: MouseEvent): void => {
     if (!event.isTrusted) return;
+    const fromPointer = event.detail > 0 && pointerClickTarget === event.target;
+    pointerClickTarget = undefined;
+    if (platform === "windows" && !fromPointer) return;
     if (selectionGesture && event.detail >= 2) leaseSelection();
     selectionGesture = undefined;
     // Covers activation performed by WebView2's default click handling after pointerup.
@@ -126,10 +142,12 @@ export function installPluginPanelInputFocus(
   };
   const cancelSelectionGesture = (event: PointerEvent): void => {
     if (!event.isTrusted) return;
+    pointerClickTarget = undefined;
     selectionGesture = undefined;
     returnPointerFocus();
   };
   const windowBlur = (): void => {
+    if (staleHandBackBlur()) return;
     // A hand-back without a lease must not erase the pending double/triple-click gesture.
     if (platform !== "windows" || editing) finish();
   };
@@ -140,14 +158,17 @@ export function installPluginPanelInputFocus(
   const focusIn = (event: FocusEvent): void => {
     const control = panelEditableControl(event.target);
     if (editing && control) leasedControl = control;
-    else if (editing && !selectionLease) finish();
+    else if (editing && !selectionLease && !staleHandBackBlur()) finish();
   };
   const wheel = (event: WheelEvent): void => {
     if (editing && !selectionLease && !panelEditableControl(event.target)) finish();
   };
   const focusOut = (): void => {
+    if (staleHandBackBlur()) return;
+    const blurredRevision = revision;
     // Native loss of focus and DOM blur can occur before the next control's focusin.
     queueMicrotask(() => {
+      if (platform === "windows" && (blurredRevision !== revision || staleHandBackBlur())) return;
       if (platform === "windows" && !editing) return;
       if (!selectionLease && (!shell.contains(document.activeElement) || !panelEditableControl(document.activeElement))) {
         finish();
@@ -155,6 +176,7 @@ export function installPluginPanelInputFocus(
     });
   };
   const keyDown = (event: KeyboardEvent): void => {
+    pointerClickTarget = undefined;
     const control = panelEditableControl(event.target);
     if (!editing || event.isComposing) return;
     if (event.key === "Escape" && !event.defaultPrevented) {

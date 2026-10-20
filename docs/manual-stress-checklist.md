@@ -32,6 +32,10 @@ without widening the visible frame. Repeat after hide/show, live resize, and mov
 buttons still receive exactly one trusted pointerdown/click and return keyboard focus, and
 text/content is not clipped by the inset. Repeat ordinary content clicks after ending an input
 lease; test right/middle presses too. Hover and wheel alone must not trigger a focus hand-back.
+On Windows, rapidly click ordinary content then an input while the first hand-back IPC is delayed:
+typing must stay in the input after the old request completes. Repeat with report-text selection.
+Activate a panel button with Enter/Space (no pointerdown): its action runs once without queuing
+a pointer hand-back or ending an existing text-selection lease.
 During an input/text-selection lease, press a resize border without moving: drawing shortcuts resume.
 In both inline and Full size spectra, change frequency/comparison selects, then Escape/Enter/Tab out;
 replace the report while a select is focused and confirm drawing shortcuts work again. Without making

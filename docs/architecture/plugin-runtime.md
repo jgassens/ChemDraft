@@ -110,6 +110,12 @@ toolbar's force-focus route, this hand-back uses guarded `SetActiveWindow` follo
 by document **webview** focus, never Tao's forced activation or synthetic Alt.
 Report-text drags finish before the hand-back decision; double/triple clicks decide
 selection before queuing it. Input and selection leases suppress this hand-back.
+Click hand-back requires a matching trusted pointerdown in the same gesture; keyboard
+activation never queues it. Focus requests carry monotonically increasing local generations
+and remain serialized through native completion. A dispatched hand-back's delayed blur cannot
+finish a newer lease while that lease is pending, and its completion cannot clear the newer
+lease's protection. The native command waits for its main-thread operation before replying,
+so an older hand-back cannot execute after a newer request from that panel has arrived.
 Native non-client presses and move/resize entry/exit use the same guarded helper,
 restoring webview focus after Wry's own focus handling as well. A transient Windows
 foreground change is possible, as with toolbars; the panel must not retain the

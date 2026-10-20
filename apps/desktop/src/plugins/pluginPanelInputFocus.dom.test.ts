@@ -21,7 +21,7 @@ function mount(html: string, platform: ShortcutPlatform = "macos") {
   const shell = document.createElement("aside");
   shell.innerHTML = html;
   document.body.append(shell);
-  const request = vi.fn(async (_editing: boolean) => undefined);
+  const request = vi.fn(async (_editing: boolean): Promise<void> => undefined);
   const listen = vi.spyOn(shell, "addEventListener");
   const listenWindow = vi.spyOn(window, "addEventListener");
   cleanup = installPluginPanelInputFocus(shell, request, platform);
@@ -144,6 +144,79 @@ describe("panel input keyboard focus", () => {
     await flush();
     expect(request).toHaveBeenCalledExactlyOnceWith(true);
     expect(document.getSelection()?.toString()).toBe("Report text");
+  });
+
+  it.each(["before completion", "after completion"])("keeps a newer Windows lease across stale hand-back blur %s", async (timing) => {
+    const { shell, request } = mount("<button>Run</button><input>", "windows");
+    let completeHandBack!: () => void;
+    let completeLease!: () => void;
+    request.mockImplementationOnce(() => new Promise<void>((resolve) => { completeHandBack = resolve; }));
+    request.mockImplementationOnce(() => new Promise<void>((resolve) => { completeLease = resolve; }));
+    const button = shell.querySelector("button")!;
+    pointerDown(button);
+    click(button);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([false]);
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    if (timing === "after completion") {
+      completeHandBack();
+      await flush();
+    }
+    // The old false IPC can deliver native/DOM blur after the new pointerdown.
+    window.dispatchEvent(new Event("blur"));
+    shell.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    completeHandBack();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([false, true]);
+    completeLease();
+    await flush();
+    expect(document.activeElement).toBe(input);
+    // Once the new lease has settled, a real loss of focus must still finish it.
+    window.dispatchEvent(new Event("blur"));
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([false, true, false]);
+  });
+
+  it.each(["Enter", " "])("does not hand back a Windows keyboard click from %s", async (activation) => {
+    const { shell, request } = mount('<button>Run</button><div class="plugin-report"><p>Report text</p></div>', "windows");
+    const button = shell.querySelector("button")!;
+    button.focus();
+    key(button, activation);
+    click(button, 0);
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    const text = shell.querySelector("p")!;
+    pointerDown(text);
+    selectText(text);
+    pointerUp(text);
+    click(text);
+    await flush();
+    key(button, activation);
+    click(button, 0);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(document.getSelection()?.toString()).toBe("Report text");
+  });
+
+  it("requires a matching unconsumed pointer gesture for Windows click hand-back", async () => {
+    const { shell, request } = mount("<button>Run</button><h2>Title</h2>", "windows");
+    const button = shell.querySelector("button")!;
+    const title = shell.querySelector("h2")!;
+    click(button);
+    pointerDown(title);
+    click(button);
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    pointerDown(button);
+    click(button);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([false]);
+    request.mockClear();
+    click(button);
+    await flush();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("retries on a new trusted click if the native request was dropped while background", async () => {
