@@ -1,5 +1,15 @@
 # ChemDraft Desktop
 
+Preferences includes “Ask to save unsaved changes before quitting”, off by default.
+When enabled, quitting with dirty tabs offers Save / Don't Save / Cancel in a native message
+box, with an accessible in-window fallback if the native box cannot open. Save writes every
+dirty tab; a cancelled or failed save keeps the app open. Discard retains the existing
+session-recovery behavior. Without a response from the document window, quitting retains
+the bounded native grace period; it pauses only once the save dialog is actually showing.
+Save and Discard re-arm that grace before flushing the session. Prompt controls are restricted
+to the document window. On macOS, Dock Quit also checks the preference and reveals hidden
+documents for the prompt; system logout, restart, and shutdown remain non-blocking.
+
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
 `pnpm dev` launches the Tauri desktop app. `pnpm dev:web` remains available as a secondary browser preview for React shell work.

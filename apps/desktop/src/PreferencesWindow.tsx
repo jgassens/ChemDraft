@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { loadAskToSaveBeforeQuit, saveAskToSaveBeforeQuit } from "./quitSettings";
 import {
   loadSpin3dSettings,
   saveSpin3dSettings,
@@ -13,7 +14,7 @@ import {
   type KeybindingScheme,
   type KeybindingSettings
 } from "./keybindingSettings";
-import { broadcastKeybindingSettings, broadcastSpin3dSettings } from "./window-manager";
+import { broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
   value: T;
@@ -92,6 +93,7 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
 
@@ -132,6 +134,18 @@ export function PreferencesWindow() {
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
+
+      <section className="preferences-section">
+        <h2>Quitting</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={askToSave} onChange={(event) => {
+            setAskToSave(event.target.checked);
+            saveAskToSaveBeforeQuit(event.target.checked);
+            void broadcastQuitSettings(event.target.checked);
+          }} />
+          Ask to save unsaved changes before quitting
+        </label>
+      </section>
 
       <PreferenceRadioGroup
         legend="Keyboard shortcuts"
