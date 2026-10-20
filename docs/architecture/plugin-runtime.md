@@ -170,7 +170,11 @@ presses reach WebView2's DOM drag handler; native edges/corners retain their pro
 WebView2 fills the whole client, without a second inset or exposed parent-client margin.
 Tauri maintains the overlay's region through resize/DPI changes; maximized windows have no
 resize grip. macOS makes the nonactivating panel key without activating the application and
-rejects background acquisition. The proposal window is marked open only once its native open
+rejects background acquisition. A click on a panel or analysis window while another app is
+frontmost does activate ChemDraft on macOS (the drawing stays key; a clicked menu opens):
+`NonactivatingPanel` is set on Tao's `NSWindow`, and AppKit honours it only for `NSPanel`.
+This is accepted as ordinary Mac behaviour (owner decision, 2026-10-20); Windows keeps the
+other app in front. Neither platform activates ChemDraft without a click. The proposal window is marked open only once its native open
 succeeds, so a failed open leaves the pending-proposals badge in place.
 
 **Escape.** A report window closes on a bubbling window-level Escape unless the
