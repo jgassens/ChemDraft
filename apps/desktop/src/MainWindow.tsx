@@ -9027,7 +9027,7 @@ export function MainWindow({
       const defaultPath = options.destinationPath ?? nativePathJoin(lastExportDirectoryRef.current, options.filename) ?? options.filename;
       // Runs in main, so the native panel's grant belongs to the writer. The shared wrapper
       // suspends and restores live dialog windows on both platforms without changing placement.
-      const path = await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions);
+      const path = await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId));
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
       if (!path) return { status: "cancelled", notice: "Export location unchanged" };
       if (path.length > 1024 || nativePathBasename(path).length > 256 || new TextEncoder().encode(JSON.stringify([path, nativePathBasename(path)])).length > 2400) throw new Error("The chosen export path is too long for the dialog. Choose a shorter path.");
@@ -29865,14 +29865,15 @@ async function pickNativeSavePath(
 async function pickNativeExportPath(
   defaultPath: string,
   formatLabel: string,
-  extensions: readonly string[]
+  extensions: readonly string[],
+  focusExportSessionId?: string
 ): Promise<string | undefined> {
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
     defaultPath,
     filters: [{ name: formatLabel, extensions: [...extensions] }]
-  });
+  }, focusExportSessionId);
   return selected ?? undefined;
 }
 

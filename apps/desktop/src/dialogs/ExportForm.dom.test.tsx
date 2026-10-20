@@ -13,6 +13,24 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 describe.each(["macos", "windows"] as const)("Export keyboard on %s", platform => {
+  it.each(["ready", "busy", "error", "completed"])("closes from the document body in %s state", state => {
+    const cancel = vi.fn();
+    act(() => root.render(createElement(ExportForm, {
+      state: { ...exportFixture(), busy: state === "busy" || state === "completed" },
+      completed: state === "completed", error: state === "error" ? "Disk full" : undefined,
+      onChange: vi.fn(), onSubmit: vi.fn(), onCancel: cancel, onChooseDestination: vi.fn(), platform
+    })));
+    const close = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Close");
+    if (state === "completed") expect(document.activeElement).toBe(close);
+    (document.activeElement as HTMLElement).blur();
+    for (const [key, modifier] of [["Escape", false], ["w", true]] as const) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true,
+        metaKey: modifier && platform === "macos", ctrlKey: modifier && platform === "windows" });
+      act(() => document.body.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(cancel).toHaveBeenCalledTimes(2);
+  });
   it("focuses filename, submits valid Enter once, ignores IME and invalid input, wraps Tab and cancels", () => {
     const submit = vi.fn(), cancel = vi.fn(), change = vi.fn();
     const render = (state: ExportDialogState = { ...exportFixture(), busy: false }) => act(() => root.render(createElement(ExportForm, {
@@ -49,4 +67,20 @@ it("clears an old picker grant when filename or format changes and keeps all opt
     act(() => root.render(createElement(ExportForm, { state: { ...state, format }, onChange: change, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
     expect(container.querySelector("fieldset")).not.toBeNull();
   }
+});
+
+it("keeps the action footer outside the scrollable form body", () => {
+  act(() => root.render(createElement(ExportForm, {
+    state: { ...exportFixture(), busy: false }, notice: "Warning\n".repeat(100),
+    onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+  })));
+  const form = container.querySelector("form")!;
+  const body = container.querySelector("fieldset")!.parentElement!;
+  const footer = form.lastElementChild as HTMLElement;
+  expect(form.style.overflow).toBe("hidden");
+  expect(form.style.gridTemplateRows).toBe("auto minmax(0, 1fr) auto");
+  expect(body.style.overflowY).toBe("auto");
+  expect(body.style.minHeight).toBe("0px");
+  expect(body.contains(footer)).toBe(false);
+  expect(footer.querySelector('button[type="submit"]')).not.toBeNull();
 });

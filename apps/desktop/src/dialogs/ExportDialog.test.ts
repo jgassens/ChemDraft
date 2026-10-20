@@ -150,3 +150,15 @@ it.each(["export", "chooseDestination"])("accepts %s synchronously before owner 
     expect(h.transport.publish).toHaveBeenCalledTimes(1);
   } finally { accepted?.(); await h.coordinator.dispose(); }
 });
+
+it("exposes only the current live Export session for picker focus restoration", async () => {
+  const h = await setup();
+  expect(h.coordinator.exportSessionId("tab-origin")).toBe(h.snapshot.sessionId);
+  expect(h.coordinator.exportSessionId("other-tab")).toBeUndefined();
+  await h.coordinator.closeTab("tab-origin");
+  expect(h.coordinator.exportSessionId("tab-origin")).toBeUndefined();
+  await h.coordinator.openExport("tab-origin", { title: "Reopened", options: exportFixture() });
+  expect(h.coordinator.exportSessionId("tab-origin")).not.toBe(h.snapshot.sessionId);
+  await h.coordinator.dispose();
+  expect(h.coordinator.exportSessionId("tab-origin")).toBeUndefined();
+});

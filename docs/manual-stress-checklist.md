@@ -372,3 +372,14 @@ and Art toolbars open, including at 125%/150% display scale:
 - In the browser preview, verify the shared in-page Export form and validation; raster formats
   remain desktop-only and supported exports download. On desktop force native creation failure:
   report the error without an in-page fallback.
+
+### Export dialog regression checks (macOS and Windows)
+
+- At default size and minimum size, with PDF options and long warnings, scroll the body and verify
+  Cancel/Close and Export stay visible; repeat in the browser build.
+- With focus on a field and then on the page body, try Escape and Cmd/Ctrl+W before export, while
+  busy, after an error and after success. Each closes Export; success first focuses Close.
+- Open Choose from Export and both Save and Cancel the native picker. Export becomes key/active
+  again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
+  confirm no closed or newly reopened Export receives focus. Switch to another app before the
+  picker completes and confirm ChemDraft does not take foreground.

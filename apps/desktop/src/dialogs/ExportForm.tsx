@@ -52,6 +52,19 @@ function ExportFormBody({
   onSubmit, title, error, notice, completed, platform = detectDialogPlatform()
 }: ExportDialogProps) {
   const composing = useRef(false);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (completed) closeButton.current?.focus(); }, [completed]);
+  useEffect(() => {
+    const closeOnKey = (event: KeyboardEvent) => {
+      if (composing.current || event.isComposing || event.keyCode === 229) return;
+      const modifier = platform === "macos" ? event.metaKey : event.ctrlKey;
+      if (event.key === "Escape" || (modifier && event.key.toLowerCase() === "w")) {
+        event.preventDefault(); event.stopPropagation(); onCancel();
+      }
+    };
+    document.addEventListener("keydown", closeOnKey, true);
+    return () => document.removeEventListener("keydown", closeOnKey, true);
+  }, [onCancel, platform]);
   const feedback = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error || notice) feedback.current?.scrollIntoView?.({ block: "nearest" }); }, [error, notice]);
   const descriptor = getExportFormatDescriptor(state.format);
@@ -65,10 +78,7 @@ function ExportFormBody({
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
       onKeyDown={event => {
         if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
-        const modifier = platform === "macos" ? event.metaKey : event.ctrlKey;
-        if (event.key === "Escape" || (modifier && event.key.toLowerCase() === "w")) {
-          event.preventDefault(); event.stopPropagation(); onCancel();
-        } else if (event.key === "Tab") {
+        if (event.key === "Tab") {
           const fields = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input:not(:disabled),select:not(:disabled),button:not(:disabled)'));
           const first = fields[0], last = fields.at(-1);
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
@@ -77,7 +87,7 @@ function ExportFormBody({
           event.preventDefault(); if (!exportDisabled) event.currentTarget.querySelector("form")?.requestSubmit();
         }
       }}>
-      <form style={{ ...exportDialogPanelStyle, maxHeight: isDesktopRuntime() ? "100vh" : "calc(100vh - 64px)" }}
+      <form style={{ ...exportDialogPanelStyle, height: isDesktopRuntime() ? "100vh" : undefined, maxHeight: isDesktopRuntime() ? "100vh" : "calc(100vh - 64px)" }}
         onSubmit={event => { event.preventDefault(); if (!composing.current && !exportDisabled) void onSubmit(event); }}>
         <div style={exportDialogHeaderStyle}>
           <h2 style={exportDialogTitleStyle}>Export</h2>
@@ -91,6 +101,7 @@ function ExportFormBody({
           </button>
         </div>
 
+        <div style={exportDialogBodyStyle}>
         {title ? <p style={exportDialogHintStyle}>Drawing: <strong>{title}</strong></p> : null}
         {error ? <p ref={feedback} role="alert" style={exportDialogWarningStyle}>{error}</p> : null}
         {notice ? <p ref={error ? undefined : feedback} role="status" style={{ ...exportDialogHintStyle, whiteSpace: "pre-wrap" }}>{notice}</p> : null}
@@ -341,8 +352,9 @@ function ExportFormBody({
           </fieldset>
         ) : null}
 
+        </div>
         <div style={exportDialogFooterStyle}>
-          <button type="button" style={exportDialogButtonStyle} onClick={onCancel}>
+          <button ref={closeButton} type="button" style={exportDialogButtonStyle} onClick={onCancel}>
             {completed ? "Close" : "Cancel"}
           </button>
           <button disabled={exportDisabled} type="submit" style={exportDialogPrimaryButtonStyle}>
@@ -402,13 +414,21 @@ const exportDialogPanelStyle: CSSProperties = {
   boxShadow: "0 18px 48px rgba(20, 30, 40, 0.22)",
   color: "#18212a",
   display: "grid",
+  gridTemplateRows: "auto minmax(0, 1fr) auto",
   gap: 8,
   maxHeight: "100vh",
   maxWidth: "100%",
-  overflow: "auto",
+  overflow: "hidden",
   padding: 16,
   width: "100%",
   boxSizing: "border-box"
+};
+
+const exportDialogBodyStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
+  minHeight: 0,
+  overflowY: "auto"
 };
 
 const exportDialogHeaderStyle: CSSProperties = {

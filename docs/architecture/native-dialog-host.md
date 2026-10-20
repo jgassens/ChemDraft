@@ -129,7 +129,7 @@ snapshot revisions and cancellation semantics before they can use the host.
 `export.open` opens the second registered kind, `export`, labelled `dialog-main-export-<slot>`.
 It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
 retain a session for the same tab. Export starts at 520 × 620 logical pixels, has a 420 × 360
-minimum, resizes with its content scrolling, and cannot minimize or maximize. Its ownership,
+minimum, resizes with its form body scrolling and its action footer always visible, and cannot minimize or maximize. Its ownership,
 floating level, macOS unparented/hides-on-deactivate behavior, first centring, per-kind position
 persistence, and utility suspension are the same shared paths as Page Size. No AppKit child
 relationship or new global window privilege is introduced. Browser builds retain an in-page
@@ -305,3 +305,11 @@ download test's sandbox-denied loopback bind. Excluding only
 all remaining tests and binary/doc targets. Temporary Sparkle links and Cargo output were removed.
 Windows code and `CURRENT_BUILD_STAMP` are unchanged. Windows native compilation and both platforms'
 hands-on window checks remain unverified; rerun the full Rust suite outside the sandbox.
+
+Export handles Escape and Cmd/Ctrl+W on document keydown, including when focus has fallen to
+body while fields are disabled. A successful export focuses Close. The shared browser form uses
+the same scrolling-body/pinned-footer layout. Save-panel suspension release carries the originating
+Export session ID; Rust restores focus only to that still-live, visible, ready session, after
+restoration, while ChemDraft remains foreground and no other native box is suspending utilities.
+Tauri makes it key on macOS and activates it on Windows. Closed or replaced sessions cannot receive
+focus, and returning from another application never activates ChemDraft.

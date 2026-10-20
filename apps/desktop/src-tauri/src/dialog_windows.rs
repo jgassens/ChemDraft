@@ -784,6 +784,43 @@ fn reveal_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), St
     place_window(window)?;
     show_on_main(window)
 }
+/// Main-thread-only, after the document-owned picker has released utility suspension.
+pub(crate) fn focus_export_after_picker<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: &str,
+) -> Result<(), String> {
+    if super::quit_in_progress()
+        || super::utility_windows_suspended()
+        || !super::foreground_belongs_to_app()
+    {
+        return Ok(());
+    }
+    let label = export_focus_label(
+        &REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
+        session_id,
+    );
+    if let Some(window) = label.and_then(|label| app.get_webview_window(&label)) {
+        if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true) {
+            // Tauri makes the window key on macOS and activates its HWND on Windows.
+            window.set_focus().map_err(|e| e.to_string())?;
+            bring_to_front_on_main(&window)?;
+        }
+    }
+    Ok(())
+}
+
+fn export_focus_label(registry: &Registry, session_id: &str) -> Option<String> {
+    registry
+        .sessions
+        .values()
+        .find(|session| {
+            session.snapshot.dialog_kind == "export"
+                && session.snapshot.session_id == session_id
+                && session.ready
+        })
+        .map(|session| session.registration.window_label.clone())
+}
+
 /// Reopening focuses without replacing the draft, resizing, or moving a user-positioned dialog.
 fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     if super::quit_in_progress() {
@@ -1333,6 +1370,36 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn picker_focus_targets_only_the_same_live_ready_export_session() {
+        let mut registry = Registry::default();
+        let mut message = snapshot();
+        let old_id = message.session_id.clone();
+        let (page, _) = register(&mut registry, message.clone(), false).unwrap();
+        registry.sessions.get_mut(&page.host_id).unwrap().ready = true;
+        assert_eq!(export_focus_label(&registry, &old_id), None);
+        registry.sessions.clear();
+        message.dialog_kind = "export".into();
+        message.data = export_snapshot().data;
+        let (export, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert_eq!(export_focus_label(&registry, &old_id), None);
+        registry.sessions.get_mut(&export.host_id).unwrap().ready = true;
+        assert_eq!(
+            export_focus_label(&registry, &old_id),
+            Some(export.window_label)
+        );
+        registry.sessions.clear();
+        assert_eq!(export_focus_label(&registry, &old_id), None);
+        message.session_id = "replacement-session".into();
+        let (replacement, _) = register(&mut registry, message, false).unwrap();
+        registry
+            .sessions
+            .get_mut(&replacement.host_id)
+            .unwrap()
+            .ready = true;
+        assert_eq!(export_focus_label(&registry, &old_id), None);
+    }
+
     #[test]
     fn every_channel_message_stays_receiver_private_at_worst_case() {
         let mut maximum = snapshot();

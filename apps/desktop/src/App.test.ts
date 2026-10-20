@@ -1871,7 +1871,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
     expect(mainWindowSource).toContain("const result = await createDialogExportResult(source, { ...options, busy: false })");
     expect(mainWindowSource).toContain("nativePathJoin(lastExportDirectoryRef.current, options.filename)");
-    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId))");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
     expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
     expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");

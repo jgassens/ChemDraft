@@ -26,6 +26,11 @@ export class DialogCoordinator {
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: "export" | "pageSize"): void;
   }, private options: { readyTimeoutMs?: number } = {}) {}
 
+  exportSessionId(tabId: string): string | undefined {
+    const session = this.sessions.get(`${tabId}:export`);
+    return session && !session.settled ? session.snapshot.sessionId : undefined;
+  }
+
   private ensureSubscription(): Promise<() => void> {
     return this.subscription ??= this.transport.subscribe(delivery => { void this.receive(delivery).catch(e => this.owner.onError(String(e))); })
       .catch(error => { this.subscription = undefined; throw error; });
