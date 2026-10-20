@@ -765,6 +765,24 @@ export async function requestToolsetTextStyle(): Promise<void> {
   await emit(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
 }
 
+export async function startPaletteWindowResize(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().startResizeDragging("SouthEast");
+}
+
+export async function setPaletteMinimumSize(size?: ToolsetWindowSize): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { getCurrentWindow, LogicalSize } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setMinSize(new LogicalSize(size?.width ?? 96, size?.height ?? 56));
+}
+
+export async function canPersistCurrentToolsetSize(): Promise<boolean> {
+  if (!isDesktopRuntime()) return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("can_persist_toolset_size");
+}
+
 export async function startPaletteWindowDrag(grabX: number, grabY: number): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
@@ -1141,6 +1159,7 @@ export async function listenForToolsetDefinitionsRequests(handler: () => void): 
 /** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
  *  is handled by the caller (mode state), not the layout applier. */
 export type ToolsetLayoutEdit =
+  | { kind: "setOrientation"; orientation: "horizontal" | "vertical" }
   | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }
@@ -1465,4 +1484,14 @@ export async function listenForToolsetWindowStates(handler: (state: ToolsetWindo
 async function invokeToolsetWindow(commandName: string, toolsetId: string): Promise<ToolsetWindowState> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ToolsetWindowState>(commandName, { toolsetId });
+}
+
+/** Native user gestures only; fitting and DPI changes never complete one. */
+export async function listenPaletteNativeResize(
+  handler: (payload: { phase: "start" | "end" | "cancel"; width: number; height: number }) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => {};
+  return listenCurrentWindowEvent<{ phase: "start" | "end" | "cancel"; width: number; height: number }>(
+    "chemdraft://palette-native-resize", (event) => handler(event.payload)
+  );
 }

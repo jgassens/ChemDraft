@@ -1,3 +1,4 @@
+import { resetPaletteFrames, type PaletteFrameResetScope } from "./resizableToolbarSettings";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
@@ -1593,7 +1594,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.20.10.40-opus";
+const CURRENT_BUILD_STAMP = "10.20.12.25-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10858,8 +10859,7 @@ export function MainWindow({
   // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
   // the startup load path so the palettes + menu refresh live.
   // Commit a toolbar layout state: rebuild the registry, reconcile which palettes are open, and
-  // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
-  // applies immediately — no draft that can drift out of sync) from a final close.
+  // persist. Inline customization stays open; the dialog closes only after Apply.
   const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
@@ -10898,15 +10898,17 @@ export function MainWindow({
     }
   }, [toolbarCatalog, effectiveNativePalette]);
 
-  // Live edits from the Customize dialog (visibility toggles, hides, reorders) apply immediately so
-  // palettes appear/disappear as you click — no Apply-then-reopen round trip, and no long-lived draft
-  // that can revert a hidden toolset back to visible.
   const liveApplyCustomizeToolbars = useCallback(
     (next: ToolsetLayoutState) => commitToolbarLayout(next, false),
     [commitToolbarLayout]
   );
   const applyCustomizeToolbars = useCallback(
-    (next: ToolsetLayoutState) => commitToolbarLayout(next, true),
+    (next: ToolsetLayoutState, resetFrames?: PaletteFrameResetScope) => {
+      commitToolbarLayout(next, true);
+      if (resetFrames && (resetFrames === "all" || resetFrames.length > 0)) {
+        void resetPaletteFrames(resetFrames).catch(() => setStatus("Couldn't reset toolbar sizes"));
+      }
+    },
     [commitToolbarLayout]
   );
 
@@ -12452,7 +12454,7 @@ export function MainWindow({
     let active = true;
     let unlisten: (() => void) | undefined;
     void listenForToolsetLayoutEdits((payload) => {
-      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID && payload.edit.kind !== "setOrientation" && payload.edit.kind !== "resetToolset") {
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
@@ -12460,7 +12462,8 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      if (!registry.get(payload.toolsetId)) return;
+      const currentGroups = getToolsetPaletteGroups(payload.toolsetId, registry);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -12476,10 +12479,14 @@ export function MainWindow({
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
-        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+        gridRows: registry.get(payload.toolsetId)?.gridLayout?.rows,
+        gridLayout: registry.get(payload.toolsetId)?.gridLayout
       });
       if (next !== current) {
         commitToolbarLayoutRef.current(next, false);
+      }
+      if (payload.edit.kind === "resetToolset") {
+        void resetPaletteFrames([payload.toolsetId]).catch(() => setStatus("Couldn't reset toolbar size"));
       }
     })
       .then((cleanup) => {

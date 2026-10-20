@@ -8,8 +8,17 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Resizable toolbar review fixes on `resizable-palettes-prototype`, integrated with upstream `085d99d`.
+Add an off-by-default preference preserving main's sizing path; reset saved and live frames;
+preserve authored layout and actual grid dimensions; save only completed user resizes in logical
+units; keep macOS drag layout stable and scope native permissions to real toolset windows.
+Preserve native window ownership, shading, and shared suspension. Conduct independent fresh-agent
+source reviews. The user has now authorized the necessary tests, builds and verification;
+run the regression suites and platform checks available on this Windows host.
+No commit, push, publication, or PR message without the user's explicit approval.
+Files: PaletteWindow, ToolPalette, toolbar layout edits, Preferences/settings, MainWindow reset
+routing, window-manager, native resize provenance/permissions, regression tests and toolbar docs.
+This prototype is not marked shipped.
 
 ---
 

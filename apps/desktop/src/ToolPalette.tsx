@@ -221,7 +221,9 @@ export function ToolPalette({
   gridLayout,
   activeTool = "tool.select",
   mode = "docked",
-  orientation = "vertical",
+  orientation: preferredOrientation = "vertical",
+  responsive = false,
+  freezeResponsive = false,
   title = "Drawing tools",
   currentDistributeMode = "centers",
   onRequestFlyout,
@@ -235,6 +237,8 @@ export function ToolPalette({
   activeTool?: string;
   mode?: ToolPaletteMode;
   orientation?: ToolPaletteOrientation;
+  responsive?: boolean;
+  freezeResponsive?: boolean;
   title?: string;
   currentDistributeMode?: ToolPaletteDistributeMode;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
@@ -253,7 +257,44 @@ export function ToolPalette({
     clearTooltip
   } = usePaletteTooltipState();
 
-  const effectiveItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
+  const paletteRef = useRef<HTMLElement | null>(null);
+  const [availableSize, setAvailableSize] = useState<{ width: number; height: number }>();
+  useEffect(() => {
+    const viewport = paletteRef.current?.parentElement;
+    if (!responsive || freezeResponsive || !viewport || typeof ResizeObserver === "undefined") return;
+    let observing = true;
+    const measure = () => {
+      if (!observing) return;
+      setAvailableSize({ width: viewport.clientWidth, height: viewport.clientHeight });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => {
+      observing = false;
+      observer.disconnect();
+    };
+  }, [responsive, freezeResponsive]);
+  const orientation = preferredOrientation;
+  const sourceItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
+  // Explicit slots, intentional blanks and grid widgets are authored layouts. Keep their
+  // placements intact and let the window viewport scroll rather than repacking them.
+  const reflowGrid = responsive && !sourceItemGroups.flat().some((item) =>
+    item.kind === "spacer" || item.kind === "separator" || isGridWidgetItem(item) ||
+    item.layout.column !== undefined || item.layout.row !== undefined ||
+    item.layout.colSpan !== 1 || item.layout.rowSpan !== 1
+  );
+  const effectiveItemGroups = sourceItemGroups;
+  const cellWidth = gridLayout?.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
+  const cellHeight = gridLayout?.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
+  const cellGap = gridLayout?.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
+  const maxColumns = Math.max(1, Math.floor(((availableSize?.width ?? 96) - 24) / (cellWidth + cellGap)));
+  const availableRows = Math.max(1, Math.floor(((availableSize?.height ?? 200) - 100) / (cellHeight + cellGap)));
+  const gridCells = effectiveItemGroups.flat().filter((item) => !isToolbarWidgetItem(item))
+    .reduce((count, item) => count + item.layout.colSpan * item.layout.rowSpan, 0);
+  const responsiveColumns = orientation === "vertical"
+    ? Math.min(maxColumns, Math.max(2, Math.ceil(gridCells / availableRows)))
+    : maxColumns;
   const renderPaletteItem = (
     item: ToolbarPaletteItemModel,
     tooltipId: string,
@@ -273,7 +314,9 @@ export function ToolPalette({
     />
   );
 
-  const gridStyle = toolPaletteGridStyle(gridLayout);
+  const gridStyle = toolPaletteGridStyle(reflowGrid
+    ? { ...gridLayout, orientation, columns: responsiveColumns }
+    : gridLayout);
   // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
   // sections below and can replace/hide the grid. Strip them from the grid content + sizing so a
   // widget placeholder never shows as a disabled button. Pair each group's id (from `customize`,
@@ -374,6 +417,8 @@ export function ToolPalette({
   return (
     <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
+        ref={paletteRef}
+        data-responsive-palette={reflowGrid ? "true" : undefined}
         className={[
           "tool-palette",
           mode,

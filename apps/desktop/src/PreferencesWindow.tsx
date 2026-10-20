@@ -1,3 +1,4 @@
+import { loadResizableToolbarSettings, saveResizableToolbarSettings, broadcastResizableToolbarSettings } from "./resizableToolbarSettings";
 import { useEffect, useState } from "react";
 import { loadAskToSaveBeforeQuit, saveAskToSaveBeforeQuit } from "./quitSettings";
 import {
@@ -93,6 +94,7 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const [resizableToolbars, setResizableToolbars] = useState(loadResizableToolbarSettings);
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
@@ -144,6 +146,22 @@ export function PreferencesWindow() {
             void broadcastQuitSettings(event.target.checked);
           }} />
           Ask to save unsaved changes before quitting
+        </label>
+      </section>
+
+      <section className="preferences-section" aria-labelledby="pref-floating-toolbars">
+        <h2 id="pref-floating-toolbars">Floating toolbars</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={resizableToolbars.enabled} onChange={(event) => {
+            const next = { enabled: event.currentTarget.checked };
+            setResizableToolbars(next);
+            saveResizableToolbarSettings(next);
+            void broadcastResizableToolbarSettings(next).catch(() => undefined);
+          }} />
+          <span className="preferences-radio-body">
+            <strong>Resizable floating toolbars</strong>
+            <small>Resize floating toolbars and wrap their buttons. Takes effect immediately.</small>
+          </span>
         </label>
       </section>
 

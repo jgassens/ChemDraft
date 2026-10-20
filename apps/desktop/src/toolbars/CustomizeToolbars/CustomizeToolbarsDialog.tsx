@@ -1,3 +1,4 @@
+import type { PaletteFrameResetScope } from "../../resizableToolbarSettings";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   DndContext,
@@ -36,6 +37,7 @@ import {
   reorderItems,
   reorderToolsets,
   resetToolsetLayout,
+  resetAllLayouts,
   setItemHidden,
   setToolsetVisible,
   setUserToolsetGroups
@@ -89,9 +91,8 @@ export interface CustomizeToolbarsDialogProps {
   layoutState: LayoutState;
   /** All commands available to add to a user toolset (from the command registry). */
   availableCommands?: readonly CommandOption[];
-  onApply: (next: LayoutState) => void;
-  /** Applied immediately on each edit (visibility toggles, hides, reorders) for live preview —
-   *  palettes appear/disappear as you click instead of only on Apply. */
+  onApply: (next: LayoutState, resetFrames?: PaletteFrameResetScope) => void;
+  /** Keep the existing live layout preview; frame resets commit only on Apply. */
   onLiveApply?: (next: LayoutState) => void;
   onClose: () => void;
 }
@@ -142,7 +143,7 @@ function SortableToolsetRow({
   const commitRename = (event: { currentTarget: HTMLInputElement }) => {
     // Only write when the title actually changed. Committing on every blur — including a mere
     // focus-through with no edit — would pin a title override onto the toolset, freezing it against
-    // future manifest renames and writing junk to disk (edits apply live). Trimmed compare matches
+    // future manifest renames and adding an unnecessary draft override. Trimmed compare matches
     // renameToolset, which clears the override when the field is emptied.
     if (event.currentTarget.value.trim() === toolset.title) {
       return;
@@ -225,8 +226,6 @@ export function CustomizeToolbarsDialog({
   onClose
 }: CustomizeToolbarsDialogProps) {
   const [draft, setDraft] = useState<LayoutState>(layoutState);
-  // Live preview: every edit applies immediately (palettes appear/disappear as you click), instead of
-  // only on Apply. Keep the open-time state so Cancel can revert. Refs avoid re-firing on prop identity.
   const initialLayoutRef = useRef(layoutState);
   const onLiveApplyRef = useRef(onLiveApply);
   onLiveApplyRef.current = onLiveApply;
@@ -238,6 +237,7 @@ export function CustomizeToolbarsDialog({
     }
     onLiveApplyRef.current?.(draft);
   }, [draft]);
+  const [resetFrames, setResetFrames] = useState<PaletteFrameResetScope>([]);
   const { toolsets: effective, error: draftError } = useEffectiveToolsets(baseToolsets, draft);
   const [selectedToolsetId, setSelectedToolsetId] = useState<string | undefined>(effective[0]?.id);
   const [newToolbarName, setNewToolbarName] = useState("");
@@ -360,11 +360,8 @@ export function CustomizeToolbarsDialog({
     });
   };
 
-  // Every edit applies live (and persists), so dismissing the dialog must ROLL BACK to the state it
-  // opened with — otherwise the ×, a backdrop click, and Escape would silently behave like Apply. Only
-  // the Apply button commits the draft. This is the single dismiss path for all three affordances.
   const cancelAndClose = () => {
-    onLiveApply?.(initialLayoutRef.current);
+    onLiveApplyRef.current?.(initialLayoutRef.current);
     onClose();
   };
 
@@ -374,8 +371,7 @@ export function CustomizeToolbarsDialog({
         return;
       }
       // Escape inside a text field means "abandon this edit", not "throw away the whole session".
-      // Without this check, pressing it while renaming a toolbar rolled every live-applied edit —
-      // reorderings, hides, deletions — back to the state the dialog opened with.
+      // Keep earlier staged edits while abandoning the focused field.
       const target = event.target;
       if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
         target.blur();
@@ -386,7 +382,7 @@ export function CustomizeToolbarsDialog({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // cancelAndClose closes over stable refs/props (onLiveApply, onClose); rebinding each render is
+    // Rebinding each render is
     // harmless and keeps the latest closure without extra deps churn.
   });
 
@@ -419,7 +415,10 @@ export function CustomizeToolbarsDialog({
                       onSelect={() => setSelectedToolsetId(toolset.id)}
                       onToggleVisible={(visible) => setDraft((current) => setToolsetVisible(current, toolset.id, visible))}
                       onRename={(title) => setDraft((current) => renameToolset(current, toolset.id, title))}
-                      onReset={() => setDraft((current) => resetToolsetLayout(current, toolset.id))}
+                      onReset={() => {
+                        setDraft((current) => resetToolsetLayout(current, toolset.id));
+                        setResetFrames((scope) => scope === "all" ? scope : [...new Set([...scope, toolset.id])]);
+                      }}
                       onClone={() => handleClone(toolset.id)}
                       onDelete={() => {
                         setDraft((current) => deleteUserToolset(current, toolset.id));
@@ -481,6 +480,10 @@ export function CustomizeToolbarsDialog({
               This customization can’t be applied. Cancel to keep your current toolbars.
             </span>
           ) : null}
+          <button type="button" onClick={() => {
+            setDraft(resetAllLayouts());
+            setResetFrames("all");
+          }}>Reset All</button>
           <button type="button" className="customize-toolbars-cancel" onClick={cancelAndClose}>
             Cancel
           </button>
@@ -488,7 +491,7 @@ export function CustomizeToolbarsDialog({
             type="button"
             className="customize-toolbars-apply"
             disabled={draftError}
-            onClick={() => onApply(draft)}
+            onClick={() => onApply(draft, resetFrames)}
           >
             Apply
           </button>

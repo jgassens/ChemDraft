@@ -2303,6 +2303,86 @@ textarea:focus-visible,
   cursor: grabbing;
 }
 
+/* The untouched frame still measures its original content. Only a user resize (or a saved
+   user frame) opts into a constrained, scrolling viewport. The grip adds no sizing row. */
+.palette-scroll-viewport { display: contents; }
+.palette-window-shell[data-user-sized="true"] {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+  grid-template-rows: 22px minmax(0, 1fr);
+  overflow: hidden;
+}
+.palette-window-shell[data-user-sized="true"] > .palette-scroll-viewport {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 12px;
+  box-sizing: border-box;
+  cursor: default;
+}
+.palette-window-shell .palette-scroll-viewport .tool-palette.floating[data-responsive-palette="true"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  padding: 6px;
+  gap: 6px;
+}
+.palette-window-shell .palette-scroll-viewport .tool-palette.floating[data-responsive-palette="true"].vertical {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+.palette-scroll-viewport .tool-palette.floating[data-responsive-palette="true"] > .tool-group {
+  grid-auto-flow: row;
+  grid-template-rows: none;
+  flex: 0 0 auto;
+}
+.tool-palette[data-responsive-palette="true"] > .palette-content-drag-grip { display: none; }
+.tool-palette[data-responsive-palette="true"] > [data-toolbar-style-controls],
+.tool-palette[data-responsive-palette="true"] > .art-toolbar-style-controls {
+  flex: 0 0 auto;
+  max-width: none;
+}
+.palette-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 var(--cd-radius-window) 0;
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--cd-text-muted) 3px 4px);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.palette-orientation-toggle {
+  position: absolute;
+  right: 3px;
+  top: 2px;
+  width: 16px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cd-text-muted);
+  font-size: 0;
+  cursor: pointer;
+}
+.palette-orientation-toggle::after { content: "\21c4"; font-size: 13px; }
+.palette-window-shell[data-rotatable="true"] .palette-title-label { clip-path: inset(0 18px 0 0); }
+
 .palette-title {
   position: relative;
   box-sizing: border-box;

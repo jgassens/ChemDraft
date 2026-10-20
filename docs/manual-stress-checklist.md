@@ -275,6 +275,25 @@ Status row: at the 900×640 minimum window, open a file with warnings under a lo
 in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,
 in a branch build (long stamp with the worktree label) and in a stable build (short stamp), on both platforms.
 
+1. **Resizable palette prototype, on macOS and Windows:** with the preference off (including with
+   old saved frames), compare toolbars with main: no Rotate/grip/title clipping or changed sizing.
+   Enable Resizable floating toolbars in Preferences; toggle it with palettes already open and
+   during a drag. Restore defaults and Reset All must return resized open and closed palettes to
+   content-fit; Cancel in Customize preserves frames and rolls back the live layout preview.
+   Start with fresh dev settings and compare
+   each untouched toolbar with main: same first-open frame and content layout. Drag the bottom-right
+   grip and native edges on Main, button-only, text, art, inspector, plugin and user palettes. Buttons
+   wrap without changing saved orientation; rotate grid toolbars both ways, including one-row
+   inspectors; non-grid panels have no Rotate button. Spacers, explicit slots and spanning widgets
+   remain present after resizing. A macOS grip click without movement must not opt into user sizing;
+   layout stays stable during a drag. Controls/sliders remain grouped and
+   readable; reach every control by scrolling at minimum size. Customize, add/remove/reorder and exit.
+   Close/reopen and restart: retain genuine user sizes and orientation. Repeat across mixed-DPI
+   displays and after unplugging the remembered monitor. Open native Open/Save, About, Preferences
+   and overlapping dialogs while resized: restore only after the last closes. Minimize the document
+   on Windows and quit during a dialog: never save a transient frame or resurrect toolbars. Confirm
+   focus/shortcuts stay with the drawing and the stable installation/settings remain separate.
+
 1. **Document tabs, on macOS and Windows:** start with one document and confirm the tab strip is visible.
    File ▸ New and the + button after the last tab add and activate an Untitled tab inside the same
    document window. Tab to + and activate it with Enter and Space; confirm its "New tab" accessible

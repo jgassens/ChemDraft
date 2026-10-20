@@ -2,6 +2,7 @@ import { toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
 import type {
   ToolsetDefinition,
   ToolsetGroupDefinition,
+  ToolsetGridLayout,
   ToolsetItemDefinition,
   ToolsetLayoutState,
   UserToolsetDefinition,
@@ -23,6 +24,34 @@ import type {
  */
 
 export const USER_TOOLSET_ID_PREFIX = "user.";
+
+export function setToolsetOrientation<I extends string, A extends string>(
+  state: ToolsetLayoutState<I, A>,
+  toolsetId: string,
+  orientation: "horizontal" | "vertical",
+  gridLayout?: ToolsetGridLayout
+): ToolsetLayoutState<I, A> {
+  const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
+  const currentGrid = gridLayout || override?.gridLayout
+    ? { ...gridLayout, ...override?.gridLayout }
+    : undefined;
+  // Inspector/control panels have no button grid to rotate.
+  if (!currentGrid || (currentGrid.rows === undefined && currentGrid.columns === undefined)) {
+    return state;
+  }
+  const currentOrientation = currentGrid.orientation ?? (currentGrid.rows !== undefined ? "horizontal" : "vertical");
+  if (currentOrientation === orientation) {
+    return state;
+  }
+  return withOverride(state, toolsetId, (draft) => {
+    draft.gridLayout = {
+      ...currentGrid,
+      orientation,
+      rows: currentGrid.columns,
+      columns: currentGrid.rows
+    };
+  });
+}
 
 export function emptyLayoutState<I extends string = string, A extends string = string>(): ToolsetLayoutState<I, A> {
   return { version: 1, toolsetOverrides: [], userToolsets: [] };

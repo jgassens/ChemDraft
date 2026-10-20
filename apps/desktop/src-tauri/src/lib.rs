@@ -7,6 +7,7 @@ mod installed_plugins;
 mod macos_quit;
 mod ocsr_engine;
 mod opsin;
+mod palette_resize;
 mod panel_window;
 mod plugin_package;
 mod problem_reports;
@@ -719,6 +720,33 @@ struct ToolsetWindowDirectory {
     labels: Mutex<HashMap<String, String>>,
 }
 
+#[tauri::command]
+fn can_persist_toolset_size(window: tauri::WebviewWindow) -> bool {
+    can_save_palette_frame(&window)
+}
+
+fn can_save_palette_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    if !window.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let app = window.app_handle();
+    toolset_size_may_be_saved(
+        quit_in_progress(),
+        utility_windows_suspended(),
+        toolset_id_for_window_label(app, window.label()).is_some(),
+        toolset_frame_is_transient(app, &window.as_ref().window()),
+    )
+}
+
+fn toolset_size_may_be_saved(
+    quitting: bool,
+    suspended: bool,
+    is_toolset: bool,
+    transient: bool,
+) -> bool {
+    !quitting && !suspended && is_toolset && !transient
+}
+
 struct Engine3dManagedSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -1179,6 +1207,7 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             observe_hide_for_document_key_restore(app.clone());
+            palette_resize::observe(app.clone());
 
             // The tooltip window is NOT built here: a palette prewarms it once it has painted
             // (prewarm_toolset_tooltip). Building it in setup put a hidden webview ahead of every
@@ -1212,6 +1241,7 @@ pub fn run() {
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
+            can_persist_toolset_size,
             close_toolset_window,
             suspend_toolset_windows,
             list_toolset_window_states,
@@ -1740,6 +1770,7 @@ async fn suspend_toolset_windows(
     if window.label() != MAIN_WINDOW_LABEL {
         return Err("Only the document window can suspend floating windows.".into());
     }
+    palette_resize::invalidate(&app);
     let _creation = match lock_window_creation() {
         Ok(guard) => guard,
         Err(error) => {
@@ -2227,6 +2258,7 @@ fn close_toolset_window(
     app: tauri::AppHandle,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    palette_resize::invalidate(&app);
     if utility_windows_suspended() {
         return toolset_state(&app, &toolset_id);
     }
@@ -6374,6 +6406,7 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
+    palette_resize::grant(app, &label)?;
     let window = match utility_window_builder(
         WebviewWindowBuilder::new(
             app,
@@ -6412,6 +6445,7 @@ fn ensure_toolset_window<R: Runtime>(
     };
 
     configure_toolset_utility_window(&window, true)?;
+    palette_resize::install(&window)?;
     Ok(())
 }
 
@@ -7288,6 +7322,16 @@ fn find_menu_item_by_id<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_toolset_sizes_are_saved_only_in_a_normal_live_frame() {
+        assert!(super::toolset_size_may_be_saved(false, false, true, false));
+        assert!(!super::toolset_size_may_be_saved(true, false, true, false));
+        assert!(!super::toolset_size_may_be_saved(false, true, true, false));
+        assert!(!super::toolset_size_may_be_saved(
+            false, false, false, false
+        ));
+        assert!(!super::toolset_size_may_be_saved(false, false, true, true));
+    }
 
     use super::*;
 
@@ -8224,14 +8268,27 @@ mod tests {
     /// so it is deliberately not the thing asserted.)
     #[test]
     fn registered_commands_have_permissions_and_capability_grants() {
+        use tauri::ipc::RuntimeCapability;
+        // Toolbar resize grants are installed for exact real window labels at creation time.
+        // Inspect the actual builder, retaining the same positive permission cross-check.
+        let tauri::utils::acl::capability::CapabilityFile::Capability(resize_capability) =
+            super::palette_resize::capability("toolset-core-main").build()
+        else {
+            panic!("expected one toolset resize capability");
+        };
+        assert_eq!(resize_capability.windows, ["toolset-core-main"]);
+        assert!(resize_capability.webviews.is_empty());
+        assert!(resize_capability.local && resize_capability.remote.is_none());
+        let resize_grants = serde_json::to_string(&resize_capability).expect("resize capability");
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}",
+            "{}{}{}{}{}{}",
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
-            include_str!("../capabilities/quit-prompt.json")
+            include_str!("../capabilities/quit-prompt.json"),
+            resize_grants
         );
 
         let handler_start = lib_source

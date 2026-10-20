@@ -12,9 +12,15 @@ import {
 import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
-import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "./keyboardShortcuts";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
+import {
+  loadResizableToolbarSettings,
+  listenForResizableToolbarSettings,
+  listenForPaletteFrameResets
+} from "./resizableToolbarSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
@@ -70,6 +76,10 @@ import {
   setCurrentWindowLogicalSize,
   setToolsetWindowFocusable,
   startPaletteWindowDrag,
+  startPaletteWindowResize,
+  setPaletteMinimumSize,
+  canPersistCurrentToolsetSize,
+  listenPaletteNativeResize,
   toolsetCommandSpecsSignature,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
@@ -115,16 +125,69 @@ function pendingPlaceholderToolset(toolsetId: string): DesktopToolsetDefinition 
 
 export function PaletteWindow({
   toolsetId = "core.main",
+  platform = detectDesktopShortcutPlatform(),
   // Interim seam so tests (and, until Phase 4's definition-push, callers) can supply a
   // registry that already includes plugin toolsets. Defaults to the core registry.
   initialRegistry
 }: {
   toolsetId?: string;
+  platform?: ShortcutPlatform;
   initialRegistry?: DesktopToolsetRegistry;
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
-  const lastLoggedSizeRef = useRef<string>("");
+  const [userSized, setUserSized] = useState(false);
+  const [resizingEnabled, setResizingEnabled] = useState(() => loadResizableToolbarSettings().enabled);
+  const resizingEnabledRef = useRef(resizingEnabled);
+  resizingEnabledRef.current = resizingEnabled;
+  const [resizeInProgress, setResizeInProgress] = useState(false);
+  const resizeInProgressRef = useRef(false);
+  const nativeResizeStartRef = useRef<{ width: number; height: number } | undefined>(undefined);
+  const resizeGenerationRef = useRef(0);
+  const [frameRevision, setFrameRevision] = useState(0);
+  const originalFrameRef = useRef({
+    width: globalThis.window?.innerWidth ?? 96,
+    height: globalThis.window?.innerHeight ?? 56
+  });
+  const minimumAppliedRef = useRef(false);
+  const savedSizeRef = useRef(false);
+  const minimumRef = useRef({ width: 96, height: 56 });
+  const resizeDragRef = useRef<{ pointerId: number; x: number; y: number; width: number; height: number } | undefined>(undefined);
+  const resizeFrameRef = useRef<number | undefined>(undefined);
+  const resizeTargetRef = useRef<{ width: number; height: number } | undefined>(undefined);
+  const resizeWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const cancelResize = () => {
+    resizeGenerationRef.current += 1;
+    resizeDragRef.current = undefined;
+    resizeTargetRef.current = undefined;
+    nativeResizeStartRef.current = undefined;
+    resizeInProgressRef.current = false;
+    setResizeInProgress(false);
+    if (resizeFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = undefined;
+    }
+  };
+  const persistUserFrame = async (size: { width: number; height: number }, generation: number) => {
+    if (!resizingEnabledRef.current || generation !== resizeGenerationRef.current ||
+        !Number.isFinite(size.width) || !Number.isFinite(size.height) ||
+        size.width < minimumRef.current.width || size.height < 56) return;
+    if (!await canPersistCurrentToolsetSize() || !resizingEnabledRef.current ||
+        generation !== resizeGenerationRef.current) return;
+    setUserSized(true);
+    try {
+      localStorage.setItem(`chemdraft.palette.frame.v1.${toolsetId}`, JSON.stringify(size));
+    } catch { /* Resizing works without persistent storage. */ }
+  };
+  const queueGripSize = (size: { width: number; height: number }, generation: number) => {
+    // Serialize native requests so an older in-flight frame cannot overwrite the final frame.
+    resizeWriteRef.current = resizeWriteRef.current.catch(() => undefined).then(async () => {
+      if (generation === resizeGenerationRef.current && resizingEnabledRef.current) {
+        await setCurrentWindowLogicalSize(size);
+      }
+    });
+    return resizeWriteRef.current;
+  };
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
   const [commandSpecs, setCommandSpecs] = useState<CommandSpec[]>(() =>
@@ -189,6 +252,10 @@ export function PaletteWindow({
   );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
+  const canRotate = Boolean(toolset.gridLayout &&
+    (toolset.gridLayout.rows !== undefined || toolset.gridLayout.columns !== undefined));
+  const orientation = toolset.gridLayout?.orientation ??
+    (toolset.gridLayout?.rows !== undefined ? "horizontal" : "vertical");
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
   // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
@@ -226,6 +293,36 @@ export function PaletteWindow({
   customizeThisPaletteRef.current = customizeThisPalette;
 
   useEffect(() => {
+    let disposed = false;
+    const cleanups: Array<() => void> = [];
+    const resetLiveFrame = () => {
+      cancelResize();
+      savedSizeRef.current = false;
+      setUserSized(false);
+      setFrameRevision((value) => value + 1);
+    };
+    void listenForResizableToolbarSettings((settings) => {
+      if (settings.enabled === resizingEnabledRef.current) return;
+      resizingEnabledRef.current = settings.enabled;
+      resetLiveFrame();
+      setResizingEnabled(settings.enabled);
+    }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup)).catch(() => undefined);
+    void listenForPaletteFrameResets((scope) => {
+      if (scope === "all" || scope.includes(toolsetId)) {
+        // Delete again at the receiver: an old save may have completed while IPC was in flight.
+        try { localStorage.removeItem(`chemdraft.palette.frame.v1.${toolsetId}`); }
+        catch { /* Live reset still works when storage is unavailable. */ }
+        resetLiveFrame();
+      }
+    }).then((cleanup) => disposed ? cleanup() : cleanups.push(cleanup)).catch(() => undefined);
+    return () => {
+      disposed = true;
+      resizeGenerationRef.current += 1;
+      cleanups.forEach((cleanup) => cleanup());
+    };
+  }, [toolsetId]);
+
+  useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
     document.body.classList.add("palette-window-body");
     return () => {
@@ -234,6 +331,8 @@ export function PaletteWindow({
       if (sizeAnimationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(sizeAnimationFrameRef.current);
       }
+      if (resizeFrameRef.current !== undefined) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeGenerationRef.current += 1;
     };
   }, []);
 
@@ -417,13 +516,15 @@ export function PaletteWindow({
   }, [customizeThisPalette, toolset.id]);
 
   useEffect(() => {
+    if (userSized || resizeInProgress || !knownToolset) return;
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
-    if (!preferredSize) {
-      return;
-    }
+    // Preserve main's untouched path, including toolsets that retain their native opening frame.
+    if (!resizingEnabled && !preferredSize && !minimumAppliedRef.current) return;
 
     const shell = shellRef.current;
+    let observing = true;
     const applySize = () => {
+      if (!observing || resizingEnabled !== resizingEnabledRef.current || resizeInProgressRef.current) return;
       // Fit the window to the palette's own content in BOTH dimensions. The shell is
       // width/height:max-content (see CSS), so its measured box is the natural content size:
       // the window shrinks when the manifest size is too big (blank gaps) and grows when
@@ -431,24 +532,57 @@ export function PaletteWindow({
       const rect = shell?.getBoundingClientRect();
       const contentWidth = rect ? Math.ceil(rect.width) : 0;
       const contentHeight = rect ? Math.ceil(rect.height) : 0;
-      const width = contentWidth > 0 ? contentWidth : preferredSize.width;
-      const height = Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height);
-      // Dev-only size probe: open the palette window's devtools console to read exact
-      // content-vs-window numbers for any palette that still looks wrong.
-      if (import.meta.env.DEV) {
-        const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
-        if (lastLoggedSizeRef.current !== key) {
-          lastLoggedSizeRef.current = key;
-          console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
-        }
+      // Toolsets with no declared/grid size previously kept the native opening frame.
+      const width = preferredSize ? (contentWidth > 0 ? contentWidth : preferredSize.width) : originalFrameRef.current.width;
+      const height = preferredSize
+        ? Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height)
+        : originalFrameRef.current.height;
+      if (!resizingEnabled) {
+        const generation = resizeGenerationRef.current;
+        const restoreMinimum = minimumAppliedRef.current;
+        resizeWriteRef.current = resizeWriteRef.current.catch(() => undefined).then(async () => {
+          if (generation !== resizeGenerationRef.current || resizingEnabledRef.current) return;
+          if (restoreMinimum) await setPaletteMinimumSize();
+          minimumAppliedRef.current = false;
+          if (generation !== resizeGenerationRef.current || resizingEnabledRef.current) return;
+          if (preferredSize) await setCurrentWindowLogicalSize({ width, height });
+          else if (restoreMinimum) await setCurrentWindowLogicalSize(originalFrameRef.current);
+        }).catch(() => undefined);
+        return;
       }
-      void setCurrentWindowLogicalSize({ width, height }).catch(() => undefined);
+      const controls = itemGroups.flat().some((item) => item.primary.type === "control");
+      minimumRef.current = { width: controls ? Math.max(96, Math.min(320, width)) : 96, height: 56 };
+      // Match the OS minimum before recording the target. Otherwise a tiny content-fit
+      // frame clamped by the OS looks like a user resize when its resize event arrives.
+      let size = { width: Math.max(minimumRef.current.width, width), height: Math.max(56, height) };
+      if (!savedSizeRef.current) {
+        savedSizeRef.current = true;
+        try {
+          const stored = JSON.parse(localStorage.getItem(`chemdraft.palette.frame.v1.${toolset.id}`) ?? "null");
+          if (stored && Number.isFinite(stored.width) && Number.isFinite(stored.height) && stored.width >= 96 && stored.height >= 56) {
+            size = {
+              width: Math.max(minimumRef.current.width, Math.min(stored.width, window.screen.availWidth || stored.width)),
+              height: Math.max(56, Math.min(stored.height, window.screen.availHeight || stored.height))
+            };
+            setUserSized(true);
+          }
+        } catch { /* Default content-fit layout survives unavailable or malformed storage. */ }
+      }
+      const generation = resizeGenerationRef.current;
+      minimumAppliedRef.current = true;
+      resizeWriteRef.current = resizeWriteRef.current.catch(() => undefined).then(async () => {
+        if (generation !== resizeGenerationRef.current || !resizingEnabledRef.current || resizeInProgressRef.current) return;
+        await setPaletteMinimumSize(minimumRef.current);
+        if (generation !== resizeGenerationRef.current || !resizingEnabledRef.current || resizeInProgressRef.current) return;
+        await setCurrentWindowLogicalSize(size);
+      })
+        .catch(() => undefined);
     };
 
     applySize();
 
     if (!shell || typeof ResizeObserver === "undefined") {
-      return;
+      return () => { observing = false; };
     }
 
     const observer = new ResizeObserver(() => {
@@ -464,13 +598,49 @@ export function PaletteWindow({
     observer.observe(shell);
 
     return () => {
+      observing = false;
       observer.disconnect();
       if (sizeAnimationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(sizeAnimationFrameRef.current);
         sizeAnimationFrameRef.current = undefined;
       }
     };
-  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
+  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize, toolset.id, userSized, itemGroups, knownToolset, resizingEnabled, resizeInProgress, frameRevision]);
+
+  useEffect(() => {
+    if (!resizingEnabled) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listenPaletteNativeResize((payload) => {
+      if (!active || !resizingEnabledRef.current) return;
+      if (payload.phase === "start") {
+        cancelResize();
+        nativeResizeStartRef.current = { width: payload.width, height: payload.height };
+        resizeInProgressRef.current = true;
+        setResizeInProgress(true);
+      } else if (payload.phase === "cancel") {
+        if (resizeInProgressRef.current) cancelResize();
+      } else {
+        // Ignore late native completion after a reset, cancellation or preference transition.
+        if (!resizeInProgressRef.current) return;
+        const start = nativeResizeStartRef.current;
+        nativeResizeStartRef.current = undefined;
+        if (!start || (start.width === payload.width && start.height === payload.height)) {
+          cancelResize();
+          return;
+        }
+        const generation = resizeGenerationRef.current;
+        void persistUserFrame({ width: payload.width, height: payload.height }, generation)
+          .catch(() => undefined).finally(() => {
+            if (active && generation === resizeGenerationRef.current) {
+              resizeInProgressRef.current = false;
+              setResizeInProgress(false);
+            }
+          });
+      }
+    }).then((cleanup) => active ? unlisten = cleanup : cleanup()).catch(() => undefined);
+    return () => { active = false; unlisten?.(); };
+  }, [toolset.id, resizingEnabled]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -939,7 +1109,9 @@ export function PaletteWindow({
         gridLayout={toolset.gridLayout}
         activeTool={activeTool}
         mode="floating"
-        orientation={toolset.gridLayout?.orientation ?? "vertical"}
+        responsive={resizingEnabled && userSized && !customizeThisPalette}
+        freezeResponsive={resizeInProgress}
+        orientation={resizingEnabled ? orientation : toolset.gridLayout?.orientation ?? "vertical"}
         title={toolset.title}
         onRequestFlyout={openFlyoutPopover}
         onInvoke={invokeCommand}
@@ -975,6 +1147,10 @@ export function PaletteWindow({
     <main
       ref={shellRef}
       className="palette-window-shell"
+      data-resizing-enabled={resizingEnabled ? "true" : undefined}
+      data-rotatable={resizingEnabled && canRotate ? "true" : undefined}
+      data-user-sized={resizingEnabled && userSized ? "true" : undefined}
+      data-controls={itemGroups.flat().some((item) => item.primary.type === "control") ? "true" : undefined}
       aria-label={`ChemDraft floating ${toolset.title}`}
       data-toolset-id={toolset.id}
       data-palette-drag-surface="true"
@@ -1006,7 +1182,12 @@ export function PaletteWindow({
         >
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
+        {resizingEnabled && canRotate && <button type="button" className="palette-orientation-toggle" data-palette-control="true"
+          aria-label={`Switch to ${orientation === "horizontal" ? "vertical" : "horizontal"} toolbar`}
+          title="Rotate toolbar layout" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}
+          onClick={() => { void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "setOrientation", orientation: orientation === "horizontal" ? "vertical" : "horizontal" } }).catch(() => undefined); }}>Rotate</button>}
       </div>
+      <div className="palette-scroll-viewport">
       {customizeThisPalette ? (
         <ToolbarCustomizeController
           toolsetId={toolset.id}
@@ -1031,6 +1212,64 @@ export function PaletteWindow({
       ) : (
         renderPalette(paletteGroups)
       )}
+      </div>
+      {resizingEnabled && <button type="button" className="palette-resize-handle" aria-label="Resize toolbar" title="Drag to resize toolbar" data-palette-control="true"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault(); event.stopPropagation();
+          if (platform !== "macos") {
+            void startPaletteWindowResize().catch(() => undefined);
+            return;
+          }
+          // tao's explicit resize-drag API is unsupported on macOS. Keep the native resizable
+          // edges and drive this grip with captured pointer deltas in logical points instead.
+          cancelResize();
+          resizeInProgressRef.current = true;
+          setResizeInProgress(true);
+          resizeDragRef.current = { pointerId: event.pointerId, x: event.screenX, y: event.screenY, width: window.innerWidth, height: window.innerHeight };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const drag = resizeDragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          event.stopPropagation();
+          resizeTargetRef.current = { width: Math.max(minimumRef.current.width, drag.width + event.screenX - drag.x), height: Math.max(56, drag.height + event.screenY - drag.y) };
+          if (resizeFrameRef.current !== undefined) return;
+          resizeFrameRef.current = window.requestAnimationFrame(() => {
+            resizeFrameRef.current = undefined;
+            const size = resizeTargetRef.current;
+            if (size) void queueGripSize(size, resizeGenerationRef.current).catch(() => undefined);
+          });
+        }}
+        onPointerUp={(event) => {
+          const drag = resizeDragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          event.stopPropagation();
+          const size = resizeTargetRef.current ?? { width: drag.width, height: drag.height };
+          if (size.width === drag.width && size.height === drag.height) {
+            cancelResize();
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+            return;
+          }
+          const generation = resizeGenerationRef.current;
+          if (resizeFrameRef.current !== undefined) {
+            window.cancelAnimationFrame(resizeFrameRef.current);
+            resizeFrameRef.current = undefined;
+          }
+          resizeDragRef.current = undefined;
+          void queueGripSize(size, generation).then(() => persistUserFrame(size, generation))
+            .catch(() => undefined).finally(() => {
+              if (generation === resizeGenerationRef.current) {
+                resizeInProgressRef.current = false;
+                setResizeInProgress(false);
+              }
+            });
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          event.stopPropagation();
+        }}
+        onPointerCancel={(event) => { event.stopPropagation(); cancelResize(); }}
+        onLostPointerCapture={() => { if (resizeDragRef.current) cancelResize(); }}
+        onMouseDown={(event) => event.stopPropagation()} />}
     </main>
   );
 }

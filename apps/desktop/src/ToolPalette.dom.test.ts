@@ -1184,14 +1184,76 @@ describe("ToolPalette spacer items", () => {
     };
     const onInvoke = vi.fn();
     act(() => {
-      root.render(createElement(ToolPalette, { itemGroups: [[button, spacer]], orientation: "horizontal", onInvoke }));
+      root.render(createElement(ToolPalette, { itemGroups: [[button, spacer]], orientation: "horizontal", responsive: true, onInvoke }));
     });
 
     const spacerSlot = container.querySelector<HTMLElement>('.toolbar-item-spacer[data-toolbar-item-id="user.spacer.1"]');
     expect(spacerSlot).not.toBeNull();
     expect(spacerSlot?.querySelector("button")).toBeNull();
+    expect(spacerSlot?.style.gridRow).toBe("span 2");
+    expect(container.querySelector('[data-responsive-palette="true"]')).toBeNull();
     // The command button still renders normally alongside it.
     expect(container.querySelector('button[data-command-id="tool.bond"]')).not.toBeNull();
+  });
+
+  it("preserves authored slots and spanning widgets after user resizing", async () => {
+    const item: ToolbarPaletteItemModel = {
+      id: "widget.core.textStyleControls",
+      kind: "control",
+      label: "Text Style",
+      primary: { type: "control", controlId: "widget.core.textStyleControls" },
+      submenu: null,
+      tooltip: { title: "Text Style" },
+      layout: { column: 2, row: 1, colSpan: 3, rowSpan: 2 }
+    };
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        itemGroups: [[item]], responsive: true,
+        gridLayout: { columns: 6, rows: 4 }, onInvoke: vi.fn()
+      }));
+    });
+    const slot = container.querySelector<HTMLElement>('.toolbar-widget-grid-slot[data-toolbar-item-id="widget.core.textStyleControls"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.style.gridColumn).toBe("3 / span 3");
+    expect(slot?.style.gridRow).toBe("2 / span 2");
+    expect(slot?.closest<HTMLElement>(".tool-group")?.style.gridTemplateColumns).toBe("repeat(6, var(--toolbar-cell-width))");
+    expect(container.querySelectorAll('[data-toolbar-item-id="widget.core.textStyleControls"]')).toHaveLength(1);
+  });
+
+  it("holds responsive columns during resize and measures again when released", () => {
+    let notifyResize = () => {};
+    const originalObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) { notifyResize = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    let width = 200;
+    Object.defineProperty(container, "clientWidth", { get: () => width });
+    Object.defineProperty(container, "clientHeight", { get: () => 200 });
+    const item: ToolbarPaletteItemModel = {
+      id: "tool.bond", kind: "button", label: "Bond",
+      primary: { type: "command", command: { id: "tool.bond", title: "Bond", source: "core" } as CommandSpec },
+      submenu: null, tooltip: { title: "Bond" }, layout: { colSpan: 1, rowSpan: 1 }
+    };
+    const render = (freezeResponsive: boolean) => act(() => root.render(createElement(ToolPalette, {
+      itemGroups: [[item]], responsive: true, freezeResponsive, orientation: "horizontal",
+      gridLayout: { rows: 1 }, onInvoke: vi.fn()
+    })));
+    try {
+      render(false);
+      const columns = () => container.querySelector<HTMLElement>(".tool-group")?.style.gridTemplateColumns;
+      const initial = columns();
+      render(true);
+      width = 400;
+      act(() => notifyResize());
+      expect(columns()).toBe(initial);
+      render(false);
+      expect(columns()).not.toBe(initial);
+    } finally {
+      globalThis.ResizeObserver = originalObserver;
+    }
   });
 
   it("activates a palette button from Space/Enter keydown through the button's own handler", () => {

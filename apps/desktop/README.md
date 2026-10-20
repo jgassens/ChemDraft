@@ -1,5 +1,9 @@
 # ChemDraft Desktop
 
+Preferences includes “Resizable floating toolbars”, off by default. Enabling it adds a resize grip,
+remembers completed user resizes, and offers Rotate for grid toolbars. Restore defaults resets the
+selected toolbar size; Customize Toolbars' Reset All clears all remembered sizes on Apply.
+
 Preferences includes “Ask to save unsaved changes before quitting”, off by default.
 When enabled, quitting with dirty tabs offers Save / Don't Save / Cancel in a native message
 box, with an accessible in-window fallback if the native box cannot open. Save writes every

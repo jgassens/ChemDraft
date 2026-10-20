@@ -48,6 +48,15 @@ describe("PreferencesWindow", () => {
     expect(markup).toContain("Case matters for element keys: B = boron, b = Br");
   });
 
+  it("defaults floating-toolbar resizing off and reflects the saved preference", () => {
+    let markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(markup).toContain("Resizable floating toolbars");
+    expect(markup).toMatch(/type="checkbox"(?![^>]*checked)/);
+    storage.setItem("chemdraft.resizable-toolbars.v1", JSON.stringify({ enabled: true }));
+    markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(markup).toMatch(/type="checkbox"[^>]*checked/);
+  });
+
   it("reflects persisted settings as one selected option per group", () => {
     storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "balanced", enginePreference: "openchemlib", forceField: "uff" }));
     storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw" }));
