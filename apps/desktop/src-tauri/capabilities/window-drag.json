@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "window-drag",
+  "description": "Compensated native dragging for palette and report title strips only. Popovers and the tooltip have no drag surface.",
+  "windows": ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "plugin-panel-*"],
+  "permissions": ["allow-start-window-drag"]
+}

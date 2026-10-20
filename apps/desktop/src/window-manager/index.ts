@@ -783,13 +783,13 @@ export async function canPersistCurrentToolsetSize(): Promise<boolean> {
   return invoke<boolean>("can_persist_toolset_size");
 }
 
-export async function startPaletteWindowDrag(): Promise<void> {
+export async function startPaletteWindowDrag(grabX: number, grabY: number): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().startDragging();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("start_window_drag", { grabX, grabY });
 }
 
 export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {

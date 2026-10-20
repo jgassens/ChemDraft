@@ -671,7 +671,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("palette-window-shell");
     expect(markup).toContain("data-palette-drag-surface");
-    expect(markup).toContain('data-tauri-drag-region="true"');
+    expect(markup).not.toContain("data-tauri-drag-region");
     expect(markup).toContain('data-palette-content-drag-grip="true"');
     expect(markup).toContain("palette-close-button");
     expect(markup).toContain('aria-label="Hide Main Toolbar"');

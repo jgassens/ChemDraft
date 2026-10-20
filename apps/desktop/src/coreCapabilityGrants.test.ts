@@ -57,8 +57,7 @@ describe("core capability grants", () => {
     { call: /\.setSize\(/, permission: "core:window:allow-set-size", why: "popovers are sized before they are shown" },
     { call: /\.outerPosition\(/, permission: "core:window:allow-outer-position", why: "anchor geometry is read natively" },
     { call: /\.scaleFactor\(/, permission: "core:window:allow-scale-factor", why: "mixed-DPI placement needs the scale factor" },
-    { call: /\.setFocus\(/, permission: "core:window:allow-set-focus", why: "focus is handed back to the document window" },
-    { call: /startDragging\(/, permission: "core:window:allow-start-dragging", why: "palette title bars drag their own window" }
+    { call: /\.setFocus\(/, permission: "core:window:allow-set-focus", why: "focus is handed back to the document window" }
   ];
 
   it("grants every core window permission the desktop source actually calls", () => {
@@ -77,6 +76,21 @@ describe("core capability grants", () => {
     // Pinned by name as well as by scan: `show()` is common enough that a future refactor could
     // rename it out of the pattern above and quietly take the guard with it.
     expect(capabilities).toContain('"core:window:allow-show"');
+  });
+
+  it("grants compensated dragging only to palettes and report windows, with no core drag bypass", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        windows: string[]; permissions: (string | { identifier: string })[];
+      });
+    expect(grants.filter((grant) => grant.permissions.includes("allow-start-window-drag"))
+      .map((grant) => grant.windows)).toEqual([
+      ["toolset-core-*", "toolset-plugin-*", "toolset-user-*", "plugin-panel-*"]
+    ]);
+    expect(grants.some((grant) => grant.permissions.includes("core:window:allow-start-dragging"))).toBe(false);
+    expect(sources).not.toMatch(/\.startDragging\(/);
   });
 
   it("grants native-prompt toolset suspension only to the document window", () => {
