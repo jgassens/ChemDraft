@@ -31,6 +31,7 @@ fn main() {
             "plugin_storage_read",
             "plugin_storage_write",
             "open_plugin_panel_window",
+            "register_plugin_panel_input_focus",
             "set_plugin_panel_input_focus",
             "open_toolset_popover",
             "prewarm_toolset_popover",

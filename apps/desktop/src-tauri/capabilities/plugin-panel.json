@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-outer-position",
     "core:window:allow-scale-factor",
+    "allow-register-plugin-panel-input-focus",
     "allow-set-plugin-panel-input-focus",
     "core:window:allow-set-position",
     "core:window:allow-set-size"
