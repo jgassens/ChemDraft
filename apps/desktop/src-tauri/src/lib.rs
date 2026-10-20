@@ -476,6 +476,26 @@ struct ToolsetWindowDirectory {
     labels: Mutex<HashMap<String, String>>,
 }
 
+#[tauri::command]
+fn can_persist_toolset_size(window: tauri::WebviewWindow) -> bool {
+    let app = window.app_handle();
+    toolset_size_may_be_saved(
+        quit_in_progress(),
+        utility_windows_suspended(),
+        toolset_id_for_window_label(app, window.label()).is_some(),
+        toolset_frame_is_transient(app, &window.as_ref().window()),
+    )
+}
+
+fn toolset_size_may_be_saved(
+    quitting: bool,
+    suspended: bool,
+    is_toolset: bool,
+    transient: bool,
+) -> bool {
+    !quitting && !suspended && is_toolset && !transient
+}
+
 struct Engine3dManagedSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -928,6 +948,7 @@ pub fn run() {
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
+            can_persist_toolset_size,
             close_toolset_window,
             suspend_toolset_windows,
             list_toolset_window_states,
@@ -6775,6 +6796,16 @@ fn find_menu_item_by_id<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_toolset_sizes_are_saved_only_in_a_normal_live_frame() {
+        assert!(super::toolset_size_may_be_saved(false, false, true, false));
+        assert!(!super::toolset_size_may_be_saved(true, false, true, false));
+        assert!(!super::toolset_size_may_be_saved(false, true, true, false));
+        assert!(!super::toolset_size_may_be_saved(
+            false, false, false, false
+        ));
+        assert!(!super::toolset_size_may_be_saved(false, false, true, true));
+    }
 
     use super::*;
 

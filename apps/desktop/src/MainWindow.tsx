@@ -1625,7 +1625,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.14.10.45-opus";
+const CURRENT_BUILD_STAMP = "10.19.14.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -12229,7 +12229,7 @@ export function MainWindow({
     let active = true;
     let unlisten: (() => void) | undefined;
     void listenForToolsetLayoutEdits((payload) => {
-      if (payload.toolsetId !== DEFAULT_TOOLSET_ID) {
+      if (payload.toolsetId !== DEFAULT_TOOLSET_ID && payload.edit.kind !== "setOrientation") {
         return;
       }
       if (payload.edit.kind === "exitCustomize") {
@@ -12237,7 +12237,8 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      if (!registry.get(payload.toolsetId)) return;
+      const currentGroups = getToolsetPaletteGroups(payload.toolsetId, registry);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -12253,7 +12254,8 @@ export function MainWindow({
         commandAssetName: (commandId) => commandByIdRef.current.get(commandId)?.assetName,
         widgetTitle: (widgetId) => TOOLBAR_WIDGET_TITLES[widgetId],
         widgetLayout: (widgetId) => TOOLBAR_WIDGET_GRID_SPANS[widgetId],
-        gridRows: registry.get(DEFAULT_TOOLSET_ID)?.gridLayout?.rows
+        gridRows: registry.get(payload.toolsetId)?.gridLayout?.rows,
+        gridLayout: registry.get(payload.toolsetId)?.gridLayout
       });
       if (next !== current) {
         commitToolbarLayoutRef.current(next, false);

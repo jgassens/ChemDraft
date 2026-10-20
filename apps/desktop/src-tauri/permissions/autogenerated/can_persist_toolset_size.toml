@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-can-persist-toolset-size"
+description = "Enables the can_persist_toolset_size command without any pre-configured scope."
+commands.allow = ["can_persist_toolset_size"]
+
+[[permission]]
+identifier = "deny-can-persist-toolset-size"
+description = "Denies the can_persist_toolset_size command without any pre-configured scope."
+commands.deny = ["can_persist_toolset_size"]

@@ -40,6 +40,26 @@ function payload(edit: ToolsetLayoutEditPayload["edit"]): ToolsetLayoutEditPaylo
 }
 
 describe("applyToolsetLayoutEdit", () => {
+  it("changes orientation without losing tools or existing customizations", () => {
+    const state: ToolsetLayoutState = {
+      ...emptyLayoutState(),
+      toolsetOverrides: [{ toolsetId: TOOLSET, title: "My tools", visible: true }]
+    };
+    const vertical = applyToolsetLayoutEdit(state, payload({ kind: "setOrientation", orientation: "vertical" }), {
+      ...context, gridLayout: { orientation: "horizontal", rows: 2, cellWidth: 24 }
+    });
+    expect(appliedItemIds(vertical)).toEqual(appliedItemIds(state));
+    expect(vertical.toolsetOverrides[0]).toMatchObject({
+      title: "My tools", visible: true, gridLayout: { orientation: "vertical", columns: 2, cellWidth: 24 }
+    });
+    expect(vertical.toolsetOverrides[0].gridLayout?.rows).toBeUndefined();
+    const horizontal = applyToolsetLayoutEdit(vertical, payload({ kind: "setOrientation", orientation: "horizontal" }), {
+      ...context, gridLayout: vertical.toolsetOverrides[0].gridLayout
+    });
+    expect(appliedItemIds(horizontal)).toEqual(appliedItemIds(state));
+    expect(horizontal.toolsetOverrides[0].gridLayout?.columns).toBeUndefined();
+    expect(horizontal.toolsetOverrides[0].gridLayout?.rows).toBe(2);
+  });
   it("reorderItems writes itemOrder for the group", () => {
     const next = applyToolsetLayoutEdit(
       emptyLayoutState(),

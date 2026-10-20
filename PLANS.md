@@ -8,8 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Local resizable toolbar prototype on `resizable-palettes-prototype`, based on upstream `8a3781e`.
+All floating toolbars retain content-fit defaults until user resizing. Button grids then wrap;
+control panels retain grouped slider/input rows with a minimum width and scrolling. Preserve main's
+native window ownership, shading, and shared suspension. Build a local Windows NSIS installer,
+run independent fresh-agent reviews, and present the result for owner feedback.
+No commit, push, publication, or PR message without the user's explicit approval.
+Files: PaletteWindow, ToolPalette, toolbar layout edits, window-manager, narrow Rust persistence
+check/permissions, tests, the manual checklist, and `docs/resizable-palettes-prototype.md`.
+This prototype is not marked shipped.
 
 ---
 
