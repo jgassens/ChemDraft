@@ -10,15 +10,15 @@ fn compensate_before_drag(
     grab_x: f64,
     grab_y: f64,
 ) -> Result<(), String> {
-    // GetAsyncKeyState lives in user32. Declare this small seam directly rather than adding an
-    // otherwise unused keyboard/input dependency feature just to inspect the physical button.
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetAsyncKeyState(vkey: i32) -> i16;
-    }
-    // SAFETY: user32 accepts the virtual-key code and has no pointer arguments. Its high bit
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::GetAsyncKeyState,
+        WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON},
+    };
+    // SAFETY: SM_SWAPBUTTON is a valid system metric and this call has no pointer arguments.
+    let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) != 0 };
+    // SAFETY: GetAsyncKeyState accepts the virtual-key code and has no pointer arguments. Its high bit
     // reports whether the button is held NOW, unlike the message-queue state from GetKeyState.
-    let button_down = unsafe { GetAsyncKeyState(0x01) < 0 }; // VK_LBUTTON
+    let button_down = unsafe { GetAsyncKeyState(primary_button_vkey(swapped)) < 0 };
     if !button_down {
         return Ok(());
     }
@@ -53,14 +53,23 @@ fn compensate_before_drag(
     _grab_x: f64,
     _grab_y: f64,
 ) -> Result<(), String> {
-    // macOS: tao 0.35.3 src/platform_impl/macos/window.rs::drag_window (lines 931-957)
-    // passes NSApp.currentEvent to performWindowDragWithEvent. AppKit anchors using that native
-    // event's location (the press), rather than Windows handle_os_dragging's fresh GetCursorPos.
-    // Moving the window first would count that displacement twice, so leave macOS untouched.
-    // tao also synthesizes a LeftMouseDown from mouseLocation for an ApplicationDefined (0x15)
-    // currentEvent; that fallback is not evidence that normal title presses need compensation.
+    // macOS: tao 0.35.3 src/platform_impl/macos/window.rs::drag_window reads NSApp.currentEvent.
+    // If its type equals 0x15, tao substitutes a LeftMouseDown synthesized from mouseLocation
+    // and the current event's modifiers, timestamp and window number. It passes that event to
+    // performWindowDragWithEvent. Leave macOS behavior as it was before this change; whether
+    // its drag anchor loses early motion is unmeasured.
     // Other platforms retain their existing native drag behavior as well.
     Ok(())
+}
+
+/// GetAsyncKeyState reports physical buttons; select the one mapped to the logical primary button.
+#[cfg(any(windows, test))]
+fn primary_button_vkey(swapped: bool) -> i32 {
+    if swapped {
+        0x02 // VK_RBUTTON
+    } else {
+        0x01 // VK_LBUTTON
+    }
 }
 
 /// Physical motion since the press, using client CSS coordinates and the window's own scale.
@@ -89,7 +98,13 @@ fn compensation_delta(
 
 #[cfg(test)]
 mod tests {
-    use super::compensation_delta;
+    use super::{compensation_delta, primary_button_vkey};
+
+    #[test]
+    fn primary_button_honors_swapped_buttons() {
+        assert_eq!(primary_button_vkey(false), 0x01); // VK_LBUTTON
+        assert_eq!(primary_button_vkey(true), 0x02); // VK_RBUTTON
+    }
 
     #[test]
     fn recovers_motion_at_each_scale_using_the_client_origin() {

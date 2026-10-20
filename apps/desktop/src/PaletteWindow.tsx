@@ -67,7 +67,6 @@ import {
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
   showPaletteFloatingTooltip,
-  setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   setToolsetWindowFocusable,
   startPaletteWindowDrag,
@@ -76,18 +75,11 @@ import {
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
   type ToolsetPopoverAnchor,
-  type ToolsetPopoverContent,
-  type ToolsetWindowPosition
+  type ToolsetPopoverContent
 } from "./window-manager";
 
 type PaletteWindowDrag = {
   pointerId: number | undefined;
-  originX: number;
-  originY: number;
-  currentX: number;
-  currentY: number;
-  startX?: number;
-  startY?: number;
 };
 
 /** Rehydrate persisted palette layout against both the static shell catalog and runtime commands
@@ -133,8 +125,6 @@ export function PaletteWindow({
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const lastLoggedSizeRef = useRef<string>("");
-  const pendingPositionRef = useRef<ToolsetWindowPosition | null>(null);
-  const animationFrameRef = useRef<number | undefined>(undefined);
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const [toolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
   const [commandSpecs, setCommandSpecs] = useState<CommandSpec[]>(() =>
@@ -241,9 +231,6 @@ export function PaletteWindow({
     return () => {
       document.documentElement.classList.remove("palette-window-html");
       document.body.classList.remove("palette-window-body");
-      if (animationFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(animationFrameRef.current);
-      }
       if (sizeAnimationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(sizeAnimationFrameRef.current);
       }
@@ -846,7 +833,7 @@ export function PaletteWindow({
   };
 
   const startDragFromPaletteSurface = (event: PointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || customizeThisPaletteRef.current) {
+    if (event.button !== 0 || event.isPrimary === false || customizeThisPaletteRef.current) {
       return;
     }
 
@@ -856,7 +843,7 @@ export function PaletteWindow({
 
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY, event.pointerId);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.pointerId);
   };
 
   const startMouseDragFromPaletteSurface = (event: ReactMouseEvent<HTMLElement>) => {
@@ -869,11 +856,11 @@ export function PaletteWindow({
     }
 
     event.preventDefault();
-    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY);
+    beginPaletteWindowDrag(event.clientX, event.clientY);
   };
 
   const startDragFromTitle = (event: PointerEvent<HTMLElement>) => {
-    if (event.button !== 0) {
+    if (event.button !== 0 || event.isPrimary === false) {
       return;
     }
 
@@ -884,7 +871,7 @@ export function PaletteWindow({
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY, event.pointerId);
+    beginPaletteWindowDrag(event.clientX, event.clientY, event.pointerId);
   };
 
   const startMouseDragFromTitle = (event: ReactMouseEvent<HTMLElement>) => {
@@ -898,50 +885,18 @@ export function PaletteWindow({
 
     event.preventDefault();
     event.stopPropagation();
-    beginPaletteWindowDrag(event.clientX, event.clientY, event.screenX, event.screenY);
+    beginPaletteWindowDrag(event.clientX, event.clientY);
   };
 
   const beginPaletteWindowDrag = (
-    grabX: number, grabY: number, screenX: number, screenY: number, pointerId?: number
+    grabX: number, grabY: number, pointerId?: number
   ) => {
     // One native entry point compensates for Windows IPC delay before handing off to the OS.
     // Keep the grab point window-local: screen coordinates times DPR fail across mixed-DPI monitors.
     // Geometry is still persisted only by the Rust WindowEvent::Moved handler.
     void startPaletteWindowDrag(grabX, grabY).catch(() => undefined);
 
-    dragRef.current = {
-      pointerId,
-      originX: screenX,
-      originY: screenY,
-      currentX: screenX,
-      currentY: screenY
-    };
-  };
-
-  const movePaletteWindow = (event: PointerEvent<HTMLElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || drag.startX === undefined || drag.startY === undefined) {
-      if (drag?.pointerId === event.pointerId) {
-        drag.currentX = event.screenX;
-        drag.currentY = event.screenY;
-      }
-      return;
-    }
-
-    drag.currentX = event.screenX;
-    drag.currentY = event.screenY;
-    movePaletteWindowToCurrentPointer(drag);
-  };
-
-  const movePaletteWindowFromMouse = (event: ReactMouseEvent<HTMLElement> | MouseEvent) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== undefined) {
-      return;
-    }
-
-    drag.currentX = event.screenX;
-    drag.currentY = event.screenY;
-    movePaletteWindowToCurrentPointer(drag);
+    dragRef.current = { pointerId };
   };
 
   const stopPaletteWindowDrag = (event: PointerEvent<HTMLElement>) => {
@@ -961,46 +916,14 @@ export function PaletteWindow({
     }
   };
 
-  const schedulePaletteWindowMove = (position: ToolsetWindowPosition) => {
-    pendingPositionRef.current = position;
-    if (animationFrameRef.current !== undefined) {
-      return;
-    }
-
-    animationFrameRef.current = window.requestAnimationFrame(() => {
-      animationFrameRef.current = undefined;
-      const pendingPosition = pendingPositionRef.current;
-      pendingPositionRef.current = null;
-      if (pendingPosition) {
-        void setCurrentWindowLogicalPosition(pendingPosition).catch(() => undefined);
-      }
-    });
-  };
-
-  const movePaletteWindowToCurrentPointer = (drag: PaletteWindowDrag) => {
-    if (drag.startX === undefined || drag.startY === undefined) {
-      return;
-    }
-
-    schedulePaletteWindowMove({
-      x: drag.startX + drag.currentX - drag.originX,
-      y: drag.startY + drag.currentY - drag.originY
-    });
-  };
-
   useEffect(() => {
-    const handleMouseMove = (event: MouseEvent) => {
-      movePaletteWindowFromMouse(event);
-    };
     const handleMouseUp = () => {
       stopPaletteWindowMouseDrag();
     };
 
-    window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
 
     return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
   });
@@ -1056,22 +979,20 @@ export function PaletteWindow({
       data-toolset-id={toolset.id}
       data-palette-drag-surface="true"
       onPointerDown={startDragFromPaletteSurface}
-      onPointerMove={movePaletteWindow}
       onPointerUp={stopPaletteWindowDrag}
       onPointerCancel={stopPaletteWindowDrag}
+      onLostPointerCapture={stopPaletteWindowDrag}
       onMouseDown={startMouseDragFromPaletteSurface}
-      onMouseMove={movePaletteWindowFromMouse}
       onMouseUp={stopPaletteWindowMouseDrag}
     >
       <div
         className="palette-title"
         data-palette-title-drag-surface="true"
         onPointerDown={startDragFromTitle}
-        onPointerMove={movePaletteWindow}
         onPointerUp={stopPaletteWindowDrag}
         onPointerCancel={stopPaletteWindowDrag}
+        onLostPointerCapture={stopPaletteWindowDrag}
         onMouseDown={startMouseDragFromTitle}
-        onMouseMove={movePaletteWindowFromMouse}
         onMouseUp={stopPaletteWindowMouseDrag}
       >
         <button
