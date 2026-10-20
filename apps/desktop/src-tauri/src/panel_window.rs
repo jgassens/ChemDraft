@@ -227,7 +227,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 ) -> Result<(), String> {
     use windows_sys::Win32::UI::{
         Shell::{RemoveWindowSubclass, SetWindowSubclass},
-        WindowsAndMessaging::{FindWindowExW, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
+        WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let document = window
@@ -262,13 +262,17 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
         // Keep Tao's NCCALCSIZE unchanged: Win10 MUST retain a zero top inset
         // while WS_CAPTION is present; Win11 uses its DPI-scaled one-pixel inset.
         // Adapt the existing Tauri overlay, never install a competing resize surface.
-        let class: Vec<u16> = "TAURI_DRAG_RESIZE_BORDERS\0".encode_utf16().collect();
-        let name: Vec<u16> = "TAURI_DRAG_RESIZE_WINDOW\0".encode_utf16().collect();
-        let overlay = FindWindowExW(hwnd, std::ptr::null_mut(), class.as_ptr(), name.as_ptr());
+        let overlay = resize_overlay(hwnd);
         if overlay.is_null() || SetWindowSubclass(overlay, Some(overlay_subclass), 1, parent) == 0 {
             RemoveWindowSubclass(hwnd, Some(resize_subclass), 1);
             drop(Box::from_raw(data));
             return Err("Could not adapt Tauri's panel resize overlay.".into());
+        }
+        if let Err(error) = update_resize_overlay(hwnd) {
+            RemoveWindowSubclass(overlay, Some(overlay_subclass), 1);
+            RemoveWindowSubclass(hwnd, Some(resize_subclass), 1);
+            drop(Box::from_raw(data));
+            return Err(error);
         }
     }
     Ok(())
@@ -298,6 +302,83 @@ unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> (i32, i32
 }
 
 #[cfg(windows)]
+unsafe fn resize_overlay(
+    parent: windows_sys::Win32::Foundation::HWND,
+) -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    let class: Vec<u16> = "TAURI_DRAG_RESIZE_BORDERS\0".encode_utf16().collect();
+    let name: Vec<u16> = "TAURI_DRAG_RESIZE_WINDOW\0".encode_utf16().collect();
+    FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), name.as_ptr())
+}
+
+/// Widen the INPUT region of Tauri's existing child, not the parent's non-client frame.
+/// Tauri 2.11.2 otherwise clips this child to SM_CYFRAME (without SM_CXPADDEDBORDER),
+/// so a larger hit test alone cannot receive presses throughout the system resize band.
+#[cfg(windows)]
+unsafe fn update_resize_overlay(
+    parent: windows_sys::Win32::Foundation::HWND,
+) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::{HWND, RECT},
+        UI::WindowsAndMessaging::{GetClientRect, GetWindowRect},
+    };
+    // These entry points are gated behind windows-sys's otherwise unused GDI feature.
+    type Region = *mut std::ffi::c_void;
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> Region;
+        fn EqualRgn(first: Region, second: Region) -> i32;
+        fn DeleteObject(object: Region) -> i32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowRgn(hwnd: HWND, region: Region) -> i32;
+        fn SetWindowRgn(hwnd: HWND, region: Region, redraw: i32) -> i32;
+    }
+    let overlay = resize_overlay(parent);
+    let mut window_rect = RECT::default();
+    let mut overlay_rect = RECT::default();
+    let mut client_rect = RECT::default();
+    if overlay.is_null()
+        || GetWindowRect(parent, &mut window_rect) == 0
+        || GetWindowRect(overlay, &mut overlay_rect) == 0
+        || GetClientRect(parent, &mut client_rect) == 0
+    {
+        return Err("Could not measure panel resize overlay.".into());
+    }
+    let (_, border) = resize_border(parent);
+    let region = geometry::top_overlay_rect(
+        client_rect.right - client_rect.left,
+        client_rect.bottom - client_rect.top,
+        overlay_rect.top - window_rect.top,
+        border,
+    );
+    let desired = CreateRectRgn(region.left, region.top, region.right, region.bottom);
+    let current = CreateRectRgn(0, 0, 0, 0);
+    if desired.is_null() || current.is_null() {
+        if !desired.is_null() {
+            DeleteObject(desired);
+        }
+        if !current.is_null() {
+            DeleteObject(current);
+        }
+        return Err("Could not allocate panel resize region.".into());
+    }
+    // SetWindowRgn sends WM_WINDOWPOSCHANGED too. Comparing first makes that nested
+    // callback a no-op and avoids repainting on ordinary moves of an unchanged band.
+    let unchanged = GetWindowRgn(overlay, current) != 0 && EqualRgn(current, desired) != 0;
+    DeleteObject(current);
+    if unchanged {
+        DeleteObject(desired);
+    } else if SetWindowRgn(overlay, desired, 1) == 0 {
+        DeleteObject(desired);
+        return Err("Could not set panel resize region.".into());
+    }
+    // On success Windows owns `desired`; never delete the installed region.
+    Ok(())
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn resize_subclass(
     hwnd: windows_sys::Win32::Foundation::HWND,
     message: u32,
@@ -309,9 +390,9 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_ENTERSIZEMOVE,
-            WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
-            WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+            HTCLIENT, MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_DPICHANGED,
+            WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
+            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
         },
     };
     if message == WM_MOUSEACTIVATE {
@@ -349,6 +430,13 @@ unsafe extern "system" fn resize_subclass(
         return result;
     }
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    // Run after Tauri's WM_SIZE handler rewrites the overlay region. DPI/settings
+    // changes also refresh the metrics even if the client size has not changed.
+    if matches!(message, WM_SIZE | WM_DPICHANGED | WM_SETTINGCHANGE) {
+        if let Err(error) = update_resize_overlay(hwnd) {
+            eprintln!("{error}");
+        }
+    }
     if let Some(return_focus) = return_focus {
         // Wry focuses WebView2 on entering a native move/resize loop. Hand back AFTER it,
         // and again after the gesture, including a title press that never becomes a drag.
@@ -357,9 +445,10 @@ unsafe extern "system" fn resize_subclass(
     result
 }
 
-/// Tauri owns this overlay's size/region/lifetime. Its original shadow handler returns
+/// Tauri owns this overlay's size/lifetime. Its original shadow handler returns
 /// HTTOP for every pixel in SM_CYFRAME, swallowing title presses and corner directions.
-/// Delegate the title interior to WebView2; only the outer one-DIP edge is a top grip.
+/// The adapted region and hit test reserve the system resize border and delegate the
+/// title interior below it to WebView2, without changing Tao's client origin.
 #[cfg(windows)]
 unsafe extern "system" fn overlay_subclass(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -374,6 +463,7 @@ unsafe extern "system" fn overlay_subclass(
         WindowsAndMessaging::{
             SendMessageW, HTTRANSPARENT, MA_NOACTIVATE, WM_MOUSEACTIVATE, WM_NCDESTROY,
             WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+            WM_WINDOWPOSCHANGED,
         },
     };
     let parent = parent as windows_sys::Win32::Foundation::HWND;
@@ -398,7 +488,15 @@ unsafe extern "system" fn overlay_subclass(
         }
         return 0;
     }
-    DefSubclassProc(hwnd, message, wparam, lparam)
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    // Tauri also resets the region outside WM_SIZE when updating shadows, and sizes
+    // this child asynchronously. Catch both through its position/region notification.
+    if message == WM_WINDOWPOSCHANGED {
+        if let Err(error) = update_resize_overlay(parent) {
+            eprintln!("{error}");
+        }
+    }
+    result
 }
 
 #[cfg(windows)]
@@ -406,18 +504,9 @@ unsafe fn panel_resize_hit(
     hwnd: windows_sys::Win32::Foundation::HWND,
     lparam: isize,
 ) -> Option<geometry::ResizeHit> {
-    use windows_sys::Win32::{
-        Foundation::{POINT, RECT},
-        UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::GetWindowRect},
-    };
-    // windows-sys gates this user32 API behind the otherwise unused GDI feature.
-    #[link(name = "user32")]
-    extern "system" {
-        fn ClientToScreen(hwnd: windows_sys::Win32::Foundation::HWND, point: *mut POINT) -> i32;
-    }
+    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
     let mut rect = RECT::default();
-    let mut client = POINT::default();
-    if GetWindowRect(hwnd, &mut rect) == 0 || ClientToScreen(hwnd, &mut client) == 0 {
+    if GetWindowRect(hwnd, &mut rect) == 0 {
         return None;
     }
     let (bx, by) = resize_border(hwnd);
@@ -432,7 +521,6 @@ unsafe fn panel_resize_hit(
         },
         bx,
         by,
-        geometry::top_resize_height(client.y - rect.top, GetDpiForWindow(hwnd), by),
     )
 }
 

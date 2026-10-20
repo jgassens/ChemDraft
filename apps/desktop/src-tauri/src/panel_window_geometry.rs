@@ -1,4 +1,4 @@
-//! Physical-pixel geometry shared by the non-client frame and its resize hit test.
+//! Physical-pixel geometry for the panel's resize hit test and existing Tauri overlay.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Rect {
@@ -22,27 +22,19 @@ pub(super) enum ResizeHit {
 }
 
 /// `rect` and the point must use the same origin (screen, window, or client).
-pub(super) fn resize_hit(
-    x: i32,
-    y: i32,
-    rect: Rect,
-    bx: i32,
-    by: i32,
-    top_height: i32,
-) -> Option<ResizeHit> {
+pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option<ResizeHit> {
     if x < rect.left || y < rect.top || x >= rect.right || y >= rect.bottom {
         return None;
     }
     let left = x < rect.left + bx;
     let right = x >= rect.right - bx;
-    let top = y < rect.top + top_height;
+    let top = y < rect.top + by;
     let bottom = y >= rect.bottom - by;
-    // Full-height native side corners plus wider corner targets in the thin overlay grip.
-    // The title interior remains client space; only pixels on a resize edge participate.
-    if (left && y < rect.top + by) || (top && x < rect.left + 2 * bx) {
+    // Wider corner targets stay entirely within the system-height top band.
+    if top && x < rect.left + 2 * bx {
         return Some(ResizeHit::TopLeft);
     }
-    if (right && y < rect.top + by) || (top && x >= rect.right - 2 * bx) {
+    if top && x >= rect.right - 2 * bx {
         return Some(ResizeHit::TopRight);
     }
     match (left, right, top, bottom) {
@@ -58,14 +50,16 @@ pub(super) fn resize_hit(
     }
 }
 
-/// Tao's actual client origin is authoritative: 0 top inset on Windows 10, one scaled
-/// pixel on Windows 11. Include just one DIP of client edge, not Tauri's whole SM_CYFRAME
-/// title strip. Maximized windows have no resize grip.
-pub(super) fn top_resize_height(client_top: i32, dpi: u32, border: i32) -> i32 {
-    if border == 0 {
-        return 0;
+/// The overlay starts at Tao's unchanged client origin: zero top inset on Windows 10,
+/// one scaled pixel on Windows 11. Cover only the client part of the system resize
+/// border; the parent handles the non-client part. A zero border disables resizing.
+pub(super) fn top_overlay_rect(width: i32, height: i32, client_top: i32, border: i32) -> Rect {
+    Rect {
+        left: 0,
+        top: 0,
+        right: width.max(0),
+        bottom: (border - client_top.max(0)).clamp(0, height.max(0)),
     }
-    client_top.max(0) + ((dpi as f64 / 96.0).round() as i32).max(1)
 }
 
 /// Missing foreground information fails closed; a delayed IPC cannot activate another process.
@@ -129,46 +123,95 @@ mod tests {
     }
 
     #[test]
-    fn windows_10_and_11_title_interior_passes_through_at_each_dpi() {
-        for dpi in [96, 120, 144, 192, 288] {
-            let dip = (dpi as f64 / 96.0).round() as i32;
-            let border = 8 * dip;
-            // Tao keeps WS_CAPTION on both, but only Win11 permits a positive top inset.
-            for client_top in [0, dip] {
-                let top = top_resize_height(client_top, dpi, border);
+    fn windows_10_and_11_system_top_border_and_title_at_each_dpi() {
+        // Representative per-DPI system metrics, not rounded DIP * a base metric:
+        // 150% must yield 12 physical pixels, not 16.
+        for (dpi, frame, padding, win11_inset) in [(96, 4, 4, 1), (144, 6, 6, 2), (192, 8, 8, 2)] {
+            let border = frame + padding;
+            // Tao keeps WS_CAPTION on both. Never change these client origins.
+            for (windows, client_top) in [("10", 0), ("11", win11_inset)] {
                 let rect = Rect {
                     left: -1800,
                     top: -900,
                     right: -1400,
                     bottom: -600,
                 };
-                assert_eq!(top, client_top + dip);
-                assert_eq!(
-                    resize_hit(-1600, -900 + client_top, rect, border, border, top),
-                    Some(ResizeHit::Top)
-                );
-                // Sol's reproduction: the rest of the first SM_CYFRAME pixels used to resize.
-                for y in (client_top + dip)..(client_top + 4 * dip) {
-                    assert_eq!(resize_hit(-1600, -900 + y, rect, border, border, top), None);
+                let overlay = top_overlay_rect(400 - 2 * border, 300, client_top, border);
+                assert_eq!(overlay.bottom + client_top, border);
+                assert_eq!(overlay.right, 400 - 2 * border);
+                // Every physical pixel through the whole top band is reachable:
+                // non-client pixels by the parent, client pixels by the SAME overlay.
+                // Test both sides of each widened top-corner boundary too.
+                for y in 0..border {
+                    for (x, expected) in [
+                        (rect.left, ResizeHit::TopLeft),
+                        (rect.left + 2 * border - 1, ResizeHit::TopLeft),
+                        (rect.left + 2 * border, ResizeHit::Top),
+                        (-1600, ResizeHit::Top),
+                        (rect.right - 2 * border - 1, ResizeHit::Top),
+                        (rect.right - 2 * border, ResizeHit::TopRight),
+                        (rect.right - 1, ResizeHit::TopRight),
+                    ] {
+                        assert_eq!(
+                            resize_hit(x, rect.top + y, rect, border, border),
+                            Some(expected),
+                            "Windows {windows}, dpi={dpi}, x={x}, y={y}"
+                        );
+                    }
+                    if y >= client_top {
+                        assert!(y - client_top < overlay.bottom);
+                    }
                 }
+                // The first pixel below the band and the remaining title strip pass
+                // through to the DOM, including below the widened corner targets.
+                for y in border..(28 * dpi / 96) {
+                    assert!(y - client_top >= overlay.bottom);
+                    for x in [rect.left + border, -1600, rect.right - border - 1] {
+                        assert_eq!(resize_hit(x, rect.top + y, rect, border, border), None);
+                    }
+                    assert_eq!(
+                        resize_hit(rect.left, rect.top + y, rect, border, border),
+                        Some(ResizeHit::Left)
+                    );
+                    assert_eq!(
+                        resize_hit(rect.right - 1, rect.top + y, rect, border, border),
+                        Some(ResizeHit::Right)
+                    );
+                }
+                // Native side/bottom shadow borders retain their directions.
                 for (x, y, hit) in [
-                    (-1800, -900, ResizeHit::TopLeft),
-                    (-1401, -900, ResizeHit::TopRight),
-                    (-1800, -900 + border / 2, ResizeHit::TopLeft),
-                    (-1401, -900 + border / 2, ResizeHit::TopRight),
-                    (-1800 + border, -900 + client_top, ResizeHit::TopLeft),
-                    (-1401 - border, -900 + client_top, ResizeHit::TopRight),
                     (-1800, -601, ResizeHit::BottomLeft),
                     (-1401, -601, ResizeHit::BottomRight),
                     (-1800, -750, ResizeHit::Left),
                     (-1401, -750, ResizeHit::Right),
                     (-1600, -601, ResizeHit::Bottom),
                 ] {
-                    assert_eq!(resize_hit(x, y, rect, border, border, top), Some(hit));
+                    assert_eq!(resize_hit(x, y, rect, border, border), Some(hit));
                 }
-                assert_eq!(resize_hit(-1801, -900, rect, border, border, top), None);
+                for (x, y) in [(-1801, -900), (-1600, -901), (-1400, -900), (-1600, -600)] {
+                    assert_eq!(resize_hit(x, y, rect, border, border), None);
+                }
             }
-            assert_eq!(top_resize_height(0, dpi, 0), 0);
+        }
+    }
+
+    #[test]
+    fn overlay_clamps_to_client_and_maximized_windows_have_no_grip() {
+        for client_top in [0, 1, 2] {
+            assert_eq!(top_overlay_rect(400, 300, client_top, 0).bottom, 0);
+            assert_eq!(top_overlay_rect(400, 3, client_top, 16).bottom, 3);
+        }
+        assert_eq!(top_overlay_rect(400, 300, 20, 16).bottom, 0);
+        assert_eq!(top_overlay_rect(0, 0, 0, 16).right, 0);
+        assert_eq!(top_overlay_rect(0, 0, 0, 16).bottom, 0);
+        let rect = Rect {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 300,
+        };
+        for (x, y) in [(0, 0), (200, 0), (399, 0), (0, 150), (399, 299)] {
+            assert_eq!(resize_hit(x, y, rect, 0, 0), None);
         }
     }
 }

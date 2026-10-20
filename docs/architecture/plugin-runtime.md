@@ -164,12 +164,25 @@ Windows uses **one resize mechanism**: Tauri's existing TAURI_DRAG_RESIZE_WINDOW
 adapted to share screen-coordinate hit testing with its parent. There is no second resize
 window and no WM_NCCALCSIZE override. Tao keeps its zero top non-client inset on Windows 10
 (necessary while WS_CAPTION remains set), and its DPI-scaled one-pixel top inset on Windows 11.
-Hit testing measures that actual client origin and reserves only one DIP of client top edge
-for resizing. The rest of Tauri's original SM_CYFRAME strip returns HTTRANSPARENT so title
-presses reach WebView2's DOM drag handler; native edges/corners retain their proper directions.
+The top hit band is the panel's current-DPI `SM_CYSIZEFRAME` (`SM_CYFRAME`) plus
+`SM_CXPADDEDBORDER`, measured in physical pixels from the outer window top, just like the
+native side/bottom resize borders. Only that band returns HTTOP/HTTOPLEFT/HTTOPRIGHT;
+below it, the title interior reaches WebView2's DOM drag handler (HTTRANSPARENT on the
+overlay, HTCLIENT on the parent). Side/bottom edges retain their proper directions.
+The same overlay's input region covers the client portion of that band, subtracting Tao's
+actual top inset. Updating hit testing alone is insufficient: Tauri 2.11.2 otherwise clips
+the overlay to SM_CYFRAME without the padded border. The adaptation refreshes this region
+after Tauri's size handling, on DPI/settings changes, and on the overlay's position/region
+notifications, including asynchronous sizing and shadow updates. Equal regions are left
+alone to avoid recursive SetWindowRgn notifications. Windows owns each installed region.
 WebView2 fills the whole client, without a second inset or exposed parent-client margin.
-Tauri maintains the overlay's region through resize/DPI changes; maximized windows have no
-resize grip. macOS makes the nonactivating panel key without activating the application and
+Tauri still owns the overlay's window size and lifetime; no new window, painted border,
+caption, or WM_NCCALCSIZE adjustment is introduced. Maximized windows have no resize grip.
+Portable geometry tests cover Windows 10/11 client origins at 100%, 150%, and 200% DPI,
+each physical row of the top band, corner boundaries, title pass-through, negative monitor
+coordinates, and the empty maximized region. Native visual/input checks remain in the
+[manual stress checklist](../manual-stress-checklist.md).
+macOS makes the nonactivating panel key without activating the application and
 rejects background acquisition. A click on a panel or analysis window while another app is
 frontmost does activate ChemDraft on macOS (the drawing stays key; a clicked menu opens):
 `NonactivatingPanel` is set on Tao's `NSWindow`, and AppKit honours it only for `NSPanel`.
