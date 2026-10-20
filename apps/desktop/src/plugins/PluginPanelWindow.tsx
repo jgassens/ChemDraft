@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
@@ -37,6 +37,14 @@ import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
  */
 export function PluginPanelWindow({ panelId }: { panelId: string }) {
+  const dragPointerRef = useRef<number | undefined>(undefined);
+  const stopWindowDrag = (event: PointerEvent<HTMLElement>) => {
+    if (dragPointerRef.current !== event.pointerId) return;
+    dragPointerRef.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
   // This webview belongs to the panel, including full-size figures portalled outside the aside.
   useEffect(() => installPluginPanelInputFocus(document.body), []);
   useEffect(() => installPluginPanelPointerFeed(panelId), [panelId]);
@@ -138,10 +146,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         className="palette-title plugin-panel-window-title"
         data-palette-title-drag-surface="true"
         onPointerDown={(event) => {
-          if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {
-            void startPaletteWindowDrag().catch(() => undefined);
+          if (event.button === 0 && event.isPrimary !== false
+            && !(event.target as HTMLElement).closest("button")) {
+            event.preventDefault();
+            dragPointerRef.current = event.pointerId;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            void startPaletteWindowDrag(event.clientX, event.clientY).catch(() => undefined);
           }
         }}
+        onPointerUp={stopWindowDrag}
+        onPointerCancel={stopWindowDrag}
+        onLostPointerCapture={stopWindowDrag}
       >
         {/* The window is undecorated (`decorations(false)` in lib.rs), so this stoplight-styled
             button IS the close control. It stays empty like the palette windows' own: a glyph
