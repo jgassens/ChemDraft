@@ -659,6 +659,12 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
+            if is_plugin_panel_window_label(webview.label())
+                && matches!(payload.event(), PageLoadEvent::Started)
+            {
+                // Reset before the new page can install its focus listener or acquire a lease.
+                panel_window::reset_for_webview(&webview.window());
+            }
             if webview.label() == MAIN_WINDOW_LABEL
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
@@ -2336,13 +2342,13 @@ async fn set_plugin_panel_input_focus(
     validate_plugin_panel_focus_caller(window.label())?;
     // Register the pending generation BEFORE marshalling acquisition to the UI thread.
     // A native loss while that operation is queued must cancel it, not be forgotten.
-    if !panel_window::request(&window, generation, editing) {
+    let Some(epoch) = panel_window::request(&window, generation, editing) else {
         return Ok(false);
-    }
+    };
     let target = window.clone();
     run_on_main_thread_blocking(&window, move || {
-        if !panel_window::is_current(&target, generation)
-            || (editing && !panel_window::acquired(&target, generation, true))
+        if !panel_window::is_current(&target, generation, epoch)
+            || (editing && !panel_window::acquired(&target, generation, epoch, true))
         {
             return Ok(false);
         }
@@ -2403,9 +2409,10 @@ async fn set_plugin_panel_input_focus(
             let held = panel_window::acquired(
                 &target,
                 generation,
+                epoch,
                 result.as_ref().copied().unwrap_or(false),
             );
-            if !held && panel_window::is_current(&target, generation) {
+            if !held && panel_window::is_current(&target, generation, epoch) {
                 let _ = target.set_focusable(false);
             }
             result.map(|_| held)
@@ -2906,9 +2913,13 @@ fn build_or_show_plugin_panel<R: Runtime>(
     }
     let window = builder.build().map_err(|error| error.to_string())?;
     let target = window.clone();
-    run_on_main_thread_blocking(&window, move || {
+    let installed = run_on_main_thread_blocking(&window, move || {
         panel_window::install_resize_hit_test(&target)
-    })??;
+    })
+    .and_then(|result| result);
+    panel_window::finish_installation(installed, || {
+        window.destroy().map_err(|error| error.to_string())
+    })?;
 
     if restoring {
         let target = window.clone();

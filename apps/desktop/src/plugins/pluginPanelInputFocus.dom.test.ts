@@ -401,7 +401,57 @@ describe("panel input keyboard focus", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith(false, expect.any(Number));
   });
 
-  it("ignores native deactivation tagged with an older lease generation", async () => {
+  it.each(["macos", "windows"] as const)("cancels queued retries when the outstanding lease deactivates (%s)", async (platform) => {
+    const { shell, request, deactivate } = mount("<input>", platform);
+    let complete!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = resolve; }));
+    const input = shell.querySelector("input")!;
+    pointerDown(input); input.focus();
+    await flush();
+    pointerDown(input);
+    deactivate(request.mock.calls[0]![1]);
+    complete(true); // Even a stale successful reply cannot revive the queued click.
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(input);
+    pointerDown(input);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true]);
+  });
+
+  it.each(["false", "error"])("cancels queued retries when the outstanding acquisition returns %s", async (outcome) => {
+    const { shell, request } = mount("<input>", "windows");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve, reject) => {
+      complete = () => outcome === "false" ? resolve(false) : reject(new Error("Focus failed"));
+    }));
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    await flush();
+    pointerDown(input);
+    complete();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("ends a pending retry on loss of its predecessor's native generation", async () => {
+    const { shell, request, deactivate } = mount("<input>", "windows");
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    await flush();
+    const old = request.mock.calls[0]![1];
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = () => resolve(true); }));
+    pointerDown(input);
+    await flush();
+    deactivate(old);
+    complete();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
+  });
+
+  it("ignores native deactivation tagged with an older settled lease generation", async () => {
     const { shell, request, deactivate } = mount("<input>", "windows");
     const input = shell.querySelector("input")!;
     pointerDown(input); input.focus();
@@ -415,6 +465,28 @@ describe("panel input keyboard focus", () => {
     deactivate();
     await flush();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
+  });
+
+  it.each(["collapse", "outside", "control"])("ends a settled selection lease when its range changes: %s", async (change) => {
+    const { shell, request } = mount('<input><div class="plugin-report"><p>Report text</p><button>Action</button></div>', "windows");
+    const text = shell.querySelector("p")!;
+    pointerDown(text); selectText(text); pointerUp(text); click(text);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    if (change === "collapse") {
+      key(text, "ArrowRight");
+      document.getSelection()!.collapseToEnd(); // Browser default action after the key.
+    } else if (change === "control") {
+      selectText(shell.querySelector("button")!);
+    } else {
+      const outside = document.createElement("p");
+      outside.textContent = "Outside the report";
+      document.body.append(outside);
+      selectText(outside);
+    }
+    document.dispatchEvent(new Event("selectionchange"));
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
   });
 
   it("lets the full-size overlay consume Escape before releasing its input lease", async () => {

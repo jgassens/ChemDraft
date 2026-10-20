@@ -212,6 +212,29 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(mac).toContain("super::activation(&target, active)");
   });
 
+  it("resets native generations before a reloaded panel webview can acquire focus", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
+    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("PageLoadEvent::Started");
+    expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const reset = panel.split("fn reset_for_webview")[1]!.split("#[derive")[0]!;
+    expect(reset).toContain(".reset()");
+    expect(reset).toContain("set_focusable(false)");
+    // The pure Rust regression also exercises generation reuse and an old UI task's epoch.
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    expect(command).toContain("panel_window::is_current(&target, generation, epoch)");
+  });
+
+  it("destroys a newly built panel if native focus/resize installation fails", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
+    const build = source.split("fn build_or_show_plugin_panel")[1]!.split("fn analysis_window_initial_position")[0]!;
+    expect(build).toMatch(/let installed = run_on_main_thread_blocking[\s\S]*install_resize_hit_test[\s\S]*\.and_then/);
+    expect(build).toMatch(/finish_installation\(installed, \|\| \{[\s\S]*window\.destroy\(\)[\s\S]*\}\)\?/);
+  });
+
   it("grants and releases input focus for the full-size spectrum portal", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     const bodyListen = vi.spyOn(document.body, "addEventListener");

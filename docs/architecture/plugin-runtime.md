@@ -71,6 +71,15 @@ the main document window, not global always-on-top panels, and retain their
 session position when hidden and reopened. The in-app `PluginPanelSurface` and
 proposal tray are web-build fallbacks only.
 
+Panel keyboard focus is a native-ended lease. Repeated input clicks may queue acquisitions,
+but loss or failure of the outstanding lease cancels its queued retries; an older generation
+also ends a successor that has not settled yet. Once that successor settles, obsolete native
+events cannot end it. Report-text selection leases end when their range collapses or leaves
+report text. At the start of a panel webview load, native generations reset alongside the
+JavaScript counter; a native epoch prevents queued work from the old page matching reused
+generations. A newly built panel whose native focus/resize hooks fail is destroyed and its
+open request fails.
+
 Analysis windows hold no dialog, filesystem, or clipboard permission
 (`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
 one is performed by the main window on the window's behalf:

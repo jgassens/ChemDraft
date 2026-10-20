@@ -5,12 +5,27 @@ use tauri::{Emitter, Manager};
 
 #[path = "panel_focus_lease.rs"]
 mod focus_lease;
+#[path = "panel_window_installation.rs"]
+mod installation;
+pub(crate) use installation::finish_installation;
 #[cfg(target_os = "macos")]
 #[path = "panel_focus_macos.rs"]
 mod macos;
 
 #[derive(Default)]
 pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
+
+pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    window
+        .state::<PanelFocusState>()
+        .0
+        .lock()
+        .unwrap()
+        .entry(window.label().to_string())
+        .or_default()
+        .reset();
+    let _ = window.set_focusable(false);
+}
 
 #[derive(Clone, serde::Serialize)]
 struct FocusEvent {
@@ -22,20 +37,17 @@ pub(crate) fn request<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     generation: u64,
     editing: bool,
-) -> bool {
-    window
-        .state::<PanelFocusState>()
-        .0
-        .lock()
-        .unwrap()
-        .entry(window.label().to_string())
-        .or_default()
-        .request(generation, editing)
+) -> Option<u64> {
+    let state = window.state::<PanelFocusState>();
+    let mut leases = state.0.lock().unwrap();
+    let lease = leases.entry(window.label().to_string()).or_default();
+    lease.request(generation, editing).then_some(lease.epoch)
 }
 
 pub(crate) fn acquired<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     generation: u64,
+    epoch: u64,
     focused: bool,
 ) -> bool {
     window
@@ -45,12 +57,13 @@ pub(crate) fn acquired<R: tauri::Runtime>(
         .unwrap()
         .entry(window.label().to_string())
         .or_default()
-        .acquired(generation, focused)
+        .acquired(generation, epoch, focused)
 }
 
 pub(crate) fn is_current<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     generation: u64,
+    epoch: u64,
 ) -> bool {
     window
         .state::<PanelFocusState>()
@@ -58,7 +71,7 @@ pub(crate) fn is_current<R: tauri::Runtime>(
         .lock()
         .unwrap()
         .get(window.label())
-        .is_some_and(|lease| lease.generation == generation)
+        .is_some_and(|lease| lease.is_current(generation, epoch))
 }
 
 // Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,

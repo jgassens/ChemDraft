@@ -55,7 +55,16 @@ takes more than 32 ms (repeat with 100 ms and 1 s delays). Repeat for input typi
 then click the document or another app while acquisition is pending and after it settles.
 Log the generation-tagged native chemdraft://plugin-panel-focus events: a genuine native
 deactivation must end the lease even if a delayed success reply or DOM focus arrives afterward.
-The selection must clear immediately on that event; it must survive DOM blur alone. A plain text click keeps drawing shortcuts active. With text
+The selection must clear immediately on that event; it must survive DOM blur alone.
+While the first input acquisition is delayed, click that input again and then click the document.
+The first native deactivation (or failed acquisition) must cancel the queued retry, with no focus
+stolen back. Repeat with the retry already pending when the first generation's loss arrives.
+After drag-selecting report text and copying it, collapse the selection with an arrow key:
+drawing shortcuts must resume. Moving the range outside report text must also end the lease.
+Reload a panel webview using developer tools after several input leases; a fresh input click must
+still acquire focus. Repeat with an old acquisition pending at reload. Inject a native resize-hook
+installation failure: opening must report the error and leave no live panel window.
+A plain text click keeps drawing shortcuts active. With text
 selected, Escape or a click elsewhere in the panel/document clears selection and returns drawing
 shortcuts; report replacement must also end the lease. Script-created ranges and synthetic drags
 must not start a lease. On both platforms, with another app frontmost, click an exposed panel input
@@ -69,7 +78,8 @@ After a background request returns false, the input/selection lease must end imm
 without any DOM blur. Close the foreground application so Windows activates the idle panel:
 drawing shortcuts must work, with no stale lease suppressing hand-back. Then activate the document
 and click the same input again: typing works. Repeat while rapidly ending one lease and acquiring
-another: an older generation's deactivation must never clear the new input/selection.
+another: an ended lease's deactivation must never clear an independent new input/selection lease.
+An obsolete generation must likewise not clear a newer acquisition that has already settled.
 On Windows, put File Explorer (then another application) in front and close it without clicking
 ChemDraft. If Windows activates an idle panel, the document must promptly receive keyboard focus
 and the next drawing shortcut. Repeat with two panels; another panel's input lease must not be

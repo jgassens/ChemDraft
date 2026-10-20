@@ -25,7 +25,8 @@ export interface NativePanelFocusEvent {
   generation: number;
 }
 
-// Survives effect teardown/reinstall in the same webview (including React StrictMode).
+// Survives effect teardown/reinstall (including React StrictMode). Native bookkeeping
+// resets at PageLoadEvent::Started when a reload creates a fresh JS counter.
 let nextGeneration = 0;
 
 async function requestNativeInputFocus(editing: boolean, generation: number): Promise<boolean> {
@@ -53,13 +54,20 @@ export function installPluginPanelInputFocus(
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
   let pointerClickTarget: EventTarget | null | undefined;
   let revision = 0;
+  let leaseChain = 0;
+  const nativeGenerations = new Set<number>();
   let pending = Promise.resolve();
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerActive = false;
   let disposed = false;
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
+    if (editing !== next) {
+      leaseChain++;
+      nativeGenerations.clear();
+    }
     editing = next;
+    const requestedChain = leaseChain;
     const requestedRevision = revision = ++nextGeneration;
     // Every request has a generation, including retries. Keep IPC serialized through native
     // completion: an old hand-back can never execute natively after a newer lease request.
@@ -69,10 +77,19 @@ export function installPluginPanelInputFocus(
         // Subscribe before acquiring: a native loss can precede the acquisition reply.
         await subscribed;
         if (requestedRevision !== revision) return;
+        if (next) nativeGenerations.add(requestedRevision);
         const acquired = await requestFocus(next, requestedRevision);
-        if (next && requestedRevision === revision && !acquired) finish();
+        if (next && requestedChain === leaseChain) {
+          if (!acquired) finish();
+          else {
+            // A settled successor supersedes old native events. Until it settles, loss of
+            // its predecessor also cancels this retry and any clicks queued behind it.
+            nativeGenerations.clear();
+            nativeGenerations.add(requestedRevision);
+          }
+        }
       } catch (error) {
-        if (next && requestedRevision === revision) finish();
+        if (next && requestedChain === leaseChain) finish();
         throw error;
       }
     });
@@ -186,7 +203,7 @@ export function installPluginPanelInputFocus(
     if (disposed) return;
     if (event.kind === "deactivated") {
       // Loss is terminal even if a delayed acquisition reply says it acquired focus.
-      if (editing && event.generation === revision) finish();
+      if (editing && nativeGenerations.has(event.generation)) finish();
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
@@ -224,6 +241,9 @@ export function installPluginPanelInputFocus(
       else finish();
     }
   };
+  const selectionChange = (): void => {
+    if (selectionLease && !hasReportSelection()) finish();
+  };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
   const observer = new MutationObserver(() => {
     if (selectionLease) {
@@ -240,6 +260,7 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("click", click, true);
   shell.addEventListener("focusin", focusIn);
   shell.addEventListener("keydown", keyDown);
+  document.addEventListener("selectionchange", selectionChange);
   let unsubscribeFocus: (() => void) | undefined;
   const subscribed = subscribeFocus(nativeFocus).then((unsubscribe) => {
     if (disposed) unsubscribe();
@@ -258,6 +279,7 @@ export function installPluginPanelInputFocus(
     shell.removeEventListener("click", click, true);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("keydown", keyDown);
+    document.removeEventListener("selectionchange", selectionChange);
     finish();
   };
 }
