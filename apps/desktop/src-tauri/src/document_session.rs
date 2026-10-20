@@ -27,6 +27,11 @@ fn check_saved_file(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("the saved path is not absolute".into());
     }
+    if path.as_os_str().to_string_lossy().split(['/', '\\']).any(|part| {
+        matches!(part, "." | "..")
+    }) {
+        return Err("the saved path contains a dot component".into());
+    }
     if !path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -200,6 +205,41 @@ mod tests {
             assert!(session["restoreSavePathError"].is_string());
             assert_eq!(session["path"], json!(path));
             assert_eq!(session["contents"], "drawing");
+        }
+    }
+
+    #[test]
+    fn rejects_dot_components_in_saved_paths() {
+        let files = Files::new();
+        let target = files.file("drawing.chemdraft");
+        let parent = target.parent().unwrap();
+        let paths = [
+            parent.join("sub").join("..").join("drawing.chemdraft"),
+            parent.join(".").join("drawing.chemdraft"),
+        ];
+        for path in paths {
+            let mut session = tab(&path);
+            assert!(grants(&mut session).is_empty());
+            assert!(session["restoreSavePathError"].is_string());
+            assert_eq!(session["contents"], "drawing");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_backslash_dot_components_in_saved_paths() {
+        let files = Files::new();
+        let target = files.file("drawing.chemdraft");
+        let parent = target.parent().unwrap();
+        let parent_text = parent.to_string_lossy();
+        let paths = [
+            PathBuf::from(format!(r"{parent_text}\\sub\\..\\drawing.chemdraft")),
+            PathBuf::from(format!(r"{parent_text}\\.\\drawing.chemdraft")),
+        ];
+        for path in paths {
+            let mut session = tab(&path);
+            assert!(grants(&mut session).is_empty());
+            assert!(session["restoreSavePathError"].is_string());
         }
     }
 
