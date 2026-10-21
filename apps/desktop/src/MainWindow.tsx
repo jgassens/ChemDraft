@@ -27,6 +27,7 @@ import {
 import { modifierHint, type HeldModifiers, type ModifierHintContext, type ModifierHintInteraction } from "./modifierHints";
 import { modifierLabels } from "./modifierLabels";
 import {
+  Fragment,
   createElement,
   memo,
   useCallback,
@@ -731,6 +732,7 @@ import {
   createDefaultVisibleToolsetIds,
   defaultVisibleToolsetIds,
   desktopToolsetRegistry,
+  compoundLayoutRegistry,
   getToolbarsMenuModel,
   getToolsetCommandSpecs,
   getToolsetItemGroups,
@@ -808,6 +810,11 @@ import {
   writeLastAutoCheck
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
+import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
+import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
+import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
+import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
@@ -1595,7 +1602,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.21.14.18-codex";
+const CURRENT_BUILD_STAMP = "10.21.14.43-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2202,7 +2209,10 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
-  const [toolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
+  const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
+    [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
 
   // The toolbar catalog is the single data brain: it composes the core manifest with live
   // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
@@ -2794,7 +2804,21 @@ export function MainWindow({
     })),
     [canRedo, canUndo, document, documentTabs.length, selectedMolecule, selectedNativeMoleculeParts]
   );
-  const layerActions = useMemo(() => createLayerActions(document), [document]);
+  const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
+  compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
+  const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
+  const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
+  const openArrangementSpacingRef = useRef<() => void>(() => {});
+  const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
+  const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
+  useEffect(() => {
+    if (!compoundLayoutsEnabled) {
+      setSpacingSource(undefined);
+      void dialogCoordinatorRef.current?.closeArrangementSpacing();
+      if (previousCompoundLayoutsEnabled.current) void dismissToolsetPopovers().catch(() => undefined);
+    }
+    previousCompoundLayoutsEnabled.current = compoundLayoutsEnabled;
+  }, [compoundLayoutsEnabled]);
   const pageCssVars = useMemo(
     () =>
       ({
@@ -2860,11 +2884,12 @@ export function MainWindow({
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
-        registry: toolsetRegistry
+        registry: toolsetRegistry,
+        compoundLayoutsEnabled
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry]
+    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -8343,10 +8368,54 @@ export function MainWindow({
     // Trigger the existing autosave of all tabs, without switching the visible drawing.
     setDocumentTabs([...documentTabsRef.current]);
   };
+  const spacingSourceForTab = (tabId: string): ChemDraftDocument => {
+    if (!compoundLayoutsEnabledRef.current) throw new Error("Enable Compound layout tools in Settings");
+    const source = nativeSpacingSourcesRef.current.get(tabId);
+    const current = tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present
+      : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
+    return source;
+  };
+  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
+  previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
+  const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
+  applySpacingRef.current = (tabId, percent) => {
+    const source = spacingSourceForTab(tabId);
+    if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then save the spacing again.");
+    const result = adjustArrangementSpacing(source, percent / 100);
+    if (!result.ok) throw new Error(result.status);
+    if (tabId === activeDocumentTabIdRef.current) {
+      commitDocumentChange(result.document, "Adjust arrangement spacing"); setStatus(result.status); return;
+    }
+    const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+    if (result.document === source) return;
+    const present = normalizeCommittedDocument(result.document);
+    documentUndoLabelsRef.current.set(present, "Adjust arrangement spacing");
+    documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+      history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+      file: { ...snapshot.file, dirty: true }, status: result.status });
+    nonPristineTabsRef.current.add(tabId);
+    setDocumentTabs([...documentTabsRef.current]);
+  };
+  openArrangementSpacingRef.current = () => {
+    if (!isDesktopRuntime()) { setSpacingSource(documentRef.current); return; }
+    const coordinator = dialogCoordinatorRef.current;
+    if (!coordinator) { setStatus("Adjust spacing could not open: the dialog host is unavailable."); return; }
+    const tabId = activeDocumentTabIdRef.current;
+    const source = documentHistoryRef.current.present;
+    if (!coordinator.hasArrangementSpacing(tabId)) nativeSpacingSourcesRef.current.set(tabId, source);
+    const range = arrangementSpacingRange(source);
+    const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+    void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
+      .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
+  };
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
-      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size), onError: setStatus,
+      applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
+      previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
+      applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
+      onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
@@ -9734,6 +9803,18 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (isCompoundLayoutCommand(action.id)) {
+          if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
+          if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
+          if (action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(); return; }
+          const layout = arrangementLayoutForCommand(action.id)!;
+          let operationStatus = "";
+          commitDocumentChange(current => {
+            const result = arrangeSelectedDocumentObjects(current, layout, { gridAlignment: arrangementGridAlignmentForCommand(action.id) });
+            operationStatus = result.status; return result.document;
+          }, action.title);
+          setStatus(operationStatus); return;
+        }
         if (action.id === distributeModeCommandIds.centers || action.id === distributeModeCommandIds.spacing) {
           const nextMode: DocumentDistributeMode = action.id === distributeModeCommandIds.spacing ? "spacing" : "centers";
           setDistributeMode(nextMode);
@@ -10121,6 +10202,7 @@ export function MainWindow({
     document,
     flashArtPaintTargetControls,
     layerActions,
+    compoundLayoutsEnabled,
     nativePalette,
     openExportDialog,
     openInteractive3dWorkspace,
@@ -10715,6 +10797,9 @@ export function MainWindow({
   );
 
   const invoke = useCallback(async (commandId: string) => {
+    if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
+      setStatus("Enable Compound layout tools in Settings"); return;
+    }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
@@ -10950,12 +11035,13 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
+      if (!compoundLayoutsEnabled && isCompoundLayoutCommand(command.id)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
       }
     }
     return [...byId].map(([id, title]) => ({ id, title }));
-  }, [shellCommandSpecs]);
+  }, [shellCommandSpecs, compoundLayoutsEnabled]);
 
   // Full live specs (including current enabled state) for the in-place customize gallery — minus
   // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
@@ -10968,10 +11054,11 @@ export function MainWindow({
     // ships is a fixed fact; what the user has arranged is not.
     const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return shellCommandSpecs.filter((command) =>
+      (compoundLayoutsEnabled || !isCompoundLayoutCommand(command.id)) &&
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [shellCommandSpecs]);
+  }, [shellCommandSpecs, compoundLayoutsEnabled]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -12495,7 +12582,7 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry);
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -19161,7 +19248,7 @@ export function MainWindow({
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
-            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById);
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled);
             // Render from a given set of groups — the controller passes an optimistic overlay while a
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
@@ -19777,6 +19864,7 @@ export function MainWindow({
             baseToolsets={toolbarCatalog.baseToolsets()}
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
             availableCommands={customizeCommandOptions}
+            isCommandHidden={compoundLayoutsEnabled ? undefined : isCompoundLayoutCommand}
             onApply={applyCustomizeToolbars}
             onLiveApply={liveApplyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
@@ -19832,8 +19920,19 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
+        onSave={factor => {
+          if (documentRef.current !== spacingSource) {
+            setSpacingSource(undefined); setStatus("Drawing changed. Reopen Adjust spacing to preview the current selection."); return;
+          }
+          let ok = false, operationStatus = "";
+          commitDocumentChange(current => { const result = adjustArrangementSpacing(current, factor);
+            ok = result.ok; operationStatus = result.status; return result.document; }, "Adjust arrangement spacing");
+          if (ok) setSpacingSource(undefined); setStatus(operationStatus);
+        }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           objectId={objectContextMenu.objectId}
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
           objectCount={activePage.objects.length}
@@ -22022,6 +22121,7 @@ export function nativeDeleteTargetFromSelectionPart(
 }
 
 function isLayerCommandId(commandId: string): boolean {
+  if (isCompoundLayoutCommand(commandId)) return true;
   return (
     commandId === "layout.bringToFront" ||
     commandId === "layout.bringForward" ||
@@ -23070,6 +23170,7 @@ function ArtStyleQaLayer({
 }
 
 export function ObjectLayerContextMenu({
+  layoutActions = [],
   objectId,
   objectIndex,
   objectCount,
@@ -23080,6 +23181,7 @@ export function ObjectLayerContextMenu({
   position,
   onInvoke
 }: {
+  layoutActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
   objectCount: number;
@@ -23101,6 +23203,28 @@ export function ObjectLayerContextMenu({
   // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
   // the right edge would clip it and slides up when the bottom would.
   const [copyAsOpen, setCopyAsOpen] = useState(false);
+  const [arrangeOpen, setArrangeOpen] = useState(false);
+  const arrangeParentRef = useRef<HTMLDivElement | null>(null);
+  const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const arrangeKeyboardOpenRef = useRef(false);
+  const [arrangeFlyoutStyle, setArrangeFlyoutStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    if (layoutActions.length === 0) { setArrangeOpen(false); return; }
+    if (!arrangeOpen) return;
+    const parent = arrangeParentRef.current;
+    const flyout = arrangeFlyoutRef.current;
+    if (!parent || !flyout) return;
+    const parentRect = parent.getBoundingClientRect();
+    const flyoutRect = flyout.getBoundingClientRect();
+    setArrangeFlyoutStyle({
+      ...(parentRect.right + flyoutRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
+      top: `${-Math.max(0, parentRect.top + flyoutRect.height + 8 - window.innerHeight)}px`
+    });
+    if (arrangeKeyboardOpenRef.current) {
+      flyout.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+      arrangeKeyboardOpenRef.current = false;
+    }
+  }, [arrangeOpen, clampedPosition, layoutActions.length]);
   const copyAsParentRef = useRef<HTMLDivElement | null>(null);
   const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
   const [copyAsFlyoutStyle, setCopyAsFlyoutStyle] = useState<CSSProperties>({});
@@ -23139,6 +23263,55 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {layoutActions.length > 0 ? (
+        <div className="object-context-menu-submenu" ref={arrangeParentRef}
+          onPointerEnter={() => { setCopyAsOpen(false); setArrangeOpen(true); }}
+          onPointerLeave={() => setArrangeOpen(false)}>
+          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
+            className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
+            onClick={() => { setCopyAsOpen(false); setArrangeOpen(open => !open); }}
+            onKeyDown={event => {
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                event.preventDefault(); event.stopPropagation();
+                arrangeKeyboardOpenRef.current = true;
+                setCopyAsOpen(false); setArrangeOpen(true);
+              }
+            }}>
+            <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
+          </button>
+          {arrangeOpen ? (
+            <div className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
+              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}
+              onKeyDown={event => {
+                if (event.key === "Escape" || event.key === "ArrowLeft") {
+                  event.preventDefault(); event.stopPropagation(); setArrangeOpen(false);
+                  arrangeParentRef.current?.querySelector<HTMLButtonElement>('[data-context-submenu="arrange"]')?.focus();
+                } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault(); event.stopPropagation();
+                  const choices = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+                  const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+                  choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
+                }
+              }}>
+              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
+                <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+                  data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
+                  {action.title.replace(/^Arrange in (?:a|an) /, "")}
+                </button>
+              ))}
+              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
+                <Fragment key={action.id}>
+                  <div className="object-context-menu-separator" role="separator" />
+                  <button type="button" role="menuitem" className="object-context-menu-item"
+                    data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
+                    Adjust spacing…
+                  </button>
+                </Fragment>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {(["clipboard.cut", "clipboard.copy", "clipboard.paste"] as const).map((clipboardCommandId) => (
         <button
           type="button"
@@ -23154,7 +23327,7 @@ export function ObjectLayerContextMenu({
       <div
         className="object-context-menu-submenu"
         ref={copyAsParentRef}
-        onPointerEnter={() => setCopyAsOpen(true)}
+        onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(true); }}
         onPointerLeave={() => setCopyAsOpen(false)}
       >
         <button
@@ -23164,7 +23337,7 @@ export function ObjectLayerContextMenu({
           aria-expanded={copyAsOpen}
           className="object-context-menu-item object-context-menu-submenu-trigger"
           data-context-submenu="copy-as"
-          onClick={() => setCopyAsOpen((open) => !open)}
+          onClick={() => { setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
         >
           <span>Copy As</span>
           <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>

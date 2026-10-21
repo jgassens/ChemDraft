@@ -19,12 +19,15 @@ import {
   SHAFT_MARK_SIZE_MAX_PX,
   SHAFT_MARK_SIZE_MIN_PX
 } from "@chemdraft/art-engine";
+import { ArrangementLayouts, ArrangementGridAlignments, type ArrangementLayout, type ArrangementGridAlignment } from "@chemdraft/layout-engine";
+import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
   nativeHotkeyElements,
   selectedTextToAtomLabelDisabledReason,
   selectedGroupObjectIds,
+  selectedArrangementObjectIds,
   selectedArtBooleanEligibleObjectIds,
   type NativeHotkeyElement
 } from "./documentWorkflow";
@@ -55,6 +58,7 @@ export interface CommandAvailability {
 }
 
 export interface ShellCommandOptions {
+  compoundLayoutsEnabled?: boolean;
   availability?: CommandAvailability;
   registry?: DesktopToolsetRegistry;
 }
@@ -693,6 +697,24 @@ export const distributeModeCommandIds = {
   centers: "layout.distribute.mode.centers",
   spacing: "layout.distribute.mode.spacing"
 } as const;
+
+export const arrangementLayoutLabels: Record<ArrangementLayout, string> = {
+  circle: "Circle", oval: "Oval", grid: "Grid", row: "Row", column: "Column"
+};
+export function arrangementCommandId(layout: ArrangementLayout, gridAlignment: ArrangementGridAlignment = "center"): string {
+  return `layout.arrange.${layout}${layout === "grid" && gridAlignment !== "center" ? `.${gridAlignment}` : ""}`;
+}
+export function arrangementLayoutForCommand(commandId: string): ArrangementLayout | undefined {
+  if (commandId === arrangementCommandId("grid", "left") || commandId === arrangementCommandId("grid", "right")) return "grid";
+  return ArrangementLayouts.find((layout) => arrangementCommandId(layout) === commandId);
+}
+export function arrangementGridAlignmentForCommand(commandId: string): ArrangementGridAlignment | undefined {
+  return ArrangementGridAlignments.find((alignment) => arrangementCommandId("grid", alignment) === commandId);
+}
+export function arrangementIconName(layout: ArrangementLayout, gridAlignment: ArrangementGridAlignment = "center"): IconName {
+  if (layout === "grid") return gridAlignment === "left" ? "arrangeGridLeft" : gridAlignment === "right" ? "arrangeGridRight" : "arrangeGridCenter";
+  return { circle: "arrange", oval: "arrangeOval", row: "arrangeRow", column: "arrangeColumn" }[layout] as IconName;
+}
 
 export type ObjectPaintType = "none" | "solid" | "linear-gradient" | "radial-gradient" | "gloss";
 
@@ -1926,13 +1948,26 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
   };
 }
 
-export function createLayerActions(document: ChemDraftDocument): CommandSpec[] {
+export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
   const hasSelectedGroup = selectedGroupObjectIds(document).length > 0;
+  const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
+      enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
+    ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({
+      id: arrangementCommandId(layout, gridAlignment),
+      title: `Arrange in ${layout === "oval" ? "an" : "a"} ${arrangementLayoutLabels[layout]}${layout === "grid" ? ` (${gridAlignment === "center" ? "Centered" : gridAlignment === "left" ? "Left" : "Right"})` : ""}`,
+      icon: arrangementIconName(layout, gridAlignment),
+      source: "core",
+      category: "layout",
+      enabled: layoutsEnabled && hasArrangementSelection,
+      disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings",
+      description: `Arrange the selection in ${layout}`
+    }))),
     {
       id: "layout.alignLeft",
       title: "Align Left",
@@ -2245,7 +2280,7 @@ export function allShellCommands(
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
     ...createQuickActions(document, selectedMolecule, options.availability),
-    ...createLayerActions(document),
+    ...createLayerActions(document, options.compoundLayoutsEnabled),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),
