@@ -9,6 +9,8 @@ Unreleased changes based on `8a3781eaf0b2ebb446c445c068cf3a4d62b5750c`.
   instead of becoming `C`.
 - Spell supported single-heavy-element labels (`NH2`, `OH`, `CH3`) in the molfile input used by
   SMILES and SDF export, using the existing shared parser instead of replacing them with `*`.
+  A radical-bearing label instead keeps the placeholder and its loss warning, since spelling it
+  would change its radical count.
 - Refuse the Windows updater's strict session flush when an empty drawing contains unsaved changes
   and autosave is unavailable. A clean empty canvas can still skip a write.
 - Reject reserved Windows device names (`CON`, `NUL`, `AUX`, `PRN`, `COM1`–`COM9`, `LPT1`–`LPT9`)

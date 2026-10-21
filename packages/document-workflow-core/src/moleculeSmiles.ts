@@ -56,6 +56,13 @@ export async function moleculeSmiles(
   if (computeStructureIdentifiers) {
     try {
       const writerWarnings: string[] = [];
+      const placeholderAtoms = new Map(expanded.placeholderAtoms);
+      for (const atom of expanded.molecule.atoms) {
+        const spelled = nativeSingleHeavyElementLabelValence(atom.element);
+        if ((atom.markRadicals ?? 0) > 0 && spelled && spelled.element !== atom.element) {
+          placeholderAtoms.set(atom.id, "it carries radical electrons, so its stated hydrogen count cannot be preserved");
+        }
+      }
       const identifiers = await computeStructureIdentifiers(
         molfile ?? moleculeToMolfileV2000(expanded.molecule, {
           unknownBondOrders: "refuse",
@@ -64,7 +71,7 @@ export async function moleculeSmiles(
           messageFormat: "SMILES",
           spellLabel: nativeSingleHeavyElementLabelValence,
           kekuleBondOrders: nativeBondOrderResolution(expanded.molecule.atoms, expanded.molecule.bonds).kekuleOrders,
-          placeholderAtoms: expanded.placeholderAtoms
+          placeholderAtoms
         }).contents
       );
       if (identifiers?.smiles) {

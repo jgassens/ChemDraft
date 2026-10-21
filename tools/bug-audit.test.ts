@@ -83,6 +83,25 @@ it("exports the same NH2 chemistry with the engine as without it", async () => {
   expect(warnings).toEqual([]);
 });
 
+it("keeps a radical-bearing CH3 label as a placeholder through real SMILES and SDF engines", async () => {
+  installNodeEngines();
+  const source = molecule("CH3", 2);
+  const warnings: ExportWarning[] = [];
+  const smiles = await moleculeSmiles(source, 0, warnings, computeStructureIdentifiers);
+  expect(smiles).not.toContain("[CH3]");
+  expect(warnings).toContainEqual(expect.objectContaining({
+    code: "export.smiles_v2000_loss", message: expect.stringContaining('Atom label "CH3"')
+  }));
+
+  const document = createEmptyDocument();
+  document.pages[0]!.objects.push(source);
+  const sdf = await exportStructureListSdf(document);
+  expect(sdf.warnings).toContainEqual(expect.objectContaining({
+    code: "export.sdf_v2000_loss", message: expect.stringContaining('Atom label "CH3"')
+  }));
+  expect(sdf.contents).not.toContain("[CH3]");
+});
+
 it.each(["NH2", "OH", "CH3"])("preserves a bonded %s label through real SMILES and SDF engines", async (label) => {
   installNodeEngines();
   const source = molecule("C");

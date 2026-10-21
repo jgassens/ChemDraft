@@ -95,7 +95,7 @@ export function validateBatchName(name: string): void {
 
 /** Windows reserves device stems even before extensions and ignores trailing stem spaces. */
 export function isWindowsDeviceName(name: string): boolean {
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name.split(".")[0]!.trimEnd());
+  return /^(con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(name.split(".")[0]!.trimEnd());
 }
 
 /**
