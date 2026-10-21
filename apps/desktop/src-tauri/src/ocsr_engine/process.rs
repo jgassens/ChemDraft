@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::sync::mpsc;
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::thread;
 use std::time::Duration;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::time::Instant;
 
 use serde::Serialize;

@@ -23,7 +23,11 @@ use std::sync::atomic::AtomicBool;
 use std::{
     fs::File,
     io::{Read, Write},
-    sync::{atomic::Ordering, Arc},
+    sync::atomic::Ordering,
+};
+#[cfg(all(test, unix))]
+use std::{
+    sync::Arc,
     time::{Duration, Instant},
 };
 
