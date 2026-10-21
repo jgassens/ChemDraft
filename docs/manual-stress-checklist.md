@@ -449,6 +449,24 @@ and Art toolbars open, including at 125%/150% display scale:
   size settings. Repeat while another drawing is active and while Choose is pending, then cancel
   Choose. The refreshed preview and final file must describe the originating drawing.
 
+## Name from Structure (Orthonym) (macOS and Windows)
+
+- Install the Orthonym plugin from a package. Run Name from Structure with the engine absent: the movable
+  “Naming needs a local engine” dialog opens owned by the document window, centred the first time (no
+  Windows taskbar entry), and the floating toolbars stay usable beside it. Move it, close it, reopen
+  it: it returns where it was left.
+- Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
+  process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
+- Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
+  shown), `[13CH3]O`, a sodium salt, TEMPO (a radical). Glycine zwitterion is declined with no name;
+  `[Fe]` is declined as an unsupported element. A declined structure never shows a guessed name.
+- Select several molecules: one row each, capped at 10. Copy puts exactly the name on the clipboard
+  and nothing else. Insert Name as Text adds one text object below the molecule with one undo entry;
+  undo removes it, redo restores it.
+- Quit with the sidecar running: no python or java process remains afterwards. Use Remove engine and
+  confirm the engine folder is gone and Name from Structure offers the install dialog again.
+- Intel Mac: Name from Structure reports the engine unsupported rather than offering an install.
+
 ## Native Custom Page Size (macOS and Windows)
 
 - From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred

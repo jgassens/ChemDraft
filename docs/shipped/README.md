@@ -1,5 +1,18 @@
 # Shipped slices
 
+## Structure to name (Orthonym) (2026-10-21)
+
+Name from Structure (jgassens/ChemDraft#165; PR TBD) names a drawn molecule with the optional,
+user-installed Orthonym engine. The host runs the engine as a managed process on `local_engine`,
+installed only on explicit user action through a native, movable `engineInstall` dialog (a new
+dialog kind). Every name is read back through OPSIN under the exact policy in
+`document-workflow-core/structureName.ts`: a name is shown only if it parses back to the same
+structure, and anything else is declined rather than guessed. Plugin API 0.1.7 adds
+`structureToName` and a `chemicalName` report section. The official plugin is
+`jgassens/ChemDraft-Orthonym-Plugin`. Components, pins and licences are in `NOTICE` and
+`docs/architecture/dependency-inventory.md`; design in `docs/architecture/naming-engine.md`.
+Intel Macs report the engine unsupported. The hands-on pass is in `docs/manual-stress-checklist.md`.
+
 ## Export dialog preview and size presets (2026-10-20)
 
 The movable Export dialog shares its form with the browser fallback. Preferences adds

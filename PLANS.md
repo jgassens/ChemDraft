@@ -32,6 +32,14 @@ What remains open from it:
   lack of ideas: the measured gap is not where feature or optimizer work reaches. Reopening it needs a
   reason recorded here first.
 
+Other parked work:
+
+- **Structure naming on the CLI and MCP (jgassens/ChemDraft#165 follow-up).** The policy is shared in
+  `document-workflow-core/structureName.ts`; a headless caller needs the engine directory listed in the
+  user's trust file (§5), never an environment variable alone.
+- **MolScribe engine install on the `engineInstall` dialog kind.** The OCSR install still uses its own
+  flow; moving it onto the shared dialog kind the naming engine introduced is parked.
+
 ---
 
 # Known open items (not in flight)
