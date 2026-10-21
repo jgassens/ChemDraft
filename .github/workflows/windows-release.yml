@@ -1,0 +1,294 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Public repository tag or full commit SHA to build (must match the workflow ref)
+        required: true
+        type: string
+      upload_to_release:
+        description: Optional existing DRAFT release tag (v<app version>)
+        required: false
+        type: string
+      allow_unsigned_upload:
+        description: Allow uploading artifacts without both verified signatures (dry runs only)
+        required: false
+        type: boolean
+        default: false
+      notes_file:
+        description: Optional repository path to Windows release notes
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Do not race two uploads to the same draft, or cancel an outstanding signing approval.
+concurrency:
+  group: windows-release-${{ inputs.upload_to_release || inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # No fork runs, PR events, fork checkouts, or credentials persisted in the checkout.
+    if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork
+    runs-on: windows-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read # SignPath reads the CI artifact and build provenance.
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.bundle.outputs.version }}
+      authenticode_signed: ${{ steps.authenticode.outputs.signed || 'false' }}
+      updater_signed: ${{ steps.updater.outputs.signed || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate public release source and notes
+        env:
+          BUILD_REF: ${{ inputs.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.upload_to_release }}
+          NOTES_FILE: ${{ inputs.notes_file }}
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve build commit.' }
+          if ($env:BUILD_REF -notmatch '^[0-9a-fA-F]{40}$') {
+            $tag = $env:BUILD_REF -replace '^refs/tags/', ''
+            git check-ref-format "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw 'ref must be a tag or full commit SHA.' }
+            $tagSha = git rev-parse --verify "refs/tags/${tag}^{commit}"
+            if ($LASTEXITCODE -ne 0 -or $tagSha -ne $sha) { throw 'ref must resolve to a repository tag.' }
+          }
+          if ($sha -ne $env:WORKFLOW_SHA) {
+            throw 'Build ref must match the workflow commit for SignPath provenance. Dispatch with --ref <release-tag>.'
+          }
+          $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($env:RELEASE_TAG -and $env:RELEASE_TAG -cne "v$($config.version)") {
+            throw 'upload_to_release must be v<app version>, matching latest.json download URLs.'
+          }
+          if ($env:NOTES_FILE) {
+            $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE) + [IO.Path]::DirectorySeparatorChar
+            $notes = [IO.Path]::GetFullPath((Join-Path $root $env:NOTES_FILE))
+            if (-not $notes.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Notes must be inside the repository.' }
+            $relativeNotes = [IO.Path]::GetRelativePath($root, $notes).Replace('\', '/')
+            git ls-files --error-unmatch -- $relativeNotes
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw 'Notes must be a tracked repository file.' }
+          }
+          Write-Host "Release source: $sha"
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # rust-toolchain.toml is the same single source of truth as the CI Windows job.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+          shared-key: windows-release
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21' # jlink --compress=zip-9 requires JDK 21+.
+      - name: Build host-native OPSIN runtime and smoke test benzene
+        run: node scripts/build-opsin-runtime.mjs
+
+      - name: Build stable NSIS installer without updater signing
+        env:
+          CHEMDRAFT_STABLE_BUILD: '1'
+          CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'
+        run: pnpm --filter @chemdraft/desktop build --bundles nsis
+
+      - name: Verify stable bundle identity and stage unsigned installer
+        id: bundle
+        run: |
+          $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $windows = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          $identifier = if ($windows.identifier) { $windows.identifier } else { $config.identifier }
+          $product = if ($windows.productName) { $windows.productName } else { $config.productName }
+          if ($identifier -cne 'org.chemdraft.desktop' -or $product -cne 'ChemDraft') { throw 'Bundle has a development identity.' }
+          # build.rs re-emits the label into the compiled native title. Inspect the latest build output.
+          $output = Get-ChildItem apps/desktop/src-tauri/target/release/build/chemdraft-*/output |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if (-not $output) { throw 'No native build output to verify.' }
+          $labels = @(Get-Content $output.FullName | Where-Object { $_ -like 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=*' })
+          if ($labels.Count -ne 1 -or $labels[0] -cne 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=') { throw 'Native build has a worktree label.' }
+          $shortSha = (git rev-parse --short HEAD).Trim()
+          $assets = (Get-ChildItem apps/desktop/dist/assets/*.js | Get-Content -Raw) -join "`n"
+          if ($assets -notmatch "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} $shortSha" -or
+              $assets -match '\[[^\]\r\n]+\] (?:·|\\x[bB]7|\\u00[bB]7) \d{4}-\d{2}-\d{2}') { throw 'Frontend build stamp missing or labelled.' }
+          $bundleDir = 'apps/desktop/src-tauri/target/release/bundle/nsis'
+          $installers = @(Get-ChildItem "$bundleDir/*.exe")
+          $expected = "ChemDraft_$($config.version)_x64-setup.exe"
+          if ($installers.Count -ne 1 -or $installers[0].Name -cne $expected) { throw 'Expected exactly one stable x64 installer.' }
+          if (Get-ChildItem "$bundleDir/*.sig") { throw 'Updater signing ran before Authenticode.' }
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets
+          "version=$($config.version)" >> $env:GITHUB_OUTPUT
+          "installer=$expected" >> $env:GITHUB_OUTPUT
+          Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha"
+
+      # Signing secrets are step-scoped: no setup/cache/artifact action receives them.
+      - name: Check signing availability
+        id: signing
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          if ($env:SIGNPATH_API_TOKEN) {
+            if (-not $env:SIGNPATH_ORGANIZATION_ID -or -not $env:SIGNPATH_PROJECT_SLUG -or -not $env:SIGNPATH_SIGNING_POLICY_SLUG) {
+              throw 'SignPath token is set but required SignPath repository variables are missing.'
+            }
+            'authenticode=true' >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host '::warning::SIGNPATH_API_TOKEN is missing. Skipping Authenticode; this is an unsigned dry run.'
+          }
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            'updater=true' >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host '::warning::TAURI_SIGNING_PRIVATE_KEY is missing. Skipping updater .sig and latest.json; installer cannot be published as an update.'
+          }
+
+      - name: Upload unsigned installer for SignPath provenance
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-unsigned
+          path: release-assets/*.exe
+          if-no-files-found: error
+
+      - name: Authenticode-sign and download final installer
+        if: steps.signing.outputs.authenticode == 'true'
+        # https://github.com/SignPath/github-action-submit-signing-request/releases/tag/v2
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signpath-signed
+
+      - name: Verify Authenticode and replace unsigned installer
+        id: authenticode
+        if: steps.signing.outputs.authenticode == 'true'
+        env:
+          EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
+          INSTALLER: ${{ steps.bundle.outputs.installer }}
+        run: |
+          $signed = @(Get-ChildItem signpath-signed -Recurse -File)
+          if ($signed.Count -ne 1 -or $signed[0].Name -cne $env:INSTALLER) { throw 'SignPath must return exactly the expected installer.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
+          Write-Host "Authenticode: Valid; publisher=$($signature.SignerCertificate.Subject)"
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
+            throw 'EXPECTED_AUTHENTICODE_SUBJECT repository variable is required when Authenticode signing runs. Set it to the expected signer certificate subject substring.'
+          }
+          if (-not $signature.SignerCertificate.Subject.Contains($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
+            throw "Authenticode signer subject does not contain EXPECTED_AUTHENTICODE_SUBJECT: $($signature.SignerCertificate.Subject)"
+          }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination (Join-Path release-assets $env:INSTALLER) -Force
+          'signed=true' >> $env:GITHUB_OUTPUT
+
+      # No operation may change the .exe after this point. Minisign covers the FINAL installer.
+      - name: Sign final installer for the Tauri updater
+        if: steps.signing.outputs.updater == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          INSTALLER: ${{ steps.bundle.outputs.installer }}
+        run: |
+          $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
+          $installer = Join-Path release-assets $env:INSTALLER
+          # Call Node directly so cmd.exe/pnpm.cmd cannot discard the empty password argument.
+          node apps/desktop/node_modules/@tauri-apps/cli/tauri.js signer sign --password '' $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Tauri updater signing failed.' }
+
+      - name: Verify updater signature and generate latest.json
+        id: updater
+        if: steps.signing.outputs.updater == 'true'
+        env:
+          INSTALLER: ${{ steps.bundle.outputs.installer }}
+          VERSION: ${{ steps.bundle.outputs.version }}
+          NOTES_FILE: ${{ inputs.notes_file }}
+        run: |
+          $installer = Join-Path release-assets $env:INSTALLER
+          pnpm exec tsx tools/release/verify-windows-updater.ts $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Updater signature verification failed.' }
+          $manifestArgs = @('--version', $env:VERSION, '--installer', $installer, '--out', 'release-assets/latest.json')
+          if ($env:NOTES_FILE) { $manifestArgs += @('--notes', $env:NOTES_FILE) }
+          pnpm -s release:windows-manifest @manifestArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows update manifest generation failed.' }
+          'signed=true' >> $env:GITHUB_OUTPUT
+
+      - name: Print SHA-256 and sizes and write checksums
+        run: |
+          $checksums = @(Get-ChildItem release-assets -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "$hash  $($_.Length) bytes  $($_.Name)"
+            "$hash  $($_.Name)"
+          })
+          $checksums | Set-Content -Encoding utf8NoBOM release-assets/SHA256SUMS.txt
+      - name: Upload final release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: release-assets/*
+          if-no-files-found: error
+
+  upload:
+    needs: build
+    if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
+    runs-on: windows-latest
+    permissions:
+      contents: write # Only this job can upload release assets; no source code executes here.
+      actions: read
+    steps:
+      - name: Require verified signatures before release upload
+        shell: pwsh
+        env:
+          AUTHENTICODE_SIGNED: ${{ needs.build.outputs.authenticode_signed }}
+          UPDATER_SIGNED: ${{ needs.build.outputs.updater_signed }}
+          ALLOW_UNSIGNED_UPLOAD: ${{ inputs.allow_unsigned_upload }}
+        run: |
+          if ($env:AUTHENTICODE_SIGNED -ne 'true' -or $env:UPDATER_SIGNED -ne 'true') {
+            if ($env:ALLOW_UNSIGNED_UPLOAD -ne 'true') {
+              throw 'Refusing release upload: both Authenticode and updater signatures must be verified. Use allow_unsigned_upload only for an explicit unsigned dry run.'
+            }
+            Write-Host '::warning::UNSIGNED RELEASE UPLOAD OVERRIDE: one or both signatures are missing. These artifacts must not be published as a signed production update.'
+          }
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release-assets
+      - name: Upload only to an existing draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.upload_to_release }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if ($env:RELEASE_TAG -cne "v$env:VERSION") { throw 'Release tag must match the installer version.' }
+          $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,tagName
+          if ($LASTEXITCODE -ne 0) { throw 'Target release must already exist.' }
+          $release = $releaseJson | ConvertFrom-Json
+          if ($release.isDraft -ne $true -or $release.tagName -cne $env:RELEASE_TAG) { throw 'Refusing to upload to a published release.' }
+          $assets = @(Get-ChildItem release-assets -File | ForEach-Object { $_.FullName })
+          gh release upload $env:RELEASE_TAG @assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
