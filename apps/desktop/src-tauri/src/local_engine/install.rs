@@ -57,6 +57,8 @@ where
 pub enum RunStep {
     InstallPython,
     CreateVenv,
+    #[cfg(windows)]
+    RewriteVenvLaunchers,
     InstallPackages,
     Extra,
     VerifyEnvironment,
@@ -278,7 +280,7 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
 
 /// Runs a program and returns what it wrote to stdout: the seam the in-place receipt upgrade uses
 /// to ask the installed uv and Python what they are.
-pub trait ProbeIo: Send + Sync {
+pub trait ProbeIo: InstallIo {
     fn output(
         &self,
         platform: &dyn EnginePlatform,
@@ -448,32 +450,9 @@ pub fn install<S: EngineSpec>(
 
     let python_install_dir = partial.join("python");
     let cache_dir = partial.join("download-cache");
-    let python_bin_dir = partial.join("python-bin");
-    let state_dir = partial.join("uv-state");
     let temp_dir = partial.join("temp");
     fs::create_dir_all(&temp_dir).map_err(S::failed_io)?;
-    let environment = vec![
-        (
-            OsString::from("UV_PYTHON_INSTALL_DIR"),
-            python_install_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_CACHE_DIR"),
-            cache_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_PYTHON_BIN_DIR"),
-            python_bin_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_STATE_DIR"),
-            state_dir.as_os_str().to_owned(),
-        ),
-        (OsString::from("UV_NO_CONFIG"), OsString::from("1")),
-        (OsString::from("TMPDIR"), temp_dir.as_os_str().to_owned()),
-        (OsString::from("TMP"), temp_dir.as_os_str().to_owned()),
-        (OsString::from("TEMP"), temp_dir.as_os_str().to_owned()),
-    ];
+    let environment = uv_environment(&partial);
     progress.report(message(
         InstallPhase::InstallingPython,
         "Installing the pinned managed Python runtime.",
@@ -594,6 +573,94 @@ pub fn install<S: EngineSpec>(
     Ok(receipt)
 }
 
+/// uv must never inherit a caller's interpreter, cache or configuration. Use the same
+/// engine-local directories before staging is swapped and when refreshing the final tree.
+fn uv_environment(root: &Path) -> Vec<(OsString, OsString)> {
+    let mut env: Vec<_> = [
+        ("UV_PYTHON_INSTALL_DIR", "python"),
+        ("UV_CACHE_DIR", "download-cache"),
+        ("UV_PYTHON_BIN_DIR", "python-bin"),
+        ("UV_STATE_DIR", "uv-state"),
+        ("TMPDIR", "temp"),
+        ("TMP", "temp"),
+        ("TEMP", "temp"),
+    ]
+    .into_iter()
+    .map(|(key, directory)| (OsString::from(key), root.join(directory).into_os_string()))
+    .collect();
+    env.push((OsString::from("UV_NO_CONFIG"), OsString::from("1")));
+    env
+}
+
+/// Windows uv launchers embed the absolute managed interpreter path, even with
+/// --relocatable, and ignore pyvenv.cfg. Regenerate both launchers after a move, preserving
+/// site-packages. The minor-version junction was already rebased by relocation.
+#[cfg(windows)]
+pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
+    root: &Path,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    check_cancel::<S>(cancel)?;
+    let python = root
+        .join("python")
+        .join(format!(
+            "cpython-{}-windows-x86_64-none",
+            S::python_version()
+        ))
+        .join("python.exe");
+    // The install removed its staging temp directory before the swap. uv may need it while
+    // replacing launchers; restore it briefly and leave an existing recovery temp tree alone.
+    let temp = root.join("temp");
+    let had_temp = temp.exists();
+    fs::create_dir_all(&temp).map_err(|error| {
+        InstallError::failed(format!(
+            "Could not prepare the venv launcher rewrite: {error}"
+        ))
+    })?;
+    let result = io.run(
+        platform,
+        RunStep::RewriteVenvLaunchers,
+        &platform.uv_executable(root),
+        &[
+            OsString::from("venv"),
+            root.join("venv").into_os_string(),
+            OsString::from("--allow-existing"),
+            OsString::from("--python"),
+            python.into_os_string(),
+            OsString::from("--python-preference"),
+            OsString::from("only-managed"),
+            OsString::from("--relocatable"),
+        ],
+        &uv_environment(root),
+        cancel,
+        None,
+    );
+    if !had_temp {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result.map_err(|error| InstallError {
+        code: error.code,
+        message: format!(
+            "Could not rewrite the relocated venv launchers: {}",
+            error.message
+        ),
+    })?;
+    check_cancel::<S>(cancel)
+}
+
+// Unix venv interpreters are symlinks, which relocate_staged_tree already repairs.
+#[cfg(not(windows))]
+pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
+    _root: &Path,
+    _platform: &dyn EnginePlatform,
+    _io: &dyn InstallIo,
+    _cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    Ok(())
+}
+
 /// Swaps the verified staging tree into place and proves it works there.
 ///
 /// uv records the interpreter by absolute path — the venv's `python` link and `pyvenv.cfg`'s
@@ -647,14 +714,14 @@ fn commit_staged_tree<S: EngineSpec>(
 
     // A set-aside tree from an interrupted swap may be the only working engine: put it back in
     // place first if `engine/` is not, so it becomes the one this install falls back to.
-    reconcile_previous::<S>(paths, platform);
+    reconcile_previous::<S>(paths, platform, io, cancel)?;
     remove_tree::<S>(&paths.app_data, &previous).map_err(S::failed_io)?;
     let had_previous = final_dir.exists();
     if had_previous {
         fs::rename(&final_dir, &previous).map_err(S::failed_io)?;
     }
     if let Err(error) = fs::rename(&partial, &final_dir) {
-        restore_previous::<S>(&final_dir, &previous, had_previous);
+        restore_previous::<S>(&final_dir, &previous, had_previous, platform, io, cancel);
         return Err(S::failed_io(error));
     }
     // From here the staging tree is gone; a failure retires the new tree instead.
@@ -662,6 +729,7 @@ fn commit_staged_tree<S: EngineSpec>(
 
     let outcome = relocate_staged_tree(&final_dir, &rebases)
         .map_err(S::relocation_error)
+        .and_then(|()| rewrite_venv_launchers::<S>(&final_dir, platform, io, cancel))
         .and_then(|()| S::verify_layout(&final_dir, platform))
         .and_then(|()| {
             io.run(
@@ -693,7 +761,14 @@ fn commit_staged_tree<S: EngineSpec>(
             // mid-delete would leave a half-deleted tree where the engine belongs.
             match retire_tree::<S>(&paths.app_data, &final_dir) {
                 Ok(discarded) => {
-                    restore_previous::<S>(&final_dir, &previous, had_previous);
+                    restore_previous::<S>(
+                        &final_dir,
+                        &previous,
+                        had_previous,
+                        platform,
+                        io,
+                        cancel,
+                    );
                     if let Some(discarded) = discarded {
                         delete_discarded::<S>(&discarded);
                     }
@@ -711,7 +786,14 @@ fn commit_staged_tree<S: EngineSpec>(
     }
 }
 
-fn restore_previous<S: EngineSpec>(final_dir: &Path, previous: &Path, had_previous: bool) {
+fn restore_previous<S: EngineSpec>(
+    final_dir: &Path,
+    previous: &Path,
+    had_previous: bool,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) {
     if had_previous && !final_dir.exists() {
         if let Err(error) = fs::rename(previous, final_dir) {
             eprintln!(
@@ -719,6 +801,16 @@ fn restore_previous<S: EngineSpec>(final_dir: &Path, previous: &Path, had_previo
                 S::LOG_PREFIX,
                 previous.display()
             );
+        } else if let Err(error) = rewrite_venv_launchers::<S>(final_dir, platform, io, cancel) {
+            // The old launchers already name final_dir, so cancellation can skip the refresh
+            // safely. Never start a new child after cancellation (including app exit).
+            if error.code != super::InstallErrorCode::Cancelled {
+                eprintln!(
+                    "{} could not refresh the restored engine: {}",
+                    S::LOG_PREFIX,
+                    error.message
+                );
+            }
         }
     }
 }
@@ -820,14 +912,19 @@ pub fn remove_engine_trees<S: EngineSpec>(
 /// is discarded. Otherwise, if it is healthy itself, it is restored: the unhealthy or missing
 /// `engine/` is retired and the previous engine renamed back. If neither is healthy both are
 /// left alone. Returns whether `engine.previous/` was removed from disk.
-fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn EnginePlatform) -> bool {
+fn reconcile_previous<S: EngineSpec>(
+    paths: &InstallPaths,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) -> Result<bool, InstallError> {
     let final_dir = paths.final_dir_for::<S>();
     let previous = paths.previous_dir_for::<S>();
     if !previous.exists() {
-        return false;
+        return Ok(false);
     }
     if is_healthy::<S>(&final_dir, platform) {
-        return match retire_tree::<S>(&paths.app_data, &previous) {
+        return Ok(match retire_tree::<S>(&paths.app_data, &previous) {
             Ok(discarded) => {
                 if let Some(discarded) = discarded {
                     delete_discarded::<S>(&discarded);
@@ -842,11 +939,12 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
                 );
                 false
             }
-        };
+        });
     }
     if !S::is_restorable(&previous, platform) {
-        return false;
+        return Ok(false);
     }
+    check_cancel::<S>(cancel)?;
     let discarded = match retire_tree::<S>(&paths.app_data, &final_dir) {
         Ok(discarded) => discarded,
         Err(error) => {
@@ -855,26 +953,52 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
                 S::LOG_PREFIX,
                 final_dir.display()
             );
-            return false;
+            return Ok(false);
         }
     };
-    match fs::rename(&previous, &final_dir) {
-        Ok(()) => eprintln!(
-            "{} restored the previous engine from {}",
+    let outcome = fs::rename(&previous, &final_dir)
+        .map_err(S::failed_io)
+        .and_then(|()| {
+            relocate_staged_tree(&final_dir, &[(previous.clone(), final_dir.clone())])
+                .map_err(S::relocation_error)
+        })
+        .and_then(|()| rewrite_venv_launchers::<S>(&final_dir, platform, io, cancel))
+        .and_then(|()| check_cancel::<S>(cancel));
+    if let Err(error) = outcome {
+        eprintln!(
+            "{} could not restore the previous engine: {}",
             S::LOG_PREFIX,
-            previous.display()
-        ),
-        Err(error) => eprintln!(
-            "{} could not restore the previous engine from {}: {error}",
-            S::LOG_PREFIX,
-            previous.display()
-        ),
+            error.message
+        );
+        // Keep the only verified tree for another recovery attempt if refreshing it failed.
+        if final_dir.exists() && !previous.exists() {
+            if let Err(error) = fs::rename(&final_dir, &previous) {
+                eprintln!(
+                    "{} could not set the previous engine back: {error}",
+                    S::LOG_PREFIX
+                );
+            }
+        }
+        if let Some(discarded) = discarded {
+            if let Err(error) = fs::rename(discarded, &final_dir) {
+                eprintln!(
+                    "{} could not restore the interrupted tree: {error}",
+                    S::LOG_PREFIX
+                );
+            }
+        }
+        return Err(error);
     }
+    eprintln!(
+        "{} restored the previous engine from {}",
+        S::LOG_PREFIX,
+        previous.display()
+    );
     if let Some(discarded) = discarded {
         delete_discarded::<S>(&discarded);
     }
     // Restored, not removed: the engine is still on disk, now as `engine/`.
-    false
+    Ok(false)
 }
 
 /// Use the same spelling for canonicalized Windows paths and junction targets returned by read_link.
@@ -1131,6 +1255,8 @@ pub fn is_healthy<S: EngineSpec>(root: &Path, platform: &dyn EnginePlatform) -> 
 pub fn remove_stale_staging<S: EngineSpec>(
     paths: &InstallPaths,
     platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
 ) -> Vec<PathBuf> {
     let mut removed = Vec::new();
     let partial = paths.partial_dir_for::<S>();
@@ -1144,8 +1270,14 @@ pub fn remove_stale_staging<S: EngineSpec>(
             ),
         }
     }
-    if reconcile_previous::<S>(paths, platform) {
-        removed.push(paths.previous_dir_for::<S>());
+    match reconcile_previous::<S>(paths, platform, io, cancel) {
+        Ok(true) => removed.push(paths.previous_dir_for::<S>()),
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "{} could not reconcile the previous engine: {}",
+            S::LOG_PREFIX,
+            error.message
+        ),
     }
     let final_dir = paths.final_dir_for::<S>();
     if final_dir.is_dir() && fs::symlink_metadata(final_dir.join(RECEIPT_FILE)).is_err() {

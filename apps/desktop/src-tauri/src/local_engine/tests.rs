@@ -289,6 +289,13 @@ struct FixtureIo {
     fail_probe: bool,
     cancel_probe: bool,
     probes: AtomicUsize,
+    commands: Mutex<Vec<&'static str>>,
+    #[cfg(windows)]
+    fail_rewrite: bool,
+    #[cfg(windows)]
+    cancel_rewrite: bool,
+    #[cfg(windows)]
+    rewrites: AtomicUsize,
 }
 impl InstallIo for FixtureIo {
     fn download(
@@ -323,15 +330,102 @@ impl InstallIo for FixtureIo {
         step: RunStep,
         program: &Path,
         args: &[OsString],
-        _env: &[(OsString, OsString)],
+        env: &[(OsString, OsString)],
         cancel: &AtomicBool,
         watch: Option<RunWatch<'_>>,
     ) -> Result<(), InstallError> {
+        let name = match step {
+            RunStep::InstallPython => "python",
+            RunStep::CreateVenv => "venv",
+            RunStep::InstallPackages => "packages",
+            RunStep::Extra => "extra",
+            RunStep::VerifyEnvironment => "probe",
+            #[cfg(windows)]
+            RunStep::RewriteVenvLaunchers => "rewrite",
+        };
+        self.commands.lock().expect("commands").push(name);
+        #[cfg(not(windows))]
+        let _ = env;
         let partial = program.parent().expect("program parent");
         if let RunStep::CreateVenv = step {
             let python = platform.venv_python(partial);
             fs::create_dir_all(python.parent().expect("python parent")).map_err(Stub::failed_io)?;
             fs::write(python, b"python").map_err(Stub::failed_io)?;
+            fs::write(
+                partial.join("venv").join("pyvenv.cfg"),
+                format!("home = {}\n", partial.join("python").display()),
+            )
+            .map_err(Stub::failed_io)?;
+            #[cfg(windows)]
+            {
+                let managed = partial
+                    .join("python")
+                    .join("cpython-3.12.99-windows-x86_64-none");
+                fs::create_dir_all(&managed).map_err(Stub::failed_io)?;
+                fs::write(managed.join("python.exe"), b"managed python")
+                    .map_err(Stub::failed_io)?;
+                install::create_link(
+                    &managed,
+                    &partial
+                        .join("python")
+                        .join("cpython-3.12-windows-x86_64-none"),
+                    true,
+                )
+                .map_err(Stub::failed_io)?;
+            }
+        }
+        #[cfg(windows)]
+        if let RunStep::RewriteVenvLaunchers = step {
+            let root = program.parent().expect("uv parent");
+            assert!(root.ends_with(Stub::DIR_NAME), "rewrite runs after swap");
+            assert_eq!(program, StubPlatform.uv_executable(root));
+            let managed = root
+                .join("python")
+                .join("cpython-3.12-windows-x86_64-none")
+                .join("python.exe");
+            assert!(
+                managed.is_file(),
+                "junction relocation precedes launcher rewrite"
+            );
+            let config = fs::read_to_string(root.join("venv").join("pyvenv.cfg")).expect("config");
+            assert!(
+                !config.contains(".partial"),
+                "config relocation precedes launcher rewrite"
+            );
+            assert_eq!(
+                args,
+                [
+                    OsString::from("venv"),
+                    root.join("venv").into_os_string(),
+                    OsString::from("--allow-existing"),
+                    OsString::from("--python"),
+                    managed.into_os_string(),
+                    OsString::from("--python-preference"),
+                    OsString::from("only-managed"),
+                    OsString::from("--relocatable"),
+                ]
+            );
+            for (key, dir) in [
+                ("UV_PYTHON_INSTALL_DIR", "python"),
+                ("UV_PYTHON_BIN_DIR", "python-bin"),
+                ("UV_STATE_DIR", "uv-state"),
+                ("UV_CACHE_DIR", "download-cache"),
+                ("TMPDIR", "temp"),
+                ("TMP", "temp"),
+                ("TEMP", "temp"),
+            ] {
+                assert!(env.contains(&(OsString::from(key), root.join(dir).into_os_string())));
+            }
+            assert!(env.contains(&(OsString::from("UV_NO_CONFIG"), OsString::from("1"))));
+            assert!(watch.is_none());
+            let first = self.rewrites.fetch_add(1, Ordering::SeqCst) == 0;
+            if first && self.cancel_rewrite {
+                cancel.store(true, Ordering::SeqCst);
+                return Err(Stub::cancelled());
+            }
+            if first && self.fail_rewrite {
+                return Err(InstallError::failed("launcher refused"));
+            }
         }
         if let RunStep::VerifyEnvironment = step {
             self.probes.fetch_add(1, Ordering::Relaxed);
@@ -340,6 +434,12 @@ impl InstallIo for FixtureIo {
             assert!(
                 !final_dir.join(RECEIPT_FILE).exists(),
                 "receipt written last"
+            );
+            #[cfg(windows)]
+            assert_eq!(
+                self.commands.lock().expect("commands").iter().rev().nth(1),
+                Some(&"rewrite"),
+                "launcher rewrite precedes probe",
             );
             assert_eq!(args, Stub::probe_args());
             if self.cancel_probe {
@@ -396,6 +496,160 @@ fn stub_transaction_stages_then_probes_in_final_location_and_writes_receipt_last
     install::remove_engine_trees::<Stub>(&paths).expect("uninstall");
     assert!(!paths.final_dir_for::<Stub>().exists());
 }
+#[cfg(not(windows))]
+#[test]
+fn unix_launcher_refresh_is_a_noop_and_install_issues_no_extra_command() {
+    let fixture = FixtureRoot::new("unix-launcher");
+    let paths = fixture.paths();
+    let io = FixtureIo::default();
+    install::rewrite_venv_launchers::<Stub>(
+        Path::new("missing"),
+        &StubPlatform,
+        &io,
+        &AtomicBool::new(false),
+    )
+    .expect("Unix no-op");
+    assert!(io.commands.lock().expect("commands").is_empty());
+    run_install(&paths, &io).expect("install");
+    assert_eq!(
+        *io.commands.lock().expect("commands"),
+        ["python", "venv", "packages", "probe"]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_launcher_rewrite_uses_final_paths_after_relocation_before_probe() {
+    let fixture = FixtureRoot::new("windows-launcher");
+    let paths = fixture.paths();
+    let io = FixtureIo::default();
+    run_install(&paths, &io).expect("install");
+    assert_eq!(
+        *io.commands.lock().expect("commands"),
+        ["python", "venv", "packages", "rewrite", "probe"]
+    );
+    assert_clean(&paths);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_launcher_failure_and_cancel_roll_back_with_and_without_a_previous_install() {
+    for previous in [false, true] {
+        for cancelled in [false, true] {
+            let fixture = FixtureRoot::new("windows-launcher-rollback");
+            let paths = fixture.paths();
+            if previous {
+                run_install(&paths, &FixtureIo::default()).expect("original");
+                fs::write(paths.final_dir_for::<Stub>().join("marker"), b"old").expect("marker");
+            }
+            let io = FixtureIo {
+                fail_rewrite: !cancelled,
+                cancel_rewrite: cancelled,
+                ..Default::default()
+            };
+            let error = run_install(&paths, &io).expect_err("rewrite refused");
+            assert_eq!(
+                error.code,
+                if cancelled {
+                    InstallErrorCode::Cancelled
+                } else {
+                    InstallErrorCode::Failed
+                }
+            );
+            assert!(error.message.contains("venv launchers"), "step is named");
+            assert_eq!(
+                io.probes.load(Ordering::SeqCst),
+                0,
+                "never probe stale launchers"
+            );
+            if previous {
+                assert_eq!(
+                    fs::read(paths.final_dir_for::<Stub>().join("marker")).expect("restored"),
+                    b"old"
+                );
+                assert_eq!(
+                    io.rewrites.load(Ordering::SeqCst),
+                    if cancelled { 1 } else { 2 },
+                    "rollback refreshes launchers unless already cancelled"
+                );
+            } else {
+                assert!(!paths.final_dir_for::<Stub>().exists());
+            }
+            assert_clean(&paths);
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_reconcile_refreshes_launchers_and_preserves_previous_on_failure_or_cancel() {
+    for cancelled in [false, true] {
+        let fixture = FixtureRoot::new("windows-reconcile");
+        let paths = fixture.paths();
+        run_install(&paths, &FixtureIo::default()).expect("original");
+        fs::rename(
+            paths.final_dir_for::<Stub>(),
+            paths.previous_dir_for::<Stub>(),
+        )
+        .expect("interrupted swap");
+        let io = FixtureIo {
+            fail_rewrite: !cancelled,
+            cancel_rewrite: cancelled,
+            ..Default::default()
+        };
+        install::remove_stale_staging::<Stub>(&paths, &StubPlatform, &io, &AtomicBool::new(false));
+        assert!(
+            paths
+                .previous_dir_for::<Stub>()
+                .join(RECEIPT_FILE)
+                .is_file(),
+            "previous preserved"
+        );
+        assert!(!paths.final_dir_for::<Stub>().exists());
+        let retry = FixtureIo::default();
+        install::remove_stale_staging::<Stub>(
+            &paths,
+            &StubPlatform,
+            &retry,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(*retry.commands.lock().expect("commands"), ["rewrite"]);
+        assert!(install::is_healthy::<Stub>(
+            &paths.final_dir_for::<Stub>(),
+            &StubPlatform
+        ));
+        assert_clean(&paths);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_reinstall_keeps_previous_when_its_recovery_refresh_fails() {
+    let fixture = FixtureRoot::new("windows-reinstall-recovery");
+    let paths = fixture.paths();
+    run_install(&paths, &FixtureIo::default()).expect("original");
+    fs::rename(
+        paths.final_dir_for::<Stub>(),
+        paths.previous_dir_for::<Stub>(),
+    )
+    .expect("interrupted swap");
+    let io = FixtureIo {
+        fail_rewrite: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        run_install(&paths, &io).expect_err("recovery failed").code,
+        InstallErrorCode::Failed
+    );
+    assert!(paths
+        .previous_dir_for::<Stub>()
+        .join(RECEIPT_FILE)
+        .is_file());
+    assert!(!paths.partial_dir_for::<Stub>().exists());
+    assert!(!paths.final_dir_for::<Stub>().exists());
+    assert_eq!(io.probes.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn bad_sha_and_post_swap_probe_failure_preserve_the_previous_install() {
     let fixture = FixtureRoot::new("rollback");
@@ -463,7 +717,7 @@ fn stub_disk_and_cancel_refuse_before_staging_and_startup_restores_a_previous_tr
     )
     .expect("interrupted swap");
     fs::create_dir_all(paths.partial_dir_for::<Stub>()).expect("stale stage");
-    install::remove_stale_staging::<Stub>(&paths, &StubPlatform);
+    install::remove_stale_staging::<Stub>(&paths, &StubPlatform, &io, &AtomicBool::new(false));
     assert!(install::is_healthy::<Stub>(
         &paths.final_dir_for::<Stub>(),
         &StubPlatform

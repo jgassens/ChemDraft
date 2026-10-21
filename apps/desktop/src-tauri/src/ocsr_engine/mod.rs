@@ -210,6 +210,8 @@ impl OcsrEngineState {
         };
         let staging = self.registry.staging.clone();
         let installing = self.installing.clone();
+        let cancel = self.cancel_install.clone();
+        let running = self.install_child.clone();
         std::thread::spawn(move || {
             let _staging = lock_ignoring_poison(&staging);
             // An install that has started but not yet reached the staging lock is about to
@@ -217,7 +219,17 @@ impl OcsrEngineState {
             if installing.load(Ordering::SeqCst) {
                 return;
             }
-            for path in install::remove_stale_staging(&paths, platform.as_ref()) {
+            let io = match SystemInstallIo::new(running) {
+                Ok(io) => io,
+                Err(error) => {
+                    eprintln!(
+                        "[chemdraft ocsr] could not prepare engine recovery: {}",
+                        error.message
+                    );
+                    return;
+                }
+            };
+            for path in install::remove_stale_staging(&paths, platform.as_ref(), &io, &cancel) {
                 eprintln!(
                     "[chemdraft ocsr] removed {} left by an interrupted install",
                     path.display()
