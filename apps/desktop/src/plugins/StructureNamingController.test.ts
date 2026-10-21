@@ -4,7 +4,7 @@ import { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import { dialogEnvelope, type DialogMessage } from "../dialogs/dialogProtocol";
 import type { DialogTransport } from "../dialogs/dialogTransport";
 import { StructureNamingController } from "./StructureNamingController";
-import { fakeNamingEngine, namingInstalled, namingMolecule } from "./structureNamingTestFixtures";
+import { fakeNamingEngine, namingInstalled, namingMolecule, namingRaw } from "./structureNamingTestFixtures";
 
 const plugin = { id: "test", name: "Test" };
 function setup(state = "installed" as typeof namingInstalled.state) {
@@ -74,19 +74,43 @@ describe("StructureNamingController", () => {
     await action("install");
     expect(await result).toEqual({ status: "failed", code: "installFailed", message: "Download failed" });
   });
-  it("cancellation calls naming_cancel and resolves promptly; another call is busy", async () => {
+  it("cancellation waits for native acknowledgement, discards late results, and allows retry", async () => {
     const { controller, engine } = setup();
     let resolve!: (value: Awaited<ReturnType<typeof engine.name>>) => void;
-    vi.mocked(engine.name).mockImplementation(() => new Promise(done => { resolve = done; }));
+    vi.mocked(engine.name).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    let acknowledge!: () => void;
+    vi.mocked(engine.cancel).mockImplementationOnce(() => new Promise(done => { acknowledge = done; }));
     const stop = new AbortController();
     const result = controller.name(plugin, namingMolecule, stop.signal);
     await vi.waitFor(() => expect(engine.name).toHaveBeenCalled());
     expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toMatchObject({ status: "failed", code: "busy" });
     stop.abort();
-    expect(await result).toEqual({ status: "cancelled" });
     expect(engine.cancel).toHaveBeenCalledOnce();
-    // Settle the abandoned native call without making its late result visible.
-    resolve({ name: null, tier: "abstain", isPin: false, opsin: "failed", gateOutcome: "", limitCode: null, stereoUnexpressed: false, source: "", elapsedMs: 0, opsinReadBack: null });
+    let settled = false;
+    void result.then(() => { settled = true; });
+    resolve(namingRaw);
+    await new Promise(done => setTimeout(done, 0));
+    expect(settled).toBe(false);
+    expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toMatchObject({ status: "failed", code: "busy" });
+    acknowledge();
+    expect(await result).toEqual({ status: "cancelled" });
+    expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toMatchObject({ status: "named" });
+    expect(engine.name).toHaveBeenCalledTimes(2);
+  });
+  it("failed cancellation IPC keeps the controller busy until the original request stops", async () => {
+    const { controller, engine } = setup();
+    let reject!: (reason: unknown) => void;
+    vi.mocked(engine.name).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    vi.mocked(engine.cancel).mockRejectedValueOnce(new Error("IPC failed"));
+    const stop = new AbortController();
+    const result = controller.name(plugin, namingMolecule, stop.signal);
+    await vi.waitFor(() => expect(engine.name).toHaveBeenCalled());
+    stop.abort();
+    await new Promise(done => setTimeout(done, 0));
+    expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toMatchObject({ status: "failed", code: "busy" });
+    reject({ code: "cancelled", message: "Stopped" });
+    expect(await result).toEqual({ status: "cancelled" });
+    expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toMatchObject({ status: "named" });
   });
   it("activity is hidden for the first second", async () => {
     vi.useFakeTimers();

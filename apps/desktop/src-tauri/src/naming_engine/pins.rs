@@ -1,6 +1,8 @@
 //! Reviewed naming inputs. Tool pins and digest IO remain in local_engine.
 pub const DIR_NAME: &str = "naming-engine";
 pub const PYTHON_VERSION: &str = "3.12";
+// 2026-10-21 macOS arm64 measurement: ~490 MB fresh-install peak + ~310 MB previous
+// engine retained during update = ~800 MB worst case, plus a 25% margin. See naming-engine.md.
 pub const REQUIRED_DISK_BYTES: u64 = 1_000_000_000;
 pub const ORTHONYM_VERSION: &str = "1.0.8";
 pub const ORTHONYM_COMMIT: &str = "461987b947f76e41ff0baa6c2aa19ecd79cacd0b";

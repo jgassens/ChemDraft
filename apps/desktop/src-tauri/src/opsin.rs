@@ -308,6 +308,37 @@ pub(crate) fn convert_with_options(
     name: &str,
     options: OpsinOptions,
 ) -> Result<OpsinConversion, OpsinError> {
+    convert_with_control(java, jar, name, options, None)
+}
+
+/// Internal structure-to-name read-back only. Ordinary name-to-structure conversions retain
+/// their existing launch flags and timeout behaviour. `stopped` includes engine removal/exit.
+pub(crate) fn convert_with_options_cancellable(
+    java: &std::path::Path,
+    jar: &std::path::Path,
+    name: &str,
+    options: OpsinOptions,
+    platform: &dyn crate::local_engine::platform::EnginePlatform,
+    stopped: &dyn Fn() -> bool,
+) -> Result<OpsinConversion, OpsinError> {
+    convert_with_control(java, jar, name, options, Some((platform, stopped)))
+}
+
+type ConversionControl<'a> = (
+    &'a dyn crate::local_engine::platform::EnginePlatform,
+    &'a dyn Fn() -> bool,
+);
+
+fn convert_with_control(
+    java: &std::path::Path,
+    jar: &std::path::Path,
+    name: &str,
+    options: OpsinOptions,
+    control: Option<ConversionControl<'_>>,
+) -> Result<OpsinConversion, OpsinError> {
+    if control.is_some_and(|(_, stopped)| stopped()) {
+        return Err(OpsinError::engine_failure("Naming read-back stopped."));
+    }
     // The ONLY `invalidName` path: the input was refused before a process existed. Everything below
     // this line is the engine, and a failure there says nothing about the name.
     let name = validate_name(name).map_err(OpsinError::invalid_name)?;
@@ -322,6 +353,10 @@ pub(crate) fn convert_with_options(
     let mut command = Command::new(java);
     if let Some(dir) = jar_dir {
         command.current_dir(dir);
+    }
+    command.without_console_window();
+    if let Some((platform, _)) = control {
+        platform.configure_child(&mut command);
     }
     let mut child = command
         .arg("-jar")
@@ -338,13 +373,12 @@ pub(crate) fn convert_with_options(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .without_console_window()
         .spawn()
         .map_err(|error| {
             OpsinError::engine_failure(format!("Could not start the name parser: {error}"))
         })?;
 
-    {
+    let sent = (|| {
         let stdin = child
             .stdin
             .as_mut()
@@ -353,11 +387,22 @@ pub(crate) fn convert_with_options(
         writeln!(stdin, "{name}").map_err(|error| {
             OpsinError::engine_failure(format!("Could not send the name: {error}"))
         })?;
+        Ok::<_, OpsinError>(())
+    })();
+    if let Err(error) = sent {
+        if control.is_some() {
+            stop_read_back_child(&mut child);
+        }
+        return Err(error);
     }
     drop(child.stdin.take());
 
-    let output =
-        wait_with_timeout(child, OPSIN_TIMEOUT_SECS).map_err(OpsinError::engine_failure)?;
+    let output = if let Some((_, stopped)) = control {
+        wait_cancellable(child, OPSIN_TIMEOUT_SECS, stopped)
+    } else {
+        wait_with_timeout(child, OPSIN_TIMEOUT_SECS)
+    }
+    .map_err(OpsinError::engine_failure)?;
 
     // OPSIN exits 0 whether or not the name parsed (BUILD.md), so a zero status says nothing about
     // the name and success is read from the output. A NON-zero status with no result line is the
@@ -392,6 +437,88 @@ pub(crate) fn convert_with_options(
     }
 }
 
+fn stop_read_back_child(child: &mut std::process::Child) {
+    crate::local_engine::platform::kill_process_tree(child.id());
+    // Sweep after exit but before reaping: catches a fork racing the first Unix group kill.
+    let _ = crate::local_engine::platform::sweep_exited_process_group(child.id(), true);
+    let _ = child.wait();
+}
+
+fn wait_cancellable(
+    mut child: std::process::Child,
+    seconds: u64,
+    stopped: &dyn Fn() -> bool,
+) -> Result<std::process::Output, String> {
+    use std::{
+        io::Read,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    // Drain both pipes while the child runs. Never block cancellation on a pipe held by a
+    // descendant. Keep the leader unreaped until both close, so tree-kill still owns its pid.
+    let (send, receive) = mpsc::channel();
+    for (index, mut pipe) in [
+        Box::new(child.stdout.take().expect("piped stdout")) as Box<dyn Read + Send>,
+        Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn Read + Send>,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let send = send.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = send.send((index, result));
+        });
+    }
+    drop(send);
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let mut pipes = [None, None];
+    loop {
+        let error = if stopped() {
+            Some("Naming read-back stopped.".into())
+        } else if Instant::now() >= deadline {
+            Some(format!(
+                "The name parser did not finish within {seconds} seconds."
+            ))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            stop_read_back_child(&mut child);
+            return Err(error);
+        }
+        // Does not reap; clears descendants even when the leader exits first.
+        let _ = crate::local_engine::platform::sweep_exited_process_group(child.id(), false);
+        for (index, result) in receive.try_iter() {
+            pipes[index] = Some(result);
+        }
+        if pipes.iter().all(Option::is_some) {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Ok(std::process::Output {
+                        status,
+                        stdout: pipes[0]
+                            .take()
+                            .expect("stdout")
+                            .map_err(|e| e.to_string())?,
+                        stderr: pipes[1]
+                            .take()
+                            .expect("stderr")
+                            .map_err(|e| e.to_string())?,
+                    })
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    stop_read_back_child(&mut child);
+                    return Err(format!("The name parser failed: {error}"));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Wait for the child, killing it if it overruns.
 ///
 /// `wait_with_output` alone would block forever on a hung JVM and take the command thread with it.
@@ -423,8 +550,124 @@ fn wait_with_timeout(
 }
 
 #[cfg(test)]
+pub(crate) fn build_sleeping_opsin_stub(java: &std::path::Path) {
+    // A real, portable child tree with the same argv shape as java -jar. No shell or Python
+    // dependency, and no installed OPSIN runtime required for cancellation regression tests.
+    let source = java.with_extension("rs");
+    std::fs::create_dir_all(java.parent().expect("launcher directory")).expect("stub directory");
+    std::fs::write(
+        &source,
+        r#"
+        use std::{env, fs, path::PathBuf, process::{Command, Stdio}, thread, time::Duration};
+        fn main() {
+            let args: Vec<_> = env::args_os().collect();
+            if args[1] == "--descendant" {
+                let marker = PathBuf::from(&args[2]);
+                fs::write(&marker, std::process::id().to_string()).unwrap();
+                thread::sleep(Duration::from_secs(3));
+                fs::write(marker.with_extension("survived"), "descendant survived").unwrap();
+                thread::sleep(Duration::from_secs(30));
+                return;
+            }
+            let jar = PathBuf::from(&args[2]);
+            if jar.file_stem().unwrap() == "fast" {
+                println!("CCO\tethanol");
+                return;
+            }
+            let marker = jar.with_extension("descendant");
+            let mut command = Command::new(env::current_exe().unwrap());
+            command.arg("--descendant").arg(&marker).stdin(Stdio::null());
+            #[cfg(windows)] {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let _child = command.spawn().unwrap();
+            while !marker.exists() { thread::sleep(Duration::from_millis(5)); }
+            fs::write(jar.with_extension("started"), std::process::id().to_string()).unwrap();
+            thread::sleep(Duration::from_secs(30));
+            println!("CCO\tethanol");
+        }
+    "#,
+    )
+    .expect("stub source");
+    let output = Command::new("rustc")
+        .args(["--crate-name", "opsin_sleep_stub", "--edition=2021"])
+        .arg(&source)
+        .arg("-o")
+        .arg(java)
+        .output()
+        .expect("compile OPSIN stub");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellable_read_back_kills_a_sleeping_opsin_process_tree_promptly() {
+        use std::{
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                mpsc, Arc,
+            },
+            time::{Duration, Instant},
+        };
+        let root =
+            std::env::temp_dir().join(format!("chemdraft-opsin-cancel-{}", std::process::id()));
+        let java = root.join(if cfg!(windows) { "java.exe" } else { "java" });
+        build_sleeping_opsin_stub(&java);
+        let jar = root.join("sleep.jar");
+        let stop = Arc::new(AtomicBool::new(false));
+        let child_stop = stop.clone();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            use crate::local_engine::platform::{
+                EnginePlatform, MacArchitecture, MacPlatform, WindowsPlatform,
+            };
+            let platform: Box<dyn EnginePlatform> = if cfg!(windows) {
+                Box::new(WindowsPlatform)
+            } else {
+                Box::new(MacPlatform::new(MacArchitecture::Aarch64))
+            };
+            let result = convert_with_options_cancellable(
+                &java,
+                &jar,
+                "ethanol",
+                OpsinOptions { radicals: true },
+                platform.as_ref(),
+                &|| child_stop.load(Ordering::SeqCst),
+            );
+            send.send(result).expect("result");
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join("sleep.started").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = root.join("sleep.started").exists();
+        let at_cancel = Instant::now();
+        stop.store(true, Ordering::SeqCst);
+        let error = receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bounded cancel")
+            .expect_err("cancelled");
+        worker.join().expect("read-back thread");
+        assert!(started, "stub must reach read-back before cancellation");
+        assert!(at_cancel.elapsed() < Duration::from_secs(2));
+        assert_eq!(error.kind, OpsinErrorKind::EngineFailure);
+        assert!(error.message.contains("stopped"));
+        // The descendant would write this after three seconds if only the parent were killed.
+        std::thread::sleep(Duration::from_millis(3200));
+        assert!(
+            !root.join("sleep.survived").exists(),
+            "OPSIN descendant survived cancellation"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn a_launcher_that_cannot_run_is_an_engine_failure_not_a_bad_name() {

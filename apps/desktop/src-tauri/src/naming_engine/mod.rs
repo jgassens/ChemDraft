@@ -108,6 +108,7 @@ struct SharedState {
     process: Arc<Mutex<ProcessManager>>,
     kill: KillSwitch,
     cancels: AtomicU64,
+    stops: AtomicU64,
 }
 
 pub struct NamingEngineState {
@@ -129,6 +130,7 @@ impl Default for NamingEngineState {
                 kill: process.kill_switch(),
                 process: Arc::new(Mutex::new(process)),
                 cancels: AtomicU64::new(0),
+                stops: AtomicU64::new(0),
             }),
         }
     }
@@ -291,7 +293,7 @@ pub async fn naming_engine_install<R: Runtime>(
     });
     tauri::async_runtime::spawn_blocking(move || {
         let _reset = reset;
-        stop_sidecar_blocking(&state.process, &state.kill);
+        stop_naming_blocking(&state);
         let _staging = lock(&state.registry.staging);
         let free = free_disk(&paths.app_data);
         let io = SystemInstallIo::new(state.install_child.clone())?;
@@ -346,7 +348,7 @@ pub async fn naming_engine_uninstall<R: Runtime>(
             std::thread::sleep(Duration::from_millis(50));
         }
         let _reset = ResetOperation(state.clone());
-        stop_sidecar_blocking(&state.process, &state.kill);
+        stop_naming_blocking(&state);
         let _staging = lock(&state.registry.staging);
         local_engine::install::remove_engine_trees::<NamingSpec>(&paths).map_err(|(path, error)| {
             InstallError::failed(format!("Could not remove {}: {error}", path.display()))
@@ -360,21 +362,92 @@ pub async fn naming_engine_uninstall<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn naming_cancel(state: tauri::State<'_, NamingEngineState>) {
-    cancel_request(&state.inner.cancels, &state.inner.kill);
+pub async fn naming_cancel(state: tauri::State<'_, NamingEngineState>) -> Result<(), NamingError> {
+    let state = state.inner.clone();
+    // Counter covers both sidecar startup and the handoff to OPSIN. The read-back polls it
+    // every 20 ms and kills/reaps its whole child tree before releasing the request gate.
+    cancel_request(&state.cancels, &state.kill);
+    tauri::async_runtime::spawn_blocking(move || {
+        drop(lock(&state.request_gate));
+    })
+    .await
+    .map_err(|error| {
+        failure(
+            "engineCrashed",
+            format!("Could not wait for naming cancellation: {error}"),
+        )
+    })
 }
 
-fn read_back(result: protocol::RawResult, launch: &LaunchPaths) -> NameStructureRaw {
+/// Engine operations wait for the same gate as naming, including read-back, before changing
+/// files. Their installing flag prevents another request until the operation ends.
+fn stop_naming_blocking(state: &SharedState) {
+    state.stops.fetch_add(1, Ordering::SeqCst);
+    stop_sidecar_blocking(&state.process, &state.kill);
+    drop(lock(&state.request_gate));
+}
+
+fn request_error(state: &SharedState, cancels: u64, stops: u64) -> Option<NamingError> {
+    if state.cancels.load(Ordering::SeqCst) != cancels {
+        Some(failure("cancelled", "Naming cancelled."))
+    } else if state.stops.load(Ordering::SeqCst) != stops
+        || state.shut_down.load(Ordering::SeqCst)
+        || state.installing.load(Ordering::SeqCst)
+    {
+        Some(failure(
+            "engineCrashed",
+            "The naming engine was stopped for app exit, installation or removal.",
+        ))
+    } else {
+        None
+    }
+}
+
+fn with_request<T>(
+    state: &SharedState,
+    cancels: u64,
+    stops: u64,
+    work: impl FnOnce(&dyn Fn() -> bool) -> Result<T, NamingError>,
+) -> Result<T, NamingError> {
+    // A cancelled blocking-pool job must not compete with a retry for the gate.
+    if let Some(error) = request_error(state, cancels, stops) {
+        return Err(error);
+    }
+    let Some(_request) = enter_request(&state.request_gate) else {
+        return Err(failure(
+            "busy",
+            "The naming engine is already naming another structure.",
+        ));
+    };
+    if let Some(error) = request_error(state, cancels, stops) {
+        return Err(error);
+    }
+    let result = work(&|| request_error(state, cancels, stops).is_some());
+    // Covers a stop racing the last read/parse, including raw results with no name.
+    if let Some(error) = request_error(state, cancels, stops) {
+        return Err(error);
+    }
+    result
+}
+
+fn read_back(
+    result: protocol::RawResult,
+    launch: &LaunchPaths,
+    platform: &dyn local_engine::platform::EnginePlatform,
+    stopped: &dyn Fn() -> bool,
+) -> NameStructureRaw {
     let opsin_read_back = result
         .name
         .as_ref()
         .filter(|name| !name.trim().is_empty())
         .map(|name| {
-            crate::opsin::convert_with_options(
+            crate::opsin::convert_with_options_cancellable(
                 &process::java_executable(&launch.jre),
                 &launch.opsin,
                 name,
                 crate::opsin::OpsinOptions { radicals: true },
+                platform,
+                stopped,
             )
             .unwrap_or_else(|error| crate::opsin::OpsinConversion {
                 smiles: None,
@@ -396,6 +469,7 @@ pub async fn name_structure_raw<R: Runtime>(
     protocol::validate_smiles(&smiles)?;
     let state = app.state::<NamingEngineState>().inner.clone();
     let cancels_at_start = state.cancels.load(Ordering::SeqCst);
+    let stops_at_start = state.stops.load(Ordering::SeqCst);
     let paths = install_paths(&app).map_err(|error| failure("engineCrashed", error.message))?;
     let platform = install::current_platform().map_err(|detail| failure("notInstalled", detail))?;
     let root = paths.final_dir_for::<NamingSpec>();
@@ -407,57 +481,41 @@ pub async fn name_structure_raw<R: Runtime>(
         opsin: required_resource(&app, "resources/opsin/opsin-cli-2.9.0.jar")?,
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(_request) = enter_request(&state.request_gate) else {
-            return Err(failure(
-                "busy",
-                "The naming engine is already naming another structure.",
-            ));
-        };
-        let cancelled = || state.cancels.load(Ordering::SeqCst) != cancels_at_start;
-        let raw = {
-            let mut manager = lock(&state.process);
-            if cancelled() {
-                return Err(failure("cancelled", "Naming cancelled."));
-            }
-            if state.shut_down.load(Ordering::SeqCst) {
-                return Err(failure("engineCrashed", "ChemDraft is quitting."));
-            }
-            if state.installing.load(Ordering::SeqCst) {
-                return Err(failure(
-                    "notInstalled",
-                    "The naming engine is being installed or removed.",
-                ));
-            }
-            let status = installed_status(&launch.engine, platform.as_ref(), 0);
-            match status.state {
-                EngineStatus::Installed => {}
-                EngineStatus::Broken => {
-                    return Err(failure("engineCrashed", status.detail.unwrap_or_default()))
+        with_request(&state, cancels_at_start, stops_at_start, |stopped| {
+            let raw = {
+                let mut manager = lock(&state.process);
+                if let Some(error) = request_error(&state, cancels_at_start, stops_at_start) {
+                    return Err(error);
                 }
-                _ => return Err(failure("notInstalled", "Install the naming engine first.")),
-            }
-            match manager.recognize_with(
-                platform.as_ref(),
-                &launch,
-                &smiles,
-                process::REQUEST_TIMEOUT,
-                &|()| {},
-                &cancelled,
-            ) {
-                Err(ProcessError::Cancelled) if !cancelled() => {
-                    return Err(failure(
-                        "engineCrashed",
-                        "The naming engine was stopped for app exit, installation or removal.",
-                    ))
+                let status = installed_status(&launch.engine, platform.as_ref(), 0);
+                match status.state {
+                    EngineStatus::Installed => {}
+                    EngineStatus::Broken => {
+                        return Err(failure("engineCrashed", status.detail.unwrap_or_default()))
+                    }
+                    _ => return Err(failure("notInstalled", "Install the naming engine first.")),
                 }
-                other => other?,
-            }
-        };
-        let response = read_back(raw, &launch);
-        if cancelled() {
-            return Err(failure("cancelled", "Naming cancelled."));
-        }
-        Ok(response)
+                match manager.recognize_with(
+                    platform.as_ref(),
+                    &launch,
+                    &smiles,
+                    process::REQUEST_TIMEOUT,
+                    &|()| {},
+                    stopped,
+                ) {
+                    Err(ProcessError::Cancelled)
+                        if state.cancels.load(Ordering::SeqCst) == cancels_at_start =>
+                    {
+                        return Err(failure(
+                            "engineCrashed",
+                            "The naming engine was stopped for app exit, installation or removal.",
+                        ))
+                    }
+                    other => other?,
+                }
+            };
+            Ok(read_back(raw, &launch, platform.as_ref(), stopped))
+        })
     })
     .await
     .map_err(|error| {

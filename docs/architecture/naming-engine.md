@@ -48,11 +48,32 @@ with a detail string. No receipt upgrade from another engine is attempted.
 | Requirements SHA-256 (LF) | `ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a` |
 | centres | `https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar` |
 | centres size / SHA-256 | 2,291,742 bytes / `6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb` |
-| Free-space requirement | 1,000,000,000 bytes (staging and download-cache headroom) |
+| Free-space requirement | 1,000,000,000 bytes (800 MB update peak plus 25% margin) |
 
 The lock includes rdkit 2026.3.5, jpype1 1.7.1, lxml 6.1.3, numpy 2.5.4, pillow 13.0.0 and
 packaging 26.3. macOS Apple silicon and Windows x64 are implemented. Intel Mac is `unsupported`
 before any download: RDKit 2026.3.5 has no macOS x86_64 Python 3.12 wheel. Other targets are unsupported.
+
+## Disk and download sizes
+
+A fresh install of this exact requirements lock was measured on **2026-10-21, macOS arm64**.
+Disk use was measured with one-second `du` sampling of the app-data directory during installation,
+then a breakdown of the completed engine. Sizes below are approximate MB; rounding and wheel
+variants mean the component totals need not add up exactly.
+
+| Measurement | Size |
+| --- | --- |
+| Total download | About 100 MB |
+| Wheels | About 56 MB: rdkit 29.9, numpy 12.0, pillow 4.9, lxml about 4.6–8.6, Orthonym 4.1, jpype 0.4, packaging 0.1 |
+| uv archive / Python 3.12 / centres | About 20 MB / 20 MB / 2.3 MB |
+| Fresh-install peak | 490 MB of staging, including the 179 MB download cache |
+| Final engine | 310 MB: venv 205, Python 67, uv 35, jars 2.2 |
+| Update peak | About 800 MB: the 490 MB install peak plus the previous 310 MB engine |
+
+An update retains the previous copy until the replacement passes its post-swap check.
+`REQUIRED_DISK_BYTES` therefore stays at 1,000,000,000 bytes: the approximately 800 MB worst-case
+peak plus a 25% margin. Windows sizes are **estimates from PyPI wheel sizes** (about 53 MB of
+wheels), pending a Windows install measured with the same sampling method.
 
 ## Spawn environment and integrity
 
@@ -102,6 +123,11 @@ are never retried. A second crash reports `engineCrashed`. Only one request (inc
 read-back) runs at a time; another gets `busy`. Idle sidecars are reaped after 10 minutes.
 The sidecar stops at app exit (including Windows forced exit), before install and before uninstall.
 Cancel uses the shared kill switch plus a cancel counter to cover a cancel racing request startup.
+The counter also cancels the host OPSIN read-back, which polls for stops every 20 ms and kills
+and reaps its child process tree before releasing the request gate. Install and uninstall mark
+the request stopped, stop the sidecar, and acquire that same gate before changing engine files;
+a request overlapping either operation fails rather than returning a raw result. A final stop
+check under the gate covers a stop racing the last read, including a result with no name.
 Shared platform flags use process groups on Unix and `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
 on Windows; termination uses the shared tree-kill implementation (currently `taskkill /T /F` on
 Windows, with the limitations documented in [OCSR engine](ocsr-engine.md)).
@@ -118,15 +144,20 @@ All six commands are registered in `lib.rs`, named in `build.rs`, and granted ex
 | `naming_engine_cancel_install` | immediately cancels install and kills the active install child tree |
 | `naming_engine_uninstall` | status; rejection `{code, message}`; cancels/waits for install, stops sidecar, removes engine trees |
 | `name_structure_raw` (`{smiles}`) | raw fields below; rejection `{code, message}` |
-| `naming_cancel` | cancels the active request; leaves an idle sidecar running |
+| `naming_cancel` | cancels the active request including OPSIN read-back; acknowledges only after the request gate is released; leaves an idle sidecar running |
 
 `name_structure_raw` rejects empty, padded, control-character or over-5000-character SMILES before
 spawning. Its success value has the sidecar's `name`, `tier`, `isPin`, `opsin`, `gateOutcome`,
 `limitCode`, `stereoUnexpressed`, `source` and `elapsedMs` fields at the top level, matching
 `OrthonymRawResult`. `opsinReadBack` is null if there is no non-empty name, otherwise
 `{smiles: string|null, failureReason: string|null}`. The read-back uses the internal
-`opsin::convert_with_options(..., OpsinOptions { radicals: true })`; a read failure returns its
+`opsin::convert_with_options_cancellable(..., OpsinOptions { radicals: true }, ...)`; a read failure returns its
 reason beside the unchanged raw result. Nothing in Rust applies acceptance policy or canonicalizes.
+Cancellation or an engine stop returns an error instead of a raw result with a read-back failure.
+The controller waits for the native cancel acknowledgement before reporting `cancelled` and
+clearing its active request. Calls during that wait remain `busy`; a retry after `cancelled`
+cannot race the old native read-back. If cancellation IPC fails, it waits for the original request
+to settle before releasing controller state. Late results from a cancelled call are discarded.
 The TypeScript host must compare exact canonical isomeric SMILES through RDKit WASM, especially for
 glycine zwitterion, which Orthonym can name as neutral glycine. The independent read-back still
 shares OPSIN 2.9.0 with Orthonym and cannot catch a name both engines misread identically.
@@ -153,8 +184,9 @@ These checks from the feature design must be run on Windows before release:
 - The refactored MolScribe install, cancel and uninstall after T1 (its Windows path was documented
   as "implemented, never run").
 - The naming engine's relocation of uv's junction and `pyvenv.cfg` after the swap.
-- `taskkill /T /F` or job-object tree kill of `python.exe` and its in-process JVM on cancel and quit,
-  with no surviving `python.exe`.
+- `taskkill /T /F` tree kill of `python.exe` and its in-process JVM, and the host OPSIN
+  `java.exe` read-back, on cancel and quit, with no surviving child; retry immediately after
+  cancellation and install/uninstall during read-back must also pass on Windows.
 - JPype loading `jre\bin\server\jvm.dll` from `%LOCALAPPDATA%\ChemDraft\…`, including a user profile
   path with non-ASCII characters: JPype's classpath goes through JNI, not the ANSI launcher that
   `opsin.rs` works around.

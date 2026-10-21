@@ -351,7 +351,8 @@ fn raw_contract_preserves_all_metadata_and_read_back_failure_without_policy() {
     raw.tier = "unverified".into();
     raw.gate_outcome = "carveout:example".into();
     raw.stereo_unexpressed = true;
-    let result = read_back(raw.clone(), &launch(&root.0));
+    let platform = install::current_platform().expect("platform");
+    let result = read_back(raw.clone(), &launch(&root.0), platform.as_ref(), &|| false);
     assert_eq!(result.result, raw);
     assert!(result
         .opsin_read_back
@@ -377,7 +378,153 @@ fn raw_contract_preserves_all_metadata_and_read_back_failure_without_policy() {
     assert!(value["opsinReadBack"]["smiles"].is_null());
     assert!(value["opsinReadBack"]["failureReason"].is_string());
     raw.name = None;
-    assert!(read_back(raw, &launch(&root.0)).opsin_read_back.is_none());
+    assert!(
+        read_back(raw, &launch(&root.0), platform.as_ref(), &|| false)
+            .opsin_read_back
+            .is_none()
+    );
+}
+
+fn sleeping_read_back(root: &TestRoot) -> LaunchPaths {
+    let launch = launch(&root.0);
+    fs::create_dir_all(&launch.engine).expect("engine directory");
+    crate::opsin::build_sleeping_opsin_stub(&process::java_executable(&launch.jre));
+    launch
+}
+
+fn wait_for_read_back(root: &TestRoot) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.0.join("opsin.started").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        root.0.join("opsin.started").exists(),
+        "OPSIN read-back never started"
+    );
+}
+
+#[test]
+fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
+    let root = TestRoot::new("cancel-read-back");
+    let mut launch = sleeping_read_back(&root);
+    let state = NamingEngineState::default();
+    let worker_state = state.inner.clone();
+    let worker_launch = launch.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let platform = install::current_platform().expect("platform");
+        let response = with_request(&worker_state, 0, 0, |stopped| {
+            Ok(read_back(raw(), &worker_launch, platform.as_ref(), stopped))
+        });
+        send.send(response).expect("result");
+    });
+    wait_for_read_back(&root);
+    assert_eq!(
+        with_request(&state.inner, 0, 0, |_| Ok(()))
+            .expect_err("busy")
+            .code,
+        "busy"
+    );
+    let at_cancel = Instant::now();
+    cancel_request(&state.inner.cancels, &state.inner.kill);
+    assert_eq!(
+        receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("bounded cancel")
+            .expect_err("cancelled")
+            .code,
+        "cancelled"
+    );
+    // Same acknowledgement barrier as naming_cancel; the read-back has stopped before it opens.
+    drop(lock(&state.inner.request_gate));
+    worker.join().expect("request worker");
+    assert!(at_cancel.elapsed() < Duration::from_secs(2));
+    launch.opsin = root.0.join("fast.jar");
+    let platform = install::current_platform().expect("platform");
+    let retry = with_request(&state.inner, 1, 0, |stopped| {
+        Ok(read_back(raw(), &launch, platform.as_ref(), stopped))
+    })
+    .expect("retry is not busy");
+    assert_eq!(
+        retry
+            .opsin_read_back
+            .expect("verified read-back")
+            .smiles
+            .as_deref(),
+        Some("CCO")
+    );
+}
+
+#[test]
+fn engine_operations_during_opsin_read_back_wait_and_refuse_a_raw_result() {
+    // Install and uninstall share the same stop/gate barrier. Exercise both; the removal path
+    // also deletes the actual engine trees after the child has stopped.
+    for uninstall in [false, true] {
+        let root = TestRoot::new(if uninstall {
+            "uninstall-read-back"
+        } else {
+            "install-read-back"
+        });
+        let launch = sleeping_read_back(&root);
+        let paths = InstallPaths {
+            app_data: root.0.clone(),
+            requirements: root.0.join("unused"),
+        };
+        fs::create_dir_all(paths.final_dir_for::<NamingSpec>()).expect("installed engine");
+        let state = NamingEngineState::default();
+        let worker_state = state.inner.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let platform = install::current_platform().expect("platform");
+            let response = with_request(&worker_state, 0, 0, |stopped| {
+                Ok(read_back(raw(), &launch, platform.as_ref(), stopped))
+            });
+            send.send(response).expect("result");
+        });
+        wait_for_read_back(&root);
+        state.inner.installing.store(true, Ordering::SeqCst);
+        let at_stop = Instant::now();
+        stop_naming_blocking(&state.inner);
+        assert!(
+            at_stop.elapsed() < Duration::from_secs(2),
+            "engine operation waited for OPSIN timeout"
+        );
+        if uninstall {
+            local_engine::install::remove_engine_trees::<NamingSpec>(&paths).expect("uninstall");
+            assert!(!paths.final_dir_for::<NamingSpec>().exists());
+        }
+        assert_eq!(
+            receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("stopped request")
+                .expect_err("no raw result after engine stop")
+                .code,
+            "engineCrashed"
+        );
+        worker.join().expect("request worker");
+    }
+}
+
+#[test]
+fn stop_racing_a_completed_read_back_or_a_queued_request_never_returns_a_result() {
+    let state = NamingEngineState::default();
+    let response = with_request(&state.inner, 0, 0, |_| {
+        // Model an uninstall arriving after the last OPSIN read, before return.
+        state.inner.stops.fetch_add(1, Ordering::SeqCst);
+        Ok(raw())
+    });
+    assert_eq!(
+        response.expect_err("stop wins over result").code,
+        "engineCrashed"
+    );
+    assert_eq!(
+        with_request(&state.inner, 0, 0, |_| -> Result<(), NamingError> {
+            panic!("request queued before an engine stop must never run");
+        })
+        .expect_err("stale request")
+        .code,
+        "engineCrashed"
+    );
 }
 
 #[test]
@@ -427,7 +574,7 @@ fn real_engine_ethanol_glycine_raw_and_iron_abstention() {
                 &|| false,
             )
             .expect("real naming");
-        read_back(raw, &launch)
+        read_back(raw, &launch, platform.as_ref(), &|| false)
     };
     let ethanol = request("CCO");
     assert_eq!(ethanol.result.name.as_deref(), Some("ethanol"));

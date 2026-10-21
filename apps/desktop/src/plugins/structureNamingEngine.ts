@@ -41,6 +41,7 @@ export interface StructureNamingEngine {
   cancelInstall(): Promise<void>;
   uninstall(): Promise<StructureNamingEngineStatus>;
   name(smiles: string): Promise<StructureNamingRawResult>;
+  /** Resolves only after the native request, including OPSIN read-back, releases its gate. */
   cancel(): Promise<void>;
 }
 type InvokeCommand = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;

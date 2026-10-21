@@ -110,9 +110,15 @@ export class StructureNamingController {
     this.installDocumentTabId = this.documentTabId?.();
     const active = { id: this.nextId++, stop: new AbortController(), engineRunning: false };
     this.active = active;
+    let work: Promise<PluginStructureToNameResult> | undefined;
+    let cancellation: Promise<void> | undefined;
     const abort = () => active.stop.abort();
     const stop = () => {
-      if (active.engineRunning) void this.engine.cancel().catch(() => undefined);
+      if (active.engineRunning) {
+        // Keep this request busy until native acknowledges that its gate is released. If IPC
+        // cancellation fails, wait for the original request instead of permitting a busy retry.
+        cancellation = this.engine.cancel().catch(async () => { await work?.catch(() => undefined); });
+      }
       if (this.pending) {
         if (this.pending.ownsInstall) void this.engine.cancelInstall().catch(() => undefined);
         this.finishInstall("cancelled");
@@ -126,10 +132,14 @@ export class StructureNamingController {
       if (!active.stop.signal.aborted) { this.activity = { id: active.id, pluginName: plugin.name, startedAt: Date.now() - 1000 }; this.notify(); }
     }, 1000);
     try {
-      const result = await untilNamingStopped(this.runNaming(plugin, molecule, active), active.stop.signal);
+      work = this.runNaming(plugin, molecule, active);
+      const result = await untilNamingStopped(work, active.stop.signal);
+      await cancellation;
+      if (active.stop.signal.aborted) return { status: "cancelled" };
       return result ?? { status: "cancelled" };
-    } catch (error) { return namingFailure(error); }
+    } catch (error) { return active.stop.signal.aborted ? { status: "cancelled" } : namingFailure(error); }
     finally {
+      await cancellation;
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);
       active.stop.signal.removeEventListener("abort", stop);
