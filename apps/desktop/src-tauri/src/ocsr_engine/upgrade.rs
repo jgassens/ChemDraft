@@ -19,7 +19,8 @@
 //! version on the same platform is the same wheel the lock's hashes describe.
 //!
 //! A failure is reported to the user as [`ENGINE_NEEDS_UPDATE`], never with the technical detail,
-//! which goes to the log. Nothing here downloads, and nothing is written except the new receipt.
+//! which goes to the log. Nothing here downloads. On Windows the venv launchers are refreshed before the Python probe;
+//! otherwise nothing is written except the new receipt.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -128,7 +129,7 @@ pub fn upgrade_legacy_receipt(
     Ok(receipt)
 }
 
-/// The checks alone; reads the engine and runs its uv and Python, and writes nothing.
+/// The checks alone; runs uv and Python. On Windows this also refreshes the venv launchers.
 pub fn verify_legacy_engine(
     root: &Path,
     platform: &dyn EnginePlatform,
@@ -186,6 +187,11 @@ pub fn verify_legacy_engine(
             pins::UV_VERSION
         )));
     }
+
+    crate::local_engine::install::rewrite_venv_launchers::<super::install::MolScribeSpec>(
+        root, platform, io, cancel,
+    )
+    .map_err(|error| UpgradeError::from_probe("the venv launcher rewrite failed", error))?;
 
     // `-I` ignores the user's site and PYTHON* variables; `-B` writes no bytecode into the venv.
     let probe = io
@@ -734,6 +740,10 @@ pub(crate) mod tests {
         pub uv_output: String,
         pub python_output: Result<String, InstallErrorCode>,
         pub calls: Mutex<Vec<String>>,
+        #[cfg(windows)]
+        pub rewrites: std::sync::atomic::AtomicUsize,
+        #[cfg(windows)]
+        launcher_error: Option<InstallErrorCode>,
     }
 
     impl FakeProbe {
@@ -745,11 +755,86 @@ pub(crate) mod tests {
                     serde_json::to_string(&mac_arm64_environment()).expect("env json")
                 )),
                 calls: Mutex::new(Vec::new()),
+                #[cfg(windows)]
+                rewrites: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(windows)]
+                launcher_error: None,
             }
         }
 
         pub(crate) fn call_count(&self) -> usize {
             self.calls.lock().expect("calls").len()
+        }
+    }
+
+    impl super::super::install::InstallIo for FakeProbe {
+        fn download(
+            &self,
+            _spec: crate::local_engine::install::Download<'_>,
+            _destination: &Path,
+            _cancel: &AtomicBool,
+            _progress: &dyn crate::local_engine::install::ProgressReporter,
+        ) -> Result<(), InstallError> {
+            panic!("an upgrade must never download")
+        }
+
+        fn extract_uv(
+            &self,
+            _platform: &dyn EnginePlatform,
+            _archive: &Path,
+            _destination: &Path,
+        ) -> Result<(), InstallError> {
+            panic!("an upgrade must never extract uv")
+        }
+
+        fn run(
+            &self,
+            platform: &dyn EnginePlatform,
+            _step: crate::local_engine::install::RunStep,
+            program: &Path,
+            args: &[OsString],
+            env: &[(OsString, OsString)],
+            cancel: &AtomicBool,
+            watch: Option<crate::local_engine::install::RunWatch<'_>>,
+        ) -> Result<(), InstallError> {
+            let root = program.parent().expect("uv parent");
+            assert_eq!(program, platform.uv_executable(root));
+            assert_eq!(args[0], "venv");
+            assert_eq!(args[1], root.join("venv").into_os_string());
+            assert!(args.contains(&OsString::from("--allow-existing")));
+            assert!(args.contains(&OsString::from("--offline")));
+            assert!(env.contains(&(OsString::from("UV_NO_CONFIG"), OsString::from("1"))));
+            assert!(!cancel.load(Ordering::SeqCst));
+            assert!(watch.is_none());
+            #[cfg(windows)]
+            {
+                assert_eq!(
+                    self.call_count(),
+                    1,
+                    "uv checked before rewriting, Python after"
+                );
+                assert_eq!(
+                    args[5],
+                    root.join("python")
+                        .join(format!(
+                            "cpython-{}-windows-x86_64-none",
+                            pins::PYTHON_VERSION
+                        ))
+                        .join("python.exe")
+                        .into_os_string()
+                );
+                self.rewrites.fetch_add(1, Ordering::SeqCst);
+                if let Some(code) = self.launcher_error {
+                    if code == InstallErrorCode::Cancelled {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                    return Err(InstallError {
+                        code,
+                        message: "fake launcher rewrite failure".into(),
+                    });
+                }
+            }
+            Ok(())
         }
     }
 
@@ -771,6 +856,12 @@ pub(crate) mod tests {
                 assert_eq!(args, [OsString::from("--version")]);
                 return Ok(self.uv_output.clone());
             }
+            #[cfg(windows)]
+            assert_eq!(
+                self.rewrites.load(Ordering::SeqCst),
+                1,
+                "rewrite precedes Python probe"
+            );
             assert!(args.contains(&OsString::from("-I")) && args.contains(&OsString::from("-B")));
             self.python_output.clone().map_err(|code| InstallError {
                 code,
@@ -935,6 +1026,36 @@ pub(crate) mod tests {
             ReceiptRead::Current(receipt)
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_upgrade_rewrite_failure_and_cancel_leave_the_receipt_and_skip_python() {
+        for cancelled in [false, true] {
+            let root = temp_root("windows-launcher");
+            let engine = fake_legacy_engine(&root);
+            let mut probe = FakeProbe::matching();
+            probe.launcher_error = Some(if cancelled {
+                InstallErrorCode::Cancelled
+            } else {
+                InstallErrorCode::Failed
+            });
+            let result = upgrade(&engine, &probe);
+            if cancelled {
+                assert_eq!(result, Err(UpgradeError::Cancelled));
+            } else {
+                assert!(
+                    matches!(result, Err(UpgradeError::Mismatch(detail)) if detail.contains("venv launcher rewrite"))
+                );
+            }
+            assert_eq!(probe.call_count(), 1, "only uv --version, no Python");
+            assert_eq!(probe.rewrites.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                fs::read_to_string(engine.join(RECEIPT_FILE)).expect("receipt"),
+                OWNER_LEGACY_RECEIPT
+            );
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     fn assert_refused(engine: &Path, probe: &FakeProbe, expected: &str) {

@@ -150,9 +150,12 @@ impl NamingEngineState {
         std::thread::spawn(move || {
             let _staging = lock(&state.registry.staging);
             if !state.installing.load(Ordering::SeqCst) {
+                let io = SystemInstallIo::offline(state.install_child.clone());
                 local_engine::install::remove_stale_staging::<NamingSpec>(
                     &paths,
                     platform.as_ref(),
+                    &io,
+                    &state.cancel_install,
                 );
             }
         });
