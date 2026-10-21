@@ -11,6 +11,7 @@ import { buildSmilesDocument, renderSmilesToAssets } from "../document";
 import { MAX_DOCUMENT_BYTES, validateDocumentOutputPath } from "../documentInput";
 import { runCli } from "../cli";
 import type { CliIo } from "../output";
+import { chargeSeparationCases } from "../../../document-workflow-core/test/chargeSeparationFixtures";
 
 let directory: string;
 beforeAll(async () => { directory = await mkdtemp(join(tmpdir(), "chemdraft-document-")); });
@@ -23,6 +24,19 @@ async function run(args: string[]) {
 }
 
 describe("native document agent commands", () => {
+  it.each(chargeSeparationCases)("renders neutral-drawn $name and passes its info note through", async ({ molecule, smiles }) => {
+    const built = await buildSmilesDocument(smiles);
+    built.document.pages[0]!.objects = [molecule];
+    const input = join(directory, `${molecule.id}.json`);
+    await writeFile(input, JSON.stringify(built.document));
+    const result = await run(["render-document", "--document", input, "--out", join(directory, `${molecule.id}.svg`)]);
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.result.molecules[0].canonicalSmiles).toBe(smiles);
+    expect(result.result.exportWarnings).toEqual([expect.objectContaining({
+      code: "export.smiles_charge_separated", severity: "info", objectId: molecule.id
+    })]);
+    expect(result.result.warnings).toEqual([result.result.exportWarnings[0].message]);
+  });
   it("builds a fused bicyclic with input atom indices, ids, page size and centers inside each ring", async () => {
     const out = join(directory, "decalin.json");
     const result = await run(["document", "--smiles", "C1CCC2CCCCC2C1", "--out", out]);

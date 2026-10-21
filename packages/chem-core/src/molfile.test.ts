@@ -76,6 +76,24 @@ const chiral = molecule(
   ]
 );
 
+describe.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("MDL radical counts", (write) => {
+  it.each([0, 1, 2, 3, 4])("reports an unrepresentable count of %i without substituting triplet", (count) => {
+    const source = molecule([{ id: "radical_atom", element: "C", x: 0, y: 0, markRadicals: count }], []);
+    const warnings: string[] = [];
+    const { contents } = write(source, { kekuleBondOrders: new Map(), warnings });
+    if (count > 2) {
+      expect(warnings).toEqual([`Atom radical_atom has ${count} radical electrons; MDL radical codes cannot represent this count. The radical property was omitted.`]);
+      expect(contents).not.toMatch(/M  RAD|RAD=/);
+    } else {
+      expect(warnings).toEqual([]);
+      const code = count === 1 ? 2 : 3;
+      if (count === 0) expect(contents).not.toMatch(/M  RAD|RAD=/);
+      else if (contents.includes("V3000")) expect(contents).toContain(` RAD=${code}`);
+      else expect(contents).toContain(`M  RAD  1   1   ${code}`);
+    }
+  });
+});
+
 describe("moleculeToMolfileV2000 — structure", () => {
   it("writes a counts line with atom/bond counts and chiral flag set when wedged", () => {
     const mf = moleculeToMolfileV2000(chiral, { kekuleBondOrders: new Map() }).contents;

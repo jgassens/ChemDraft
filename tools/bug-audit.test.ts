@@ -77,10 +77,20 @@ it("exports the same NH2 chemistry with the engine as without it", async () => {
   installNodeEngines();
   const warnings: ExportWarning[] = [];
   const source = molecule("NH2");
-  const fallback = await moleculeSmiles(source, 0, [], undefined);
+  const fallbackWarnings: ExportWarning[] = [];
+  const fallback = await moleculeSmiles(source, 0, fallbackWarnings, undefined);
   const engine = await moleculeSmiles(source, 0, warnings, computeStructureIdentifiers);
   expect(engine).toBe(fallback);
-  expect(warnings).toEqual([]);
+  expect(engine).toBe("[NH2]");
+  // Lone NH2 needs one unpaired electron, which this drawing did not mark. Both routes warn.
+  expect(warnings).toEqual([expect.objectContaining({
+    code: "export.smiles_radical_loss",
+    message: "Atom a (NH2) is drawn with 0 radical electrons; SMILES reparses with 1 radical electron."
+  })]);
+  expect(fallbackWarnings).toEqual([expect.objectContaining({
+    code: "export.smiles_radical_loss",
+    message: "Atom a (NH2) is drawn with 0 radical electrons; SMILES would imply 1 radical electron with its hydrogen count and formal charge."
+  })]);
 });
 
 it("keeps a radical-bearing CH3 label as a placeholder through real SMILES and SDF engines", async () => {

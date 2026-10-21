@@ -496,10 +496,15 @@ function wedgeStereoFlag(bond: MoleculeBond): number {
  * MDL `RAD` atom-radical code from the drawn unpaired-electron count. One dot is an ordinary
  * (doublet) radical; two dots on the same atom is written as a triplet, the conventional reading
  * when spin pairing isn't tracked separately (matching how other drawing tools serialize it).
- * 0 means "not a radical" and is never written as a property line.
+ * Three or more unpaired electrons have no MDL code: omit the property and warn instead of
+ * substituting a triplet. 0 means "not a radical" and is never written as a property line.
  */
-function mdlRadicalCode(markRadicals: number | undefined): number {
+function mdlRadicalCode(markRadicals: number | undefined, atomId: string, options: MolfileWriteOptions): number {
   if (!markRadicals || markRadicals <= 0) return 0;
+  if (markRadicals > 2) {
+    options.warnings?.push(`Atom ${atomId} has ${markRadicals} radical electrons; MDL radical codes cannot represent this count. The radical property was omitted.`);
+    return 0;
+  }
   return markRadicals === 1 ? 2 : 3;
 }
 
@@ -582,7 +587,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   // Radical property lines: same up-to-8-pairs-per-line shape as M CHG above.
   const radicals = atoms
-    .map((atom, index) => ({ atomNumber: index + 1, radicalCode: mdlRadicalCode(atom.markRadicals) }))
+    .map((atom, index) => ({ atomNumber: index + 1, radicalCode: mdlRadicalCode(atom.markRadicals, atom.id, options) }))
     .filter((entry) => entry.radicalCode !== 0);
   for (let i = 0; i < radicals.length; i += 8) {
     const chunk = radicals.slice(i, i + 8);
@@ -661,7 +666,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
-    const radicalCode = mdlRadicalCode(atom.markRadicals);
+    const radicalCode = mdlRadicalCode(atom.markRadicals, atom.id, options);
     const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
     const rgroup = rgroupByAtomNumber.get(index + 1);
     const rgroups30 = rgroup !== undefined ? ` RGROUPS=(1 ${rgroup})` : "";

@@ -40,7 +40,7 @@ async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarn
   const results = [];
   for (const molecule of molecules) {
     const writerWarnings: string[] = [];
-    const molfile = currentMoleculeIdentityMolfile(molecule, writerWarnings).contents;
+    const molfile = (await currentMoleculeIdentityMolfile(molecule, writerWarnings, warnings)).contents;
     warnings.push(...writerWarnings.map((message) => ({ code: "export.molfile_loss", message,
       severity: "warning" as const, objectId: molecule.id })));
     // The helper regenerates the current graph; stored uncertainty flags require a matching CTAB.
