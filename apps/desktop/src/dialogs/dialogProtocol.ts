@@ -4,7 +4,24 @@ import { validExportOptions } from "./exportOptionsValidation";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "export";
+export type DialogKind = "pageSize" | "export" | "engineInstall";
+export type EngineInstallAction = "install" | "cancelInstall" | "close";
+export type EngineInstallState =
+  | { status: "notInstalled" | "installed" }
+  | { status: "broken"; detail: string }
+  | { status: "failed"; message: string }
+  | { status: "installing"; phase: string; step: number; steps: number; bytesDone: number; bytesTotal: number; estimated: boolean };
+export interface EngineInstallSnapshot {
+  title: string;
+  engineName: string;
+  pluginName: string;
+  pluginId: string;
+  disclosure: string;
+  requiredDiskBytes: number;
+  freeDiskBytes: number;
+  state: EngineInstallState;
+  buttons: EngineInstallAction[];
+}
 export type DialogPlatform = "macos" | "windows" | "linux";
 export type PageUnit = "inch" | "mm" | "css-px";
 export interface PageSize { width: number; height: number; unit: PageUnit }
@@ -28,8 +45,9 @@ export interface ExportDialogResult {
 export type DialogMessage = DialogEnvelope & (
   | { dialogKind: "pageSize"; type: "snapshot"; data: PageSize & { title: string } }
   | { dialogKind: "export"; type: "snapshot"; data: { title: string; options: ExportOptions; frame?: ExportFrame } }
+  | { dialogKind: "engineInstall"; type: "snapshot"; data: EngineInstallSnapshot }
   | { type: "request" | "ready"; data: Record<string, never> }
-  | { type: "action"; data: ({ action: "apply" } & PageSize) | { action: "cancel" } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & PageSize) | { action: "cancel" } | { action: EngineInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "result"; data: { status: "accepted" | "applied" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
 );
@@ -49,20 +67,22 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "export"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "export", "engineInstall"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
+    // Room for the Rust-written delivery wrapper, including the longest native label.
+    if (value.dialogKind === "engineInstall" && new TextEncoder().encode(JSON.stringify(value)).length > 3400) return undefined;
     let valid = false;
     switch (value.type) {
       case "snapshot": valid = typeof d.title === "string" && d.title.length > 0 && d.title.length <= 256 &&
-        (value.dialogKind === "pageSize" ? keys(d, ["title", "width", "height", "unit"]) && validPageSize(d) :
+        (value.dialogKind === "engineInstall" ? validEngineInstallSnapshot(d) : value.dialogKind === "pageSize" ? keys(d, ["title", "width", "height", "unit"]) && validPageSize(d) :
           keys(d, ["title", "options"], ["frame"]) && validExportOptions(d.options) && (d.frame === undefined || validExportFrame(d.frame))); break;
       case "request": case "ready": valid = keys(d, []); break;
-      case "action": valid = d.action === "cancel" ? keys(d, ["action"]) : value.dialogKind === "pageSize"
+      case "action": valid = value.dialogKind === "engineInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "cancelInstall", "close"].includes(d.action) : d.action === "cancel" ? keys(d, ["action"]) : value.dialogKind === "pageSize"
         ? d.action === "apply" && keys(d, ["action", "width", "height", "unit"]) && validPageSize(d)
         : typeof d.action === "string" && ["export", "chooseDestination", "preview"].includes(d.action) && keys(d, ["action", "options"]) && validExportOptions(d.options); break;
-      case "result": if (value.dialogKind === "export" && d.status === "frame") { valid = keys(d, ["status", "frame"]) && validExportFrame(d.frame); break; } if (value.dialogKind === "export" && d.status === "preview") { valid = keys(d, ["status", "preview"]) && validExportPreview(d.preview); break; } valid = keys(d, ["status"], value.dialogKind === "pageSize" ? ["error"] : ["error", "notice", "destinationPath", "filename"]) &&
+      case "result": if (value.dialogKind === "engineInstall") { valid = keys(d, ["status"], ["error"]) && typeof d.status === "string" && ["accepted", "cancelled", "error"].includes(d.status) && (d.error === undefined || typeof d.error === "string" && d.error.length <= 1024); break; } if (value.dialogKind === "export" && d.status === "frame") { valid = keys(d, ["status", "frame"]) && validExportFrame(d.frame); break; } if (value.dialogKind === "export" && d.status === "preview") { valid = keys(d, ["status", "preview"]) && validExportPreview(d.preview); break; } valid = keys(d, ["status"], value.dialogKind === "pageSize" ? ["error"] : ["error", "notice", "destinationPath", "filename"]) &&
         typeof d.status === "string" && (value.dialogKind === "pageSize" ? ["accepted", "applied", "cancelled", "error"] : ["accepted", "progress", "picked", "exported", "cancelled", "error"]).includes(d.status) &&
         (d.error === undefined || (typeof d.error === "string" && d.error.length <= 2048)) &&
         (d.notice === undefined || (typeof d.notice === "string" && d.notice.length <= 1024)) &&
@@ -101,4 +121,26 @@ export function validExportPreview(v: unknown): v is ExportPreviewResult {
     typeof v.url === "string" && (v.kind === "pdf" ? /^data:application\/pdf;base64,[A-Za-z0-9+/]*={0,2}$/.test(v.url) : v.kind === "image" && /^data:image\/(png|jpeg|svg\+xml);base64,[A-Za-z0-9+/]*={0,2}$/.test(v.url)) &&
     [v.width, v.height].every(n => typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 8192) &&
     Array.isArray(v.warnings) && v.warnings.length <= 100 && v.warnings.every(w => typeof w === "string" && w.length <= 2048);
+}
+
+export function validEngineInstallSnapshot(v: unknown): v is EngineInstallSnapshot {
+  const text = (s: unknown, max: number) => typeof s === "string" && s.length <= max && !s.includes("\0");
+  const bytes = (n: unknown) => Number.isSafeInteger(n) && Number(n) >= 0;
+  if (!record(v) || !keys(v, ["title", "engineName", "pluginName", "pluginId", "disclosure", "requiredDiskBytes", "freeDiskBytes", "state", "buttons"]) ||
+      !text(v.title, 256) || !text(v.engineName, 80) || !text(v.pluginName, 128) || !text(v.pluginId, 256) || !text(v.disclosure, 1024) ||
+      ![v.title, v.engineName, v.pluginName, v.pluginId, v.disclosure].every(s => typeof s === "string" && s.length > 0) ||
+      !bytes(v.requiredDiskBytes) || !bytes(v.freeDiskBytes) || !record(v.state)) return false;
+  const state = v.state;
+  let valid = false;
+  switch (state.status) {
+    case "notInstalled": case "installed": valid = keys(state, ["status"]); break;
+    case "broken": valid = keys(state, ["status", "detail"]) && text(state.detail, 1024); break;
+    case "failed": valid = keys(state, ["status", "message"]) && text(state.message, 1024); break;
+    case "installing": valid = keys(state, ["status", "phase", "step", "steps", "bytesDone", "bytesTotal", "estimated"]) &&
+      text(state.phase, 128) && Number.isInteger(state.step) && Number.isInteger(state.steps) &&
+      Number(state.step) >= 1 && Number(state.step) <= Number(state.steps) && Number(state.steps) <= 32 &&
+      bytes(state.bytesDone) && bytes(state.bytesTotal) && typeof state.estimated === "boolean"; break;
+  }
+  const buttons = state.status === "installing" ? ["cancelInstall", "close"] : state.status === "installed" || state.status === "failed" ? ["close"] : ["install", "close"];
+  return valid && JSON.stringify(v.buttons) === JSON.stringify(buttons);
 }

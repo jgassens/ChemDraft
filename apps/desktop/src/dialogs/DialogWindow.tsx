@@ -6,6 +6,7 @@ import { performFocusedFieldSelectAll } from "../editHistoryRouting";
 import { formatPageSizeFieldValue, PageSizeForm, type PageSizeDraft } from "./PageSizeForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./exportOptions";
 import { exportOptions } from "./exportOptionsValidation";
+import { EngineInstallForm } from "./EngineInstallForm";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
@@ -27,6 +28,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   const actionPending = useRef(false);
   const cancellationRequested = useRef(false);
   const pendingRequestId = useRef<string | undefined>(undefined);
+  const readySession = useRef<string | undefined>(undefined);
   const startAcceptanceDeadline = () => {
     clearTimeout(actionTimer.current);
     actionTimer.current = setTimeout(() => {
@@ -55,10 +57,10 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       if (message.type === "snapshot") {
         if (latest && (message.sessionId !== latest.sessionId || message.snapshotRevision < latest.snapshotRevision)) return;
         // Replay must not replace the user's draft at the same revision.
-        if (!latest || message.snapshotRevision > latest.snapshotRevision) {
+        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall") {
           setSnapshot(message);
           if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit });
-          else { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
+          else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;
         }
       } else if (latest && sameDialog(message, latest) && message.type === "result" && message.data.status === "frame" && message.data.frame) {
@@ -99,16 +101,22 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   // React committed the form, including first-field focus. Hidden webviews suspend rAF: never wait for it.
   const reportReady = useCallback(() => {
     if (!snapshot) return;
+    if (snapshot.dialogKind === "engineInstall" && readySession.current === snapshot.sessionId) return;
+    readySession.current = snapshot.sessionId;
     void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: {} }).catch(e => setError(String(e)));
   }, [hostId, snapshot]);
-  useEffect(() => { if (snapshot?.dialogKind === "pageSize") reportReady(); }, [snapshot, reportReady]);
+  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "engineInstall") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
-    if (data.action === "cancel") {
+    if (data.action === "cancel" || data.action === "close") {
       cancellationRequested.current = true;
       clearTimeout(actionTimer.current);
       pendingRequestId.current = undefined;
+      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data }).catch(e => setError(String(e)));
+      return;
+    }
+    if (snapshot.dialogKind === "engineInstall" && data.action === "cancelInstall") {
       void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "action", data }).catch(e => setError(String(e)));
       return;
     }
@@ -144,6 +152,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     onCancel={() => sendAction({ action: "cancel" })}
     onChooseDestination={() => sendAction({ action: "chooseDestination", options: exportOptions(exportDraft) })}
     onSubmit={() => sendAction({ action: "export", options: exportOptions(exportDraft) })} /></Suspense>;
+  if (snapshot?.dialogKind === "engineInstall") return <EngineInstallForm snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
   if (!snapshot || snapshot.dialogKind !== "pageSize" || !draft) return <p role="status">{error ?? "Opening dialog…"}</p>;
   return <PageSizeForm title={snapshot.data.title} state={draft} onChange={setDraft} busy={busy} error={error}
     onCancel={() => sendAction({ action: "cancel" })} onApply={size => sendAction({ action: "apply", ...size })} />;

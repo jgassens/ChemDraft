@@ -1,4 +1,4 @@
-# Native dialog host (stages 1 and 2)
+# Native dialog host
 
 `page.setSizeCustom` opens a modeless, movable, document-owned native window on macOS and Windows.
 The title and form identify the originating drawing. Drawing and floating toolbars remain usable.
@@ -20,12 +20,76 @@ failure reports an error in the document status; it never creates an in-page des
   callbacks before invoking creation/bootstrap. No dialog protocol event-bus subscriptions exist.
 - `DialogWindow.tsx`, `PageSizeForm.tsx`, and `ExportForm.tsx`: trusted snapshot rendering and local
   form drafts only. Export options have a strict shared TypeScript/Rust shape.
+- `EngineInstallForm.tsx`: data-only local-engine installation disclosure and progress. It has no
+  engine, filesystem, plugin-runtime or document capability.
 - `App.tsx`: dialog routing precedes other routes. All window components are lazy imports, so the
   dialog entry does not initialize MainWindow, chemistry engines, or the plugin runtime.
 - `src-tauri/src/dialog_windows.rs`: registration, validation, native construction/reveal/ownership,
   close/destroy hooks, bounded sessions, and position persistence.
 - `src-tauri/capabilities/dialog-host.json` / `dialog-owner.json`: host receive/send only versus
   main-only create/publish/close. Existing filesystem/dialog/capture/engine grants are unchanged.
+
+
+## Local engine installation
+
+The generic `engineInstall` kind uses the same modeless native construction, owner, floating
+level, focus policy, session limits and per-kind position persistence as the existing dialogs.
+Its label is `dialog-main-engineInstall-<slot>`. The existing opaque-host route in App needs no
+new query parameters. Dialog capabilities add only this label pattern; all engine commands remain
+restricted to the document window. Recognition installation is unchanged.
+
+The strict TypeScript and Rust snapshots contain engine display name, title, requesting plugin
+name and ID, disclosure, required/free disk bytes, state and the host-selected button set.
+States are `notInstalled`, `broken` with detail, `installing` with display phase, step/step count,
+byte counts and estimated flag, `installed`, or `failed` with a message. Buttons are exactly
+Install/Close before installation (including broken), Cancel installation/Close during it, and
+Close after success/failure. Broken displays **Install engine again**. Disk and progress counts
+are nonnegative JavaScript-safe integers. Nested unknown fields, unknown actions/kinds and
+malformed states fail closed.
+
+Engine messages have an additional 3400-byte serialized budget within the unchanged 16 KiB input
+limit. This leaves room for Rust's complete delivery wrapper below 4096 bytes, even with maximum
+envelope tokens and labels. Naming clips plugin/error/detail display strings by JSON-escaped UTF-8
+bytes, including the abbreviation suffix. Native progress messages and installed receipts/paths
+never enter the snapshot. Phase names are host-authored. Progress replaces the retained snapshot
+at the same session revision: there is no user draft to overwrite. Ready flushes the latest
+snapshot, including progress received during native construction.
+
+`presentStructureNamingInstall` binds the naming controller to the document's coordinator using
+a typed `NamingDialogContext`. The originating tab is captured synchronously before the engine
+status await, so switching tabs during the status check cannot retarget the install. The
+controller continues the pending naming after Install completes. Close, title-bar close and
+originating-tab dismissal decline with `engineNotInstalled` and cancel an install owned by that
+request. Cancel installation calls the naming adapter's native cancellation. Failure text stays
+in the native window until Close; no successful naming report window is added. Reopening a live
+install focuses its retained native window, even while installation is pending.
+The document DOM retains only the existing “Naming the structure…” activity indicator.
+No native creation failure falls back to an in-page installer.
+
+### Integration boundary in this worker
+
+The allowed-file list excludes `MainWindow.tsx` and `plugins/usePluginRuntime.ts`, which own the
+coordinator ref and active-tab provider. They still need the small typed wiring below before this
+migration is active in the application:
+
+- Add an optional `getDialogCoordinator(): DialogCoordinator | undefined` provider to
+  `PluginRuntimeProviders`, passing `() => dialogCoordinatorRef.current` from MainWindow.
+- Supply `{ coordinator: () => providersRef.current.getDialogCoordinator?.(),
+  documentTabId: () => providersRef.current.getActiveDocumentTab?.().id }` as the second argument
+  to the existing `mountStructureNamingHost(runtime.naming)` call.
+
+Until that wiring is integrated, mounting without the context supplies only the activity indicator;
+a first-use naming call returns `engineNotInstalled`. Coordinator/controller and DOM tests inject
+this context explicitly. Recommended next task: integrate these two provider changes, then run the
+standing native-dialog hands-on checks on macOS and Windows (ownership/taskbar, modeless focus,
+reopen position, destination DPI, minimized persistence and native close while installing).
+
+Worker verification on macOS: Rust fmt, all-target clippy with warnings denied, and the 33
+dialog-filtered native tests passed. The required Vitest suites passed, including controller/native
+form integration, strict validators, bounded escaped text, cancellation, retained reopen, tab-close
+races and both platform close shortcuts. Root lint still fails on existing mass-fragment example
+dependency/type errors outside this task. Windows compilation and both platforms' real-window
+ownership, focus, taskbar and mixed-DPI checks remain unverified. No build stamp was changed.
 
 ## Transport and lifecycle
 

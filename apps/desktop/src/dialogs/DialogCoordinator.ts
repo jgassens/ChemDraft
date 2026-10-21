@@ -1,6 +1,12 @@
 import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize, type ExportDialogResult } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
+import type { DialogKind, EngineInstallSnapshot, EngineInstallAction } from "./dialogProtocol";
+
+export interface EngineInstallPresenter {
+  action(action: EngineInstallAction): void | Promise<void>;
+  closed(): void;
+}
 
 interface Session {
   snapshot: Extract<DialogMessage, { type: "snapshot" }>;
@@ -15,6 +21,7 @@ interface Session {
   previewRequestId?: string;
   pendingFrame?: ExportFrame;
   frameKey?: string;
+  engineInstall?: EngineInstallPresenter;
 }
 /** Document-owned authority. A future modal kind can acquire an input lease here; pageSize never does. */
 export class DialogCoordinator {
@@ -27,8 +34,10 @@ export class DialogCoordinator {
     previewExport?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportPreviewResult>;
     chooseExportDestination?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportDialogResult>;
     onError(message: string): void;
-    onSettled?(tabId: string, reason: DialogCloseReason, kind?: "export" | "pageSize"): void;
+    onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
   }, private options: { readyTimeoutMs?: number } = {}) {}
+
+  reportError(message: string): void { this.owner.onError(message); }
 
   cancelExportPreviews(): void {
     for (const session of this.sessions.values()) {
@@ -72,28 +81,45 @@ export class DialogCoordinator {
   async openExport(tabId: string, data: { title: string; options: ExportOptions; frame?: ExportFrame }): Promise<void> {
     return this.open(tabId, "export", data);
   }
-  private async open(tabId: string, kind: "pageSize" | "export", data: (PageSize & { title: string }) | { title: string; options: ExportOptions; frame?: ExportFrame }): Promise<void> {
+  async openEngineInstall(tabId: string, data: EngineInstallSnapshot, presenter: EngineInstallPresenter, afterClose?: Promise<void>): Promise<void> {
+    return this.open(tabId, "engineInstall", data, presenter, afterClose);
+  }
+  async updateEngineInstall(tabId: string, data: EngineInstallSnapshot): Promise<void> {
+    const session = this.sessions.get(`${tabId}:engineInstall`);
+    if (!session || session.settled || session.snapshot.dialogKind !== "engineInstall") return;
+    const snapshot = { ...session.snapshot, data };
+    if (!parseDialogMessage(snapshot)) throw new Error("Invalid engine installation snapshot");
+    session.snapshot = snapshot;
+    if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
+  }
+  async closeEngineInstall(tabId: string): Promise<void> {
+    const session = this.sessions.get(`${tabId}:engineInstall`);
+    if (session) await this.settle(session, "close");
+  }
+  private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, afterClose?: Promise<void>): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
     const key = `${tabId}:${kind}`;
     const existing = this.sessions.get(key);
     if (existing) {
       // Reuse the retained snapshot and native window, preserving its local draft and position.
       const receipt = existing.terminalRequestId ? existing.receipts.get(existing.terminalRequestId) : undefined;
-      if (existing.registration && (!existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) await this.transport.open(existing.snapshot);
+      if (existing.registration && (kind === "engineInstall" || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) await this.transport.open(existing.snapshot);
       return;
     }
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
-    const title = kind === "export" ? "Export" : "Custom Page Size";
+    const title = kind === "engineInstall" ? "Engine installation" : kind === "export" ? "Export" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
-    const session: Session = { snapshot, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
+    const session: Session = { snapshot, engineInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
     this.sessions.set(key, session);
     try {
       // Track the opening before the first await so tab close/dispose can cancel it.
       await this.ensureSubscription();
+      if (afterClose) await afterClose;
       if (session.settled || this.stopped) return;
       session.registration = await this.transport.open(snapshot);
+      if (!session.settled && session.ready && session.snapshot.dialogKind === "engineInstall") await this.transport.publish(session.registration.hostId, session.snapshot);
       await this.flushExportFrame(session);
       if (session.settled) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
     } catch (error) {
@@ -111,15 +137,35 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "export" ? "Export" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "export" ? "Export" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
-    if (message.type === "ready") { clearTimeout(session.timer); session.ready = true; await this.flushExportFrame(session); return; }
+    if (message.type === "ready") {
+      clearTimeout(session.timer); session.ready = true;
+      if (session.snapshot.dialogKind === "engineInstall" && session.registration) await this.transport.publish(session.registration.hostId, session.snapshot);
+      await this.flushExportFrame(session); return;
+    }
     if (message.type === "request") {
       if (session.registration) await this.transport.publish(session.registration.hostId, session.snapshot);
       return;
     }
     if (message.type !== "action" || !session.ready || !session.registration) return;
+    if (session.snapshot.dialogKind === "engineInstall") {
+      const action = message.data.action;
+      if (action !== "install" && action !== "cancelInstall" && action !== "close") return;
+      if (action === "close") { await this.settle(session, "close"); return; }
+      if (session.receipts.has(message.requestId) || !session.snapshot.data.buttons.includes(action)) return;
+      const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "accepted" } };
+      session.receipts.set(message.requestId, receipt);
+      // Reserve Install synchronously. Cancellation can still interrupt the running install.
+      if (action === "install") {
+        if (session.terminalRequestId) return;
+        session.terminalRequestId = message.requestId;
+      }
+      await this.transport.publish(session.registration.hostId, receipt);
+      if (!session.settled) await session.engineInstall?.action(action);
+      return;
+    }
     // Cancellation invalidates owner work immediately, even while a receipt is pending.
     if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
     if (message.data.action === "preview") {
@@ -196,7 +242,8 @@ export class DialogCoordinator {
     const key = `${session.snapshot.documentTabId}:${session.snapshot.dialogKind}`;
     if (this.sessions.get(key) === session) this.sessions.delete(key);
     // Preserve the existing Page Size callback contract.
-    if (session.snapshot.dialogKind === "export") this.owner.onSettled?.(session.snapshot.documentTabId, reason, "export");
+    if (session.snapshot.dialogKind === "engineInstall") session.engineInstall?.closed();
+    else if (session.snapshot.dialogKind === "export") this.owner.onSettled?.(session.snapshot.documentTabId, reason, "export");
     else this.owner.onSettled?.(session.snapshot.documentTabId, reason);
     if (close && session.registration) {
       try { await this.transport.close(session.registration.hostId, reason); }

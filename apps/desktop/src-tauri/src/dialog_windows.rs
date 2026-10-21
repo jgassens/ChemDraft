@@ -38,6 +38,13 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 620.0),
             min_size: (420.0, 360.0),
         }),
+        "engineInstall" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Engine installation",
+            size: (520.0, 480.0),
+            min_size: (420.0, 380.0),
+        }),
         _ => Err("Unknown dialog kind".into()),
     }
 }
@@ -79,6 +86,95 @@ enum Action {
 struct Receipt {
     status: String,
     error: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EngineInstallSnapshot {
+    title: String,
+    engine_name: String,
+    plugin_name: String,
+    plugin_id: String,
+    disclosure: String,
+    required_disk_bytes: u64,
+    free_disk_bytes: u64,
+    state: EngineInstallState,
+    buttons: Vec<String>,
+}
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+enum EngineInstallState {
+    NotInstalled {},
+    Installed {},
+    Broken {
+        detail: String,
+    },
+    Failed {
+        message: String,
+    },
+    Installing {
+        phase: String,
+        step: u32,
+        steps: u32,
+        #[serde(rename = "bytesDone")]
+        bytes_done: u64,
+        #[serde(rename = "bytesTotal")]
+        bytes_total: u64,
+        estimated: bool,
+    },
+}
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+impl EngineInstallSnapshot {
+    fn valid(&self) -> bool {
+        let fields = [
+            (&self.title, 256),
+            (&self.engine_name, 80),
+            (&self.plugin_name, 128),
+            (&self.plugin_id, 256),
+            (&self.disclosure, 1024),
+        ];
+        if fields
+            .iter()
+            .any(|(s, max)| s.is_empty() || !bounded_text(s, *max))
+            || self.required_disk_bytes > MAX_SAFE_INTEGER
+            || self.free_disk_bytes > MAX_SAFE_INTEGER
+        {
+            return false;
+        }
+        let valid_state = match &self.state {
+            EngineInstallState::NotInstalled {} | EngineInstallState::Installed {} => true,
+            EngineInstallState::Broken { detail } => bounded_text(detail, 1024),
+            EngineInstallState::Failed { message } => bounded_text(message, 1024),
+            EngineInstallState::Installing {
+                phase,
+                step,
+                steps,
+                bytes_done,
+                bytes_total,
+                estimated,
+            } => {
+                let _ = estimated;
+                bounded_text(phase, 128)
+                    && *step >= 1
+                    && step <= steps
+                    && *steps <= 32
+                    && *bytes_done <= MAX_SAFE_INTEGER
+                    && *bytes_total <= MAX_SAFE_INTEGER
+            }
+        };
+        let buttons: &[&str] = match self.state {
+            EngineInstallState::Installing { .. } => &["cancelInstall", "close"],
+            EngineInstallState::Installed {} | EngineInstallState::Failed { .. } => &["close"],
+            _ => &["install", "close"],
+        };
+        valid_state && self.buttons == buttons
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum EngineInstallAction {
+    Install {},
+    CancelInstall {},
+    Close {},
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -374,10 +470,26 @@ impl Message {
             || !token(&self.request_id)
             || self.snapshot_revision == 0
             || self.snapshot_revision > 9_007_199_254_740_991
+            || (self.dialog_kind == "engineInstall"
+                && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 3400)
         {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "engineInstall" => {
+                serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
+                    .is_ok_and(|s| s.valid())
+            }
+            "action" if self.dialog_kind == "engineInstall" => {
+                serde_json::from_value::<EngineInstallAction>(self.data.clone()).is_ok()
+            }
+            "result" if self.dialog_kind == "engineInstall" => {
+                serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
+                    matches!(r.status.as_str(), "accepted" | "cancelled" | "error")
+                        && optional_string_fields(&self.data, &["error"])
+                        && r.error.is_none_or(|s| s.encode_utf16().count() <= 1024)
+                })
+            }
             "snapshot" if self.dialog_kind == "export" => {
                 serde_json::from_value::<ExportSnapshot>(self.data.clone()).is_ok_and(|s| {
                     !s.title.is_empty()
@@ -499,6 +611,7 @@ pub(crate) fn is_dialog_label(label: &str) -> bool {
     label
         .strip_prefix("dialog-main-pageSize-")
         .or_else(|| label.strip_prefix("dialog-main-export-"))
+        .or_else(|| label.strip_prefix("dialog-main-engineInstall-"))
         .is_some_and(|slot| {
             !slot.is_empty() && slot.len() <= 20 && slot.bytes().all(|c| c.is_ascii_digit())
         })
@@ -622,7 +735,19 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
             .insert(message.request_id.clone(), message.clone());
         return Ok(true);
     }
-    let cancelling = message.data["action"] == "cancel";
+    if message.dialog_kind == "engineInstall" {
+        let action = message.data["action"].as_str().unwrap_or_default();
+        if !session.snapshot.data["buttons"]
+            .as_array()
+            .is_some_and(|buttons| buttons.iter().any(|button| button == action))
+        {
+            return Err("Engine installation action is unavailable".into());
+        }
+    }
+    let cancelling = matches!(
+        message.data["action"].as_str(),
+        Some("cancel" | "cancelInstall" | "close")
+    );
     // Closing must bypass pending work and the retry limit, while still reserving the session.
     if session.terminal_request.is_some() && !cancelling {
         return Err("A terminal dialog action is already pending".into());
@@ -717,7 +842,8 @@ pub(crate) async fn dialog_open(
             .ok_or("Unknown dialog host")?;
         session.owner_channel = Some(channel);
         session.ready
-            && (session.terminal_request.is_none()
+            && (session.snapshot.dialog_kind == "engineInstall"
+                || session.terminal_request.is_none()
                 || session
                     .terminal_request
                     .as_ref()
@@ -1585,6 +1711,168 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn engine_install_snapshot() -> Message {
+        let mut message = snapshot();
+        message.dialog_kind = "engineInstall".into();
+        message.data = json!({"title":"Naming needs a local engine", "engineName":"Naming engine",
+            "pluginName":"Structure names", "pluginId":"org.chemdraft.names", "disclosure":"About 100 MB to download and about 0.3 GB on disk. Runs only on this computer.",
+            "requiredDiskBytes":300000000, "freeDiskBytes":1000000000,
+            "state":{"status":"notInstalled"}, "buttons":["install","close"]});
+        message
+    }
+    #[test]
+    fn engine_install_registration_validation_ownership_and_limits() {
+        let message = engine_install_snapshot();
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("engineInstall").unwrap();
+        assert!(spec.resizable);
+        assert!(!spec.maximizable);
+        assert_eq!(spec.size, (520.0, 480.0));
+        let mut registry = Registry::default();
+        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(build);
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        assert!(authorize(session, "main", true, Some(&message)).is_ok());
+        assert!(authorize(session, "preferences", true, Some(&message)).is_err());
+        assert!(authorize(session, &registration.window_label, false, Some(&message)).is_ok());
+        assert!(authorize(session, "main", false, Some(&message)).is_err());
+        assert!(
+            serde_json::to_vec(&delivery(session, "main", &message).unwrap())
+                .unwrap()
+                .len()
+                < MAX_CHANNEL_BYTES
+        );
+        for field in ["path", "callback", "document"] {
+            let mut invalid = message.clone();
+            invalid.data[field] = json!("untrusted");
+            assert!(invalid.validate().is_err());
+        }
+        for state in [
+            json!({"status":"unknown"}),
+            json!({"status":"notInstalled","extra":1}),
+            json!({"status":"broken","detail":null}),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data["state"] = state;
+            assert!(invalid.validate().is_err());
+        }
+        let mut oversized = message.clone();
+        oversized.data["disclosure"] = json!("\u{0001}".repeat(1024));
+        assert!(oversized.validate().is_err());
+        assert!(delivery(session, "main", &oversized).is_err());
+        oversized.data["disclosure"] = json!("x".repeat(MAX_BYTES));
+        assert!(oversized.validate().is_err());
+        for number in [json!(-1), json!(1.5), json!(MAX_SAFE_INTEGER + 1)] {
+            let mut invalid = message.clone();
+            invalid.data["freeDiskBytes"] = number;
+            assert!(invalid.validate().is_err());
+        }
+        for action in ["install", "cancelInstall", "close"] {
+            let mut action_message = message.clone();
+            action_message.message_type = "action".into();
+            action_message.data = json!({"action":action});
+            assert!(action_message.validate().is_ok());
+            action_message.data["unknown"] = json!(true);
+            assert!(action_message.validate().is_err());
+        }
+        for label in [
+            "dialog-main-engineInstall-",
+            "dialog-main-engineInstall-../",
+            "dialog-other-engineInstall-1",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+    }
+    #[test]
+    fn engine_install_progress_is_bounded_and_cancel_bypasses_pending_install() {
+        let mut registry = Registry::default();
+        let mut message = engine_install_snapshot();
+        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        message.message_type = "action".into();
+        message.data = json!({"action":"install"});
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(!reserve_action(session, &message).unwrap());
+        session.snapshot.data["state"] = json!({"status":"installing", "phase":"Installing Python", "step":2,"steps":5,"bytesDone":100,"bytesTotal":200,"estimated":true});
+        session.snapshot.data["buttons"] = json!(["cancelInstall", "close"]);
+        assert!(session.snapshot.validate().is_ok());
+        assert!(
+            serde_json::to_vec(&delivery(session, "main", &session.snapshot).unwrap())
+                .unwrap()
+                .len()
+                < MAX_CHANNEL_BYTES
+        );
+        for (field, value) in [
+            ("step", json!(6)),
+            ("estimated", json!("yes")),
+            ("path", json!("/private")),
+        ] {
+            let mut invalid = session.snapshot.clone();
+            invalid.data["state"][field] = value;
+            assert!(invalid.validate().is_err());
+        }
+        message.request_id = "cancel-install".into();
+        message.data = json!({"action":"cancelInstall"});
+        assert!(reserve_action(session, &message).unwrap());
+        message.request_id = "close-install".into();
+        message.data = json!({"action":"close"});
+        assert!(reserve_action(session, &message).unwrap());
+    }
+    #[test]
+    fn engine_install_persists_its_kind_and_reopens_at_destination_scale() {
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, engine_install_snapshot(), false).unwrap();
+        let saved = SavedPosition {
+            monitor: "other".into(),
+            x: 1200.0,
+            y: 20.0,
+            offset_x: 0.5,
+            offset_y: 0.25,
+        };
+        registry
+            .sessions
+            .get_mut(&registration.host_id)
+            .unwrap()
+            .pending_move = Some((Instant::now(), saved.clone()));
+        let writes = take_pending_positions(&mut registry);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "engineInstall");
+        let owner = WorkArea {
+            id: "owner".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+            scale: 2.0,
+        };
+        let other = WorkArea {
+            id: "other".into(),
+            x: 1000.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+            scale: 1.5,
+        };
+        let position = position_for(
+            Some(&writes[0].1),
+            &[other],
+            &owner,
+            (0.0, 0.0, 800.0, 600.0),
+            kind_spec("engineInstall").unwrap().size,
+        );
+        assert_eq!(position, (1860.0, 120.0, 1.5));
+        assert!(!should_persist(
+            true,
+            true,
+            (false, false),
+            false,
+            false,
+            true,
+            false
+        ));
+    }
     #[test]
     fn picker_focus_targets_only_the_same_live_ready_export_session() {
         let mut registry = Registry::default();

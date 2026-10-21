@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { engineInstallFixture } from "./engineInstallTestFixtures";
 import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
@@ -46,4 +47,34 @@ it("validates owner frame updates and presentation fields strictly", () => {
   for (const change of [{ revision: 0 }, { revision: 1.5 }, { page: { width: 0, height: 10 } }, { url: "file:///private" }]) {
     expect(parseDialogMessage({ ...message, data: { status: "frame", frame: { ...frame, ...change } } })).toBeUndefined();
   }
+});
+
+it("validates engine install snapshots, states and actions strictly within the delivery budget", () => {
+  const data = engineInstallFixture();
+  const message = { ...snapshot(), dialogKind: "engineInstall", data };
+  expect(parseDialogMessage(message)).toBeDefined();
+  const states = [
+    { state: { status: "broken", detail: "Damaged receipt" }, buttons: ["install", "close"] },
+    { state: { status: "installing", phase: "Installing Python", step: 2, steps: 5, bytesDone: 100, bytesTotal: 200, estimated: true }, buttons: ["cancelInstall", "close"] },
+    { state: { status: "installed" }, buttons: ["close"] },
+    { state: { status: "failed", message: "Download failed" }, buttons: ["close"] }
+  ];
+  for (const state of states) expect(parseDialogMessage({ ...message, data: { ...data, ...state } })).toBeDefined();
+  for (const action of ["install", "cancelInstall", "close"]) {
+    expect(parseDialogMessage({ ...message, type: "action", data: { action } })).toBeDefined();
+    expect(parseDialogMessage({ ...message, type: "action", data: { action, path: "/tmp" } })).toBeUndefined();
+  }
+  for (const change of [
+    { path: "/tmp" }, { freeDiskBytes: -1 }, { requiredDiskBytes: 1.5 }, { freeDiskBytes: Number.MAX_SAFE_INTEGER + 1 },
+    { state: { status: "notInstalled", detail: "unknown" } }, { state: { status: "unsupported" } },
+    { state: { status: "broken", detail: null } }, { buttons: ["install", "cancelInstall", "close"] },
+    { ...states[1], state: { ...states[1]!.state, step: 6 } },
+    { ...states[1], state: { ...states[1]!.state, estimated: "yes" } },
+    { disclosure: "x".repeat(16384) },
+    { disclosure: "\\u0001".repeat(1024) }
+  ]) expect(parseDialogMessage({ ...message, data: { ...data, ...change } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "cancel" } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: ["install"] } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, type: "result", data: { status: ["accepted"] } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, type: "result", data: { status: "exported" } })).toBeUndefined();
 });

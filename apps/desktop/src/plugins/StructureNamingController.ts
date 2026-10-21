@@ -33,6 +33,10 @@ export class StructureNamingController {
   private activity?: NamingActivity;
   private nextId = 1;
   private presenters = 0;
+  private documentTabId?: () => string | undefined;
+  private revealInstall?: () => void;
+  private installDocumentTabId?: string;
+  getInstallDocumentTabId = (): string | undefined => this.installDocumentTabId;
   private listeners = new Set<() => void>();
   constructor(private readonly engine: StructureNamingEngine,
     private readonly canonicalizer?: NamingCanonicalizer) {}
@@ -42,7 +46,9 @@ export class StructureNamingController {
   getOpenInstall = (): OpenStructureNamingInstall | undefined => this.pending;
   getInstallRun = (): StructureNamingInstallRun | undefined => this.run;
   getActivity = (): NamingActivity | undefined => this.pending ? undefined : this.activity;
-  attachInstallPresenter(): () => void {
+  attachInstallPresenter(documentTabId?: () => string | undefined, revealInstall?: () => void): () => void {
+    this.documentTabId = documentTabId;
+    this.revealInstall = revealInstall;
     this.presenters++;
     return () => { if (--this.presenters === 0 && this.pending) this.decline(this.pending.id); };
   }
@@ -97,7 +103,11 @@ export class StructureNamingController {
   }
   async name(plugin: { id: string; name: string }, molecule: MoleculeObject, signal: AbortSignal): Promise<PluginStructureToNameResult> {
     if (signal.aborted) return { status: "cancelled" };
-    if (this.active) return { status: "failed", code: "busy", message: "Another structure is already being named." };
+    if (this.active) {
+      if (this.pending) this.revealInstall?.();
+      return { status: "failed", code: "busy", message: "Another structure is already being named." };
+    }
+    this.installDocumentTabId = this.documentTabId?.();
     const active = { id: this.nextId++, stop: new AbortController(), engineRunning: false };
     this.active = active;
     const abort = () => active.stop.abort();
@@ -135,6 +145,7 @@ export class StructureNamingController {
     if (status.state === "unsupported") return { status: "unsupported", reason: status.detail ?? "This computer cannot run the local naming engine." };
     if (status.state !== "installed") {
       if (!this.presenters) return { status: "engineNotInstalled" };
+      if (!this.installPromise) this.run = undefined;
       const outcome = await new Promise<InstallOutcome>(resolve => {
         this.pending = { id: active.id, pluginId: plugin.id, pluginName: plugin.name, status, installing: status.state === "installing", ownsInstall: false, resolve };
         this.notify();

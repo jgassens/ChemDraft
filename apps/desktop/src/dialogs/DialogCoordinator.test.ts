@@ -175,3 +175,47 @@ it("rejects stale previews and allows export while a preview is pending", async 
   expect(published.some(message => message.type === "result" && message.data.status === "preview")).toBe(false);
   await coordinator.dispose();
 });
+
+it("retains an engine install window, streams progress, allows cancellation, and dismisses on tab close", async () => {
+  const { engineInstallFixture } = await import("./engineInstallTestFixtures");
+  const h = host();
+  const presenter = { action: vi.fn(), closed: vi.fn() };
+  await h.coordinator.openEngineInstall("tab-1", engineInstallFixture(), presenter);
+  await h.deliver(h.message("ready", {}));
+  await h.coordinator.openEngineInstall("tab-1", engineInstallFixture(), presenter);
+  expect(h.transport.open).toHaveBeenCalledTimes(2);
+  const retained = vi.mocked(h.transport.open).mock.calls[0]![0];
+  expect(vi.mocked(h.transport.open).mock.calls[1]![0]).toEqual(retained);
+  let finish!: () => void;
+  presenter.action.mockImplementationOnce(() => new Promise<void>(r => { finish = r; }));
+  const install = h.deliver(h.message("action", { action: "install" }));
+  await Promise.resolve();
+  await h.deliver(h.message("action", { action: "install" }, "double-click"));
+  expect(presenter.action).toHaveBeenCalledExactlyOnceWith("install");
+  await h.coordinator.openEngineInstall("tab-1", engineInstallFixture(), presenter);
+  expect(h.transport.open).toHaveBeenCalledTimes(3);
+  await h.coordinator.updateEngineInstall("tab-1", { ...engineInstallFixture(),
+    state: { status: "installing", phase: "Installing Python", step: 2, steps: 5, bytesDone: 10, bytesTotal: 100, estimated: true },
+    buttons: ["cancelInstall", "close"] });
+  await h.deliver(h.message("action", { action: "cancelInstall" }, "cancel"));
+  expect(presenter.action).toHaveBeenLastCalledWith("cancelInstall");
+  await h.coordinator.closeTab("tab-1");
+  expect(presenter.closed).toHaveBeenCalledOnce();
+  expect(h.transport.close).toHaveBeenCalledWith("opaque", "ownerTabClose");
+  finish(); await install;
+  await h.coordinator.dispose();
+});
+
+it("cancels an engine opening while the previous failure window is closing", async () => {
+  const { engineInstallFixture } = await import("./engineInstallTestFixtures");
+  const h = host();
+  let finishClose!: () => void;
+  const closing = new Promise<void>(resolve => { finishClose = resolve; });
+  const presenter = { action: vi.fn(), closed: vi.fn() };
+  const opening = h.coordinator.openEngineInstall("tab-1", engineInstallFixture(), presenter, closing);
+  await h.coordinator.closeTab("tab-1");
+  finishClose(); await opening;
+  expect(h.transport.open).not.toHaveBeenCalled();
+  expect(presenter.closed).toHaveBeenCalledOnce();
+  await h.coordinator.dispose();
+});
