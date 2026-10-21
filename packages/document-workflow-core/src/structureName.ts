@@ -52,10 +52,23 @@ export type StructureNameOutcome =
     limitCode?: string;
   };
 
-const approximationWarningCodes = new Set([
-  "export.smiles_dative_bond",
-  "export.smiles_bond_order",
-  "export.smiles_atom_label"
+// Audited against moleculeSmiles.ts and chem-core/molfile.ts (V2000):
+// - Abbreviation expansion preserves the exact graph; retain its informational warning.
+// - Only dashed DISPLAY on a double/triple/aromatic bond is harmless: the chemical order is
+//   retained, and dashes here carry no charge, H count, isotope, radical, stereo or fragment data.
+// - Dative-to-single, unknown/query or unresolved aromatic orders (with or without literal-atom
+//   H-count loss), omitted literal valences (unknown order or sum >14), and dummy/R-group
+//   substitutions (including unspellable condensed labels) can change chemistry: decline.
+// - moleculeSmiles' dative_bond, bond_order, atom_label and stereo_dropped warnings also decline.
+// V2000 warnings share one code and are untyped text, so allow only these complete, reviewed
+// display messages. Every other message/code, including future warnings, fails closed.
+const exactExportWarningCodes = new Set(["export.smiles_abbreviation_expanded"]);
+const displayOnlyV2000Warnings = new Set([
+  "Dashed display on a double bond is not a coordination bond; written to SMILES as double, dashed style not preserved.",
+  "Dashed display on a triple bond is not a coordination bond; written to SMILES as triple, dashed style not preserved.",
+  "Dashed display on an aromatic bond is not a coordination bond; written to SMILES as single, dashed style not preserved.",
+  "Dashed display on an aromatic bond is not a coordination bond; written to SMILES as double, dashed style not preserved.",
+  "Dashed display on an aromatic bond is not a coordination bond; written to SMILES as aromatic, dashed style not preserved."
 ]);
 
 const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
@@ -155,7 +168,7 @@ export async function nameStructure(deps: StructureNameDeps, molecule: MoleculeO
     return decline("structureNotExact", "The drawing could not be written as exact SMILES.");
   }
 
-  if (approximationWarnings(exportWarnings)) {
+  if (inexactExportWarnings(exportWarnings)) {
     return decline("structureNotExact", "The drawing cannot be represented exactly as SMILES.");
   }
   if (canonicalizationFailed) {
@@ -199,8 +212,9 @@ export async function nameStructure(deps: StructureNameDeps, molecule: MoleculeO
   return { status: "named", name: raw.name!, kind: accepted.kind, warnings };
 }
 
-function approximationWarnings(warnings: readonly ExportWarning[]): boolean {
-  return warnings.some((warning) => approximationWarningCodes.has(warning.code));
+function inexactExportWarnings(warnings: readonly ExportWarning[]): boolean {
+  return warnings.some((warning) => !exactExportWarningCodes.has(warning.code) &&
+    !(warning.code === "export.smiles_v2000_loss" && displayOnlyV2000Warnings.has(warning.message)));
 }
 
 function limitDeclineCode(limitCode: string | null): Extract<StructureNameDeclineCode, "unsupportedElement" | "unnameable" | "engineLimit"> {

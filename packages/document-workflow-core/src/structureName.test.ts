@@ -1,8 +1,9 @@
 // This test stays beside its module so the policy contract is easy to audit. The purity boundary
 // scans src imports as production dependencies, so use the workspace test runner by its local path.
-import { describe, expect, it, vi } from "../../../node_modules/vitest";
+import { afterEach, describe, expect, it, vi } from "../../../node_modules/vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
+import * as smilesExport from "./moleculeSmiles";
 import {
   acceptOrthonymResult,
   nameStructure,
@@ -10,6 +11,8 @@ import {
   type OrthonymRawResult,
   type StructureNameDeps
 } from "./structureName";
+
+afterEach(() => vi.restoreAllMocks());
 
 const verified = (overrides: Partial<OrthonymRawResult> = {}): OrthonymRawResult => ({
   name: "ethanol",
@@ -148,6 +151,100 @@ describe("nameStructure", () => {
     for (const drawn of [dative, unknown, dummy]) {
       await expect(nameStructure(deps(), drawn)).resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
     }
+  });
+
+  // Inject at the export boundary to cover even warnings whose source path currently refuses
+  // before RDKit runs. Both canonicalisations would succeed and agree; warnings must still veto.
+  it.each([
+    ["export.smiles_dative_bond", "Dative bond written as single."],
+    ["export.smiles_bond_order", "Unknown bond order approximated."],
+    ["export.smiles_atom_label", "Atom label written as dummy."],
+    ["export.smiles_stereo_dropped", "Stereochemistry could not be written to SMILES."],
+    ["export.smiles_v2000_loss", "Bond b1 has an unknown bond order; written as bond type 8 (any), which readers treat as a query bond with no chemical order."],
+    ["export.smiles_v2000_loss", "V2000 has no coordination bond type: 1 dative (dashed) bond written as plain single. Export V3000 to preserve it."],
+    ["export.smiles_v2000_loss", "Aromatic bonds at atoms a1, a2 have no resolved Kekulé order; the structure engine interpreted them for SMILES."],
+    ["export.smiles_v2000_loss", "Aromatic bonds at atoms a1, a2 have no resolved Kekulé order; the structure engine interpreted them for SMILES. Hydrogen counts at literal atoms a1 could not be specified; the structure engine may add hydrogens."],
+    ["export.smiles_v2000_loss", "Literal atoms a1 have an unknown-order bond; written without a valence field, so a reader may add hydrogens."],
+    ["export.smiles_v2000_loss", "Literal atom \"N\" has a bond-order sum of 15, which the structure engine cannot receive exactly for SMILES; the engine may add hydrogens."],
+    ["export.smiles_v2000_loss", "Atom label \"Ph\" is not an element symbol; written as a dummy atom (*) — the label's group is not represented in SMILES."],
+    ["export.smiles_v2000_loss", "Atom label \"Ph\" is not an element symbol; written as R-group placeholder R1 — the label's group is not represented in SMILES."],
+    ["export.smiles_v2000_loss", "Atom label \"Ar\" stands for a group here (bonded aryl); written as a dummy atom (*) — the label's group is not represented in SMILES."],
+    ["export.smiles_v2000_loss", "Atom label \"NH2\" is not an element symbol; it cannot be written as N because it has an unknown-order bond, so the hydrogen count it states cannot be carried by an explicit valence; written as a dummy atom (*) — the label's group is not represented in SMILES."],
+    ["export.smiles_v2000_loss", "Atom label \"NH2\" is not an element symbol; it cannot be written as N because it has an aromatic bond with no resolved Kekulé order, so the hydrogen count it states cannot be carried by an explicit valence; written as a dummy atom (*) — the label's group is not represented in SMILES."],
+    ["export.smiles_v2000_loss", "Atom label \"NH2\" is not an element symbol; it cannot be written as N because its bond orders and stated hydrogens sum to 15, past the V2000 valence field's limit of 14; written as a dummy atom (*) — the label's group is not represented in SMILES."],
+    ["export.future_warning", "A warning added after this policy was audited."],
+    ["export.smiles_v2000_loss", "A new V2000 warning."],
+    ["export.smiles_v2000_loss", "Dashed display on a double bond is not a coordination bond; written to SMILES as double, dashed style not preserved. Hydrogen counts changed."]
+  ])("declines %s: %s even with a matching canonical read-back", async (code, message) => {
+    const original = smilesExport.moleculeSmiles;
+    vi.spyOn(smilesExport, "moleculeSmiles").mockImplementationOnce(async (...args) => {
+      args[2].push({ code, message, severity: "warning" });
+      return original(...args);
+    });
+    const services = deps();
+    await expect(nameStructure(services, molecule()))
+      .resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
+    expect(services.canonicalize).toHaveBeenCalled();
+    expect(services.name).not.toHaveBeenCalled();
+    expect(services.readName).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("declines a real unresolved-aromatic writer warning (typed atom: %s)", async (labelLiteral) => {
+    const drawn = molecule({
+      atoms: molecule().atoms.slice(0, 2).map(atom => ({ ...atom, labelLiteral })),
+      bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "aromatic" }]
+    });
+    const warnings: Parameters<typeof smilesExport.moleculeSmiles>[2] = [];
+    await smilesExport.moleculeSmiles(drawn, 0, warnings, async () => ({ smiles: "CCO" }));
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: "export.smiles_v2000_loss",
+      message: expect.stringContaining(labelLiteral ? "Hydrogen counts at literal atoms" : "no resolved Kekulé order")
+    }));
+    const services = deps();
+    await expect(nameStructure(services, drawn)).resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
+    expect(services.canonicalize).toHaveBeenCalled();
+    expect(services.name).not.toHaveBeenCalled();
+  });
+
+  it("declines a real literal-atom valence overflow even when canonicalisation succeeds", async () => {
+    const atoms = Array.from({ length: 6 }, (_, index) => ({
+      id: `a${index}`, element: "N", x: index * 10, y: 0, formalCharge: 0, labelLiteral: true
+    }));
+    const bonds = atoms.slice(1).map(atom => ({
+      id: `b${atom.id}`, fromAtomId: "a0", toAtomId: atom.id, order: "triple" as const
+    }));
+    const drawn = molecule({ atoms, bonds });
+    const warnings: Parameters<typeof smilesExport.moleculeSmiles>[2] = [];
+    await smilesExport.moleculeSmiles(drawn, 0, warnings, async () => ({ smiles: "CCO" }));
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: "export.smiles_v2000_loss", message: expect.stringContaining("bond-order sum of 15")
+    }));
+    await expect(nameStructure(deps(), drawn)).resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
+  });
+
+  it.each(["double", "triple"] as const)("still names a %s bond with only a lost dashed display", async (order) => {
+    const drawn = molecule({ bonds: [{
+      id: "b1", fromAtomId: "a1", toAtomId: "a2", order, display: { bondStyle: "dashed" }
+    }] });
+    const warnings: Parameters<typeof smilesExport.moleculeSmiles>[2] = [];
+    await smilesExport.moleculeSmiles(drawn, 0, warnings, async () => ({ smiles: "CCO" }));
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: "export.smiles_v2000_loss", message: expect.stringContaining("dashed style not preserved")
+    }));
+    await expect(nameStructure(deps(), drawn)).resolves.toMatchObject({ status: "named", warnings: [] });
+  });
+
+  it("still names resolved aromatic bonds with only a lost dashed display", async () => {
+    const atoms = Array.from({ length: 6 }, (_, index) => ({
+      id: `a${index}`, element: "C", x: Math.cos(index * Math.PI / 3) * 10,
+      y: Math.sin(index * Math.PI / 3) * 10, formalCharge: 0
+    }));
+    const bonds = atoms.map((atom, index) => ({
+      id: `b${index}`, fromAtomId: atom.id, toAtomId: atoms[(index + 1) % 6]!.id,
+      order: "aromatic" as const, display: { bondStyle: "dashed" as const }
+    }));
+    await expect(nameStructure(deps(), molecule({ atoms, bonds })))
+      .resolves.toMatchObject({ status: "named", warnings: [] });
   });
 
   it("enforces SMILES and heavy-atom caps", async () => {
