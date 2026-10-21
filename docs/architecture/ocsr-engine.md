@@ -535,26 +535,28 @@ nothing else in the installer or process manager branches on the OS. Free-disk q
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
 | macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
-| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | implemented, never run |
+| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | install reached relocation; junction fix awaiting Windows validation |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
 ## Adding Windows
 
-The Windows implementation compiles in the seam but has never been built or run on Windows, and CI
-runs Rust checks only on macOS. Before calling it release-ready:
+An actual Windows install reached relocation and exposed a junction privilege failure: uv creates a
+directory junction for the managed Python's minor version, but relocation previously replaced it
+with a symlink, which failed with error 1314 for an ordinary user. Relocation now detects and
+recreates that junction with an absolute rebased target through `FSCTL_SET_REPARSE_POINT`, using
+the existing `windows-sys` dependency; real symlinks retain their type. No Developer Mode or elevation
+is needed to recreate the junction. The fix has not yet been exercised by a real Windows install.
+Before calling it release-ready:
 
 - Build and run `cargo clippy --all-targets -- -D warnings` and `cargo test` on Windows.
 - Run a real clean install and uninstall, including cancellation during each external step, and quit
   the app mid-install: no `uv.exe` or `python.exe` may survive. `taskkill /T` cannot reach a
   descendant whose parent has already exited; a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
   would, and would also cover ChemDraft crashing, so it is the stronger fix once this can be tested.
-- **Relocation is the open question.** On Windows, uv links the managed Python's minor-version
-  directory with a junction, and the venv's `python.exe` is a launcher that reads `pyvenv.cfg`. The
-  `pyvenv.cfg` rewrite should be enough for the venv, but `std` cannot create junctions, and recreating
-  a link with `symlink_dir` needs Developer Mode or elevation, so a junction pointing into the staging
-  directory may fail to relocate. If it does, the post-swap import check fails and the install rolls
-  back cleanly rather than leaving a broken engine. The likely fixes are to create the junction through
-  the Win32 API, or to install with `UV_PYTHON_INSTALL_DIR` outside the renamed tree.
+- Run the junction relocation regression test as an ordinary user with Developer Mode disabled,
+  then complete a clean engine install. Confirm the junction targets the final directory, the venv's
+  `python.exe` launcher resolves the rewritten `pyvenv.cfg`, and the post-swap import check and real
+  recognition succeed. Failure must still roll back cleanly rather than leave a broken engine.
 - Check torch wheel resolution for Python 3.10 on Windows, and paths with spaces and non-ASCII
   characters (the sidecar's image path must be valid Unicode).
 - A new architecture (e.g. Windows arm64) needs an upstream uv asset and a reviewed checksum in

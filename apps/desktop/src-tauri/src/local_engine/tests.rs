@@ -160,6 +160,51 @@ impl Drop for FixtureRoot {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn relocation_preserves_directory_symlink() {
+    assert_directory_link_relocation(false);
+}
+
+#[cfg(windows)]
+#[test]
+fn relocation_preserves_directory_junction_without_symlink_privilege() {
+    assert_directory_link_relocation(true);
+}
+
+fn assert_directory_link_relocation(junction: bool) {
+    let fixture = FixtureRoot::new("relocate-link");
+    let root = fs::canonicalize(&fixture.0).expect("absolute fixture root");
+    let partial = root.join("engine.partial");
+    let installed = root.join("engine");
+    let python = Path::new("python").join("cpython-3.10.20");
+    let alias = Path::new("python").join("cpython-3.10");
+    fs::create_dir_all(partial.join(&python)).expect("managed Python directory");
+    fs::write(partial.join(&python).join("python.exe"), b"python").expect("interpreter fixture");
+    install::create_link(&partial.join(&python), &partial.join(&alias), junction)
+        .expect("directory link without elevation");
+    assert_eq!(
+        install::is_junction(&partial.join(&alias)).unwrap(),
+        junction
+    );
+    fs::rename(&partial, &installed).expect("commit staged tree");
+    assert!(
+        !installed.join(&alias).exists(),
+        "old target is now missing"
+    );
+
+    install::relocate_staged_tree(&installed, &[(partial.clone(), installed.clone())])
+        .expect("relocate directory link");
+
+    let link = installed.join(&alias);
+    assert_eq!(install::is_junction(&link).unwrap(), junction);
+    let target = fs::read_link(&link).expect("relocated target");
+    assert!(target.is_absolute());
+    assert_eq!(target, installed.join(&python));
+    assert_eq!(fs::read(link.join("python.exe")).unwrap(), b"python");
+    assert!(!partial.exists(), "relocation must not recreate staging");
+}
+
 #[derive(Default)]
 struct FixtureIo {
     bad_sha: bool,

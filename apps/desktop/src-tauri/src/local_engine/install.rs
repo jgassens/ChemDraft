@@ -877,7 +877,7 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
     false
 }
 
-/// Rewrites every symlink under `root` whose target lies under an old prefix, and the `home`
+/// Rewrites every symlink or junction under `root` whose target lies under an old prefix, and the `home`
 /// entry of `venv/pyvenv.cfg`, so both point at the same place under the new prefix.
 pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::Result<()> {
     let rebase = |target: &Path| {
@@ -891,11 +891,12 @@ pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::
             let entry = entry?;
             let path = entry.path();
             let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
+            let junction = is_junction(&path)?;
+            if junction || file_type.is_symlink() {
                 let target = fs::read_link(&path)?;
                 if let Some(rebased) = rebase(&target) {
                     fs::remove_file(&path).or_else(|_| fs::remove_dir(&path))?;
-                    create_symlink(&rebased, &path)?;
+                    create_link(&rebased, &path, junction)?;
                 }
             } else if file_type.is_dir() {
                 pending.push(path);
@@ -918,15 +919,101 @@ pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::
 }
 
 #[cfg(unix)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+pub(super) fn create_link(target: &Path, link: &Path, _junction: bool) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
-// Windows: uv links the managed Python's minor-version directory with a junction. std cannot
-// create junctions, and symlink creation needs Developer Mode or elevation; this path is
-// unverified until a real Windows install runs (see docs/architecture/engine.md).
+// A real Windows install confirmed uv's minor-version directory is a junction. Replacing it
+// with symlink_dir failed with error 1314 for an ordinary user. Preserve the reparse-point kind:
+// junction creation needs no symlink privilege (see docs/architecture/ocsr-engine.md).
 #[cfg(windows)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+pub(super) fn create_link(target: &Path, link: &Path, junction: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
+    };
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    if junction {
+        let absolute: Vec<u16> = std::path::absolute(target)?
+            .as_os_str()
+            .encode_wide()
+            .collect();
+        // The substitute name is an absolute NT path, including for verbatim and UNC paths.
+        let mut substitute: Vec<u16> = r"\??\".encode_utf16().collect();
+        if absolute.starts_with(&[92, 92, 63, 92]) {
+            substitute.extend_from_slice(&absolute[4..]);
+        } else if absolute.starts_with(&[92, 92]) {
+            substitute.extend("UNC\\".encode_utf16());
+            substitute.extend_from_slice(&absolute[2..]);
+        } else {
+            substitute.extend_from_slice(&absolute);
+        }
+        let size = 16 + (substitute.len() + absolute.len() + 2) * 2;
+        if size > MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "junction target is too long",
+            ));
+        }
+        // REPARSE_DATA_BUFFER: 8-byte header, 8-byte mount-point header, then two NUL-terminated
+        // UTF-16 names. Offsets and lengths count bytes from the start of PathBuffer.
+        let mut data = Vec::with_capacity(size);
+        data.extend(IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        for value in [
+            (size - 8) as u16,
+            0,
+            0,
+            (substitute.len() * 2) as u16,
+            ((substitute.len() + 1) * 2) as u16,
+            (absolute.len() * 2) as u16,
+        ] {
+            data.extend(value.to_le_bytes());
+        }
+        for unit in substitute
+            .iter()
+            .chain([0].iter())
+            .chain(absolute.iter())
+            .chain([0].iter())
+        {
+            data.extend(unit.to_le_bytes());
+        }
+        fs::create_dir(link)?;
+        let result = (|| {
+            let directory = fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+                .open(link)?;
+            let mut returned = 0;
+            // SAFETY: the owned handle stays open; data holds a complete mount-point buffer;
+            // this synchronous call uses no output buffer or OVERLAPPED structure.
+            let ok = unsafe {
+                DeviceIoControl(
+                    directory.as_raw_handle(),
+                    FSCTL_SET_REPARSE_POINT,
+                    data.as_ptr().cast(),
+                    data.len() as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir(link);
+        }
+        return result;
+    }
     if target.is_dir() {
         std::os::windows::fs::symlink_dir(target, link)
     } else {
@@ -935,11 +1022,52 @@ fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+pub(super) fn create_link(_target: &Path, _link: &Path, _junction: bool) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "symlinks are unsupported on this platform",
     ))
+}
+
+#[cfg(windows)]
+pub(super) fn is_junction(path: &Path) -> io::Result<bool> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileAttributeTagInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+
+    if fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(false);
+    }
+    let link = fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut info = FILE_ATTRIBUTE_TAG_INFO {
+        FileAttributes: 0,
+        ReparseTag: 0,
+    };
+    // SAFETY: link owns the handle and info is writable with exactly the requested size.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            link.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT)
+}
+
+#[cfg(not(windows))]
+pub(super) fn is_junction(_path: &Path) -> io::Result<bool> {
+    Ok(false)
 }
 
 /// Whether `root` holds an install that matches this build's pins and layout, as
