@@ -1,3 +1,7 @@
+import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import { StructureNamingController } from "./StructureNamingController";
+import { TauriStructureNamingEngine, type StructureNamingEngine } from "./structureNamingEngine";
+import { scopedNamingMolecule, type NamingCanonicalizer } from "./pluginStructureNaming";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   AppliedPatchReceipt,
@@ -108,6 +112,8 @@ export interface DesktopPluginRuntimeOptions {
   imageSourceRegistry?: ImageSourceRegistry;
   /** Local OCSR engine port; injectable for tests and future platform engines. */
   structureRecognitionEngine?: StructureRecognitionEngine;
+  structureNamingEngine?: StructureNamingEngine;
+  namingCanonicalizer?: NamingCanonicalizer;
   /** Chemistry validation seam used after recognition and before a proposal is built. */
   recognitionStructureValidator?: RecognitionStructureValidator;
   /** Injectable clock (tests pass a fixed value); defaults to wall-clock. */
@@ -159,6 +165,7 @@ export interface DesktopPluginRuntime {
   prompts: PluginPromptTextController;
   images: PluginImageRequestController;
   recognition: StructureRecognitionController;
+  naming: StructureNamingController;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string): void;
@@ -237,6 +244,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // (registry → handler wrapper → `createCommandContext`, no await between), so a collector armed
   // around that call is claimed by exactly that invocation's context. Its selection API then hands the
   // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
+  const naming = new StructureNamingController(options.structureNamingEngine ?? new TauriStructureNamingEngine(), options.namingCanonicalizer);
+  const namingInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
+  let namingFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
   const proposalTabs = new Map<string, string>();
@@ -253,9 +263,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     override async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
+      const tokens: symbol[] = [];
+      const previousFrame = namingFrame;
+      namingFrame = tokens;
       try {
-        return await super.invokeCommand<Result>(commandId);
+        const call = super.invokeCommand<Result>(commandId);
+        namingFrame = previousFrame;
+        return await call;
       } finally {
+        for (const token of tokens) { namingInvocations.get(token)?.stop.abort(); namingInvocations.delete(token); }
         if (tabId) {
           const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
           if (remaining > 0) runningTabCommands.set(tabId, remaining);
@@ -265,8 +281,33 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       }
     }
 
+    override unregisterPlugin(pluginId: string): void {
+      for (const [token, invocation] of namingInvocations) {
+        if (invocation.pluginId === pluginId) { invocation.stop.abort(); namingInvocations.delete(token); }
+      }
+      super.unregisterPlugin(pluginId);
+    }
+
     override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken);
+      const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
+      if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
+        if (invocationToken && namingFrame) {
+          namingFrame.push(invocationToken);
+          namingInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
+        }
+        const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
+        context.chemistry.structureToName = async request => {
+          for (const permission of permissions) this.requirePermission(pluginId, permission);
+          const invocation = invocationToken ? namingInvocations.get(invocationToken) : undefined;
+          if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
+          const parsed = PluginStructureToNameRequestSchema.parse(request);
+          if (documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
+          const molecule = scopedNamingMolecule(options.getActiveDocument(), options.getSelection?.(), parsed.objectId);
+          const manifest = this.listPlugins().find(plugin => plugin.id === pluginId)!;
+          return naming.name(manifest, molecule, invocation.stop.signal);
+        };
+      }
       const tabId = options.getActiveDocumentTab?.().id;
       const proposePatch = context.documents.proposePatch;
       context.documents.proposePatch = (proposal) => {
@@ -348,6 +389,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     prompts,
     images,
     recognition,
+    naming,
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;

@@ -30,7 +30,7 @@ export interface OfficialPluginCatalogEntry {
   assetStem: string;
   /** A host-managed engine the plugin cannot work without. Installing the plugin from the catalog
    *  also installs it, in the same flow, after saying so in the review. */
-  requiresEngine?: "structureRecognition";
+  requiresEngine?: "structureRecognition" | "structureNaming";
   /** Marks a catalog entry whose recognition quality is not yet reliable enough for general use.
    *  Surfaces must show the experimental caveat wherever the entry, its install, or its output
    *  is shown to the user. */
@@ -42,6 +42,14 @@ export interface OfficialPluginCatalogEntry {
  * authority for both one-click installs and update locations; plugin manifests never extend it.
  */
 export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
+  {
+    pluginId: "org.chemdraft.naming.orthonym",
+    displayName: "Name from Structure (Orthonym)",
+    description: "Name the selected structure. Every name shown was read back by OPSIN as exactly the drawn structure. Installing it also downloads a local naming engine (about 100 MB).",
+    repository: "jgassens/ChemDraft-Orthonym-Plugin",
+    assetStem: "orthonym-naming",
+    requiresEngine: "structureNaming"
+  },
   {
     pluginId: "org.chemdraft.nmr.predictor",
     displayName: "NMR Shift Predictor",

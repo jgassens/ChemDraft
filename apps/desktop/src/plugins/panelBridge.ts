@@ -278,14 +278,14 @@ export async function respondToProposalDecision(requestId: string, outcome: Prop
 }
 
 /**
- * Window → main: copy Molecular Inspector text through the main window's native clipboard, and
+ * Window → main: copy host-rendered analysis text through the main window's native clipboard, and
  * resolve with whether it actually landed.
  *
  * Report windows hold no clipboard permission of their own; the main window performs the write and
  * this returns its real outcome, so the floating window's "Copied" label can say "Copy failed"
  * instead of claiming success regardless (mirrors `requestSaveTextFileFromMain`).
  */
-export async function requestCopyMolecularInspectorText(text: string): Promise<boolean> {
+export async function requestCopyAnalysisText(text: string): Promise<boolean> {
   if (!isDesktopRuntime()) {
     return false;
   }
@@ -310,6 +310,9 @@ export async function requestCopyMolecularInspectorText(text: string): Promise<b
     unlisten?.();
   }
 }
+
+/** Compatibility name for the inspector's original caller. Both use the same host clipboard path. */
+export const requestCopyMolecularInspectorText = requestCopyAnalysisText;
 
 /** Main → window: answer a `copyMolecularInspector` action. */
 export async function respondToCopyMolecularInspector(requestId: string, ok: boolean): Promise<void> {

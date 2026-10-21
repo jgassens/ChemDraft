@@ -19,6 +19,8 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
+import { fakeNamingEngine, namingManifest } from "./structureNamingTestFixtures";
+import { OFFICIAL_PLUGIN_CATALOG, type OfficialPluginCatalogEntry } from "./pluginUpdates";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type {
   StructureRecognitionEngine,
@@ -69,6 +71,48 @@ const descriptors: readonly BundledPluginDescriptor[] = [
     options: { commandHandlers: { [commandId]: async () => ({ ok: true }) } }
   }
 ];
+
+describe("naming engine catalog ownership", () => {
+  it("discloses and starts the naming engine after the catalog plugin install", async () => {
+    const engine = fakeNamingEngine({ state: "notInstalled", requiredDiskBytes: 1e9, freeDiskBytes: 8e9 });
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
+    const official = { ...namingManifest, id: "org.chemdraft.naming.orthonym" };
+    const prepared: PreparedOfficialPluginInstall = {
+      ...pickedPackage(official), pluginId: official.id, checksumVerified: true
+    };
+    const install = vi.fn(async () => undefined);
+    mount(createElement(OfficialCatalogHarness, { runtime, prepare: async () => prepared, onInstall: install }));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${official.id}"]`)!.click();
+    });
+    const review = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
+    expect(review?.textContent).toContain("100 MB");
+    expect(review?.textContent).toContain("0.3 GB");
+    expect(review?.textContent).toContain("GPL-2.0-with-Classpath-Exception");
+    expect(engine.install).not.toHaveBeenCalled();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="confirm-install-package"]')!.click();
+    });
+    expect(install).toHaveBeenCalledOnce();
+    expect(engine.install).toHaveBeenCalledOnce();
+  });
+
+  it("chooses the Naming engine row by requiresEngine, including another catalog id", async () => {
+    const catalog = OFFICIAL_PLUGIN_CATALOG as OfficialPluginCatalogEntry[];
+    const alias = { ...catalog.find(entry => entry.requiresEngine === "structureNaming")!, pluginId: "org.chemdraft.test.otherNaming" };
+    catalog.push(alias);
+    onTestFinished(() => { catalog.splice(catalog.indexOf(alias), 1); });
+    const engine = fakeNamingEngine();
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
+    const manifest = { ...namingManifest, id: alias.pluginId };
+    mount(createElement(Harness, { runtime, installedPlugins: [installedEntry(manifest)], onClose: vi.fn(), onPluginsChanged: vi.fn() }));
+    await act(async () => { await Promise.resolve(); });
+    const row = document.querySelector('[data-testid="naming-engine-row"]');
+    expect(row?.textContent).toContain("Naming engine: installed");
+    expect(row?.querySelector('[data-action="remove-naming-engine"]')).not.toBeNull();
+    expect(row?.textContent).not.toContain("Recognition engine");
+  });
+});
 
 let container: HTMLElement | undefined;
 let root: Root | undefined;

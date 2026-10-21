@@ -11,6 +11,7 @@ export interface RecognitionInstallProgressProps {
   progress?: StructureRecognitionInstallProgress;
   startedAt?: number;
   phaseStartedAt?: number;
+  profile?: Parameters<typeof describeRecognitionInstall>[2];
 }
 
 /**
@@ -28,7 +29,7 @@ export function RecognitionInstallProgress(props: RecognitionInstallProgressProp
     recognitionInstallProgressStore.getSnapshot,
     recognitionInstallProgressStore.getSnapshot
   );
-  const { progress, startedAt, phaseStartedAt } = live
+  const { progress, startedAt, phaseStartedAt } = live && !props.profile
     ? { progress: live.progress ?? props.progress, startedAt: live.startedAt, phaseStartedAt: live.phaseStartedAt }
     : props;
   const [now, setNow] = useState(() => Date.now());
@@ -37,7 +38,7 @@ export function RecognitionInstallProgress(props: RecognitionInstallProgressProp
     return () => window.clearInterval(timer);
   }, []);
 
-  const view = describeRecognitionInstall(progress, { now, startedAt, phaseStartedAt });
+  const view = describeRecognitionInstall(progress, { now, startedAt, phaseStartedAt }, props.profile);
   const percent = Math.round(view.overallFraction * 100);
   const step = view.step;
   return (

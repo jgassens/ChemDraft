@@ -164,7 +164,7 @@ export function StructureRecognitionInstallDialog({
 
 export function recognitionInstallErrorMessage(
   error: StructureRecognitionInstallError,
-  status: OpenStructureRecognitionInstall["status"]
+  status: Pick<OpenStructureRecognitionInstall["status"], "requiredDiskBytes" | "freeDiskBytes">
 ): string {
   switch (error.code) {
     case "insufficientDisk":

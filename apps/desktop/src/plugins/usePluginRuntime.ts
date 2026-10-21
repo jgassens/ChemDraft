@@ -43,6 +43,7 @@ import type {
 } from "./StructureRecognitionController";
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
+import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -177,6 +178,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
+  useEffect(() => mountStructureNamingHost(runtime.naming), [runtime]);
   useEffect(() => {
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);

@@ -187,10 +187,10 @@ and the SMILES and MOL block. When a proposal of that recognition is queued — 
 A `recognition` review block on a proposal that no recognition in the same command invocation produced
 is refused: only the host may describe a recognition for review.
 
-## Host-owned structure naming
+## Structure naming (0.1.7)
 
 API 0.1.7 exposes `context.chemistry?.structureToName?.({ objectId })` for a molecule in the current
-selection. Declare all three permissions — `chemistry.compute`, `native.execute`, and
+selection, or the page’s only molecule when nothing is selected. An object outside that scope is refused. The desktop host reads the current document itself. Declare all three permissions — `chemistry.compute`, `native.execute`, and
 `selection.read` — and declare `apiVersion: "^0.1.7"`. The method is absent if any is missing, and is
 valid only during one of the plugin's command invocations. The host reads the selected molecule; a
 plugin supplies neither SMILES nor a name, and it cannot request an engine download.
@@ -226,7 +226,7 @@ applicable). `engineNotInstalled` means the user declined or did not finish host
 `cancelled` means the user cancelled or abandoned the invocation and the plugin should stay silent;
 `unsupported` identifies a platform, host, or OPSIN-runtime limitation; and `failed` has one of
 `engineCrashed`, `timeout`, `busy`, `installFailed`, or `invalidResult` plus a message. Never show a
-partial or unverified name.
+partial or unverified name: only `named` carries a name. A failed engine install is `failed` with `installFailed`, rather than a chemical decline.
 
 For `named`, the host reads the name back through OPSIN and compares host-canonical exact isomeric
 SMILES, including formal charge, isotopes, radicals, and stereo. This check cannot catch a name that

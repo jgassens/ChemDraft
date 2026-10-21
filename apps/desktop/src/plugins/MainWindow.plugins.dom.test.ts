@@ -13,11 +13,13 @@ import {
   RECOGNITION_FIXTURE_PANEL_ID
 } from "../testSupport/recognitionFixturePlugin";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
+import { namingManifest, namingMolecule } from "./structureNamingTestFixtures";
 
 // No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
 // to the test-only recognition fixture, standing in for an installed plugin.
 const bundled = vi.hoisted(() => ({
   withRecognitionFixture: false,
+  withNamingFixture: false,
   massAnalyzerHandler: undefined as undefined | (() => unknown)
 }));
 vi.mock("./registerBundledPlugins", async (importOriginal) => {
@@ -26,7 +28,7 @@ vi.mock("./registerBundledPlugins", async (importOriginal) => {
   return {
     ...actual,
     registerBundledPlugins: (runtime: DesktopPluginRuntime, disabledIds?: ReadonlySet<string>) => {
-      if (!bundled.withRecognitionFixture && !bundled.massAnalyzerHandler) {
+      if (!bundled.withRecognitionFixture && !bundled.withNamingFixture && !bundled.massAnalyzerHandler) {
         return actual.registerBundledPlugins(runtime, disabledIds);
       }
       const descriptors = actual.createBundledPluginDescriptors().map((descriptor) => {
@@ -44,10 +46,28 @@ vi.mock("./registerBundledPlugins", async (importOriginal) => {
         };
       });
       if (bundled.withRecognitionFixture) descriptors.push(recognitionFixtureDescriptor());
+      if (bundled.withNamingFixture) {
+        descriptors.push({
+          manifest: { ...namingManifest, permissions: [...namingManifest.permissions, "ui.menu"],
+            contributes: { ...namingManifest.contributes, menus: [{ id: "menu.namingTest.run", title: "Name Structure Test", commandId: "plugin.namingTest.run", location: "analyze", requiredPermissions: [] }] } },
+          options: { commandHandlers: { "plugin.namingTest.run": async context => {
+            const result = await context.chemistry!.structureToName!({ objectId: namingMolecule.id });
+            if (result.status === "named") await context.panels!.showReport("panel.namingTest.result", { title: "Name", sections: [{ kind: "chemicalName", label: "Name", name: result.name, kindLabel: result.kindLabel, warnings: result.warnings }] });
+          } } }
+        });
+      }
       actual.applyEnabledPlugins(runtime, disabledIds ?? new Set(), descriptors);
       return descriptors;
     }
   };
+});
+
+vi.mock("./createPluginRuntime", async importOriginal => {
+  const actual = await importOriginal<typeof import("./createPluginRuntime")>();
+  const { fakeNamingEngine } = await import("./structureNamingTestFixtures");
+  return { ...actual, createPluginRuntime: (options: import("./createPluginRuntime").DesktopPluginRuntimeOptions) =>
+    actual.createPluginRuntime(bundled.withNamingFixture ? { ...options, structureNamingEngine: fakeNamingEngine(),
+      namingCanonicalizer: { canonicalize: async () => "CCO", version: "test" } } : options) };
 });
 
 function installDomMocks(): void {
@@ -77,6 +97,7 @@ let container: HTMLElement | undefined;
 
 afterEach(() => {
   bundled.withRecognitionFixture = false;
+  bundled.withNamingFixture = false;
   bundled.massAnalyzerHandler = undefined;
   act(() => {
     root?.unmount();
@@ -155,6 +176,24 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it("routes a named result through the plugin command and chemicalName renderer", async () => {
+    bundled.withNamingFixture = true;
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+    const drawing = createPhase4Document();
+    drawing.pages[0]!.objects = [namingMolecule];
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(createElement(MainWindow, { initialDocument: drawing, initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false }));
+    });
+    await click(container.querySelector('button[data-menu-section="analyze"]')!);
+    await click(container.querySelector('button[data-command-id="plugin.namingTest.run"]')!);
+    const name = await waitForElement(".plugin-report-chemical-name pre");
+    expect(name.textContent).toBe("ethanol");
+    expect(container.textContent).toContain("Preferred IUPAC name");
+  });
+
   it("opens the core plugin manager from the Plugins menu", async () => {
     installDomMocks();
     container = document.createElement("div");

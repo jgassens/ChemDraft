@@ -501,6 +501,28 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(exportButton.textContent).toBe("Export failed");
   });
 
+  it("copies a chemical name through the main window without granting the panel clipboard access", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    tauriEvents.setResponder((name, payload) => {
+      const action = payload as { kind?: string; requestId?: string };
+      if (name === ANALYSIS_WINDOW_ACTION_EVENT && action.kind === "copyMolecularInspector") {
+        void tauriEvents.emit(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId: action.requestId, ok: true });
+      }
+    });
+    await mountWindow();
+    const payload = reportPayload();
+    payload.report = { title: "Name", sections: [{ kind: "chemicalName", label: "Name", name: "ethanol", kindLabel: "Preferred IUPAC name", warnings: [] }] };
+    await act(async () => { await broadcastPluginPanelReport(payload); });
+    const copy = [...container!.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Copy")!;
+    await act(async () => {
+      copy.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    const request = tauriEvents.emitted.find(event => event.name === ANALYSIS_WINDOW_ACTION_EVENT && (event.payload as { kind?: string }).kind === "copyMolecularInspector");
+    expect((request?.payload as { text: string }).text).toBe("ethanol");
+    expect(tauriInvoke).not.toHaveBeenCalledWith("write_clipboard_text_items", expect.anything());
+  });
+
   it("copies through the main window's native clipboard and shows Copied on success", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     const windowId = pluginPanelWindowId(ANALYSIS_WINDOW_OWNER_ID, MOLECULAR_INSPECTOR_WINDOW_ID);

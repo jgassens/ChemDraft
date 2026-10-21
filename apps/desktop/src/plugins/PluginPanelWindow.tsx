@@ -12,6 +12,7 @@ import {
   parsePluginPanelWindowId,
   requestAnalysisWindowAction,
   requestCopyMolecularInspectorText,
+  requestCopyAnalysisText,
   requestPluginPanelRerun,
   requestPluginPanelReport,
   requestProposalDecision,
@@ -194,7 +195,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
                 refresh.
               </div>
             ) : null}
-            <PluginReportRenderer report={payload.report} />
+            <PluginReportRenderer report={payload.report} copyText={requestCopyAnalysisText} />
           </>
         ) : (
           <p className="plugin-panel-waiting">Waiting for plugin content…</p>
@@ -237,7 +238,7 @@ function AnalysisWindowContent({ payload }: { payload: AnalysisWindowSnapshotPay
         />
       );
     case "report":
-      return <PluginReportRenderer report={content.report} />;
+      return <PluginReportRenderer report={content.report} copyText={requestCopyAnalysisText} />;
     case "pluginDiagnostics":
       return <PluginDiagnosticsPanel plugins={content.plugins} diagnostics={content.diagnostics} />;
     case "patchReview":

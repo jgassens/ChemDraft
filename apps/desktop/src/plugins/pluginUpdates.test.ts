@@ -123,6 +123,14 @@ describe("host-managed plugin update catalog", () => {
   it("compiles the complete official plugin catalog into the host", () => {
     expect(OFFICIAL_PLUGIN_CATALOG).toEqual([
       {
+        pluginId: "org.chemdraft.naming.orthonym",
+        displayName: "Name from Structure (Orthonym)",
+        description: "Name the selected structure. Every name shown was read back by OPSIN as exactly the drawn structure. Installing it also downloads a local naming engine (about 100 MB).",
+        repository: "jgassens/ChemDraft-Orthonym-Plugin",
+        assetStem: "orthonym-naming",
+        requiresEngine: "structureNaming"
+      },
+      {
         pluginId: "org.chemdraft.nmr.predictor",
         displayName: "NMR Shift Predictor",
         description: "¹H/¹³C shift prediction from NMRShiftDB2-derived statistics.",

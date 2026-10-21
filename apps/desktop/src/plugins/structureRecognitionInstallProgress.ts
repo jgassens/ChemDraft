@@ -12,7 +12,7 @@ import type {
  * are approximate; the per-step byte counts come from the host.
  */
 
-interface PhaseInfo {
+export interface PhaseInfo {
   step: number;
   name: string;
   weightBytes: number;
@@ -80,8 +80,11 @@ export interface RecognitionInstallTiming {
 
 export function describeRecognitionInstall(
   progress: StructureRecognitionInstallProgress | undefined,
-  timing: RecognitionInstallTiming
+  timing: RecognitionInstallTiming,
+  profile?: { phases: typeof PHASES; installedText: string }
 ): RecognitionInstallProgressView {
+  const phases = profile?.phases ?? PHASES;
+  const totalWeight = profile ? ORDER.reduce((sum, phase) => sum + phases[phase].weightBytes, 0) : TOTAL_WEIGHT;
   const elapsedText = formatElapsed(timing.now - (timing.startedAt ?? timing.now));
   const phase = progress?.phase ?? "checkingDisk";
   if (phase === "done") {
@@ -90,20 +93,20 @@ export function describeRecognitionInstall(
       stepCount: RECOGNITION_INSTALL_STEP_COUNT,
       stepName: "Finished",
       overallFraction: 1,
-      step: { kind: "estimate", text: "The recognition engine is installed." },
+      step: { kind: "estimate", text: profile?.installedText ?? "The recognition engine is installed." },
       elapsedText
     };
   }
 
-  const info = PHASES[phase];
+  const info = phases[phase];
   const phaseSeconds = Math.max(0, (timing.now - (timing.phaseStartedAt ?? timing.now)) / 1000);
   const hasBytes =
     progress?.bytesDone !== undefined && progress.bytesTotal !== undefined && progress.bytesTotal > 0;
   const phaseFraction = hasBytes
     ? clamp(progress!.bytesDone! / progress!.bytesTotal!)
     : Math.min(TIME_ESTIMATE_CAP, phaseSeconds / info.typicalSeconds);
-  const before = ORDER.slice(0, ORDER.indexOf(phase)).reduce((sum, earlier) => sum + PHASES[earlier].weightBytes, 0);
-  const overallFraction = clamp((before + info.weightBytes * phaseFraction) / TOTAL_WEIGHT);
+  const before = ORDER.slice(0, ORDER.indexOf(phase)).reduce((sum, earlier) => sum + phases[earlier].weightBytes, 0);
+  const overallFraction = clamp((before + info.weightBytes * phaseFraction) / totalWeight);
 
   return {
     stepNumber: info.step,

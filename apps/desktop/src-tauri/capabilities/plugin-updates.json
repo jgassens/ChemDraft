@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "plugin-updates",
   "description": "Allow only the main ChemDraft window to check and download allowlisted plugin releases.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     {
       "identifier": "http:default",
@@ -33,6 +35,15 @@
         },
         {
           "url": "https://github.com/jgassens/ChemDraft-MolScribe-Plugin/releases/download/*/molscribe-ocsr-*.zip.sha256"
+        },
+        {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-Orthonym-Plugin/releases/latest"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-Orthonym-Plugin/releases/download/*/orthonym-naming-*.zip"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-Orthonym-Plugin/releases/download/*/orthonym-naming-*.zip.sha256"
         },
         {
           "url": "https://release-assets.githubusercontent.com/github-production-release-asset/*"
