@@ -70,7 +70,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   storage: ["get", "set", "delete", "listKeys"],
   documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
-  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles"],
+  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"]

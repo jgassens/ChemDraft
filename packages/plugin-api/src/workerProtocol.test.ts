@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { PluginApiVersion, parsePluginManifest, type PluginManifest } from "./index";
 import {
+  PLUGIN_WORKER_CAPABILITY_METHODS,
   PLUGIN_WORKER_PROTOCOL_VERSION,
   PluginWorkerErrorCodes,
   checkWorkerHandshake,
@@ -107,6 +108,14 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.5", "0.1.4")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.6", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.6", "0.1.5")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.7", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.7", "0.1.6")).toBe(false);
+  });
+});
+
+describe("chemistry worker capability allowlist", () => {
+  it("includes structureToName", () => {
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toContain("structureToName");
   });
 });
 
@@ -175,6 +184,52 @@ describe("runPluginWorker", () => {
     await flush();
     expect(sawSelection).toBe(false);
     expect(sawDialogs).toBe(false);
+  });
+
+  it("omits structureToName without each of chemistry.compute, native.execute, or selection.read", async () => {
+    for (const permissions of [
+      ["native.execute", "selection.read"],
+      ["chemistry.compute", "selection.read"],
+      ["chemistry.compute", "native.execute"]
+    ] as const) {
+      const endpoint = new ControlledEndpoint();
+      let hasMethod = true;
+      runPluginWorker(
+        {
+          manifest: manifest([...permissions]),
+          commandHandlers: {
+            [commandId]: async (context) => {
+              hasMethod = context.chemistry?.structureToName !== undefined;
+              return { ok: true };
+            }
+          }
+        },
+        endpoint
+      );
+      endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+      await flush();
+      expect(hasMethod, permissions.join(", ")).toBe(false);
+    }
+  });
+
+  it("offers structureToName only with all three required permissions", async () => {
+    const endpoint = new ControlledEndpoint();
+    let hasMethod = false;
+    runPluginWorker(
+      {
+        manifest: manifest(["chemistry.compute", "native.execute", "selection.read"]),
+        commandHandlers: {
+          [commandId]: async (context) => {
+            hasMethod = context.chemistry?.structureToName !== undefined;
+            return { ok: true };
+          }
+        }
+      },
+      endpoint
+    );
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    expect(hasMethod).toBe(true);
   });
 
   it("reports an unknown command instead of hanging", async () => {

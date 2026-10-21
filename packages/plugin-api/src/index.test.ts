@@ -10,6 +10,8 @@ import {
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
   PluginRecognitionResultSchema,
+  PluginStructureToNameRequestSchema,
+  PluginStructureToNameResultSchema,
   ProposedDocumentPatchSchema,
   RecognizedStructureResultSchema,
   createStructureSourceFingerprint,
@@ -521,6 +523,93 @@ describe("RecognizedStructureResult", () => {
         }
       }).proposedPatch?.patch.op
     ).toBe("addObject");
+  });
+});
+
+describe("StructureToName API 0.1.7", () => {
+  const named = {
+    status: "named" as const,
+    name: "ethanol",
+    kind: "preferredIupacName" as const,
+    kindLabel: "Preferred IUPAC name",
+    verification: {
+      method: "opsin-exact-isomeric-smiles" as const,
+      opsin: { id: "opsin" as const, version: "2.9.0" as const, radicals: true as const },
+      canonicalizer: { id: "rdkit-minimallib" as const, version: "2026.03.5" }
+    },
+    engine: {
+      id: "orthonym" as const,
+      version: "1.0.8" as const,
+      commit: "461987b947f76e41ff0baa6c2aa19ecd79cacd0b",
+      tier: "valid" as const
+    },
+    warnings: [{ code: "stereoLimitedEvidence" as const, message: "Stereo naming has limited evidence." }]
+  };
+
+  it("strictly validates the selection request and named result", () => {
+    expect(PluginStructureToNameRequestSchema.parse({ objectId: "molecule-1" })).toEqual({ objectId: "molecule-1" });
+    expect(() => PluginStructureToNameRequestSchema.parse({ objectId: "", extra: true })).toThrow();
+    expect(PluginStructureToNameResultSchema.parse(named)).toEqual(named);
+    expect(() => PluginStructureToNameResultSchema.parse({ ...named, extra: true })).toThrow();
+  });
+
+  it("validates every decline code and all non-named result variants", () => {
+    for (const code of [
+      "noVerifiedName",
+      "notFullyVerified",
+      "unsupportedElement",
+      "unnameable",
+      "engineLimit",
+      "structureNotExact",
+      "tooLarge"
+    ]) {
+      expect(
+        PluginStructureToNameResultSchema.parse({
+          status: "declined",
+          code,
+          reason: "No verified name is available.",
+          limitCode: "LIMIT",
+          engine: { id: "orthonym", version: "1.0.8" }
+        })
+      ).toMatchObject({ status: "declined", code });
+    }
+
+    expect(PluginStructureToNameResultSchema.parse({ status: "engineNotInstalled" })).toEqual({ status: "engineNotInstalled" });
+    expect(PluginStructureToNameResultSchema.parse({ status: "cancelled" })).toEqual({ status: "cancelled" });
+    expect(PluginStructureToNameResultSchema.parse({ status: "unsupported", reason: "Intel Mac is unsupported." })).toMatchObject({
+      status: "unsupported"
+    });
+    for (const code of ["engineCrashed", "timeout", "busy", "installFailed", "invalidResult"]) {
+      expect(PluginStructureToNameResultSchema.parse({ status: "failed", code, message: "Naming failed." })).toMatchObject({
+        status: "failed",
+        code
+      });
+    }
+  });
+
+  it("accepts both documented warning codes and the chemicalName panel section", () => {
+    const report = PluginPanelReportSchema.parse({
+      title: "Name",
+      sections: [
+        {
+          kind: "chemicalName",
+          label: "Name",
+          name: "ethanol",
+          kindLabel: "Preferred IUPAC name",
+          warnings: [
+            { code: "stereoLimitedEvidence", message: "Stereo naming has limited evidence." },
+            { code: "abbreviationExpanded", message: "An abbreviation was expanded." }
+          ]
+        }
+      ]
+    });
+    expect(report.sections[0]).toMatchObject({ kind: "chemicalName", name: "ethanol" });
+    expect(() =>
+      PluginPanelReportSchema.parse({
+        ...report,
+        sections: [{ ...report.sections[0], warnings: [{ code: "unknown", message: "No." }] }]
+      })
+    ).toThrow();
   });
 });
 

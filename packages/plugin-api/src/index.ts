@@ -12,16 +12,18 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.1 adds `PluginChemistryAPI.nameToStructure`; 0.1.2 adds `structureFromSmiles`; 0.1.3 adds
  * `PluginDialogsAPI.promptText`; 0.1.4 adds command-scoped `PluginDocumentAPI.applyPatch`; 0.1.5
  * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
- * `PluginRecognitionAPI.recognizeStructure`.
+ * `PluginRecognitionAPI.recognizeStructure`; 0.1.7 adds host-owned local
+ * `PluginChemistryAPI.structureToName` and the `chemicalName` report section.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
  * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
  * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition, `^0.1.6` for
- * local structure recognition), which this host satisfies and an older one correctly does not.
+ * local structure recognition, `^0.1.7` for structure naming), which this host satisfies and an
+ * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.6" as const;
+export const PluginApiVersion = "0.1.7" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -357,6 +359,22 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
       caption: z.string().optional()
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("chemicalName"),
+      label: NonEmptyStringSchema,
+      name: NonEmptyStringSchema,
+      kindLabel: NonEmptyStringSchema,
+      warnings: z.array(
+        z
+          .object({
+            code: z.enum(["stereoLimitedEvidence", "abbreviationExpanded"]),
+            message: NonEmptyStringSchema
+          })
+          .strict()
+      )
+    })
+    .strict(),
   // Core-owned interactive figure (ADR-0015). Plugins supply serializable data only; the desktop
   // renders a zoomable spectrum linked to an annotated structure with hover cross-highlighting.
   // Geometry is chemistry-agnostic (points, lines, labels) so the section stays domain-neutral.
@@ -483,6 +501,7 @@ export type PluginLinkedFigurePeak = PluginLinkedFigureSpectrum["peaks"][number]
 export type PluginLinkedFigureStructure = NonNullable<PluginLinkedFigureSection["structure"]>;
 export type PluginLinkedFigureAtom = PluginLinkedFigureStructure["atoms"][number];
 export type PluginLinkedFigureBond = PluginLinkedFigureStructure["bonds"][number];
+export type PluginChemicalNameSection = Extract<PluginPanelSection, { kind: "chemicalName" }>;
 
 export interface PluginPanelAPI {
   showReport(panelId: string, report: PluginPanelReport): Promise<void>;
@@ -953,6 +972,105 @@ export type PluginNameToStructureResult =
     }
   | { available: false; reason: string };
 
+/** A molecule in the current selection, named by the host rather than plugin code. */
+export interface PluginStructureToNameRequest {
+  objectId: string;
+}
+
+export const PluginStructureToNameRequestSchema = z
+  .object({ objectId: NonEmptyStringSchema })
+  .strict();
+
+export const PluginStructureNameKindSchema = z.enum(["preferredIupacName", "systematicName"]);
+export type PluginStructureNameKind = z.infer<typeof PluginStructureNameKindSchema>;
+
+export const PluginStructureNameDeclineCodeSchema = z.enum([
+  "noVerifiedName",
+  "notFullyVerified",
+  "unsupportedElement",
+  "unnameable",
+  "engineLimit",
+  "structureNotExact",
+  "tooLarge"
+]);
+export type PluginStructureNameDeclineCode = z.infer<typeof PluginStructureNameDeclineCodeSchema>;
+
+export const PluginStructureNameWarningCodeSchema = z.enum(["stereoLimitedEvidence", "abbreviationExpanded"]);
+export type PluginStructureNameWarningCode = z.infer<typeof PluginStructureNameWarningCodeSchema>;
+
+export const PluginStructureNameWarningSchema = z
+  .object({
+    code: PluginStructureNameWarningCodeSchema,
+    message: NonEmptyStringSchema
+  })
+  .strict();
+export type PluginStructureNameWarning = z.infer<typeof PluginStructureNameWarningSchema>;
+
+const PluginStructureNameEngineSchema = z
+  .object({
+    id: z.literal("orthonym"),
+    version: NonEmptyStringSchema
+  })
+  .strict();
+
+const PluginStructureNameVerificationSchema = z
+  .object({
+    method: z.literal("opsin-exact-isomeric-smiles"),
+    opsin: z
+      .object({
+        id: z.literal("opsin"),
+        version: z.literal("2.9.0"),
+        radicals: z.literal(true)
+      })
+      .strict(),
+    canonicalizer: z
+      .object({
+        id: z.literal("rdkit-minimallib"),
+        version: NonEmptyStringSchema
+      })
+      .strict()
+  })
+  .strict();
+
+export const PluginStructureToNameResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("named"),
+      name: NonEmptyStringSchema,
+      kind: PluginStructureNameKindSchema,
+      /** Display label is host-fixed: "Preferred IUPAC name" / "Systematic name (not the preferred IUPAC name)". */
+      kindLabel: NonEmptyStringSchema,
+      verification: PluginStructureNameVerificationSchema,
+      engine: PluginStructureNameEngineSchema.extend({
+        version: z.literal("1.0.8"),
+        commit: NonEmptyStringSchema,
+        tier: z.literal("valid")
+      }).strict(),
+      warnings: z.array(PluginStructureNameWarningSchema)
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("declined"),
+      code: PluginStructureNameDeclineCodeSchema,
+      reason: NonEmptyStringSchema,
+      limitCode: NonEmptyStringSchema.optional(),
+      engine: PluginStructureNameEngineSchema.optional()
+    })
+    .strict(),
+  z.object({ status: z.literal("engineNotInstalled") }).strict(),
+  z.object({ status: z.literal("cancelled") }).strict(),
+  z.object({ status: z.literal("unsupported"), reason: NonEmptyStringSchema }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: z.enum(["engineCrashed", "timeout", "busy", "installFailed", "invalidResult"]),
+      message: NonEmptyStringSchema
+    })
+    .strict()
+]);
+export type PluginStructureToNameResult = z.infer<typeof PluginStructureToNameResultSchema>;
+
 export interface PluginStructureFromSmilesRequest {
   smiles: string;
   /** Recorded on the object so a reader can tell what produced it. Free text, e.g. a plugin name. */
@@ -995,6 +1113,10 @@ export interface PluginChemistryAPI {
    * design, allowed not to be there.
    */
   nameToStructure?(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
+  /** Present only with chemistry.compute + native.execute + selection.read, on a host with the
+   * naming-engine seam. Valid only during one of this plugin's command invocations; the host reads
+   * the selected molecule itself. */
+  structureToName?(request: PluginStructureToNameRequest): Promise<PluginStructureToNameResult>;
 }
 
 export const PluginPromptTextRequestSchema = z

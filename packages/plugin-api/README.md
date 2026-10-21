@@ -1,10 +1,11 @@
 # @chemdraft/plugin-api
 
-Defines public plugin API types, Zod-backed manifest schemas, permission names, contribution types, command context interfaces, plugin storage contracts, proposed/direct-patch envelopes and receipts, and recognition result types. API 0.1.6 adds the host-owned `recognition.recognizeStructure` capability for images returned by `images.requestImage` in the same command invocation.
+Defines public plugin API types, Zod-backed manifest schemas, permission names, contribution types, command context interfaces, plugin storage contracts, proposed/direct-patch envelopes and receipts, and recognition result types. API 0.1.7 adds the host-owned `chemistry.structureToName` capability and the `chemicalName` report section.
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
-API 0.1.6 adds `recognition.recognizeStructure`, limited to an image returned by
+API 0.1.7 adds `chemistry.structureToName`, limited to a molecule in the current selection and gated
+on `chemistry.compute`, `native.execute`, and `selection.read`. API 0.1.6 adds `recognition.recognizeStructure`, limited to an image returned by
 `images.requestImage` during the same command invocation and gated on local-inference permissions.
 
 Plugin contribution ids are namespaced by surface: `plugin.<pluginName>.<action>` for commands,

@@ -234,6 +234,17 @@ export function runPluginWorker(
                   >
               }
             : {}),
+          // Structure → name also invokes a local engine, but the host reads a molecule from the
+          // current selection instead of accepting plugin-supplied SMILES. Match the host's three
+          // permission gates exactly so installed-worker and in-process contexts have the same shape.
+          ...(has("native.execute") && has("selection.read")
+            ? {
+                structureToName: (request: Parameters<NonNullable<PluginChemistryAPI["structureToName"]>>[0]) =>
+                  call("chemistry", "structureToName", [request]) as ReturnType<
+                    NonNullable<PluginChemistryAPI["structureToName"]>
+                  >
+              }
+            : {}),
           // Same rule as the host: this one lays out against the active document, so it needs
           // `document.read` too. Keeping the two conditions identical is what keeps the in-process and
           // worker paths agreeing about what the host offers.

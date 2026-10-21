@@ -26,8 +26,9 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.6`). API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that use it
-should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
+`0.1.7`). API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should
+declare `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
+use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. Existing `^0.1.0` through `^0.1.5` packages remain compatible.
 
@@ -76,7 +77,7 @@ const runWidget: PluginCommandHandler = async (context) => {
 };
 ```
 
-Report section kinds: `text`, `keyValue`, `table`, `svg`, and `linkedFigure` (an interactive
+Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
 ## One-line text prompts
@@ -185,6 +186,52 @@ and the SMILES and MOL block. When a proposal of that recognition is queued — 
 
 A `recognition` review block on a proposal that no recognition in the same command invocation produced
 is refused: only the host may describe a recognition for review.
+
+## Host-owned structure naming
+
+API 0.1.7 exposes `context.chemistry?.structureToName?.({ objectId })` for a molecule in the current
+selection. Declare all three permissions — `chemistry.compute`, `native.execute`, and
+`selection.read` — and declare `apiVersion: "^0.1.7"`. The method is absent if any is missing, and is
+valid only during one of the plugin's command invocations. The host reads the selected molecule; a
+plugin supplies neither SMILES nor a name, and it cannot request an engine download.
+
+```ts
+const result = await context.chemistry?.structureToName?.({ objectId: "molecule-1" });
+if (result?.status === "named") {
+  await context.panels?.showReport("panel.example.result", {
+    title: "Name",
+    sections: [{
+      kind: "chemicalName",
+      label: "Name",
+      name: result.name,
+      kindLabel: result.kindLabel,
+      warnings: result.warnings
+    }]
+  });
+}
+```
+
+`named` carries either `preferredIupacName` or `systematicName`, verification provenance, engine
+provenance, and warnings. The host fixes `kindLabel` text: it is exactly **“Preferred IUPAC name”** or
+**“Systematic name (not the preferred IUPAC name)”**; a plugin must display that value rather than
+inventing its own label. `stereoLimitedEvidence` means the name includes stereodescriptors but stereo
+naming has limited benchmark evidence. `abbreviationExpanded` records an exact-SMILES conversion that
+expanded an abbreviation. `chemicalName` is a declarative report section; the host provides its Copy
+button, so a plugin needs no clipboard permission.
+
+Every result status is significant: `declined` means no name passed host policy; its codes are
+`noVerifiedName`, `notFullyVerified`, `unsupportedElement`, `unnameable`, `engineLimit`,
+`structureNotExact`, and `tooLarge` (the raw naming-engine limit is available as `limitCode` where
+applicable). `engineNotInstalled` means the user declined or did not finish host-owned installation;
+`cancelled` means the user cancelled or abandoned the invocation and the plugin should stay silent;
+`unsupported` identifies a platform, host, or OPSIN-runtime limitation; and `failed` has one of
+`engineCrashed`, `timeout`, `busy`, `installFailed`, or `invalidResult` plus a message. Never show a
+partial or unverified name.
+
+For `named`, the host reads the name back through OPSIN and compares host-canonical exact isomeric
+SMILES, including formal charge, isotopes, radicals, and stereo. This check cannot catch a name that
+Orthonym and OPSIN both misread in the same way, because both use OPSIN 2.9.0; do not describe it as a
+proof beyond that limitation.
 
 **`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
 laid out against the active document — its page id, an object id derived from the document's object
