@@ -6,6 +6,7 @@ import { moleculeSmiles } from "./moleculeSmiles";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
@@ -49,7 +50,7 @@ describe("Copy As SMILES messages", () => {
     expect(doc).toEqual(before);
   });
 
-  it.each(["NH2", "Ar"])("discloses the engine's %s placeholder loss", async (label) => {
+  it.each(["Ar"])("discloses the engine's %s placeholder loss", async (label) => {
     const mol = molecule(["C", label]);
     mol.atoms[1].labelLiteral = true;
     const warnings: string[] = [];
@@ -57,6 +58,18 @@ describe("Copy As SMILES messages", () => {
     expect(warnings).toContainEqual(expect.stringContaining(`Atom label "${label}"`));
     expect(warnings).toContainEqual(expect.stringContaining("group is not represented in SMILES"));
     assertSmilesMessages(warnings);
+  });
+
+  it("preserves a typed NH2 label in Copy As SMILES without a placeholder warning", async () => {
+    const mol = molecule(["C", "NH2"]);
+    mol.atoms[1].labelLiteral = true;
+    vi.mocked(computeStructureIdentifiers).mockImplementation(async (molfile) => {
+      expect(parseMolfileGraph(molfile)?.atoms.map((atom) => atom.element)).toEqual(["C", "N"]);
+      return { smiles: "CN" };
+    });
+    const warnings: string[] = [];
+    expect(await copyAsSmiles(documentWith(mol), warnings)).toBe("CN");
+    expect(warnings).toEqual([]);
   });
 
   it("reports the dative loss exactly once in terms of SMILES", async () => {

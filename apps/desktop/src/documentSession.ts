@@ -270,7 +270,7 @@ export function shouldRestoreDocumentSession(envelope: ParsedDocumentSession): b
 /**
  * Why a flush that must not silently skip (the app updater's, whose installer ends the process)
  * cannot run now, or undefined when it can proceed — either because saving is open, or because
- * skipping it loses nothing (a blank canvas, or a file saved with no edits since).
+ * skipping it loses nothing (a clean blank canvas, or a file saved with no edits since).
  */
 export function strictSessionFlushRefusal(state: {
   hydrated: boolean;
@@ -281,7 +281,7 @@ export function strictSessionFlushRefusal(state: {
   if (state.hydrated && state.saveEnabled) {
     return undefined;
   }
-  if (state.blank || (state.fileState.path !== undefined && !state.fileState.dirty)) {
+  if (!state.fileState.dirty && (state.blank || state.fileState.path !== undefined)) {
     return undefined;
   }
   return state.hydrated

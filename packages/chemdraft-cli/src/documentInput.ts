@@ -3,7 +3,7 @@ import { win32 } from "node:path";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { withNativeDocumentLabelBondSides } from "@chemdraft/document-workflow-core";
-import { validateBatchName, CliUsageError } from "./output";
+import { validateBatchName, isWindowsDeviceName, CliUsageError } from "./output";
 import { decodeUserText } from "./textInput";
 
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
@@ -15,11 +15,11 @@ export function validateDocumentOutputPath(file: string): void {
   }
   const name = win32.basename(file);
   const extension = win32.extname(name);
-  validateBatchName(extension ? name.slice(0, -extension.length) : name);
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ||
+  if (isWindowsDeviceName(name) ||
       /[<>:"|?*]/.test(name) || /[. ]$/.test(name)) {
     throw new CliUsageError(`Unsafe output filename ${JSON.stringify(name)}.`);
   }
+  validateBatchName(extension ? name.slice(0, -extension.length) : name);
 }
 
 /** Bound the read itself, including when the file changes after it is opened. */

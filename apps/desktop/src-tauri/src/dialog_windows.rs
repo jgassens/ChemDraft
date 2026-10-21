@@ -31,6 +31,13 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (420.0, 300.0),
             min_size: (360.0, 260.0),
         }),
+        "arrangementSpacing" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Adjust arrangement spacing",
+            size: (540.0, 600.0),
+            min_size: (360.0, 260.0),
+        }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -87,6 +94,35 @@ enum Action {
         unit: String,
     },
     Cancel,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SpacingSnapshot {
+    title: String,
+    min_percent: u32,
+    max_percent: u32,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum SpacingAction {
+    Apply { percent: u32 },
+    Preview { percent: u32 },
+    Cancel,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpacingPreview {
+    percent: u32,
+    index: usize,
+    count: usize,
+    chunk: String,
+    error: Option<String>,
+}
+fn valid_percent(percent: u32) -> bool {
+    (25..=150).contains(&percent)
+}
+fn valid_title(title: &str) -> bool {
+    !title.is_empty() && title.encode_utf16().count() <= 256
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -546,20 +582,60 @@ impl Message {
                         && r.filename.is_none_or(|s| s.encode_utf16().count() <= 256)
                 })
             }
-            "snapshot" => serde_json::from_value::<Snapshot>(self.data.clone()).is_ok_and(|s| {
-                !s.title.is_empty()
-                    && s.title.encode_utf16().count() <= 256
-                    && valid_size(s.width, s.height, &s.unit)
-            }),
+            "snapshot" => {
+                if self.dialog_kind == "pageSize" {
+                    serde_json::from_value::<Snapshot>(self.data.clone()).is_ok_and(|s| {
+                        valid_title(&s.title) && valid_size(s.width, s.height, &s.unit)
+                    })
+                } else {
+                    serde_json::from_value::<SpacingSnapshot>(self.data.clone()).is_ok_and(|s| {
+                        valid_title(&s.title)
+                            && valid_percent(s.min_percent)
+                            && valid_percent(s.max_percent)
+                            && s.min_percent <= 100
+                            && s.max_percent >= 100
+                    })
+                }
+            }
             "action" => {
-                serde_json::from_value::<Action>(self.data.clone()).is_ok_and(|a| match a {
-                    Action::Cancel => true,
-                    Action::Apply {
-                        width,
-                        height,
-                        unit,
-                    } => valid_size(width, height, &unit),
-                })
+                if self.dialog_kind == "pageSize" {
+                    serde_json::from_value::<Action>(self.data.clone()).is_ok_and(|a| match a {
+                        Action::Cancel => true,
+                        Action::Apply {
+                            width,
+                            height,
+                            unit,
+                        } => valid_size(width, height, &unit),
+                    })
+                } else {
+                    serde_json::from_value::<SpacingAction>(self.data.clone()).is_ok_and(
+                        |a| match a {
+                            SpacingAction::Cancel => true,
+                            SpacingAction::Apply { percent }
+                            | SpacingAction::Preview { percent } => valid_percent(percent),
+                        },
+                    )
+                }
+            }
+            "preview" => {
+                self.dialog_kind == "arrangementSpacing"
+                    && serde_json::from_value::<SpacingPreview>(self.data.clone()).is_ok_and(|p| {
+                        valid_percent(p.percent)
+                            && p.count > 0
+                            && p.count <= 1024
+                            && p.index < p.count
+                            && p.chunk.len() <= 2000
+                            && p.chunk.bytes().all(|c| {
+                                c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=')
+                            })
+                            && self.data.get("error").is_none_or(|e| e.is_string())
+                            && p.error.is_none_or(|e| {
+                                e.encode_utf16().count() <= 256
+                                    && p.chunk.is_empty()
+                                    && p.index == 0
+                                    && p.count == 1
+                            })
+                    })
             }
             "request" | "ready" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "result" => serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
@@ -616,11 +692,13 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registr
 
 pub(crate) fn is_dialog_label(label: &str) -> bool {
     label
-        .strip_prefix("dialog-main-pageSize-")
-        .or_else(|| label.strip_prefix("dialog-main-export-"))
-        .or_else(|| label.strip_prefix("dialog-main-engineInstall-"))
-        .is_some_and(|slot| {
-            !slot.is_empty() && slot.len() <= 20 && slot.bytes().all(|c| c.is_ascii_digit())
+        .strip_prefix("dialog-main-")
+        .and_then(|s| s.split_once('-'))
+        .is_some_and(|(kind, slot)| {
+            kind_spec(kind).is_ok()
+                && !slot.is_empty()
+                && slot.len() <= 20
+                && slot.bytes().all(|c| c.is_ascii_digit())
         })
 }
 fn authorize(
@@ -723,6 +801,13 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
 fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if message.dialog_kind == "arrangementSpacing" && message.data["action"] == "preview" {
+        return if session.terminal_request.is_none() {
+            Ok(true)
+        } else {
+            Err("A terminal dialog action is already pending".into())
+        };
+    }
     if let Some(previous) = session.actions.get(&message.request_id) {
         if previous.data != message.data {
             return Err("A dialog request ID cannot be reused for another action".into());
@@ -1011,8 +1096,11 @@ pub(crate) fn dialog_publish(
     message: Message,
 ) -> Result<(), String> {
     message.validate()?;
-    if !matches!(message.message_type.as_str(), "snapshot" | "result") {
-        return Err("Owner can publish only snapshot or result".into());
+    if !matches!(
+        message.message_type.as_str(),
+        "snapshot" | "preview" | "result"
+    ) {
+        return Err("Owner can publish only snapshot, preview or result".into());
     }
     let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
     let session = registry
@@ -1063,7 +1151,7 @@ pub(crate) fn dialog_publish(
         session
             .receipts
             .insert(message.request_id.clone(), message.clone());
-    } else {
+    } else if message.message_type == "snapshot" {
         session.snapshot = message.clone();
     }
     send_host(session, &message)
@@ -2255,6 +2343,63 @@ mod tests {
     }
     fn snapshot() -> Message {
         serde_json::from_value(json!({"protocolVersion":1,"ownerWindowId":"main","documentTabId":"tab-1","dialogKind":"pageSize","sessionId":"session-1","requestId":"request-1","snapshotRevision":1,"type":"snapshot","data":{"title":"Drawing","width":8.5,"height":11,"unit":"inch"}})).unwrap()
+    }
+    #[test]
+    fn spacing_preview_payloads_stay_bounded_and_do_not_reserve_save() {
+        let mut message = snapshot();
+        message.dialog_kind = "arrangementSpacing".into();
+        message.data = json!({"title":"Drawing", "minPercent":25, "maxPercent":150});
+        assert!(message.validate().is_ok());
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&registration.window_label));
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        message.message_type = "action".into();
+        message.data = json!({"action":"preview", "percent":80});
+        assert!(message.validate().is_ok());
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(session.terminal_request.is_none());
+        assert!(session.actions.is_empty());
+        message.request_id = "save".into();
+        message.data = json!({"action":"apply", "percent":80});
+        assert!(reserve_action(session, &message).unwrap());
+        message.request_id = "late-preview".into();
+        message.data = json!({"action":"preview", "percent":90});
+        assert!(reserve_action(session, &message).is_err());
+        message.message_type = "preview".into();
+        message.data = json!({"percent":80, "index":0, "count":1024, "chunk":"A".repeat(2000)});
+        assert!(message.validate().is_ok());
+        assert!(delivery(session, "main", &message).is_ok());
+        for data in [
+            json!({"percent":80, "index":0, "count":1, "chunk":"A".repeat(2001)}),
+            json!({"percent":80, "index":0, "count":1025, "chunk":"AA=="}),
+            json!({"percent":80, "index":1, "count":1, "chunk":"AA=="}),
+            json!({"percent":80, "index":0, "count":1, "chunk":"https://example.com"}),
+            json!({"percent":80.5, "index":0, "count":1, "chunk":"AA=="}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+    }
+    #[test]
+    fn spacing_has_its_own_window_size_and_page_size_cannot_send_preview() {
+        let spacing = kind_spec("arrangementSpacing").unwrap();
+        assert!(spacing.resizable);
+        assert_eq!(spacing.size, (540.0, 600.0));
+        let mut message = snapshot();
+        message.message_type = "action".into();
+        message.data = json!({"action":"preview", "percent":80});
+        assert!(message.validate().is_err());
+        message.dialog_kind = "export".into();
+        assert!(message.validate().is_err());
+        message.dialog_kind = "arrangementSpacing".into();
+        message.message_type = "result".into();
+        message.data = json!({"status":"accepted"});
+        assert!(message.validate().is_ok());
+        message.data = json!({"status":"exported"});
+        assert!(message.validate().is_err());
+        assert!(is_dialog_label("dialog-main-arrangementSpacing-12"));
+        assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
     }
     #[test]
     fn validates_kind_label_owner_and_payload() {

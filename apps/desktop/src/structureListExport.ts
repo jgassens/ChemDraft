@@ -4,7 +4,7 @@ import {
   type MoleculeObject,
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
-import { expandNativeMoleculeLabelGroups } from "@chemdraft/document-workflow-core";
+import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
@@ -80,13 +80,21 @@ export async function exportStructureListSdf(
     // Valid group labels ("OMe") go into the record as their atoms, each in a superatom S-group
     // carrying the label; the same molfile feeds the record's SMILES below.
     const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
+    const radicalPlaceholders = new Map(placeholderAtoms);
+    for (const atom of expanded.atoms) {
+      const spelled = nativeSingleHeavyElementLabelValence(atom.element);
+      if ((atom.markRadicals ?? 0) > 0 && spelled && spelled.element !== atom.element) {
+        radicalPlaceholders.set(atom.id, "it carries radical electrons, so its stated hydrogen count cannot be preserved");
+      }
+    }
     const molfile = moleculeToMolfileV2000(expanded, {
       ...options,
       fromDocFrame: true,
       warnings: writerWarnings,
       kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders,
       superatomGroups: expansions,
-      placeholderAtoms
+      spellLabel: nativeSingleHeavyElementLabelValence,
+      placeholderAtoms: radicalPlaceholders
     }).contents;
     warnings.push(...writerWarnings.map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",

@@ -416,6 +416,44 @@ and Art toolbars open, including at 125%/150% display scale:
   the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
   must be raised again. Cancel must balance suspension even when its acquisition is still pending.
 
+## Compound layout tools (opt-in)
+
+On macOS and Windows, verify that a fresh Settings/Preferences has Compound layout tools off and
+no layout button/flyout/context/gallery entry is visible. Enable it with a native palette open;
+Main, Art and Layout should update live. Select unequal-size compounds, optionally grouped captions,
+and open Arrange › in the selection context menu. Try Circle, Oval, all three Grid justifications,
+Row and Column; check click, hover and keyboard access to the submenu. Confirm unchanged bond lengths,
+labels and stereo, selected compounds retained, one Undo/Redo step, and no generated arrows.
+Switch Circle/Oval/Grid to Row and Column on a page too small for their usual gaps but large enough
+for the compounds: gaps tighten evenly, molecule sizes stay fixed, and one Undo restores the former
+layout. If even 12 document pixels between compounds will not fit, the drawing stays unchanged.
+Group a molecule with a wide caption rotated 90°, then arrange it with other compounds in each
+layout and adjust spacing. Keep the rotated caption inside the page and clear of other items,
+retaining its angle, size, text and offset from the molecule. A caption taller than the page
+after rotation must cause a fit refusal with no document change.
+Open Adjust spacing on macOS and Windows: it must be a movable, resizable native window,
+centred over the document on first open, with the originating drawing in its title, no utility menu,
+and no Windows taskbar entry. Move it to another monitor, close, and reopen; retain position.
+Reopen while still open: retain slider draft and focus the existing window. Check Escape,
+Cmd/Ctrl+W, title-bar close, Tab, Enter, IME composition, and reload prevention.
+On page two, preview Adjust spacing: only that page appears and Save changes only that selection.
+Check the full white page and outlined boundary against its gray surround. Move the slider:
+the page framing and molecule sizes stay fixed. Spreading stops at the page edge or 150%.
+Try initially overlapping compounds with space to expand: a feasible expansion must be reachable
+even if 150% exceeds the page. Intermediate overlap values show an error and disable Save.
+Align a row or column with a page edge using decimal coordinates, then reopen Adjust spacing:
+valid expansion/compaction remains reachable; rounding alone must not pin the slider to 100%.
+Place a sticky charge label near a neighboring atom, then arrange, adjust spacing,
+Undo/Redo and save/reopen. Layouts and spacing keep the charge on its original atom.
+Switch tabs before Save: change only the original tab, keep it selected there, and Undo once there.
+Change the source drawing while its preview is open: stale Save must fail without an undo entry.
+Close/replace its drawing or quit during startup: no orphan or late mutation. Rapidly drag the slider:
+Save stays disabled until the latest complete preview arrives and double Save commits at most once.
+Native creation failure must report an error, never show an in-page desktop fallback. Check the
+browser-only shared form separately. Check native prompt hide/restore and Cmd-Tab/Alt-Tab behavior.
+Cancel/Escape makes no change. Check close/far/page limits and native save/reopen. Disable the setting
+with a preview/flyout open: it closes, controls disappear and direct commands report why unavailable.
+
 - Export preview and presets (macOS and Windows): with a fresh profile, verify Preferences >
   Export preview and size presets is unchecked. Export must show the original Scale/Max dimension
   controls and JPEG quality slider, prefill the last destination, and let Choose work with an empty

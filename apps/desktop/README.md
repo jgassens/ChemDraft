@@ -40,3 +40,12 @@ app bundle only; installed plugin packages stay in Application Support. See
 `../../docs/releasing/macos-updates.md` for the signing, appcast, and end-to-end verification flow.
 
 The desktop palette is a separate Tauri window behind `src/window-manager`. Palette buttons route command IDs back to the main document window, where the existing command registry invokes them. `pnpm dev:web` keeps an in-window docked palette only as a browser-preview fallback.
+
+Compound layouts are opt-in: enable **Compound layout tools** in Settings/Preferences.
+Select two or more compounds or groups, then use Arrange Selection in Main, Art or Layout;
+long-press or press Arrow Down for Circle, Oval, Grid left/center/right, Row or Column.
+Row and Column automatically tighten their default gaps when needed to fit the page,
+keeping at least 12 document pixels between visible compound bounds and preserving molecule sizes.
+Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
+Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
+while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.

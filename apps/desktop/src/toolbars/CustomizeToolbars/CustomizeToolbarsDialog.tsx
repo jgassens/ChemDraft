@@ -89,6 +89,8 @@ export interface CustomizeToolbarsDialogProps {
   layoutState: LayoutState;
   /** All commands available to add to a user toolset (from the command registry). */
   availableCommands?: readonly CommandOption[];
+  /** Hide commands from the dialog only; their saved layout and ordering remain intact. */
+  isCommandHidden?: (commandId: string) => boolean;
   onApply: (next: LayoutState) => void;
   /** Applied immediately on each edit (visibility toggles, hides, reorders) for live preview —
    *  palettes appear/disappear as you click instead of only on Apply. */
@@ -220,6 +222,7 @@ export function CustomizeToolbarsDialog({
   baseToolsets,
   layoutState,
   availableCommands = [],
+  isCommandHidden,
   onApply,
   onLiveApply,
   onClose
@@ -320,10 +323,14 @@ export function CustomizeToolbarsDialog({
     });
   }, [selectedBase, draft.toolsetOverrides, selectedToolsetId]);
 
+  const displayedGroups = useMemo(() => isCommandHidden
+    ? detailGroups.map((group) => ({ ...group, items: group.items.filter((item) => !isCommandHidden(item.id)) }))
+    : detailGroups, [detailGroups, isCommandHidden]);
+
   const availableForToolset: CommandOption[] = useMemo(() => {
     const present = new Set(detailGroups.flatMap((group) => group.items.map((item) => item.id)));
-    return availableCommands.filter((command) => !present.has(command.id));
-  }, [availableCommands, detailGroups]);
+    return availableCommands.filter((command) => !isCommandHidden?.(command.id) && !present.has(command.id));
+  }, [availableCommands, detailGroups, isCommandHidden]);
 
   const addCommandToUserToolset = (groupId: string, command: CommandOption) => {
     setDraft((current) => {
@@ -436,11 +443,17 @@ export function CustomizeToolbarsDialog({
               <CustomizeToolsetDetail
                 toolsetTitle={selectedTitle}
                 isUser={selectedIsUser}
-                groups={detailGroups}
+                groups={displayedGroups}
                 availableCommands={availableForToolset}
                 onReorderItems={(groupId, orderedItemIds) => {
                   if (selectedToolsetId) {
-                    setDraft((current) => reorderItems(current, selectedToolsetId, groupId, orderedItemIds));
+                    // Reorder only displayed slots, retaining feature-hidden commands in place.
+                    const group = detailGroups.find((entry) => entry.id === groupId);
+                    let index = 0;
+                    const order = isCommandHidden && group
+                      ? group.items.map((item) => isCommandHidden(item.id) ? item.id : orderedItemIds[index++]!)
+                      : orderedItemIds;
+                    setDraft((current) => reorderItems(current, selectedToolsetId, groupId, order));
                   }
                 }}
                 onToggleItemHidden={(itemId, hidden) => {

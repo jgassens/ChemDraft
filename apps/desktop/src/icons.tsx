@@ -1,6 +1,14 @@
 import type { SVGProps } from "react";
 
 export type IconName =
+  | "arrange"
+  | "arrangeOval"
+  | "arrangeGridLeft"
+  | "arrangeGridCenter"
+  | "arrangeGridRight"
+  | "arrangeRow"
+  | "arrangeColumn"
+
   | "close"
   | "nextTab"
   | "previousTab"
@@ -56,6 +64,41 @@ export function Icon({ name, ...props }: IconProps) {
       return <svg {...common}><path d="M4 5h16v14H4zM10 8l4 4-4 4" /></svg>;
     case "previousTab":
       return <svg {...common}><path d="M4 5h16v14H4zM14 8l-4 4 4 4" /></svg>;
+    case "arrange":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="4" r="2" />
+          <circle cx="20" cy="12" r="2" />
+          <circle cx="12" cy="20" r="2" />
+          <circle cx="4" cy="12" r="2" />
+          <path d="M7 5.8 5.8 7M17 5.8 18.2 7M18.2 17 17 18.2M7 18.2 5.8 17" />
+        </svg>
+      );
+    case "arrangeOval":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="6" r="1.8" />
+          <circle cx="21" cy="12" r="1.8" />
+          <circle cx="12" cy="18" r="1.8" />
+          <circle cx="3" cy="12" r="1.8" />
+          <path d="M6 7.5 8 6.5M16 6.5 18 7.5M18 16.5 16 17.5M8 17.5 6 16.5" />
+        </svg>
+      );
+    case "arrangeGridLeft":
+    case "arrangeGridCenter":
+    case "arrangeGridRight": {
+      const start = name === "arrangeGridLeft" ? 3 : name === "arrangeGridRight" ? 10 : 6.5;
+      return (
+        <svg {...common}>
+          {[3, 10, 17].map((x) => <rect key={x} x={x} y="5" width="4" height="4" rx="0.5" />)}
+          {[start, start + 7].map((x) => <rect key={x} x={x} y="15" width="4" height="4" rx="0.5" />)}
+        </svg>
+      );
+    }
+    case "arrangeRow":
+      return <svg {...common}>{[4, 9.333, 14.667, 20].map((x) => <circle key={x} cx={x} cy="12" r="1.8" />)}</svg>;
+    case "arrangeColumn":
+      return <svg {...common}>{[4, 9.333, 14.667, 20].map((y) => <circle key={y} cx="12" cy={y} r="1.8" />)}</svg>;
     case "align":
       return (
         <svg {...common}>

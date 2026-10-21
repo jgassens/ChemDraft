@@ -1132,3 +1132,6 @@ multi-molecule targeting, mixed values, sparse per-atom overrides, `.cds` style-
 the style compatibility boundary, `.template` export, and a shared font catalog backed by the raster
 export font database. Durable schema and architecture notes live in
 `docs/architecture/toolbars-and-toolsets.md` and `packages/toolset-registry/README.md`.
+
+- [Compound layouts](compound-layouts.md): opt-in Circle/Oval/Grid/Row/Column selection layouts
+  and a selected-page spacing preview, preserving molecule sizes and chemistry.

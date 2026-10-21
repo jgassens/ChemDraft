@@ -7,6 +7,7 @@ import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
+import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./tauriEvents";
@@ -1493,4 +1494,38 @@ export async function listenForToolsetWindowStates(handler: (state: ToolsetWindo
 async function invokeToolsetWindow(commandName: string, toolsetId: string): Promise<ToolsetWindowState> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ToolsetWindowState>(commandName, { toolsetId });
+}
+
+export const COMPOUND_LAYOUT_SETTINGS_EVENT = "chemdraft://compound-layout-settings";
+
+export async function broadcastCompoundLayoutSettings(settings: CompoundLayoutSettings): Promise<void> {
+  dispatchDomToolsetEvent(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
+  if (!isDesktopRuntime()) {
+    return;
+  }
+
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
+}
+
+export async function listenForCompoundLayoutSettings(
+  handler: (settings: CompoundLayoutSettings) => void
+): Promise<Unlisten> {
+  const onStorage = (event: StorageEvent) => { if (event.key === COMPOUND_LAYOUT_STORAGE_KEY || event.key === null) handler(loadCompoundLayoutSettings()); };
+  globalThis.addEventListener?.("storage", onStorage);
+  const removeStorage = () => globalThis.removeEventListener?.("storage", onStorage);
+  const unlistenDom = listenForDomToolsetEvent(COMPOUND_LAYOUT_SETTINGS_EVENT, (event) => {
+    if (isCompoundLayoutSettings(event.detail)) handler(event.detail);
+  });
+  if (!isDesktopRuntime()) {
+    return () => { unlistenDom(); removeStorage(); };
+  }
+  const unlistenTauri = await listenTauriEvent<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, (event) => {
+    if (isCompoundLayoutSettings(event.payload)) handler(event.payload);
+  });
+  return () => {
+    removeStorage();
+    unlistenDom();
+    unlistenTauri();
+  };
 }

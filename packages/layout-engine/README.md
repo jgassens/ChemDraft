@@ -89,3 +89,14 @@ plus `testMoleculeFromSmiles` (a test-only reader whose bare lowercase `n` does 
 type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
+
+## Selection arrangement
+
+`planObjectArrangement` plans translation-only Circle, Oval, Grid, Row and Column layouts.
+Grid supports left, centered and right alignment of incomplete rows. Visible label bounds and
+ring-system anchors reserve space for asymmetric molecules without altering molecular geometry.
+It accepts an optional page frame and refuses layouts that cannot fit without scaling.
+With a page frame, default Row/Column gaps tighten from 48 to no less than 12 document pixels
+when necessary to fit. Explicit `gap` values remain fixed; molecule dimensions never change.
+`textVisualBoundsForArrangement` measures rotated caption frames around the same pivot as SVG
+text rendering, so grouped captions participate in layout clearance and page-fit checks.

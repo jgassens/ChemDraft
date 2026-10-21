@@ -31,6 +31,20 @@ describe("dialog contract", () => {
   });
 });
 
+it("validates spacing kinds, bounded preview chunks and typed actions without broadening page-size messages", () => {
+  const s = { ...snapshot(), dialogKind: "arrangementSpacing", data: { title: "Selection", minPercent: 25, maxPercent: 150 } };
+  expect(parseDialogMessage(s)).toBeDefined();
+  const preview = { ...s, type: "preview", data: { percent: 100, index: 0, count: 1, chunk: "PHN2Zy8+" } };
+  expect(parseDialogMessage(preview)).toBeDefined();
+  for (const data of [ { ...preview.data, chunk: "x".repeat(2001) }, { ...preview.data, count: 1025 }, { ...preview.data, index: 1 }, { ...preview.data, percent: 24 }, { ...preview.data, error: "bad" }, { ...preview.data, chunk: "https://example.com" } ]) expect(parseDialogMessage({...preview,data})).toBeUndefined();
+  expect(parseDialogMessage({...s,type:"action",data:{action:"preview",percent:80}})).toBeDefined();
+  expect(parseDialogMessage({...snapshot(),type:"action",data:{action:"preview",percent:80}})).toBeUndefined();
+  expect(parseDialogMessage({...s,type:"action",data:{action:"apply",percent:NaN}})).toBeUndefined();
+  expect(parseDialogMessage({...s,type:"result",data:{status:"accepted"}})).toBeDefined();
+  expect(parseDialogMessage({...s,type:"result",data:{status:"exported"}})).toBeUndefined();
+  expect(parseDialogMessage({...preview,dialogKind:"export"})).toBeUndefined();
+});
+
 it("restricts large payloads to typed inline image/PDF previews", () => {
   const message = { ...snapshot(), dialogKind: "export", type: "result", data: { status: "preview", preview: { url: "data:image/png;base64," + "A".repeat(20000), kind: "image", width: 600, height: 400, warnings: [] } } };
   expect(parseDialogMessage(message)).toBeDefined();
