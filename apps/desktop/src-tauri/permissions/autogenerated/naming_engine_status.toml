@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-naming-engine-status"
+description = "Enables the naming_engine_status command without any pre-configured scope."
+commands.allow = ["naming_engine_status"]
+
+[[permission]]
+identifier = "deny-naming-engine-status"
+description = "Denies the naming_engine_status command without any pre-configured scope."
+commands.deny = ["naming_engine_status"]

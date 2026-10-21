@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-name-structure-raw"
+description = "Enables the name_structure_raw command without any pre-configured scope."
+commands.allow = ["name_structure_raw"]
+
+[[permission]]
+identifier = "deny-name-structure-raw"
+description = "Denies the name_structure_raw command without any pre-configured scope."
+commands.deny = ["name_structure_raw"]

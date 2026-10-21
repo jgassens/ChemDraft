@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-naming-engine-cancel-install"
+description = "Enables the naming_engine_cancel_install command without any pre-configured scope."
+commands.allow = ["naming_engine_cancel_install"]
+
+[[permission]]
+identifier = "deny-naming-engine-cancel-install"
+description = "Denies the naming_engine_cancel_install command without any pre-configured scope."
+commands.deny = ["naming_engine_cancel_install"]

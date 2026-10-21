@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-naming-cancel"
+description = "Enables the naming_cancel command without any pre-configured scope."
+commands.allow = ["naming_cancel"]
+
+[[permission]]
+identifier = "deny-naming-cancel"
+description = "Denies the naming_cancel command without any pre-configured scope."
+commands.deny = ["naming_cancel"]
