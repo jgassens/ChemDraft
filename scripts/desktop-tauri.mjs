@@ -68,9 +68,14 @@ if (isBranchBuild) {
 // input to `pnpm release:windows-manifest`). Only when the updater key is on this machine: without it
 // the build still succeeds, just without update signatures, so a developer on main is never blocked.
 // Branch builds never sign — they must not be publishable as an update to the released app.
+// CI defers updater signing until AFTER Authenticode, which changes the installer bytes. The
+// explicit opt-out also overrides createUpdaterArtifacts in a checked-in config; VM defaults stay.
 if (args[0] === "build" && !isBranchBuild && process.platform === "win32") {
   const keyPath = env.CHEMDRAFT_UPDATER_KEY_PATH ?? join(homedir(), ".tauri", "chemdraft-updater.key");
-  if (env.TAURI_SIGNING_PRIVATE_KEY || existsSync(keyPath)) {
+  if (env.CHEMDRAFT_SKIP_UPDATER_SIGNING === "1") {
+    args.splice(1, 0, "--config", JSON.stringify({ bundle: { createUpdaterArtifacts: false } }));
+    console.log("Stable build: updater signing explicitly deferred (CHEMDRAFT_SKIP_UPDATER_SIGNING=1).");
+  } else if (env.TAURI_SIGNING_PRIVATE_KEY || existsSync(keyPath)) {
     // Trimmed (which also strips a BOM, whitespace to trim()): a key restored from a password manager
     // through an editor or PowerShell gains a trailing newline, and the CLI then fails to decode it.
     env.TAURI_SIGNING_PRIVATE_KEY ??= readFileSync(keyPath, "utf8").trim();
