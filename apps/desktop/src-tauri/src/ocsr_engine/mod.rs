@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use std::borrow::Cow;
 
+use crate::local_engine::EngineSpec;
 use base64::Engine;
 use image::ImageFormat;
 use serde::Serialize;
@@ -76,66 +77,9 @@ pub struct OcsrEngineStatus {
     pub engine_check: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum InstallPhase {
-    CheckingDisk,
-    DownloadingUv,
-    InstallingPython,
-    InstallingPackages,
-    DownloadingModel,
-    Verifying,
-    Done,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallProgress {
-    pub phase: InstallPhase,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes_done: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes_total: Option<u64>,
-    /// The byte counts are an estimate from directory growth, not a transfer count
-    /// (see `progress.rs`). Omitted when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub estimated: bool,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum InstallErrorCode {
-    InsufficientDisk,
-    Network,
-    ChecksumMismatch,
-    Cancelled,
-    Unsupported,
-    Failed,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallError {
-    pub code: InstallErrorCode,
-    pub message: String,
-}
+pub use crate::local_engine::{InstallError, InstallErrorCode, InstallPhase, InstallProgress};
 
 impl InstallError {
-    fn network(message: impl Into<String>) -> Self {
-        Self {
-            code: InstallErrorCode::Network,
-            message: message.into(),
-        }
-    }
-
-    fn checksum(message: impl Into<String>) -> Self {
-        Self {
-            code: InstallErrorCode::ChecksumMismatch,
-            message: message.into(),
-        }
-    }
-
     fn cancelled() -> Self {
         Self {
             code: InstallErrorCode::Cancelled,
@@ -143,22 +87,8 @@ impl InstallError {
         }
     }
 
-    fn failed(message: impl Into<String>) -> Self {
-        Self {
-            code: InstallErrorCode::Failed,
-            message: message.into(),
-        }
-    }
-
     fn failed_io(error: std::io::Error) -> Self {
         Self::failed(format!("OCSR installation failed: {error}"))
-    }
-
-    fn unsupported(message: impl Into<String>) -> Self {
-        Self {
-            code: InstallErrorCode::Unsupported,
-            message: message.into(),
-        }
     }
 }
 
@@ -223,7 +153,7 @@ pub struct OcsrEngineState {
     install_child: Arc<RunningChild>,
     /// Held while anything creates or deletes the `ocsr-engine*` trees (an install, an uninstall,
     /// the startup sweep of stale staging), so none of them deletes what another is writing.
-    staging: Arc<Mutex<()>>,
+    pub(crate) registry: crate::local_engine::EngineRegistry,
     stop_reaper: Arc<AtomicBool>,
     shut_down: AtomicBool,
     request_gate: Arc<Mutex<()>>,
@@ -253,7 +183,7 @@ impl OcsrEngineState {
             cancel_install: Arc::new(AtomicBool::new(false)),
             install_snapshot: Arc::new(Mutex::new(None)),
             install_child: Arc::default(),
-            staging: Arc::new(Mutex::new(())),
+            registry: crate::local_engine::EngineRegistry::default(),
             stop_reaper: Arc::new(AtomicBool::new(false)),
             shut_down: AtomicBool::new(false),
             request_gate: Arc::new(Mutex::new(())),
@@ -265,21 +195,10 @@ impl OcsrEngineState {
     }
 
     pub fn start_idle_reaper(&self) {
-        let stop = self.stop_reaper.clone();
-        let process = self.process.clone();
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_secs(30));
-                let manager = match process.try_lock() {
-                    Ok(manager) => Some(manager),
-                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-                    Err(TryLockError::WouldBlock) => None,
-                };
-                if let Some(mut manager) = manager {
-                    manager.stop_if_idle(Instant::now());
-                }
-            }
-        });
+        crate::local_engine::process::start_idle_reaper(
+            self.stop_reaper.clone(),
+            self.process.clone(),
+        );
     }
 
     /// Removes the staging trees a quit or crash mid-install left behind (see
@@ -289,7 +208,7 @@ impl OcsrEngineState {
         let (Ok(paths), Ok(platform)) = (install_paths(app), platform::current()) else {
             return;
         };
-        let staging = self.staging.clone();
+        let staging = self.registry.staging.clone();
         let installing = self.installing.clone();
         std::thread::spawn(move || {
             let _staging = lock_ignoring_poison(&staging);
@@ -342,16 +261,7 @@ impl OcsrEngineState {
     /// recognition: a running one is killed, which releases the manager within milliseconds.
     /// Call it off the main thread.
     fn stop_sidecar_blocking(process: &Mutex<ProcessManager>, kill: &KillSwitch) {
-        loop {
-            match process.try_lock() {
-                Ok(mut manager) => return manager.stop(),
-                Err(TryLockError::Poisoned(poisoned)) => return poisoned.into_inner().stop(),
-                Err(TryLockError::WouldBlock) => {
-                    kill.kill_now();
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
+        crate::local_engine::process::stop_sidecar_blocking(process, kill);
     }
 }
 
@@ -398,7 +308,7 @@ pub async fn ocsr_engine_install<R: Runtime>(
     let installing = state.installing.clone();
     let cancel = state.cancel_install.clone();
     let install_child = state.install_child.clone();
-    let staging = state.staging.clone();
+    let staging = state.registry.staging.clone();
     let process = state.process.clone();
     let sidecar_kill = state.sidecar_kill.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -449,7 +359,7 @@ pub async fn ocsr_engine_uninstall<R: Runtime>(app: tauri::AppHandle<R>) -> Ocsr
         Err(error) => return broken_status(0, error.message),
     };
     let installing = state.installing.clone();
-    let staging = state.staging.clone();
+    let staging = state.registry.staging.clone();
     let process = state.process.clone();
     let sidecar_kill = state.sidecar_kill.clone();
     let upgrade_refused = state.upgrade_refused.clone();
@@ -633,8 +543,7 @@ pub fn ocsr_recognize_cancel(state: tauri::State<'_, OcsrEngineState>) {
 /// it does, and one already running is killed through the switch. Between them no request can slip
 /// through (see `ProcessManager::recognize_with`).
 fn cancel_recognition(cancels: &AtomicU64, kill: &KillSwitch) {
-    cancels.fetch_add(1, Ordering::SeqCst);
-    kill.cancel_request();
+    crate::local_engine::process::cancel_request(cancels, kill);
 }
 
 /// One recognition on the blocking pool, after the request gate: the part of
@@ -869,7 +778,7 @@ where
     let installing = state.installing.clone();
     let snapshot = state.install_snapshot.clone();
     let cancel = state.cancel_install.clone();
-    let staging = state.staging.clone();
+    let staging = state.registry.staging.clone();
     let refused = state.upgrade_refused.clone();
     std::thread::spawn(move || {
         let _staging = lock_ignoring_poison(&staging);
@@ -903,9 +812,10 @@ fn install_paths<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<InstallPaths, 
     let app_data = app.path().app_data_dir().map_err(|error| {
         InstallError::failed(format!("No app data directory is available: {error}"))
     })?;
-    let requirements = resource_path(app, "resources/ocsr/requirements.txt").ok_or_else(|| {
-        InstallError::failed("The OCSR requirements file is not present in this build.")
-    })?;
+    let requirements =
+        resource_path(app, install::MolScribeSpec::requirements().0).ok_or_else(|| {
+            InstallError::failed("The OCSR requirements file is not present in this build.")
+        })?;
     Ok(InstallPaths {
         app_data,
         requirements,
@@ -927,11 +837,7 @@ fn resource_path<R: Runtime>(app: &tauri::AppHandle<R>, relative: &str) -> Optio
 /// recognition poisons the gate, which guards no data, so the next request proceeds rather than
 /// recognition being disabled for the rest of the session.
 fn enter_request(gate: &Mutex<()>) -> Option<std::sync::MutexGuard<'_, ()>> {
-    match gate.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-        Err(TryLockError::WouldBlock) => None,
-    }
+    crate::local_engine::process::enter_request(gate)
 }
 
 fn timeout_message() -> String {
@@ -957,9 +863,7 @@ fn existing_ancestor(path: &Path) -> PathBuf {
 }
 
 fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::local_engine::process::lock_ignoring_poison(mutex)
 }
 
 fn broken_status(free_disk_bytes: u64, detail: impl Into<String>) -> OcsrEngineStatus {

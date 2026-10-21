@@ -1,21 +1,10 @@
-//! Progress for the install steps that report none of their own, and a rate limit for all of it.
-//!
-//! uv prints no byte counts when its output is not a terminal, so `uv python install` and
-//! `uv pip install` — the longest part of an install — used to send one message and then nothing
-//! for minutes. [`GrowthEstimator`] fills that gap by measuring how much the directories uv writes
-//! into have grown, against a fixed expected total. **It is an estimate**, not a byte count: the
-//! expected totals below were measured on one macOS arm64 install, wheel sizes differ by platform
-//! and release, and APFS clones from the uv cache into the venv are counted at their logical size.
-//! The estimate therefore never claims completion on its own: it is monotonic, it stops at 99%
-//! while the step is still running, and only the step's successful exit reports 100%.
-
-use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-
 use super::process::RecognitionProgress;
+#[cfg(test)]
 use super::{InstallPhase, InstallProgress};
-
+pub use crate::local_engine::progress::*;
+use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::{fs, path::PathBuf};
 /// Expected growth of the uv cache and managed-Python directories during `uv python install`.
 /// Estimate: a real macOS arm64 install left about 70 MB in `python/`.
 pub const PYTHON_EXPECTED_GROWTH_BYTES: u64 = 75_000_000;
@@ -23,133 +12,6 @@ pub const PYTHON_EXPECTED_GROWTH_BYTES: u64 = 75_000_000;
 /// Expected growth of the uv cache plus the venv during `uv pip install` of PyTorch, torchvision,
 /// numpy, MolScribe and their dependencies. Estimate: about 1.2 GB.
 pub const PACKAGES_EXPECTED_GROWTH_BYTES: u64 = 1_200_000_000;
-
-/// How often a running uv step is measured.
-pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
-
-/// The fastest the webview is sent progress: about four events per second.
-pub const EMIT_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Estimates a uv step's progress from directory growth; see the module documentation.
-pub struct GrowthEstimator {
-    phase: InstallPhase,
-    label: &'static str,
-    watched: Vec<PathBuf>,
-    baseline: u64,
-    expected_bytes: u64,
-    done: u64,
-}
-
-impl GrowthEstimator {
-    /// Measures the watched directories now, so only growth from this point is counted.
-    pub fn new(
-        phase: InstallPhase,
-        label: &'static str,
-        watched: Vec<PathBuf>,
-        expected_bytes: u64,
-    ) -> Self {
-        let baseline = approximate_size(&watched);
-        Self {
-            phase,
-            label,
-            watched,
-            baseline,
-            expected_bytes: expected_bytes.max(1),
-            done: 0,
-        }
-    }
-
-    /// The current estimate: never lower than the last one, and never above 99% of the expected
-    /// total while the step runs (uv deletes temporary files, and the true total is unknown).
-    pub fn sample(&mut self) -> InstallProgress {
-        let grown = approximate_size(&self.watched).saturating_sub(self.baseline);
-        let cap = self.expected_bytes / 100 * 99;
-        self.done = self.done.max(grown.min(cap));
-        self.progress()
-    }
-
-    /// The step exited successfully, which is the only thing that may report 100%.
-    pub fn finished(&mut self) -> InstallProgress {
-        self.done = self.expected_bytes;
-        self.progress()
-    }
-
-    fn progress(&self) -> InstallProgress {
-        let megabytes = |bytes: u64| bytes / 1_000_000;
-        InstallProgress {
-            phase: self.phase,
-            message: format!(
-                "{}: about {} of {} MB (estimated).",
-                self.label,
-                megabytes(self.done),
-                megabytes(self.expected_bytes)
-            ),
-            bytes_done: Some(self.done),
-            bytes_total: Some(self.expected_bytes),
-            estimated: true,
-        }
-    }
-}
-
-/// Sum of regular-file sizes under `roots`, tolerating whatever uv is creating, renaming and
-/// deleting at the same moment: an unreadable or vanished entry is skipped, not an error.
-/// Symlinks are not followed, so the venv's interpreter link is not counted twice.
-pub fn approximate_size(roots: &[PathBuf]) -> u64 {
-    let mut total = 0_u64;
-    let mut pending: Vec<PathBuf> = roots.iter().filter(|p| p.exists()).cloned().collect();
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if file_type.is_file() {
-                if let Ok(metadata) = entry.metadata() {
-                    total = total.saturating_add(metadata.len());
-                }
-            }
-        }
-    }
-    total
-}
-
-/// Decides which progress events reach the webview. A new phase and a completed byte count always
-/// pass, so the dialog never misses a step or stalls one short of full; anything else passes at
-/// most once per `interval`.
-pub struct ProgressThrottle {
-    interval: Duration,
-    last: Option<(InstallPhase, Instant)>,
-}
-
-impl ProgressThrottle {
-    pub fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            last: None,
-        }
-    }
-
-    pub fn admit(&mut self, progress: &InstallProgress, now: Instant) -> bool {
-        let boundary = match self.last {
-            None => true,
-            Some((phase, _)) => phase != progress.phase,
-        } || progress.phase == InstallPhase::Done
-            || (progress.bytes_total.is_some() && progress.bytes_done == progress.bytes_total);
-        let due = self
-            .last
-            .is_none_or(|(_, at)| now.saturating_duration_since(at) >= self.interval);
-        if boundary || due {
-            self.last = Some((progress.phase, now));
-            true
-        } else {
-            false
-        }
-    }
-}
 
 /// The same limit for a recognition's progress. A new stage, and a change in how many readings are
 /// planned, always pass; readings within one plan pass at most once per `interval`. A skipped

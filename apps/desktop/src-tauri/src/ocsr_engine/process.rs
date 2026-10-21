@@ -1,15 +1,20 @@
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::process::{Command, Stdio};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::sync::mpsc;
+use std::sync::Arc;
+#[cfg(test)]
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use serde::Serialize;
 
-use super::platform::{self, EnginePlatform};
+use super::platform::EnginePlatform;
 use super::protocol::{
     self, ProtocolResultError, RecognitionPayload, RequestLine, SidecarErrorCode, SidecarRequest,
 };
@@ -20,7 +25,6 @@ use super::protocol::{
 /// so about 35 s for a full vote; 300 s leaves roughly an 8x margin for slower CPUs and a cold load.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct LaunchPaths {
@@ -69,97 +73,11 @@ pub enum ProcessError {
     Cancelled,
 }
 
-/// Kills the running sidecar from any thread, without the [`ProcessManager`] lock that a
-/// recognition holds for its whole length (up to [`REQUEST_TIMEOUT`]). Exit, install and
-/// uninstall use it so none of them waits for a recognition to finish: the child dies, and the
-/// request in flight is woken at once and reports [`ProcessError::Cancelled`] (it does not wait for
-/// the child's output to close, which a grandchild still holding it open would delay).
-#[derive(Clone, Default)]
-pub struct KillSwitch(Arc<Mutex<KillState>>);
-
-#[derive(Default)]
-struct KillState {
-    /// Set by `kill_now` (or `cancel_request` while a request runs), cleared when the next request
-    /// begins.
-    requested: bool,
-    /// True from the start of a request until it returns; `cancel_request` acts only then.
-    active: bool,
-    /// Kills the current child; present from spawn until the manager stops it.
-    kill: Option<Box<dyn FnMut() + Send>>,
-}
-
-impl KillSwitch {
-    /// Kills the current child, if any, and marks the request in flight as cancelled. Returns at
-    /// once; nothing here waits for the child to exit.
-    pub fn kill_now(&self) {
-        let kill = {
-            let mut state = self.state();
-            state.requested = true;
-            state.kill.take()
-        };
-        if let Some(mut kill) = kill {
-            kill();
-        }
-    }
-
-    /// The user's Cancel: kills the child only while a request is running, so a click that lands
-    /// between recognitions leaves a warm idle sidecar alone. Returns whether a request was running.
-    /// A cancel that lands just before a request begins is caught by the manager's `cancelled`
-    /// check instead, which runs after `begin`.
-    pub fn cancel_request(&self) -> bool {
-        let kill = {
-            let mut state = self.state();
-            if !state.active {
-                return false;
-            }
-            state.requested = true;
-            state.kill.take()
-        };
-        if let Some(mut kill) = kill {
-            kill();
-        }
-        true
-    }
-
-    /// Called by a spawner as soon as its child exists, before the (possibly long) model load.
-    /// A kill requested while the spawn was starting takes effect immediately.
-    pub fn arm(&self, mut kill: Box<dyn FnMut() + Send>) {
-        let mut state = self.state();
-        if state.requested {
-            drop(state);
-            kill();
-        } else {
-            state.kill = Some(kill);
-        }
-    }
-
-    fn begin(&self) {
-        let mut state = self.state();
-        state.requested = false;
-        state.active = true;
-    }
-
-    /// Ends a request; returns whether a kill was requested at any point during it.
-    fn finish(&self) -> bool {
-        let mut state = self.state();
-        state.active = false;
-        state.requested
-    }
-
-    fn requested(&self) -> bool {
-        self.state().requested
-    }
-
-    fn disarm(&self) {
-        self.state().kill = None;
-    }
-
-    fn state(&self) -> MutexGuard<'_, KillState> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
+pub use crate::local_engine::process::KillSwitch;
+use crate::local_engine::process::{
+    self as shared, FailureKind, ProcessFailure, ProcessMessages, ResponseLine, SidecarProtocol,
+};
+pub type ProcessManager = shared::ProcessManager<OcsrProtocol>;
 
 pub trait EngineProcess: Send {
     /// `progress` receives each reading the sidecar announces, before the final answer.
@@ -185,187 +103,66 @@ pub trait ProcessSpawner: Send + Sync {
     ) -> Result<Box<dyn EngineProcess>, ProcessError>;
 }
 
-pub struct ProcessManager {
-    spawner: Arc<dyn ProcessSpawner>,
-    process: Option<Box<dyn EngineProcess>>,
-    last_used: Option<Instant>,
-    kill_switch: KillSwitch,
-}
-
-impl ProcessManager {
-    pub fn system() -> Self {
-        Self::new(Arc::new(SystemSpawner))
+impl ProcessFailure for ProcessError {
+    fn cancelled() -> Self {
+        Self::Cancelled
     }
-
-    pub fn new(spawner: Arc<dyn ProcessSpawner>) -> Self {
-        Self {
-            spawner,
-            process: None,
-            last_used: None,
-            kill_switch: KillSwitch::default(),
+    fn timeout() -> Self {
+        Self::Timeout
+    }
+    fn crashed(message: String) -> Self {
+        Self::Crashed(message)
+    }
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Cancelled => FailureKind::Cancelled,
+            Self::Timeout => FailureKind::Timeout,
+            Self::Crashed(_) => FailureKind::Crashed,
+            _ => FailureKind::Answer,
         }
-    }
-
-    /// A handle that kills this manager's child without taking the manager's lock.
-    pub fn kill_switch(&self) -> KillSwitch {
-        self.kill_switch.clone()
-    }
-
-    /// [`Self::recognize_with`] without progress or a cancel check.
-    #[cfg(test)]
-    pub fn recognize(
-        &mut self,
-        platform: &dyn EnginePlatform,
-        paths: &LaunchPaths,
-        image_path: &Path,
-        timeout: Duration,
-    ) -> Result<RecognitionPayload, ProcessError> {
-        self.recognize_with(platform, paths, image_path, timeout, &|_| {}, &|| false)
-    }
-
-    /// A crashed child is discarded and the request is retried against one fresh process. A timeout
-    /// is not retried because the first inference may still have consumed the entire user budget,
-    /// and a kill through the [`KillSwitch`] is not retried because someone asked for it.
-    ///
-    /// `progress` hears `Starting` before each spawn and every reading the sidecar announces.
-    /// `cancelled` is the caller's own cancel flag, read once the request has begun: a
-    /// [`KillSwitch::cancel_request`] that raced ahead of `begin` found no request to kill, so the
-    /// caller's flag is what stops this one before it starts work.
-    pub fn recognize_with(
-        &mut self,
-        platform: &dyn EnginePlatform,
-        paths: &LaunchPaths,
-        image_path: &Path,
-        timeout: Duration,
-        progress: &dyn Fn(RecognitionProgress),
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<RecognitionPayload, ProcessError> {
-        self.kill_switch.begin();
-        let result = if cancelled() {
-            Err(ProcessError::Cancelled)
-        } else {
-            self.attempts(platform, paths, image_path, timeout, progress)
-        };
-        if self.kill_switch.finish() {
-            // A kill landed after the attempts last looked (or during them): the child may be dead
-            // while still held here, so drop it and let the next request start a fresh one.
-            self.stop();
-            return result.map_err(|_| ProcessError::Cancelled);
-        }
-        result
-    }
-
-    fn attempts(
-        &mut self,
-        platform: &dyn EnginePlatform,
-        paths: &LaunchPaths,
-        image_path: &Path,
-        timeout: Duration,
-        progress: &dyn Fn(RecognitionProgress),
-    ) -> Result<RecognitionPayload, ProcessError> {
-        let deadline = Instant::now() + timeout;
-        let request_id = format!("ocsr-{}", NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed));
-        for attempt in 0..=1 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.stop();
-                return Err(ProcessError::Timeout);
-            }
-            if self.process.is_none() {
-                progress(RecognitionProgress::Starting);
-                match self
-                    .spawner
-                    .spawn(platform, paths, remaining, &self.kill_switch)
-                {
-                    Ok(process) => self.process = Some(process),
-                    Err(error) => {
-                        self.kill_switch.disarm();
-                        return Err(if self.kill_switch.requested() {
-                            ProcessError::Cancelled
-                        } else {
-                            error
-                        });
-                    }
-                }
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let result = self
-                .process
-                .as_mut()
-                .expect("process was initialized")
-                .recognize(&request_id, image_path, remaining, progress);
-            self.last_used = Some(Instant::now());
-            if self.kill_switch.requested() {
-                // The child is dead or dying; an answer that arrived first still stands.
-                self.stop();
-                return result.map_err(|_| ProcessError::Cancelled);
-            }
-            match result {
-                // Killed before this request began (it asked for nothing): a dead child, as below.
-                Err(ProcessError::Cancelled) => {
-                    self.stop();
-                    if attempt == 1 {
-                        return Err(ProcessError::Crashed(
-                            "The OCSR engine was stopped while recognizing the image.".to_string(),
-                        ));
-                    }
-                }
-                Err(ProcessError::Crashed(message)) => {
-                    self.stop();
-                    if attempt == 1 {
-                        return Err(ProcessError::Crashed(message));
-                    }
-                }
-                Err(ProcessError::Timeout) => {
-                    self.stop();
-                    return Err(ProcessError::Timeout);
-                }
-                other => return other,
-            }
-        }
-        Err(ProcessError::Crashed(
-            "The OCSR engine stopped twice while recognizing the image.".to_string(),
-        ))
-    }
-
-    pub fn stop_if_idle(&mut self, now: Instant) -> bool {
-        if self.process.is_some()
-            && self
-                .last_used
-                .is_some_and(|last_used| now.saturating_duration_since(last_used) >= IDLE_TIMEOUT)
-        {
-            self.stop();
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn stop(&mut self) {
-        self.kill_switch.disarm();
-        if let Some(mut process) = self.process.take() {
-            process.shutdown();
-        }
-        self.last_used = None;
     }
 }
 
-impl Drop for ProcessManager {
-    fn drop(&mut self) {
-        self.stop();
+pub struct OcsrProtocol;
+impl SidecarProtocol for OcsrProtocol {
+    type Input = Path;
+    type Response = RecognitionPayload;
+    type Progress = RecognitionProgress;
+    type Error = ProcessError;
+    type LaunchPaths = LaunchPaths;
+    type Process = dyn EngineProcess;
+    type Spawner = dyn ProcessSpawner;
+    const IDLE_TIMEOUT: Duration = IDLE_TIMEOUT;
+    const LOG_PREFIX: &'static str = "[chemdraft ocsr]";
+    const REQUEST_PREFIX: &'static str = "ocsr-";
+    fn system_spawner() -> Arc<Self::Spawner> {
+        Arc::new(SystemSpawner)
     }
-}
-
-struct SystemSpawner;
-
-impl ProcessSpawner for SystemSpawner {
     fn spawn(
-        &self,
+        spawner: &Self::Spawner,
         platform: &dyn EnginePlatform,
         paths: &LaunchPaths,
         timeout: Duration,
-        kill_switch: &KillSwitch,
-    ) -> Result<Box<dyn EngineProcess>, ProcessError> {
+        kill: &KillSwitch,
+    ) -> Result<Box<Self::Process>, ProcessError> {
+        spawner.spawn(platform, paths, timeout, kill)
+    }
+    fn recognize(
+        process: &mut Self::Process,
+        id: &str,
+        input: &Path,
+        timeout: Duration,
+        progress: &dyn Fn(RecognitionProgress),
+    ) -> Result<RecognitionPayload, ProcessError> {
+        process.recognize(id, input, timeout, progress)
+    }
+    fn shutdown(process: &mut Self::Process) {
+        process.shutdown();
+    }
+    fn starting() -> RecognitionProgress {
+        RecognitionProgress::Starting
+    }
+    fn configure_command(paths: &LaunchPaths) -> Command {
         let mut command = Command::new(&paths.python);
         command
             .args(&paths.interpreter_args)
@@ -384,160 +181,82 @@ impl ProcessSpawner for SystemSpawner {
         if let Some(engine_dir) = paths.model.parent().filter(|dir| dir.is_dir()) {
             command.current_dir(engine_dir);
         }
-        platform.configure_child(&mut command);
-        let mut child = command.spawn().map_err(|error| {
-            ProcessError::Crashed(format!("Could not start the OCSR engine: {error}"))
+        command
+    }
+    fn ready(line: &str) -> Result<(), ProcessError> {
+        let ready = protocol::parse_line(line).map_err(ProcessError::Crashed)?;
+        protocol::validate_ready(ready).map_err(ProcessError::Crashed)
+    }
+    fn encode(request_id: &str, image_path: &Path) -> Result<String, ProcessError> {
+        let image_path = image_path.to_str().ok_or_else(|| {
+            ProcessError::InvalidImage("The temporary image path is not valid Unicode.".to_string())
         })?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            ProcessError::Crashed("Could not open the OCSR engine input.".to_string())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            ProcessError::Crashed("Could not open the OCSR engine output.".to_string())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            ProcessError::Crashed("Could not open the OCSR engine log.".to_string())
-        })?;
-        let child = Arc::new(Mutex::new(Sidecar {
-            child,
-            reaped: false,
-        }));
-        let (lines_tx, lines_rx) = mpsc::channel();
-        let killable = child.clone();
-        let killed_tx = lines_tx.clone();
-        kill_switch.arm(Box::new(move || {
-            // Holding the child's lock rules out a concurrent reap, so the id cannot be reused.
-            let mut sidecar = lock_child(&killable);
-            if !sidecar.reaped {
-                platform::kill_process_tree(sidecar.child.id());
-            }
-            let _ = sidecar.child.kill();
-            drop(sidecar);
-            // Wakes the request now, rather than when the output closes.
-            let _ = killed_tx.send(SidecarOutput::Killed);
-        }));
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if lines_tx.send(SidecarOutput::Line(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("[chemdraft ocsr] could not read sidecar output: {error}");
-                        break;
-                    }
-                }
-            }
-            // Said explicitly: the kill switch's sender keeps the channel connected.
-            let _ = lines_tx.send(SidecarOutput::Closed);
-        });
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                match line {
-                    Ok(line) => eprintln!("[chemdraft ocsr] {line}"),
-                    Err(error) => {
-                        eprintln!("[chemdraft ocsr] could not read sidecar log: {error}");
-                        break;
-                    }
-                }
-            }
-        });
-
-        let mut process = SystemProcess {
-            child,
-            stdin,
-            lines: lines_rx,
+        protocol::encode_request(&SidecarRequest::Recognize {
+            id: request_id,
+            image_path,
+        })
+        .map_err(ProcessError::Crashed)
+    }
+    fn classify(line: &str, request_id: &str) -> ResponseLine<Self> {
+        let message = match protocol::parse_line(line).map_err(ProcessError::Crashed) {
+            Ok(message) => message,
+            Err(error) => return ResponseLine::Final(Err(error)),
         };
-        let ready_result = process.receive_line(timeout).and_then(|ready_line| {
-            let ready =
-                protocol::parse_line(ready_line.trim_end()).map_err(ProcessError::Crashed)?;
-            protocol::validate_ready(ready).map_err(ProcessError::Crashed)
-        });
-        if let Err(error) = ready_result {
-            process.shutdown();
-            return Err(error);
-        }
-        Ok(Box::new(process))
-    }
-}
-
-struct SystemProcess {
-    /// Shared with the [`KillSwitch`], which kills it from another thread.
-    child: Arc<Mutex<Sidecar>>,
-    stdin: ChildStdin,
-    lines: mpsc::Receiver<SidecarOutput>,
-}
-
-enum SidecarOutput {
-    Line(String),
-    /// The sidecar's stdout reached its end.
-    Closed,
-    /// The [`KillSwitch`] killed the sidecar.
-    Killed,
-}
-
-/// The sidecar's child. Every reap goes through here, so the process group is swept first (see
-/// [`platform::sweep_exited_process_group`]), and `reaped` records when its pid stops being ours.
-struct Sidecar {
-    child: Child,
-    reaped: bool,
-}
-
-impl Sidecar {
-    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        if !self.reaped
-            && matches!(
-                platform::sweep_exited_process_group(self.child.id(), false),
-                Ok(false)
-            )
-        {
-            return Ok(None);
-        }
-        let status = self.child.try_wait()?;
-        self.reaped |= status.is_some();
-        Ok(status)
-    }
-
-    fn kill_and_wait(&mut self) {
-        if !self.reaped {
-            platform::kill_process_tree(self.child.id());
-            let _ = self.child.kill();
-            let _ = platform::sweep_exited_process_group(self.child.id(), true);
-        }
-        let _ = self.child.wait();
-        self.reaped = true;
-    }
-}
-
-fn lock_child(child: &Mutex<Sidecar>) -> MutexGuard<'_, Sidecar> {
-    child
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-impl SystemProcess {
-    fn receive_line(&mut self, timeout: Duration) -> Result<String, ProcessError> {
-        match self.lines.recv_timeout(timeout) {
-            Ok(SidecarOutput::Line(line)) => Ok(line),
-            Ok(SidecarOutput::Killed) => Err(ProcessError::Cancelled),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(ProcessError::Timeout),
-            Ok(SidecarOutput::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let detail = match lock_child(&self.child).try_wait() {
-                    Ok(Some(status)) => format!("The OCSR engine exited with {status}."),
-                    Ok(None) => "The OCSR engine closed its output unexpectedly.".to_string(),
-                    Err(error) => format!("Could not inspect the OCSR engine: {error}"),
-                };
-                Err(ProcessError::Crashed(detail))
+        match protocol::classify_for_id(message, request_id) {
+            RequestLine::Progress(reading) => {
+                ResponseLine::Progress(RecognitionProgress::Reading {
+                    run: reading.run,
+                    runs_planned: reading.runs_planned,
+                })
             }
+            RequestLine::Final(answer) => ResponseLine::Final(match answer {
+                Ok(payload) => Ok(payload),
+                Err(ProtocolResultError::Recognition { code, message }) => match code {
+                    SidecarErrorCode::InvalidImage => Err(ProcessError::InvalidImage(message)),
+                    SidecarErrorCode::RecognitionFailed => {
+                        Err(ProcessError::RecognitionFailed(message))
+                    }
+                },
+                Err(ProtocolResultError::Crashed(message)) => Err(ProcessError::Crashed(message)),
+            }),
+        }
+    }
+    fn shutdown_line() -> Result<String, ProcessError> {
+        protocol::encode_request(&SidecarRequest::Shutdown).map_err(ProcessError::Crashed)
+    }
+    fn messages() -> ProcessMessages {
+        ProcessMessages {
+            stopped: "The OCSR engine was stopped while recognizing the image.",
+            stopped_twice: "The OCSR engine stopped twice while recognizing the image.",
+            start: "Could not start the OCSR engine: ",
+            input: "Could not open the OCSR engine input.",
+            output: "Could not open the OCSR engine output.",
+            log: "Could not open the OCSR engine log.",
+            exited: "The OCSR engine exited with ",
+            closed: "The OCSR engine closed its output unexpectedly.",
+            inspect: "Could not inspect the OCSR engine: ",
+            inspect_request: "Could not inspect OCSR: ",
+            not_running: "The OCSR engine was no longer running.",
+            send: "Could not send the image to OCSR: ",
         }
     }
 }
 
-impl EngineProcess for SystemProcess {
+struct SystemSpawner;
+impl ProcessSpawner for SystemSpawner {
+    fn spawn(
+        &self,
+        platform: &dyn EnginePlatform,
+        paths: &LaunchPaths,
+        timeout: Duration,
+        kill_switch: &KillSwitch,
+    ) -> Result<Box<dyn EngineProcess>, ProcessError> {
+        shared::SystemProcess::<OcsrProtocol>::spawn(platform, paths, timeout, kill_switch)
+            .map(|process| Box::new(OcsrProcess(process)) as Box<dyn EngineProcess>)
+    }
+}
+struct OcsrProcess(shared::SystemProcess<OcsrProtocol>);
+impl EngineProcess for OcsrProcess {
     fn recognize(
         &mut self,
         request_id: &str,
@@ -545,69 +264,10 @@ impl EngineProcess for SystemProcess {
         timeout: Duration,
         progress: &dyn Fn(RecognitionProgress),
     ) -> Result<RecognitionPayload, ProcessError> {
-        let deadline = Instant::now() + timeout;
-        if lock_child(&self.child)
-            .try_wait()
-            .map_err(|error| ProcessError::Crashed(format!("Could not inspect OCSR: {error}")))?
-            .is_some()
-        {
-            return Err(ProcessError::Crashed(
-                "The OCSR engine was no longer running.".to_string(),
-            ));
-        }
-        let image_path = image_path.to_str().ok_or_else(|| {
-            ProcessError::InvalidImage("The temporary image path is not valid Unicode.".to_string())
-        })?;
-        let line = protocol::encode_request(&SidecarRequest::Recognize {
-            id: request_id,
-            image_path,
-        })
-        .map_err(ProcessError::Crashed)?;
-        writeln!(self.stdin, "{line}")
-            .and_then(|()| self.stdin.flush())
-            .map_err(|error| {
-                ProcessError::Crashed(format!("Could not send the image to OCSR: {error}"))
-            })?;
-        // Progress lines come first, one per reading; the whole request shares one deadline.
-        let answer = loop {
-            let response = self.receive_line(deadline.saturating_duration_since(Instant::now()))?;
-            let message =
-                protocol::parse_line(response.trim_end()).map_err(ProcessError::Crashed)?;
-            match protocol::classify_for_id(message, request_id) {
-                RequestLine::Progress(reading) => progress(RecognitionProgress::Reading {
-                    run: reading.run,
-                    runs_planned: reading.runs_planned,
-                }),
-                RequestLine::Final(answer) => break answer,
-            }
-        };
-        match answer {
-            Ok(payload) => Ok(payload),
-            Err(ProtocolResultError::Recognition { code, message }) => match code {
-                SidecarErrorCode::InvalidImage => Err(ProcessError::InvalidImage(message)),
-                SidecarErrorCode::RecognitionFailed => {
-                    Err(ProcessError::RecognitionFailed(message))
-                }
-            },
-            Err(ProtocolResultError::Crashed(message)) => Err(ProcessError::Crashed(message)),
-        }
+        self.0.recognize(request_id, image_path, timeout, progress)
     }
-
     fn shutdown(&mut self) {
-        if let Ok(line) = protocol::encode_request(&SidecarRequest::Shutdown) {
-            let _ = writeln!(self.stdin, "{line}");
-            let _ = self.stdin.flush();
-        }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            let exited = lock_child(&self.child).try_wait();
-            match exited {
-                Ok(Some(_)) => return,
-                Ok(None) => thread::sleep(Duration::from_millis(20)),
-                Err(_) => break,
-            }
-        }
-        lock_child(&self.child).kill_and_wait();
+        self.0.shutdown();
     }
 }
 

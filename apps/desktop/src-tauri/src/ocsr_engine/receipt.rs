@@ -11,8 +11,7 @@
 //! in place (`upgrade.rs`).
 
 use std::fmt;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 use chrono::Utc;
@@ -218,27 +217,26 @@ pub fn read_current_receipt(path: &Path) -> Option<InstallReceipt> {
 pub fn parse_receipt(text: &str) -> Result<ReceiptRead, ReceiptError> {
     let malformed = |error: serde_json::Error| ReceiptError::Malformed(error.to_string());
     let mut value: serde_json::Value = serde_json::from_str(text).map_err(malformed)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| ReceiptError::Malformed("not a JSON object".to_string()))?;
-    let version = match object.get("receiptVersion") {
-        // 6635f42 wrote the version-2 shape before receipts carried their version.
-        None if object.contains_key("requirementsSha256") => CURRENT_RECEIPT_VERSION,
-        None => LEGACY_RECEIPT_VERSION,
-        Some(version) => version
-            .as_u64()
-            .and_then(|version| u32::try_from(version).ok())
-            .ok_or_else(|| ReceiptError::Malformed(format!("receiptVersion {version}")))?,
-    };
+    // 6635f42 wrote the version-2 shape before receipts carried their version.
+    let version = crate::local_engine::receipt::receipt_version(
+        &value,
+        LEGACY_RECEIPT_VERSION,
+        CURRENT_RECEIPT_VERSION,
+        "requirementsSha256",
+    )
+    .map_err(ReceiptError::Malformed)?;
     match version {
         LEGACY_RECEIPT_VERSION => serde_json::from_value(value)
             .map(ReceiptRead::Legacy)
             .map_err(malformed),
         CURRENT_RECEIPT_VERSION => {
-            object.insert(
-                "receiptVersion".to_string(),
-                serde_json::Value::from(CURRENT_RECEIPT_VERSION),
-            );
+            value
+                .as_object_mut()
+                .expect("version dispatch checked object")
+                .insert(
+                    "receiptVersion".to_string(),
+                    serde_json::Value::from(CURRENT_RECEIPT_VERSION),
+                );
             serde_json::from_value(value)
                 .map(ReceiptRead::Current)
                 .map_err(malformed)
@@ -248,24 +246,8 @@ pub fn parse_receipt(text: &str) -> Result<ReceiptRead, ReceiptError> {
     }
 }
 
-/// Writes the receipt beside itself and renames it into place, so a crash mid-write leaves the
-/// old receipt or the new one, never half of one.
 pub fn write_receipt(path: &Path, receipt: &InstallReceipt) -> Result<(), InstallError> {
-    let bytes = serde_json::to_vec_pretty(receipt).map_err(|error| {
-        InstallError::failed(format!("Could not encode install receipt: {error}"))
-    })?;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = Path::new(&temporary);
-    let written = File::create(temporary).and_then(|mut file| {
-        file.write_all(&bytes)?;
-        file.sync_all()
-    });
-    if let Err(error) = written.and_then(|()| fs::rename(temporary, path)) {
-        let _ = fs::remove_file(temporary);
-        return Err(InstallError::failed_io(error));
-    }
-    Ok(())
+    crate::local_engine::receipt::write_receipt::<super::install::MolScribeSpec>(path, receipt)
 }
 
 #[cfg(test)]

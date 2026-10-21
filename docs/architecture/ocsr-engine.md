@@ -50,7 +50,7 @@ fraction, so a finished 5.7 MB download would put the bar at ~52% before the 1.2
 pulled it back to ~3%.
 
 uv prints no byte counts when not attached to a terminal, so the two uv steps are **estimated** in Rust
-(`progress.rs`): while `uv python install` runs, the growth of `python/` and the uv cache is measured
+(`src/local_engine/progress.rs`): while `uv python install` runs, the growth of `python/` and the uv cache is measured
 every 500 ms against about 75 MB; while `uv pip install` runs, the growth of the uv cache and the venv
 against about 1.2 GB. The estimate is monotonic, is capped at 99% while the step runs, and only the
 step's successful exit reports 100%; such events carry `estimated: true` and the UI labels them
@@ -58,10 +58,14 @@ step's successful exit reports 100%; such events carry `estimated: true` and the
 reach the webview at most about four times a second (a new phase or a completed byte count always
 passes); the status snapshot sees every event.
 
-Code: `apps/desktop/src-tauri/src/ocsr_engine/` — `mod.rs` (commands and state), `install.rs`
-(installer), `progress.rs` (install progress estimates), `process.rs` (sidecar lifetime), `protocol.rs` (JSON Lines), `platform.rs` (per-OS seam),
-`pins.rs` (every supply-chain pin), `receipt.rs` (the install receipt and its versions), `upgrade.rs`
-(in-place receipt upgrade). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
+Code: `apps/desktop/src-tauri/src/` — `ocsr_engine/mod.rs` (commands and state),
+`local_engine/install.rs` / `ocsr_engine/install.rs` (installer),
+`local_engine/progress.rs` / `ocsr_engine/progress.rs` (install progress estimates),
+`local_engine/process.rs` / `ocsr_engine/process.rs` (sidecar lifetime),
+`ocsr_engine/protocol.rs` (JSON Lines), `local_engine/platform.rs` / `ocsr_engine/platform.rs` (per-OS seam),
+`local_engine/pins.rs` / `ocsr_engine/pins.rs` (every supply-chain pin),
+`local_engine/receipt.rs` / `ocsr_engine/receipt.rs` (the install receipt and its versions),
+`ocsr_engine/upgrade.rs` (in-place receipt upgrade). Sidecar: `apps/desktop/src-tauri/resources/ocsr/`.
 
 ## Installed layout
 
@@ -214,7 +218,7 @@ CHEMDRAFT_OCSR_ENGINE_DIR="$HOME/Library/Application Support/<bundle id>/ocsr-en
 
 ## Pins
 
-All pins live in `src/ocsr_engine/pins.rs`. Changing any of them is a deliberate, reviewed
+All pins live in `src/ocsr_engine/pins.rs` / `src/local_engine/pins.rs`. Changing any of them is a deliberate, reviewed
 supply-chain change that must update `resources/ocsr/requirements.txt`, NOTICE, the dependency
 inventory, and this document together. Tests assert that the requirements file's SHA-256 is
 `REQUIREMENTS_LOCK_SHA256`, that every entry in it is an exact pin followed by hashes, and that it
@@ -521,7 +525,7 @@ indicator's own subscription (`subscribeActivity`), so a reading never re-render
 
 ## Platform seam
 
-`EnginePlatform` (`platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
+`EnginePlatform` (`src/local_engine/platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
 and venv interpreter paths, and child-process flags. `platform::current()` picks one with `#[cfg]`;
 nothing else in the installer or process manager branches on the OS. Free-disk queries and
 `kill_process_tree` are the other per-OS functions (`statvfs` and `killpg` on Unix,
@@ -554,4 +558,4 @@ runs Rust checks only on macOS. Before calling it release-ready:
 - Check torch wheel resolution for Python 3.10 on Windows, and paths with spaces and non-ASCII
   characters (the sidecar's image path must be valid Unicode).
 - A new architecture (e.g. Windows arm64) needs an upstream uv asset and a reviewed checksum in
-  `pins.rs` and a new `EnginePlatform` implementation. Never fall back to a system uv or Python.
+  `src/local_engine/pins.rs` and a new `EnginePlatform` implementation. Never fall back to a system uv or Python.
