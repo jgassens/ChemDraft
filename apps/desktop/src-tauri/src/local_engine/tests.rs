@@ -21,6 +21,84 @@ use std::time::{Duration, Instant};
 const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+fn shell_command(script: &str) -> (PathBuf, Vec<OsString>) {
+    if cfg!(windows) {
+        (
+            PathBuf::from("cmd.exe"),
+            vec!["/C".into(), OsString::from(script)],
+        )
+    } else {
+        (
+            PathBuf::from("sh"),
+            vec!["-c".into(), OsString::from(script)],
+        )
+    }
+}
+
+fn failing_script(message: &str) -> String {
+    if cfg!(windows) {
+        format!("echo {message} 1>&2 & exit /b 2")
+    } else {
+        format!("printf '%s\\n' '{message}' >&2; exit 2")
+    }
+}
+
+#[test]
+fn uv_failure_includes_its_stderr_tail() {
+    let io = install::SystemInstallIo::<Stub>::from_builder(reqwest::blocking::Client::builder())
+        .expect("system io");
+    let (program, args) = shell_command(&failing_script("Missing expected target directory"));
+    let error = io
+        .run(
+            &StubPlatform,
+            RunStep::InstallPython,
+            &program,
+            &args,
+            &[],
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect_err("child fails");
+
+    assert_eq!(error.code, InstallErrorCode::Failed);
+    assert!(
+        error.message.contains("Missing expected target directory"),
+        "stderr tail missing from {}",
+        error.message
+    );
+}
+
+#[test]
+fn uv_large_stderr_is_drained_and_truncated() {
+    let io = install::SystemInstallIo::<Stub>::from_builder(reqwest::blocking::Client::builder())
+        .expect("system io");
+    let script = if cfg!(windows) {
+        "for /L %i in (1,1,20000) do @echo 012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789 1>&2 & exit /b 2"
+    } else {
+        "head -c 1100000 /dev/zero | tr '\\0' x >&2; printf '\\nfinal stderr line\\n' >&2; exit 2"
+    };
+    let (program, args) = shell_command(script);
+    let started = Instant::now();
+    let error = io
+        .run(
+            &StubPlatform,
+            RunStep::InstallPackages,
+            &program,
+            &args,
+            &[],
+            &AtomicBool::new(false),
+            None,
+        )
+        .expect_err("child fails");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "large stderr child was not drained"
+    );
+    assert!(error.message.contains("final stderr line"));
+    assert!(error.message.len() <= 5 * 1024, "tail was not bounded");
+}
+
 // A second spec overrides only the additive install option; all other fixture policy delegates.
 struct CompiledStub;
 macro_rules! delegate_stub {

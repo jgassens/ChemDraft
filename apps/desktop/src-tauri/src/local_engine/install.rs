@@ -20,6 +20,11 @@ use super::{InstallError, InstallPhase, InstallProgress};
 pub const RECEIPT_FILE: &str = "install.json";
 pub const REQUIREMENTS_FILE: &str = "requirements.txt";
 
+/// Retain enough of a failed uv invocation to make its otherwise terse exit status actionable,
+/// without allowing a broken child to retain an unbounded amount of installer memory.
+const STDERR_TAIL_BYTES: usize = 4 * 1024;
+const STDERR_ERROR_LINES: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct InstallPaths {
     pub app_data: PathBuf,
@@ -170,6 +175,77 @@ fn scrub_environment(command: &mut Command) {
     }
 }
 
+/// Drain stderr while the child is running. Keeping only the tail is important both for noisy
+/// package builds and because the installer must continue to supervise (and cancel) the child.
+fn drain_stderr(
+    mut stderr: std::process::ChildStderr,
+) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut tail = Vec::with_capacity(STDERR_TAIL_BYTES);
+        let mut buffer = [0_u8; 8 * 1024];
+        loop {
+            let read = stderr.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(tail);
+            }
+            tail.extend_from_slice(&buffer[..read]);
+            if tail.len() > STDERR_TAIL_BYTES {
+                let excess = tail.len() - STDERR_TAIL_BYTES;
+                tail.drain(..excess);
+            }
+        }
+    })
+}
+
+/// uv ordinarily writes UTF-8 diagnostics. If the bounded byte tail began in the middle of a
+/// character, discard those leading continuation bytes rather than showing a replacement glyph.
+fn stderr_tail_text(bytes: &[u8]) -> String {
+    let mut start = 0;
+    while start < bytes.len() && std::str::from_utf8(&bytes[start..]).is_err() {
+        start += 1;
+    }
+    let text = String::from_utf8_lossy(&bytes[start..]);
+    strip_ansi_colour_codes(&text)
+}
+
+/// Removes ANSI CSI colour sequences from a diagnostic before it reaches the dialog or log.
+fn strip_ansi_colour_codes(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut clean = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\x1b' && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (b'@'..=b'~').contains(&byte) {
+                    break;
+                }
+            }
+        } else {
+            let character = text[index..]
+                .chars()
+                .next()
+                .expect("character at byte index");
+            clean.push(character);
+            index += character.len_utf8();
+        }
+    }
+    clean
+}
+
+fn stderr_error_summary(tail: &str) -> Option<String> {
+    let lines: Vec<_> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .rev()
+        .take(STDERR_ERROR_LINES)
+        .collect();
+    (!lines.is_empty()).then(|| lines.into_iter().rev().collect::<Vec<_>>().join(" "))
+}
+
 /// Bytes between progress events, so a 1.1 GB download sends ~1,000 events rather than ~9,000.
 const PROGRESS_STRIDE_BYTES: u64 = 1024 * 1024;
 
@@ -265,14 +341,42 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         command
             .args(args)
             .envs(env.iter().cloned())
+            .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         platform.configure_child(&mut command);
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
-        self.supervise(&mut child, program, cancel, watch, None)
+        let stderr = child.stderr.take().map(drain_stderr);
+        let outcome = self.supervise(&mut child, program, cancel, watch, None);
+        let stderr_tail = stderr
+            .and_then(|reader| reader.join().ok())
+            .and_then(Result::ok)
+            .map(|tail| stderr_tail_text(&tail))
+            .unwrap_or_default();
+        match outcome {
+            Err(mut error) => {
+                if error.code == super::InstallErrorCode::Failed {
+                    if let Some(summary) = stderr_error_summary(&stderr_tail) {
+                        eprintln!(
+                            "{} {} stderr:\n{}",
+                            S::LOG_PREFIX,
+                            program.display(),
+                            stderr_tail.trim_end()
+                        );
+                        if error.message.ends_with('.') {
+                            error.message.pop();
+                        }
+                        error.message.push_str(": ");
+                        error.message.push_str(&summary);
+                    }
+                }
+                Err(error)
+            }
+            Ok(()) => Ok(()),
+        }
     }
 }
 
