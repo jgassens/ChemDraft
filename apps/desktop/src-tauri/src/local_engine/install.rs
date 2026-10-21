@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,8 +11,8 @@ use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 
 use super::pins;
-use super::platform::EnginePlatform;
 pub use super::platform::RunningChild;
+use super::platform::{EnginePlatform, InstallChild};
 use super::progress::{self, GrowthEstimator};
 use super::EngineSpec;
 use super::{InstallError, InstallPhase, InstallProgress};
@@ -24,6 +24,7 @@ pub const REQUIREMENTS_FILE: &str = "requirements.txt";
 /// without allowing a broken child to retain an unbounded amount of installer memory.
 const STDERR_TAIL_BYTES: usize = 4 * 1024;
 const STDERR_ERROR_LINES: usize = 3;
+const PIPE_READER_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct InstallPaths {
@@ -197,6 +198,19 @@ fn drain_stderr(
     })
 }
 
+/// Descendants can inherit a pipe even after its owner exits. Never let such a reader block
+/// installation indefinitely; dropping an unfinished handle detaches the reader thread.
+pub(crate) fn finish_reader<T>(reader: std::thread::JoinHandle<T>, timeout: Duration) -> Option<T> {
+    let deadline = Instant::now() + timeout;
+    while !reader.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    reader.join().ok()
+}
+
 /// uv ordinarily writes UTF-8 diagnostics. If the bounded byte tail began in the middle of a
 /// character, discard those leading continuation bytes rather than showing a replacement glyph.
 fn stderr_tail_text(bytes: &[u8]) -> String {
@@ -352,7 +366,7 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         let stderr = child.stderr.take().map(drain_stderr);
         let outcome = self.supervise(&mut child, program, cancel, watch, None);
         let stderr_tail = stderr
-            .and_then(|reader| reader.join().ok())
+            .and_then(|reader| finish_reader(reader, PIPE_READER_TIMEOUT))
             .and_then(Result::ok)
             .map(|tail| stderr_tail_text(&tail))
             .unwrap_or_default();
@@ -431,7 +445,9 @@ impl<S: EngineSpec> ProbeIo for SystemInstallIo<S> {
             Some(Instant::now() + PROBE_TIMEOUT),
         );
         let text = reader
-            .map(|reader| reader.join().unwrap_or_else(|_| Ok(Vec::new())))
+            .map(|reader| {
+                finish_reader(reader, PIPE_READER_TIMEOUT).unwrap_or_else(|| Ok(Vec::new()))
+            })
             .transpose()
             .map_err(S::failed_io)?
             .unwrap_or_default();
@@ -443,9 +459,9 @@ impl<S: EngineSpec> ProbeIo for SystemInstallIo<S> {
 impl<S: EngineSpec> SystemInstallIo<S> {
     /// Waits for `child`, killing its whole tree on cancel (or past `deadline`), and sampling a
     /// step's progress estimate while it runs.
-    fn supervise(
+    pub(crate) fn supervise(
         &self,
-        child: &mut Child,
+        child: &mut impl InstallChild,
         program: &Path,
         cancel: &AtomicBool,
         mut watch: Option<RunWatch<'_>>,
@@ -456,9 +472,7 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         loop {
             let timed_out = deadline.is_some_and(|deadline| Instant::now() >= deadline);
             if cancel.load(Ordering::SeqCst) || timed_out {
-                self.running.kill_tree();
-                let _ = child.kill();
-                let _ = child.wait();
+                self.running.kill_and_wait(child);
                 if timed_out && !cancel.load(Ordering::SeqCst) {
                     return Err(InstallError::failed(format!(
                         "{} did not finish within {} seconds.",
@@ -495,10 +509,13 @@ impl<S: EngineSpec> SystemInstallIo<S> {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(error) => {
+                    // Reap before either caller waits for a pipe reader. In particular, an
+                    // inspection error does not imply that the process or its pipes exited.
+                    self.running.kill_and_wait(child);
                     return Err(InstallError::failed(format!(
                         "Could not inspect {}: {error}",
                         program.display()
-                    )))
+                    )));
                 }
             }
         }

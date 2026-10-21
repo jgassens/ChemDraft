@@ -258,6 +258,29 @@ use std::io;
 use std::process::{Child, ExitStatus};
 use std::sync::{Mutex, MutexGuard};
 
+/// The installer's child operations, with a seam for failures from `try_wait`.
+pub(crate) trait InstallChild {
+    fn id(&self) -> u32;
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn kill(&mut self) -> io::Result<()>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+
+impl InstallChild for Child {
+    fn id(&self) -> u32 {
+        self.id()
+    }
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.try_wait()
+    }
+    fn kill(&mut self) -> io::Result<()> {
+        self.kill()
+    }
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.wait()
+    }
+}
+
 /// The uv child an install is running, if any, so app exit can kill it and everything it started
 /// without waiting for the install thread to notice its cancel flag: a process that is exiting
 /// never gets back to that thread, and an orphaned uv would keep writing gigabytes into the
@@ -270,24 +293,43 @@ pub struct RunningChild {
 impl RunningChild {
     /// Kills the running child's whole process tree, if a child is running. Returns at once.
     pub fn kill_tree(&self) {
-        if let Some(pid) = self.slot().take() {
+        if let Some(pid) = *self.slot() {
             kill_process_tree(pid);
         }
     }
 
-    pub(crate) fn track(&self, child: &Child) {
+    pub(crate) fn track(&self, child: &impl InstallChild) {
         *self.slot() = Some(child.id());
     }
 
     /// `try_wait` under the slot's lock, clearing the slot once the child is reaped: `kill_tree`
     /// then never signals an id the system may already have handed to another process.
-    pub(crate) fn try_wait(&self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+    pub(crate) fn try_wait(&self, child: &mut impl InstallChild) -> io::Result<Option<ExitStatus>> {
         let mut slot = self.slot();
         let result = child.try_wait();
-        if !matches!(result, Ok(None)) {
+        if matches!(result, Ok(Some(_))) {
             *slot = None;
         }
         result
+    }
+
+    /// Keep the PID protected from concurrent exit/cancel until the child has been reaped.
+    /// On a wait failure it stays tracked, so those paths can still retry the tree kill.
+    pub(crate) fn kill_and_wait(&self, child: &mut impl InstallChild) {
+        let mut slot = self.slot();
+        if let Some(pid) = *slot {
+            kill_process_tree(pid);
+            let _ = child.kill();
+            let _ = sweep_exited_process_group(pid, true);
+            if child.wait().is_ok() {
+                *slot = None;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked_pid(&self) -> Option<u32> {
+        *self.slot()
     }
 
     fn slot(&self) -> MutexGuard<'_, Option<u32>> {
