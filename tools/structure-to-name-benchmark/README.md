@@ -28,6 +28,7 @@ namers installed with different RDKit builds are scored alike.
 ## Running
 
 Everything goes in throwaway venvs outside the repository; nothing is installed system-wide.
+Build the per-host OPSIN Java runtime first with `node scripts/build-opsin-runtime.mjs`.
 
 ```bash
 W=$TMPDIR/s2n-bench; mkdir -p $W/out

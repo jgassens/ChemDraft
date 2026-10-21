@@ -62,7 +62,9 @@ def run_opsin(names, java, jar, allow_radicals=False):
     if lines and lines[-1] == "":
         lines.pop()
     if len(lines) != len(names):
-        print(f"WARNING: {len(names)} names in, {len(lines)} lines out", file=sys.stderr)
+        raise RuntimeError(
+            f"OPSIN output line count mismatch: {len(names)} names in, {len(lines)} lines out"
+        )
     # Empty first field = OPSIN could not parse that name. Exit code is 0 either way.
     return [line.split("\t")[0].strip() for line in lines]
 

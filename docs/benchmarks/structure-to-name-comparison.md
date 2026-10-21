@@ -76,7 +76,9 @@ What each column means for a user:
   names (27 → 2). It still emits **14 confident, OPSIN-readable names for the wrong compound**.
 - **Orthonym's default tier** misnamed nothing. It pays for that by declining almost a third of the
   corpus. Of its 1,577 declines, 1,094 are `UNNAMEABLE`, 332 are `NO_VERIFIED_PIN` (it built a valid name
-  that is not a certified PIN) and 151 are `UNSUPPORTED_ELEMENT`.
+  that is not a certified PIN) and 151 are `UNSUPPORTED_ELEMENT`. These breakdowns come from raw run
+  files not committed to the repo; regenerate them by rerunning the benchmark harness above and
+  inspecting its stage-1 output.
 - **Orthonym's valid tier** has the best coverage of any engine. Its 4 "misnames" are not wrong
   compounds: each is the same delocalised cation with the positive charge drawn on the other nitrogen (see
   [Where Orthonym's own check and the oracle disagree](#where-orthonyms-own-check-and-the-oracle-disagree)).
@@ -203,10 +205,12 @@ Results are in `structure-to-name-data/pubchem-*.csv`.
 - **For scale, OpenClatura 0.4.3 on the same 200 structures** matched PubChem exactly 120 times, and its
   names equalled Orthonym's 151 times. String agreement therefore says nothing that separates the two
   engines on easy structures. What it does establish is that the PINs Orthonym verified through OPSIN
-  are also conventional names to an outside generator, not names that only OPSIN accepts.
+  are also conventional names to an outside generator, not names that only OPSIN accepts. These figures
+  come from raw run files not committed to the repo; regenerate them by rerunning the benchmark harness above.
 
 **Sample 2: 100 names only the valid tier adds** (structures the default tier did not name). PubChem
 had 99 of them. Exact agreement was **6/99**. PubChem's names parsed to the same structure in 84 cases,
+including the 6 exact string matches,
 to a different tautomer in 11 (imine/amine, thiosemicarbazone/carbamimidothioic acid, hydroxy/oxo;
 in each, Orthonym named the tautomer that was drawn), and not at all in 4 (salts and mixtures joined
 with a semicolon). These are the harder
@@ -289,7 +293,7 @@ disagreement in the run comes from that difference or from an OPSIN flag:
 here from the very same jar. Its 0 misnames on the oracle are therefore **largely by construction**: it
 discards any name that OPSIN reads as something else, and this benchmark's question is whether OPSIN
 reads the name as something else. What the oracle can still catch is the gap between Orthonym's InChIKey
-equality and exact structure equality, and it caught all of it (the 5 rows above). It **cannot** catch a
+equality and exact structure equality, and it caught all of it (the 4 rows above). It **cannot** catch a
 name that Orthonym and OPSIN both misread the same way. Three pieces of evidence bear on that blind spot,
 and none of them shares the OPSIN path:
 

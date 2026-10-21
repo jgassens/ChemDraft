@@ -133,7 +133,7 @@ places.
 
 **Worth measuring before merging:** whether either version causes currently-correct names to start
 declining. The benchmark harness used here can quantify that — it is
-`tools/openclatura-benchmark/` in the reporting repository, and re-runs in about a minute over 4,999
+`tools/structure-to-name-benchmark/` in the reporting repository, and re-runs in about a minute over 4,999
 structures.
 
 ## A smaller, separate observation
