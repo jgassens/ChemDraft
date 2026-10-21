@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
-import { verifyNameRoundTrip } from "@chemdraft/document-workflow-core";
+import { moleculeSmiles, verifyNameRoundTrip } from "@chemdraft/document-workflow-core";
 
 import { createPhase4Document, createSmilesMolecule } from "../documentWorkflow";
 import { registerRdkitWasmLoader } from "../rdkitWasmLoader";
@@ -58,7 +58,7 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 
-  it("declines a drawn methyl radical when the name reads back as closed-shell methane", async () => {
+  it("declines a drawn methyl radical before naming when export atom states are unverified", async () => {
     const molecule = drawnMolecule("C");
     // The drawing tool records an associated radical dot as markRadicals; the SMILES depiction
     // interface does not carry radicals. Exercise that real native representation and M RAD write.
@@ -67,8 +67,19 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
     const result = await nameStructureForPlugin(molecule, engine, namingInstalled);
 
     const canonical = await loadNamingCanonicalizer();
-    expect(engine.name).toHaveBeenCalledWith(await canonical.canonicalize("[CH3]"));
-    expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
+    const warnings: Parameters<typeof moleculeSmiles>[2] = [];
+    // Naming supplies only canonical SMILES, not the atom-state correspondence required by
+    // PR #174's "keeps identifier-only engines compatible while requiring evidence for drawn radicals" test.
+    expect(await moleculeSmiles(molecule, 0, warnings, async structure => ({
+      smiles: (await canonical.canonicalize(structure)) ?? undefined
+    }))).toBe("[CH3]");
+    expect(warnings).toEqual([{
+      code: "export.smiles_atom_state_unverified",
+      message: `Atom states (Atom ${molecule.atoms[0]!.id} (C)) could not be verified against the exported SMILES by the structure engine.`,
+      severity: "warning", objectId: molecule.id
+    }]);
+    expect(engine.name).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 

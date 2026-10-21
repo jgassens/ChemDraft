@@ -272,6 +272,45 @@ describe("nameStructure", () => {
     expect(services.readName).not.toHaveBeenCalled();
   });
 
+  it("declines a radical when the canonicalizer supplies no atom-state evidence", async () => {
+    const drawn = molecule({
+      atoms: [{ id: "a1", element: "C", x: 0, y: 0, formalCharge: 0, markRadicals: 1 }],
+      bonds: [], structure: "C"
+    });
+    const services = deps({ canonicalize: vi.fn(async () => "[CH3]") });
+    const warnings: Parameters<typeof smilesExport.moleculeSmiles>[2] = [];
+    await smilesExport.moleculeSmiles(drawn, 0, warnings, async structure => ({
+      smiles: (await services.canonicalize(structure)) ?? undefined
+    }));
+    expect(warnings).toEqual([{
+      code: "export.smiles_atom_state_unverified", severity: "warning", objectId: drawn.id,
+      message: "Atom states (Atom a1 (C)) could not be verified against the exported SMILES by the structure engine."
+    }]);
+    const result = await nameStructure(services, drawn);
+    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
+    expect(result).not.toHaveProperty("name");
+    expect(services.name).not.toHaveBeenCalled();
+  });
+
+  it("declines charge-separated export even though its warning is informational", async () => {
+    // PR #174 permits this export when total charge survives, but per-atom formal charges
+    // changed. Informational severity does not prove the exact drawing required for naming.
+    const original = smilesExport.moleculeSmiles;
+    vi.spyOn(smilesExport, "moleculeSmiles").mockImplementationOnce(async (...args) => {
+      args[2].push({
+        code: "export.smiles_charge_separated", severity: "info",
+        message: "SMILES writes charge-separated formal charges while preserving total charge: Atom a1 (N) is drawn with formal charge 0; SMILES reparses with formal charge 1. Atom a2 (O) is drawn with formal charge 0; SMILES reparses with formal charge -1."
+      });
+      return original(...args);
+    });
+    const services = deps();
+    const result = await nameStructure(services, molecule());
+    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
+    expect(result).not.toHaveProperty("name");
+    expect(services.name).not.toHaveBeenCalled();
+    expect(services.readName).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("declines a real unresolved-aromatic writer warning (typed atom: %s)", async (labelLiteral) => {
     const drawn = molecule({
       atoms: molecule().atoms.slice(0, 2).map(atom => ({ ...atom, labelLiteral })),
