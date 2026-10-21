@@ -7,7 +7,8 @@ import { EXPERIMENTAL_PLUGIN_NOTICE } from "./pluginUpdates";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
-import { formatGigabytes, installSpaceStatement } from "./structureRecognitionInstallProgress";
+import { installSpaceStatement } from "../dialogs/engineInstallText";
+import { formatGigabytes } from "./structureRecognitionInstallProgress";
 
 export interface StructureRecognitionInstallDialogProps {
   request: OpenStructureRecognitionInstall;

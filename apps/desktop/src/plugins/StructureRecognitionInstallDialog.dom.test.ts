@@ -92,7 +92,7 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(document.querySelector('[aria-modal="true"]')).toBeNull();
     expect(prompt.message).toContain("Requested by MolScribe OCSR");
     expect(prompt.message).toContain("a private Python, PyTorch and a 1.1 GB model");
-    expect(prompt.message).toContain("Needs about 2 GB free while installing. Free now: 3 GB.");
+    expect(prompt.message).toContain("Needs about 2.0 GB free while installing. Free now: 3.0 GB.");
     expect(prompt.message).toContain("Images never leave it.");
     expect(prompt.message).toContain("Experimental");
     expect(prompt.choices).toEqual([
@@ -276,7 +276,7 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(formatDiskBytes(12_400_000_000)).toBe("12 GB");
     expect(formatDiskBytes(0)).toBe("0 GB");
     renderDialog(request({ status: { state: "notInstalled", requiredDiskBytes: 3e9, freeDiskBytes: 2.5e9 } }));
-    expect(document.body.textContent).toContain("Needs about 3 GB free while installing; only 2.5 GB is free.");
+    expect(document.body.textContent).toContain("Needs about 3.0 GB free while installing; only 2.5 GB is free.");
   });
 
   it.each<[string, StructureRecognitionInstallProgress, string, string]>([

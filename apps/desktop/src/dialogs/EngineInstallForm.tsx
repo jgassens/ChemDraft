@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { installSpaceStatement, isShortOfSpace } from "../plugins/structureRecognitionInstallProgress";
+import { installSpaceStatement, isShortOfSpace } from "./engineInstallText";
 import { detectDialogPlatform, type DialogPlatform, type EngineInstallAction, type EngineInstallSnapshot } from "./dialogProtocol";
 
 export function EngineInstallForm({ snapshot, onAction, busy = false, error, platform = detectDialogPlatform() }: {

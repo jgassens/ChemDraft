@@ -161,26 +161,6 @@ export function formatGigabytes(bytes: number): string {
   return `${gigabytes >= 10 ? Math.round(gigabytes).toLocaleString("en-US") : gigabytes.toFixed(1).replace(/\.0$/, "")} GB`;
 }
 
-/** Decimal gigabytes with one decimal ("16.7 GB", "1 GB"), for the free-space statement. */
-function formatGigabytesOneDecimal(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 GB";
-  return `${(bytes / 1e9).toFixed(1).replace(/\.0$/, "")} GB`;
-}
-
-/** Whether the disk has less room than the install needs while it runs (0 means unknown, so never short). */
-export function isShortOfSpace(requiredBytes: number, freeBytes: number): boolean {
-  return requiredBytes > 0 && freeBytes < requiredBytes;
-}
-
-/** One statement of the room an install needs while it runs (staging, the download cache and, on an
- *  update, the previous copy), against the free space now. */
-export function installSpaceStatement(requiredBytes: number, freeBytes: number): string {
-  const needs = `Needs about ${formatGigabytesOneDecimal(requiredBytes)} free while installing`;
-  return isShortOfSpace(requiredBytes, freeBytes)
-    ? `${needs}; only ${formatGigabytesOneDecimal(freeBytes)} is free.`
-    : `${needs}. Free now: ${formatGigabytesOneDecimal(freeBytes)}.`;
-}
-
 function clamp(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));

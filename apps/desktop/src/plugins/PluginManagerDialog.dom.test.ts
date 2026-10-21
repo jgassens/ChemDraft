@@ -1874,7 +1874,7 @@ describe("PluginManagerDialog one-click engine install", () => {
     expect(disclosure?.textContent).toContain("Also installs the local recognition engine");
     expect(disclosure?.textContent).toContain("downloads about 2.5 GB and uses about 2.4 GB once installed");
     // 3,000,000,000 bytes is 3 GB, as every other size in the flow is stated (not 2.8 "GB" of 1024³).
-    expect(disclosure?.textContent).toContain("Needs about 3 GB free while installing. Free now: 8 GB.");
+    expect(disclosure?.textContent).toContain("Needs about 3.0 GB free while installing. Free now: 8.0 GB.");
     expect(fake.engine.install).not.toHaveBeenCalled();
 
     await act(async () => {

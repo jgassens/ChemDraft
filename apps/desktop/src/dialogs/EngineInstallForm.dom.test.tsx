@@ -28,8 +28,8 @@ it.each(["macos", "windows"] as const)("closes with Escape and the platform clos
 });
 
 it.each([
-  [16_730_000_000, "Needs about 1 GB free while installing. Free now: 16.7 GB.", false],
-  [600_000_000, "Needs about 1 GB free while installing; only 0.6 GB is free.", true]
+  [16_730_000_000, "Needs about 1.0 GB free while installing. Free now: 16.7 GB.", false],
+  [600_000_000, "Needs about 1.0 GB free while installing; only 0.6 GB is free.", true]
 ])("states the install space in one sentence (free %d)", async (free, sentence, disabled) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container);

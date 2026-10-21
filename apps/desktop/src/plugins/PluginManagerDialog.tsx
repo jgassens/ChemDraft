@@ -23,7 +23,7 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
-import { installSpaceStatement } from "./structureRecognitionInstallProgress";
+import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";

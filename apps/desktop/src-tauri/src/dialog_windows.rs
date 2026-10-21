@@ -48,6 +48,13 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
         _ => Err("Unknown dialog kind".into()),
     }
 }
+fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
+    if kind == "engineInstall" {
+        snapshot_title.to_string()
+    } else {
+        format!("{spec_title} — {snapshot_title}")
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -868,7 +875,7 @@ pub(crate) async fn dialog_open(
         &registration.window_label,
         WebviewUrl::App(format!("/?window=dialog&hostId={}", registration.host_id).into()),
     )
-    .title(format!("{} — {}", spec.title, title))
+    .title(native_window_title(&message.dialog_kind, spec.title, title))
     .inner_size(spec.size.0, spec.size.1)
     .min_inner_size(spec.min_size.0, spec.min_size.1)
     .visible(false)
@@ -1728,6 +1735,18 @@ mod tests {
         assert!(spec.resizable);
         assert!(!spec.maximizable);
         assert_eq!(spec.size, (520.0, 480.0));
+        assert_eq!(
+            native_window_title("engineInstall", spec.title, "Install Naming Engine"),
+            "Install Naming Engine"
+        );
+        assert_eq!(
+            native_window_title("pageSize", "Custom Page Size", "Custom Page Size"),
+            "Custom Page Size — Custom Page Size"
+        );
+        assert_eq!(
+            native_window_title("export", "Export", "Export document"),
+            "Export — Export document"
+        );
         let mut registry = Registry::default();
         let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
         assert!(build);
