@@ -58,7 +58,34 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 
-  it("declines a drawn methyl radical before naming when export atom states are unverified", async () => {
+  it("names neutral pentavalent nitrobenzene using its verified charge-separated reference", async () => {
+    const readBack = "O=[N+]([O-])c1ccccc1";
+    const molecule = drawnMolecule(readBack);
+    const nitrogen = molecule.atoms.find(atom => atom.element === "N")!;
+    for (const atom of molecule.atoms) atom.formalCharge = 0;
+    for (const bond of molecule.bonds) {
+      const neighborId = bond.fromAtomId === nitrogen.id ? bond.toAtomId :
+        bond.toAtomId === nitrogen.id ? bond.fromAtomId : undefined;
+      if (molecule.atoms.some(atom => atom.id === neighborId && atom.element === "O")) {
+        bond.order = "double";
+      }
+    }
+    const engine = engineReading(readBack);
+    vi.mocked(engine.name).mockResolvedValue({
+      ...namingRaw, name: "nitrobenzene", opsinReadBack: { smiles: readBack, failureReason: null }
+    });
+    const canonical = await loadNamingCanonicalizer();
+    const warnings: Parameters<typeof moleculeSmiles>[2] = [];
+    const reference = await moleculeSmiles(molecule, 0, warnings, canonical.computeStructureIdentifiers);
+    expect(reference).toBe(await canonical.canonicalize(readBack));
+    expect(warnings).toEqual([expect.objectContaining({ code: "export.smiles_charge_separated", severity: "info" })]);
+
+    const result = await nameStructureForPlugin(molecule, engine, namingInstalled);
+    expect(engine.name).toHaveBeenCalledExactlyOnceWith(reference);
+    expect(result).toMatchObject({ status: "named", name: "nitrobenzene" });
+  }, 60_000);
+
+  it("verifies a drawn methyl radical but declines a methane name read-back", async () => {
     const molecule = drawnMolecule("C");
     // The drawing tool records an associated radical dot as markRadicals; the SMILES depiction
     // interface does not carry radicals. Exercise that real native representation and M RAD write.
@@ -68,18 +95,11 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
 
     const canonical = await loadNamingCanonicalizer();
     const warnings: Parameters<typeof moleculeSmiles>[2] = [];
-    // Naming supplies only canonical SMILES, not the atom-state correspondence required by
-    // PR #174's "keeps identifier-only engines compatible while requiring evidence for drawn radicals" test.
-    expect(await moleculeSmiles(molecule, 0, warnings, async structure => ({
-      smiles: (await canonical.canonicalize(structure)) ?? undefined
-    }))).toBe("[CH3]");
-    expect(warnings).toEqual([{
-      code: "export.smiles_atom_state_unverified",
-      message: `Atom states (Atom ${molecule.atoms[0]!.id} (C)) could not be verified against the exported SMILES by the structure engine.`,
-      severity: "warning", objectId: molecule.id
-    }]);
-    expect(engine.name).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
+    // M RAD carries one electron and RDKit's correspondence proves C / 3 H / 1 radical.
+    expect(await moleculeSmiles(molecule, 0, warnings, canonical.computeStructureIdentifiers)).toBe("[CH3]");
+    expect(warnings).toEqual([]);
+    expect(engine.name).toHaveBeenCalledExactlyOnceWith("[CH3]");
+    expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 

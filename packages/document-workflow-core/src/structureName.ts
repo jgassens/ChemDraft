@@ -1,7 +1,7 @@
 import { type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 
-import { moleculeSmiles } from "./moleculeSmiles";
+import { moleculeSmiles, type ComputeStructureIdentifiers } from "./moleculeSmiles";
 
 export type StructureNameKind = "preferredIupacName" | "systematicName";
 
@@ -30,10 +30,12 @@ export interface OrthonymRawResult {
 /** All chemistry services are supplied by the desktop (or, later, a headless caller). */
 export interface StructureNameDeps {
   /**
-   * Returns canonical isomeric SMILES for either the molfile produced from a drawing or SMILES
-   * read back from a name. A null result means the structure could not be canonicalised.
+   * Returns canonical isomeric SMILES for name read-back (and drawings when no identifier engine
+   * is supplied). A null result means the structure could not be canonicalised.
    */
   canonicalize: (structure: string) => Promise<string | null>;
+  /** Export identifier engine, including atom-state correspondence when requested. */
+  computeStructureIdentifiers?: ComputeStructureIdentifiers;
   name: (canonicalSmiles: string) => Promise<OrthonymRawResult>;
   readName: (name: string) => Promise<{ smiles: string | null; failureReason?: string }>;
 }
@@ -54,6 +56,8 @@ export type StructureNameOutcome =
 
 // Audited against moleculeSmiles.ts and chem-core/molfile.ts (V2000):
 // - Abbreviation expansion preserves the exact graph; retain its informational warning.
+// - Charge separation is emitted only when elements, hydrogens, radicals, isotopes and total
+//   charge match; the host still verifies the name by exact canonical-SMILES read-back.
 // - Only dashed DISPLAY on a double/triple/aromatic bond is harmless: the chemical order is
 //   retained, and dashes here carry no charge, H count, isotope, radical, stereo or fragment data.
 // - Dative-to-single, unknown/query or unresolved aromatic orders (with or without literal-atom
@@ -62,7 +66,7 @@ export type StructureNameOutcome =
 // - moleculeSmiles' dative_bond, bond_order, atom_label and stereo_dropped warnings also decline.
 // V2000 warnings share one code and are untyped text, so allow only these complete, reviewed
 // display messages. Every other message/code, including future warnings, fails closed.
-const exactExportWarningCodes = new Set(["export.smiles_abbreviation_expanded"]);
+const exactExportWarningCodes = new Set(["export.smiles_abbreviation_expanded", "export.smiles_charge_separated"]);
 const displayOnlyV2000Warnings = new Set([
   "Dashed display on a double bond is not a coordination bond; written to SMILES as double, dashed style not preserved.",
   "Dashed display on a triple bond is not a coordination bond; written to SMILES as triple, dashed style not preserved.",
@@ -152,8 +156,13 @@ export async function nameStructure(deps: StructureNameDeps, molecule: MoleculeO
       molecule,
       0,
       exportWarnings,
-      async (structure) => {
+      async (structure, options) => {
         try {
+          if (deps.computeStructureIdentifiers) {
+            const identifiers = await deps.computeStructureIdentifiers(structure, options);
+            if (!identifiers?.smiles) canonicalizationFailed = true;
+            return identifiers;
+          }
           const smiles = await deps.canonicalize(structure);
           if (!smiles) canonicalizationFailed = true;
           return smiles ? { smiles } : undefined;

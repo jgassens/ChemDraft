@@ -23,6 +23,7 @@ export function namingReadBack(result: StructureNamingRawResult | undefined, nam
 }
 export interface NamingCanonicalizer {
   canonicalize: StructureNameDeps["canonicalize"];
+  computeStructureIdentifiers?: StructureNameDeps["computeStructureIdentifiers"];
   version: string;
 }
 export async function loadNamingCanonicalizer(): Promise<NamingCanonicalizer> {
@@ -33,7 +34,8 @@ export async function loadNamingCanonicalizer(): Promise<NamingCanonicalizer> {
   const module = await ensureRdkit();
   const version = module.version?.();
   if (!version) throw new Error("The loaded RDKit MinimalLib did not report its version.");
-  return { version, canonicalize: async structure => (await computeStructureIdentifiers(structure))?.smiles ?? null };
+  return { version, computeStructureIdentifiers,
+    canonicalize: async structure => (await computeStructureIdentifiers(structure))?.smiles ?? null };
 }
 
 export async function nameStructureForPlugin(molecule: MoleculeObject, engine: StructureNamingEngine,
@@ -43,6 +45,7 @@ export async function nameStructureForPlugin(molecule: MoleculeObject, engine: S
   let engineError: unknown;
   const result = await nameStructure({
     canonicalize: canonical.canonicalize,
+    computeStructureIdentifiers: canonical.computeStructureIdentifiers,
     name: async smiles => {
       try { raw = await engine.name(smiles); return raw; }
       catch (error) { engineError = error; throw error; }

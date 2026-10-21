@@ -292,9 +292,7 @@ describe("nameStructure", () => {
     expect(services.name).not.toHaveBeenCalled();
   });
 
-  it("declines charge-separated export even though its warning is informational", async () => {
-    // PR #174 permits this export when total charge survives, but per-atom formal charges
-    // changed. Informational severity does not prove the exact drawing required for naming.
+  it("allows verified charge separation and still checks the name read-back", async () => {
     const original = smilesExport.moleculeSmiles;
     vi.spyOn(smilesExport, "moleculeSmiles").mockImplementationOnce(async (...args) => {
       args[2].push({
@@ -305,8 +303,20 @@ describe("nameStructure", () => {
     });
     const services = deps();
     const result = await nameStructure(services, molecule());
-    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
-    expect(result).not.toHaveProperty("name");
+    expect(result).toMatchObject({ status: "named", name: "ethanol" });
+    expect(services.name).toHaveBeenCalledWith("CCO");
+    expect(services.readName).toHaveBeenCalledWith("ethanol");
+  });
+
+  it("declines an unknown info-level export code", async () => {
+    const original = smilesExport.moleculeSmiles;
+    vi.spyOn(smilesExport, "moleculeSmiles").mockImplementationOnce(async (...args) => {
+      args[2].push({ code: "export.smiles_future_note", severity: "info", message: "Future note." });
+      return original(...args);
+    });
+    const services = deps();
+    await expect(nameStructure(services, molecule()))
+      .resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
     expect(services.name).not.toHaveBeenCalled();
     expect(services.readName).not.toHaveBeenCalled();
   });
