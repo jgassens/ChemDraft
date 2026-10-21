@@ -88,6 +88,14 @@ export function validateBatchName(name: string): void {
       `Invalid batch name ${JSON.stringify(name)}: names must match ${batchNamePattern}.`
     );
   }
+  if (isWindowsDeviceName(name)) {
+    throw new CliUsageError(`Invalid batch name ${JSON.stringify(name)}: Windows device names are reserved.`);
+  }
+}
+
+/** Windows reserves device stems even before extensions and ignores trailing stem spaces. */
+export function isWindowsDeviceName(name: string): boolean {
+  return /^(con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(name.split(".")[0]!.trimEnd());
 }
 
 /**

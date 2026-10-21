@@ -7,9 +7,12 @@ import { describe, expect, it } from "vitest";
 import {
   CliUsageError,
   handleCliError,
+  isWindowsDeviceName,
   parseNamedSmilesJob,
-  readBatchFile
+  readBatchFile,
+  validateBatchName
 } from "./output";
+import { validateDocumentOutputPath } from "./documentInput";
 
 async function readNamedJobs(jobs: unknown): Promise<unknown[]> {
   const directory = await mkdtemp(join(tmpdir(), "chemdraft-batch-validation-"));
@@ -58,4 +61,26 @@ describe("shared CLI output helpers", () => {
     await expect(readNamedJobs(jobs))
       .rejects.toThrow('Batch job 501 named "job-501" exceeds the maximum of 500 jobs');
   });
+
+  it.each(["COM¹", "com².txt", "LPT³ ", "CONIN$", "conout$.svg"])(
+    "recognizes Windows device name %s", (name) => {
+      expect(isWindowsDeviceName(name)).toBe(true);
+    }
+  );
+
+  it.each(["COM10", "LPT⁴", "CONIN", "CONOUT", "CONIN$-copy"])(
+    "does not recognize ordinary name %s as a Windows device", (name) => {
+      expect(isWindowsDeviceName(name)).toBe(false);
+    }
+  );
+
+  it.each(["COM1", "LPT9", "CON"])("rejects device name %s as a batch name", (name) => {
+    expect(() => validateBatchName(name)).toThrow(/reserved/);
+  });
+
+  it.each(["COM¹.svg", "LPT² .png", "CONIN$.pdf", "conout$.chemdraft"])(
+    "rejects device name %s as a document output path", (name) => {
+      expect(() => validateDocumentOutputPath(name)).toThrow(/Unsafe output filename/);
+    }
+  );
 });
