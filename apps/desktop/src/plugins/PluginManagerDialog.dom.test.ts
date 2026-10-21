@@ -131,6 +131,54 @@ describe("naming engine catalog ownership", () => {
     expect(document.querySelector('[data-testid="recognition-install-progress"]')).toBeNull();
   });
 
+  it("settles a catalog-started naming cancellation live when its row refreshed while installing", async () => {
+    const notInstalled = { state: "notInstalled" as const, requiredDiskBytes: 1e9, freeDiskBytes: 8e9 };
+    const installing = { ...notInstalled, state: "installing" as const };
+    const engine = fakeNamingEngine(notInstalled);
+    let status: Awaited<ReturnType<typeof engine.status>> = notInstalled;
+    let failInstall!: (error: unknown) => void;
+    let reportProgress!: Parameters<typeof engine.install>[0];
+    vi.mocked(engine.status).mockImplementation(async () => status);
+    vi.mocked(engine.install).mockImplementation((progress) => {
+      status = installing;
+      reportProgress = progress;
+      return new Promise((_resolve, reject) => { failInstall = reject; });
+    });
+    vi.mocked(engine.cancelInstall).mockImplementation(async () => {
+      status = notInstalled;
+      failInstall({ code: "cancelled", message: "Naming engine installation cancelled." });
+    });
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
+    const official = { ...namingManifest, id: "org.chemdraft.naming.orthonym" };
+    const prepared: PreparedOfficialPluginInstall = {
+      ...pickedPackage(official), pluginId: official.id, checksumVerified: true
+    };
+    mount(createElement(OfficialCatalogHarness, { runtime, prepare: async () => prepared }));
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${official.id}"]`)!.click();
+    });
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>("[data-action=confirm-install-package]")!.click();
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-action="cancel-naming-engine-install"]')).not.toBeNull());
+    act(() => reportProgress({ phase: "installingPython", message: "Installing Python", bytesDone: 46e6, bytesTotal: 75e6 }));
+    expect(document.querySelector('[data-testid="recognition-install-progress"]')).not.toBeNull();
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="cancel-naming-engine-install"]')!.click();
+    });
+
+    expect(document.querySelector('[data-testid="naming-engine-row"]')?.textContent).toContain(
+      "Naming engine: not installed"
+    );
+    expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
+      "Installation was cancelled."
+    );
+    // Unmounting this component clears its elapsed-time interval, so the display cannot keep ticking.
+    expect(document.querySelector('[data-testid="recognition-install-progress"]')).toBeNull();
+  });
+
   it("reports a cancelled naming install neutrally in the installed plugin row", async () => {
     const engine = fakeNamingEngine({ state: "notInstalled", requiredDiskBytes: 1e9, freeDiskBytes: 8e9 });
     let failInstall!: (error: unknown) => void;

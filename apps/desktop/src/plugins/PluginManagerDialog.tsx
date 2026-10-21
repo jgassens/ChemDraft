@@ -813,7 +813,11 @@ function RecognitionEngineRow({
   // A run this window did not start (or started before it was reopened) is still this install.
   // `status` is checked with `!= null` throughout: a status must never be null, but a null one must
   // degrade to "checking…" rather than take the whole window down in render.
-  const installing = run?.running === true || status?.state === "installing";
+  // A stopped run is the authoritative outcome for an install the runtime observed. In particular,
+  // the catalog path mounts this row only after it starts the engine, so its first status refresh can
+  // legitimately report `installing`; that response must not keep the progress timer alive after a
+  // later cancellation, failure, or success settles the run.
+  const installing = run ? run.running : status?.state === "installing";
   const installed = !installing && status?.state === "installed";
   // The one-time check of an engine already on disk after an app update. It is not an install: there
   // is nothing to cancel (cancelling it marked the engine broken and offered a 2.5 GB download), and it
