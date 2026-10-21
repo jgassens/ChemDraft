@@ -116,7 +116,8 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
 
     const engine = engineReading("[H][C]([H])([H])[H]");
     const result = await nameStructureForPlugin(molecule, engine, namingInstalled, canonical);
-    expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
+    // The export step catches this before the read-back can neutralize the drawn hydride.
+    expect(result).toMatchObject({ status: "declined", code: "structureNotExact" });
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 
