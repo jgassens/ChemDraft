@@ -3,6 +3,7 @@ mod document_session;
 mod export;
 mod fonts;
 mod installed_plugins;
+mod local_engine;
 #[cfg(target_os = "macos")]
 mod macos_quit;
 mod main_window_placement;
