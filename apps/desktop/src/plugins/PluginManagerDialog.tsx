@@ -23,6 +23,7 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { installSpaceStatement } from "./structureRecognitionInstallProgress";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
 import type { StructureRecognitionInstallRun } from "./StructureRecognitionController";
@@ -882,8 +883,9 @@ function RecognitionEngineRow({
       ) : null}
       {canInstall && status && onInstall ? (
         <p className="plugin-manager-update-status" data-testid="molscribe-engine-install-note">
-          Downloads about {naming ? "100 MB" : "2.5 GB"} and needs {formatDiskBytes(status.requiredDiskBytes)} free (
-          {formatDiskBytes(status.freeDiskBytes)} free now). It runs entirely on this computer.
+          Downloads about {naming ? "100 MB" : "2.5 GB"} and uses about {naming ? "0.3 GB" : "2.4 GB"} once installed. Needs
+          about {formatDiskBytes(status.requiredDiskBytes)} free while installing ({formatDiskBytes(status.freeDiskBytes)} free
+          now). It runs entirely on this computer.
         </p>
       ) : null}
       <div className="plugin-manager-package-actions">
@@ -978,7 +980,7 @@ function NamingEngineDisclosure({ status }: { status?: EngineRowStatus }) {
       status?.state === "unsupported" ? <p role="alert">This computer cannot run the local naming engine. The plugin will install, but it cannot name structures here.</p> :
       <><strong>Also installs the local naming engine.</strong>
         <p>{NAMING_ENGINE_DISCLOSURE}</p>
-        <p>Free space: {status ? formatDiskBytes(status.freeDiskBytes) : "checking…"}. Installation needs {formatDiskBytes(status?.requiredDiskBytes ?? 1e9)}.</p>
+        <p>{status ? installSpaceStatement(status.requiredDiskBytes, status.freeDiskBytes) : "Free space: checking…"}</p>
         {status && status.freeDiskBytes < status.requiredDiskBytes ? <p role="alert">There isn’t enough free space for the engine. Free up space, then use Install engine.</p> : null}
       </>}
     {status?.detail ? <p>{status.detail}</p> : null}
@@ -1006,12 +1008,10 @@ function RecognitionEngineDisclosure({ status }: { status?: EngineRowStatus | nu
     <div className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
       <p>
         <strong>Also installs the local recognition engine:</strong> a private Python, PyTorch and the MolScribe
-        model — about 2.5 GB to download. It runs entirely on this computer; images never leave it.
+        model — downloads about 2.5 GB and uses about 2.4 GB once installed. It runs entirely on this computer; images
+        never leave it.
       </p>
-      <p>
-        Needs {formatDiskBytes(status?.requiredDiskBytes ?? 3e9)} free.{" "}
-        {status != null ? `Free now: ${formatDiskBytes(status.freeDiskBytes)}.` : "Free space: checking…"}
-      </p>
+      <p>{status != null ? installSpaceStatement(status.requiredDiskBytes, status.freeDiskBytes) : "Free space: checking…"}</p>
       {shortOfSpace ? (
         <p className="plugin-manager-unavailable" role="alert">
           There isn’t enough free space for the engine. The plugin will still install; free up space, then use

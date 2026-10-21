@@ -201,10 +201,10 @@ apps/desktop/src-tauri/resources/naming/licenses/). The versions below are the e
 of resources/naming/requirements.txt (hash-locked, installed with --require-hashes).
 
 Orthonym 1.0.8
-  MIT. Source: https://pypi.org/project/orthonym/1.0.8/ , the wheel
-  orthonym-1.0.8-py3-none-any.whl (SHA-256
-  ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d) is identical, file
-  for file, to src/orthonym at commit 461987b947f76e41ff0baa6c2aa19ecd79cacd0b (tag v1.0.8).
+  MIT. Source: https://github.com/Steinbeck-Lab/Orthonym (tag v1.0.8, commit
+  461987b947f76e41ff0baa6c2aa19ecd79cacd0b). The wheel orthonym-1.0.8-py3-none-any.whl
+  (SHA-256 ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d) is identical,
+  file for file, to src/orthonym at that commit.
   Its LICENSE and NOTICE come from the installed wheel's dist-info.
 
 RDKit 2026.3.5

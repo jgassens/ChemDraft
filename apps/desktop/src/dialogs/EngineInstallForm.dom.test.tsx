@@ -26,3 +26,24 @@ it.each(["macos", "windows"] as const)("closes with Escape and the platform clos
     act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
   }
 });
+
+it.each([
+  [16_730_000_000, "Needs about 1 GB free while installing. Free now: 16.7 GB.", false],
+  [600_000_000, "Needs about 1 GB free while installing; only 0.6 GB is free.", true]
+])("states the install space in one sentence (free %d)", async (free, sentence, disabled) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(EngineInstallForm, { snapshot: { ...engineInstallFixture(), freeDiskBytes: free }, onAction: vi.fn(), platform: "macos" })));
+    const text = container.textContent ?? "";
+    expect(text).toContain(sentence);
+    expect(text).toContain("Downloads about 100 MB and uses about 0.3 GB once installed.");
+    expect(text).not.toContain("Naming engine");
+    expect(text).not.toContain("1.00");
+    expect(container.querySelector("h2")?.textContent).toBe("Naming needs a local engine");
+    expect([...container.querySelectorAll("button")].find(b => b.textContent === "Install")?.disabled).toBe(disabled);
+  } finally {
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  }
+});

@@ -30,7 +30,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 declare `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
-capability. Existing `^0.1.0` through `^0.1.5` packages remain compatible.
+capability. Existing `^0.1.0` through `^0.1.7` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 

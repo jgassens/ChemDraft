@@ -2,7 +2,7 @@
 
 What the optional naming engine installs and runs. The engine is downloaded on request, never
 bundled; these files are the pinned inputs the app ships to drive it. Design:
-`docs/architecture/naming-engine.md` (when it lands).
+[`docs/architecture/naming-engine.md`](../../../../../docs/architecture/naming-engine.md).
 
 | File | Role |
 |---|---|

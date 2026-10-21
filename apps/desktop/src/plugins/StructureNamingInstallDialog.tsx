@@ -6,7 +6,7 @@ import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { EngineInstallSnapshot } from "../dialogs/dialogProtocol";
 import type { StructureNamingController, OpenStructureNamingInstall } from "./StructureNamingController";
 
-export const NAMING_ENGINE_DISCLOSURE = "About 100 MB to download and about 0.3 GB on disk. It runs only on this computer. Downloaded parts: Orthonym (MIT); centres jar (BSD-2-Clause, with LGPL-2.1+ and GPL-2.0-with-Classpath-Exception parts).";
+export const NAMING_ENGINE_DISCLOSURE = "Downloads about 100 MB and uses about 0.3 GB once installed. Runs only on this computer. Downloaded parts: Orthonym (MIT); the centres jar (BSD-2-Clause, with LGPL-2.1-or-later and GPL-2.0-with-Classpath-Exception parts).";
 export const NAMING_INSTALL_PROFILE = {
   phases: {
     checkingDisk: { step: 1, name: "Checking free disk space", weightBytes: 0, typicalSeconds: 2 },
@@ -40,7 +40,7 @@ export function namingInstallSnapshot(controller: StructureNamingController, req
     : request.status.state === "broken" ? { status: "broken", detail: bounded(request.status.detail ?? "The engine installation is damaged.", 1000) }
     : request.status.state === "installed" ? { status: "installed" } : { status: "notInstalled" };
   return {
-    engineName: "Naming engine", title: "Naming needs a local engine",
+    engineName: "Naming", title: "Install Naming Engine",
     pluginName: bounded(request.pluginName, 128), pluginId: bounded(request.pluginId, 256),
     disclosure: NAMING_ENGINE_DISCLOSURE, requiredDiskBytes: diskBytes(request.status.requiredDiskBytes),
     freeDiskBytes: diskBytes(request.status.freeDiskBytes), state,

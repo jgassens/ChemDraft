@@ -7,7 +7,7 @@ import { EXPERIMENTAL_PLUGIN_NOTICE } from "./pluginUpdates";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
-import { formatGigabytes } from "./structureRecognitionInstallProgress";
+import { formatGigabytes, installSpaceStatement } from "./structureRecognitionInstallProgress";
 
 export interface StructureRecognitionInstallDialogProps {
   request: OpenStructureRecognitionInstall;
@@ -39,7 +39,7 @@ export function StructureRecognitionInstallDialog({
     message: [
       `Requested by ${request.pluginName} (${request.pluginId})`,
       unsupported ? "This computer isn’t supported by the MolScribe recognition engine yet." :
-        `MolScribe recognition engine: a private Python, PyTorch and a 1.1 GB model.\nSpace needed: ${formatDiskBytes(request.status.requiredDiskBytes)}. Free space: ${formatDiskBytes(request.status.freeDiskBytes)}.\nIt runs entirely on this computer. Images never leave it.\n${EXPERIMENTAL_PLUGIN_NOTICE}`,
+        `MolScribe recognition engine: a private Python, PyTorch and a 1.1 GB model.\n${installSpaceStatement(request.status.requiredDiskBytes, request.status.freeDiskBytes)}\nIt runs entirely on this computer. Images never leave it.\n${EXPERIMENTAL_PLUGIN_NOTICE}`,
       request.status.detail,
       request.error ? recognitionInstallErrorMessage(request.error, request.status) : undefined
     ].filter(Boolean).join("\n\n"),
@@ -106,8 +106,7 @@ export function StructureRecognitionInstallDialog({
             <>
               <p>MolScribe recognition engine: a private Python, PyTorch and a 1.1 GB model.</p>
               <p>
-                Space needed: {formatDiskBytes(request.status.requiredDiskBytes)}. Free space:{" "}
-                {formatDiskBytes(request.status.freeDiskBytes)}.
+                {installSpaceStatement(request.status.requiredDiskBytes, request.status.freeDiskBytes)}
               </p>
               <p>It runs entirely on this computer. Images never leave it.</p>
               <p data-testid="recognition-install-experimental-note">{EXPERIMENTAL_PLUGIN_NOTICE}</p>

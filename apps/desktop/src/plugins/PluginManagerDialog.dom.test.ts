@@ -87,7 +87,8 @@ describe("naming engine catalog ownership", () => {
     });
     const review = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
     expect(review?.textContent).toContain("100 MB");
-    expect(review?.textContent).toContain("0.3 GB");
+    expect(review?.textContent).toContain("uses about 0.3 GB once installed");
+    expect(review?.textContent).toMatch(/Needs about [\d.]+ GB free while installing/);
     expect(review?.textContent).toContain("GPL-2.0-with-Classpath-Exception");
     expect(engine.install).not.toHaveBeenCalled();
     await act(async () => {
@@ -590,7 +591,7 @@ describe("PluginManagerDialog", () => {
       "Recognition engine: not installed"
     );
     expect(document.querySelector('[data-testid="molscribe-engine-install-note"]')?.textContent).toContain(
-      "Downloads about 2.5 GB and needs 2 GB free (8 GB free now)."
+      "Downloads about 2.5 GB and uses about 2.4 GB once installed. Needs about 2 GB free while installing (8 GB free now)."
     );
     const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
     // A full-size button, never a small text link.
@@ -1871,9 +1872,9 @@ describe("PluginManagerDialog one-click engine install", () => {
     await reviewAndConfirmMolscribe();
     const disclosure = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
     expect(disclosure?.textContent).toContain("Also installs the local recognition engine");
-    expect(disclosure?.textContent).toContain("about 2.5 GB to download");
+    expect(disclosure?.textContent).toContain("downloads about 2.5 GB and uses about 2.4 GB once installed");
     // 3,000,000,000 bytes is 3 GB, as every other size in the flow is stated (not 2.8 "GB" of 1024³).
-    expect(disclosure?.textContent).toContain("Needs 3 GB free. Free now: 8 GB.");
+    expect(disclosure?.textContent).toContain("Needs about 3 GB free while installing. Free now: 8 GB.");
     expect(fake.engine.install).not.toHaveBeenCalled();
 
     await act(async () => {
