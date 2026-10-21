@@ -1,0 +1,27 @@
+id	canonical_input	status	name	opsin_smiles	outcome	seconds	namer_meta
+salt-sodium-benzoate	O=C([O-])c1ccccc1.[Na+]	named	sodium benzoate	C(C1=CC=CC=C1)(=O)[O-].[Na+]	round-trip	0.0116	
+zwitterion-glycine	[NH3+]CC(=O)[O-]	named	2-ammonioacetate	[NH3+]CC(=O)[O-]	round-trip	0.0050	
+radical-tempo	CC1(C)CCCC(C)(C)N1[O]	named	1-hydroxy-2,2,6,6-tetramethylpiperidine	ON1C(CCCC1(C)C)(C)C	MISNAMED	0.0125	
+isotope-13c-acetic-acid	[13CH3]C(=O)O	named	acetic acid	C(C)(=O)O	MISNAMED	0.0035	
+isotope-d3-acetic-acid	[2H]C([2H])([2H])C(=O)O	named	acetic acid	C(C)(=O)O	MISNAMED	0.0038	
+organometallic-ferrocene	[Fe+2].c1cc[cH-]c1.c1cc[cH-]c1	declined			declined	0.0002	
+organometallic-cisplatin	N.N.[Cl][Pt][Cl]	declined			declined	0.0001	
+boron-phenylboronic-acid	OB(O)c1ccccc1	named	(dihydroxyboryl)benzene	OB(O)C1=CC=CC=C1	round-trip	0.0077	
+silicon-tms	C[Si](C)(C)C	named	tetramethyl-silane	C[Si](C)(C)C	round-trip	0.0003	
+charged-heterocycle-imidazolium	Cn1cc[n+](C)c1	named	1,3-dimethyl-imidazol-3-ium	CN1C=[N+](C=C1)C	round-trip	0.0114	
+tautomer-acetylacetone-keto	CC(=O)CC(C)=O	named	pentane-2,4-dione	CC(CC(C)=O)=O	round-trip	0.0049	
+tautomer-acetylacetone-enol	CC(=O)C=C(C)O	named	4-hydroxypent-3-en-2-one	OC(=CC(C)=O)C	round-trip	0.0066	
+unusual-selenium-dioxide	O=[Se]=O	declined			declined	0.0002	
+salt-calcium-chloride	[Ca+2].[Cl-].[Cl-]	named	calcium chloride chloride	[Cl-].[Cl-].[Ca+2]	round-trip	0.0002	
+stereo-S-ibuprofen	CC(C)Cc1ccc([C@@H](C)C(=O)O)cc1	named	(2R)-2-(4-(2-methylpropyl)phenyl)propanoic acid	CC(CC1=CC=C(C=C1)[C@H](C(=O)O)C)C	round-trip	0.0105	
+stereo-R-ibuprofen	CC(C)Cc1ccc([C@H](C)C(=O)O)cc1	named	(2S)-2-(4-(2-methylpropyl)phenyl)propanoic acid	CC(CC1=CC=C(C=C1)[C@@H](C(=O)O)C)C	round-trip	0.0105	
+stereo-L-alanine	C[C@@H](N)C(=O)O	named	(2R)-2-aminopropanoic acid	N[C@@H](C(=O)O)C	round-trip	0.0064	
+stereo-D-alanine	C[C@H](N)C(=O)O	named	(2S)-2-aminopropanoic acid	N[C@H](C(=O)O)C	round-trip	0.0062	
+stereo-inositol-like	O[C@@H]1[C@@H](O)[C@H](O)C[C@@H](O)[C@H]1O	named	(1R,2R,3R,4S,5R)-cyclohexane-1,2,3,4,5-pentaol		name-unparseable	0.0133	
+stereo-tartaric-RR	O=C(O)[C@H](O)[C@@H](O)C(=O)O	named	(2R,3R)-2,3-dihydroxybutanedioic acid	O[C@@H](C(=O)O)[C@H](C(=O)O)O	round-trip	0.0098	
+stereo-tartaric-SS	O=C(O)[C@@H](O)[C@H](O)C(=O)O	named	(2S,3S)-2,3-dihydroxybutanedioic acid	O[C@H](C(=O)O)[C@@H](C(=O)O)O	round-trip	0.0103	
+stereo-tartaric-meso	O=C(O)[C@@H](O)[C@@H](O)C(=O)O	named	(2R,3S)-2,3-dihydroxybutanedioic acid	O[C@@H](C(=O)O)[C@@H](C(=O)O)O	round-trip	0.0101	
+stereo-E-2-butene	C/C=C/C	named	(2E)-but-2-ene	C\C=C\C	round-trip	0.0049	
+stereo-Z-2-butene	C/C=C\C	named	(2Z)-but-2-ene	C\C=C/C	round-trip	0.0049	
+stereo-ring-amide	CC(=O)N[C@H]1CCc2ccccc2C1	named	N-((3S)-bicyclo[4.4.0]deca-1(10),6,8-trien-3-yl)acetamide	C=12C[C@H](CCC2=CC=CC1)NC(C)=O	round-trip	0.0135	
+stereo-none-control	O=C1CCC(C(=O)N2CCCC2)N1	named	5-((oxo)pyrrolidin-1-ylmethyl)pyrrolidin-2-one	O=C(C1CCC(N1)=O)N1CCCC1	round-trip	0.0126	

@@ -1,19 +1,37 @@
-"""Stage 1 of the OpenClatura benchmark: structure -> name.
+"""Stage 1 of the structure-to-name benchmark: structure -> name.
 
-Emits TSV: id, input_smiles, canonical_input, status, name_or_error
+    python bench_name.py --namer {openclatura,orthonym} <structures.smi> <stage1.tsv> [--limit N]
+
+Run it with the Python of a venv that has the chosen namer installed. Emits TSV with no header:
+
+    id, input_smiles, canonical_input, status, name_or_error, seconds, namer_meta
+
+The first five columns are the August 2026 format unchanged, so stage 2 reads old and new files alike.
+`seconds` is the wall time of the namer call; `namer_meta` is the namer's own account of the result
+(Orthonym's provenance row, as JSON; empty for OpenClatura, which reports none).
 
 `status` is one of:
-  named    - OpenClatura returned a non-empty name
+  named    - the namer returned a non-empty name
   declined - it returned nothing (the SAFE failure: no name rather than a wrong one)
-  error    - it raised
+  error    - it raised, or timed out
   unusable - it returned a name we cannot round-trip through OPSIN's line protocol
              (a tab or newline inside the name would forge the delimiter)
+
+Orthonym: build one `Orthonym()` at the chosen tier (--orthonym-tier, default the default) and call
+`name_tiered`, which says whether a name
+was returned and how it was checked. A row with tier `abstain` is a decline, whatever label the `name`
+field carries. Orthonym needs a JVM and two jars; set JAVA_HOME, ORTHONYM_OPSIN_JAR and
+ORTHONYM_CENTRES_JAR (see README.md) so that it uses ChemDraft's vendored runtime and does no download.
 """
-import sys, time, signal
+import argparse
+import json
+import signal
+import sys
+import time
+
 from rdkit import Chem, RDLogger
 
 RDLogger.DisableLog("rdApp.*")
-import openclatura as oc
 
 PER_STRUCTURE_TIMEOUT = 20  # seconds; a namer that hangs must not stall the run
 
@@ -34,7 +52,48 @@ def canonical(smiles):
     return Chem.MolToSmiles(mol) if mol is not None else None
 
 
-def main(path, out_path, limit=None):
+class OpenClaturaNamer:
+    def __init__(self):
+        import openclatura
+
+        self._oc = openclatura
+        self.version = getattr(openclatura, "__version__", "?")
+
+    def name(self, smiles):
+        return (self._oc.analyze_smiles(smiles).name or "").strip(), ""
+
+
+class OrthonymNamer:
+    META_KEYS = ("tier", "is_pin", "source", "opsin", "gate_outcome", "limit_code", "stereo_unexpressed")
+
+    # The command line's --emit-tier names and the constructor switches behind them.
+    TIERS = {
+        "default": {},
+        "valid": {"general_fallback": True},
+    }
+
+    def __init__(self, tier="default"):
+        import logging
+
+        import orthonym
+
+        # Orthonym logs a warning for every decline; the TSV already records it.
+        logging.getLogger("orthonym").setLevel(logging.ERROR)
+        self.version = f"{orthonym.__version__} (tier {tier})"
+        self._namer = orthonym.Orthonym(**self.TIERS[tier])
+
+    def name(self, smiles):
+        row = self._namer.name_tiered(smiles)
+        meta = {key: row.get(key) for key in self.META_KEYS}
+        if row.get("tier") == "abstain":
+            return "", json.dumps(meta, sort_keys=True)
+        return (row.get("name") or "").strip(), json.dumps(meta, sort_keys=True)
+
+
+NAMERS = {"openclatura": OpenClaturaNamer, "orthonym": OrthonymNamer}
+
+
+def read_structures(path, limit=None):
     rows = []
     with open(path) as handle:
         for line in handle:
@@ -47,34 +106,62 @@ def main(path, out_path, limit=None):
             rows.append((ident, smiles))
             if limit and len(rows) >= limit:
                 break
+    return rows
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--namer", choices=sorted(NAMERS), required=True)
+    parser.add_argument("structures")
+    parser.add_argument("out")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--orthonym-tier", choices=sorted(OrthonymNamer.TIERS), default="default",
+                        help="Orthonym's emit tier: 'default' returns only verified preferred names, "
+                             "'valid' also OPSIN-verified names that are not the preferred name")
+    parser.add_argument("--timeout", type=int, default=PER_STRUCTURE_TIMEOUT,
+                        help="seconds per structure before it is scored as an error (default %(default)s)")
+    args = parser.parse_args(argv)
+
+    if args.namer == "orthonym":
+        namer = OrthonymNamer(args.orthonym_tier)
+    else:
+        namer = NAMERS[args.namer]()
+    print(f"namer: {args.namer} {namer.version}", file=sys.stderr)
+    rows = read_structures(args.structures, args.limit)
 
     started = time.time()
-    with open(out_path, "w") as out:
+    with open(args.out, "w") as out:
+        def emit(ident, smiles, canon, status, text, seconds="", meta=""):
+            out.write(f"{ident}\t{smiles}\t{canon}\t{status}\t{text}\t{seconds}\t{meta}\n")
+
         for index, (ident, smiles) in enumerate(rows):
             canon = canonical(smiles)
             if canon is None:
-                out.write(f"{ident}\t{smiles}\t\terror\tRDKit could not parse the input\n")
+                emit(ident, smiles, "", "error", "RDKit could not parse the input")
                 continue
+            t0 = time.perf_counter()
             try:
-                signal.alarm(PER_STRUCTURE_TIMEOUT)
-                analysis = oc.analyze_smiles(canon)
+                signal.alarm(args.timeout)
+                name, meta = namer.name(canon)
                 signal.alarm(0)
-                name = (analysis.name or "").strip()
             except Timeout:
                 signal.alarm(0)
-                out.write(f"{ident}\t{smiles}\t{canon}\terror\ttimeout after {PER_STRUCTURE_TIMEOUT}s\n")
+                emit(ident, smiles, canon, "error", f"timeout after {args.timeout}s",
+                     f"{time.perf_counter() - t0:.4f}")
                 continue
             except Exception as exc:  # noqa: BLE001 - any failure is data here
                 signal.alarm(0)
-                out.write(f"{ident}\t{smiles}\t{canon}\terror\t{type(exc).__name__}: {str(exc)[:160]}\n")
+                message = " ".join(f"{type(exc).__name__}: {exc}".split())[:160]
+                emit(ident, smiles, canon, "error", message, f"{time.perf_counter() - t0:.4f}")
                 continue
+            seconds = f"{time.perf_counter() - t0:.4f}"
 
             if not name:
-                out.write(f"{ident}\t{smiles}\t{canon}\tdeclined\t\n")
+                emit(ident, smiles, canon, "declined", "", seconds, meta)
             elif "\t" in name or "\n" in name or "\r" in name:
-                out.write(f"{ident}\t{smiles}\t{canon}\tunusable\t{name[:120]!r}\n")
+                emit(ident, smiles, canon, "unusable", repr(name[:120]), seconds, meta)
             else:
-                out.write(f"{ident}\t{smiles}\t{canon}\tnamed\t{name}\n")
+                emit(ident, smiles, canon, "named", name, seconds, meta)
 
             if (index + 1) % 250 == 0:
                 rate = (index + 1) / (time.time() - started)
@@ -85,5 +172,4 @@ def main(path, out_path, limit=None):
 
 
 if __name__ == "__main__":
-    limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
-    main(sys.argv[1], sys.argv[2], limit)
+    main()

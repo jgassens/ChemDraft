@@ -1,0 +1,5 @@
+namer,n,round-trip,stereo-lost,MISNAMED,name-unparseable,declined,error,unusable,round-trip % of all,round-trip % of named,declined %,misnamed %,namer seconds total,median ms,p95 ms,max s
+oc-0.2.0,26,19,0,3,1,3,0,0,73.08%,82.61%,11.54%,11.54%,0.2,6.5,13,0.01
+oc-0.4.3,26,19,0,3,1,3,0,0,73.08%,82.61%,11.54%,11.54%,0.1,2.3,24,0.03
+orthonym-1.0.8-default,26,19,0,1,2,4,0,0,73.08%,86.36%,15.38%,3.85%,1.3,11.2,52,0.91
+orthonym-1.0.8-valid,26,22,0,1,1,2,0,0,84.62%,91.67%,7.69%,3.85%,1.5,15.3,63,0.92

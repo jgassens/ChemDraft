@@ -1,0 +1,5 @@
+namer,inputs with stereo,round-trip,stereo-lost,MISNAMED,name-unparseable,declined,error,unusable
+oc-0.2.0,11,10,0,0,1,0,0,0
+oc-0.4.3,11,10,0,0,1,0,0,0
+orthonym-1.0.8-default,11,9,0,0,1,1,0,0
+orthonym-1.0.8-valid,11,10,0,0,0,1,0,0
