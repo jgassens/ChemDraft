@@ -11,7 +11,8 @@ There are two independent signatures, in this order:
    `CHEMDRAFT_SKIP_UPDATER_SIGNING=1`.
 2. Upload the unsigned installer as `windows-nsis-unsigned`, submit its artifact ID to SignPath,
    wait for approval/completion, and download the signed installer. Require
-   `Get-AuthenticodeSignature` to report `Valid` before replacing the unsigned copy.
+   `Get-AuthenticodeSignature` to report `Valid` and the signer certificate subject to contain
+   `EXPECTED_AUTHENTICODE_SUBJECT` before replacing the unsigned copy.
 3. Use `tauri signer sign` to create the updater `.exe.sig` over that **final** installer.
 4. Verify the updater signature against `plugins.updater.pubkey` in
    `apps/desktop/src-tauri/tauri.windows.conf.json`, then generate `latest.json` with
@@ -58,6 +59,13 @@ certificate, or approval is supplied by the workflow.
    | Variable | `SIGNPATH_ORGANIZATION_ID` | SignPath organization ID |
    | Variable | `SIGNPATH_PROJECT_SLUG` | ChemDraft project slug |
    | Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | Approved signing policy slug |
+   | Variable | `EXPECTED_AUTHENTICODE_SUBJECT` | Required, case-sensitive substring of the expected signer certificate subject |
+
+   SignPath Foundation certificates name the foundation as publisher. After the first signed run,
+   inspect the logged certificate subject, confirm it matches the Foundation-approved certificate,
+   and set `EXPECTED_AUTHENTICODE_SUBJECT` to the exact expected subject (or an identifying substring).
+   That first run fails verification if the variable is unset; rerun after setting it. An unset or
+   whitespace-only variable, invalid signature, or mismatched subject always fails the job.
 
 6. Add the **existing updater key** as repository secret `TAURI_SIGNING_PRIVATE_KEY`. The owner
    copies the contents of `%USERPROFILE%\.tauri\chemdraft-updater.key` (or its protected backup)
@@ -66,8 +74,8 @@ certificate, or approval is supplied by the workflow.
    pair would strand installed apps. The current key has an empty password; the workflow passes
    that explicitly to the signer and trims surrounding whitespace from the secret.
 
-The official SignPath action is pinned to its `v2` release tag with its release commit recorded in a
-workflow comment. Review action updates and trust policy changes as release infrastructure changes.
+The official SignPath action is pinned to the full commit SHA of its `v2` release.
+Review action updates and trust policy changes as release infrastructure changes.
 
 ## Run a release
 
@@ -108,7 +116,11 @@ body must include `## macOS` and `## Windows`; this workflow supplies the Window
 
 6. If `upload_to_release` was supplied, a separate job downloads only the final artifact and uses
    `gh release upload --clobber`. It refuses a missing or already published release, and requires
-   `v<app version>` because the generated feed points to that URL. Only this job has
+   `v<app version>` because the generated feed points to that URL. It also requires both
+   `authenticode_signed` and `updater_signed` build outputs to be true; these are set only after
+   successful verification. The boolean input `allow_unsigned_upload` defaults to false. Setting it
+   to true explicitly permits an upload with missing signatures and prints a loud workflow warning;
+   use it only for draft dry runs. Only this job has
    `contents: write`; the build/signing job has read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
 7. After both platform artifacts pass review, publish the joint release. Only **after** the installer

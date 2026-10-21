@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { verifyUpdaterSignature } from "./verify-windows-updater";
 
@@ -25,9 +25,17 @@ function signed(algorithm = "ED") {
 }
 
 describe("Windows updater verification", () => {
-  it("accepts an actual Tauri CLI signature with an ephemeral test key", () => {
+  it("accepts an actual Tauri CLI signature with an ephemeral test key", (context) => {
+    const desktopRequire = createRequire(new URL("../../apps/desktop/package.json", import.meta.url));
+    let cli: string;
+    try {
+      cli = desktopRequire.resolve("@tauri-apps/cli/tauri.js");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+      context.skip("Tauri CLI is not installed/resolvable from the desktop package; skipping real CLI signature test.");
+      return;
+    }
     const root = mkdtempSync(join(tmpdir(), "chemdraft-updater-verify-"));
-    const cli = fileURLToPath(new URL("../../apps/desktop/node_modules/@tauri-apps/cli/tauri.js", import.meta.url));
     const key = join(root, "test.key");
     const installer = join(root, "test.exe");
     try {

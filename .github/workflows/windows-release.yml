@@ -11,6 +11,11 @@ on:
         description: Optional existing DRAFT release tag (v<app version>)
         required: false
         type: string
+      allow_unsigned_upload:
+        description: Allow uploading artifacts without both verified signatures (dry runs only)
+        required: false
+        type: boolean
+        default: false
       notes_file:
         description: Optional repository path to Windows release notes
         required: false
@@ -38,6 +43,8 @@ jobs:
         shell: pwsh
     outputs:
       version: ${{ steps.bundle.outputs.version }}
+      authenticode_signed: ${{ steps.authenticode.outputs.signed || 'false' }}
+      updater_signed: ${{ steps.updater.outputs.signed || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,6 +139,7 @@ jobs:
           "installer=$expected" >> $env:GITHUB_OUTPUT
           Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha"
 
+      # Signing secrets are step-scoped: no setup/cache/artifact action receives them.
       - name: Check signing availability
         id: signing
         env:
@@ -165,9 +173,8 @@ jobs:
 
       - name: Authenticode-sign and download final installer
         if: steps.signing.outputs.authenticode == 'true'
-        # Official release v2; commit c92b958760219087e01f8d67a1669ed57afe2627.
         # https://github.com/SignPath/github-action-submit-signing-request/releases/tag/v2
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -179,8 +186,10 @@ jobs:
           output-artifact-directory: signpath-signed
 
       - name: Verify Authenticode and replace unsigned installer
+        id: authenticode
         if: steps.signing.outputs.authenticode == 'true'
         env:
+          EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
           INSTALLER: ${{ steps.bundle.outputs.installer }}
         run: |
           $signed = @(Get-ChildItem signpath-signed -Recurse -File)
@@ -188,7 +197,14 @@ jobs:
           $signature = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
           if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
           Write-Host "Authenticode: Valid; publisher=$($signature.SignerCertificate.Subject)"
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
+            throw 'EXPECTED_AUTHENTICODE_SUBJECT repository variable is required when Authenticode signing runs. Set it to the expected signer certificate subject substring.'
+          }
+          if (-not $signature.SignerCertificate.Subject.Contains($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
+            throw "Authenticode signer subject does not contain EXPECTED_AUTHENTICODE_SUBJECT: $($signature.SignerCertificate.Subject)"
+          }
           Copy-Item -LiteralPath $signed[0].FullName -Destination (Join-Path release-assets $env:INSTALLER) -Force
+          'signed=true' >> $env:GITHUB_OUTPUT
 
       # No operation may change the .exe after this point. Minisign covers the FINAL installer.
       - name: Sign final installer for the Tauri updater
@@ -204,6 +220,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Tauri updater signing failed.' }
 
       - name: Verify updater signature and generate latest.json
+        id: updater
         if: steps.signing.outputs.updater == 'true'
         env:
           INSTALLER: ${{ steps.bundle.outputs.installer }}
@@ -217,6 +234,7 @@ jobs:
           if ($env:NOTES_FILE) { $manifestArgs += @('--notes', $env:NOTES_FILE) }
           pnpm -s release:windows-manifest @manifestArgs
           if ($LASTEXITCODE -ne 0) { throw 'Windows update manifest generation failed.' }
+          'signed=true' >> $env:GITHUB_OUTPUT
 
       - name: Print SHA-256 and sizes and write checksums
         run: |
@@ -241,6 +259,19 @@ jobs:
       contents: write # Only this job can upload release assets; no source code executes here.
       actions: read
     steps:
+      - name: Require verified signatures before release upload
+        shell: pwsh
+        env:
+          AUTHENTICODE_SIGNED: ${{ needs.build.outputs.authenticode_signed }}
+          UPDATER_SIGNED: ${{ needs.build.outputs.updater_signed }}
+          ALLOW_UNSIGNED_UPLOAD: ${{ inputs.allow_unsigned_upload }}
+        run: |
+          if ($env:AUTHENTICODE_SIGNED -ne 'true' -or $env:UPDATER_SIGNED -ne 'true') {
+            if ($env:ALLOW_UNSIGNED_UPLOAD -ne 'true') {
+              throw 'Refusing release upload: both Authenticode and updater signatures must be verified. Use allow_unsigned_upload only for an explicit unsigned dry run.'
+            }
+            Write-Host '::warning::UNSIGNED RELEASE UPLOAD OVERRIDE: one or both signatures are missing. These artifacts must not be published as a signed production update.'
+          }
       - uses: actions/download-artifact@v4
         with:
           name: windows-release
