@@ -611,6 +611,23 @@ describe("StructureToName API 0.1.7", () => {
       })
     ).toThrow();
   });
+
+  it("accepts an optional title on chemicalName sections and rejects unknown fields", () => {
+    const section = {
+      kind: "chemicalName" as const,
+      label: "Name",
+      name: "ethanol",
+      kindLabel: "Preferred IUPAC name",
+      warnings: []
+    };
+    expect(PluginPanelReportSchema.parse({ title: "Name", sections: [section] }).sections[0]).toMatchObject(section);
+    expect(
+      PluginPanelReportSchema.parse({ title: "Name", sections: [{ ...section, title: "Preferred name" }] }).sections[0]
+    ).toMatchObject({ ...section, title: "Preferred name" });
+    expect(() =>
+      PluginPanelReportSchema.parse({ title: "Name", sections: [{ ...section, extra: true }] })
+    ).toThrow();
+  });
 });
 
 describe("linkedFigure panel section (ADR-0015)", () => {

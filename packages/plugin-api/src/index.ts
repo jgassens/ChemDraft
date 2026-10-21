@@ -362,6 +362,7 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("chemicalName"),
+      title: NonEmptyStringSchema.optional(),
       label: NonEmptyStringSchema,
       name: NonEmptyStringSchema,
       kindLabel: NonEmptyStringSchema,
