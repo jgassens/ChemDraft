@@ -37,9 +37,12 @@ export async function loadNamingCanonicalizer(): Promise<NamingCanonicalizer> {
   return { version, computeStructureIdentifiers,
     canonicalize: async structure => {
       // Normalize ordinary explicit H on BOTH sides of the comparison, after export atom-state
-      // verification. RDKit's removeHs preserves stereo and keeps isotopic H (D/T) by default;
-      // never use removeAllHs or enable RemoveHsParameters.removeIsotopes here.
-      const molecule = module.get_mol(structure, JSON.stringify({ removeHs: true }));
+      // verification. Keep isotopic H (D/T) and charged hydrides; removing hydrides could erase
+      // the charge distinction between X-[H-] and X-[H].
+      const molecule = module.get_mol(structure, JSON.stringify({
+        removeHs: true,
+        removeHydrides: false
+      }));
       if (!molecule) return null;
       try { return molecule.get_smiles?.() || null; }
       finally { molecule.delete(); }

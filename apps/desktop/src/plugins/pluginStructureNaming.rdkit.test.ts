@@ -104,6 +104,22 @@ describe("structure naming with the real host RDKit canonicaliser", () => {
     expect(result).not.toHaveProperty("name");
   }, 60_000);
 
+  it("declines a read-back that neutralizes a drawn bonded hydride", async () => {
+    const molecule = await drawnWithExplicitHydrogen("[H-][C]([H])([H])[H]");
+    const hydride = molecule.atoms.find(atom => atom.element === "H" && atom.formalCharge === -1);
+    expect(hydride).toBeDefined();
+    expect(molecule.bonds.some(bond => bond.fromAtomId === hydride!.id || bond.toAtomId === hydride!.id)).toBe(true);
+
+    const canonical = await loadNamingCanonicalizer();
+    expect(await canonical.canonicalize("[H-][C]([H])([H])[H]"))
+      .not.toBe(await canonical.canonicalize("[H][C]([H])([H])[H]"));
+
+    const engine = engineReading("[H][C]([H])([H])[H]");
+    const result = await nameStructureForPlugin(molecule, engine, namingInstalled, canonical);
+    expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
+    expect(result).not.toHaveProperty("name");
+  }, 60_000);
+
   it.each([
     ["charge: glycine zwitterion versus neutral glycine", "[NH3+]CC(=O)[O-]", "NCC(=O)O"],
     ["stereo: L-alanine versus D-alanine", "N[C@@H](C)C(=O)O", "N[C@H](C)C(=O)O"],
