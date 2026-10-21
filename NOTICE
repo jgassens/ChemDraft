@@ -8,9 +8,11 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components requiring attribution
 --------------------------------------------------------------------------------
 
-The following components are redistributed with this software. Each is permissively
-licensed and each requires that its copyright notice, conditions, and disclaimer be
-reproduced in the materials accompanying a binary distribution. Full terms are
+The following components are redistributed with this software. Most are permissively
+licensed and require that their copyright notice, conditions, and disclaimer be
+reproduced in the materials accompanying a binary distribution; the exceptions
+(LGPL-2.1-or-later jna-inchi, the GPL-2.0 WITH Classpath-exception runtime, and
+MPL-2.0 Eigen) say so in their own entries. Full terms are
 vendored alongside each artifact; the complete inventory, including build provenance
 and artifact hashes, is in docs/architecture/dependency-inventory.md.
 
@@ -45,7 +47,10 @@ IsoSpec (vendored WebAssembly build)
 
 OPSIN (vendored Java archive, name-to-structure)
   MIT. Copyright (c) 2017 Daniel Lowe.
-  Source: https://github.com/dan2097/opsin, release 2.9.0. Unmodified.
+  Source: https://github.com/dan2097/opsin, release 2.9.0. Modified only by code
+  signing: the four macOS native libraries inside the jar are re-signed with our
+  Developer ID so Apple notarization accepts them; every other entry is
+  byte-identical to the upstream release (record: BUILD.md below).
   Full licence text: apps/desktop/src-tauri/resources/opsin/OPSIN-LICENSE.txt
 
   The released artifact is a shaded "jar-with-dependencies", and shading overwrites
@@ -57,12 +62,51 @@ OPSIN (vendored Java archive, name-to-structure)
                                               Software Foundation
     Apache Commons IO (2.21.0)              Apache-2.0, (c) 2002-2025 The Apache
                                               Software Foundation
+    Apache Commons CLI (1.11.0)             Apache-2.0, (c) The Apache Software
+                                              Foundation
     Stax2 API (stax2-api 4.2.2)             BSD-2-Clause, (c) Tatu Saloranta
     dk.brics automaton (1.12-4)             BSD-2-Clause, (c) Anders Moeller,
                                               Aarhus University
 
   This product includes software developed at The Apache Software Foundation
   (https://www.apache.org/).
+
+  The jar also redistributes the three components in the entries that follow (JNA,
+  jna-inchi, InChI). Their licences were read from Maven Central POMs and the
+  upstream repositories; the table is in the OPSIN BUILD.md.
+
+JNA 5.10.0 (Java Native Access, inside the OPSIN jar)
+  Dual-licensed LGPL-2.1-or-later OR Apache-2.0; ChemDraft uses and redistributes it
+  under the Apache License 2.0.
+  Source: https://github.com/java-native-access/jna, tag 5.10.0
+  (also https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.10.0/jna-5.10.0-sources.jar).
+  The licence statement is the LICENSE file at that tag.
+
+jna-inchi 1.3.1 (inside the OPSIN jar: jna-inchi-api, jna-inchi-core and the
+eight platform artifacts jna-inchi-{darwin-aarch64,darwin-x86-64,linux-aarch64,
+linux-arm,linux-x86,linux-x86-64,win32-x86,win32-x86-64})
+  GNU Lesser General Public License, version 2.1 or later (copyleft). The
+  licence text (LGPL 2.1) is META-INF/LGPL2.1 inside the jar.
+  Source: https://github.com/dan2097/jna-inchi, tag jna-inchi-1.3.1
+  (also https://repo1.maven.org/maven2/io/github/dan2097/jna-inchi-api/1.3.1/jna-inchi-api-1.3.1-sources.jar).
+  The only change ChemDraft makes is the code signature on the two macOS
+  libjnainchi.dylib files (arm64 and x86-64). The Windows and Linux libraries are
+  as upstream built them.
+
+  Written offer: for as long as ChemDraft distributes this jar, the complete
+  corresponding source for the jna-inchi version shipped is the tag above, and anyone
+  who received ChemDraft may also request it from the project owner. The shipped
+  jar is the upstream jar-with-dependencies plus the signatures described above, so
+  a user can replace the jna-inchi classes and libraries by rebuilding that tag
+  and substituting them into a copy of the jar.
+
+InChI 1.07.2 (the chemistry library inside the jna-inchi native libraries)
+  MIT. Copyright (c) 2024 InChI Project.
+  Source: https://github.com/IUPAC-InChI/InChI, tag v1.07.2 (LICENSE at that tag).
+  The version is read from the binary ("InChI version 1, Software 1.07.2 (API
+  Library)") and from jna-inchi's jnainchi_build.props (inchi_version=1.07.2).
+  This entry is for the copy in the OPSIN jar; the separate copy inside the RDKit
+  MinimalLib build is the InChI entry further below.
 
 Bundled Java runtime (OpenJDK, produced with jlink)
   GPL-2.0-only WITH Classpath-exception-2.0. The runtime is redistributed so the
@@ -71,7 +115,7 @@ Bundled Java runtime (OpenJDK, produced with jlink)
   Build recipe and module list:
   apps/desktop/src-tauri/resources/opsin/BUILD.md
 
-InChI (statically linked into the RDKit MinimalLib build above)
+InChI (statically linked into the RDKit MinimalLib build above; not the copy in the OPSIN jar)
   The binary self-identifies as "InChI version 1, Software 1.07.3 (API Library)".
   The InChI Trust's terms changed across the 1.06 -> 1.07 series; the applicable
   licence and notice obligations for 1.07.3 are RECORDED AS UNCONFIRMED in the

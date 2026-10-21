@@ -39,23 +39,39 @@ That is the whole reason this directory holds a JAR instead of a `.wasm` like ev
 set. So redistributing it obliges *us* to carry the notices, the same way `NOTICE` already does for
 RDKit, IsoSpec, and InChI.
 
-`META-INF/maven/**` lists **eight** artifacts, but only **six ship code**. `net.java.dev.msv:xsdlib`
-and `com.sun.xml.bind.jaxb:isorelax` leave `pom.properties` behind with **zero classes** — counted by
-package root, not assumed. What is really redistributed:
+`META-INF/maven/**` lists **22** artifacts. Two of them, `net.java.dev.msv:xsdlib` and
+`com.sun.xml.bind.jaxb:isorelax`, leave `pom.properties` behind with **zero classes** (counted by
+package root, not assumed); `opsin-cli` and `opsin-inchi` are thin shells over the rest. What is really
+redistributed, with each licence read on 2026-10-21 from the source named in the last column:
 
-| Bundled | Version | License | Package root |
-|---|---|---|---|
-| `uk.ac.cam.ch.opsin:opsin-core` | 2.9.0 | **MIT** | `uk/ac/cam` |
-| `com.fasterxml.woodstox:woodstox-core` | 7.1.1 | Apache-2.0 | `com/ctc/wstx` |
-| `org.apache.logging.log4j:log4j-api` **and `log4j-core`** | 2.25.3 | Apache-2.0 | `org/apache/logging` |
-| `commons-io:commons-io` | 2.21.0 | Apache-2.0 | `org/apache/commons` |
-| `org.codehaus.woodstox:stax2-api` | 4.2.2 | BSD-2-Clause | `org/codehaus/stax2` |
-| `dk.brics:automaton` | 1.12-4 | BSD-2-Clause | `dk/brics` |
+| Bundled | Version | License | Package root | Where the licence was read |
+|---|---|---|---|---|
+| `uk.ac.cam.ch.opsin:opsin-core` (and `opsin-inchi`, `opsin-cli`) | 2.9.0 | **MIT** | `uk/ac/cam` | `opsin` parent POM 2.9.0 on Maven Central (`<license>` MIT); `OPSIN-LICENSE.txt` |
+| `com.fasterxml.woodstox:woodstox-core` | 7.1.1 | Apache-2.0 | `com/ctc/wstx` | its own POM inside the jar |
+| `org.apache.logging.log4j:log4j-api` **and `log4j-core`** | 2.25.3 | Apache-2.0 | `org/apache/logging` | their own POMs inside the jar |
+| `commons-io:commons-io` | 2.21.0 | Apache-2.0 | `org/apache/commons/io` | no `<license>` in its POM; inherited from `commons-parent` 91 → `org.apache:apache` 35 on Maven Central |
+| `commons-cli:commons-cli` | 1.11.0 | Apache-2.0 | `org/apache/commons/cli` | same parent chain as `commons-io` |
+| `org.codehaus.woodstox:stax2-api` | 4.2.2 | BSD-2-Clause | `org/codehaus/stax2` | its own POM inside the jar |
+| `dk.brics:automaton` | 1.12-4 | BSD (the POM says only "BSD"; recorded here as BSD-2-Clause as before) | `dk/brics` | its own POM inside the jar |
+| `net.java.dev.jna:jna` | 5.10.0 | **LGPL-2.1-or-later OR Apache-2.0** (dual; we take it under Apache-2.0) | `com/sun/jna`, plus `com/sun/jna/*/libjnidispatch*` natives | `jna` 5.10.0 POM on Maven Central lists both; the `LICENSE` at tag `5.10.0` of `java-native-access/jna` says "licensed under the LGPL, version 2.1 or later, or (from version 4.0 onward) the Apache License, version 2.0 … You can freely decide which license you want to apply" |
+| `io.github.dan2097:jna-inchi-api` and `jna-inchi-core` (Java wrapper) | 1.3.1 | **LGPL-2.1-or-later** — **copyleft** | `io/github/dan2097/jnainchi` | `jna-inchi` 1.3.1 parent POM on Maven Central (`<license>` "GNU Lesser General Public License (LGPL), Version 2.1 or later"); `README.md` at tag `jna-inchi-1.3.1`: "licensed under the GNU Lesser General Public License v2.1 or later" |
+| `io.github.dan2097:jna-inchi-{darwin-aarch64,darwin-x86-64,linux-aarch64,linux-arm,linux-x86,linux-x86-64,win32-x86,win32-x86-64}` (native binaries) | 1.3.1 | distributed under the jna-inchi project's **LGPL-2.1-or-later**; the library inside is InChI (next row) | `darwin-*/libjnainchi.dylib`, `linux-*/libjnainchi.so`, `win32-*/jnainchi.dll` | the per-platform POMs inherit the `jna-inchi` parent |
+| **InChI** library inside those natives | 1.07.2 (the Linux binary self-identifies as `InChI version 1, Software 1.07.2 (API Library)`; `jnainchi_build.props` says `inchi_version=1.07.2`) | **MIT**, © 2024 InChI Project | the `libjnainchi` natives | `LICENSE` at tag `v1.07.2` of `github.com/IUPAC-InChI/InChI` (the upstream repository of the InChI Trust and IUPAC working groups). Whether each native was built from exactly that tag is jna-inchi's claim, not something verified here |
 
-**All permissive, no copyleft.** Licences were resolved from each artifact's POM on Maven Central
-(walking to the parent POM where the child declares none), not from memory. Note `log4j-core` is
-present even though only `log4j-api` leaves a `pom.properties` — the stack traces prove it, and it is
-what forces `java.desktop` below.
+**This is not "all permissive".** Two components are copyleft: the `jna-inchi` Java wrapper and its
+native binaries (LGPL-2.1-or-later, no alternative offered), and JNA, which is dual-licensed so the
+LGPL is optional and ChemDraft elects Apache-2.0. The LGPL obligations for `jna-inchi` — carry the
+licence text, say so, and offer the exact source — are addressed in `NOTICE` (written source offer) and by
+`META-INF/LGPL2.1` inside the jar (a copy of the LGPL 2.1 text; the jar's `META-INF` is otherwise
+whichever notices were shaded last). The InChI library is MIT, which asks only that its notice travel
+with it; `NOTICE` carries it. Licences were resolved from the POMs on Maven Central and the upstream
+repositories named above (walking to the parent POM where the child declares none), not from memory.
+Note `log4j-core` is present even though only `log4j-api` leaves a `pom.properties` — the stack traces
+prove it, and it is what forces `java.desktop` below.
+
+The jar bundles natives for platforms ChemDraft does not run on (Linux, BSD, Solaris, ARM, Windows
+x86/aarch64 …); they are inert here but ship as upstream built them (the four darwin natives carry only our signature, see above), which is why the table lists them by family.
+The bundled jlink runtime is separate and covered in `NOTICE`.
 
 ## The bundled runtime
 
