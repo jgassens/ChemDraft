@@ -591,7 +591,7 @@ describe("PluginManagerDialog", () => {
       "Recognition engine: not installed"
     );
     expect(document.querySelector('[data-testid="molscribe-engine-install-note"]')?.textContent).toContain(
-      "Downloads about 2.5 GB and uses about 2.4 GB once installed. Needs about 2 GB free while installing (8 GB free now)."
+      "Downloads about 2.5 GB and uses about 2.4 GB once installed. Needs about 2.0 GB free while installing. Free now: 8.0 GB. It runs entirely on this computer."
     );
     const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
     // A full-size button, never a small text link.
