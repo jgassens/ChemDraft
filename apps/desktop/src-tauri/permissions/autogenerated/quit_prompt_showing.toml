@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-quit-prompt-showing"
+description = "Enables the quit_prompt_showing command without any pre-configured scope."
+commands.allow = ["quit_prompt_showing"]
+
+[[permission]]
+identifier = "deny-quit-prompt-showing"
+description = "Denies the quit_prompt_showing command without any pre-configured scope."
+commands.deny = ["quit_prompt_showing"]

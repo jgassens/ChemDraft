@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createEmptyDocument,
+  createCustomPageLayout,
   createPageLayout,
   type TextObject,
   type UnknownCompatibilityObject
@@ -19,6 +20,88 @@ import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../lay
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("does not count the white page background as drawing geometry", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    // This is the negative control for the bond endpoint assertions below:
+    // removing the molecule must leave no drawing points despite the painted background.
+    expect(pdfDrawingPoints(Buffer.from(result.bytes).toString("latin1"))).toEqual([]);
+  });
+
+  it("accepts the maximum 200-inch PDF page without silently reducing it", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser, outputWidth: 19200, outputHeight: 19200
+    }));
+    expect(Buffer.from(result.bytes).toString("latin1")).toContain("/MediaBox [0 0 14400. 14400.]");
+  });
+
+  it.each([0, -1, NaN, Infinity, -Infinity])("rejects invalid output dimensions (%s) before rendering", async (dimension) => {
+    const document = createEmptyDocument({ now: timestamp });
+    for (const options of [{ outputWidth: dimension }, { outputHeight: dimension }]) {
+      await expect(exportDocumentToPdf(document, options)).rejects.toThrow("finite positive");
+    }
+  });
+
+  it("refuses 8190 by 4095 px at 36 DPI before rendering instead of clipping", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    await expect(exportDocumentToPdf(document, { outputWidth: 8190 / 36 * 96, outputHeight: 4095 / 36 * 96 }))
+      .rejects.toThrow("physical page size exceeds 14400 points (200 inches) per side");
+  });
+
+  it.each([96, 300, 600])("fits the entire drawing inside the DPI-derived physical PDF page at %s DPI", async (dpi) => {
+    const original = createEmptyDocument({ now: timestamp });
+    // A plain four-bond ring: every drawing primitive is checked below.
+    const ring = { ...filledRingFixture(), style: { source: "chemdraft-native-drawing" } };
+    const document = applyPatch({
+      ...original,
+      pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }]
+    }, { op: "addObject", pageId: "page_001", object: ring }, { now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser, compress: false, outputWidth: 2008 / dpi * 96, outputHeight: 1004 / dpi * 96
+    }));
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    const box = pdf.match(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/)!;
+    const widthPt = Number(box[1]), heightPt = Number(box[2]);
+    expect(widthPt).toBeCloseTo(2008 / dpi * 72, 6);
+    expect(heightPt).toBeCloseTo(1004 / dpi * 72, 6);
+    const points = pdfDrawingPoints(pdf);
+    // Fixed authored endpoints of all four bonds, independent of the exported SVG.
+    // Comparing every endpoint catches missing bonds, rather than only checking an outer box.
+    const endpoints = [[100, 100], [180, 100], [180, 100], [180, 180],
+      [180, 180], [100, 180], [100, 180], [100, 100]];
+    expect(points).toHaveLength(endpoints.length);
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index][0]).toBeCloseTo(x / 1000 * widthPt, 6);
+      expect(points[index][1]).toBeCloseTo(heightPt - y / 500 * heightPt, 6);
+    });
+  });
+
+
+  it("keeps all bond endpoints visible when independent output dimensions change the aspect ratio", async () => {
+    const original = createEmptyDocument({ now: timestamp });
+    const ring = { ...filledRingFixture(), style: { source: "chemdraft-native-drawing" } };
+    const document = applyPatch({ ...original, pages: [{ ...original.pages[0], width: 1000, height: 500, layout: createCustomPageLayout(1000, 500, "css-px") }] }, { op: "addObject", pageId: "page_001", object: ring }, { now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false, outputWidth: 960, outputHeight: 1920 }));
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    expect(pdf).toContain("/MediaBox [0 0 720. 1440.]");
+    const points = pdfDrawingPoints(pdf);
+    const endpoints = [[100, 100], [180, 100], [180, 100], [180, 180], [180, 180], [100, 180], [100, 180], [100, 100]];
+    expect(points).toHaveLength(8);
+    // Preserve the 2:1 source frame inside the 1:2 page: 720 x 360 pt, centred vertically.
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index][0]).toBeCloseTo(x * 0.72, 6);
+      expect(points[index][1]).toBeCloseTo(1440 - 540 - y * 0.72, 6);
+    });
+  });
+
+  it("uses custom output dimensions for the physical PDF page", async () => {
+    const document = createEmptyDocument({ title: "Sized PDF", now: timestamp });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, outputWidth: 960, outputHeight: 480 }));
+    expect(new TextDecoder().decode(result.bytes)).toContain("/MediaBox [0 0 720. 360.]");
+    await expect(exportDocumentToPdf(document, { outputWidth: 0 })).rejects.toThrow("finite positive");
+  });
+
   it.each([true, false])("preserves Unicode text and labels with compression=%s", async (compress) => {
     const text = "μmol H₂O SO₄²⁻ Na⁺";
     const label = "μ₆⁻";
@@ -406,4 +489,56 @@ function defineTestGlobal(target: Record<string, unknown>, key: string, value: u
     writable: true,
     value
   });
+}
+
+// Read only painted strokes, excluding filled backgrounds and clipping paths.
+// Apply nested graphics-state matrices and verify active rectangular clips contain each stroke.
+function pdfDrawingPoints(pdf: string): Array<[number, number]> {
+  type Matrix = [number, number, number, number, number, number];
+  let matrix: Matrix = [1, 0, 0, 1, 0, 0];
+  type Clip = { left: number; top: number; right: number; bottom: number };
+  let clips: Clip[] = [];
+  let pendingClip = false;
+  const stack: Array<{ matrix: Matrix; clips: Clip[] }> = [];
+  const points: Array<[number, number]> = [];
+  let path: Array<[number, number]> = [];
+  const point = (x: number, y: number) => path.push([
+    matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]
+  ]);
+  const source = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map((match) => match[1]).join("\n");
+  for (const line of source.split("\n")) {
+    const parts = line.trim().split(/\s+/), op = parts.pop();
+    const n = parts.map(Number);
+    if (op === "W" || op === "W*") pendingClip = true;
+    else if (op === "S" || op === "s") {
+      for (const [x, y] of path) for (const clip of clips) {
+        expect(x).toBeGreaterThanOrEqual(clip.left - 1e-6);
+        expect(x).toBeLessThanOrEqual(clip.right + 1e-6);
+        expect(y).toBeGreaterThanOrEqual(clip.top - 1e-6);
+        expect(y).toBeLessThanOrEqual(clip.bottom + 1e-6);
+      }
+      points.push(...path);
+      path = [];
+    } else if (["f", "f*", "n", "B", "B*", "b", "b*"].includes(op ?? "")) {
+      if (pendingClip) {
+        clips = [...clips, {
+          left: Math.min(...path.map(([x]) => x)), right: Math.max(...path.map(([x]) => x)),
+          top: Math.min(...path.map(([, y]) => y)), bottom: Math.max(...path.map(([, y]) => y))
+        }];
+        pendingClip = false;
+      }
+      path = [];
+    } else if (op === "q") stack.push({ matrix: [...matrix], clips: [...clips] });
+    else if (op === "Q") {
+      const saved = stack.pop();
+      if (saved) { matrix = saved.matrix; clips = saved.clips; }
+    }
+    else if (op === "cm" && n.length === 6) {
+      const [a,b,c,d,e,f] = matrix;
+      matrix = [a*n[0]+c*n[1], b*n[0]+d*n[1], a*n[2]+c*n[3], b*n[2]+d*n[3], a*n[4]+c*n[5]+e, b*n[4]+d*n[5]+f];
+    } else if (op === "m" || op === "l") point(n[0], n[1]);
+    else if (op === "c") for (let i=0; i<6; i+=2) point(n[i], n[i+1]);
+    else if (op === "re") { point(n[0], n[1]); point(n[0]+n[2], n[1]+n[3]); }
+  }
+  return points;
 }

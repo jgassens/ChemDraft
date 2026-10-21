@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { loadExportPreviewEnabled, saveExportPreviewEnabled } from "./exportPreviewSettings";
+import { loadAskToSaveBeforeQuit, saveAskToSaveBeforeQuit } from "./quitSettings";
 import {
   loadSpin3dSettings,
   saveSpin3dSettings,
@@ -13,7 +15,7 @@ import {
   type KeybindingScheme,
   type KeybindingSettings
 } from "./keybindingSettings";
-import { broadcastKeybindingSettings, broadcastSpin3dSettings } from "./window-manager";
+import { broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings, broadcastExportPreviewSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
   value: T;
@@ -92,6 +94,8 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
+  const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
 
@@ -132,6 +136,30 @@ export function PreferencesWindow() {
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
+
+      <section className="preferences-section">
+        <h2>Quitting</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={askToSave} onChange={(event) => {
+            setAskToSave(event.target.checked);
+            saveAskToSaveBeforeQuit(event.target.checked);
+            void broadcastQuitSettings(event.target.checked);
+          }} />
+          Ask to save unsaved changes before quitting
+        </label>
+      </section>
+
+      <section className="preferences-section">
+        <h2>Export</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={exportPreview} onChange={(event) => {
+            setExportPreview(event.target.checked);
+            saveExportPreviewEnabled(event.target.checked);
+            void broadcastExportPreviewSettings(event.target.checked);
+          }} />
+          <span className="preferences-radio-body"><span>Export preview and size presets</span><small>Show a live preview and size presets in the Export window</small></span>
+        </label>
+      </section>
 
       <PreferenceRadioGroup
         legend="Keyboard shortcuts"

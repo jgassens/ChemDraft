@@ -1,5 +1,37 @@
 # Shipped slices
 
+## Export dialog preview and size presets (2026-10-20)
+
+The movable Export dialog shares its form with the browser fallback. Preferences adds
+“Export preview and size presets”, off by default, with live updates in open dialogs.
+Enabled exports offer page/content cropping, linked or independent dimensions, DPI,
+background controls, renderer warnings, and slide/poster/publication size presets.
+PDF previews display the shared SVG page layout as an image on both platforms, labelled
+“Preview of the PDF page layout”; final PDF generation is unchanged. Preview delivery
+retains its 5 MiB cap and validation. The document owner ignores presentation options
+when its preference is off, including requests from a dialog with stale settings.
+
+## Optional save prompt before quitting (2026-10-13)
+
+Preferences adds “Ask to save unsaved changes before quitting”, off by default. Disabled
+preserves the existing quit/session flush; enabled prompts only for dirty tabs with
+Save / Discard / Cancel. Save covers every dirty tab, and cancellation or failed saving
+keeps the app open. The modal uses `role="dialog"` and `aria-modal="true"` so utility
+windows hide. PR #99's grace period and exit watchdog remain; the grace pauses only
+after the mounted dialog is acknowledged, and cancelled requests invalidate old timers.
+Session restoration and Discard's session retention are unchanged.
+The 2026-10-14 review fixes save dirty documents by ID, permit Save As before shutdown,
+re-arm the flush grace after Save/Discard, scope prompt commands to the document window,
+reveal hidden/minimized documents, identify requests across late Cancel replies, handle
+AppKit Dock Quit while leaving system termination non-blocking, and explicitly acquire
+native utility suspension for the quit modal.
+The 2026-10-19 presentation update uses `useNativePrompt` for a native Save / Don't Save /
+Cancel message box, retaining the accessible in-window fallback only if the box cannot open.
+The native quit state machine and its safeguards are unchanged.
+Independent review additionally blocks native commands, queued opens, and plugin writes during
+the quit interaction, disables competing choices while Cancel is pending, lets an existing OS
+tab-close alert resolve before requesting quit again, and keeps/raises a waiting macOS prompt.
+
 Completed implementation slices, newest first. These moved out of `PLANS.md` on 2026-07-30 so that
 file could go back to describing only the work in flight; the records themselves are unchanged apart
 from heading levels and cross-reference fixes.

@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-quit-prompt",
+  "description": "Only the document window can prepare, acknowledge, cancel, or finish a quit prompt.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-set-quit-prompt-enabled",
+    "allow-prepare-quit-prompt",
+    "allow-quit-prompt-showing",
+    "allow-cancel-quit",
+    "allow-resume-quit-after-prompt",
+    "allow-confirm-prompted-quit",
+    "allow-request-quit-after-close"
+  ]
+}

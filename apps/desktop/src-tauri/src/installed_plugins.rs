@@ -92,7 +92,8 @@ pub fn handle_tauri_request<R: Runtime>(
 
     match percent_decode(path).strip_prefix(INSTALLED_PLUGINS_URL_PREFIX) {
         Some(relative) => {
-            let response = serve_installed_plugin_asset(app, relative);
+            let bootstrap = should_bootstrap_plugin_worker(request.uri(), cfg!(windows));
+            let response = serve_installed_plugin_asset(app, relative, bootstrap);
             // Log every staged-plugin fetch. This is not decoration: a plugin can silently fall back to
             // an in-thread path when a nested worker fails to load, so the *fetch log is the only thing*
             // that distinguishes a package genuinely running from its staged location from one whose
@@ -145,6 +146,7 @@ fn serve_app_asset<R: Runtime>(app: &AppHandle<R>, path: &str) -> Response<Cow<'
 fn serve_installed_plugin_asset<R: Runtime>(
     app: &AppHandle<R>,
     relative: &str,
+    bootstrap: bool,
 ) -> Response<Cow<'static, [u8]>> {
     let Some(root) = installed_plugins_root(app) else {
         return internal_error("no app data directory is available for staged plugins");
@@ -161,6 +163,17 @@ fn serve_installed_plugin_asset<R: Runtime>(
     match std::fs::read(&candidate) {
         Ok(bytes) => {
             let mime_type = MimeType::parse(&bytes, relative);
+            // Keep startup on the installed asset response's restrictive CSP. A page-created blob
+            // bootstrap would inherit the page CSP instead and grant plugins ambient networking.
+            let bytes = if bootstrap
+                && matches!(
+                    mime_type.as_str(),
+                    "text/javascript" | "application/javascript"
+                ) {
+                installed_plugin_bootstrap().into_bytes()
+            } else {
+                bytes
+            };
             Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, mime_type)
@@ -176,6 +189,28 @@ fn serve_installed_plugin_asset<R: Runtime>(
             "Staged plugin asset not found: {relative} ({error})"
         )),
     }
+}
+
+fn should_bootstrap_plugin_worker(uri: &tauri::http::Uri, windows: bool) -> bool {
+    windows
+        && uri.query().is_some_and(|query| {
+            query
+                .split('&')
+                .any(|part| part == "__chemdraft_worker_bootstrap=windows")
+        })
+}
+
+fn installed_plugin_bootstrap() -> String {
+    // Static plugin imports would run before our prelude; dynamic import guarantees installation
+    // before even the plugin's transitive dependencies execute. The original URL owns import.meta.url.
+    concat!(
+        include_str!("../../src/plugins/workers/nestedModuleWorkerShim.js"),
+        "\ninstallNestedModuleWorkerShim('windows');\n",
+        "const entry = new URL(globalThis.location.href);\n",
+        "entry.searchParams.delete('__chemdraft_worker_bootstrap');\n",
+        "await import(entry.href);\n"
+    )
+    .to_string()
 }
 
 /// Reject anything that is not a plain, relative, non-empty path: absolute paths, `..`, drive
@@ -273,6 +308,29 @@ fn internal_error(message: &str) -> Response<Cow<'static, [u8]>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_bootstrap_is_explicit_and_windows_only() {
+        let uri = "http://tauri.localhost/installed-plugins/p/entry.js?v=1&__chemdraft_worker_bootstrap=windows"
+            .parse()
+            .expect("uri");
+        assert!(should_bootstrap_plugin_worker(&uri, true));
+        assert!(!should_bootstrap_plugin_worker(&uri, false));
+        for query in ["", "?v=1", "?__chemdraft_worker_bootstrap=macos"] {
+            let uri = format!("http://tauri.localhost/installed-plugins/p/entry.js{query}")
+                .parse()
+                .expect("uri");
+            assert!(!should_bootstrap_plugin_worker(&uri, true));
+        }
+        let source = installed_plugin_bootstrap();
+        assert!(
+            source
+                .find("installNestedModuleWorkerShim('windows');")
+                .unwrap()
+                < source.find("await import(entry.href);").unwrap()
+        );
+        assert!(source.contains("entry.searchParams.delete('__chemdraft_worker_bootstrap')"));
+    }
 
     #[test]
     fn request_path_is_origin_independent() {

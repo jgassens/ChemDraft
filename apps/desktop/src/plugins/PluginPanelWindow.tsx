@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
+import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
@@ -35,6 +37,17 @@ import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
  * window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
  */
 export function PluginPanelWindow({ panelId }: { panelId: string }) {
+  const dragPointerRef = useRef<number | undefined>(undefined);
+  const stopWindowDrag = (event: PointerEvent<HTMLElement>) => {
+    if (dragPointerRef.current !== event.pointerId) return;
+    dragPointerRef.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  // This webview belongs to the panel, including full-size figures portalled outside the aside.
+  useEffect(() => installPluginPanelInputFocus(document.body), []);
+  useEffect(() => installPluginPanelPointerFeed(panelId), [panelId]);
   // The Rust window route still calls this query field `panelId`, but the value is the reversible
   // composite window id produced by panelBridge. Decode it before filtering any messages.
   const identity = parsePluginPanelWindowId(panelId);
@@ -55,6 +68,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     if (!identity) {
       return;
     }
+    let disposed = false;
     const unlistenReports = listenForPluginPanelReports((next) => {
       if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
@@ -76,11 +90,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         current && current.revision > next.revision ? current : { revision: next.revision, stale: next.stale }
       );
     });
-    // Request only after both listeners exist: the response replays the report and its staleness
-    // verdict, so neither can be lost while a newly created webview is still mounting.
-    void requestPluginPanelReport(identity).catch(() => undefined);
+    // MainWindow caches the latest content before opening the window. Its first broadcast can
+    // precede this page, so announce readiness only after ALL native content subscriptions attach.
+    // The helpers' synchronous return owns cleanup, not readiness. Focus registration is separate.
+    void Promise.all([unlistenReports.ready, unlistenAnalysis.ready, unlistenStaleness.ready])
+      .then(() => {
+        if (!disposed) return requestPluginPanelReport(identity);
+      })
+      .catch(() => undefined);
 
     return () => {
+      disposed = true;
       unlistenReports();
       unlistenAnalysis();
       unlistenStaleness();
@@ -126,10 +146,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         className="palette-title plugin-panel-window-title"
         data-palette-title-drag-surface="true"
         onPointerDown={(event) => {
-          if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {
-            void startPaletteWindowDrag().catch(() => undefined);
+          if (event.button === 0 && event.isPrimary !== false
+            && !(event.target as HTMLElement).closest("button")) {
+            event.preventDefault();
+            dragPointerRef.current = event.pointerId;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            void startPaletteWindowDrag(event.clientX, event.clientY).catch(() => undefined);
           }
         }}
+        onPointerUp={stopWindowDrag}
+        onPointerCancel={stopWindowDrag}
+        onLostPointerCapture={stopWindowDrag}
       >
         {/* The window is undecorated (`decorations(false)` in lib.rs), so this stoplight-styled
             button IS the close control. It stays empty like the palette windows' own: a glyph

@@ -8,11 +8,8 @@ in progress rather than a changelog.
 
 # In flight
 
-On `codex/fix-export-and-session-safety`: preserve neutral radicals and condensed labels in
-exports, protect unsaved empty drawings before Windows updates, and reject reserved Windows
-batch filenames. Includes regression coverage and a pnpm-compatible license-test lookup.
-The proposed changes and verification limits are recorded in `docs/bug-fixes/export-session-safety.md`.
-Native macOS and Windows checks remain pending review/CI; no schema or dependency changes.
+Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
+`docs/shipped/README.md`.)
 
 ---
 

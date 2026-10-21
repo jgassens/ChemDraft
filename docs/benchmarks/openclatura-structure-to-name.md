@@ -1,5 +1,7 @@
 # OpenClatura structure→name benchmark (PLANS.md §8, step 1)
 
+> **Superseded 2026-10-21 by `structure-to-name-comparison.md`** (Orthonym 1.0.8, OpenClatura 0.4.3, this 0.2.0 run reproduced exactly). The harness moved to `tools/structure-to-name-benchmark/`, and the 8 "errors" below are corpus SMILES that RDKit cannot parse, not exceptions raised by OpenClatura.
+
 Run 2026-08-01 against **OpenClatura 0.2.0** (MIT, `lamalab-org/openclatura`), scored by round-tripping
 every name back through the vendored **OPSIN 2.9.0**. Harness in `tools/openclatura-benchmark/`.
 

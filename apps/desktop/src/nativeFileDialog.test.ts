@@ -28,6 +28,16 @@ describe("native file panels", () => {
     });
   }
 
+  it.each(["drawing.pdf", null])("returns focus to the initiating Export session after save returns %s", async selected => {
+    native.invoke.mockResolvedValue(undefined);
+    native.save.mockResolvedValue(selected);
+    await expect(save({ title: "Export PDF" }, "export-session")).resolves.toBe(selected);
+    expect(native.invoke).toHaveBeenLastCalledWith("suspend_toolset_windows", {
+      suspended: false, focusExportSessionId: "export-session"
+    });
+    expect(native.save).toHaveBeenCalledWith({ title: "Export PDF" });
+  });
+
   it("refuses a panel if suspension fails", async () => {
     native.invoke.mockRejectedValue(new Error("quitting"));
     await expect(open({})).rejects.toThrow("quitting");

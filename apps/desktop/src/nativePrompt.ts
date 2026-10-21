@@ -68,13 +68,20 @@ export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogC
 export async function nativePrompt(
   prompt: NativePromptOptions,
   fallback: NativePromptFallback = renderPromptFallback,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onShowing?: () => void | Promise<void>
 ): Promise<string> {
   const buttons = nativePromptButtons(prompt);
   const cancel = prompt.choices.find((choice) => choice.cancel)!;
   if (signal?.aborted) return cancel.id;
   if (provider) {
-    const result = await provider(prompt, fallback);
+    let usingFallback = false;
+    const response = provider(prompt, onShowing ? (options) => {
+      usingFallback = true;
+      return fallback(options);
+    } : fallback);
+    if (!usingFallback) await onShowing?.();
+    const result = await response;
     return prompt.choices.find((choice) => choice.id === result)?.id ?? cancel.id;
   }
   if (!isTauri()) return fallback(prompt);
@@ -85,7 +92,9 @@ export async function nativePrompt(
     if (signal?.aborted) return cancel.id;
     result = await withNativeUtilitySuspension(async () => {
       if (signal?.aborted) return cancel.label;
-      return message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+      const response = message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
+      await onShowing?.();
+      return response;
     });
   } catch (error) {
     console.error("Native prompt failed", error);
@@ -98,20 +107,25 @@ export async function nativePrompt(
 
 /** Existing React dialogs provide the fallback; their buttons resolve the same prompt promise.
  * `suspendSequence` keeps utilities hidden through the choice callback and any re-asks.
- * A native-only flow can supply a safe fallback instead of rendering a React dialog. */
+ * A native-only flow can supply a safe fallback instead of rendering a React dialog.
+ * `onShowing` runs after native invocation, or after React mounts the fallback. */
 export function useNativePrompt(
   prompt: NativePromptOptions,
   onChoice: (id: string) => void | boolean | Promise<void | boolean>,
   requestKey: string | number | undefined,
   suspendSequence = false,
-  promptFallback?: NativePromptFallback
+  promptFallback?: NativePromptFallback,
+  onShowing?: () => void | Promise<void>
 ): { visible: boolean; choose: (id: string) => void } {
-  const current = useRef({ prompt, onChoice });
-  current.current = { prompt, onChoice };
+  const current = useRef({ prompt, onChoice, onShowing });
+  current.current = { prompt, onChoice, onShowing };
   const resolve = useRef<((id: string) => void) | undefined>(undefined);
   const [visible, setVisible] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const suspension = useRef<Promise<(() => Promise<void>) | undefined>>(undefined);
+  useEffect(() => {
+    if (visible) void current.current.onShowing?.();
+  }, [visible, requestKey]);
   useEffect(() => {
     if (requestKey === undefined || !suspendSequence) { suspension.current = undefined; return; }
     let disposed = false;
@@ -138,7 +152,8 @@ export function useNativePrompt(
       resolve.current = done;
       setVisible(true);
     });
-    void nativePrompt(current.current.prompt, promptFallback ?? fallback, controller.signal).then(async (id) => {
+    void nativePrompt(current.current.prompt, promptFallback ?? fallback, controller.signal,
+      () => disposed ? undefined : current.current.onShowing?.()).then(async (id) => {
       if (disposed) return;
       resolve.current = undefined;
       // Wait for React to publish Save's status before asking again with its failure detail.

@@ -1,4 +1,4 @@
-# Native dialog host (stage 1)
+# Native dialog host (stages 1 and 2)
 
 `page.setSizeCustom` opens a modeless, movable, document-owned native window on macOS and Windows.
 The title and form identify the originating drawing. Drawing and floating toolbars remain usable.
@@ -18,7 +18,8 @@ failure reports an error in the document status; it never creates an in-page des
   only the form's keyboard behavior takes a platform parameter.
 - `dialogTransport.ts`: narrow IPC channel adapter; both owner and host install their channel
   callbacks before invoking creation/bootstrap. No dialog protocol event-bus subscriptions exist.
-- `DialogWindow.tsx` and `PageSizeForm.tsx`: snapshot rendering and local form drafts only.
+- `DialogWindow.tsx`, `PageSizeForm.tsx`, and `ExportForm.tsx`: trusted snapshot rendering and local
+  form drafts only. Export options have a strict shared TypeScript/Rust shape.
 - `App.tsx`: dialog routing precedes other routes. All window components are lazy imports, so the
   dialog entry does not initialize MainWindow, chemistry engines, or the plugin runtime.
 - `src-tauri/src/dialog_windows.rs`: registration, validation, native construction/reveal/ownership,
@@ -29,10 +30,38 @@ failure reports an error in the document status; it never creates an in-page des
 ## Transport and lifecycle
 
 Every message has `protocolVersion`, `ownerWindowId`, `documentTabId`, `dialogKind`, `sessionId`,
-`requestId`, and `snapshotRevision`. Incoming payloads are limited to 16 KiB. Every owner and dialog
-channel delivery is limited to 4096 bytes of final serialized JSON, including the delivery envelope
+`requestId`, and `snapshotRevision`. Incoming payloads are limited to 16 KiB. Ordinary owner and dialog
+channel deliveries are limited to 4096 bytes of final serialized JSON, including the delivery envelope
 and escape expansion. This keeps deliveries below Tauri 2.11.2's 8192-byte direct-delivery threshold:
 larger JSON enters an app-wide fetch queue that does not authenticate the requesting webview.
+Export previews use a separate, bounded 5 MiB result containing an inline image or PDF. Rust
+packs that result into ordered private-channel chunks of at most 7168 JSON-escaped UTF-8 bytes,
+keeping each complete serialized delivery below 8192 bytes. A 256 KiB chunk would enter Tauri's
+app-wide unauthenticated fetch queue; that is why previews retain smaller direct-channel chunks.
+The host reassembles only one bounded preview at a time;
+malformed, incomplete, superseded and closed-session previews cannot replace the current preview.
+
+**Export preview and size presets** is a Preferences checkbox, off by default. Opening Export
+reads the saved localStorage preference. Preferences persists and broadcasts changes; same-origin
+storage notifications update open Export windows without giving draft windows generic native event
+permissions. Main also subscribes to the native preference broadcast. Off uses the original form,
+including Scale, Max dimension, JPEG quality slider and destination suggestion, and does no preview
+requests, frame computation, rendering or preview IPC. Turning it off clears optional sizing drafts,
+cancels outstanding preview requests and discards queued frames.
+The owner also drops presentation options on export while its preference is off, so a
+dialog awaiting a storage notification cannot export stale sizing settings.
+The preference never enters the export engine: equal export options produce equal file bytes.
+Preview requests do not reserve an export or grant file access. Rendering remains in the owner
+window using the same pending-edit flush snapshot as the final export, debounced 250 ms by the
+shared form and capped at 800 pixels on the longest side. Drawing edits
+send frame revisions that refresh the preview while preserving the user's options. Frame updates
+wait through a pending destination picker and resume afterward; the host retains a frame even if
+it arrives before the picker receipt. Superseded form requests abort their local wait and ignore
+stale render completions. A native rasterization already started cannot be interrupted. Oversized previews report a
+specific error; the final export remains a separate explicit action.
+PDF previews show the PDF writer's shared SVG page layout in an image, labelled
+“Preview of the PDF page layout”, with PDF page-guide settings and a white background.
+They require no embedded PDF viewer in WKWebView or WebView2; final PDF generation is unchanged.
 Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
 is rejected, and the complete delivery is measured again after replacement. Dimensions must be finite,
 positive, at most 100000, in `inch`, `mm`, or `css-px`. Unknown kinds, fields, owners, stale sessions,
@@ -57,9 +86,12 @@ successful receipts keep Apply disabled until native destruction. Duplicate IDs 
 receipts without another mutation. Pending openings are registered before the first await, so
 tab close, document replacement and dispose cancel even a subscription still in flight.
 A startup missing ready fails after 10 seconds with no automatic retry.
-An action missing its matching receipt reports an error after 10 seconds and leaves Apply disabled
-until a failure receipt arrives or the user closes the native title bar; the operation is never
-retried automatically. While a terminal action is pending, another form action is ignored.
+The owner immediately publishes an `accepted` result after validating and reserving an action,
+before awaiting any flush, preparation, picker or write. The dialog's 10-second action deadline
+covers only this acceptance. After acceptance, completion has no deadline: busy state remains
+and Cancel stays available, even during a long picker or write. Progress is informational and
+does not refresh the deadline. Missing acceptance reports an error after 10 seconds without
+retrying or releasing the reservation. While an action is pending, only cancellation is allowed.
 
 Construction is async on a worker, serialized through `lock_window_creation()`, and refused after
 quit begins. Builds are hidden, `focused(false)`, focusable, decorated, shadowed, and skip the
@@ -114,11 +146,89 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-Export, plugin prompts, report readers, plugin manager, toolbar customization and colour editors
+Plugin prompts, report readers, plugin manager, toolbar customization and colour editors
 are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
 coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
 Page Size has no such lease. Other kinds will need their own busy/progress contracts,
 snapshot revisions and cancellation semantics before they can use the host.
+
+## Stage 2: modeless Export
+
+`export.open` opens the second registered kind, `export`, labelled `dialog-main-export-<slot>`.
+It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
+retain a session for the same tab. Export starts at 520 × 620 logical pixels, has a 420 × 360
+minimum, resizes with its form body scrolling and its action footer always visible, and cannot minimize or maximize. Its ownership,
+floating level, macOS unparented/hides-on-deactivate behavior, first centring, per-kind position
+persistence, and utility suspension are the same shared paths as Page Size. No AppKit child
+relationship or new global window privilege is introduced. Browser builds retain an in-page
+surface containing the very same Export form and validation.
+
+The trusted Export body loads lazily and sends ready only after its form commits and focuses the
+filename field; Page Size retains its existing commit-ready path. The snapshot contains only the
+originating drawing's title and small initial options. Typed actions
+are `chooseDestination`, `export` (each carrying validated options), and `cancel`. MainWindow owns
+all rendering, pending-edit flushes, current tab documents, file panels, writes, last-directory
+updates and status. Export snapshots the originating tab's document when Export is pressed,
+including edits made after opening; switching tabs does not redirect it. Tab close or document
+replacement settles the session before installing a new document. Async rendering/picker completion
+checks that session again before writing. A write already handed to the filesystem cannot be undone
+by closing its window.
+
+The save panel runs in the document window through `nativeFileDialog.save` and the shared utility
+suspension. Thus its filesystem grant belongs to the writer. The host receives no file-dialog or
+filesystem permission. Both platform branches recognize Export labels as suspended utilities;
+only live sessions return, in the captured stacking order and at their retained positions.
+MainWindow records the exact granted path, format and filename. Name/format changes clear the
+displayed destination; even a stale/forged destination requires another panel unless all three
+values match the owner-held grant. The writer uses the exact granted path, without appending an
+extension after the panel returns. Overlong path receipts fail visibly before a write.
+
+Results are `accepted`, `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
+or warning notice data. Main returns preparation/picker/write progress without completing the
+request receipt or releasing its reservation. Failed operations and cancelled
+panels release the reservation for an explicit retry. Completed exports keep Export disabled and
+show success and warning details inside the dialog until Close/Escape/Cmd-or-Ctrl+W/title-bar close.
+The original export functions, option mapping, PDF metadata generation, and rasterizer input are
+unchanged. Long warning details are explicitly marked as abbreviated; encoded notices are bounded
+before delivery, and Rust still enforces the complete 4096-byte serialized delivery cap.
+
+Request receipts cover both picker and export actions. Duplicate IDs replay the earlier receipt;
+distinct submissions while pending or after success cannot write again. Only cancel is allowed
+after the successful export receipt, and `export.open` can focus that retained receipt window.
+Cancel also bypasses pending-action reservations in the renderer, coordinator and Rust host.
+It settles the session immediately: preparation and picker completions cannot start a write,
+and a write already started may finish but cannot publish progress, errors or success to the
+closed dialog. The write reservation remains in force while cancellation is delivered.
+Warning abbreviation includes its suffix in both the 1024-character notice limit and the
+1000-byte JSON-encoded notice budget, leaving room for the complete 4096-byte channel delivery.
+The dialog's synchronous pending guard prevents same-turn double clicks before React commits busy
+state. First-field focus, IME-safe Enter, Escape, platform-specific close shortcuts and Tab wrapping
+live in the shared Export form. Undo/Redo and Select All retain the host's local-field routing.
+
+Stage 2 regression coverage includes protocol/option validation, same-tab independent kinds,
+receipt deduplication, visible failures, origin edits/inactive tabs/close/replacement, exact granted
+paths, changed-name re-picking, both-platform picker suspension, keyboard/IME behavior, per-kind Rust
+spec/placement, and export parity (real SVG/CDXML/PDF bytes; mocked native raster bytes with identical
+SVG and raster options). Existing export fixtures remain unchanged. Hands-on acceptance is the
+standing checklist's **Native Export** section on both platforms. The build stamp is deliberately
+unchanged for the orchestrator to handle during integration.
+
+Stage 2 worker verification: root `pnpm -s lint`, the required dialog command with
+`--configLoader runner` (9 files, 52 tests), shell/tab/capability tests (3 files, 392 tests), the
+web build with runner config loading, Rust formatting, and `git diff --check` passed. No install,
+dependency changes or build-stamp change was made; missing package dependencies used the authorized
+read-only source symlinks. The broader desktop/export run passed 3839 tests and skipped two but
+initially failed three source assertions tied to the old form/allowlist (updated and passed in the
+focused rerun), plus the existing `abbreviationChemistry` RDKit loader failure through the external
+dependency symlinks. Export-engine fixtures were not changed.
+
+macOS clippy and Rust tests both stopped in `tauri-plugin-sparkle-updater`'s build script because
+this worktree lacks `Sparkle.framework`, before compiling ChemDraft. No framework workaround was
+applied. Native launch was not attempted because `run-app` would prepare that missing framework.
+Windows menu-churn smoke reported its macOS-host skip. Windows native compilation and all real
+window checks on **both** platforms remain unverified. Recommended next task: run native
+fmt/clippy/tests with the normal framework available, then the standing Native Export checklist on
+macOS and Windows, especially the save-panel round trip, ownership, focus, stacking and mixed DPI.
 
 ## Handoff verification
 
@@ -223,3 +333,11 @@ download test's sandbox-denied loopback bind. Excluding only
 all remaining tests and binary/doc targets. Temporary Sparkle links and Cargo output were removed.
 Windows code and `CURRENT_BUILD_STAMP` are unchanged. Windows native compilation and both platforms'
 hands-on window checks remain unverified; rerun the full Rust suite outside the sandbox.
+
+Export handles Escape and Cmd/Ctrl+W on document keydown, including when focus has fallen to
+body while fields are disabled. A successful export focuses Close. The shared browser form uses
+the same scrolling-body/pinned-footer layout. Save-panel suspension release carries the originating
+Export session ID; Rust restores focus only to that still-live, visible, ready session, after
+restoration, while ChemDraft remains foreground and no other native box is suspending utilities.
+Tauri makes it key on macOS and activates it on Windows. Closed or replaced sessions cannot receive
+focus, and returning from another application never activates ChemDraft.

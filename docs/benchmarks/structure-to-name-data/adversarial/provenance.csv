@@ -1,0 +1,13 @@
+namer,tier,opsin,gate_outcome,our outcome,n
+orthonym-1.0.8-default,pin_verified,verified,self_consistency_verified,round-trip,19
+orthonym-1.0.8-default,abstain,n/a,suppressed,declined,4
+orthonym-1.0.8-default,pin_unverified,verified_constitution_only,self_consistency_constitution_only,name-unparseable,1
+orthonym-1.0.8-default,pin_verified,verified,self_consistency_verified,MISNAMED,1
+orthonym-1.0.8-default,pin_verified,verified,self_consistency_verified,name-unparseable,1
+orthonym-1.0.8-valid,pin_verified,verified,self_consistency_verified,round-trip,17
+orthonym-1.0.8-valid,abstain,n/a,suppressed,declined,2
+orthonym-1.0.8-valid,pin_verified,verified,full_key_round_trip_verified,round-trip,2
+orthonym-1.0.8-valid,systematic_verified,verified,full_key_round_trip_verified,round-trip,2
+orthonym-1.0.8-valid,pin_verified,verified,self_consistency_verified,MISNAMED,1
+orthonym-1.0.8-valid,pin_verified,verified,self_consistency_verified,name-unparseable,1
+orthonym-1.0.8-valid,systematic_verified,verified,self_consistency_verified,round-trip,1

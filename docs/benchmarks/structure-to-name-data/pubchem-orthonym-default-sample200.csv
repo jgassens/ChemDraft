@@ -1,0 +1,201 @@
+id,canonical_input,inchikey,pubchem_status,namer_name,pubchem_name,exact,case_insensitive,pubchem_name_via_opsin
+1,CC1=CC(=O)C=CC1=O,VTWDKFNVVLAELH-UHFFFAOYSA-N,found,"2-methylcyclohexa-2,5-diene-1,4-dione","2-methylcyclohexa-2,5-diene-1,4-dione",True,True,round-trip
+22,CCOC(=O)c1cnc2nc(N)ccc2c1O,CLMIRNDQXLEBHS-UHFFFAOYSA-N,found-several-names,"ethyl 7-amino-4-hydroxy-1,8-naphthyridine-3-carboxylate","ethyl 7-amino-4-oxo-8H-1,8-naphthyridine-3-carboxylate",False,False,MISNAMED
+29,Cc1ccc(C(=O)c2ccc(Cl)cc2)cc1,MRIBPIAKCVDXLY-UHFFFAOYSA-N,found,(4-chlorophenyl)(4-methylphenyl)methanone,(4-chlorophenyl)-(4-methylphenyl)methanone,False,False,round-trip
+57,Cc1nc(O)nc2c1CCCC2,SBWKGXYIVNLNHY-UHFFFAOYSA-N,found,"4-methyl-5,6,7,8-tetrahydroquinazolin-2-ol","4-methyl-5,6,7,8-tetrahydro-3H-quinazolin-2-one",False,False,MISNAMED
+69,N#CC(Cc1ccccc1)(c1ccccc1)c1ccccc1,NEBFPWDVSIBSNS-UHFFFAOYSA-N,found,"2,2,3-triphenylpropanenitrile","2,2,3-triphenylpropanenitrile",True,True,round-trip
+81,Nc1ccc(Cl)nc1,QAJYCQZQLVENRZ-UHFFFAOYSA-N,found,6-chloropyridin-3-amine,6-chloropyridin-3-amine,True,True,round-trip
+96,COc1ccc(CC#N)cc1,PACGLQCRGWFBJH-UHFFFAOYSA-N,found,(4-methoxyphenyl)acetonitrile,2-(4-methoxyphenyl)acetonitrile,False,False,round-trip
+160,O=C(O)C(=Cc1cc(Br)c(O)c(Br)c1)c1ccccc1,LPTBYLWJALFESZ-UHFFFAOYSA-N,found,"3-(3,5-dibromo-4-hydroxyphenyl)-2-phenylprop-2-enoic acid","3-(3,5-dibromo-4-hydroxyphenyl)-2-phenylprop-2-enoic acid",True,True,round-trip
+242,COC(=O)CCCCCCCCCCS,ONZUTDDACQHPTP-UHFFFAOYSA-N,found,methyl 11-sulfanylundecanoate,methyl 11-sulfanylundecanoate,True,True,round-trip
+251,Nc1ncnc(N)n1,VZXTWGWHSMCWGA-UHFFFAOYSA-N,found,"1,3,5-triazine-2,4-diamine","1,3,5-triazine-2,4-diamine",True,True,round-trip
+264,NNC(=O)C(=O)NN,SWRGUMCEJHQWEE-UHFFFAOYSA-N,found,oxalohydrazide,ethanedihydrazide,False,False,round-trip
+283,Nc1cc(N)cc([N+](=O)[O-])c1,DFWXYHZQNLIBLY-UHFFFAOYSA-N,found,"5-nitrobenzene-1,3-diamine","5-nitrobenzene-1,3-diamine",True,True,round-trip
+298,N#CC(=Cc1ccccc1)C(=O)O,CDUQMGQIHYISOP-UHFFFAOYSA-N,found,2-cyano-3-phenylprop-2-enoic acid,2-cyano-3-phenylprop-2-enoic acid,True,True,round-trip
+303,O=c1[nH][nH]c2c(Cl)cccc12,RTXHRBDLTUNMCT-UHFFFAOYSA-N,found,"7-chloro-1,2-dihydro-3H-indazol-3-one","7-chloro-1,2-dihydroindazol-3-one",False,False,round-trip
+309,Cc1ccccc1NNc1ccccc1C,OVXBYJMCICSXFP-UHFFFAOYSA-N,found,"1,2-bis(2-methylphenyl)hydrazine","1,2-bis(2-methylphenyl)hydrazine",True,True,round-trip
+315,CC(=O)N(c1ccccc1)C(C(=O)c1ccccc1)c1ccccc1,UGHPGBNFXXYGSP-UHFFFAOYSA-N,found,"N-(2-oxo-1,2-diphenylethyl)-N-phenylacetamide","N-(2-oxo-1,2-diphenylethyl)-N-phenylacetamide",True,True,round-trip
+348,CC(=O)CCc1ccc(Cl)cc1,NHWRHEOCEWDYPJ-UHFFFAOYSA-N,found,4-(4-chlorophenyl)butan-2-one,4-(4-chlorophenyl)butan-2-one,True,True,round-trip
+379,O=C(O)CSc1ccccc1C(=O)O,GMBZSYUPMWCDGK-UHFFFAOYSA-N,found,2-[(carboxymethyl)sulfanyl]benzoic acid,2-(carboxymethylsulfanyl)benzoic acid,False,False,round-trip
+404,O=C(O)C1(C(=O)O)CCOCC1,LAHAPBJSVSVFGR-UHFFFAOYSA-N,found,"oxane-4,4-dicarboxylic acid","oxane-4,4-dicarboxylic acid",True,True,round-trip
+423,OCCOc1ccc(Cl)cc1Cl,PCCMNBRZMKANQD-UHFFFAOYSA-N,found,"2-(2,4-dichlorophenoxy)ethan-1-ol","2-(2,4-dichlorophenoxy)ethanol",False,False,round-trip
+475,Cc1cc2ccccc2cn1,FVVXWRGARUACNW-UHFFFAOYSA-N,found,3-methylisoquinoline,3-methylisoquinoline,True,True,round-trip
+479,O=C1NC(=O)C(Cc2ccccc2)(c2cccnc2)N1,PCPFITWOBPHEGE-UHFFFAOYSA-N,found,"5-benzyl-5-(pyridin-3-yl)imidazolidine-2,4-dione","5-benzyl-5-pyridin-3-ylimidazolidine-2,4-dione",False,False,round-trip
+506,N#CC(c1ccccc1)C1CCCCC1,IZSWBXTYTALSOZ-UHFFFAOYSA-N,found,cyclohexyl(phenyl)acetonitrile,2-cyclohexyl-2-phenylacetonitrile,False,False,round-trip
+507,CC(C)C(C)(O)c1ccccc1,KZVSJCRPDWUPEP-UHFFFAOYSA-N,found,3-methyl-2-phenylbutan-2-ol,3-methyl-2-phenylbutan-2-ol,True,True,round-trip
+532,N#CC(C#N)=Cc1ccc(Br)cc1,MYMFYWGVTXOLRG-UHFFFAOYSA-N,found,[(4-bromophenyl)methylidene]propanedinitrile,2-[(4-bromophenyl)methylidene]propanedinitrile,False,False,round-trip
+569,CC(C)CC(=O)OC(C)CC(C)C,NZEOVKAVEXLHRW-UHFFFAOYSA-N,found,4-methylpentan-2-yl 3-methylbutanoate,4-methylpentan-2-yl 3-methylbutanoate,True,True,round-trip
+582,CCC(=O)c1ccc([N+](=O)[O-])cc1,QHTSEJJUUBOESF-UHFFFAOYSA-N,found,1-(4-nitrophenyl)propan-1-one,1-(4-nitrophenyl)propan-1-one,True,True,round-trip
+584,O=C(C=Cc1ccccc1Cl)C=Cc1ccccc1Cl,OZBIBYIDJNVAOQ-UHFFFAOYSA-N,found,"1,5-bis(2-chlorophenyl)penta-1,4-dien-3-one","1,5-bis(2-chlorophenyl)penta-1,4-dien-3-one",True,True,round-trip
+595,CCCCCCCC(=O)CCCCCCC,PQYGSSYFJIJDFK-UHFFFAOYSA-N,found,pentadecan-8-one,pentadecan-8-one,True,True,round-trip
+612,Cc1ccc(C(=O)CCCC(=O)c2ccc(C)cc2)cc1,HTENBIWOWMNNNY-UHFFFAOYSA-N,found,"1,5-bis(4-methylphenyl)pentane-1,5-dione","1,5-bis(4-methylphenyl)pentane-1,5-dione",True,True,round-trip
+617,CC(=O)c1ccc(C)c([N+](=O)[O-])c1,YRBBMDOBWRUMEZ-UHFFFAOYSA-N,found,1-(4-methyl-3-nitrophenyl)ethan-1-one,1-(4-methyl-3-nitrophenyl)ethanone,False,False,round-trip
+636,OC(CBr)CBr,KIHQZLPHVZKELA-UHFFFAOYSA-N,found,"1,3-dibromopropan-2-ol","1,3-dibromopropan-2-ol",True,True,round-trip
+655,CC1C=CC(=O)O1,BGLUXFNVVSVEET-UHFFFAOYSA-N,found,5-methylfuran-2(5H)-one,2-methyl-2H-furan-5-one,False,False,round-trip
+664,COc1ccc(CCC(=NO)c2ccccc2)cc1,DTNGJVCRPGSBNR-UHFFFAOYSA-N,found,N-hydroxy-3-(4-methoxyphenyl)-1-phenylpropan-1-imine,N-[3-(4-methoxyphenyl)-1-phenylpropylidene]hydroxylamine,False,False,round-trip
+743,Nc1nc(N)c2nc[nH]c2n1,MSSXOMSJDRHRMC-UHFFFAOYSA-N,found,"9H-purine-2,6-diamine","7H-purine-2,6-diamine",False,False,MISNAMED
+798,O=C(C=Cc1ccccc1)c1ccccn1,UYYLCENCUQKANA-UHFFFAOYSA-N,found,3-phenyl-1-(pyridin-2-yl)prop-2-en-1-one,3-phenyl-1-pyridin-2-ylprop-2-en-1-one,False,False,round-trip
+838,c1ccn2nnnc2c1,BPDSGGQFORKTMY-UHFFFAOYSA-N,found,"[1,2,3,4]tetrazolo[1,5-a]pyridine","tetrazolo[1,5-a]pyridine",False,False,round-trip
+878,CC(CC(c1ccccc1)c1ccccc1)[N+](C)(C)C,DUMZYDKDUCHVRO-UHFFFAOYSA-N,found,"N,N,N-trimethyl-4,4-diphenylbutan-2-aminium","4,4-diphenylbutan-2-yl(trimethyl)azanium",False,False,round-trip
+891,CC(C)(C)COC(=O)C(C)(C)C,KEVRVUAKQLMNFS-UHFFFAOYSA-N,found,"2,2-dimethylpropyl 2,2-dimethylpropanoate","2,2-dimethylpropyl 2,2-dimethylpropanoate",True,True,round-trip
+893,CC(C)(C)COC(=O)C(C)(C)CC(C)(C)C,UQTPQZDQOHOXKU-UHFFFAOYSA-N,found,"2,2-dimethylpropyl 2,2,4,4-tetramethylpentanoate","2,2-dimethylpropyl 2,2,4,4-tetramethylpentanoate",True,True,round-trip
+898,CCCCCC(C)(C)O,ACBMYYVZWKYLIP-UHFFFAOYSA-N,found,2-methylheptan-2-ol,2-methylheptan-2-ol,True,True,round-trip
+911,CC=C(C)c1ccccc1,UGUYQBMBIJFNRM-UHFFFAOYSA-N,found,(but-2-en-2-yl)benzene,but-2-en-2-ylbenzene,False,False,round-trip
+916,CCCC(=O)CC(C)(C)C,JUQWYDYXUFYJNR-UHFFFAOYSA-N,found,"2,2-dimethylheptan-4-one","2,2-dimethylheptan-4-one",True,True,round-trip
+970,CCCCc1ccncc1,LWMDPZVQAMQFOC-UHFFFAOYSA-N,found,4-butylpyridine,4-butylpyridine,True,True,round-trip
+985,Nc1cc(Cl)ccc1SSc1ccc(Cl)cc1N,XMIKJNSWZZMXKK-UHFFFAOYSA-N,found,"2,2'-disulfanediylbis(5-chloroaniline)",2-[(2-amino-4-chlorophenyl)disulfanyl]-5-chloroaniline,False,False,round-trip
+1031,O=C1OC(CO)C(O)C1O,CUOKHACJLGPRHD-UHFFFAOYSA-N,found,"3,4-dihydroxy-5-(hydroxymethyl)oxolan-2-one","3,4-dihydroxy-5-(hydroxymethyl)oxolan-2-one",True,True,round-trip
+1054,CC(C)(C)C(=O)C(O)C(C)(C)C,YMRDPCUYKKPMFC-UHFFFAOYSA-N,found,"4-hydroxy-2,2,5,5-tetramethylhexan-3-one","4-hydroxy-2,2,5,5-tetramethylhexan-3-one",True,True,round-trip
+1065,CNC(C)C,XHFGWHUWQXTGAT-UHFFFAOYSA-N,found,N-methylpropan-2-amine,N-methylpropan-2-amine,True,True,round-trip
+1175,CCOC(=O)C(=O)C1CCCCC1=O,SIQOFNOENHOIFT-UHFFFAOYSA-N,found,ethyl oxo(2-oxocyclohexyl)acetate,ethyl 2-oxo-2-(2-oxocyclohexyl)acetate,False,False,round-trip
+1176,COc1cc(Br)c(NC(C)=O)cc1OC,YOURKSABCNNJOV-UHFFFAOYSA-N,found,"N-(2-bromo-4,5-dimethoxyphenyl)acetamide","N-(2-bromo-4,5-dimethoxyphenyl)acetamide",True,True,round-trip
+1190,CCCCCCCCCCSC#N,SSHHEEVAWJSEPF-UHFFFAOYSA-N,found,decyl thiocyanate,decyl thiocyanate,True,True,round-trip
+1216,O=C(CO)C(O)C(O)C(O)C(O)CO,HSNZZMHEPUFJNZ-UHFFFAOYSA-N,found,"1,3,4,5,6,7-hexahydroxyheptan-2-one","1,3,4,5,6,7-hexahydroxyheptan-2-one",True,True,round-trip
+1234,Cc1c2ccccc2nc2ccccc12,FLDRLXJNISEWNZ-UHFFFAOYSA-N,found,9-methylacridine,9-methylacridine,True,True,round-trip
+1240,Cc1cc(C)c(Br)c(C)c1C,OYAFABIVQFUGMR-UHFFFAOYSA-N,found,"2-bromo-1,3,4,5-tetramethylbenzene","2-bromo-1,3,4,5-tetramethylbenzene",True,True,round-trip
+1245,c1ccc2c(c1)oc1ccccc12,TXCDCPKCNAJMEE-UHFFFAOYSA-N,found,"dibenzo[b,d]furan",dibenzofuran,False,False,round-trip
+1254,CCCCCCC(O)CC=CCCCCCCCC(=O)OC,XKGDWZQXVZSXAO-UHFFFAOYSA-N,found,methyl 12-hydroxyoctadec-9-enoate,methyl 12-hydroxyoctadec-9-enoate,True,True,round-trip
+1267,Oc1ccc(-c2ccccc2)cc1O,QDNPCYCBQFHNJC-UHFFFAOYSA-N,found,"[1,1'-biphenyl]-3,4-diol","4-phenylbenzene-1,2-diol",False,False,round-trip
+1274,CC=CC(O)c1ccccc1,RMTAYCVXTPSMJQ-UHFFFAOYSA-N,found,1-phenylbut-2-en-1-ol,1-phenylbut-2-en-1-ol,True,True,round-trip
+1331,CCCCOC(=O)c1ccc(O)c(OC)c1,TUOSEEPBHUCCAO-UHFFFAOYSA-N,found,butyl 4-hydroxy-3-methoxybenzoate,butyl 4-hydroxy-3-methoxybenzoate,True,True,round-trip
+1356,OCC1OCOC2COCOC12,YSFJEZDRDFWOKZ-UHFFFAOYSA-N,found,"(tetrahydro-2H,6H-[1,3]dioxino[5,4-d][1,3]dioxin-4-yl)methanol","4,4a,8,8a-tetrahydro-[1,3]dioxino[5,4-d][1,3]dioxin-4-ylmethanol",False,False,round-trip
+1376,OC1C2COC(O2)C(O)C1O,TWNIBLMWSKIRAT-UHFFFAOYSA-N,found,"6,8-dioxabicyclo[3.2.1]octane-2,3,4-triol","6,8-dioxabicyclo[3.2.1]octane-2,3,4-triol",True,True,round-trip
+1414,N#Cc1cnn(-c2ccccc2)c1N,MAKQREKUUHPPIS-UHFFFAOYSA-N,found,5-amino-1-phenyl-1H-pyrazole-4-carbonitrile,5-amino-1-phenylpyrazole-4-carbonitrile,False,False,round-trip
+1479,CCCC(=O)C(O)CCC,BVEYJWQCMOVMAR-UHFFFAOYSA-N,found,5-hydroxyoctan-4-one,5-hydroxyoctan-4-one,True,True,round-trip
+1488,Cc1cccc(N)n1,QUXLCYFNVNNRBE-UHFFFAOYSA-N,found,6-methylpyridin-2-amine,6-methylpyridin-2-amine,True,True,round-trip
+1494,Cc1ccc(N)cc1N,VOZKAJLKRJDJLL-UHFFFAOYSA-N,found,"4-methylbenzene-1,3-diamine","4-methylbenzene-1,3-diamine",True,True,round-trip
+1504,C1CCC(NC2CCCC2)CC1,HTPYKHDZMIJYOU-UHFFFAOYSA-N,found,N-cyclopentylcyclohexanamine,N-cyclopentylcyclohexanamine,True,True,round-trip
+1511,CCCCOC(=O)c1ccccc1O,YFDUWSBGVPBWKF-UHFFFAOYSA-N,found,butyl 2-hydroxybenzoate,butyl 2-hydroxybenzoate,True,True,round-trip
+1542,O=[N+]([O-])c1c(O)cccc1O,ZLCPKMIJYMHZMJ-UHFFFAOYSA-N,found,"2-nitrobenzene-1,3-diol","2-nitrobenzene-1,3-diol",True,True,round-trip
+1574,CCOC(=O)c1cnc(O)nc1N,GGHDCMZITFQXRE-UHFFFAOYSA-N,found,ethyl 4-amino-2-hydroxypyrimidine-5-carboxylate,ethyl 6-amino-2-oxo-1H-pyrimidine-5-carboxylate,False,False,MISNAMED
+1588,Cc1ccnc(O)n1,AHHHDTLXONDKQF-UHFFFAOYSA-N,found,4-methylpyrimidin-2-ol,6-methyl-1H-pyrimidin-2-one,False,False,MISNAMED
+1605,COc1ccc(C=NNC(N)=O)cc1OC,PZGBQOUDZACWFL-UHFFFAOYSA-N,found,"2-[(3,4-dimethoxyphenyl)methylidene]hydrazine-1-carboxamide","[(3,4-dimethoxyphenyl)methylideneamino]urea",False,False,round-trip
+1648,CSc1nc(C)nc2c1cnn2-c1ccccc1,YOLRAHGHQKZCNT-UHFFFAOYSA-N,found,"6-methyl-4-(methylsulfanyl)-1-phenyl-1H-pyrazolo[3,4-d]pyrimidine","6-methyl-4-methylsulfanyl-1-phenylpyrazolo[5,4-d]pyrimidine",False,False,round-trip
+1649,CCSc1nc(C)nc2c1cnn2-c1ccccc1,YGUMVRLQJBDBRB-UHFFFAOYSA-N,found,"4-(ethylsulfanyl)-6-methyl-1-phenyl-1H-pyrazolo[3,4-d]pyrimidine","4-ethylsulfanyl-6-methyl-1-phenylpyrazolo[5,4-d]pyrimidine",False,False,round-trip
+1704,O=S(=O)(O)c1ccc2ccc(O)cc2c1,MVEOHWRUBFWKJY-UHFFFAOYSA-N,found,7-hydroxynaphthalene-2-sulfonic acid,7-hydroxynaphthalene-2-sulfonic acid,True,True,round-trip
+1713,CCCCOC(=O)CI,MPLKDWCVBIOQRN-UHFFFAOYSA-N,found,butyl iodoacetate,butyl 2-iodoacetate,False,False,round-trip
+1762,O=C(O)C=Cc1c(Cl)cccc1Cl,OIPVGRCXMFBNAN-UHFFFAOYSA-N,found,"3-(2,6-dichlorophenyl)prop-2-enoic acid","3-(2,6-dichlorophenyl)prop-2-enoic acid",True,True,round-trip
+1854,c1ccc(-c2nc3ccccc3s2)cc1,XBHOUXSGHYZCNH-UHFFFAOYSA-N,found,"2-phenyl-1,3-benzothiazole","2-phenyl-1,3-benzothiazole",True,True,round-trip
+1876,CC(=O)COc1ccccc1,QWAVNXZAQASOML-UHFFFAOYSA-N,found,1-phenoxypropan-2-one,1-phenoxypropan-2-one,True,True,round-trip
+1885,O=C(O)c1cc(-c2ccccc2)ccc1O,LGERKUYJCZOBTB-UHFFFAOYSA-N,found,"4-hydroxy[1,1'-biphenyl]-3-carboxylic acid",2-hydroxy-5-phenylbenzoic acid,False,False,round-trip
+1905,O=C1CC=NC(=S)N1,WVEPMFMDHQBYNO-UHFFFAOYSA-N,found-several-names,"2-sulfanylidene-2,3-dihydropyrimidin-4(5H)-one",2-sulfanyl-5H-pyrimidin-4-one,False,False,MISNAMED
+1907,CC(C)c1ccc(C(=O)O)cc1,CKMXAIVXVKGGFM-UHFFFAOYSA-N,found,4-(propan-2-yl)benzoic acid,4-propan-2-ylbenzoic acid,False,False,round-trip
+1924,NC(=O)c1cc2ccccc2c2ccccc12,RKCQJTTZAYJPKC-UHFFFAOYSA-N,found,phenanthrene-9-carboxamide,phenanthrene-9-carboxamide,True,True,round-trip
+1973,OC(c1ccccc1)(c1ccccc1)C(O)(c1ccccc1)c1ccccc1,MFEWNFVBWPABCX-UHFFFAOYSA-N,found,"1,1,2,2-tetraphenylethane-1,2-diol","1,1,2,2-tetraphenylethane-1,2-diol",True,True,round-trip
+1976,OCC(O)C(O)C(O)C(O)C(O)CO,OXQKEKGBFMQTML-UHFFFAOYSA-N,found,"heptane-1,2,3,4,5,6,7-heptol","heptane-1,2,3,4,5,6,7-heptol",True,True,round-trip
+1983,O=C(C=CC(=O)c1ccccc1)c1ccccc1,WYCXGQSQHAXLPK-UHFFFAOYSA-N,found,"1,4-diphenylbut-2-ene-1,4-dione","1,4-diphenylbut-2-ene-1,4-dione",True,True,round-trip
+1990,O=C(C=Cc1cccc(Cl)c1)c1ccccc1,XBFMSIZYORSEPA-UHFFFAOYSA-N,found,3-(3-chlorophenyl)-1-phenylprop-2-en-1-one,3-(3-chlorophenyl)-1-phenylprop-2-en-1-one,True,True,round-trip
+2094,c1cc[c]([Sn]([c]2ccccc2)([c]2ccccc2)[c]2ccccc2)cc1,CRHIAMBJMSSNNM-UHFFFAOYSA-N,found,tetraphenylstannane,tetraphenylstannane,True,True,round-trip
+2151,COc1ccc(CO)cc1,MSHFRERJPWKJFX-UHFFFAOYSA-N,found,(4-methoxyphenyl)methanol,(4-methoxyphenyl)methanol,True,True,round-trip
+2186,Cc1cc(O)c(C(C)C)cc1C1(c2cc(C(C)C)c(O)cc2C)OC(=O)c2ccccc21,LDKDGDIWEUUXSH-UHFFFAOYSA-N,found,"3,3-bis[4-hydroxy-2-methyl-5-(propan-2-yl)phenyl]-2-benzofuran-1(3H)-one","3,3-bis(4-hydroxy-2-methyl-5-propan-2-ylphenyl)-2-benzofuran-1-one",False,False,round-trip
+2192,CCCCCCC(=O)O,MNWFXJYAOYHMED-UHFFFAOYSA-N,found-several-names,heptanoic acid,heptanoic acid,True,True,round-trip
+2216,Nc1c(Br)cc(Br)cc1Br,GVPODVKBTHCGFU-UHFFFAOYSA-N,found,"2,4,6-tribromoaniline","2,4,6-tribromoaniline",True,True,round-trip
+2262,CCC(c1ccc(OC)cc1)C(O)(CC)c1ccc(OC)cc1,SVTHZCYFDSJXPQ-UHFFFAOYSA-N,found,"3,4-bis(4-methoxyphenyl)hexan-3-ol","3,4-bis(4-methoxyphenyl)hexan-3-ol",True,True,round-trip
+2266,Oc1cc(Cl)c(Cl)cc1Cl,LHJGJYXLEPZJPM-UHFFFAOYSA-N,found,"2,4,5-trichlorophenol","2,4,5-trichlorophenol",True,True,round-trip
+2272,COC(=O)CCSCCO,OASNVZFMNAEIPP-UHFFFAOYSA-N,found,methyl 3-[(2-hydroxyethyl)sulfanyl]propanoate,methyl 3-(2-hydroxyethylsulfanyl)propanoate,False,False,round-trip
+2283,CCSCCSCC,DCXDVGKTBDNYRX-UHFFFAOYSA-N,found,"1,2-bis(ethylsulfanyl)ethane","1,2-bis(ethylsulfanyl)ethane",True,True,round-trip
+2317,CCCCCCC(O)CC=CCCCCCCCC(=O)OCCOC,QTRKSBZYBWSRBJ-UHFFFAOYSA-N,found,2-methoxyethyl 12-hydroxyoctadec-9-enoate,2-methoxyethyl 12-hydroxyoctadec-9-enoate,True,True,round-trip
+2353,COc1cccc(C(N)=O)c1OC,SDYIZAANGZBOSO-UHFFFAOYSA-N,found,"2,3-dimethoxybenzamide","2,3-dimethoxybenzamide",True,True,round-trip
+2366,C=C(c1ccc(Cl)cc1)c1ccc(Cl)cc1,IEAUXBMXWDAYID-UHFFFAOYSA-N,found,"1,1'-(ethene-1,1-diyl)bis(4-chlorobenzene)",1-chloro-4-[1-(4-chlorophenyl)ethenyl]benzene,False,False,round-trip
+2395,C=CCCCCCCCCC(=O)OCCCC,GRAORJFMGCQWRN-UHFFFAOYSA-N,found,butyl undec-10-enoate,butyl undec-10-enoate,True,True,round-trip
+2402,COC(=O)C(CC(=O)c1ccc(-c2ccccc2)cc1)c1ccccc1,KEJILQKPDRGJCH-UHFFFAOYSA-N,found,"methyl 4-([1,1'-biphenyl]-4-yl)-4-oxo-2-phenylbutanoate",methyl 4-oxo-2-phenyl-4-(4-phenylphenyl)butanoate,False,False,round-trip
+2415,CCCCOCc1ccc(OC)cc1,CWTASUFNGJFIMV-UHFFFAOYSA-N,found,1-(butoxymethyl)-4-methoxybenzene,1-(butoxymethyl)-4-methoxybenzene,True,True,round-trip
+2446,CC(=O)Oc1ccc(O)c(C(=O)O)c1,PALBHIQJXKCCQX-UHFFFAOYSA-N,found,5-(acetyloxy)-2-hydroxybenzoic acid,5-acetyloxy-2-hydroxybenzoic acid,False,False,round-trip
+2569,OCC(O)C(O)C(O)C(O)C(O)C(C=NNc1ccccc1)=NNc1ccccc1,JERMDAVQYBUDDH-UHFFFAOYSA-N,found,"7,8-bis(phenylhydrazinylidene)octane-1,2,3,4,5,6-hexol","7,8-bis(phenylhydrazinylidene)octane-1,2,3,4,5,6-hexol",True,True,round-trip
+2622,c1ccc(Nc2cccc3ccccc23)cc1,XQVWYOYUZDUNRW-UHFFFAOYSA-N,found,N-phenylnaphthalen-1-amine,N-phenylnaphthalen-1-amine,True,True,round-trip
+2704,C[N+](C)(C)C=Cc1ccccc1,PYYRANPBSQQMED-UHFFFAOYSA-N,found,"N,N,N-trimethyl-2-phenyleth-1-en-1-aminium",trimethyl(2-phenylethenyl)azanium,False,False,round-trip
+2717,CC(C)(CS(C)(=O)=O)C(=O)O,FHYVGPXHEONOBH-UHFFFAOYSA-N,found,"3-(methanesulfonyl)-2,2-dimethylpropanoic acid","2,2-dimethyl-3-methylsulfonylpropanoic acid",False,False,round-trip
+2771,O=C1c2ccccc2C(=O)N1Cc1ccccc1,WITXFYCLPDFRNM-UHFFFAOYSA-N,found,"2-benzyl-1H-isoindole-1,3(2H)-dione","2-benzylisoindole-1,3-dione",False,False,round-trip
+2775,CN(C)c1ccc(N=O)cc1,CMEWLCATCRTSGF-UHFFFAOYSA-N,found,"N,N-dimethyl-4-nitrosoaniline","N,N-dimethyl-4-nitrosoaniline",True,True,round-trip
+2778,CCCCCNC(=O)C(C)O,CBHYPXXMQKAMNM-UHFFFAOYSA-N,found,2-hydroxy-N-pentylpropanamide,2-hydroxy-N-pentylpropanamide,True,True,round-trip
+2803,O=C(O)c1c(O)ccc2ccccc12,UPHOPMSGKZNELG-UHFFFAOYSA-N,found,2-hydroxynaphthalene-1-carboxylic acid,2-hydroxynaphthalene-1-carboxylic acid,True,True,round-trip
+2819,Oc1cc(O)c2c(c1)OC(c1ccc(O)c(O)c1)C(O)C2,PFTAWBLQPZVEMU-UHFFFAOYSA-N,found,"2-(3,4-dihydroxyphenyl)-3,4-dihydro-2H-1-benzopyran-3,5,7-triol","2-(3,4-dihydroxyphenyl)-3,4-dihydro-2H-chromene-3,5,7-triol",False,False,round-trip
+2876,O=C(OCCl)c1ccccc1,BOXZXICVMMSYPE-UHFFFAOYSA-N,found,chloromethyl benzoate,chloromethyl benzoate,True,True,round-trip
+2884,CC(C)(C)c1ccc(OP(=O)(Oc2ccc(C(C)(C)C)cc2)Oc2ccc(C(C)(C)C)cc2)cc1,LORSVOJSXMHDHF-UHFFFAOYSA-N,found,tris(4-tert-butylphenyl) phosphate,tris(4-tert-butylphenyl) phosphate,True,True,round-trip
+3061,CCc1nc(N)nc(N)c1-c1ccc(Cl)cc1,WKSAUQYGYAYLPV-UHFFFAOYSA-N,found,"5-(4-chlorophenyl)-6-ethylpyrimidine-2,4-diamine","5-(4-chlorophenyl)-6-ethylpyrimidine-2,4-diamine",True,True,round-trip
+3065,Cc1cc2nc3c(=O)[nH]c(=O)nc-3n(CCO)c2cc1C,MYNIJFMVMJFIPZ-UHFFFAOYSA-N,found,"10-(2-hydroxyethyl)-7,8-dimethylbenzo[g]pteridine-2,4(3H,10H)-dione","10-(2-hydroxyethyl)-7,8-dimethylbenzo[g]pteridine-2,4-dione",False,False,round-trip
+3094,CN(C)N=Nc1ccccc1,LLROQAGEAVDYFP-UHFFFAOYSA-N,found,"3,3-dimethyl-1-phenyltriaz-1-ene",N-methyl-N-phenyldiazenylmethanamine,False,False,round-trip
+3117,N#CCCOCC1CCCO1,SXCCMCCJGSXUML-UHFFFAOYSA-N,found,3-[(oxolan-2-yl)methoxy]propanenitrile,3-(oxolan-2-ylmethoxy)propanenitrile,False,False,round-trip
+3128,O=C(Nc1ccccc1)c1ccco1,XHVDWCKBZSFUDE-UHFFFAOYSA-N,found,N-phenylfuran-2-carboxamide,N-phenylfuran-2-carboxamide,True,True,round-trip
+3131,O=C(Nc1ccccc1)c1ccccc1,ZVSKZLHKADLHSD-UHFFFAOYSA-N,found,N-phenylbenzamide,N-phenylbenzamide,True,True,round-trip
+3181,CCCCCCCCCCCC(=O)Nc1ccccc1,YGKDYOGEVVXBKW-UHFFFAOYSA-N,found,N-phenyldodecanamide,N-phenyldodecanamide,True,True,round-trip
+3182,Cc1c([N+](=O)[O-])cc([N+](=O)[O-])c(O)c1[N+](=O)[O-],YYGJRRYSYLLCQH-UHFFFAOYSA-N,found,"3-methyl-2,4,6-trinitrophenol","3-methyl-2,4,6-trinitrophenol",True,True,round-trip
+3190,COc1cc(C(=Cc2ccccc2N)C(=O)O)cc(Br)c1OC,XMHSSYYKBDBYIO-UHFFFAOYSA-N,found,"3-(2-aminophenyl)-2-(3-bromo-4,5-dimethoxyphenyl)prop-2-enoic acid","3-(2-aminophenyl)-2-(3-bromo-4,5-dimethoxyphenyl)prop-2-enoic acid",True,True,round-trip
+3306,CCOC(=O)C(C#N)=CNC(=O)NC,HJQUOJIOGWDIDS-UHFFFAOYSA-N,found,ethyl 2-cyano-3-[(methylcarbamoyl)amino]prop-2-enoate,ethyl 2-cyano-3-(methylcarbamoylamino)prop-2-enoate,False,False,round-trip
+3351,CC12CCC3C4CCC(=O)C=C4CCC3C1CCC2O,NPAGDVCDWIYMMC-UHFFFAOYSA-N,found,"17-hydroxy-13-methyl-1,2,6,7,8,9,10,11,12,13,14,15,16,17-tetradecahydro-3H-cyclopenta[a]phenanthren-3-one","17-hydroxy-13-methyl-2,6,7,8,9,10,11,12,14,15,16,17-dodecahydro-1H-cyclopenta[a]phenanthren-3-one",False,False,round-trip
+3367,FC(F)=C(F)C(F)(F)C(F)(Cl)C(F)(F)C(F)(Cl)C(F)(F)Cl,OPNJDWSPEUABTI-UHFFFAOYSA-N,found,"4,6,7-trichloro-1,1,2,3,3,4,5,5,6,7,7-undecafluorohept-1-ene","4,6,7-trichloro-1,1,2,3,3,4,5,5,6,7,7-undecafluorohept-1-ene",True,True,round-trip
+3382,CCCCCCCCCCCC(=O)OC(C)C(=O)NC(C)(C)CC(C)(C)C,NEDCSNDIXOFJGV-UHFFFAOYSA-N,found,"1-oxo-1-[(2,4,4-trimethylpentan-2-yl)amino]propan-2-yl dodecanoate","[1-oxo-1-(2,4,4-trimethylpentan-2-ylamino)propan-2-yl] dodecanoate",False,False,round-trip
+3396,c1ccc2ncccc2c1,SMWDFEZZVXVKRB-UHFFFAOYSA-N,found,quinoline,quinoline,True,True,round-trip
+3406,NCCBr,IZQAUUVBKYXMET-UHFFFAOYSA-N,found,2-bromoethan-1-amine,2-bromoethanamine,False,False,round-trip
+3422,CCCCCCCN=c1ssc(=O)n1CCCCCCC,NOZPXJROUSNKIE-UHFFFAOYSA-N,found,"4-heptyl-5-(heptylimino)-1,2,4-dithiazolidin-3-one","4-heptyl-5-heptylimino-1,2,4-dithiazolidin-3-one",False,False,round-trip
+3444,CC(O)c1ccc(N(C)C)cc1,BANBVMGOUBOEHA-UHFFFAOYSA-N,found,1-[4-(dimethylamino)phenyl]ethan-1-ol,1-[4-(dimethylamino)phenyl]ethanol,False,False,round-trip
+3464,O=C1c2ccccc2C(=O)c2c(-c3ccccc3)oc(-c3ccccc3)c21,OJZPRMUUKPDVSJ-UHFFFAOYSA-N,found,"1,3-diphenylnaphtho[2,3-c]furan-4,9-dione","1,3-diphenylbenzo[f][2]benzofuran-4,9-dione",False,False,round-trip
+3483,O=C(O)C=Cc1ccc(OC(=O)c2ccccc2)cc1,KOKUTEOWSHGSAQ-UHFFFAOYSA-N,found,3-[4-(benzoyloxy)phenyl]prop-2-enoic acid,3-(4-benzoyloxyphenyl)prop-2-enoic acid,False,False,round-trip
+3508,Nc1ccc2ccsc2c1,CHKYKCBEIFLRRR-UHFFFAOYSA-N,found,1-benzothiophen-6-amine,1-benzothiophen-6-amine,True,True,round-trip
+3547,CCNS(=O)(=O)c1ccccc1,WNSXUAGCWVZDQC-UHFFFAOYSA-N,found,N-ethylbenzenesulfonamide,N-ethylbenzenesulfonamide,True,True,round-trip
+3559,CCCCN1C(=O)c2ccccc2C1=O,DLKDEVCJRCPTLN-UHFFFAOYSA-N,found,"2-butyl-1H-isoindole-1,3(2H)-dione","2-butylisoindole-1,3-dione",False,False,round-trip
+3610,CN(CCC1CCCCC1)CCC1CCCCC1,VEKYMVTZQGCUAQ-UHFFFAOYSA-N,found,2-cyclohexyl-N-(2-cyclohexylethyl)-N-methylethan-1-amine,2-cyclohexyl-N-(2-cyclohexylethyl)-N-methylethanamine,False,False,round-trip
+3630,CC(O)C(F)(F)C(F)(F)C(F)(F)F,RBPHBIMHZSTIDT-UHFFFAOYSA-N,found,"3,3,4,4,5,5,5-heptafluoropentan-2-ol","3,3,4,4,5,5,5-heptafluoropentan-2-ol",True,True,round-trip
+3640,CC(C(O)C(F)(F)F)[N+](=O)[O-],PKQGAGPKSOAOPY-UHFFFAOYSA-N,found,"1,1,1-trifluoro-3-nitrobutan-2-ol","1,1,1-trifluoro-3-nitrobutan-2-ol",True,True,round-trip
+3663,CCCCCCSc1ccc(C)cc1,UDVNNGADKKZXFY-UHFFFAOYSA-N,found,1-(hexylsulfanyl)-4-methylbenzene,1-hexylsulfanyl-4-methylbenzene,False,False,round-trip
+3696,Cc1ccc(O)cc1,IWDCLRJOBJJRNH-UHFFFAOYSA-N,found,4-methylphenol,4-methylphenol,True,True,round-trip
+3723,OCCS,DGVVWUTYPXICAM-UHFFFAOYSA-N,found,2-sulfanylethan-1-ol,2-sulfanylethanol,False,False,round-trip
+3759,CC(=O)c1cc(O)ccc1O,WLDWSGZHNBANIO-UHFFFAOYSA-N,found,"1-(2,5-dihydroxyphenyl)ethan-1-one","1-(2,5-dihydroxyphenyl)ethanone",False,False,round-trip
+3790,CN(c1ccccc1)c1ccccc1,DYFFAVRFJWYYQO-UHFFFAOYSA-N,found,N-methyl-N-phenylaniline,N-methyl-N-phenylaniline,True,True,round-trip
+3811,O=Cc1cc(Cl)ccc1O,FUGKCSRLAQKUHG-UHFFFAOYSA-N,found,5-chloro-2-hydroxybenzaldehyde,5-chloro-2-hydroxybenzaldehyde,True,True,round-trip
+3824,Cc1nc2ccccc2o1,DQSHFKPKFISSNM-UHFFFAOYSA-N,found,"2-methyl-1,3-benzoxazole","2-methyl-1,3-benzoxazole",True,True,round-trip
+3835,Cc1cc(O)nc2c(C)cccc12,NJUAEGGYLOZMGV-UHFFFAOYSA-N,found-several-names,"4,8-dimethylquinolin-2-ol","4,8-dimethyl-1H-quinolin-2-one",False,False,MISNAMED
+3857,CCCCCCC(C)OC(=O)C(C)O,QOJLBDMAKOJFNZ-UHFFFAOYSA-N,found,octan-2-yl 2-hydroxypropanoate,octan-2-yl 2-hydroxypropanoate,True,True,round-trip
+3868,CCCCCCCCCCCC(=O)OCCOCCO,WGIMXKDCVCTHGW-UHFFFAOYSA-N,found,2-(2-hydroxyethoxy)ethyl dodecanoate,2-(2-hydroxyethoxy)ethyl dodecanoate,True,True,round-trip
+3875,CCCCCCCCCCCCCCCCCC(=O)OCC(O)CO,VBICKXHEKHSIBG-UHFFFAOYSA-N,found,"2,3-dihydroxypropyl octadecanoate","2,3-dihydroxypropyl octadecanoate",True,True,round-trip
+3891,CCCCCCCCCCCC(=O)OCCCCC,PQWBDPUBNMEITD-UHFFFAOYSA-N,found,pentyl dodecanoate,pentyl dodecanoate,True,True,round-trip
+3893,CCCCOC(=O)CCCCCCCCC(=O)OCCCC,PYGXAGIECVVIOZ-UHFFFAOYSA-N,found,dibutyl decanedioate,dibutyl decanedioate,True,True,round-trip
+3946,CCOC(=O)C=C(C)CC(C)C,JZDBQUQHLAWUMT-UHFFFAOYSA-N,found,"ethyl 3,5-dimethylhex-2-enoate","ethyl 3,5-dimethylhex-2-enoate",True,True,round-trip
+3947,Oc1cc(Cl)ccc1Cc1ccc(Cl)cc1O,PMYWWZKCZCXDPU-UHFFFAOYSA-N,found,"2,2'-methylenebis(5-chlorophenol)",5-chloro-2-[(4-chloro-2-hydroxyphenyl)methyl]phenol,False,False,round-trip
+3955,Nc1ncnc2c1cnn2-c1ccc(Cl)cc1,NTRNCDBHKIJOLA-UHFFFAOYSA-N,found,"1-(4-chlorophenyl)-1H-pyrazolo[3,4-d]pyrimidin-4-amine","1-(4-chlorophenyl)pyrazolo[3,4-d]pyrimidin-4-amine",False,False,round-trip
+3969,NC(N)=O.O=C(O)C(=O)O,YBSLUBPQYDULIZ-UHFFFAOYSA-N,found,oxalic acid—urea (1/1),oxalic acid;urea,False,False,name-unparseable
+4033,c1ccc(Cc2ccccn2)cc1,PCFUWBOSXMKGIP-UHFFFAOYSA-N,found,2-benzylpyridine,2-benzylpyridine,True,True,round-trip
+4034,CCC(C)C(=O)OC(=O)c1ccc([N+](=O)[O-])cc1,GJSXUVHDUMTLLV-UHFFFAOYSA-N,found,2-methylbutanoic 4-nitrobenzoic anhydride,2-methylbutanoyl 4-nitrobenzoate,False,False,round-trip
+4048,CC(C)CC(=O)OCC(COC(=O)CC(C)C)OC(=O)CC(C)C,HZGMZSCMYSGJTL-UHFFFAOYSA-N,found,"propane-1,2,3-triyl tri(3-methylbutanoate)","2,3-bis(3-methylbutanoyloxy)propyl 3-methylbutanoate",False,False,round-trip
+4058,CCCCCCCCCCCCCCCCCCCCCCCCCCO,IRHTZOCLLONTOC-UHFFFAOYSA-N,found,hexacosan-1-ol,hexacosan-1-ol,True,True,round-trip
+4081,NNc1ccc(-c2ccc(NN)cc2)cc1,SXEHKFHPFVVDIR-UHFFFAOYSA-N,found,"4,4'-dihydrazinyl-1,1'-biphenyl",[4-(4-hydrazinylphenyl)phenyl]hydrazine,False,False,round-trip
+4095,CCNC(=O)CBr,XZHKIYIYQHCBED-UHFFFAOYSA-N,found,2-bromo-N-ethylacetamide,2-bromo-N-ethylacetamide,True,True,round-trip
+4102,CC(Br)C(=O)N(C(C)C)C(C)C,FSZNETUUKCPBSH-UHFFFAOYSA-N,found,"2-bromo-N,N-di(propan-2-yl)propanamide","2-bromo-N,N-di(propan-2-yl)propanamide",True,True,round-trip
+4132,CCOCCOC(=O)C(C)O,WWLJGQOZMKGWOW-UHFFFAOYSA-N,found,2-ethoxyethyl 2-hydroxypropanoate,2-ethoxyethyl 2-hydroxypropanoate,True,True,round-trip
+4137,COC(=O)c1ccc([N+](=O)[O-])cc1,YOJAHJGBFDPSDI-UHFFFAOYSA-N,found,methyl 4-nitrobenzoate,methyl 4-nitrobenzoate,True,True,round-trip
+4189,CN(C)c1ccc(N=Nc2ccc([As](=O)(O)O)cc2)cc1,VESQGSDAHXGDIU-UHFFFAOYSA-N,found,(4-{[4-(dimethylamino)phenyl]diazenyl}phenyl)arsonic acid,[4-[[4-(dimethylamino)phenyl]diazenyl]phenyl]arsonic acid,False,False,round-trip
+4204,Cc1ccc(N(CCCc2ccccc2)CCCc2ccccc2)cc1,OUFYSWWYSMWESE-UHFFFAOYSA-N,found,"4-methyl-N,N-bis(3-phenylpropyl)aniline","4-methyl-N,N-bis(3-phenylpropyl)aniline",True,True,round-trip
+4238,CN(C)c1ccc(C=Cc2ccc3ccccc3[n+]2C)cc1,NEOWNATTXBQULQ-UHFFFAOYSA-N,found-several-names,2-{2-[4-(dimethylamino)phenyl]ethenyl}-1-methylquinolin-1-ium,"N,N-dimethyl-4-[2-(1-methylquinolin-1-ium-2-yl)ethenyl]aniline",False,False,round-trip
+4251,CCOc1cc(C(=O)O)cc(Cl)n1,BQYNRDNXUDHSHD-UHFFFAOYSA-N,found,2-chloro-6-ethoxypyridine-4-carboxylic acid,2-chloro-6-ethoxypyridine-4-carboxylic acid,True,True,round-trip
+4257,CCOC(=O)C(C#N)=Cc1ccc([N+](=O)[O-])o1,STWDHFNLNIGHOF-UHFFFAOYSA-N,found,ethyl 2-cyano-3-(5-nitrofuran-2-yl)prop-2-enoate,ethyl 2-cyano-3-(5-nitrofuran-2-yl)prop-2-enoate,True,True,round-trip
+4266,O=C(Nc1ccccc1)c1ccncc1,FCTZHFATVFONMW-UHFFFAOYSA-N,found,N-phenylpyridine-4-carboxamide,N-phenylpyridine-4-carboxamide,True,True,round-trip
+4272,Cc1cc2cccnc2c2ncccc12,UJAQYOZROIFQHO-UHFFFAOYSA-N,found,"5-methyl-1,10-phenanthroline","5-methyl-1,10-phenanthroline",True,True,round-trip
+4274,Clc1ccccc1CCc1ccncc1,USQKRDOQSVGOKQ-UHFFFAOYSA-N,found,4-[2-(2-chlorophenyl)ethyl]pyridine,4-[2-(2-chlorophenyl)ethyl]pyridine,True,True,round-trip
+4294,CCCCCCCNC1=C(OCC)C(=O)c2ccccc2C1=O,RCPSONUNBJDATP-UHFFFAOYSA-N,found,"2-ethoxy-3-(heptylamino)naphthalene-1,4-dione","2-ethoxy-3-(heptylamino)naphthalene-1,4-dione",True,True,round-trip
+4343,Cc1cccnc1O,MVKDNXIKAWKCCS-UHFFFAOYSA-N,found,3-methylpyridin-2-ol,3-methyl-1H-pyridin-2-one,False,False,MISNAMED
+4348,O=C(CN1CCOCC1)C(O)C(O)C(O)CO,JPANQHVKLYKLEB-UHFFFAOYSA-N,found,"3,4,5,6-tetrahydroxy-1-(morpholin-4-yl)hexan-2-one","3,4,5,6-tetrahydroxy-1-morpholin-4-ylhexan-2-one",False,False,round-trip
+4350,CC(N)C(C)(C)O,OVKDLPZRDQTOJW-UHFFFAOYSA-N,found,3-amino-2-methylbutan-2-ol,3-amino-2-methylbutan-2-ol,True,True,round-trip
+4427,CNc1nc(NC)nc(-c2ccccc2)n1,OUVUYCXSHODHKI-UHFFFAOYSA-N,found,"N2,N4-dimethyl-6-phenyl-1,3,5-triazine-2,4-diamine","2-N,4-N-dimethyl-6-phenyl-1,3,5-triazine-2,4-diamine",False,False,round-trip
+4469,NC(=S)Nc1ccccc1O,VYBCFZXLXJUFPM-UHFFFAOYSA-N,found-several-names,2-(carbamothioylamino)phenol,N'-(2-hydroxyphenyl)carbamimidothioic acid,False,False,MISNAMED
+4471,O=[N+]([O-])c1cnc2cc(Cl)ccc2c1O,ZCVZBMGSTIUGRP-UHFFFAOYSA-N,found,7-chloro-3-nitroquinolin-4-ol,7-chloro-3-nitro-1H-quinolin-4-one,False,False,MISNAMED
+4515,CCC(=O)C(I)CS(=O)(=O)c1ccccc1,DOPKFCTUNBWBFV-UHFFFAOYSA-N,found,1-(benzenesulfonyl)-2-iodopentan-3-one,1-(benzenesulfonyl)-2-iodopentan-3-one,True,True,round-trip
+4533,CC(=O)OC1CC1(Br)Br,ZTZAVLYFUKRNTQ-UHFFFAOYSA-N,found,"2,2-dibromocyclopropyl acetate","(2,2-dibromocyclopropyl) acetate",False,False,round-trip
+4574,OCC(c1ccccc1)c1ccccc1,NYLOEXLAXYHOHH-UHFFFAOYSA-N,found,"2,2-diphenylethan-1-ol","2,2-diphenylethanol",False,False,round-trip
+4596,CC(C)(O)C(Cl)(Cl)Cl,OSASVXMJTNOKOY-UHFFFAOYSA-N,found,"1,1,1-trichloro-2-methylpropan-2-ol","1,1,1-trichloro-2-methylpropan-2-ol",True,True,round-trip
+4606,Nc1c(I)cc([N+](=O)[O-])cc1I,YPVYMWQYENWFAT-UHFFFAOYSA-N,found,"2,6-diiodo-4-nitroaniline","2,6-diiodo-4-nitroaniline",True,True,round-trip
+4649,Clc1ccccn1,OKDGRDCXVWSXDC-UHFFFAOYSA-N,found,2-chloropyridine,2-chloropyridine,True,True,round-trip
+4664,Nc1cc([N+](=O)[O-])ccc1O,VLZVIIYRNMWPSN-UHFFFAOYSA-N,found,2-amino-4-nitrophenol,2-amino-4-nitrophenol,True,True,round-trip
+4702,O=Nn1c2ccccc2c2cc([N+](=O)[O-])ccc21,UTBGPZHMURQBBF-UHFFFAOYSA-N,found,3-nitro-9-nitroso-9H-carbazole,3-nitro-9-nitrosocarbazole,False,False,round-trip
+4729,CC(=O)Nc1nncs1,YOGFGFKRNRQDMF-UHFFFAOYSA-N,found,"N-(1,3,4-thiadiazol-2-yl)acetamide","N-(1,3,4-thiadiazol-2-yl)acetamide",True,True,round-trip
+4741,O=C(O)c1cc(S(=O)(=O)O)ccc1O,YCPXWRQRBFJBPZ-UHFFFAOYSA-N,found,2-hydroxy-5-sulfobenzoic acid,2-hydroxy-5-sulfobenzoic acid,True,True,round-trip
+4808,Cc1ccc(C=N)cc1,IZVONMSLZFRGFP-UHFFFAOYSA-N,found,1-(4-methylphenyl)methanimine,(4-methylphenyl)methanimine,False,False,round-trip
+4811,c1ccc(CNCc2ccccc2)cc1,BWLUMTFWVZZZND-UHFFFAOYSA-N,found,N-benzyl-1-phenylmethanamine,N-benzyl-1-phenylmethanamine,True,True,round-trip
+4851,CC(C)S(=O)(=O)O,HNDXKIMMSFCCFW-UHFFFAOYSA-N,found,propane-2-sulfonic acid,propane-2-sulfonic acid,True,True,round-trip
+4860,Nc1c([N+](=O)[O-])cc([N+](=O)[O-])cc1[N+](=O)[O-],IAHOUQOWMXVMEH-UHFFFAOYSA-N,found,"2,4,6-trinitroaniline","2,4,6-trinitroaniline",True,True,round-trip
+4893,CC(=O)OCCC(C)CCC=C(C)C,JOZKFWLRHCDGJA-UHFFFAOYSA-N,found,"3,7-dimethyloct-6-en-1-yl acetate","3,7-dimethyloct-6-enyl acetate",False,False,round-trip
+4902,C1=C(C2CCc3ccccc32)Cc2ccccc21,KRDBPYIPLJNENY-UHFFFAOYSA-N,found,"2,3-dihydro-1H,1'H-1,2'-biindene","2-(2,3-dihydro-1H-inden-1-yl)-1H-indene",False,False,round-trip
+4925,Cc1nnc(C)n1NC(=O)Nc1cccc(Cl)c1,OWCSOHWQQXPTCW-UHFFFAOYSA-N,found,"N-(3-chlorophenyl)-N'-(3,5-dimethyl-4H-1,2,4-triazol-4-yl)urea","1-(3-chlorophenyl)-3-(3,5-dimethyl-1,2,4-triazol-4-yl)urea",False,False,round-trip
+4942,Cc1n[nH]c2c(Cl)ncnc12,PVLXFOBJWRGYFQ-UHFFFAOYSA-N,found,"7-chloro-3-methyl-1H-pyrazolo[4,3-d]pyrimidine","7-chloro-3-methyl-2H-pyrazolo[4,3-d]pyrimidine",False,False,MISNAMED
+4982,Cc1ccc2cccc(Cl)c2n1,VVLYDFPOGMTMFJ-UHFFFAOYSA-N,found,8-chloro-2-methylquinoline,8-chloro-2-methylquinoline,True,True,round-trip
+4995,O=C1c2ccccc2C(=O)c2c(O)c(Cl)cc(O)c21,UJCPMVFRZRPROL-UHFFFAOYSA-N,found,"2-chloro-1,4-dihydroxyanthracene-9,10-dione","2-chloro-1,4-dihydroxyanthracene-9,10-dione",True,True,round-trip
+5046,O=[N+]([O-])c1cccc(N=Nc2ccc(O)cc2O)c1,VXGDALQPLLWULX-UHFFFAOYSA-N,found,"4-[(3-nitrophenyl)diazenyl]benzene-1,3-diol","4-[(3-nitrophenyl)diazenyl]benzene-1,3-diol",True,True,round-trip

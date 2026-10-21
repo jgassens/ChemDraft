@@ -10,6 +10,118 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
+reopen where it was left, without flashing at the OS cascade position. With no saved frame it
+centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back
+maximized, and un-maximizing must return to the recorded pre-maximize frame. Repeat with the saved
+normal frame on a disconnected display: relaunch must centre then maximize, without a cascade flash.
+On Windows repeat with top/left taskbars and different display scales. On macOS also repeat fullscreen
+and Dock reopen. Cold-open a file from Finder/Explorer, relaunch after an update, and open another
+file/launch again while running: the main window must appear, preserving its live frame and maximized
+state when already visible. Repeat with session recovery and crash-report consent pending.
+
+Nested plugin workers (packaged macOS and Windows builds): install the NMR Shift Predictor package,
+select a molecule, and invoke prediction from real menu input. On Windows/WebView2, confirm the
+entry bootstrap loads with the unchanged installed-plugin CSP, the nested module imports from its
+real `http://tauri.localhost/installed-plugins/…` URL, its reference JSON resolves relative to that
+module, and prediction answers without `ERR_ABORTED` or `NMR_PROVIDER_FAILURE`. Repeat after
+disable/re-enable and uninstall/reinstall. Exercise nested worker `postMessage`, replies, name,
+credentials, error listeners, and termination; confirm blob URLs are released after module startup
+and on load failure. Probe external fetch/module imports: the installed worker and its blob child
+must still be blocked by CSP without host permission. On macOS, confirm the entry and nested
+worker still load directly from `tauri://localhost` with working prediction. In a Windows web
+preview, confirm construction remains native; classic and cross-origin calls must remain unchanged.
+
+Plugin panel focus (both macOS and Windows): open/re-show a panel from Analyze or a plugin command;
+click a panel button, heading, chart, empty area and title/drag area, hover its controls and scroll.
+Buttons must run exactly once and hover feedback must work; after each ordinary click the drawing
+must have keyboard focus. On Windows at 200%, repeat with the Mass Analysis heading, table cell,
+value text, empty content, and title bar (press/release without moving, then drag). Use a 15 ms
+GetForegroundWindow logger alongside a Main toolbar button as the control: a transient panel
+foreground interval is allowed, but it must hand back to the document promptly after release,
+without a document click. Press a drawing-tool shortcut immediately after each click; foreground
+ownership alone is insufficient if keyboard focus remains in the panel's WebView2 child.
+Click a panel text/number field, textarea, select or
+editable text, type/change its value, then press Escape: the panel stays open and a drawing-tool
+shortcut works again. Single-line Enter commits and returns focus; multiline Enter stays in the
+field. Tab between inputs, then Tab out of the last (and Shift+Tab out of the first), and click back
+on the document while editing: keyboard focus returns to the drawing. Move/resize and close a panel
+(including the native close shortcut): ownership, shadow, no taskbar entry and plugin close notification
+remain intact. On Windows 10 and 11 at 100%, 150%, and 200%, resize from every edge and corner,
+also on a second monitor at a different scale. Measure the top target against
+`GetSystemMetricsForDpi(SM_CYSIZEFRAME, GetDpiForWindow(panel))` plus
+`GetSystemMetricsForDpi(SM_CXPADDEDBORDER, GetDpiForWindow(panel))`: the entire physical-pixel
+band from the outer window top must resize, including its last row and both top corners,
+with no gap where Tauri's original SM_CYFRAME overlay ended. Check the appropriate vertical
+or diagonal resize cursor. Immediately below that band, in the client title strip (including
+below the wider corner targets), title text must receive its trusted DOM pointerdown and
+move the window rather than resize it; the native left/right border still resizes sideways.
+Windows 10 must never show a native caption above the DOM title.
+The panel must
+have a single frame like the toolbars, content reaching its edge, and no white inset or black
+left/right/bottom bands during or after resizing. Repeat after hide/show, live resize, and moving between
+100%, 150% and 200% DPI monitors (including monitors above/left of the primary). Confirm WebView2
+still paints beneath the enlarged top input band without a blank margin. Re-measure the top
+target and check the first draggable row after each DPI transition; if maximized, no edge
+may resize, and restoring must recover the current-DPI band. Confirm WebView2
+buttons still receive exactly one trusted pointerdown/click and return keyboard focus, and
+text/content is not clipped. Repeat ordinary content clicks after ending an input
+lease; test right/middle presses too. Hover and wheel alone must not trigger a focus hand-back.
+On Windows, rapidly click ordinary content then an input while the first hand-back IPC is delayed:
+typing must stay in the input after the old request completes. Repeat with report-text selection.
+Activate a panel button with Enter/Space (no pointerdown): its action runs once without queuing
+a pointer hand-back or ending an existing text-selection lease.
+During an input/text-selection lease, press a resize border without moving: drawing shortcuts resume.
+In both inline and Full size spectra, change frequency/comparison selects, then Escape/Enter/Tab out;
+replace the report while a select is focused and confirm drawing shortcuts work again. Without making
+the panel key, hover peaks/atoms to check linked highlighting and pan across peak hit areas (and out
+of the spectrum while captured): panning must continue until release. Programmatic `input.focus()`
+and dispatched pointer events must not start a keyboard lease. In Full size, focus a select and
+press Escape: the first closes only the overlay, preserving the report window. Drag-select report
+text and double/triple click a word/paragraph, then Cmd/Ctrl+C: paste into another app and confirm
+the report selection was copied. On Windows at 200%, log window blur/focus around pointerup
+and double-click: the activation's transient blur/focus must not clear the selected range,
+including when native acquisition replies before or after the blur and WebView2 focus recovery
+takes more than 32 ms (repeat with 100 ms and 1 s delays). Repeat for input typing and a select;
+then click the document or another app while acquisition is pending and after it settles.
+Log the generation-tagged native chemdraft://plugin-panel-focus events: a genuine native
+deactivation must end the lease even if a delayed success reply or DOM focus arrives afterward.
+The selection must clear immediately on that event; it must survive DOM blur alone.
+While the first input acquisition is delayed, click that input again and then click the document.
+The first native deactivation (or failed acquisition) must cancel the queued retry, with no focus
+stolen back. Repeat with the retry already pending when the first generation's loss arrives.
+After drag-selecting report text and copying it, press Right or Down, then M: the selection
+must clear and drawing shortcuts must resume even on WebView2, without scrolling the report.
+Repeat with Home/End/PageUp/PageDown, letters, digits, Tab, Enter and Space as the release key.
+Cmd/Ctrl+C, Cmd/Ctrl+A, Shift+arrow/Home/End and bare modifier keys must keep the selection lease;
+arrows in an editable input must keep its input lease. Check on macOS and Windows.
+Moving the range outside report text must also end the lease.
+Reload a panel webview using developer tools after several input leases; a fresh input click must
+still acquire focus. Repeat with an old acquisition pending at reload. Inject a native resize-hook
+installation failure: opening must report the error and leave no live panel window.
+A plain text click keeps drawing shortcuts active. With text
+selected, Escape or a click elsewhere in the panel/document clears selection and returns drawing
+shortcuts; report replacement must also end the lease. Script-created ranges and synthetic drags
+must not start a lease. On both platforms, with another app frontmost, click an exposed panel input
+or select text, and also switch apps before a delayed focus request executes: ChemDraft must never
+activate or come to the front. On Windows repeat with a non-client edge/corner press/resize while
+the other app is foreground; it must stay foreground and receive no phantom Alt keystroke.
+Also repeat ordinary content/title clicks and switch apps between pointer release and IPC delivery;
+the guarded hand-back must not raise ChemDraft. With two panels open, a delayed hand-back from
+one must not interrupt an input lease in the other.
+After a background request returns false, the input/selection lease must end immediately even
+without any DOM blur. Close the foreground application so Windows activates the idle panel:
+drawing shortcuts must work, with no stale lease suppressing hand-back. Then activate the document
+and click the same input again: typing works. Repeat while rapidly ending one lease and acquiring
+another: an ended lease's deactivation must never clear an independent new input/selection lease.
+An obsolete generation must likewise not clear a newer acquisition that has already settled.
+On Windows, put File Explorer (then another application) in front and close it without clicking
+ChemDraft. If Windows activates an idle panel, the document must promptly receive keyboard focus
+and the next drawing shortcut. Repeat with two panels; another panel's input lease must not be
+interrupted. Repeat with delayed activation notification/hand-back while clicking an input or
+selecting text: an active or pending lease must supersede that hand-back. Switching to a third
+application before delivery must not bring ChemDraft forward.
+
 Drawing-tool surfaces added since: each reaction-arrow kind by click and by drag (heads render per
 kind, resize handles work, rotate and flip move the arrow itself and not just its frame), both
 bracket kinds placed and resized, dagger and submenu symbol stamps, atom labels through `tool.atom`,
@@ -197,6 +309,14 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    then relaunch: all tabs, file associations, dirty states and the active tab return without a quit
    prompt. Repeat using a pre-tabs session file. Invoke a plugin and inspect the agent snapshot after
    switching tabs; both must use the active document. Keep the worktree label visible throughout.
+   On **macOS and Windows**, open a named `.chemdraft` (also a `.cdxml`) from outside the default
+   filesystem scopes, via a launch path argument / Open With. Edit it, close the window, and relaunch
+   with no arguments. Verify the restored tab is dirty and Cmd+S / Ctrl+S writes those edits to its
+   original path without a picker; reopen the file to confirm the bytes changed. Repeat via the
+   dirty-tab close prompt's Save. Then quit dirty again, move/delete the original file before
+   relaunch, and Save: a clear restored-file message and Save As picker appear, cancel keeps the
+   drawing dirty with its content, and choosing a new location saves it. Check the same fallback
+   for a restored path replaced by a directory or symbolic link; no linked target should be written.
    Queue a recognition proposal, switch tabs (also during recognition), and check its document name
    in review; Accept must activate and edit only its source tab with one undo entry. Close that tab:
    Accept must explain that its document was closed and keep the proposal pending; Reject must work
@@ -274,6 +394,60 @@ and Art toolbars open, including at 125%/150% display scale:
   informational result boxes (OK): cancellation does not install; accepting keeps the existing download/install/session-flush flow.
 - Windows document-window close still flushes the session and quits (without a new dirty-tab
   prompt); relaunch restores every retained dirty tab. Check the same session retention on macOS.
+- On both platforms, leave “Ask to save unsaved changes before quitting” off and verify the
+  existing quit/session-recovery flow. Turn it on: clean tabs quit without a prompt, and a dirty
+  foreground or background tab opens a native Save / Don't Save / Cancel message box with
+  floating palettes hidden. If the native box cannot open, check the accessible in-window
+  fallback instead; it must expose the same choices and keep palettes hidden.
+  Cancel and Escape keep the app open; Save writes all dirty tabs before quitting. Cancel a save
+  picker or fail a write: the app stays open. Discard quits with existing session recovery.
+  Leave the prompt open beyond three seconds, then cancel and quit again. A document window
+  that never answers the quit event must still quit after the native grace period.
+- Keep dirty tabs A and B open, request closing B, then Quit before answering its close prompt:
+  Save must write both documents to their own paths. Repeat with untitled tabs and cancel each
+  Save As picker. Delay a Cancel reply and request Quit again: the newer prompt must remain.
+  Stall the session flush after Save and after Discard: quit must still use the bounded grace
+  and Windows exit watchdog. Toolbar/Preferences/debugger calls to prompt-control commands
+  must be refused. On macOS, hide the dirty document with the red button and use app-menu or
+  Dock Quit: the window must reappear with a visible prompt. Repeat minimized, with the
+  preference off, and during system logout/restart/shutdown (which must not wait for a prompt).
+  If an OS tab-close alert is already visible, answer it first; only afterward should the quit
+  modal appear. While cancelling or saving, native Undo and queued OS opens must not mutate
+  the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
+  must be raised again. Cancel must balance suspension even when its acquisition is still pending.
+
+- Export preview and presets (macOS and Windows): with a fresh profile, verify Preferences >
+  Export preview and size presets is unchecked. Export must show the original Scale/Max dimension
+  controls and JPEG quality slider, prefill the last destination, and let Choose work with an empty
+  filename. Confirm no preview requests, frame computations, native rasterizations or preview IPC.
+  Toggle the preference on with Export already open: the preview and presets must appear live.
+  Toggle off while rendering and while Choose is open: legacy controls return and stale previews
+  must not appear. Reopen Export and restart to verify persistence. Compare saved files with equal
+  options in both modes (fix PDF time/ID when comparing bytes). With the preference on, export molecules, text, arrows, and an
+  object crossing the page edge. Compare preview with saved SVG, PDF, and PNG; check clipping
+  warnings. Switch slide/poster/publication presets and edit linked pixel/physical dimensions.
+  The 7200 px poster preset must keep preview rendering at most 800 px on its longest side;
+  only the saved export uses the requested size. Choose content crop and transparent PNG,
+  verify JPEG numeric quality changes the preview, and check PNG density/PDF physical dimensions.
+  The PNG density hint must be absent until explicit sizing is set. Type an atom label without
+  committing it and verify the preview matches the pending edit and the final export.
+  Close during rendering and switch formats rapidly: stale previews must never replace the
+  current format, and updates remain debounced. Repeat each preset with an empty portrait
+  Letter page and a tall drawing; submit after editing pixels and physical dimensions.
+  Verify saved SVG millimeter dimensions and PDF drawing bounds match the displayed physical
+  size. Request 8190 x 4095 px at 36 DPI in PDF: a specific 14400-point limit message must
+  prevent export without clipping. Typing a filename must not rerun the content crop.
+  Verify Enter submits a valid export, unlink/relink dimensions, clear and retype numeric
+  values, and check manual edits select Custom. Navigate presets with arrow keys: dimensions
+  change only on Enter or leaving the field. Choose a file, change format/name, then cancel
+  and retry the new location picker; only explicitly chosen paths may be written, and
+  failures must show inside the dialog. Check rounded SVG units. With a ring and arrow, PDF
+  must show both in the image labelled “Preview of the PDF page layout”, with no embedded
+  PDF viewer or extra tab stop. Toggle PDF page guides and compare with the exported PDF.
+  Repeat previews for BMP, GIF and TIFF. Keep Export open while editing its source drawing,
+  including edits that preserve its bounds: the preview must refresh and keep the filename and
+  size settings. Repeat while another drawing is active and while Choose is pending, then cancel
+  Choose. The refreshed preview and final file must describe the originating drawing.
 
 ## Native Custom Page Size (macOS and Windows)
 
@@ -328,3 +502,58 @@ and Art toolbars open, including at 125%/150% display scale:
   document; reopening the document must not resurrect the dismissed dialog.
 - In the browser preview, check the same form/validation in the documented in-page fallback.
   Force native creation failure on desktop: show an error and never display the browser overlay.
+
+## Native Export (macOS and Windows)
+
+- Launch this worktree's labelled build. Choose Export and verify a movable native window centred
+  over the originating drawing on first opening, about 520 × 620 logical pixels. Resize to its
+  420 × 360 minimum: all controls and messages remain reachable by scrolling. There is no minimize
+  control and no utility-window menu; Windows has no separate taskbar entry. On macOS measure its
+  floating level and confirm it is unparented, matching Page Size.
+- Leave Export open and draw, use the floating toolbars and shortcuts, switch tabs, and export.
+  The file must contain the originating drawing as it was at the press, including edits made after
+  opening. Verify a live atom-label/text edit is included. The other tab must stay active and
+  unchanged. Close the originating tab, or open a saved file into its pristine tab: Export closes.
+  Repeat during startup, rendering, and a picker round trip; no stale write or late dialog appears.
+- Check filename, format, destination, SVG warnings/page guides, PDF compression/page guides,
+  raster scale/background/size/JPEG quality, CDXML creation program, and unavailable formats against
+  the existing export behavior. Compare files with the same options against main (PDF comparisons
+  must hold metadata date/ID constant); raster output must use the same SVG and raster options.
+- Move Export off the document and onto a second monitor. Reinvoke Export with a draft: focus the
+  same window without moving or resetting it. Close/reopen and verify its saved position. Repeat
+  across Windows 100% ↔ 150%/200% DPI, negative-coordinate monitors, work-area edges, monitor removal,
+  and owner minimize/restore. Page Size's saved position must be independent.
+- From Export itself choose a location. While the native save panel is open, Export and utilities
+  hide. Accept, cancel, then repeat with a panel failure: live Export returns at the same position,
+  in the preserved stacking order, and its fields/buttons work. Repeat after changing apps while
+  the panel is open. The hidden toolbar stays hidden; dialog moves never move toolbars. Close the
+  source document or quit during suspension: no closed Export window returns.
+- Choose a path, then change the filename or format. Export must ask for a new grant, and write
+  exactly the newly chosen path. Repeat with a path without an extension and with a different
+  extension: no silent `forbidden path` error or additional file. Check ordinary accepted grants
+  are used directly when options are unchanged.
+- Double-click Export, press Enter repeatedly, and simulate delayed rendering/writing: one press
+  writes at most one file. Success and warnings remain in Export, with Export disabled and Close
+  available. Force a denied/unwritable destination or full-disk error: the failure is visible
+  inside Export and an explicit retry works. Cancel a save panel: Export remains usable.
+- Verify filename focus on opening; valid Enter submits, invalid values and IME composition Enter
+  do not. Tab/Shift+Tab remain inside the native window. Escape, title-bar close and Cmd/Ctrl+W
+  cancel; field Undo/Redo and Select All stay local. F5 and Cmd/Ctrl+R must not reload the webview.
+- Overlap Export with toolbars/panels, click each, and use toolbar flyouts/tooltips. Reopen Export,
+  then open/dismiss a native message box or save panel: preserve the prior relative stacking.
+  Cmd-Tab on macOS hides Export with the utilities; switching back restores it without AppKit
+  attachment or a level change. Repeat Windows Alt-Tab and owner close/quit.
+- In the browser preview, verify the shared in-page Export form and validation; raster formats
+  remain desktop-only and supported exports download. On desktop force native creation failure:
+  report the error without an in-page fallback.
+
+### Export dialog regression checks (macOS and Windows)
+
+- At default size and minimum size, with PDF options and long warnings, scroll the body and verify
+  Cancel/Close and Export stay visible; repeat in the browser build.
+- With focus on a field and then on the page body, try Escape and Cmd/Ctrl+W before export, while
+  busy, after an error and after success. Each closes Export; success first focuses Close.
+- Open Choose from Export and both Save and Cancel the native picker. Export becomes key/active
+  again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
+  confirm no closed or newly reopened Export receives focus. Switch to another app before the
+  picker completes and confirm ChemDraft does not take foreground.

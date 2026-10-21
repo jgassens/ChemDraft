@@ -1,6 +1,34 @@
 # ChemDraft Desktop
 
+Preferences includes “Ask to save unsaved changes before quitting”, off by default.
+When enabled, quitting with dirty tabs offers Save / Don't Save / Cancel in a native message
+box, with an accessible in-window fallback if the native box cannot open. Save writes every
+dirty tab; a cancelled or failed save keeps the app open. Discard retains the existing
+session-recovery behavior. Without a response from the document window, quitting retains
+the bounded native grace period; it pauses only once the save dialog is actually showing.
+Save and Discard re-arm that grace before flushing the session. Prompt controls are restricted
+to the document window. On macOS, Dock Quit also checks the preference and reveals hidden
+documents for the prompt; system logout, restart, and shutdown remain non-blocking.
+
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
+
+File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
+linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,
+numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses
+the existing padded content framing and does not edit the document. PNG embeds density;
+SVG and PDF use the requested physical size. Other raster formats display a DPI-derived size.
+Presets fit the longer frame side, including portrait drawings. PDF pages exceeding
+14400 points (200 inches) on either side are refused with instructions to reduce
+the pixel dimensions or increase DPI.
+Preview updates are debounced and render at most 800 px on the longest side; only
+the final export renders at the requested size. Enter in a valid filename/size field
+exports. Changing the filename or format requires a new destination grant; write errors
+appear in the dialog. Manual size edits select Custom, and keyboard preset navigation
+applies on Enter or leaving the preset field.
+Desktop Export uses the shared `dialogs/ExportForm.tsx` in its movable native window; the
+document window renders previews and writes final exports. Editing the source drawing refreshes
+its preview without resetting the dialog's options. BMP, GIF and TIFF previews use PNG rendering
+for webview compatibility.
 
 `pnpm dev` launches the Tauri desktop app. `pnpm dev:web` remains available as a secondary browser preview for React shell work.
 

@@ -258,6 +258,7 @@ const appCss = readFileSync(new URL("./App.css", import.meta.url), "utf8");
 const toolPaletteSource = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
 const toolbarTooltipSource = readFileSync(new URL("./toolbars/toolbarTooltip.tsx", import.meta.url), "utf8");
 const mainWindowSource = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
+const exportFormSource = readFileSync(new URL("./dialogs/ExportForm.tsx", import.meta.url), "utf8");
 const desktopCapabilitiesSource = readFileSync(
   new URL("../src-tauri/capabilities/default.json", import.meta.url),
   "utf8"
@@ -372,18 +373,13 @@ describe("ChemDraft desktop shell", () => {
     );
   });
 
-  it("focuses an analysis window only when the user asked for it", () => {
-    // Automatic re-shows (a new proposal, a plugin's report) must not take the keyboard from the canvas.
+  it("opens analysis windows without focus and lends focus only to their editable controls", () => {
     expect(desktopNativeSource).toContain("focused_on_build: false,");
-    expect(desktopNativeSource).toContain("focus_after_show: self.focus && !deferred,");
     expect(desktopNativeSource).toContain(".focused(presentation.focused_on_build)");
-    expect(desktopNativeSource).toContain(
-      "configure_analysis_window(&window, presentation.focus_after_show)"
-    );
-    expect(desktopNativeSource).toMatch(/if focus \{\s*window\.set_focus\(\)/);
-    expect(desktopNativeSource).not.toMatch(/\.set_focusable\(true\)\s*\.and_then\(\|_\| window\.set_focus\(\)\)/);
-    // User-invoked Analyze windows focus; the arriving-proposal path and plugin reports do not.
-    expect(mainWindowSource).toContain("{ open: true, focus: true, width: 940, height: 660 }");
+    expect(desktopNativeSource).toContain("configure_analysis_window(&window)");
+    expect(desktopNativeSource).not.toContain("focus_after_show");
+    expect(desktopNativeSource).toContain("validate_plugin_panel_focus_caller(window.label())?");
+    expect(desktopNativeSource).toMatch(/async fn set_plugin_panel_input_focus\(/);
     expect(mainWindowSource).toContain("showProposalReview(false);");
     expect(mainWindowSource).toMatch(/title: panel\.report\.title \|\| panel\.title,\s*focus: false/);
   });
@@ -675,7 +671,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain("palette-window-shell");
     expect(markup).toContain("data-palette-drag-surface");
-    expect(markup).toContain('data-tauri-drag-region="true"');
+    expect(markup).not.toContain("data-tauri-drag-region");
     expect(markup).toContain('data-palette-content-drag-grip="true"');
     expect(markup).toContain("palette-close-button");
     expect(markup).toContain('aria-label="Hide Main Toolbar"');
@@ -1859,17 +1855,18 @@ describe("ChemDraft desktop shell", () => {
   it("routes desktop exports through native save and file-write helpers", () => {
     expect(mainWindowSource).toContain("async function pickNativeExportPath(");
     expect(mainWindowSource).toContain('if (action.id === "export.open")');
-    expect(mainWindowSource).toContain("<ExportDialog");
-    expect(mainWindowSource).toContain("Export as");
-    expect(mainWindowSource).toContain("Compress PDF");
-    expect(mainWindowSource).toContain("Include warning metadata");
-    expect(mainWindowSource).toContain("JPEG quality");
-    expect(mainWindowSource).toContain("Creation program");
+    expect(mainWindowSource).toContain("coordinator.openExport(tabId");
+    expect(mainWindowSource).toContain("<ExportForm");
+    expect(exportFormSource).toContain("Export as");
+    expect(exportFormSource).toContain("Compress PDF");
+    expect(exportFormSource).toContain("Include warning metadata");
+    expect(exportFormSource).toContain("JPEG quality");
+    expect(exportFormSource).toContain("Creation program");
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
-    expect(mainWindowSource).toContain("const result = await createDialogExportResult(documentForFlush(), dialog)");
-    expect(mainWindowSource).toContain("const defaultPath = nativePathJoin(lastExportDirectoryRef.current, filename) ?? filename");
-    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions)");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(source, { ...options, busy: false })");
+    expect(mainWindowSource).toContain("nativePathJoin(lastExportDirectoryRef.current, options.filename)");
+    expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId))");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
     expect(mainWindowSource).toContain("downloadExportResult(filename, result)");
     expect(mainWindowSource).toContain("rasterizeSvgNative(svgResult.contents, rasterFormat");
@@ -2596,8 +2593,9 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
-    expect(mainWindowSource).toContain("createNativeSavePayload(documentForFlush())");
-    expect(mainWindowSource).toContain("createDialogExportResult(documentForFlush(), dialog)");
+    expect(mainWindowSource).toContain("createNativeSavePayload(active ? documentForFlush() : savingDocument)");
+    expect(mainWindowSource).toContain("tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present");
+    expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false })");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
 

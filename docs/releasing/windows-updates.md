@@ -35,7 +35,7 @@ by the installer. They are there on the next launch, as on macOS.
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
 - **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to
-  the macOS `appcast.xml`, so each platform publishes on its own schedule.
+  the macOS `appcast.xml`; joint releases use the same commit and version for both platforms.
 - **Public key:** `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.windows.conf.json`.
 - **Private key:** `%USERPROFILE%\.tauri\chemdraft-updater.key`.
   - It is outside the repository. Never commit it, and never print it.
@@ -43,6 +43,8 @@ by the installer. They are there on the next launch, as on macOS.
     Sparkle key.
   - Override its location with `CHEMDRAFT_UPDATER_KEY_PATH`. `TAURI_SIGNING_PRIVATE_KEY`, if set,
     wins over both.
+  - CI uses the repository secret `TAURI_SIGNING_PRIVATE_KEY`, populated by the owner from this
+    same key. See [Windows installer signing](windows-signing.md) for SignPath setup and secret handling.
 - **Permission:** the document window alone gets `updater:default`, from
   `capabilities/app-updates.json`. That capability is marked `"platforms": ["windows"]`: the
   updater plugin exists only in Windows builds, and Tauri skips a capability for another platform
@@ -57,6 +59,28 @@ next installer by hand once.
 The updater compares the installed app's version with the feed's `version`. Every Windows release
 must therefore raise `version` in `apps/desktop/src-tauri/tauri.conf.json`, and must never reuse a
 published version.
+
+### GitHub Actions path
+
+The manual-dispatch [Windows release workflow](../../.github/workflows/windows-release.yml) builds
+the installer on `windows-latest`, optionally Authenticode-signs the CI artifact through SignPath
+Foundation, then signs the **final installer bytes** for the Tauri updater and generates `latest.json`.
+The [signing guide](windows-signing.md) covers the owner's SignPath application, trusted build setup,
+repository secrets/variables, workflow inputs and release checks.
+
+Dispatch on the release tag with the same tag in `ref`; optionally provide a tracked Windows notes
+file and an existing draft release tag in `upload_to_release`. The final `windows-release` artifact
+contains the installer, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
+explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
+publishes a release or commits the feed. Review both platform artifacts from the same commit/version,
+publish the joint release, then commit the generated feed to `main` only after its installer URL works.
+
+### Existing Windows VM path
+
+This path stays valid. Its updater signature does not provide Authenticode signing. If Authenticode
+is applied separately, do it **before** the final `tauri signer sign` and manifest generation: an
+existing `.sig` is invalid once any installer bytes change. SignPath Foundation requires verifiable
+CI builds; submitting a VM-built installer through the workflow is not supported.
 
 1. On `main` (or with `CHEMDRAFT_STABLE_BUILD=1`), with the key on this machine, build the installer:
 

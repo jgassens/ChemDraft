@@ -386,12 +386,12 @@ export function ToolPalette({
         data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
       >
         {mode === "floating" && !customize ? (
-          // The OS-drag grip would hijack a customize drag, so it's removed in customize mode.
+          // The palette shell handles this grip through the same drag command as the title.
+          // Remove it in customize mode so it cannot hijack a toolbar-item drag.
           <span
             className="palette-content-drag-grip"
             aria-hidden="true"
             data-palette-content-drag-grip="true"
-            data-tauri-drag-region="true"
           />
         ) : null}
         {hidesGrid ? null : replacesGrid ? (
