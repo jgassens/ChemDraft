@@ -19,6 +19,7 @@ export function EngineInstallForm({ snapshot, onAction, busy = false, error, pla
     return () => document.removeEventListener("keydown", key, true);
   }, [onAction, platform]);
   const state = snapshot.state;
+  const cancelled = state.status === "failed" && state.message === "Installation was cancelled.";
   const short = isShortOfSpace(snapshot.requiredDiskBytes, snapshot.freeDiskBytes);
   return <section role="dialog" aria-label={snapshot.title} style={{ padding: 20 }}>
     <h2>{snapshot.engineName} needs a local engine</h2>
@@ -26,7 +27,7 @@ export function EngineInstallForm({ snapshot, onAction, busy = false, error, pla
     <p>{snapshot.disclosure}</p>
     <p role={short ? "alert" : undefined}>{installSpaceStatement(snapshot.requiredDiskBytes, snapshot.freeDiskBytes)}</p>
     {state.status === "broken" ? <p role="alert">{state.detail}</p> : null}
-    {state.status === "failed" ? <p role="alert">{state.message}</p> : null}
+    {state.status === "failed" ? <p role={cancelled ? "status" : "alert"}>{state.message}</p> : null}
     {state.status === "installed" ? <p role="status">The {snapshot.engineName.toLowerCase()} engine is installed.</p> : null}
     {state.status === "installing" ? <div role="status">
       <p>Step {state.step} of {state.steps}: {state.phase}</p>

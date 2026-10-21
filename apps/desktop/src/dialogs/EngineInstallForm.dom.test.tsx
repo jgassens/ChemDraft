@@ -47,3 +47,20 @@ it.each([
     act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
   }
 });
+
+it("presents a user-cancelled install as neutral status text", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(EngineInstallForm, {
+      snapshot: { ...engineInstallFixture(), state: { status: "failed", message: "Installation was cancelled." }, buttons: ["close"] },
+      onAction: vi.fn(),
+      platform: "windows"
+    })));
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was cancelled.");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
+  }
+});

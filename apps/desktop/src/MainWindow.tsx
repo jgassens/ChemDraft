@@ -10356,9 +10356,15 @@ export function MainWindow({
         const applied = applyPluginDocumentPatch(documentRef.current, patch);
         commitDocumentChange(applied.document, undoLabel);
         setSelectedNativeMoleculePart(undefined);
+        const insertedObject = patch.patch.op === "addObject" ? patch.patch.object : undefined;
+        const insertedDescription = insertedObject?.type === "molecule"
+          ? "structure"
+          : insertedObject?.type === "text"
+            ? patch.reason === "Insert Name" ? "name" : "text"
+            : undefined;
         setStatus(
-          applied.receipt.objectIds.length > 0
-            ? `${plugin.name}: inserted structure`
+          applied.receipt.objectIds.length > 0 && insertedDescription
+            ? `${plugin.name}: inserted ${insertedDescription}`
             : `${plugin.name}: applied ${command.title}`
         );
         return applied.receipt;

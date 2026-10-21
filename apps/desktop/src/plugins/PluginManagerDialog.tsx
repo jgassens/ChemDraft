@@ -848,11 +848,16 @@ function RecognitionEngineRow({
   const runError = !installing ? run?.error : undefined;
   // A followed check that did not pass already says why in the host's words; "could not be installed"
   // would misname it, since nothing was being installed.
+  const cancelled = runError?.code === "cancelled";
   const runErrorText =
     runError && status
       ? run?.engineCheck && runError.code === "failed"
         ? runError.message
-        : naming ? `The naming engine could not be installed: ${runError.message}` : recognitionInstallErrorMessage(runError, status)
+        : cancelled
+          ? "Installation was cancelled."
+          : naming
+            ? `The naming engine could not be installed: ${runError.message}`
+            : recognitionInstallErrorMessage(runError, status)
       : undefined;
   // The host's plain reason, such as an engine from an older ChemDraft that no longer matches — unless
   // the run error above already says exactly that.
@@ -877,7 +882,7 @@ function RecognitionEngineRow({
         </p>
       ) : null}
       {runErrorText ? (
-        <p className="plugin-manager-update-status is-error" data-testid="molscribe-engine-install-error" role="alert">
+        <p className={`plugin-manager-update-status${cancelled ? "" : " is-error"}`} data-testid="molscribe-engine-install-error" role={cancelled ? "status" : "alert"}>
           {runErrorText}
         </p>
       ) : null}

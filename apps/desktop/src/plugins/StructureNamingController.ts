@@ -36,6 +36,10 @@ export class StructureNamingController {
   private documentTabId?: () => string | undefined;
   private revealInstall?: () => void;
   private installDocumentTabId?: string;
+  /** A status read that began before an install must not restore its transient `installing` state
+   * after that install has already ended. The catalog review deliberately refreshes status without
+   * blocking its Install button, so this race is ordinary rather than exceptional. */
+  private statusRevision = 0;
   getInstallDocumentTabId = (): string | undefined => this.installDocumentTabId;
   private listeners = new Set<() => void>();
   constructor(private readonly engine: StructureNamingEngine,
@@ -53,12 +57,17 @@ export class StructureNamingController {
     return () => { if (--this.presenters === 0 && this.pending) this.decline(this.pending.id); };
   }
   async refreshStatus(): Promise<StructureNamingEngineStatus> {
-    this.latestStatus = await this.engine.status();
-    this.notify();
-    return this.latestStatus;
+    const revision = this.statusRevision;
+    const status = await this.engine.status();
+    if (revision === this.statusRevision) {
+      this.latestStatus = status;
+      this.notify();
+    }
+    return status;
   }
   installEngine(): Promise<boolean> {
     if (this.installPromise) return this.installPromise;
+    this.statusRevision++;
     this.run = { running: true, startedAt: Date.now(), phaseStartedAt: Date.now() };
     const run = this.run;
     this.installPromise = this.engine.install(progress => {
@@ -71,7 +80,11 @@ export class StructureNamingController {
       this.run = undefined;
       return true;
     }).catch((error: unknown) => {
-      const normalized = isStructureRecognitionInstallError(error) ? error : { code: "failed" as const, message: messageOf(error) };
+      const normalized = isStructureRecognitionInstallError(error)
+        ? error.code === "cancelled"
+          ? { code: "cancelled" as const, message: "Installation was cancelled." }
+          : error
+        : { code: "failed" as const, message: messageOf(error) };
       this.run = { ...(this.run ?? run), running: false, error: normalized };
       if (normalized.code === "unsupported") this.latestStatus = { state: "unsupported", requiredDiskBytes: 0, freeDiskBytes: 0, detail: normalized.message };
       return false;
@@ -80,7 +93,14 @@ export class StructureNamingController {
     return this.installPromise;
   }
   async cancelEngineInstall(): Promise<void> { await this.engine.cancelInstall(); }
-  async uninstall(): Promise<void> { this.latestStatus = await this.engine.uninstall(); this.run = undefined; this.notify(); }
+  async uninstall(): Promise<void> {
+    const revision = ++this.statusRevision;
+    const status = await this.engine.uninstall();
+    if (revision !== this.statusRevision) return;
+    this.latestStatus = status;
+    this.run = undefined;
+    this.notify();
+  }
   async install(id: number): Promise<void> {
     const pending = this.pending;
     if (!pending || pending.id !== id || pending.installing) return;

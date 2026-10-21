@@ -341,6 +341,8 @@ describe("closing a report window through the OS (Window > Close Window, Cmd+W)"
 // chooses — here, in the middle of a canvas drag.
 const DIRECT_WRITE_PLUGIN_ID = "org.chemdraft.test.direct-write";
 const DIRECT_WRITE_COMMAND_ID = "plugin.directWriteFixture.insert";
+const DIRECT_TEXT_WRITE_PLUGIN_ID = "org.chemdraft.test.direct-text-write";
+const DIRECT_TEXT_WRITE_COMMAND_ID = "plugin.directTextWriteFixture.insert";
 
 function registerDirectWritePlugin(pageId: string): { release: () => void } {
   let release!: () => void;
@@ -391,6 +393,45 @@ function registerDirectWritePlugin(pageId: string): { release: () => void } {
     }
   );
   return { release };
+}
+
+function registerDirectTextWritePlugin(pageId: string, reason: string): void {
+  harness.runtime!.registerPlugin(
+    {
+      id: DIRECT_TEXT_WRITE_PLUGIN_ID,
+      name: "Direct Text Write Fixture",
+      version: "0.0.1",
+      apiVersion: "^0.1.6",
+      entry: "test:direct-text-write",
+      permissions: ["document.write"],
+      contributes: {
+        commands: [{ id: DIRECT_TEXT_WRITE_COMMAND_ID, title: "Insert Text", requiredPermissions: ["document.write"] }]
+      }
+    },
+    {
+      commandHandlers: {
+        [DIRECT_TEXT_WRITE_COMMAND_ID]: async (context) => context.documents.applyPatch!({
+          reason,
+          patch: {
+            op: "addObject",
+            pageId,
+            object: {
+              id: `text_${reason.replaceAll(" ", "_")}`,
+              type: "text",
+              x: 400,
+              y: 300,
+              width: 80,
+              height: 20,
+              rotation: 0,
+              style: {},
+              text: "ethanol",
+              spans: []
+            }
+          }
+        })
+      }
+    }
+  );
 }
 
 function dispatchPen(target: EventTarget, type: "pointerdown" | "pointermove" | "pointerup", x: number, y: number): void {
@@ -483,6 +524,18 @@ describe("a plugin's direct write that lands during a canvas drag", () => {
     expect(receipt).toEqual({ applied: true, objectIds: ["mol_named_001"] });
     expect(objectIds(bridge)).toEqual(["mol_named_001"]);
     expect(statusText()).toBe("Direct Write Fixture: inserted structure");
+  });
+
+  it.each([
+    ["Insert Name", "inserted name"],
+    ["Add generated label", "inserted text"]
+  ])("describes text patches from their reason (%s)", async (reason, expected) => {
+    const bridge = await renderMainWindow();
+    registerDirectTextWritePlugin(bridge.snapshot().document.pages[0]!.id, reason);
+    await act(async () => {
+      await harness.runtime!.host.invokeCommand(DIRECT_TEXT_WRITE_COMMAND_ID);
+    });
+    expect(statusText()).toBe(`Direct Text Write Fixture: ${expected}`);
   });
 });
 

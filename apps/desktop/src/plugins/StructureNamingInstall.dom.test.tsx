@@ -79,7 +79,7 @@ it.each(["Close", "title-bar"])("%s before completion returns engineNotInstalled
   await act(async () => finish(namingInstalled));
   expect(h.engine.name).not.toHaveBeenCalled();
 });
-it("Cancel installation calls the native cancellation and displays the failure", async () => {
+it("Cancel installation calls the native cancellation and displays neutral cancellation text", async () => {
   const h = setup(); let fail!: (error: unknown) => void;
   vi.mocked(h.engine.install).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
   vi.mocked(h.engine.cancelInstall).mockImplementation(async () => { fail({ code: "cancelled", message: "Installation cancelled." }); });
@@ -88,7 +88,8 @@ it("Cancel installation calls the native cancellation and displays the failure",
   await act(async () => h.button("Cancel installation").click());
   expect(h.engine.cancelInstall).toHaveBeenCalledOnce();
   expect(await result).toEqual({ status: "cancelled" });
-  expect(container.textContent).toContain("Installation cancelled.");
+  expect(container.textContent).toContain("Installation was cancelled.");
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was cancelled.");
 });
 it("shows broken detail and Install engine again", async () => {
   const h = setup("broken"); const { result } = await h.start();

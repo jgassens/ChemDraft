@@ -98,6 +98,63 @@ describe("naming engine catalog ownership", () => {
     expect(engine.install).toHaveBeenCalledOnce();
   });
 
+  it("shows a catalog-started naming install failure without reopening, even when the review's status read arrives late", async () => {
+    const notInstalled = { state: "notInstalled" as const, requiredDiskBytes: 1e9, freeDiskBytes: 8e9 };
+    const engine = fakeNamingEngine(notInstalled);
+    let resolveStaleStatus!: (status: typeof notInstalled & { state: "installing" }) => void;
+    vi.mocked(engine.status).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveStaleStatus = resolve; })
+    ).mockResolvedValue(notInstalled);
+    vi.mocked(engine.install).mockRejectedValue({ code: "network", message: "The download connection was lost." });
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
+    const official = { ...namingManifest, id: "org.chemdraft.naming.orthonym" };
+    const prepared: PreparedOfficialPluginInstall = {
+      ...pickedPackage(official), pluginId: official.id, checksumVerified: true
+    };
+    mount(createElement(OfficialCatalogHarness, { runtime, prepare: async () => prepared }));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${official.id}"]`)!.click();
+    });
+    await vi.waitFor(() => expect(engine.status).toHaveBeenCalled());
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>("[data-action=confirm-install-package]")!.click();
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="naming-engine-row"]')).not.toBeNull());
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent)
+      .toBe("The naming engine could not be installed: The download connection was lost."));
+
+    // The status request that began while the catalog review was open must not put a stopped run
+    // back into its final progress phase.
+    await act(async () => resolveStaleStatus({ ...notInstalled, state: "installing" }));
+    expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent)
+      .toBe("The naming engine could not be installed: The download connection was lost.");
+    expect(document.querySelector('[data-testid="recognition-install-progress"]')).toBeNull();
+  });
+
+  it("reports a cancelled naming install neutrally in the installed plugin row", async () => {
+    const engine = fakeNamingEngine({ state: "notInstalled", requiredDiskBytes: 1e9, freeDiskBytes: 8e9 });
+    let failInstall!: (error: unknown) => void;
+    vi.mocked(engine.install).mockImplementation(() => new Promise((_resolve, reject) => { failInstall = reject; }));
+    vi.mocked(engine.cancelInstall).mockImplementation(async () => {
+      failInstall({ code: "cancelled", message: "Naming engine installation cancelled." });
+    });
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
+    const official = { ...namingManifest, id: "org.chemdraft.naming.orthonym" };
+    mount(createElement(Harness, {
+      runtime,
+      installedPlugins: [installedEntry(official)],
+      onClose: vi.fn(),
+      onPluginsChanged: vi.fn()
+    }));
+    await vi.waitFor(() => expect(document.querySelector('[data-action="install-naming-engine"]')).not.toBeNull());
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-action="install-naming-engine"]')!.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-action="cancel-naming-engine-install"]')!.click());
+    const message = document.querySelector('[data-testid="molscribe-engine-install-error"]')!;
+    expect(message.textContent).toBe("Installation was cancelled.");
+    expect(message.className).not.toContain("is-error");
+    expect(message.getAttribute("role")).toBe("status");
+  });
+
   it("chooses the Naming engine row by requiresEngine, including another catalog id", async () => {
     const catalog = OFFICIAL_PLUGIN_CATALOG as OfficialPluginCatalogEntry[];
     const alias = { ...catalog.find(entry => entry.requiresEngine === "structureNaming")!, pluginId: "org.chemdraft.test.otherNaming" };
