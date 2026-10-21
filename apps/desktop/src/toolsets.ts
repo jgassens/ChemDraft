@@ -16,6 +16,7 @@ import {
   type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { isCompoundLayoutCommand, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
 import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
 import type { CommandSpec } from "./commands";
@@ -65,6 +66,24 @@ export interface ToolbarPaletteItemModel {
 export const desktopToolsets = parseToolsetManifest<IconName, ToolbarAssetName>(manifest);
 export const desktopToolsetRegistry = createDesktopToolsetRegistry();
 export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
+
+/** Filter only the displayed catalog; saved customization keeps disabled feature entries intact. */
+export function compoundLayoutRegistry(registry: DesktopToolsetRegistry, enabled: boolean): DesktopToolsetRegistry {
+  if (enabled) return registry;
+  return new ToolsetRegistry<IconName, ToolbarAssetName>(registry.listToolsets().map((toolset): DesktopToolsetDefinition => ({
+    ...toolset,
+    groups: toolset.groups.map(group => ({
+      ...group,
+      items: group.items.filter(item => {
+        const id = item.primary?.type === "command" ? item.primary.commandId : item.commandId ?? item.id;
+        return !id || !isCompoundLayoutCommand(id);
+      }).map(item => {
+        const items = item.submenu?.items.filter(entry => !isCompoundLayoutCommand(entry.commandId));
+        return { ...item, submenu: item.submenu && items?.length ? { ...item.submenu, items } : null };
+      })
+    }))
+  })));
+}
 
 export function createDesktopToolsetRegistry(
   layoutState?: unknown,
@@ -116,14 +135,17 @@ function legacyMainGroupsFromFlattenedManifest(): ToolsetGroupDefinition<IconNam
     .find((toolset) => toolset.id === "core.main")
     ?.groups.find((group) => group.id === MAIN_ITEMS_GROUP_ID)
     ?.items ?? [];
+  // Opt-in controls were never part of the historical seven-group defaults. Excluding them
+  // preserves saved section order and addition indices; unlisted new tools append normally.
+  const legacyItems = mainItems.filter(item => !isCompoundLayoutCommand(item.commandId ?? item.id ?? ""));
   let start = 0;
   return LEGACY_MAIN_GROUP_IDS.map((groupId, sectionIndex) => {
     const dividerId = LEGACY_MAIN_DIVIDER_IDS[sectionIndex];
-    const dividerIndex = mainItems.findIndex(
+    const dividerIndex = legacyItems.findIndex(
       (item, itemIndex) => itemIndex >= start && toolsetItemCustomizationId(item) === dividerId
     );
-    const end = dividerIndex >= 0 ? dividerIndex : mainItems.length;
-    const group = { id: groupId, items: mainItems.slice(start, end) };
+    const end = dividerIndex >= 0 ? dividerIndex : legacyItems.length;
+    const group = { id: groupId, items: legacyItems.slice(start, end) };
     start = dividerIndex >= 0 ? dividerIndex + 1 : end;
     return group;
   });
@@ -368,7 +390,8 @@ export interface ToolbarPaletteGroupModel {
 export function getToolsetPaletteGroups(
   toolsetId: string,
   registry: DesktopToolsetRegistry = desktopToolsetRegistry,
-  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map()
+  commandOverrides: ReadonlyMap<string, CommandSpec> = new Map(),
+  layoutsEnabled = loadCompoundLayoutSettings().enabled
 ): ToolbarPaletteGroupModel[] {
   // Items absent from this core toolset's shipped definition are persisted custom additions. Their
   // stored item shell is placement only; visual/interactive command semantics must follow the live
@@ -382,15 +405,17 @@ export function getToolsetPaletteGroups(
   );
   return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) => ({
     id: group.id,
-    items: group.items.map((item) => {
+    items: group.items.filter(item => layoutsEnabled || (item.primary.type !== "command" || !isCompoundLayoutCommand(item.primary.commandId))).map((item) => {
       const commandId = item.primary.type === "command" ? item.primary.commandId : undefined;
       const isGeneratedLauncher = commandId?.startsWith("view.toolset.toggle.") === true;
       const isCustomCoreAddition = Boolean(shippedToolset) && !shippedItemIds.has(item.id);
-      return toolsetItemToPaletteItem(
+      const model = toolsetItemToPaletteItem(
         item,
         commandOverrides,
         isGeneratedLauncher || isCustomCoreAddition
       );
+      if (!layoutsEnabled && model.submenu) model.submenu.items = model.submenu.items.filter(command => !isCompoundLayoutCommand(command.id));
+      return model;
     })
   }));
 }

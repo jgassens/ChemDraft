@@ -120,17 +120,19 @@ waits for the sweep: all three take one staging lock before touching these direc
    staging tree is renamed to `ocsr-engine/`. uv writes the interpreter's location as an absolute path
    — the venv's `python` link, `pyvenv.cfg`'s `home`, and the managed Python's minor-version link —
    so those paths still point into the staging directory, which no longer exists. The installer
-   rewrites every symlink under the tree whose target lies in the staging prefix, and the `home` line,
-   onto the final prefix (both the path as given and its canonical spelling).
+   rewrites symlinks and directory junctions under the tree whose target lies in the staging prefix, and the `home` line,
+   onto the final prefix (both the path as given and its canonical spelling). On Windows it then
+   re-runs the installed uv's `venv --allow-existing` against the final tree to regenerate the
+   absolute interpreter paths embedded in `python.exe` and `pythonw.exe` (see Adding Windows).
 9. **Prove it.** `python -c "import cv2, molscribe, numpy, torch, torchvision"` runs from the final
    location. This is the only check that the relocation worked, so it runs after the swap, not before.
-   If it fails or is cancelled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
+   If the launcher rewrite or probe fails or is cancelled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
    a failed reinstall never costs the user a working engine. On success the previous tree is removed.
 
 Every child process runs with inherited `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*` and `CONDA*`
 variables removed and `UV_NO_CONFIG=1`, so ambient configuration cannot redirect the reviewed install
 to another index, mirror or interpreter. uv's cache, temporary, state and executable-link directories
-are all redirected into the staging tree. Cancellation is a flag checked between download chunks and
+are all redirected into the staging tree, or the final tree during a Windows launcher refresh. Cancellation is a flag checked between download chunks and
 every 50 ms while a uv child runs, which is then killed **with everything it started**: each child
 runs in its own process group on Unix, and the whole group gets SIGKILL (on Windows, `taskkill /T /F`
 with `CREATE_NEW_PROCESS_GROUP`; unverified, see Adding Windows). Killing uv alone would leave the
@@ -179,15 +181,16 @@ costs every existing user a 2.4 GB re-download. Instead, the first status call t
 on its own thread and reports `installing` with phase `verifying` ("Checking the installation") while
 it runs; the check never runs on the main thread (a synchronous Tauri command does) and never runs
 twice. It takes the install's `installing` flag and staging lock, so a real install waits, uninstall
-cancels it, and the startup sweep leaves the tree alone. Nothing is downloaded, and nothing is written
-except the new receipt. In order, cheapest first (`upgrade.rs`):
+cancels it, and the startup sweep leaves the tree alone. Nothing is downloaded; Windows refreshes
+the venv launchers, and the only other write is the new receipt. In order, cheapest first (`upgrade.rs`):
 
 1. The old receipt's uv, Python, MolScribe and model pins equal the current ones.
 2. The bundled requirements file is the reviewed lock (`REQUIREMENTS_LOCK_SHA256`).
 3. The installed `uv --version` is the pinned version.
-4. `venv/bin/python -I -B -c …` imports `cv2, molscribe, numpy, torch, torchvision` (as the post-install
-   check does), then prints its PEP 508 marker environment; its Python must be the pinned minor
-   version. `-B` keeps it from writing bytecode into the engine.
+4. Windows first refreshes the venv launchers using the final managed Python path (see Adding
+   Windows). The platform's venv Python then runs `-I -B -c …` and imports `cv2, molscribe, numpy,
+   torch, torchvision` (as the post-install check does), then prints its PEP 508 marker environment;
+   its Python must be the pinned minor version. `-B` keeps it from writing bytecode into the engine.
 5. The venv's packages, read from each `*.dist-info/METADATA`, equal the lock by `name==version`
    exactly: every lock entry whose marker holds for that environment is installed at its version, and
    nothing else is installed except MolScribe. A marker, variable or requirement form the evaluator
@@ -527,7 +530,7 @@ indicator's own subscription (`subscribeActivity`), so a reading never re-render
 
 `EnginePlatform` (`src/local_engine/platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
 and venv interpreter paths, and child-process flags. `platform::current()` picks one with `#[cfg]`;
-nothing else in the installer or process manager branches on the OS. Free-disk queries and
+the installer's junction relocation and venv launcher refresh are the other OS-specific steps. Free-disk queries and
 `kill_process_tree` are the other per-OS functions (`statvfs` and `killpg` on Unix,
 `GetDiskFreeSpaceExW` and `taskkill /T /F` on Windows).
 
@@ -535,26 +538,64 @@ nothing else in the installer or process manager branches on the OS. Free-disk q
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
 | macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
-| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | implemented, never run |
+| Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | junction relocation and final-tree launcher refresh implemented; automated Windows validation pending |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
 ## Adding Windows
 
-The Windows implementation compiles in the seam but has never been built or run on Windows, and CI
-runs Rust checks only on macOS. Before calling it release-ready:
+A Windows install exposed two independent relocation problems. uv creates a directory junction for
+the managed Python's minor version; replacing it with a symlink failed with error 1314 for an ordinary
+user. Relocation preserves the junction through `FSCTL_SET_REPARSE_POINT`, using the existing
+`windows-sys` dependency, and rebases its absolute target. Real symlinks retain their type; recreating
+a junction needs neither Developer Mode nor elevation.
+
+uv also writes `venv/Scripts/python.exe` and `pythonw.exe` as trampolines with the **absolute** base
+interpreter path embedded near the end. `--relocatable` does not make that path relative, and the
+trampolines ignore `pyvenv.cfg`. After a staging rename, their embedded `.partial` path is missing:
+the post-swap check fails with "uv trampoline failed to spawn Python child process" and
+"entity not found (os error 2)". Rebasing junctions and rewriting `pyvenv.cfg` cannot fix this.
+
+After relocation and before probing, the shared commit now runs this local command (paths shown
+schematically; the Python minor comes from `EngineSpec`, 3.10 for MolScribe and 3.12 for naming):
+
+```text
+<final>/uv.exe venv <final>/venv --allow-existing --offline --python <final>/python/cpython-<minor>-windows-x86_64-none/python.exe --python-preference only-managed --relocatable
+```
+
+The platform supplies the installed uv path. `UV_PYTHON_INSTALL_DIR`, `UV_PYTHON_BIN_DIR`,
+`UV_STATE_DIR`, `UV_CACHE_DIR` and the temporary directories point into the final tree, and
+`UV_NO_CONFIG=1`; inherited uv/pip/Python environment overrides are scrubbed exactly as for other
+uv runs. The rewrite removes `download-cache/` afterwards, as well as any temporary directory
+it created. This regenerates both launchers without changing site-packages or downloading anything.
+The harmless staging reference in distribution `direct_url.json` metadata is left alone.
+The tester verified the command by hand on a real Windows machine: about one second, and the
+post-swap probe then passed. This change's Windows stub tests have not been run on the macOS host.
+
+The command uses the same `RunningChild`, cancellation, process-tree kill and `CREATE_NO_WINDOW`
+handling as all other uv runs. Failure or cancellation rolls the swap back just like a failed probe.
+Restoring `previous` during rollback or interrupted-install reconciliation refreshes the launchers
+again at the final path; a failed startup reconciliation retains the previous tree for a later retry.
+The startup sweep uses local process IO without constructing an HTTP client. During reinstall,
+a non-cancelled recovery failure is logged with its stderr tail and the unusable old trees are
+discarded so the fresh install can proceed. If that new install fails, no broken rollback is restored.
+Cancellation still aborts reinstall and preserves the previous tree.
+Rollback always renames the old engine back. If already cancelled, it skips the refresh because the
+old launchers already name the final path; no new child starts after cancellation or app exit.
+The legacy-receipt check also refreshes Windows launchers before its Python probe. Unix does nothing
+extra: symlink relocation already repairs its venv interpreter.
+
+Before calling it release-ready:
 
 - Build and run `cargo clippy --all-targets -- -D warnings` and `cargo test` on Windows.
 - Run a real clean install and uninstall, including cancellation during each external step, and quit
   the app mid-install: no `uv.exe` or `python.exe` may survive. `taskkill /T` cannot reach a
   descendant whose parent has already exited; a job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
   would, and would also cover ChemDraft crashing, so it is the stronger fix once this can be tested.
-- **Relocation is the open question.** On Windows, uv links the managed Python's minor-version
-  directory with a junction, and the venv's `python.exe` is a launcher that reads `pyvenv.cfg`. The
-  `pyvenv.cfg` rewrite should be enough for the venv, but `std` cannot create junctions, and recreating
-  a link with `symlink_dir` needs Developer Mode or elevation, so a junction pointing into the staging
-  directory may fail to relocate. If it does, the post-swap import check fails and the install rolls
-  back cleanly rather than leaving a broken engine. The likely fixes are to create the junction through
-  the Win32 API, or to install with `UV_PYTHON_INSTALL_DIR` outside the renamed tree.
+- Run the junction relocation regression test as an ordinary user with Developer Mode disabled,
+  then complete a clean engine install. Confirm the junction targets the final directory, both venv
+  launchers embed the final managed interpreter path, and the post-swap import check and real
+  recognition succeed. Exercise reinstall rollback and interrupted-swap recovery too. Failure must
+  still roll back cleanly rather than leave a broken engine.
 - Check torch wheel resolution for Python 3.10 on Windows, and paths with spaces and non-ASCII
   characters (the sidecar's image path must be valid Unicode).
 - A new architecture (e.g. Windows arm64) needs an upstream uv asset and a reviewed checksum in

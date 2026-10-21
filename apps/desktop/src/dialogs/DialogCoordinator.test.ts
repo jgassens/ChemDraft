@@ -14,7 +14,7 @@ function host(options: { timeout?: number } = {}) {
     open: vi.fn(async s => { calls.push("open"); snapshot = s as typeof snapshot; return registration; }),
     publish: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
-  const owner = { applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
+  const owner = { previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
   const coordinator = new DialogCoordinator(transport, owner, { readyTimeoutMs: options.timeout ?? 100 });
   const open = () => coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
   const message = (type: DialogMessage["type"], data: unknown, requestId = "action-1") => ({ ...dialogEnvelope(snapshot), type, data, requestId }) as DialogMessage;
@@ -131,6 +131,90 @@ describe("DialogCoordinator", () => {
     await h.coordinator.closeTab("tab-1"); finish({ hostId: "late", windowLabel: "dialog-main-pageSize-1" }); await opening;
     expect(h.transport.close).toHaveBeenCalledWith("late", "ownerTabClose"); expect(h.owner.onSettled).toHaveBeenCalledTimes(1); await h.coordinator.dispose();
   });
+});
+
+it("delivers large Unicode previews in bounded chunks and commits spacing only on Save", async () => {
+  const h=host(); await h.coordinator.openArrangementSpacing('tab-1',{title:'Drawing',minPercent:25,maxPercent:150});
+  await h.deliver(h.message('ready',{}));
+  const svg='<svg>'+ 'μ₆😀'.repeat(2000)+'</svg>';
+  h.owner.previewArrangementSpacing.mockReturnValue(svg);
+  await h.deliver(h.message('action',{action:'preview',percent:80}));
+  const chunks=vi.mocked(h.transport.publish).mock.calls.map(c=>c[1]).filter(m=>m.type==='preview');
+  expect(chunks.length).toBeGreaterThan(1);
+  for(const m of chunks) expect(new TextEncoder().encode(JSON.stringify({senderWindowId:'main',windowLabel:'dialog-main-arrangementSpacing-1',message:m})).length).toBeLessThan(4096);
+  const base64=chunks.map(m=>m.type==='preview'?m.data.chunk:'').join('');
+  expect(new TextDecoder().decode(Uint8Array.from(atob(base64),c=>c.charCodeAt(0)))).toBe(svg);
+  expect(h.owner.applyArrangementSpacing).not.toHaveBeenCalled();
+  await h.deliver(h.message('action',{action:'apply',percent:80},'save'));
+  await h.deliver(h.message('action',{action:'apply',percent:80},'save-again'));
+  expect(h.owner.applyArrangementSpacing).toHaveBeenCalledExactlyOnceWith('tab-1',80);
+  expect(h.owner.applyPageSize).not.toHaveBeenCalled();await h.coordinator.dispose();
+});
+it("coalesces preview requests and cancels both kinds when their originating tab closes", async () => {
+  const h=host();await h.coordinator.openArrangementSpacing('tab-1',{title:'Drawing',minPercent:25,maxPercent:150});
+  await h.deliver(h.message('ready',{}));
+  let resolve!:(svg:string)=>void;
+  h.owner.previewArrangementSpacing.mockImplementationOnce(()=>new Promise(r=>{resolve=r;}));
+  const first=h.deliver(h.message('action',{action:'preview',percent:80},'first'));
+  await h.deliver(h.message('action',{action:'preview',percent:90},'latest'));
+  resolve('<svg/>');await first;
+  expect(vi.mocked(h.transport.publish).mock.calls.every(c=>c[1].requestId==='latest')).toBe(true);
+  await h.open();await h.coordinator.closeTab('tab-1');
+  expect(h.transport.close).toHaveBeenCalledTimes(2);expect(h.owner.onSpacingSettled).toHaveBeenCalledOnce();
+  await h.coordinator.dispose();
+});
+it("retains a preview requested before the native open reply arrives", async () => {
+  const h=host(); const original=vi.mocked(h.transport.open).getMockImplementation()!;
+  let finish!:(value:{hostId:string;windowLabel:string})=>void;
+  vi.mocked(h.transport.open).mockImplementation(async snapshot=>{
+    await original(snapshot);
+    return new Promise(resolve=>{finish=resolve;});
+  });
+  const opening=h.coordinator.openArrangementSpacing('tab-1',{title:'Drawing',minPercent:25,maxPercent:150});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  await h.deliver(h.message('ready',{}));
+  await h.deliver(h.message('action',{action:'preview',percent:100}));
+  expect(h.owner.previewArrangementSpacing).not.toHaveBeenCalled();
+  finish({hostId:'opaque',windowLabel:'dialog-main-pageSize-1'});await opening;
+  expect(h.owner.previewArrangementSpacing).toHaveBeenCalledExactlyOnceWith('tab-1',100);
+  expect(h.transport.publish).toHaveBeenCalledWith('opaque',expect.objectContaining({type:'preview'}));
+  await h.coordinator.dispose();
+});
+
+it("keeps spacing, Export and Page Size independent on the same tab", async () => {
+  const h = host();
+  vi.mocked(h.transport.open).mockImplementation(async snapshot => ({
+    hostId: snapshot.dialogKind, windowLabel: `dialog-main-${snapshot.dialogKind}-1`
+  }));
+  const exportOwner = vi.fn(async () => ({ status: "exported" as const }));
+  const coordinator = new DialogCoordinator(h.transport, { ...h.owner, export: exportOwner });
+  try {
+    await coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
+    await coordinator.openArrangementSpacing("tab-1", { title: "Drawing", minPercent: 25, maxPercent: 150 });
+    await coordinator.openExport("tab-1", { title: "Drawing", options: exportFixture() });
+    const snapshots = vi.mocked(h.transport.open).mock.calls.map(call => call[0]);
+    const deliver = (snapshot: DialogMessage, type: string, data: unknown, sender = `dialog-main-${snapshot.dialogKind}-1`) => coordinator.receive({
+      message: { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type, data },
+      senderWindowId: sender, windowLabel: `dialog-main-${snapshot.dialogKind}-1`
+    });
+    for (const snapshot of snapshots) await deliver(snapshot, "ready", {});
+    const [page, spacing, exp] = snapshots;
+    await deliver(spacing, "action", { action: "apply", percent: 80 }, "dialog-main-export-1");
+    expect(h.owner.applyArrangementSpacing).not.toHaveBeenCalled();
+    await deliver(spacing, "action", { action: "preview", percent: 80 });
+    expect(h.owner.previewArrangementSpacing).toHaveBeenCalledExactlyOnceWith("tab-1", 80);
+    await coordinator.closeArrangementSpacing();
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("arrangementSpacing", "cancel");
+    expect(coordinator.exportSessionId("tab-1")).toBe(exp.sessionId);
+    await deliver(exp, "action", { action: "export", options: exportFixture() });
+    expect(exportOwner).toHaveBeenCalledOnce();
+    await deliver(page, "action", { action: "apply", width: 10, height: 15, unit: "inch" });
+    expect(h.owner.applyPageSize).toHaveBeenCalledExactlyOnceWith("tab-1", { action: "apply", width: 10, height: 15, unit: "inch" });
+    expect(h.transport.close).toHaveBeenCalledWith("pageSize", "apply");
+    expect(coordinator.exportSessionId("tab-1")).toBe(exp.sessionId);
+    await coordinator.closeTab("tab-1");
+    expect(h.transport.close).toHaveBeenCalledWith("export", "ownerTabClose");
+  } finally { await coordinator.dispose(); await h.coordinator.dispose(); }
 });
 
 it("rejects stale previews and allows export while a preview is pending", async () => {

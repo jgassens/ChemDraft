@@ -57,6 +57,8 @@ where
 pub enum RunStep {
     InstallPython,
     CreateVenv,
+    #[cfg(windows)]
+    RewriteVenvLaunchers,
     InstallPackages,
     Extra,
     VerifyEnvironment,
@@ -119,11 +121,20 @@ pub trait InstallIo: Send + Sync {
 
 pub struct SystemInstallIo<S: EngineSpec> {
     spec: std::marker::PhantomData<S>,
-    client: reqwest::blocking::Client,
+    client: Option<reqwest::blocking::Client>,
     pub(crate) running: Arc<RunningChild>,
 }
 
 impl<S: EngineSpec> SystemInstallIo<S> {
+    /// Recovery runs local processes and must never require an HTTP client.
+    pub fn offline(running: Arc<RunningChild>) -> Self {
+        Self {
+            spec: std::marker::PhantomData,
+            client: None,
+            running,
+        }
+    }
+
     pub fn new(running: Arc<RunningChild>) -> Result<Self, InstallError> {
         let mut io = Self::from_builder(reqwest::blocking::Client::builder())?;
         io.running = running;
@@ -147,7 +158,7 @@ impl<S: EngineSpec> SystemInstallIo<S> {
             })?;
         Ok(Self {
             spec: std::marker::PhantomData,
-            client,
+            client: Some(client),
             running: Arc::default(),
         })
     }
@@ -184,6 +195,8 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         check_cancel::<S>(cancel)?;
         let mut response = self
             .client
+            .as_ref()
+            .ok_or_else(|| InstallError::network("Downloads are disabled during engine recovery"))?
             .get(spec.url)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
@@ -268,17 +281,52 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        if _step == RunStep::RewriteVenvLaunchers {
+            command.stderr(Stdio::piped());
+        }
         platform.configure_child(&mut command);
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
+        #[cfg(windows)]
+        if _step == RunStep::RewriteVenvLaunchers {
+            let stderr = child.stderr.take().expect("piped rewrite stderr");
+            let reader = std::thread::spawn(move || stderr_tail(stderr));
+            let outcome = self.supervise(&mut child, program, cancel, watch, None);
+            let tail = reader.join().unwrap_or_default();
+            return outcome.map_err(|mut error| {
+                if !tail.is_empty() {
+                    error.message.push_str(&format!("\nstderr: {tail}"));
+                }
+                error
+            });
+        }
         self.supervise(&mut child, program, cancel, watch, None)
     }
 }
 
+/// Drain the pipe while retaining only the final 8 KiB, so a chatty uv cannot block or
+/// grow memory without bound and recovery failures include the useful diagnostic tail.
+#[cfg(any(windows, test))]
+pub(super) fn stderr_tail(mut reader: impl Read) -> String {
+    let mut tail = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..read]);
+        if tail.len() > 8192 {
+            tail.drain(..tail.len() - 8192);
+        }
+    }
+    String::from_utf8_lossy(&tail).trim().to_owned()
+}
+
 /// Runs a program and returns what it wrote to stdout: the seam the in-place receipt upgrade uses
 /// to ask the installed uv and Python what they are.
-pub trait ProbeIo: Send + Sync {
+pub trait ProbeIo: InstallIo {
     fn output(
         &self,
         platform: &dyn EnginePlatform,
@@ -448,32 +496,9 @@ pub fn install<S: EngineSpec>(
 
     let python_install_dir = partial.join("python");
     let cache_dir = partial.join("download-cache");
-    let python_bin_dir = partial.join("python-bin");
-    let state_dir = partial.join("uv-state");
     let temp_dir = partial.join("temp");
     fs::create_dir_all(&temp_dir).map_err(S::failed_io)?;
-    let environment = vec![
-        (
-            OsString::from("UV_PYTHON_INSTALL_DIR"),
-            python_install_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_CACHE_DIR"),
-            cache_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_PYTHON_BIN_DIR"),
-            python_bin_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("UV_STATE_DIR"),
-            state_dir.as_os_str().to_owned(),
-        ),
-        (OsString::from("UV_NO_CONFIG"), OsString::from("1")),
-        (OsString::from("TMPDIR"), temp_dir.as_os_str().to_owned()),
-        (OsString::from("TMP"), temp_dir.as_os_str().to_owned()),
-        (OsString::from("TEMP"), temp_dir.as_os_str().to_owned()),
-    ];
+    let environment = uv_environment(&partial);
     progress.report(message(
         InstallPhase::InstallingPython,
         "Installing the pinned managed Python runtime.",
@@ -594,6 +619,98 @@ pub fn install<S: EngineSpec>(
     Ok(receipt)
 }
 
+/// uv must never inherit a caller's interpreter, cache or configuration. Use the same
+/// engine-local directories before staging is swapped and when refreshing the final tree.
+fn uv_environment(root: &Path) -> Vec<(OsString, OsString)> {
+    let mut env: Vec<_> = [
+        ("UV_PYTHON_INSTALL_DIR", "python"),
+        ("UV_CACHE_DIR", "download-cache"),
+        ("UV_PYTHON_BIN_DIR", "python-bin"),
+        ("UV_STATE_DIR", "uv-state"),
+        ("TMPDIR", "temp"),
+        ("TMP", "temp"),
+        ("TEMP", "temp"),
+    ]
+    .into_iter()
+    .map(|(key, directory)| (OsString::from(key), root.join(directory).into_os_string()))
+    .collect();
+    env.push((OsString::from("UV_NO_CONFIG"), OsString::from("1")));
+    env
+}
+
+/// Windows uv launchers embed the absolute managed interpreter path, even with
+/// --relocatable, and ignore pyvenv.cfg. Regenerate both launchers after a move, preserving
+/// site-packages. The minor-version junction was already rebased by relocation.
+#[cfg(windows)]
+pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
+    root: &Path,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    check_cancel::<S>(cancel)?;
+    // Only x64 Windows is supported. For ARM64, change the managed Python triple here
+    // alongside the Windows uv pins in local_engine/pins.rs.
+    let python = root
+        .join("python")
+        .join(format!(
+            "cpython-{}-windows-x86_64-none",
+            S::python_version()
+        ))
+        .join("python.exe");
+    // The install removed its staging temp directory before the swap. uv may need it while
+    // replacing launchers; restore it briefly and leave an existing recovery temp tree alone.
+    let temp = root.join("temp");
+    let had_temp = temp.exists();
+    fs::create_dir_all(&temp).map_err(|error| {
+        InstallError::failed(format!(
+            "Could not prepare the venv launcher rewrite: {error}"
+        ))
+    })?;
+    let result = io.run(
+        platform,
+        RunStep::RewriteVenvLaunchers,
+        &platform.uv_executable(root),
+        &[
+            OsString::from("venv"),
+            root.join("venv").into_os_string(),
+            OsString::from("--allow-existing"),
+            OsString::from("--offline"),
+            OsString::from("--python"),
+            python.into_os_string(),
+            OsString::from("--python-preference"),
+            OsString::from("only-managed"),
+            OsString::from("--relocatable"),
+        ],
+        &uv_environment(root),
+        cancel,
+        None,
+    );
+    if !had_temp {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    let _ = fs::remove_dir_all(root.join("download-cache"));
+    result.map_err(|error| InstallError {
+        code: error.code,
+        message: format!(
+            "Could not rewrite the relocated venv launchers: {}",
+            error.message
+        ),
+    })?;
+    check_cancel::<S>(cancel)
+}
+
+// Unix venv interpreters are symlinks, which relocate_staged_tree already repairs.
+#[cfg(not(windows))]
+pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
+    _root: &Path,
+    _platform: &dyn EnginePlatform,
+    _io: &dyn InstallIo,
+    _cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    Ok(())
+}
+
 /// Swaps the verified staging tree into place and proves it works there.
 ///
 /// uv records the interpreter by absolute path — the venv's `python` link and `pyvenv.cfg`'s
@@ -647,14 +764,27 @@ fn commit_staged_tree<S: EngineSpec>(
 
     // A set-aside tree from an interrupted swap may be the only working engine: put it back in
     // place first if `engine/` is not, so it becomes the one this install falls back to.
-    reconcile_previous::<S>(paths, platform);
+    if let Err(error) = reconcile_previous::<S>(paths, platform, io, cancel) {
+        if error.code == super::InstallErrorCode::Cancelled {
+            return Err(error);
+        }
+        // Recovery logged the process error, including its stderr tail. Replace these
+        // unusable trees rather than allowing them to block reinstall or become rollback.
+        eprintln!(
+            "{} discarding unusable recovery trees before reinstall: {}",
+            S::LOG_PREFIX,
+            error.message
+        );
+        remove_tree::<S>(&paths.app_data, &previous).map_err(S::failed_io)?;
+        remove_tree::<S>(&paths.app_data, &final_dir).map_err(S::failed_io)?;
+    }
     remove_tree::<S>(&paths.app_data, &previous).map_err(S::failed_io)?;
     let had_previous = final_dir.exists();
     if had_previous {
         fs::rename(&final_dir, &previous).map_err(S::failed_io)?;
     }
     if let Err(error) = fs::rename(&partial, &final_dir) {
-        restore_previous::<S>(&final_dir, &previous, had_previous);
+        restore_previous::<S>(&final_dir, &previous, had_previous, platform, io, cancel);
         return Err(S::failed_io(error));
     }
     // From here the staging tree is gone; a failure retires the new tree instead.
@@ -662,6 +792,7 @@ fn commit_staged_tree<S: EngineSpec>(
 
     let outcome = relocate_staged_tree(&final_dir, &rebases)
         .map_err(S::relocation_error)
+        .and_then(|()| rewrite_venv_launchers::<S>(&final_dir, platform, io, cancel))
         .and_then(|()| S::verify_layout(&final_dir, platform))
         .and_then(|()| {
             io.run(
@@ -693,7 +824,14 @@ fn commit_staged_tree<S: EngineSpec>(
             // mid-delete would leave a half-deleted tree where the engine belongs.
             match retire_tree::<S>(&paths.app_data, &final_dir) {
                 Ok(discarded) => {
-                    restore_previous::<S>(&final_dir, &previous, had_previous);
+                    restore_previous::<S>(
+                        &final_dir,
+                        &previous,
+                        had_previous,
+                        platform,
+                        io,
+                        cancel,
+                    );
                     if let Some(discarded) = discarded {
                         delete_discarded::<S>(&discarded);
                     }
@@ -711,7 +849,14 @@ fn commit_staged_tree<S: EngineSpec>(
     }
 }
 
-fn restore_previous<S: EngineSpec>(final_dir: &Path, previous: &Path, had_previous: bool) {
+fn restore_previous<S: EngineSpec>(
+    final_dir: &Path,
+    previous: &Path,
+    had_previous: bool,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) {
     if had_previous && !final_dir.exists() {
         if let Err(error) = fs::rename(previous, final_dir) {
             eprintln!(
@@ -719,6 +864,16 @@ fn restore_previous<S: EngineSpec>(final_dir: &Path, previous: &Path, had_previo
                 S::LOG_PREFIX,
                 previous.display()
             );
+        } else if let Err(error) = rewrite_venv_launchers::<S>(final_dir, platform, io, cancel) {
+            // The old launchers already name final_dir, so cancellation can skip the refresh
+            // safely. Never start a new child after cancellation (including app exit).
+            if error.code != super::InstallErrorCode::Cancelled {
+                eprintln!(
+                    "{} could not refresh the restored engine: {}",
+                    S::LOG_PREFIX,
+                    error.message
+                );
+            }
         }
     }
 }
@@ -820,14 +975,19 @@ pub fn remove_engine_trees<S: EngineSpec>(
 /// is discarded. Otherwise, if it is healthy itself, it is restored: the unhealthy or missing
 /// `engine/` is retired and the previous engine renamed back. If neither is healthy both are
 /// left alone. Returns whether `engine.previous/` was removed from disk.
-fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn EnginePlatform) -> bool {
+fn reconcile_previous<S: EngineSpec>(
+    paths: &InstallPaths,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) -> Result<bool, InstallError> {
     let final_dir = paths.final_dir_for::<S>();
     let previous = paths.previous_dir_for::<S>();
     if !previous.exists() {
-        return false;
+        return Ok(false);
     }
     if is_healthy::<S>(&final_dir, platform) {
-        return match retire_tree::<S>(&paths.app_data, &previous) {
+        return Ok(match retire_tree::<S>(&paths.app_data, &previous) {
             Ok(discarded) => {
                 if let Some(discarded) = discarded {
                     delete_discarded::<S>(&discarded);
@@ -842,11 +1002,12 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
                 );
                 false
             }
-        };
+        });
     }
     if !S::is_restorable(&previous, platform) {
-        return false;
+        return Ok(false);
     }
+    check_cancel::<S>(cancel)?;
     let discarded = match retire_tree::<S>(&paths.app_data, &final_dir) {
         Ok(discarded) => discarded,
         Err(error) => {
@@ -855,35 +1016,96 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
                 S::LOG_PREFIX,
                 final_dir.display()
             );
-            return false;
+            return Ok(false);
         }
     };
-    match fs::rename(&previous, &final_dir) {
-        Ok(()) => eprintln!(
-            "{} restored the previous engine from {}",
+    let outcome = fs::rename(&previous, &final_dir)
+        .map_err(S::failed_io)
+        .and_then(|()| {
+            relocate_staged_tree(&final_dir, &[(previous.clone(), final_dir.clone())])
+                .map_err(S::relocation_error)
+        })
+        .and_then(|()| rewrite_venv_launchers::<S>(&final_dir, platform, io, cancel))
+        .and_then(|()| check_cancel::<S>(cancel));
+    if let Err(error) = outcome {
+        eprintln!(
+            "{} could not restore the previous engine: {}",
             S::LOG_PREFIX,
-            previous.display()
-        ),
-        Err(error) => eprintln!(
-            "{} could not restore the previous engine from {}: {error}",
-            S::LOG_PREFIX,
-            previous.display()
-        ),
+            error.message
+        );
+        // Keep the only verified tree for another recovery attempt if refreshing it failed.
+        if final_dir.exists() && !previous.exists() {
+            if let Err(error) = fs::rename(&final_dir, &previous) {
+                eprintln!(
+                    "{} could not set the previous engine back: {error}",
+                    S::LOG_PREFIX
+                );
+            }
+        }
+        if let Some(discarded) = discarded {
+            if let Err(error) = fs::rename(discarded, &final_dir) {
+                eprintln!(
+                    "{} could not restore the interrupted tree: {error}",
+                    S::LOG_PREFIX
+                );
+            }
+        }
+        return Err(error);
     }
+    eprintln!(
+        "{} restored the previous engine from {}",
+        S::LOG_PREFIX,
+        previous.display()
+    );
     if let Some(discarded) = discarded {
         delete_discarded::<S>(&discarded);
     }
     // Restored, not removed: the engine is still on disk, now as `engine/`.
-    false
+    Ok(false)
 }
 
-/// Rewrites every symlink under `root` whose target lies under an old prefix, and the `home`
+/// Use the same spelling for canonicalized Windows paths and junction targets returned by read_link.
+/// Keep non-UTF-8 path data intact and leave other namespaces and relative paths alone.
+#[cfg(windows)]
+pub(super) fn normalize_verbatim_path(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let mut plain = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut root = OsString::from(r"\\");
+                root.push(server);
+                root.push(r"\");
+                root.push(share);
+                PathBuf::from(root)
+            }
+            _ => return path.to_path_buf(),
+        },
+        _ => return path.to_path_buf(),
+    };
+    // The replacement prefix already supplies the root; pushing RootDir would replace it.
+    plain.extend(components.filter(|component| !matches!(component, Component::RootDir)));
+    plain
+}
+
+#[cfg(not(windows))]
+pub(super) fn normalize_verbatim_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+/// Rewrites every symlink or junction under `root` whose target lies under an old prefix, and the `home`
 /// entry of `venv/pyvenv.cfg`, so both point at the same place under the new prefix.
 pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::Result<()> {
     let rebase = |target: &Path| {
-        rebases
-            .iter()
-            .find_map(|(old, new)| target.strip_prefix(old).ok().map(|rest| new.join(rest)))
+        let target = normalize_verbatim_path(target);
+        rebases.iter().find_map(|(old, new)| {
+            target
+                .strip_prefix(normalize_verbatim_path(old))
+                .ok()
+                .map(|rest| normalize_verbatim_path(new).join(rest))
+        })
     };
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -891,11 +1113,13 @@ pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::
             let entry = entry?;
             let path = entry.path();
             let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
+            let is_link = file_type.is_symlink();
+            let junction = if is_link { is_junction(&path)? } else { false };
+            if junction || is_link {
                 let target = fs::read_link(&path)?;
                 if let Some(rebased) = rebase(&target) {
                     fs::remove_file(&path).or_else(|_| fs::remove_dir(&path))?;
-                    create_symlink(&rebased, &path)?;
+                    create_link(&rebased, &path, junction)?;
                 }
             } else if file_type.is_dir() {
                 pending.push(path);
@@ -918,15 +1142,101 @@ pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::
 }
 
 #[cfg(unix)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+pub(super) fn create_link(target: &Path, link: &Path, _junction: bool) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 
-// Windows: uv links the managed Python's minor-version directory with a junction. std cannot
-// create junctions, and symlink creation needs Developer Mode or elevation; this path is
-// unverified until a real Windows install runs (see docs/architecture/engine.md).
+// A real Windows install confirmed uv's minor-version directory is a junction. Replacing it
+// with symlink_dir failed with error 1314 for an ordinary user. Preserve the reparse-point kind:
+// junction creation needs no symlink privilege (see docs/architecture/ocsr-engine.md).
 #[cfg(windows)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+pub(super) fn create_link(target: &Path, link: &Path, junction: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
+    };
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    if junction {
+        let absolute: Vec<u16> = normalize_verbatim_path(&std::path::absolute(target)?)
+            .as_os_str()
+            .encode_wide()
+            .collect();
+        // Drive and UNC print names are plain absolute; the substitute uses the NT namespace.
+        let mut substitute: Vec<u16> = r"\??\".encode_utf16().collect();
+        if absolute.starts_with(&[92, 92, 63, 92]) {
+            substitute.extend_from_slice(&absolute[4..]);
+        } else if absolute.starts_with(&[92, 92]) {
+            substitute.extend("UNC\\".encode_utf16());
+            substitute.extend_from_slice(&absolute[2..]);
+        } else {
+            substitute.extend_from_slice(&absolute);
+        }
+        let size = 16 + (substitute.len() + absolute.len() + 2) * 2;
+        if size > MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "junction target is too long",
+            ));
+        }
+        // REPARSE_DATA_BUFFER: 8-byte header, 8-byte mount-point header, then two NUL-terminated
+        // UTF-16 names. Offsets and lengths count bytes from the start of PathBuffer.
+        let mut data = Vec::with_capacity(size);
+        data.extend(IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        for value in [
+            (size - 8) as u16,
+            0,
+            0,
+            (substitute.len() * 2) as u16,
+            ((substitute.len() + 1) * 2) as u16,
+            (absolute.len() * 2) as u16,
+        ] {
+            data.extend(value.to_le_bytes());
+        }
+        for unit in substitute
+            .iter()
+            .chain([0].iter())
+            .chain(absolute.iter())
+            .chain([0].iter())
+        {
+            data.extend(unit.to_le_bytes());
+        }
+        fs::create_dir(link)?;
+        let result = (|| {
+            let directory = fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+                .open(link)?;
+            let mut returned = 0;
+            // SAFETY: the owned handle stays open; data holds a complete mount-point buffer;
+            // this synchronous call uses no output buffer or OVERLAPPED structure.
+            let ok = unsafe {
+                DeviceIoControl(
+                    directory.as_raw_handle(),
+                    FSCTL_SET_REPARSE_POINT,
+                    data.as_ptr().cast(),
+                    data.len() as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir(link);
+        }
+        return result;
+    }
     if target.is_dir() {
         std::os::windows::fs::symlink_dir(target, link)
     } else {
@@ -935,11 +1245,52 @@ fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+pub(super) fn create_link(_target: &Path, _link: &Path, _junction: bool) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "symlinks are unsupported on this platform",
     ))
+}
+
+#[cfg(windows)]
+pub(super) fn is_junction(path: &Path) -> io::Result<bool> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileAttributeTagInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+
+    if fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Ok(false);
+    }
+    let link = fs::OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut info = FILE_ATTRIBUTE_TAG_INFO {
+        FileAttributes: 0,
+        ReparseTag: 0,
+    };
+    // SAFETY: link owns the handle and info is writable with exactly the requested size.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            link.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT)
+}
+
+#[cfg(not(windows))]
+pub(super) fn is_junction(_path: &Path) -> io::Result<bool> {
+    Ok(false)
 }
 
 /// Whether `root` holds an install that matches this build's pins and layout, as
@@ -967,6 +1318,8 @@ pub fn is_healthy<S: EngineSpec>(root: &Path, platform: &dyn EnginePlatform) -> 
 pub fn remove_stale_staging<S: EngineSpec>(
     paths: &InstallPaths,
     platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
 ) -> Vec<PathBuf> {
     let mut removed = Vec::new();
     let partial = paths.partial_dir_for::<S>();
@@ -980,8 +1333,14 @@ pub fn remove_stale_staging<S: EngineSpec>(
             ),
         }
     }
-    if reconcile_previous::<S>(paths, platform) {
-        removed.push(paths.previous_dir_for::<S>());
+    match reconcile_previous::<S>(paths, platform, io, cancel) {
+        Ok(true) => removed.push(paths.previous_dir_for::<S>()),
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "{} could not reconcile the previous engine: {}",
+            S::LOG_PREFIX,
+            error.message
+        ),
     }
     let final_dir = paths.final_dir_for::<S>();
     if final_dir.is_dir() && fs::symlink_metadata(final_dir.join(RECEIPT_FILE)).is_err() {

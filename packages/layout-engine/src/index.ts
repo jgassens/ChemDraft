@@ -70,6 +70,11 @@ import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } fr
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
+  ArrangementLayouts, ArrangementGridAlignments, planObjectArrangement,
+  type ArrangementLayout, type ArrangementGridAlignment, type ArrangementItem, type ArrangementOptions, type ArrangementPlan
+} from "./arrangement";
+
+export {
   atomBondOrderUsageMap,
   nativeAtomBondOrderUsage,
   nativeAtomChargeIsExpressible,
@@ -5281,6 +5286,51 @@ export function planMoleculeAtomLabels(
     );
     return plan ? [plan] : [];
   });
+}
+
+/** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */
+export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds {
+  const corners = [
+    { x: object.x, y: object.y },
+    { x: object.x + object.width, y: object.y },
+    { x: object.x + object.width, y: object.y + object.height },
+    { x: object.x, y: object.y + object.height }
+  ].map(point => transformPointForObject(object, point));
+  const x = Math.min(...corners.map(point => point.x));
+  const y = Math.min(...corners.map(point => point.y));
+  return { x, y,
+    width: Math.max(...corners.map(point => point.x)) - x,
+    height: Math.max(...corners.map(point => point.y)) - y };
+}
+
+/** Centre the visible ring system rather than a tall substituent or a long atom label.
+ * Acyclic structures use their atom frame; clearance still measures every visible part. */
+export function moleculeAnchorForArrangement(object:MoleculeObject):LayoutPoint {
+  const ringIds=new Set(moleculeFillRingCycles(object).flatMap(cycle=>[...cycle.atomIds]));
+  const atoms=object.atoms.filter(atom=>ringIds.has(atom.id));
+  const point=atoms.length ? {x:atoms.reduce((sum,atom)=>sum+atom.x,0)/atoms.length,
+    y:atoms.reduce((sum,atom)=>sum+atom.y,0)/atoms.length} :
+    {x:object.x+object.width/2,y:object.y+object.height/2};
+  return transformPointForObject(object,point);
+}
+
+/** Visible labels can extend beyond a molecule's stored atom frame (notably long nicknames). */
+export function moleculeVisualBoundsForArrangement(object: MoleculeObject): LayoutBounds {
+  const bounds = [object, ...planMoleculeAtomLabels(object).map((plan) => ({
+    x: plan.anchor.x + plan.layout.bounds.x,
+    y: plan.anchor.y + plan.layout.bounds.y,
+    width: plan.layout.bounds.width,
+    height: plan.layout.bounds.height
+  }))];
+  const points=bounds.flatMap(b=>[{x:b.x,y:b.y},{x:b.x+b.width,y:b.y},{x:b.x+b.width,y:b.y+b.height},{x:b.x,y:b.y+b.height}])
+    .map(point=>transformPointForObject(object,point));
+  const x = Math.min(...points.map(p=>p.x));
+  const y = Math.min(...points.map(p=>p.y));
+  return {
+    x, y,
+    width: Math.max(...points.map(p=>p.x)) - x,
+    height: Math.max(...points.map(p=>p.y)) - y
+  };
 }
 
 export function planAtomLabel(

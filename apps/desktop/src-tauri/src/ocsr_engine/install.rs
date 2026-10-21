@@ -306,8 +306,18 @@ pub fn install(
     )
 }
 
-pub fn remove_stale_staging(paths: &InstallPaths, platform: &dyn EnginePlatform) -> Vec<PathBuf> {
-    local_engine::install::remove_stale_staging::<MolScribeSpec>(&paths.shared(), platform)
+pub fn remove_stale_staging(
+    paths: &InstallPaths,
+    platform: &dyn EnginePlatform,
+    io: &dyn InstallIo,
+    cancel: &AtomicBool,
+) -> Vec<PathBuf> {
+    local_engine::install::remove_stale_staging::<MolScribeSpec>(
+        &paths.shared(),
+        platform,
+        io,
+        cancel,
+    )
 }
 
 pub fn remove_engine_trees(paths: &InstallPaths) -> Result<(), (PathBuf, std::io::Error)> {
@@ -452,6 +462,8 @@ mod tests {
                 RunStep::InstallPackages => "packages",
                 RunStep::InstallMolScribe => "molscribe",
                 RunStep::VerifyEnvironment => "verify",
+                #[cfg(windows)]
+                RunStep::RewriteVenvLaunchers => "rewrite-venv",
             };
             self.runs.lock().expect("runs").push((name, args.to_vec()));
             if matches!(step, RunStep::CreateVenv) {
@@ -557,6 +569,8 @@ mod tests {
                 "packages",
                 "molscribe",
                 "model",
+                #[cfg(windows)]
+                "rewrite-venv",
                 "verify"
             ]
         );
@@ -679,7 +693,12 @@ mod tests {
         stage(&paths.partial_dir());
         stage(&paths.previous_dir());
         assert_eq!(
-            remove_stale_staging(&paths, &platform),
+            remove_stale_staging(
+                &paths,
+                &platform,
+                &FakeIo::new(None),
+                &AtomicBool::new(false)
+            ),
             vec![paths.partial_dir()]
         );
         assert!(!paths.partial_dir().exists());
@@ -690,12 +709,23 @@ mod tests {
         stage(&paths.partial_dir());
         stage(&paths.previous_dir());
         assert_eq!(
-            remove_stale_staging(&paths, &platform),
+            remove_stale_staging(
+                &paths,
+                &platform,
+                &FakeIo::new(None),
+                &AtomicBool::new(false)
+            ),
             vec![paths.partial_dir(), paths.previous_dir()]
         );
         assert_no_staging(&paths);
         assert!(is_healthy(&paths.final_dir(), &platform));
-        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert!(remove_stale_staging(
+            &paths,
+            &platform,
+            &FakeIo::new(None),
+            &AtomicBool::new(false)
+        )
+        .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -987,12 +1017,23 @@ mod tests {
         fs::write(discarded.join("venv").join("lib").join("left"), b"x").expect("discard file");
 
         assert_eq!(
-            remove_stale_staging(&paths, &platform),
+            remove_stale_staging(
+                &paths,
+                &platform,
+                &FakeIo::new(None),
+                &AtomicBool::new(false)
+            ),
             vec![discarded.clone()]
         );
         assert!(!discarded.exists());
         assert!(is_healthy(&paths.final_dir(), &platform));
-        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert!(remove_stale_staging(
+            &paths,
+            &platform,
+            &FakeIo::new(None),
+            &AtomicBool::new(false)
+        )
+        .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1005,7 +1046,13 @@ mod tests {
         // A quit between setting the old engine aside and renaming the new one into place.
         fs::rename(paths.final_dir(), paths.previous_dir()).expect("set aside");
 
-        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert!(remove_stale_staging(
+            &paths,
+            &platform,
+            &FakeIo::new(None),
+            &AtomicBool::new(false)
+        )
+        .is_empty());
         assert!(is_healthy(&paths.final_dir(), &platform));
         assert_no_staging(&paths);
         assert_no_discards(&paths);
@@ -1033,7 +1080,13 @@ mod tests {
         assert!(verify_layout(&paths.final_dir(), &platform).is_ok());
         assert!(!is_healthy(&paths.final_dir(), &platform));
 
-        assert!(remove_stale_staging(&paths, &platform).is_empty());
+        assert!(remove_stale_staging(
+            &paths,
+            &platform,
+            &FakeIo::new(None),
+            &AtomicBool::new(false)
+        )
+        .is_empty());
         assert_eq!(
             fs::read(paths.final_dir().join("marker")).expect("previous engine restored"),
             b"old"
@@ -1053,7 +1106,12 @@ mod tests {
         fs::remove_file(paths.final_dir().join(RECEIPT_FILE)).expect("unreceipted");
 
         assert_eq!(
-            remove_stale_staging(&paths, &platform),
+            remove_stale_staging(
+                &paths,
+                &platform,
+                &FakeIo::new(None),
+                &AtomicBool::new(false)
+            ),
             vec![paths.final_dir()]
         );
         assert!(!paths.final_dir().exists());
