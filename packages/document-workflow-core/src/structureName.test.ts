@@ -164,6 +164,41 @@ describe("nameStructure", () => {
     });
   });
 
+  it("treats deuterium and tritium as supported hydrogen isotopes", async () => {
+    const drawn = molecule({
+      atoms: [
+        { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a2", element: "D", x: 10, y: 0, formalCharge: 0 },
+        { id: "a3", element: "T", x: 0, y: 10, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" },
+        { id: "b2", fromAtomId: "a1", toAtomId: "a3", order: "single" }
+      ]
+    });
+    const result = await nameStructure(deps({
+      name: async () => verified({ tier: "abstain", limitCode: "UNSUPPORTED_ELEMENT" })
+    }), drawn);
+
+    expect(result).toMatchObject({ status: "declined", code: "unsupportedElement" });
+    if (result.status === "declined") expect(result.reason).not.toContain("D");
+    expect(result).toMatchObject({ reason: "The naming engine does not support this kind of structure." });
+  });
+
+  it("uses a general reason when Orthonym declines a supported carbon-free structure", async () => {
+    const drawn = molecule({
+      atoms: [{ id: "a1", element: "O", x: 0, y: 0, formalCharge: 0 }],
+      bonds: []
+    });
+    await expect(nameStructure(deps({
+      name: async () => verified({ tier: "abstain", limitCode: "UNSUPPORTED_ELEMENT" })
+    }), drawn)).resolves.toMatchObject({
+      status: "declined",
+      code: "unsupportedElement",
+      reason: "The naming engine does not support this kind of structure."
+    });
+  });
+
   it("keeps every decline reason free of all-caps engine codes", async () => {
     const outcomes = await Promise.all([
       nameStructure(deps({ readName: async () => ({ smiles: null, failureReason: "UNSUPPORTED_ELEMENT" }) }), molecule()),

@@ -72,7 +72,7 @@ const displayOnlyV2000Warnings = new Set([
 ]);
 
 const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
-const namingSupportedElements = new Set(["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I", "B", "Si", "Se"]);
+const namingSupportedElements = new Set(["C", "H", "D", "T", "N", "O", "S", "P", "F", "Cl", "Br", "I", "B", "Si", "Se"]);
 
 /** Applies the metadata gates independently of the naming engine. */
 export function acceptOrthonymResult(raw: OrthonymRawResult):
@@ -232,6 +232,7 @@ function namingDeclineReason(code: StructureNameDeclineCode, molecule?: Molecule
       const unsupportedElements = molecule
         ? [...new Set(molecule.atoms.map((atom) => atom.element).filter((element) => !namingSupportedElements.has(element)))]
         : [];
+      if (unsupportedElements.length === 0) return "The naming engine does not support this kind of structure.";
       const elementList = unsupportedElements.length ? ` (${unsupportedElements.join(", ")})` : "";
       return `Contains an element the naming engine doesn't support${elementList}.`;
     }
