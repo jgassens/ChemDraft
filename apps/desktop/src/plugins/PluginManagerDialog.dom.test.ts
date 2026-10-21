@@ -101,7 +101,7 @@ describe("naming engine catalog ownership", () => {
   it("shows a catalog-started naming install failure without reopening, even when the review's status read arrives late", async () => {
     const notInstalled = { state: "notInstalled" as const, requiredDiskBytes: 1e9, freeDiskBytes: 8e9 };
     const engine = fakeNamingEngine(notInstalled);
-    let resolveStaleStatus!: (status: typeof notInstalled & { state: "installing" }) => void;
+    let resolveStaleStatus!: (status: Awaited<ReturnType<typeof engine.status>>) => void;
     vi.mocked(engine.status).mockImplementationOnce(
       () => new Promise((resolve) => { resolveStaleStatus = resolve; })
     ).mockResolvedValue(notInstalled);
