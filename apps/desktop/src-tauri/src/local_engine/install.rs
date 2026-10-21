@@ -877,13 +877,48 @@ fn reconcile_previous<S: EngineSpec>(paths: &InstallPaths, platform: &dyn Engine
     false
 }
 
+/// Use the same spelling for canonicalized Windows paths and junction targets returned by read_link.
+/// Keep non-UTF-8 path data intact and leave other namespaces and relative paths alone.
+#[cfg(windows)]
+pub(super) fn normalize_verbatim_path(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let mut plain = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut root = OsString::from(r"\\");
+                root.push(server);
+                root.push(r"\");
+                root.push(share);
+                PathBuf::from(root)
+            }
+            _ => return path.to_path_buf(),
+        },
+        _ => return path.to_path_buf(),
+    };
+    // The replacement prefix already supplies the root; pushing RootDir would replace it.
+    plain.extend(components.filter(|component| !matches!(component, Component::RootDir)));
+    plain
+}
+
+#[cfg(not(windows))]
+pub(super) fn normalize_verbatim_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 /// Rewrites every symlink or junction under `root` whose target lies under an old prefix, and the `home`
 /// entry of `venv/pyvenv.cfg`, so both point at the same place under the new prefix.
 pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::Result<()> {
     let rebase = |target: &Path| {
-        rebases
-            .iter()
-            .find_map(|(old, new)| target.strip_prefix(old).ok().map(|rest| new.join(rest)))
+        let target = normalize_verbatim_path(target);
+        rebases.iter().find_map(|(old, new)| {
+            target
+                .strip_prefix(normalize_verbatim_path(old))
+                .ok()
+                .map(|rest| normalize_verbatim_path(new).join(rest))
+        })
     };
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -939,11 +974,11 @@ pub(super) fn create_link(target: &Path, link: &Path, junction: bool) -> io::Res
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
     if junction {
-        let absolute: Vec<u16> = std::path::absolute(target)?
+        let absolute: Vec<u16> = normalize_verbatim_path(&std::path::absolute(target)?)
             .as_os_str()
             .encode_wide()
             .collect();
-        // The substitute name is an absolute NT path, including for verbatim and UNC paths.
+        // Drive and UNC print names are plain absolute; the substitute uses the NT namespace.
         let mut substitute: Vec<u16> = r"\??\".encode_utf16().collect();
         if absolute.starts_with(&[92, 92, 63, 92]) {
             substitute.extend_from_slice(&absolute[4..]);

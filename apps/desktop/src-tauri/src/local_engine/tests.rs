@@ -163,26 +163,41 @@ impl Drop for FixtureRoot {
 #[cfg(unix)]
 #[test]
 fn relocation_preserves_directory_symlink() {
-    assert_directory_link_relocation(false);
+    assert_directory_link_relocation(false, false);
 }
 
 #[cfg(windows)]
 #[test]
 fn relocation_preserves_directory_junction_without_symlink_privilege() {
-    assert_directory_link_relocation(true);
+    assert_directory_link_relocation(true, false);
 }
 
-fn assert_directory_link_relocation(junction: bool) {
+#[cfg(windows)]
+#[test]
+fn relocation_rebases_directory_junction_with_only_verbatim_prefixes() {
+    assert_directory_link_relocation(true, true);
+}
+
+fn assert_directory_link_relocation(junction: bool, verbatim_rebases: bool) {
     let fixture = FixtureRoot::new("relocate-link");
-    let root = fs::canonicalize(&fixture.0).expect("absolute fixture root");
+    let canonical_root = fs::canonicalize(&fixture.0).expect("absolute fixture root");
+    let root = install::normalize_verbatim_path(&canonical_root);
     let partial = root.join("engine.partial");
     let installed = root.join("engine");
     let python = Path::new("python").join("cpython-3.10.20");
     let alias = Path::new("python").join("cpython-3.10");
     fs::create_dir_all(partial.join(&python)).expect("managed Python directory");
     fs::write(partial.join(&python).join("python.exe"), b"python").expect("interpreter fixture");
-    install::create_link(&partial.join(&python), &partial.join(&alias), junction)
-        .expect("directory link without elevation");
+    install::create_link(
+        &canonical_root.join("engine.partial").join(&python),
+        &partial.join(&alias),
+        junction,
+    )
+    .expect("directory link without elevation");
+    assert_eq!(
+        fs::read_link(partial.join(&alias)).expect("plain absolute target"),
+        partial.join(&python)
+    );
     assert_eq!(
         install::is_junction(&partial.join(&alias)).unwrap(),
         junction
@@ -193,8 +208,19 @@ fn assert_directory_link_relocation(junction: bool) {
         "old target is now missing"
     );
 
-    install::relocate_staged_tree(&installed, &[(partial.clone(), installed.clone())])
-        .expect("relocate directory link");
+    let rebases = if verbatim_rebases {
+        assert_ne!(
+            canonical_root, root,
+            "regression requires verbatim prefixes"
+        );
+        vec![(
+            canonical_root.join("engine.partial"),
+            canonical_root.join("engine"),
+        )]
+    } else {
+        vec![(partial.clone(), installed.clone())]
+    };
+    install::relocate_staged_tree(&installed, &rebases).expect("relocate directory link");
 
     let link = installed.join(&alias);
     assert_eq!(install::is_junction(&link).unwrap(), junction);
@@ -203,6 +229,58 @@ fn assert_directory_link_relocation(junction: bool) {
     assert_eq!(target, installed.join(&python));
     assert_eq!(fs::read(link.join("python.exe")).unwrap(), b"python");
     assert!(!partial.exists(), "relocation must not recreate staging");
+}
+
+#[cfg(windows)]
+#[test]
+fn normalize_verbatim_drive_path() {
+    assert_eq!(
+        install::normalize_verbatim_path(Path::new(r"\\?\C:\engine.partial\python")),
+        Path::new(r"C:\engine.partial\python")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn normalize_verbatim_unc_path() {
+    assert_eq!(
+        install::normalize_verbatim_path(Path::new(r"\\?\UNC\server\share\engine.partial\python")),
+        Path::new(r"\\server\share\engine.partial\python")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn normalize_verbatim_leaves_plain_paths_unchanged() {
+    for path in [r"C:\engine\python", r"\\server\share\engine\python"] {
+        assert_eq!(
+            install::normalize_verbatim_path(Path::new(path)),
+            Path::new(path)
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn normalize_verbatim_leaves_relative_paths_unchanged() {
+    let path = Path::new(r"engine.partial\python");
+    assert_eq!(install::normalize_verbatim_path(path), path);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn normalize_verbatim_leaves_unix_paths_unchanged() {
+    for path in [
+        "/engine.partial/python",
+        "engine.partial/python",
+        r"\\?\C:\python",
+        r"\\?\UNC\server\share",
+    ] {
+        assert_eq!(
+            install::normalize_verbatim_path(Path::new(path)),
+            Path::new(path)
+        );
+    }
 }
 
 #[derive(Default)]
