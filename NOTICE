@@ -8,9 +8,11 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components requiring attribution
 --------------------------------------------------------------------------------
 
-The following components are redistributed with this software. Each is permissively
-licensed and each requires that its copyright notice, conditions, and disclaimer be
-reproduced in the materials accompanying a binary distribution. Full terms are
+The following components are redistributed with this software. Most are permissively
+licensed and require that their copyright notice, conditions, and disclaimer be
+reproduced in the materials accompanying a binary distribution; the exceptions
+(LGPL-2.1-or-later jna-inchi, the GPL-2.0 WITH Classpath-exception runtime, and
+MPL-2.0 Eigen) say so in their own entries. Full terms are
 vendored alongside each artifact; the complete inventory, including build provenance
 and artifact hashes, is in docs/architecture/dependency-inventory.md.
 
@@ -45,7 +47,10 @@ IsoSpec (vendored WebAssembly build)
 
 OPSIN (vendored Java archive, name-to-structure)
   MIT. Copyright (c) 2017 Daniel Lowe.
-  Source: https://github.com/dan2097/opsin, release 2.9.0. Unmodified.
+  Source: https://github.com/dan2097/opsin, release 2.9.0. Modified only by code
+  signing: the four macOS native libraries inside the jar are re-signed with our
+  Developer ID so Apple notarization accepts them; every other entry is
+  byte-identical to the upstream release (record: BUILD.md below).
   Full licence text: apps/desktop/src-tauri/resources/opsin/OPSIN-LICENSE.txt
 
   The released artifact is a shaded "jar-with-dependencies", and shading overwrites
@@ -57,12 +62,79 @@ OPSIN (vendored Java archive, name-to-structure)
                                               Software Foundation
     Apache Commons IO (2.21.0)              Apache-2.0, (c) 2002-2025 The Apache
                                               Software Foundation
-    Stax2 API (stax2-api 4.2.2)             BSD-2-Clause, (c) Tatu Saloranta
-    dk.brics automaton (1.12-4)             BSD-2-Clause, (c) Anders Moeller,
-                                              Aarhus University
+    Apache Commons CLI (1.11.0)             Apache-2.0, (c) The Apache Software
+                                              Foundation
+    Stax2 API (stax2-api 4.2.2)             BSD-2-Clause, (c) 2010- FasterXML.com
+                                              (text: Appendix A.6)
+    dk.brics automaton (1.12-4)             BSD-3-Clause (three conditions), (c) 2001-2022
+                                              Anders Moeller, Aarhus University
+                                              (text: Appendix A.5)
+    MSV msv-core and xsdlib (2022.7)        BSD-3-Clause, (c) 2001-2013 Oracle and/or
+                                              its affiliates (text: Appendix A.1); the
+                                              xsdlib package com.sun.msv.datatype.regexp
+                                              is under the Apache Software License 1.1,
+                                              (c) 1999-2002 The Apache Software
+                                              Foundation (text: Appendix A.2)
+    isorelax (20090621)                     MIT per iso-relax.sourceforge.net; the 9
+                                              source files that carry a header name
+                                              Kohsuke KAWAGUCHI and MURATA Makoto, 2001
+                                              (text: Appendix A.4)
+    relaxngDatatype (20020414)              BSD-3-Clause, (c) 2001 Thai Open Source
+                                              Software Center Ltd (text: Appendix A.3)
+
+  The last three entries are not separate files in the jar: woodstox-core 7.1.1 shades them, as
+  735 classes under com/ctc/wstx/shaded/, and the 176 *.aut files at the jar root are
+  the prebuilt datatype automata of dk.brics automaton. Sources and licence evidence:
+  Maven Central (msv-core, xsdlib, isorelax, relaxngDatatype and stax2-api sources jars),
+  https://github.com/xmlark/msv (LICENSE.md),
+  https://github.com/cs-au-dk/dk.brics.automaton (COPYING),
+  https://iso-relax.sourceforge.net/ and
+  https://github.com/relaxng/jing-trang (copying.txt); table in the OPSIN
+  BUILD.md. The licence texts themselves are in Appendix A at the end of this file.
 
   This product includes software developed at The Apache Software Foundation
   (https://www.apache.org/).
+
+  The jar also redistributes the three components in the entries that follow (JNA,
+  jna-inchi, InChI). Their licences were read from Maven Central POMs and the
+  upstream repositories; the table is in the OPSIN BUILD.md.
+
+JNA 5.10.0 (Java Native Access, inside the OPSIN jar)
+  Dual-licensed LGPL-2.1-or-later OR Apache-2.0; ChemDraft uses and redistributes it
+  under the Apache License 2.0.
+  Source: https://github.com/java-native-access/jna, tag 5.10.0
+  (also https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.10.0/jna-5.10.0-sources.jar).
+  The licence statement is the LICENSE file at that tag.
+
+jna-inchi 1.3.1 (inside the OPSIN jar: jna-inchi-api, jna-inchi-core and the
+eight platform artifacts jna-inchi-{darwin-aarch64,darwin-x86-64,linux-aarch64,
+linux-arm,linux-x86,linux-x86-64,win32-x86,win32-x86-64})
+  GNU Lesser General Public License, version 2.1 or later (copyleft). The
+  licence text (LGPL 2.1) is META-INF/LGPL2.1 inside the jar.
+  Source: https://github.com/dan2097/jna-inchi, tag jna-inchi-1.3.1. Maven Central
+  has a sources jar for jna-inchi-api only
+  (https://repo1.maven.org/maven2/io/github/dan2097/jna-inchi-api/1.3.1/jna-inchi-api-1.3.1-sources.jar);
+  there is none for jna-inchi-core, and the source of jna-inchi-core and of the native
+  libraries exists only at that tag.
+  The only change ChemDraft makes is the code signature on the two macOS
+  libjnainchi.dylib files (arm64 and x86-64). The Windows and Linux libraries are
+  as upstream built them.
+
+  Written offer: for at least three years from the day you received ChemDraft, we
+  will give anyone who received it the complete corresponding source for the
+  jna-inchi version shipped, which is the tag above. Request it by opening an issue at
+  https://github.com/jgassens/ChemDraft/issues. The shipped jar is the upstream
+  jar-with-dependencies plus the signatures described above, so a user can replace
+  the jna-inchi classes and libraries by rebuilding that tag and substituting them
+  into a copy of the jar.
+
+InChI 1.07.2 (the chemistry library inside the jna-inchi native libraries)
+  MIT. Copyright (c) 2024 InChI Project.
+  Source: https://github.com/IUPAC-InChI/InChI, tag v1.07.2 (LICENSE at that tag).
+  The version is read from the binary ("InChI version 1, Software 1.07.2 (API
+  Library)") and from jna-inchi's jnainchi_build.props (inchi_version=1.07.2).
+  This entry is for the copy in the OPSIN jar; the separate copy inside the RDKit
+  MinimalLib build is the InChI entry further below.
 
 Bundled Java runtime (OpenJDK, produced with jlink)
   GPL-2.0-only WITH Classpath-exception-2.0. The runtime is redistributed so the
@@ -71,7 +143,7 @@ Bundled Java runtime (OpenJDK, produced with jlink)
   Build recipe and module list:
   apps/desktop/src-tauri/resources/opsin/BUILD.md
 
-InChI (statically linked into the RDKit MinimalLib build above)
+InChI (statically linked into the RDKit MinimalLib build above; not the copy in the OPSIN jar)
   The binary self-identifies as "InChI version 1, Software 1.07.3 (API Library)".
   The InChI Trust's terms changed across the 1.06 -> 1.07 series; the applicable
   licence and notice obligations for 1.07.3 are RECORDED AS UNCONFIRMED in the
@@ -168,3 +240,214 @@ drawn from FOUR sources; a fifth is recorded and deliberately unused. None is ve
   NonCommercial term would become a real constraint on redistributing the resulting
   weights under this repository's own licence, and that must be settled before any
   public release rather than discovered afterwards.
+
+
+APPENDIX A. Licence texts the OPSIN jar's shaded components require us to reproduce
+  Each text below is reproduced exactly as read on 2026-10-21 from the source named
+  above it (comment markers removed; wording, order and punctuation unchanged).
+
+A.1 MSV (msv-core and xsdlib 2022.7) -- BSD-3-Clause
+  Read from LICENSE.md of https://github.com/xmlark/msv (branch main). Applies to
+  everything in com/ctc/wstx/shaded/msv_core/ and msv/xsd_util/ except 28 of the 30
+  com.sun.msv.datatype.regexp classes (A.2); the other two, InternalImpl and
+  InternalImpl$1, carry this Oracle BSD-3 header.
+
+    Copyright 2001-2013 Oracle and/or its affiliates. All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+A.2 MSV xsdlib, package com.sun.msv.datatype.regexp (28 of its 30 classes; InternalImpl and InternalImpl$1 are under A.1) -- Apache Software License, Version 1.1
+  Read from the header of com/sun/msv/datatype/regexp/Op.java in
+  xsdlib-2022.7-sources.jar (Maven Central); the sibling files read (Token.java) carry
+  the identical header.
+
+    The Apache Software License, Version 1.1
+
+    Copyright (c) 1999-2002 The Apache Software Foundation.  All rights
+    reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    3. The end-user documentation included with the redistribution,
+       if any, must include the following acknowledgment:
+          "This product includes software developed by the
+           Apache Software Foundation (http://www.apache.org/)."
+       Alternately, this acknowledgment may appear in the software itself,
+       if and wherever such third-party acknowledgments normally appear.
+
+    4. The names "Xerces" and "Apache Software Foundation" must
+       not be used to endorse or promote products derived from this
+       software without prior written permission. For written
+       permission, please contact apache@apache.org.
+
+    5. Products derived from this software may not be called "Apache",
+       nor may "Apache" appear in their name, without prior written
+       permission of the Apache Software Foundation.
+
+    THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESSED OR IMPLIED
+    WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+    OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED.  IN NO EVENT SHALL THE APACHE SOFTWARE FOUNDATION OR
+    ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+    USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+    ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+    OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+    SUCH DAMAGE.
+    ====================================================================
+
+    This software consists of voluntary contributions made by many
+    individuals on behalf of the Apache Software Foundation and was
+    originally based on software copyright (c) 1999, International
+    Business Machines, Inc., http://www.apache.org.  For more
+    information on the Apache Software Foundation, please see
+    <http://www.apache.org/>.
+
+  Condition 3 asks for this acknowledgment, which is also given in the entry above:
+    This product includes software developed by the Apache Software Foundation
+    (http://www.apache.org/).
+
+A.3 relaxngDatatype 20020414 -- BSD-3-Clause, Thai Open Source Software Center Ltd
+  Read from the header of org/relaxng/datatype/helpers/DatatypeLibraryLoader.java in
+  relaxngDatatype-20020414-sources.jar (Maven Central); the shaded jar contains that
+  class (com/ctc/wstx/shaded/msv/relaxng_datatype/helpers/DatatypeLibraryLoader.class).
+  The same terms, dated 2001-2003, are in copying.txt of https://github.com/relaxng/jing-trang.
+
+    Copyright (c) 2001, Thai Open Source Software Center Ltd
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+    met:
+
+        Redistributions of source code must retain the above copyright
+        notice, this list of conditions and the following disclaimer.
+
+        Redistributions in binary form must reproduce the above copyright
+        notice, this list of conditions and the following disclaimer in
+        the documentation and/or other materials provided with the
+        distribution.
+
+        Neither the name of the Thai Open Source Software Center Ltd nor
+        the names of its contributors may be used to endorse or promote
+        products derived from this software without specific prior written
+        permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR
+    CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+    EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+    PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+    PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+    SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+A.4 isorelax 20090621 -- MIT
+  Read from the header of org/iso_relax/dispatcher/SchemaProvider.java in
+  isorelax-20090621-sources.jar (Maven Central). 9 of the jar's 42 source files carry
+  this header, with holders "Kohsuke KAWAGUCHI" or "MURATA Makoto, KAWAGUCHI Kohsuke",
+  2001; the others (including jp.gr.xml.relax) carry no header. The MIT licence is the
+  project's own statement (https://iso-relax.sourceforge.net/).
+
+    Copyright 2001 Kohsuke KAWAGUCHI
+
+    Permission is hereby granted, free of charge, to any person obtaining
+    a copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+A.5 dk.brics automaton 1.12-4 -- BSD-3-Clause (three conditions, not two)
+  Read from COPYING of https://github.com/cs-au-dk/dk.brics.automaton (branch master);
+  the 1.12-4 POM on Maven Central says only "BSD".
+
+    Copyright (c) 2001-2022 Anders Moeller
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+    3. The name of the author may not be used to endorse or promote products
+       derived from this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+    IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+    OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+    IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+    NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+    THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+A.6 Stax2 API 4.2.2 -- BSD-2-Clause (Simplified BSD), (c) 2010- FasterXML.com
+  META-INF/LICENSE of stax2-api-4.2.2-sources.jar names the Simplified BSD License,
+  holder FasterXML.com, year 2010-, and points to the opensource.org template; it does
+  not carry the text. The standard template text follows with that holder filled in.
+
+    Copyright (c) 2010- FasterXML.com
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    1. Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
