@@ -1,0 +1,170 @@
+# Local naming engine (Orthonym)
+
+The optional engine is installed only after explicit user action. `src/naming_engine/` is a second
+adapter on `src/local_engine/`: downloads, hash checking, staging, whole-tree swap and rollback,
+relocation, cancellation, process-tree termination and sidecar lifetime have one implementation.
+Neither the engine nor its Python is loaded at app startup. No webview receives network access.
+
+## Layout and installation
+
+Under Tauri's app-data directory (separate for stable and worktree builds):
+
+```text
+naming-engine/
+  uv[.exe]
+  python/                       uv-managed Python 3.12
+  venv/                         relocatable environment
+  requirements.txt              reviewed hash lock
+  jars/centres-cli-1.2.1.jar     unmodified pinned download
+  LICENSES/                     Orthonym LICENSE/NOTICE plus bundled jar licence texts
+  cache/                        local Orthonym cache (created when needed)
+  install.json                  receipt v1, written last
+naming-engine.partial/          staging, swept after interrupted installs
+naming-engine.previous/         previous complete installation, restored on failure
+naming-engine.discard-*/        interrupted deletions, swept at startup
+```
+
+`local_engine::install::install::<NamingSpec>` downloads the shared pinned uv, installs managed
+Python, creates a relocatable venv, then runs `uv pip install --python <venv-python>
+--require-hashes --compile-bytecode --requirement <lock>`. It downloads and verifies centres,
+copies Orthonym's LICENSE and NOTICE from installed dist-info and the bundled
+`resources/naming/licenses/*` into `LICENSES/`, swaps, relocates and probes in the final location.
+The probe runs `python -I -B -c`, imports orthonym, rdkit and jpype, prints Orthonym's version and
+requires exactly `1.0.8`. Failure rolls back the whole tree. Download caches are removed.
+
+The receipt records `receiptVersion: 1`, engine directory name, uv asset/version/hash, Python
+version, Orthonym version/commit/wheel hash, requirements hash, centres URL/size/hash, installed-at
+timestamp and disk bytes. An unreadable, malformed, mismatched or newer receipt reports `broken`
+with a detail string. No receipt upgrade from another engine is attempted.
+
+## Pins and platform support
+
+| Input | Pin |
+| --- | --- |
+| uv | Shared `local_engine/pins.rs`, 0.12.18 with per-platform archive hashes |
+| Python | 3.12 |
+| Orthonym | 1.0.8, provenance commit `461987b947f76e41ff0baa6c2aa19ecd79cacd0b` |
+| Orthonym wheel SHA-256 | `ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d` |
+| Requirements SHA-256 (LF) | `ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a` |
+| centres | `https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar` |
+| centres size / SHA-256 | 2,291,742 bytes / `6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb` |
+| Free-space requirement | 1,000,000,000 bytes (staging and download-cache headroom) |
+
+The lock includes rdkit 2026.3.5, jpype1 1.7.1, lxml 6.1.3, numpy 2.5.4, pillow 13.0.0 and
+packaging 26.3. macOS Apple silicon and Windows x64 are implemented. Intel Mac is `unsupported`
+before any download: RDKit 2026.3.5 has no macOS x86_64 Python 3.12 wheel. Other targets are unsupported.
+
+## Spawn environment and integrity
+
+The shared process manager starts `<venv-python> -I -B <bundled>/naming/orthonym_sidecar.py` with
+the engine directory as cwd. It rechecks the centres jar's size and SHA-256 before **every** spawn,
+including a crash retry, and refuses a mismatch. OPSIN's bundled jar is covered by the existing
+`opsin::tests::jar_bytes_match_the_hash_recorded_in_build_md` check and the app signature.
+
+| Variable | Value |
+| --- | --- |
+| `JAVA_HOME` | Bundled `resources/opsin/jre` |
+| `PATH` | `<jre>/bin`, then only system directories (never the inherited PATH) |
+| `ORTHONYM_OPSIN_JAR` | Bundled `resources/opsin/opsin-cli-2.9.0.jar` |
+| `ORTHONYM_CENTRES_JAR` | `<engine>/jars/centres-cli-1.2.1.jar` |
+| `ORTHONYM_NO_DOWNLOAD` | `1` |
+| `ORTHONYM_CACHE_DIR` | `<engine>/cache` |
+
+All inherited `ORTHONYM_*` settings are removed before the above values are set. This excludes
+`ORTHONYM_ALLOW_REDUCED` and `ORTHONYM_DISABLE_JPYPE`. `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`,
+`JDK_JAVA_OPTIONS`, `CLASSPATH`, and all keys beginning `UV_`, `PIP_`, `PYTHON`, `VIRTUAL_ENV` or
+`CONDA` are removed. Windows names are scrubbed irrespective of case. Java resources use ordinary
+Windows drive paths rather than `\\?\` drive prefixes, which JVM paths cannot reliably accept.
+Fallback bare `java` resolves to the bundled runtime. No system Python, uv or Java is selected.
+
+## Protocol and process limits
+
+Protocol `NAMING_PROTOCOL_VERSION = 1` is JSON Lines, with stdout reserved for messages and stderr
+for logs. The Python sidecar redirects fd 1 before imports. The host parses typed messages with
+unknown fields refused:
+
+```json
+{"type":"ready","protocol":1,"orthonymVersion":"1.0.8","rdkitVersion":"2026.03.5","jvm":"jpype"}
+{"type":"fatal","code":"jvm_unavailable","message":"…"}
+{"id":"n-1","type":"name","smiles":"CCO"}
+{"id":"n-1","type":"result","name":"ethanol","tier":"pin_verified","isPin":true,"opsin":"verified","gateOutcome":"self_consistency_verified","limitCode":null,"stereoUnexpressed":false,"source":"pin_path","elapsedMs":25}
+{"id":"n-1","type":"error","code":"invalid_smiles","message":"…"}
+{"type":"shutdown"}
+```
+
+Ready requires protocol 1, Orthonym exactly 1.0.8 and JPype; `selftest-stub` is refused. Every fatal,
+unexpected message or mismatched request id fails closed. Fatal codes include `jvm_unavailable`,
+`jar_missing` and `reduced_mode`; request errors include `invalid_smiles` and `namer_raised`.
+
+Startup has 60 seconds, separately from the 30 second request budget. Requests share their budget
+across one crash retry; replacement startup does not consume it. Timeouts and user cancellations
+are never retried. A second crash reports `engineCrashed`. Only one request (including OPSIN
+read-back) runs at a time; another gets `busy`. Idle sidecars are reaped after 10 minutes.
+The sidecar stops at app exit (including Windows forced exit), before install and before uninstall.
+Cancel uses the shared kill switch plus a cancel counter to cover a cancel racing request startup.
+Shared platform flags use process groups on Unix and `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
+on Windows; termination uses the shared tree-kill implementation (currently `taskkill /T /F` on
+Windows, with the limitations documented in [OCSR engine](ocsr-engine.md)).
+
+## Commands and raw result contract
+
+All six commands are registered in `lib.rs`, named in `build.rs`, and granted exclusively to the
+`main` document window by `capabilities/naming-engine.json`.
+
+| Command | Result |
+| --- | --- |
+| `naming_engine_status` | `{state, installed?, requiredDiskBytes, freeDiskBytes, detail?, progress?, installElapsedMs?}`; state is `notInstalled`, `installing`, `installed`, `broken` or `unsupported` |
+| `naming_engine_install` (`onProgress` channel) | status; rejection `{code, message}` using shared install codes |
+| `naming_engine_cancel_install` | immediately cancels install and kills the active install child tree |
+| `naming_engine_uninstall` | status; rejection `{code, message}`; cancels/waits for install, stops sidecar, removes engine trees |
+| `name_structure_raw` (`{smiles}`) | raw fields below; rejection `{code, message}` |
+| `naming_cancel` | cancels the active request; leaves an idle sidecar running |
+
+`name_structure_raw` rejects empty, padded, control-character or over-5000-character SMILES before
+spawning. Its success value has the sidecar's `name`, `tier`, `isPin`, `opsin`, `gateOutcome`,
+`limitCode`, `stereoUnexpressed`, `source` and `elapsedMs` fields at the top level, matching
+`OrthonymRawResult`. `opsinReadBack` is null if there is no non-empty name, otherwise
+`{smiles: string|null, failureReason: string|null}`. The read-back uses the internal
+`opsin::convert_with_options(..., OpsinOptions { radicals: true })`; a read failure returns its
+reason beside the unchanged raw result. Nothing in Rust applies acceptance policy or canonicalizes.
+The TypeScript host must compare exact canonical isomeric SMILES through RDKit WASM, especially for
+glycine zwitterion, which Orthonym can name as neutral glycine. The independent read-back still
+shares OPSIN 2.9.0 with Orthonym and cannot catch a name both engines misread identically.
+
+Naming error codes: `notInstalled`, `invalidSmiles`, `namingFailed`, `engineCrashed`, `timeout`,
+`busy`, `cancelled`. Shared install codes: `insufficientDisk`, `network`, `checksumMismatch`,
+`cancelled`, `unsupported`, `failed`. A stop initiated by app exit/install/uninstall is
+`engineCrashed`, not a user cancellation.
+
+## Shared hooks added for this adapter
+
+- `EngineSpec::pip_install_args()` defaults to empty; existing install argv is unchanged.
+- `SidecarProtocol::START_TIMEOUT` defaults to `None`, preserving the existing shared deadline
+  for startup plus request. Naming selects 60 seconds separately from its 30 second request budget.
+- Existing streaming `pins::sha256_reader` / `verify_reader` helpers are available in production,
+  allowing the adapter to reverify centres without a second hash implementation.
+
+Existing MolScribe source, tests, install arguments and effective deadlines are unchanged.
+
+## Unverified on Windows
+
+These checks from the feature design must be run on Windows before release:
+
+- The refactored MolScribe install, cancel and uninstall after T1 (its Windows path was documented
+  as "implemented, never run").
+- The naming engine's relocation of uv's junction and `pyvenv.cfg` after the swap.
+- `taskkill /T /F` or job-object tree kill of `python.exe` and its in-process JVM on cancel and quit,
+  with no surviving `python.exe`.
+- JPype loading `jre\bin\server\jvm.dll` from `%LOCALAPPDATA%\ChemDraft\…`, including a user profile
+  path with non-ASCII characters: JPype's classpath goes through JNI, not the ANSI launcher that
+  `opsin.rs` works around.
+- Whether the bare-`java` fallback finds `jre\bin\java.exe` from the scrubbed `PATH`.
+- `CREATE_NO_WINDOW`, so no console flashes for the sidecar or OPSIN.
+- The rdkit/lxml/pillow `win_amd64` cp312 wheels resolving under `--require-hashes`.
+- The measured Windows download and disk sizes, which feed `REQUIRED_DISK_BYTES` and progress weights.
+- Copy in the WebView2 panel window, and the dialog's ownership and focus (AGENTS.md §1).
+- The catalog URL capability on `http://tauri.localhost`.
+
+Windows clippy/tests and real install, cancel, uninstall and naming still require a Windows host.
+The ignored Rust real-engine test takes `CHEMDRAFT_NAMING_ENGINE_DIR` and checks ethanol, raw glycine
+zwitterion with OPSIN read-back, and `[Fe]` abstention. Unit tests require no installed engine.

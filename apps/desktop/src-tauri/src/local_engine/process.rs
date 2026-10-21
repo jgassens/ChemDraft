@@ -36,6 +36,8 @@ pub trait SidecarProtocol: Send + Sync + 'static {
     type Process: ?Sized + Send;
     type Spawner: ?Sized + Send + Sync;
     const IDLE_TIMEOUT: Duration;
+    /// None preserves the original deadline shared by startup and requests.
+    const START_TIMEOUT: Option<Duration> = None;
     const LOG_PREFIX: &'static str;
     const REQUEST_PREFIX: &'static str;
     fn system_spawner() -> Arc<Self::Spawner>;
@@ -173,6 +175,38 @@ impl KillSwitch {
     }
 }
 
+/// Keeps the default shared deadline, or starts request time only after the first ready line.
+struct RequestDeadlines {
+    request: Duration,
+    deadline: Option<Instant>,
+    separate_start: bool,
+}
+impl RequestDeadlines {
+    fn new(request: Duration, start: Option<Duration>) -> Self {
+        Self {
+            request,
+            deadline: start.is_none().then(|| Instant::now() + request),
+            separate_start: start.is_some(),
+        }
+    }
+    fn spawned(&mut self, elapsed: Duration) {
+        if self.separate_start {
+            // A crash retry gets a startup budget too; only time spent on requests consumes
+            // the shared request budget. The default deadline remains exactly as before.
+            self.deadline = self.deadline.map(|deadline| deadline + elapsed);
+        }
+    }
+    fn started(&mut self) {
+        self.deadline
+            .get_or_insert_with(|| Instant::now() + self.request);
+    }
+    fn remaining(&self) -> Duration {
+        self.deadline.map_or(self.request, |deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        })
+    }
+}
+
 pub struct ProcessManager<P: SidecarProtocol> {
     spawner: Arc<P::Spawner>,
     pub(crate) process: Option<Box<P::Process>>,
@@ -251,28 +285,32 @@ impl<P: SidecarProtocol> ProcessManager<P> {
         timeout: Duration,
         progress: &dyn Fn(P::Progress),
     ) -> Result<P::Response, P::Error> {
-        let deadline = Instant::now() + timeout;
+        let mut deadlines = RequestDeadlines::new(timeout, P::START_TIMEOUT);
         let request_id = format!(
             "{}{}",
             P::REQUEST_PREFIX,
             NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
         );
         for attempt in 0..=1 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadlines.remaining();
             if remaining.is_zero() {
                 self.stop();
                 return Err(P::Error::timeout());
             }
             if self.process.is_none() {
                 progress(P::starting());
+                let spawning = Instant::now();
                 match P::spawn(
                     self.spawner.as_ref(),
                     platform,
                     paths,
-                    remaining,
+                    P::START_TIMEOUT.unwrap_or(remaining),
                     &self.kill_switch,
                 ) {
-                    Ok(process) => self.process = Some(process),
+                    Ok(process) => {
+                        deadlines.spawned(spawning.elapsed());
+                        self.process = Some(process);
+                    }
                     Err(error) => {
                         self.kill_switch.disarm();
                         return Err(if self.kill_switch.requested() {
@@ -283,7 +321,8 @@ impl<P: SidecarProtocol> ProcessManager<P> {
                     }
                 }
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            deadlines.started();
+            let remaining = deadlines.remaining();
             let result = P::recognize(
                 self.process
                     .as_mut()
@@ -617,5 +656,35 @@ pub fn stop_sidecar_blocking<P: SidecarProtocol>(
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    #[test]
+    fn default_charges_startup_but_split_budget_starts_after_ready() {
+        let budget = Duration::from_secs(30);
+        let mut legacy = RequestDeadlines::new(budget, None);
+        let original = legacy.deadline;
+        assert!(original.is_some());
+        legacy.started();
+        assert_eq!(legacy.deadline, original);
+        legacy.spawned(Duration::from_secs(60));
+        assert_eq!(legacy.deadline, original);
+        let mut split = RequestDeadlines::new(budget, Some(Duration::from_secs(60)));
+        assert!(split.deadline.is_none());
+        assert_eq!(split.remaining(), budget);
+        split.started();
+        let first = split.deadline;
+        assert!(first.is_some());
+        split.started();
+        assert_eq!(split.deadline, first, "retries keep the request deadline");
+        split.spawned(Duration::from_secs(60));
+        assert_eq!(
+            split.deadline,
+            first.map(|deadline| deadline + Duration::from_secs(60)),
+            "retry startup does not consume request time"
+        );
     }
 }

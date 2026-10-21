@@ -44,7 +44,8 @@
       "resources/opsin/*.txt",
       "resources/opsin/jre",
       "resources/ocsr/*.py",
-      "resources/ocsr/*.txt"
+      "resources/ocsr/*.txt",
+      "resources/naming/**/*"
     ],
     "fileAssociations": [
       {

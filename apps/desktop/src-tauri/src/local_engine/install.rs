@@ -401,6 +401,19 @@ impl<S: EngineSpec> SystemInstallIo<S> {
     }
 }
 
+pub(crate) fn pip_install_args<S: EngineSpec>(
+    python: OsString,
+    requirements: PathBuf,
+) -> Vec<OsString> {
+    let mut args = os_args(["pip", "install", "--python"]);
+    args.push(python);
+    args.push("--require-hashes".into());
+    args.extend(S::pip_install_args());
+    args.push("--requirement".into());
+    args.push(requirements.into_os_string());
+    args
+}
+
 pub fn install<S: EngineSpec>(
     paths: &InstallPaths,
     platform: &dyn EnginePlatform,
@@ -546,15 +559,7 @@ pub fn install<S: EngineSpec>(
         platform,
         RunStep::InstallPackages,
         &uv,
-        &[
-            OsString::from("pip"),
-            OsString::from("install"),
-            OsString::from("--python"),
-            venv_python.clone(),
-            OsString::from("--require-hashes"),
-            OsString::from("--requirement"),
-            installed_requirements.into_os_string(),
-        ],
+        &pip_install_args::<S>(venv_python.clone(), installed_requirements),
         &environment,
         cancel,
         Some(RunWatch {

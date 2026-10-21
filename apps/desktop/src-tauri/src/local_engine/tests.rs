@@ -20,6 +20,72 @@ use std::time::{Duration, Instant};
 
 const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+// A second spec overrides only the additive install option; all other fixture policy delegates.
+struct CompiledStub;
+macro_rules! delegate_stub {
+    ($($name:ident ($($arg:ident : $ty:ty),*) -> $out:ty;)*) => {
+        $(fn $name($($arg: $ty),*) -> $out { Stub::$name($($arg),*) })*
+    };
+}
+impl EngineSpec for CompiledStub {
+    type Receipt = serde_json::Value;
+    const DIR_NAME: &'static str = "compiled-stub";
+    const LOG_PREFIX: &'static str = "[compiled-stub]";
+    const USER_AGENT: &'static str = "compiled-stub/1";
+    fn pip_install_args() -> Vec<OsString> {
+        vec!["--compile-bytecode".into()]
+    }
+    delegate_stub! {
+        python_version() -> &'static str;
+        required_disk_bytes() -> u64;
+        requirements() -> (&'static str, &'static str);
+        python_growth_bytes() -> u64;
+        packages_growth_bytes() -> u64;
+        packages_label() -> &'static str;
+        packages_message() -> &'static str;
+        installed_message() -> &'static str;
+        insufficient_disk(free: u64) -> InstallError;
+        cancelled() -> InstallError;
+        failed_io(error: std::io::Error) -> InstallError;
+        relocation_error(error: std::io::Error) -> InstallError;
+        platform_supported(platform: &dyn EnginePlatform) -> Result<(), String>;
+        before_packages(context: &InstallContext<'_>) -> Result<(), InstallError>;
+        extra_steps(context: &InstallContext<'_>) -> Result<(), InstallError>;
+        probe_args() -> Vec<OsString>;
+        verify_layout(root: &Path, platform: &dyn EnginePlatform) -> Result<(), InstallError>;
+        receipt(platform: &dyn EnginePlatform, disk: u64) -> Self::Receipt;
+        read_current_receipt(path: &Path) -> Option<Self::Receipt>;
+        matches_pins(receipt: &Self::Receipt, platform: &dyn EnginePlatform) -> bool;
+        write_receipt(path: &Path, receipt: &Self::Receipt) -> Result<(), InstallError>;
+        is_restorable(root: &Path, platform: &dyn EnginePlatform) -> bool;
+    }
+}
+
+#[test]
+fn extra_pip_arguments_are_additive_and_default_argv_is_unchanged() {
+    let args = |compiled| {
+        if compiled {
+            install::pip_install_args::<CompiledStub>("python".into(), "requirements.txt".into())
+        } else {
+            install::pip_install_args::<Stub>("python".into(), "requirements.txt".into())
+        }
+    };
+    let legacy = install::os_args([
+        "pip",
+        "install",
+        "--python",
+        "python",
+        "--require-hashes",
+        "--requirement",
+        "requirements.txt",
+    ]);
+    assert_eq!(args(false), legacy);
+    let mut compiled = legacy;
+    compiled.insert(5, "--compile-bytecode".into());
+    assert_eq!(args(true), compiled);
+}
+
 struct Stub;
 struct StubPlatform;
 impl EnginePlatform for StubPlatform {

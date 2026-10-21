@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "naming-engine",
+  "description": "Allow only the main document window to install, manage, invoke and cancel the optional local naming engine after explicit user action.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-naming-engine-status",
+    "allow-naming-engine-install",
+    "allow-naming-engine-cancel-install",
+    "allow-naming-engine-uninstall",
+    "allow-name-structure-raw",
+    "allow-naming-cancel"
+  ]
+}

@@ -1,6 +1,5 @@
 //! Shared runtime-tool pins and digest verification.
 use sha2::{Digest, Sha256};
-#[cfg(test)]
 use std::io::{self, Read};
 pub const UV_VERSION: &str = "0.12.18";
 #[cfg(any(target_os = "macos", test))]
@@ -23,7 +22,6 @@ pub fn uv_url(asset: &str) -> String {
     format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{asset}")
 }
 
-#[cfg(test)]
 pub fn sha256_reader(mut reader: impl Read) -> io::Result<(u64, String)> {
     let mut digest = Sha256::new();
     let mut count = 0_u64;
@@ -39,7 +37,6 @@ pub fn sha256_reader(mut reader: impl Read) -> io::Result<(u64, String)> {
     Ok((count, format!("{:x}", digest.finalize())))
 }
 
-#[cfg(test)]
 pub fn verify_reader(
     reader: impl Read,
     expected_size: Option<u64>,

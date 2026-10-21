@@ -104,6 +104,10 @@ pub trait EngineSpec: Send + Sync + 'static {
     fn requirements() -> (&'static str, &'static str);
     fn python_growth_bytes() -> u64;
     fn packages_growth_bytes() -> u64;
+    /// Extra flags before the requirements argument; empty preserves existing install argv.
+    fn pip_install_args() -> Vec<std::ffi::OsString> {
+        Vec::new()
+    }
     fn packages_label() -> &'static str;
     fn packages_message() -> &'static str;
     fn installed_message() -> &'static str;

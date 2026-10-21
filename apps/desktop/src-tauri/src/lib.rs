@@ -7,6 +7,7 @@ mod local_engine;
 #[cfg(target_os = "macos")]
 mod macos_quit;
 mod main_window_placement;
+mod naming_engine;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;
@@ -264,6 +265,8 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!("{}", forced_exit_message(reason, waited));
         self.state::<ocsr_engine::OcsrEngineState>()
+            .kill_for_forced_exit();
+        self.state::<naming_engine::NamingEngineState>()
             .kill_for_forced_exit();
         // TerminateProcess, not std::process::exit: ExitProcess runs every DLL's detach, and
         // WebView2's spent about 3 s tearing down there (once raising a dialog), so a forced exit
@@ -870,6 +873,7 @@ pub fn run() {
         .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
+        .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
@@ -985,6 +989,9 @@ pub fn run() {
                         APP_QUITTING.store(true, Ordering::SeqCst);
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        window
+                            .state::<naming_engine::NamingEngineState>()
+                            .shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -1154,6 +1161,9 @@ pub fn run() {
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
+            let naming = app.state::<naming_engine::NamingEngineState>();
+            naming.start_idle_reaper();
+            naming.remove_stale_staging(app);
             // The Toolbars menu starts empty and is filled by JS (set_toolbars_menu) once the main
             // window loads; Rust no longer parses the manifest or applies customization for it.
             // Activation policy is a macOS Dock concept; other platforms have no equivalent.
@@ -1260,6 +1270,12 @@ pub fn run() {
             agent_bridge_status,
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
+            naming_engine::naming_engine_status,
+            naming_engine::naming_engine_install,
+            naming_engine::naming_engine_cancel_install,
+            naming_engine::naming_engine_uninstall,
+            naming_engine::name_structure_raw,
+            naming_engine::naming_cancel,
             ocsr_engine::ocsr_engine_status,
             ocsr_engine::ocsr_engine_install,
             ocsr_engine::ocsr_engine_cancel_install,
@@ -1299,6 +1315,7 @@ pub fn run() {
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                    app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
             }
             RunEvent::Exit => {
@@ -1307,6 +1324,7 @@ pub fn run() {
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                app.state::<naming_engine::NamingEngineState>().shutdown();
             }
             // Dock-icon click with no visible windows; a macOS-only event.
             #[cfg(target_os = "macos")]
@@ -8167,6 +8185,7 @@ mod tests {
         send_sync::<QuitFlow>();
         send_sync::<tauri::AppHandle<tauri::Wry>>();
         send_sync::<ocsr_engine::OcsrEngineState>();
+        send_sync::<naming_engine::NamingEngineState>();
     }
 
     #[test]
