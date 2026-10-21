@@ -214,6 +214,35 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it("runs Orthonym's existing insert command from Structure and hides it on removal", async () => {
+    await renderMainWindow();
+    const commandId = "plugin.orthonymNaming.insertName";
+    const handler = vi.fn(async () => undefined);
+    await act(async () => {
+      bundled.runtime!.registerPlugin({
+        ...namingManifest,
+        id: "org.chemdraft.orthonym-naming",
+        permissions: ["ui.menu"],
+        contributes: {
+          ...namingManifest.contributes,
+          panels: [],
+          commands: [{ id: commandId, title: "Insert Name", requiredPermissions: [], enabled: true }],
+          menus: [{ id: "menu.orthonymNaming.insertName", title: "Insert Name", commandId, location: "analyze", requiredPermissions: [] }]
+        }
+      }, { commandHandlers: { [commandId]: handler } });
+    });
+    await click(container!.querySelector('button[data-menu-section="structure"]')!);
+    const item = container!.querySelector(`button[data-command-id="${commandId}"]`)!;
+    expect(item.textContent).toContain("Convert Structure to Name");
+    await click(item);
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    await click(container!.querySelector('button[data-menu-section="analyze"]')!);
+    expect(container!.querySelector(`button[data-command-id="${commandId}"]`)?.textContent).toContain("Insert Name");
+    await act(async () => { bundled.runtime!.unregisterPlugin("org.chemdraft.orthonym-naming"); });
+    await click(container!.querySelector('button[data-menu-section="structure"]')!);
+    expect(container!.querySelector(`button[data-command-id="${commandId}"]`)).toBeNull();
+  });
+
   it("routes a named result through the plugin command and chemicalName renderer", async () => {
     bundled.withNamingFixture = true;
     installDomMocks();

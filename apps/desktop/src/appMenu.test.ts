@@ -54,6 +54,21 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it("routes synced plugin items by section in the shared native builder for both platforms", () => {
+    const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+    const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]?.split("/// Close Window")[0];
+    expect(builder).toContain('item.location == "structure"');
+    expect(builder).toContain("structure_menu.append");
+    expect(builder).toContain("&structure_menu,");
+    const analyze = source.split("fn build_analyze_submenu<R: Runtime>")[1]?.split("fn create_app_menu")[0];
+    expect(analyze).toContain('item.location == "analyze"');
+    const install = source.split("fn install_app_menu<R: Runtime>")[1]?.split("fn reinstall_app_menu")[0];
+    expect(install).toContain('#[cfg(target_os = "macos")]\n    app.set_menu(menu)?;');
+    expect(install).toContain('#[cfg(not(target_os = "macos"))]');
+    expect(install).toContain("app.get_webview_window(MAIN_WINDOW_LABEL)");
+    expect(install).toContain("window.set_menu(menu)?;");
+  });
+
   it("exposes routed Select All with the same command and accelerator as the native menu", () => {
     const command = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT)).find(item => item.commandId === "edit.selectAll");
     expect(command).toMatchObject({ label: "Select All", accelerator: "Cmd+A", enabled: true });

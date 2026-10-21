@@ -21,6 +21,7 @@ import {
 } from "./installPluginPackage";
 import { pickPluginPackage, type PickedPluginPackage } from "./pickPluginPackage";
 import { buildPluginMenuItems } from "./pluginMenuModel";
+import { buildOfficialPluginMenuItems } from "./officialPluginMenus";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import { createTauriPluginStagingFs, isTauriHost, type PluginStagingFs } from "./pluginStagingFs";
 import {
@@ -409,11 +410,13 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   );
   const pluginMenuItems = useStableValue(
     useMemo(
-      () =>
-        buildPluginMenuItems(
+      () => [
+        ...buildPluginMenuItems(
           runtime.host.listMenuContributions(),
           (commandId) => runtime.host.commands.get(commandId)?.enabled === true
         ),
+        ...buildOfficialPluginMenuItems((commandId) => runtime.host.commands.get(commandId))
+      ],
       [runtime, version]
     ),
     sameJson

@@ -489,6 +489,8 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Name from Structure (Orthonym) (macOS and Windows)
 
+- Structure ▸ Convert Structure to Name inserts the verified name below the structure; Structure ▸ Convert Name to Structure… opens the OPSIN prompt; both items appear only when their plugin is installed (macOS app menu and Windows document-window menu).
+
 - Install the Orthonym plugin from a package. Run Name from Structure with the engine absent: the movable
   “Naming needs a local engine” dialog opens owned by the document window, centred the first time (no
   Windows taskbar entry), and the floating toolbars stay usable beside it. Move it, close it, reopen

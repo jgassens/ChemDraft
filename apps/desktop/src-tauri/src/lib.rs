@@ -609,8 +609,14 @@ const MENU_COMMAND_IDS: &[&str] = &[
 struct PluginMenuItemInput {
     id: String,
     label: String,
+    #[serde(default = "default_plugin_menu_location")]
+    location: String,
     #[serde(default = "default_menu_item_enabled")]
     enabled: bool,
+}
+
+fn default_plugin_menu_location() -> String {
+    "analyze".to_owned()
 }
 
 fn default_menu_item_enabled() -> bool {
@@ -5604,7 +5610,7 @@ impl Default for ViewMenuState {
     }
 }
 
-/// Sync the webview's plugin Analyze menu items into the native menu (ADR-0016): store them, then
+/// Sync the webview's plugin menu items into the native menu (ADR-0016): store them, then
 /// rebuild + reinstall the app menu so they appear natively. Clicks route back by the `plugin.`
 /// prefix through the existing native→webview command bridge.
 #[tauri::command]
@@ -5760,6 +5766,7 @@ fn build_analyze_submenu<R: Runtime>(
     let separator = PredefinedMenuItem::separator(app)?;
     let plugin_menu_items = plugin_items
         .iter()
+        .filter(|item| item.location == "analyze")
         .map(|item| {
             MenuItem::with_id(
                 app,
@@ -5816,6 +5823,51 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, entries, view_state)?;
+    let structure_menu = Submenu::with_items(
+        app,
+        "Structure",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "structure.cleanup2d",
+                "Clean up Structure 2D",
+                true,
+                Some("CmdOrCtrl+Shift+K"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "text.convertToAtomLabel",
+                "Convert Text to Atom Label",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "structure.openInteractive3d",
+                "Interactive 3D Workspace...",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+    let structure_plugin_items = plugin_items
+        .iter()
+        .filter(|item| item.location == "structure")
+        .collect::<Vec<_>>();
+    if !structure_plugin_items.is_empty() {
+        structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for item in structure_plugin_items {
+            structure_menu.append(&MenuItem::with_id(
+                app,
+                item.id.as_str(),
+                item.label.as_str(),
+                item.enabled,
+                None::<&str>,
+            )?)?;
+        }
+    }
     let analyze_menu = build_analyze_submenu(app, plugin_items)?;
     let plugins_menu = Submenu::with_items(
         app,
@@ -5992,35 +6044,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 ],
             )?,
             &view_menu,
-            &Submenu::with_items(
-                app,
-                "Structure",
-                true,
-                &[
-                    &MenuItem::with_id(
-                        app,
-                        "structure.cleanup2d",
-                        "Clean up Structure 2D",
-                        true,
-                        Some("CmdOrCtrl+Shift+K"),
-                    )?,
-                    &MenuItem::with_id(
-                        app,
-                        "text.convertToAtomLabel",
-                        "Convert Text to Atom Label",
-                        true,
-                        None::<&str>,
-                    )?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
-                        app,
-                        "structure.openInteractive3d",
-                        "Interactive 3D Workspace...",
-                        true,
-                        None::<&str>,
-                    )?,
-                ],
-            )?,
+            &structure_menu,
             &analyze_menu,
             &plugins_menu,
             &Submenu::with_items(

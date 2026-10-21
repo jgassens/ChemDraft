@@ -46,8 +46,8 @@ export interface AppMenuCommand {
   nativePredefined?: boolean;
   /**
    * True when the item was contributed by the plugin runtime (a bundled plugin's manifest, or a
-   * desktop plugin-runtime affordance) rather than the core native menu. The native menu does not
-   * (yet) route these, so like {@link nativePredefined} they are excluded from the `MENU_COMMAND_IDS`
+   * desktop plugin-runtime affordance) rather than the core native menu. These sync dynamically
+   * into the native menu, so like {@link nativePredefined} they are excluded from `MENU_COMMAND_IDS`
    * drift comparison and dispatched through the plugin host instead of the core registry.
    */
   pluginContributed?: boolean;
