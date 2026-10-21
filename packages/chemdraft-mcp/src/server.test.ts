@@ -14,6 +14,9 @@ import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { createEmptyDocument, serializeDocument } from "@chemdraft/chem-core";
+import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
+import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
 
 import {
   createChemDraftMcpServer,
@@ -74,6 +77,44 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it.each(chargeSeparationCases)("renders neutral-drawn $name with an info note", async ({ molecule, smiles }) => {
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [molecule];
+    const client = await connect();
+    const result = await client.callTool({ name: "render_document", arguments: {
+      documentJson: serializeDocument(document), format: "svg"
+    } });
+    expect(result.isError).not.toBe(true);
+    const payload = jsonPayload(result.content) as {
+      exportWarnings: { code: string; severity: string; message: string }[];
+      warnings: string[]; molecules: { canonicalSmiles: string }[];
+    };
+    expect(payload.molecules[0]!.canonicalSmiles).toBe(smiles);
+    expect(payload.exportWarnings).toEqual([expect.objectContaining({
+      code: "export.smiles_charge_separated", severity: "info"
+    })]);
+    expect(payload.warnings).toEqual([payload.exportWarnings[0]!.message]);
+  });
+  it.each([...radicalExportCases, ...metalHydrogenLossCases.map((entry) => ({ ...entry, loss: true })), ...preservedRadicalExportCases.map((entry) => ({ ...entry, loss: false }))])("preserves or refuses native radical input: $name", async ({ molecule, states, loss }) => {
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [molecule];
+    const client = await connect();
+    const result = await client.callTool({ name: "render_document", arguments: {
+      documentJson: serializeDocument(document), format: "svg"
+    } });
+    if (!loss && molecule.atoms.every((atom) => (atom.markRadicals ?? 0) <= 2)) {
+      expect(result.isError).not.toBe(true);
+      const payload = jsonPayload(result.content) as { warnings: string[]; molecules: { canonicalSmiles: string }[] };
+      expect(payload.warnings).toEqual([]);
+      expect(await readAtomStates(payload.molecules[0]!.canonicalSmiles, true)).toEqual(states);
+    } else {
+      expect(result.isError).toBe(true);
+      expect(textBlocks(result.content).join("\n")).toContain(`Atom ${molecule.atoms[0]!.id}`);
+      expect(textBlocks(result.content).join("\n")).toMatch(/(?:radical electrons?|total hydrogens?)/);
+      if (loss) expect(textBlocks(result.content).join("\n")).toContain("SMILES reparses with");
+    }
+  });
+
   it("lists all ten ChemDraft CLI tools", async () => {
     const client = await connect();
     const result = await client.listTools();

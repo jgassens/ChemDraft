@@ -12,6 +12,8 @@ import {
   type PastedStructureDepiction
 } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi, readingOrderMolecules } from "./structureListExport";
+import { preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../../packages/document-workflow-core/test/radicalExportFixtures";
+import { chargeSeparationCases } from "../../../packages/document-workflow-core/test/chargeSeparationFixtures";
 
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -19,6 +21,85 @@ vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 beforeEach(() => {
   vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined);
   vi.mocked(registerRdkitWasmLoader).mockReset();
+});
+
+it.each(chargeSeparationCases)("retains the $name info note in desktop list exports", async ({ molecule }) => {
+  const { installNodeRdkitModuleLoader } = await import("@chemdraft/rdkit-adapter/node");
+  installNodeRdkitModuleLoader();
+  const real = await vi.importActual<typeof import("@chemdraft/rdkit-adapter/identifiers")>("@chemdraft/rdkit-adapter/identifiers");
+  vi.mocked(computeStructureIdentifiers).mockImplementation(real.computeStructureIdentifiers);
+  for (const exportList of [exportStructureListSmi, exportStructureListSdf]) {
+    const result = await exportList(documentWith([molecule]));
+    expect(result.contents).not.toBe("");
+    expect(result.warnings).toEqual([expect.objectContaining({
+      code: "export.smiles_charge_separated", severity: "info", objectId: molecule.id
+    })]);
+  }
+});
+
+describe.each(["engine", "fallback"])("radical list export with real RDKit: %s", (route) => {
+  it.each(preservedRadicalExportCases)("SMI and SDF preserve supported atom states: $name", async (entry) => {
+    const { molecule, states, smiles } = entry;
+    const { installNodeRdkitModuleLoader } = await import("@chemdraft/rdkit-adapter/node");
+    installNodeRdkitModuleLoader();
+    const real = await vi.importActual<typeof import("@chemdraft/rdkit-adapter/identifiers")>("@chemdraft/rdkit-adapter/identifiers");
+    if (route === "engine") vi.mocked(computeStructureIdentifiers).mockImplementation(real.computeStructureIdentifiers);
+    const document = documentWith([molecule]);
+    const smi = await exportStructureListSmi(document);
+    const sdf = await exportStructureListSdf(document);
+    if (route === "fallback" && "fallbackNeedsEngine" in entry) {
+      for (const result of [smi, sdf]) expect(result.warnings).toEqual([expect.objectContaining({
+        code: "export.smiles_radical_loss",
+        message: expect.stringContaining("cannot be reliably determined without the structure engine")
+      })]);
+    } else {
+      expect(smi.warnings).toEqual([]);
+      expect(sdf.warnings).toEqual([]);
+    }
+    const exportedSmiles = smi.contents.split("\t")[0]!;
+    expect((await real.computeStructureIdentifiers(exportedSmiles))?.smiles).toBe(smiles);
+    expect(await readAtomStates(exportedSmiles, true)).toEqual(states);
+    expect(await readAtomStates(sdf.contents.split("> <SMILES>")[0]!, true)).toEqual(states);
+  });
+
+  it.each(radicalExportCases)("SMI and SDF preserve atom properties or warn: $name", async ({ molecule, states, loss }) => {
+    const { installNodeRdkitModuleLoader } = await import("@chemdraft/rdkit-adapter/node");
+    installNodeRdkitModuleLoader();
+    if (route === "engine") {
+      const real = await vi.importActual<typeof import("@chemdraft/rdkit-adapter/identifiers")>("@chemdraft/rdkit-adapter/identifiers");
+      vi.mocked(computeStructureIdentifiers).mockImplementation(real.computeStructureIdentifiers);
+    }
+    const document = documentWith([molecule]);
+    const smi = await exportStructureListSmi(document);
+    const smiles = smi.contents.split("\t")[0]!;
+    const smilesStates = await readAtomStates(smiles);
+    if (loss) expect(smi.warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_radical_loss" }));
+    else {
+      expect(smi.warnings).toEqual([]);
+      expect(smilesStates).toEqual(states);
+    }
+    const sdf = await exportStructureListSdf(document);
+    const molfile = sdf.contents.split("> <SMILES>")[0]!;
+    const radicalCount = molecule.atoms[0]!.markRadicals ?? 0;
+    if (radicalCount > 2) {
+      expect(sdf.warnings).toContainEqual(expect.objectContaining({
+        code: "export.sdf_v2000_loss", message: expect.stringContaining(`${radicalCount} radical electrons`)
+      }));
+    } else if (molecule.atoms[0]!.element === "CH3") {
+      expect(sdf.warnings).toContainEqual(expect.objectContaining({ code: "export.sdf_v2000_loss" }));
+    } else if (molecule.atoms[0]!.element === "Zn") {
+      // M RAD preserves zinc's electron count, but the associated SMILES cannot carry it.
+      expect(await readAtomStates(molfile)).toEqual(states);
+    } else if (molecule.atoms[0]!.element === "D" || molecule.atoms[0]!.element === "T") {
+      await expect(readAtomStates(molfile)).rejects.toThrow("RDKit could not parse");
+    } else if (molecule.atoms[0]!.labelLiteral) {
+      // RDKit's explicit zero-valence reading takes precedence over M RAD here too.
+      expect(await readAtomStates(molfile)).toEqual([{ ...states[0]!, radicals: 4 }]);
+    } else if (!loss) {
+      expect(await readAtomStates(molfile)).toEqual(states);
+    }
+    if (loss) expect(sdf.warnings).toContainEqual(expect.objectContaining({ code: "export.smiles_radical_loss" }));
+  });
 });
 
 it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses its SMILES without calling the engine", async () => {
@@ -132,6 +213,14 @@ const exportListCases = [
   { format: "SMI", exportList: exportStructureListSmi }
 ];
 
+// Wiring-only engine stub for moleculeAt's two-carbon graph; real engine tests above verify
+// the actual returned SMILES and state correspondence rather than these sentinel strings.
+function mockEthaneIdentifiers(smiles: string) {
+  return { smiles, smilesAtomOrder: [0, 1], smilesAtomStates: [0, 1].map(() => ({
+    element: "C", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 3
+  })) };
+}
+
 describe("structure list export", () => {
   it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ exportList }) => {
     const molecule = moleculeAt("stereo", 20, 30);
@@ -140,8 +229,8 @@ describe("structure list export", () => {
     const document = documentWith([other, molecule]);
     const before = structuredClone(document);
     vi.mocked(computeStructureIdentifiers)
-      .mockResolvedValueOnce({ smiles: "C[C@H](F)Cl" })
-      .mockResolvedValueOnce({ smiles: "F/C=C/F" });
+      .mockResolvedValueOnce(mockEthaneIdentifiers("C[C@H](F)Cl"))
+      .mockResolvedValueOnce(mockEthaneIdentifiers("F/C=C/F"));
 
     const result = await exportList(document);
     expect(result.contents).toContain("C[C@H](F)Cl");
@@ -149,8 +238,8 @@ describe("structure list export", () => {
     expect(result.warnings).toEqual([]);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
     expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents);
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
     expect(document).toEqual(before);
   });
 
@@ -356,7 +445,12 @@ M  END
     expect(native.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
     expect(native.warnings[0].message).toContain("5 aromatic bonds could not be resolved");
     // Type 4 now stays truthful; unresolved interpretation still has to be disclosed.
-    vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "c1cccc1" });
+    vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "c1cccc1",
+      smilesAtomOrder: [0, 1, 2, 3, 4],
+      smilesAtomStates: Array.from({ length: 5 }, () => ({
+        element: "C", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 2
+      }))
+    });
     const engine = await exportStructureListSmi(document);
     expect(engine.warnings).toEqual([expect.objectContaining({
       code: "export.smiles_v2000_loss", objectId: molecule.id,
@@ -364,7 +458,7 @@ M  END
     })]);
   });
 
-  it("gives a typed atom on an aromatic ring its Kekulé valence in the SDF molfile, with no warning", async () => {
+  it("gives a typed atom on an aromatic ring its Kekulé valence and warns about inferred radicals", async () => {
     const ids = ["a0", "a1", "a2", "a3", "a4", "a5"];
     const molecule: MoleculeObject = {
       ...moleculeAt("benzene", 0, 0),
@@ -381,7 +475,10 @@ M  END
       }))
     };
     const result = await exportStructureListSdf(documentWith([molecule]));
-    expect(result.warnings).toEqual([]);
+    expect(result.warnings).toEqual([expect.objectContaining({
+      code: "export.smiles_radical_loss",
+      message: "Atom a0 (C) is drawn with 0 radical electrons; SMILES would imply 1 radical electron with its hydrogen count and formal charge."
+    })]);
     const lines = result.contents.split(/\r?\n/);
     const countsLineIndex = lines.findIndex((line) => /V2000$/.test(line));
     // Each benzene carbon takes one single and one double bond in the Kekulé structure it resolves
@@ -413,7 +510,10 @@ describe("SMILES export review regressions", () => {
     vi.mocked(computeStructureIdentifiers).mockImplementation(async (molfile) => {
       const graph = parseMolfileGraph(molfile);
       expect(graph?.atoms.map((atom) => atom.element)).toEqual(["C", "N"]);
-      return { smiles: "CN" };
+      return { smiles: "CN", smilesAtomOrder: [0, 1], smilesAtomStates: [
+        { element: "C", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 3 },
+        { element: "N", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 2 }
+      ] };
     });
     const result = await exportStructureListSmi(documentWith([molecule]));
     expect(result.contents).toBe("CN\t1\n");
@@ -451,7 +551,7 @@ describe("SMILES export review regressions", () => {
     const molecule = moleculeAt("wedged", 0, 0);
     molecule.bonds[0].display = { bondStyle: "wedge" };
     const document = documentWith([molecule]);
-    vi.mocked(computeStructureIdentifiers).mockResolvedValue({ smiles: "C[C@H](F)Cl" });
+    vi.mocked(computeStructureIdentifiers).mockResolvedValue(mockEthaneIdentifiers("C[C@H](F)Cl"));
     const warnings: string[] = [];
     expect(await copyAsSmiles(document, warnings)).toBe("C[C@H](F)Cl");
     expect(warnings).toEqual([]);
@@ -470,7 +570,10 @@ describe("SMILES export review regressions", () => {
       const molecule = moleculeAt("literal", 0, 0);
       molecule.atoms[1] = { ...molecule.atoms[1], element: "N", labelLiteral: true };
       const result = await exportStructureListSmi(documentWith([molecule]));
-      expect(result.warnings).toEqual([]);
+      expect(result.warnings).toEqual([expect.objectContaining({
+        code: "export.smiles_radical_loss",
+        message: "Atom a2 (N) is drawn with 0 radical electrons; SMILES reparses with 2 radical electrons."
+      })]);
       const rdkit = await ensureRdkit();
       const parsed = rdkit.get_mol(result.contents.split("\t")[0])!;
       try {

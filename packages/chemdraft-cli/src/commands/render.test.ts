@@ -355,10 +355,10 @@ describe("headless ChemDraft rendering", () => {
       { smiles: "[2H]C(Cl)(Br)F", ok: false },
       { smiles: "CCO", ok: true }
     ]);
-    for (const result of results.slice(0, 3)) {
-      expect(result.error).toBe(
-        `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${result.smiles}`
-      );
+    for (const [index, result] of results.slice(0, 3).entries()) {
+      expect(result.error).toContain(`Atom ${index === 1 ? 2 : 1}`);
+      expect(result.error).toContain("radical/isotope label");
+      expect(result.error).toContain("cannot yet draw");
     }
   });
 

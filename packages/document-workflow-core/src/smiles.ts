@@ -145,7 +145,24 @@ export function tryNativeSingleBondGraphSmiles(
 export function nativeSingleBondGraphSmiles(
   drawnAtoms: readonly MoleculeAtom[],
   drawnBonds: readonly MoleculeBond[],
-  warningsOut?: string[]
+  warningsOut?: string[],
+  atomOrderOut?: string[]
+): string {
+  const markedIds = atomOrderOut === undefined ? undefined : [] as string[];
+  const smiles = nativeGraphSmiles(drawnAtoms, drawnBonds, warningsOut, markedIds);
+  // Temporary markers follow the exact same graph traversal as the atom tokens. Strip them
+  // before returning SMILES; this records output order without adding atom maps to the export.
+  return atomOrderOut === undefined ? smiles : smiles.replace(/\u0000(\d+)\u0000/g, (_marker, index: string) => {
+    atomOrderOut.push(markedIds![Number(index)]!);
+    return "";
+  });
+}
+
+function nativeGraphSmiles(
+  drawnAtoms: readonly MoleculeAtom[],
+  drawnBonds: readonly MoleculeBond[],
+  warningsOut: string[] | undefined,
+  markedIds: string[] | undefined
 ): string {
   if (drawnAtoms.length === 0) {
     return "";
@@ -153,6 +170,12 @@ export function nativeSingleBondGraphSmiles(
   const { atoms, bonds: inputBonds } = expandNativeLabelGroups(drawnAtoms, drawnBonds);
   const bonds = nativeSmilesWritableBonds(atoms, inputBonds, warningsOut);
   const smilesByAtomId = nativeAtomSmilesById(atoms, bonds);
+  if (markedIds) {
+    for (const [id, token] of smilesByAtomId) {
+      smilesByAtomId.set(id, `\u0000${markedIds.length}\u0000${token}`);
+      markedIds.push(id);
+    }
+  }
   const adjacency = nativeAdjacency(atoms, bonds);
   const bondByAtomPair = nativeBondByAtomPair(bonds);
   const components = nativeComponents(atoms, adjacency);

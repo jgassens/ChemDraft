@@ -118,7 +118,11 @@ describe("Copy As SMILES messages", () => {
     vi.mocked(computeStructureIdentifiers).mockResolvedValue(undefined);
     const fallback: string[] = [];
     await copyAsSmiles(documentWith(mol), fallback);
-    expect(fallback).toEqual(["5 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single."]);
+    // The literal C has no hydrogens or radical marks; two single bonds leave two radicals.
+    expect(fallback).toEqual([
+      "5 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single.",
+      "Atom a0 (C) is drawn with 0 radical electrons; SMILES would imply 2 radical electrons with its hydrogen count and formal charge."
+    ]);
   });
 
   it("reports a literal valence overflow as a hydrogen-count problem", async () => {

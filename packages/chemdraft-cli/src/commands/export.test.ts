@@ -5,12 +5,16 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { exportDocumentToCdxml } from "@chemdraft/export-engine";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
 import { buildSmilesDocument } from "../document";
+import * as documentWorkflow from "../document";
 import { exportPerJobFormat, runExportCommand as runCli } from "./export";
+import { chargeSeparationCases } from "../../../document-workflow-core/test/chargeSeparationFixtures";
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -53,6 +57,28 @@ const UNSPECIFIED_ALKENE = "CC=CC";
 const DATIVE_PT_COMPLEX = "N->[Pt+2](<-N)(Cl)Cl";
 
 describe("chemdraft export", () => {
+  it.each(chargeSeparationCases)("accepts neutral-drawn $name in verified exports", async ({ molecule, smiles }) => {
+    const built = await buildSmilesDocument(smiles);
+    built.molecule = molecule;
+    built.document.pages[0]!.objects = [molecule];
+    built.identityMolfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders }).contents;
+    for (const format of ["mol", "cdxml"] as const) {
+      const result = await exportPerJobFormat(format, built);
+      expect(result.warnings).toEqual([expect.stringContaining("SMILES writes charge-separated formal charges")]);
+    }
+    // Supply the same native drawing at the command's builder boundary; SMILES input alone
+    // would already have been sanitized before the export verification under test.
+    const spy = vi.spyOn(documentWorkflow, "buildSmilesDocument").mockResolvedValue(built);
+    try {
+      for (const format of ["smi", "sdf"]) {
+        const io = collectIo();
+        expect(await runCli(["--smiles", smiles, "--out", join(outputDirectory, `${molecule.id}.${format}`)], io)).toBe(0);
+        expect(jsonLines(io)[0]).toMatchObject({ ok: true,
+          warnings: [expect.stringContaining("SMILES writes charge-separated formal charges")] });
+      }
+    } finally { spy.mockRestore(); }
+  });
   it.each(["mol", "sdf"])("fails closed when query-bond SMILES reaches %s export", async (format) => {
     const out = join(outputDirectory, `query-bond.${format}`);
     const io = collectIo();
@@ -112,13 +138,13 @@ describe("chemdraft export", () => {
     60_000
   );
 
-  it("keeps a typed atom's identity when its aromatic ring round-trips through CDXML", async () => {
+  it("keeps a typed atom's zero-hydrogen valence in CDXML but refuses its undrawn radical", async () => {
     // Simulates a pasted/imported aromatic ring (type-4 bonds) with one atom the user typed a
     // label on — the case molfile-writer callers must pass kekuleBondOrders for, or the atom's
     // identity changes silently (AGENTS.md §7 Chemistry invariants).
     // A typed label is literal: a typed "C" is a carbon with no hydrogens (MoleculeAtom
-    // labelLiteral), so the drawn structure is the phenyl radical, not benzene. That identity —
-    // stated here independently of the writer, as SMILES — is what the CDXML round trip must keep.
+    // labelLiteral). The CTfile must keep that zero-hydrogen valence. A SMILES parser infers an
+    // undrawn radical, so the CLI must refuse this input rather than claim verified identity.
     // Without kekuleBondOrders the typed atom's molfile valence field is omitted, a reader adds the
     // hydrogen it should not, and the round trip comes back as benzene: the check below fails.
     // (It used to compare against the untyped input's identity, which the typed drawing is not.)
@@ -142,7 +168,15 @@ describe("chemdraft export", () => {
         pages: [{ ...page, objects: page.objects.map((object, index) => index === moleculeIndex ? aromatic : object) }]
       }
     };
-    await expect(exportPerJobFormat("cdxml", patched)).resolves.toBeDefined();
+    const opened = openChemDraftPayload(exportDocumentToCdxml(patched.document).contents);
+    const reopened = opened.document!.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const molfile = moleculeToMolfileV2000(reopened, {
+      kekuleBondOrders: nativeBondOrderResolution(reopened.atoms, reopened.bonds).kekuleOrders
+    }).contents;
+    expect((await computeStructureIdentifiers(molfile))?.smiles).toBe(typedIdentity);
+    await expect(exportPerJobFormat("cdxml", patched)).rejects.toThrow(
+      "is drawn with 0 radical electrons; SMILES reparses with 1 radical electron"
+    );
   }, 60_000);
 
   it("exports a PDF starting with the %PDF signature", async () => {

@@ -4,11 +4,14 @@ import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { readFileSync } from "node:fs";
 import { moleculeToMolfileV2000, moleculeToMolfileV3000, type MoleculeObject } from "@chemdraft/chem-core";
 import { pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import * as identifiers from "@chemdraft/rdkit-adapter/identifiers";
+import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
 
 import {
   MAX_RASTER_WIDTH,
   MIN_RASTER_WIDTH,
   assertCanonicalIdentity,
+  currentMoleculeIdentityMolfile,
   depictSmiles,
   isRdkitNotConfiguredError,
   svgToPng,
@@ -22,6 +25,21 @@ afterAll(() => {
 });
 
 describe("CLI depiction boundary", () => {
+  it.each(["nRad", "hydrogenCount", "isotope", "element", "formalCharge"] as const)(
+    "refuses charge redistribution when %s also changes", async (field) => {
+      const { molecule } = chargeSeparationCases[0]!;
+      // Initialize the real loader through the public identity path before altering engine evidence.
+      const molfile = await currentMoleculeIdentityMolfile(molecule);
+      const result = (await identifiers.computeStructureIdentifiers(molfile.contents, { includeAtomStates: true }))!;
+      const state = result.smilesAtomStates![0]!;
+      if (field === "element") state.element = "N";
+      else state[field] += 1;
+      const spy = vi.spyOn(identifiers, "computeStructureIdentifiers").mockResolvedValueOnce(result);
+      try {
+        await expect(currentMoleculeIdentityMolfile(molecule)).rejects.toThrow("Cannot verify chemical identity");
+      } finally { spy.mockRestore(); }
+    }
+  );
   it.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("refuses query MOL identity even when canonical SMILES would match", async (write) => {
     const fixture = readFileSync(new URL("../../fixtures/molfile/unsupported-bond-order.mol", import.meta.url), "utf8");
     const graph = pastedStructureDepictionFromMolfile(fixture);

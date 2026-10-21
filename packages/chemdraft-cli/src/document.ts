@@ -30,6 +30,8 @@ import {
   applyMoleculeTargetBondLength,
   assertMolfileHasKnownBondOrders,
   expandNativeMoleculeLabelGroups,
+  nativeSingleHeavyElementLabelValence,
+  moleculeSmiles,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   smilesPasteBondLengthPx,
@@ -144,8 +146,25 @@ interface RdkitCountMolecule {
 }
 
 interface RdkitCountJson {
-  defaults?: { atom?: { z?: number } };
-  molecules?: Array<{ atoms?: Array<{ z?: number }> }>;
+  defaults?: { atom?: { z?: number; nRad?: number; isotope?: number } };
+  molecules?: Array<{ atoms?: Array<{ z?: number; nRad?: number; isotope?: number }> }>;
+}
+
+/** Check the input graph before an MDL intermediate can collapse radical/isotope labels. */
+function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
+  for (const [index, atom] of (parsed.molecules?.[0]?.atoms ?? []).entries()) {
+    const radicals = atom.nRad ?? parsed.defaults?.atom?.nRad ?? 0;
+    const isotope = atom.isotope ?? parsed.defaults?.atom?.isotope ?? 0;
+    const properties = [
+      ...(radicals > 0 ? [`${radicals} radical electron${radicals === 1 ? "" : "s"}`] : []),
+      ...(isotope > 0 ? [`isotope ${isotope}`] : [])
+    ];
+    if (properties.length > 0) {
+      throw new UnsupportedMolfileLabelError(
+        `Atom ${index + 1} carries ${properties.join(" and ")}; ChemDraft cannot yet draw this radical/isotope label without risking chemical identity.`
+      );
+    }
+  }
 }
 
 /** Refuse oversized structures after a graph parse but before either engine performs 2D layout. */
@@ -161,6 +180,7 @@ async function rejectOversizedSmiles(smiles: string): Promise<void> {
     let heavyAtoms: number | undefined;
     if (molecule.get_json) {
       const parsed = JSON.parse(molecule.get_json()) as RdkitCountJson;
+      rejectUnsupportedInputAtomLabels(parsed);
       const defaultAtomicNumber = parsed.defaults?.atom?.z ?? 6;
       const atoms = parsed.molecules?.[0]?.atoms;
       if (atoms) {
@@ -368,6 +388,10 @@ function identityMolfile(
   semantics: SourceBondSemantics,
   warnings?: string[]
 ): { contents: string; format: "molfile-v2000" | "molfile-v3000" } {
+  const unsupportedRadical = drawn.atoms.find((atom) => (atom.markRadicals ?? 0) > 2);
+  if (unsupportedRadical) {
+    throw new Error(`Atom ${unsupportedRadical.id} (${unsupportedRadical.element}) has ${unsupportedRadical.markRadicals} radical electrons; MDL radical codes cannot represent this count.`);
+  }
   // A valid group label ("Me", "OMe") is written as its atoms, appended after the drawn atoms and
   // bonds, so the identity is the molecule the label means and every drawn bond index still holds.
   // A bonded "Ar" (aryl) is a warned placeholder, never argon.
@@ -377,7 +401,10 @@ function identityMolfile(
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
-        moleculeToMolfileV3000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms }).contents,
+        moleculeToMolfileV3000(molecule, {
+          fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms,
+          spellLabel: nativeSingleHeavyElementLabelValence
+        }).contents,
         unspecified
       ),
       format: "molfile-v3000"
@@ -385,7 +412,10 @@ function identityMolfile(
   }
   return {
     contents: markV2000UnspecifiedDoubleBonds(
-      moleculeToMolfileV2000(molecule, { fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms }).contents,
+      moleculeToMolfileV2000(molecule, {
+        fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms,
+        spellLabel: nativeSingleHeavyElementLabelValence
+      }).contents,
       unspecified
     ),
     format: "molfile-v2000"
@@ -396,7 +426,7 @@ function identityMolfile(
  * regenerated connection table matches the stored one. The native bond schema has no unknown-E/Z
  * field; trusting the stored molfile without this comparison would hide agent chemical edits.
  */
-export function currentMoleculeIdentityMolfile(molecule: MoleculeObject, warnings: string[] = []) {
+function uncheckedCurrentMoleculeIdentityMolfile(molecule: MoleculeObject, warnings: string[] = []) {
   const currentDativeIndices = molecule.bonds.flatMap((bond, index) => isDativeBond(bond) ? [index] : []);
   const storedSemantics = sourceBondSemantics(molecule.structure);
   const current = { unspecifiedDoubleBondIndices: [], dativeBondIndices: currentDativeIndices };
@@ -422,6 +452,30 @@ export function currentMoleculeIdentityMolfile(molecule: MoleculeObject, warning
   }
   warnings.push("Stored unknown E/Z flags could not be verified against the edited graph; reported double-bond stereochemistry follows current coordinates.");
   return identityMolfile(molecule, current, warnings);
+}
+
+/** Equal canonical strings cannot reveal a loss already present in their common molfile.
+ * Compare the drawing against RDKit's reparsed atom states before accepting an identity source.
+ */
+export async function currentMoleculeIdentityMolfile(
+  molecule: MoleculeObject,
+  warnings: string[] = [],
+  exportWarnings: import("@chemdraft/export-engine").ExportWarning[] = []
+) {
+  installNodeEngines();
+  const result = uncheckedCurrentMoleculeIdentityMolfile(molecule, warnings);
+  const atomWarnings: import("@chemdraft/export-engine").ExportWarning[] = [];
+  await moleculeSmiles(molecule, 0, atomWarnings, computeStructureIdentifiers, result.contents,
+    { requireEngineAtomStates: true });
+  const loss = atomWarnings.find((warning) => [
+    "export.smiles_radical_loss", "export.smiles_hydrogen_loss", "export.smiles_charge_loss",
+    "export.smiles_isotope_loss", "export.smiles_element_loss", "export.smiles_atom_state_unverified"
+  ].includes(warning.code));
+  if (loss) throw new Error(`Cannot verify chemical identity: ${loss.message}`);
+  // This pass verifies atom states. General serialization notices (such as expanded labels)
+  // belong to the writer, not to an extra SMILES export performed only for validation.
+  exportWarnings.push(...atomWarnings.filter((warning) => warning.code === "export.smiles_charge_separated"));
+  return result;
 }
 
 class UnsupportedMolfileLabelError extends Error {}
@@ -456,7 +510,7 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
   try {
     await rejectOversizedSmiles(normalizedSmiles);
   } catch (error) {
-    if (error instanceof InputLimitError || isRdkitNotConfiguredError(error)) throw error;
+    if (error instanceof UnsupportedMolfileLabelError || error instanceof InputLimitError || isRdkitNotConfiguredError(error)) throw error;
     // Preserve the normal depiction path: it reports the RDKit failure and may still use OCL.
   }
   const ocl = await import("@chemdraft/ocl-adapter");

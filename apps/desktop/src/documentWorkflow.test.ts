@@ -12784,8 +12784,11 @@ describe("Phase 4 document workflow", () => {
 
       expect(smiles).toBe("[Zn]CC");
       expect(smiles).not.toContain(".");
-      expect(warnings).toHaveLength(1);
+      // Without an engine the native valence table cannot verify the metal's radical state.
+      expect(warnings).toHaveLength(2);
       expect(warnings[0]).toContain("dative");
+      expect(warnings[1]).toContain("(Zn) is drawn with 0 radical electrons");
+      expect(warnings[1]).toContain("cannot be reliably determined without the structure engine");
     });
 
     it("writes V3000 with coordination bond type 9 and no warning; V2000 flattens with a warning", () => {

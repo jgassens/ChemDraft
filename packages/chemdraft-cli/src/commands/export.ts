@@ -16,6 +16,7 @@ import { parseOptions, stringOption } from "../args";
 import {
   assertCanonicalIdentity,
   buildSmilesDocument,
+  currentMoleculeIdentityMolfile,
   type BuiltSmilesDocument
 } from "../document";
 import { installNodeEngines } from "../engine";
@@ -259,12 +260,16 @@ interface PerJobExportResult {
   warnings: string[];
 }
 
-function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument): string {
+async function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument, warnings: string[] = []): Promise<string> {
   if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
     throw new Error(
       "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
     );
   }
+  // Do not accept a supposedly verified canonical source made from an already lossy molfile.
+  const notes: ExportWarning[] = [];
+  await currentMoleculeIdentityMolfile(built.molecule, [], notes);
+  warnings.push(...notes.map((note) => note.message));
   return built.sourceCanonicalSmiles;
 }
 
@@ -296,11 +301,12 @@ export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
-  const sourceCanonicalSmiles = verifiedSourceCanonicalSmiles(built);
+  const identityWarnings: string[] = [];
+  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
     const warnings = await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
-    return { contents: result.contents, warnings: [...result.warnings.map((warning) => warning.message), ...warnings] };
+    return { contents: result.contents, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message), ...warnings] };
   }
   if (format === "pdf") {
     // Keep the jsPDF/svg2pdf implementation and its Node JSDOM shim out of non-PDF exports.
@@ -308,10 +314,10 @@ export async function exportPerJobFormat(
     const result = await withPdfDom((domParser) =>
       exportDocumentToPdf(built.document, { domParser, pageIndex: 0 })
     );
-    return { contents: result.bytes, warnings: result.warnings.map((warning) => warning.message) };
+    return { contents: result.bytes, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message)] };
   }
   await assertCanonicalIdentity(sourceCanonicalSmiles, built.identityMolfile);
-  return { contents: built.identityMolfile, warnings: [] };
+  return { contents: built.identityMolfile, warnings: identityWarnings };
 }
 
 async function runPerJobExport(
@@ -366,7 +372,7 @@ async function combinedRecord(
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
   const warnings = [...built.warnings];
   const molfile = built.identityMolfile;
-  const sourceCanonicalSmiles = verifiedSourceCanonicalSmiles(built);
+  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built);
   await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
 
   const smilesWarnings: ExportWarning[] = [];
@@ -377,6 +383,9 @@ async function combinedRecord(
     computeStructureIdentifiers,
     molfile
   );
+  const loss = smilesWarnings.find((warning) => warning.severity !== "info" &&
+    !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"));
+  if (loss) throw new Error(`Cannot export without changing chemical identity: ${loss.message}`);
   await assertCanonicalIdentity(sourceCanonicalSmiles, smiles);
   warnings.push(...smilesWarnings
     // The shared desktop helper still assumes its usual V2000 input. This CLI supplied a V3000
