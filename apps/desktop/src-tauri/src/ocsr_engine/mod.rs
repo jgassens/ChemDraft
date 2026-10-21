@@ -219,16 +219,7 @@ impl OcsrEngineState {
             if installing.load(Ordering::SeqCst) {
                 return;
             }
-            let io = match SystemInstallIo::new(running) {
-                Ok(io) => io,
-                Err(error) => {
-                    eprintln!(
-                        "[chemdraft ocsr] could not prepare engine recovery: {}",
-                        error.message
-                    );
-                    return;
-                }
-            };
+            let io = SystemInstallIo::offline(running);
             for path in install::remove_stale_staging(&paths, platform.as_ref(), &io, &cancel) {
                 eprintln!(
                     "[chemdraft ocsr] removed {} left by an interrupted install",

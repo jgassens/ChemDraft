@@ -559,13 +559,14 @@ After relocation and before probing, the shared commit now runs this local comma
 schematically; the Python minor comes from `EngineSpec`, 3.10 for MolScribe and 3.12 for naming):
 
 ```text
-<final>/uv.exe venv <final>/venv --allow-existing --python <final>/python/cpython-<minor>-windows-x86_64-none/python.exe --python-preference only-managed --relocatable
+<final>/uv.exe venv <final>/venv --allow-existing --offline --python <final>/python/cpython-<minor>-windows-x86_64-none/python.exe --python-preference only-managed --relocatable
 ```
 
 The platform supplies the installed uv path. `UV_PYTHON_INSTALL_DIR`, `UV_PYTHON_BIN_DIR`,
 `UV_STATE_DIR`, `UV_CACHE_DIR` and the temporary directories point into the final tree, and
 `UV_NO_CONFIG=1`; inherited uv/pip/Python environment overrides are scrubbed exactly as for other
-uv runs. This regenerates both launchers without changing site-packages or downloading anything.
+uv runs. The rewrite removes `download-cache/` afterwards, as well as any temporary directory
+it created. This regenerates both launchers without changing site-packages or downloading anything.
 The harmless staging reference in distribution `direct_url.json` metadata is left alone.
 The tester verified the command by hand on a real Windows machine: about one second, and the
 post-swap probe then passed. This change's Windows stub tests have not been run on the macOS host.
@@ -573,7 +574,11 @@ post-swap probe then passed. This change's Windows stub tests have not been run 
 The command uses the same `RunningChild`, cancellation, process-tree kill and `CREATE_NO_WINDOW`
 handling as all other uv runs. Failure or cancellation rolls the swap back just like a failed probe.
 Restoring `previous` during rollback or interrupted-install reconciliation refreshes the launchers
-again at the final path; a failed reconciliation retains the previous tree for a later retry.
+again at the final path; a failed startup reconciliation retains the previous tree for a later retry.
+The startup sweep uses local process IO without constructing an HTTP client. During reinstall,
+a non-cancelled recovery failure is logged with its stderr tail and the unusable old trees are
+discarded so the fresh install can proceed. If that new install fails, no broken rollback is restored.
+Cancellation still aborts reinstall and preserves the previous tree.
 Rollback always renames the old engine back. If already cancelled, it skips the refresh because the
 old launchers already name the final path; no new child starts after cancellation or app exit.
 The legacy-receipt check also refreshes Windows launchers before its Python probe. Unix does nothing

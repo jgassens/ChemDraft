@@ -802,6 +802,7 @@ pub(crate) mod tests {
             assert_eq!(args[0], "venv");
             assert_eq!(args[1], root.join("venv").into_os_string());
             assert!(args.contains(&OsString::from("--allow-existing")));
+            assert!(args.contains(&OsString::from("--offline")));
             assert!(env.contains(&(OsString::from("UV_NO_CONFIG"), OsString::from("1"))));
             assert!(!cancel.load(Ordering::SeqCst));
             assert!(watch.is_none());
@@ -813,7 +814,7 @@ pub(crate) mod tests {
                     "uv checked before rewriting, Python after"
                 );
                 assert_eq!(
-                    args[4],
+                    args[5],
                     root.join("python")
                         .join(format!(
                             "cpython-{}-windows-x86_64-none",

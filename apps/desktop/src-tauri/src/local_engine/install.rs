@@ -121,11 +121,20 @@ pub trait InstallIo: Send + Sync {
 
 pub struct SystemInstallIo<S: EngineSpec> {
     spec: std::marker::PhantomData<S>,
-    client: reqwest::blocking::Client,
+    client: Option<reqwest::blocking::Client>,
     pub(crate) running: Arc<RunningChild>,
 }
 
 impl<S: EngineSpec> SystemInstallIo<S> {
+    /// Recovery runs local processes and must never require an HTTP client.
+    pub fn offline(running: Arc<RunningChild>) -> Self {
+        Self {
+            spec: std::marker::PhantomData,
+            client: None,
+            running,
+        }
+    }
+
     pub fn new(running: Arc<RunningChild>) -> Result<Self, InstallError> {
         let mut io = Self::from_builder(reqwest::blocking::Client::builder())?;
         io.running = running;
@@ -149,7 +158,7 @@ impl<S: EngineSpec> SystemInstallIo<S> {
             })?;
         Ok(Self {
             spec: std::marker::PhantomData,
-            client,
+            client: Some(client),
             running: Arc::default(),
         })
     }
@@ -186,6 +195,8 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         check_cancel::<S>(cancel)?;
         let mut response = self
             .client
+            .as_ref()
+            .ok_or_else(|| InstallError::network("Downloads are disabled during engine recovery"))?
             .get(spec.url)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
@@ -270,12 +281,47 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        if _step == RunStep::RewriteVenvLaunchers {
+            command.stderr(Stdio::piped());
+        }
         platform.configure_child(&mut command);
         let mut child = command.spawn().map_err(|error| {
             InstallError::failed(format!("Could not run {}: {error}", program.display()))
         })?;
+        #[cfg(windows)]
+        if _step == RunStep::RewriteVenvLaunchers {
+            let stderr = child.stderr.take().expect("piped rewrite stderr");
+            let reader = std::thread::spawn(move || stderr_tail(stderr));
+            let outcome = self.supervise(&mut child, program, cancel, watch, None);
+            let tail = reader.join().unwrap_or_default();
+            return outcome.map_err(|mut error| {
+                if !tail.is_empty() {
+                    error.message.push_str(&format!("\nstderr: {tail}"));
+                }
+                error
+            });
+        }
         self.supervise(&mut child, program, cancel, watch, None)
     }
+}
+
+/// Drain the pipe while retaining only the final 8 KiB, so a chatty uv cannot block or
+/// grow memory without bound and recovery failures include the useful diagnostic tail.
+#[cfg(any(windows, test))]
+pub(super) fn stderr_tail(mut reader: impl Read) -> String {
+    let mut tail = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..read]);
+        if tail.len() > 8192 {
+            tail.drain(..tail.len() - 8192);
+        }
+    }
+    String::from_utf8_lossy(&tail).trim().to_owned()
 }
 
 /// Runs a program and returns what it wrote to stdout: the seam the in-place receipt upgrade uses
@@ -603,6 +649,8 @@ pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
     cancel: &AtomicBool,
 ) -> Result<(), InstallError> {
     check_cancel::<S>(cancel)?;
+    // Only x64 Windows is supported. For ARM64, change the managed Python triple here
+    // alongside the Windows uv pins in local_engine/pins.rs.
     let python = root
         .join("python")
         .join(format!(
@@ -627,6 +675,7 @@ pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
             OsString::from("venv"),
             root.join("venv").into_os_string(),
             OsString::from("--allow-existing"),
+            OsString::from("--offline"),
             OsString::from("--python"),
             python.into_os_string(),
             OsString::from("--python-preference"),
@@ -640,6 +689,7 @@ pub(crate) fn rewrite_venv_launchers<S: EngineSpec>(
     if !had_temp {
         let _ = fs::remove_dir_all(&temp);
     }
+    let _ = fs::remove_dir_all(root.join("download-cache"));
     result.map_err(|error| InstallError {
         code: error.code,
         message: format!(
@@ -714,7 +764,20 @@ fn commit_staged_tree<S: EngineSpec>(
 
     // A set-aside tree from an interrupted swap may be the only working engine: put it back in
     // place first if `engine/` is not, so it becomes the one this install falls back to.
-    reconcile_previous::<S>(paths, platform, io, cancel)?;
+    if let Err(error) = reconcile_previous::<S>(paths, platform, io, cancel) {
+        if error.code == super::InstallErrorCode::Cancelled {
+            return Err(error);
+        }
+        // Recovery logged the process error, including its stderr tail. Replace these
+        // unusable trees rather than allowing them to block reinstall or become rollback.
+        eprintln!(
+            "{} discarding unusable recovery trees before reinstall: {}",
+            S::LOG_PREFIX,
+            error.message
+        );
+        remove_tree::<S>(&paths.app_data, &previous).map_err(S::failed_io)?;
+        remove_tree::<S>(&paths.app_data, &final_dir).map_err(S::failed_io)?;
+    }
     remove_tree::<S>(&paths.app_data, &previous).map_err(S::failed_io)?;
     let had_previous = final_dir.exists();
     if had_previous {

@@ -398,6 +398,7 @@ impl InstallIo for FixtureIo {
                     OsString::from("venv"),
                     root.join("venv").into_os_string(),
                     OsString::from("--allow-existing"),
+                    OsString::from("--offline"),
                     OsString::from("--python"),
                     managed.into_os_string(),
                     OsString::from("--python-preference"),
@@ -418,6 +419,8 @@ impl InstallIo for FixtureIo {
             }
             assert!(env.contains(&(OsString::from("UV_NO_CONFIG"), OsString::from("1"))));
             assert!(watch.is_none());
+            fs::create_dir_all(root.join("download-cache")).expect("uv cache");
+            fs::write(root.join("download-cache").join("cache"), b"scratch").expect("cache");
             let first = self.rewrites.fetch_add(1, Ordering::SeqCst) == 0;
             if first && self.cancel_rewrite {
                 cancel.store(true, Ordering::SeqCst);
@@ -468,6 +471,11 @@ fn run_install(paths: &InstallPaths, io: &FixtureIo) -> Result<serde_json::Value
 }
 fn assert_clean(paths: &InstallPaths) {
     assert!(!paths.partial_dir_for::<Stub>().exists());
+    assert!(!paths
+        .final_dir_for::<Stub>()
+        .join("download-cache")
+        .exists());
+    assert!(!paths.final_dir_for::<Stub>().join("temp").exists());
     assert!(!paths.previous_dir_for::<Stub>().exists());
     assert!(!fs::read_dir(&paths.app_data)
         .expect("entries")
@@ -624,30 +632,57 @@ fn windows_reconcile_refreshes_launchers_and_preserves_previous_on_failure_or_ca
 
 #[cfg(windows)]
 #[test]
-fn windows_reinstall_keeps_previous_when_its_recovery_refresh_fails() {
-    let fixture = FixtureRoot::new("windows-reinstall-recovery");
-    let paths = fixture.paths();
-    run_install(&paths, &FixtureIo::default()).expect("original");
-    fs::rename(
-        paths.final_dir_for::<Stub>(),
-        paths.previous_dir_for::<Stub>(),
-    )
-    .expect("interrupted swap");
-    let io = FixtureIo {
-        fail_rewrite: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        run_install(&paths, &io).expect_err("recovery failed").code,
-        InstallErrorCode::Failed
-    );
-    assert!(paths
-        .previous_dir_for::<Stub>()
-        .join(RECEIPT_FILE)
-        .is_file());
-    assert!(!paths.partial_dir_for::<Stub>().exists());
-    assert!(!paths.final_dir_for::<Stub>().exists());
-    assert_eq!(io.probes.load(Ordering::SeqCst), 0);
+fn windows_reinstall_discards_broken_recovery_but_cancel_still_aborts() {
+    for cancelled in [false, true] {
+        for fail_probe in [false, true] {
+            let fixture = FixtureRoot::new("windows-reinstall-recovery");
+            let paths = fixture.paths();
+            run_install(&paths, &FixtureIo::default()).expect("original");
+            fs::write(paths.final_dir_for::<Stub>().join("marker"), b"old").expect("marker");
+            fs::rename(
+                paths.final_dir_for::<Stub>(),
+                paths.previous_dir_for::<Stub>(),
+            )
+            .expect("interrupted swap");
+            let io = FixtureIo {
+                fail_rewrite: !cancelled,
+                cancel_rewrite: cancelled,
+                fail_probe,
+                ..Default::default()
+            };
+            let result = run_install(&paths, &io);
+            if cancelled {
+                assert_eq!(
+                    result.expect_err("cancelled").code,
+                    InstallErrorCode::Cancelled
+                );
+                assert!(paths.previous_dir_for::<Stub>().join("marker").is_file());
+                assert!(!paths.final_dir_for::<Stub>().exists());
+                assert!(!paths.partial_dir_for::<Stub>().exists());
+                assert_eq!(io.probes.load(Ordering::SeqCst), 0);
+            } else {
+                if fail_probe {
+                    assert!(result
+                        .expect_err("new probe failed")
+                        .message
+                        .contains("probe refused"));
+                    assert!(
+                        !paths.final_dir_for::<Stub>().exists(),
+                        "broken engine never restored"
+                    );
+                } else {
+                    result.expect("fresh install replaces broken recovery");
+                    assert!(install::is_healthy::<Stub>(
+                        &paths.final_dir_for::<Stub>(),
+                        &StubPlatform
+                    ));
+                    assert!(!paths.final_dir_for::<Stub>().join("marker").exists());
+                }
+                assert_eq!(io.probes.load(Ordering::SeqCst), 1);
+                assert_clean(&paths);
+            }
+        }
+    }
 }
 
 #[test]
@@ -995,4 +1030,28 @@ fn version_dispatch_is_schema_neutral_and_rejects_invalid_values() {
         receipt_version(&serde_json::json!([]), 1, 7, "stub"),
         Err("not a JSON object".into())
     );
+}
+
+#[test]
+fn startup_sweep_without_http_client_removes_stale_trees() {
+    let fixture = FixtureRoot::new("offline-sweep");
+    let paths = fixture.paths();
+    fs::create_dir_all(paths.partial_dir_for::<Stub>()).expect("partial");
+    fs::create_dir_all(paths.final_dir_for::<Stub>()).expect("incomplete engine");
+    let io = install::SystemInstallIo::<Stub>::offline(std::sync::Arc::default());
+    let removed =
+        install::remove_stale_staging::<Stub>(&paths, &StubPlatform, &io, &AtomicBool::new(false));
+    assert!(removed.contains(&paths.partial_dir_for::<Stub>()));
+    assert!(removed.contains(&paths.final_dir_for::<Stub>()));
+    assert!(!paths.final_dir_for::<Stub>().exists());
+    assert_clean(&paths);
+}
+
+#[test]
+fn launcher_stderr_tail_is_bounded_and_keeps_the_failure_detail() {
+    let mut output = vec![b'x'; 20_000];
+    output.extend_from_slice(b"\nlauncher refused\n");
+    let tail = install::stderr_tail(output.as_slice());
+    assert!(tail.len() <= 8192);
+    assert!(tail.ends_with("launcher refused"));
 }
