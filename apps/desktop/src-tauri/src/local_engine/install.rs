@@ -926,8 +926,9 @@ pub fn relocate_staged_tree(root: &Path, rebases: &[(PathBuf, PathBuf)]) -> io::
             let entry = entry?;
             let path = entry.path();
             let file_type = entry.file_type()?;
-            let junction = is_junction(&path)?;
-            if junction || file_type.is_symlink() {
+            let is_link = file_type.is_symlink();
+            let junction = if is_link { is_junction(&path)? } else { false };
+            if junction || is_link {
                 let target = fs::read_link(&path)?;
                 if let Some(rebased) = rebase(&target) {
                     fs::remove_file(&path).or_else(|_| fs::remove_dir(&path))?;

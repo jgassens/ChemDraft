@@ -120,7 +120,7 @@ waits for the sweep: all three take one staging lock before touching these direc
    staging tree is renamed to `ocsr-engine/`. uv writes the interpreter's location as an absolute path
    — the venv's `python` link, `pyvenv.cfg`'s `home`, and the managed Python's minor-version link —
    so those paths still point into the staging directory, which no longer exists. The installer
-   rewrites every symlink under the tree whose target lies in the staging prefix, and the `home` line,
+   rewrites symlinks and directory junctions under the tree whose target lies in the staging prefix, and the `home` line,
    onto the final prefix (both the path as given and its canonical spelling).
 9. **Prove it.** `python -c "import cv2, molscribe, numpy, torch, torchvision"` runs from the final
    location. This is the only check that the relocation worked, so it runs after the swap, not before.
