@@ -66,30 +66,7 @@ install focuses its retained native window, even while installation is pending.
 The document DOM retains only the existing “Naming the structure…” activity indicator.
 No native creation failure falls back to an in-page installer.
 
-### Integration boundary in this worker
-
-The allowed-file list excludes `MainWindow.tsx` and `plugins/usePluginRuntime.ts`, which own the
-coordinator ref and active-tab provider. They still need the small typed wiring below before this
-migration is active in the application:
-
-- Add an optional `getDialogCoordinator(): DialogCoordinator | undefined` provider to
-  `PluginRuntimeProviders`, passing `() => dialogCoordinatorRef.current` from MainWindow.
-- Supply `{ coordinator: () => providersRef.current.getDialogCoordinator?.(),
-  documentTabId: () => providersRef.current.getActiveDocumentTab?.().id }` as the second argument
-  to the existing `mountStructureNamingHost(runtime.naming)` call.
-
-Until that wiring is integrated, mounting without the context supplies only the activity indicator;
-a first-use naming call returns `engineNotInstalled`. Coordinator/controller and DOM tests inject
-this context explicitly. Recommended next task: integrate these two provider changes, then run the
-standing native-dialog hands-on checks on macOS and Windows (ownership/taskbar, modeless focus,
-reopen position, destination DPI, minimized persistence and native close while installing).
-
-Worker verification on macOS: Rust fmt, all-target clippy with warnings denied, and the 33
-dialog-filtered native tests passed. The required Vitest suites passed, including controller/native
-form integration, strict validators, bounded escaped text, cancellation, retained reopen, tab-close
-races and both platform close shortcuts. Root lint still fails on existing mass-fragment example
-dependency/type errors outside this task. Windows compilation and both platforms' real-window
-ownership, focus, taskbar and mixed-DPI checks remain unverified. No build stamp was changed.
+MainWindow supplies the coordinator and active tab through `PluginRuntimeProviders`.
 
 ## Transport and lifecycle
 

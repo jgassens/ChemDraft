@@ -1033,7 +1033,7 @@ fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
 
 // Windows: uv links the managed Python's minor-version directory with a junction. std cannot
 // create junctions, and symlink creation needs Developer Mode or elevation; this path is
-// unverified until a real Windows install runs (see docs/architecture/engine.md).
+// unverified until a real Windows install runs (see docs/architecture/ocsr-engine.md).
 #[cfg(windows)]
 fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
     if target.is_dir() {

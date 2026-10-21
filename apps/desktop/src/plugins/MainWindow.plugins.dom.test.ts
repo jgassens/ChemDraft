@@ -13,14 +13,41 @@ import {
   RECOGNITION_FIXTURE_PANEL_ID
 } from "../testSupport/recognitionFixturePlugin";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
-import { namingManifest, namingMolecule } from "./structureNamingTestFixtures";
+import { namingInstalled, namingManifest, namingMolecule } from "./structureNamingTestFixtures";
 
 // No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
 // to the test-only recognition fixture, standing in for an installed plugin.
 const bundled = vi.hoisted(() => ({
   withRecognitionFixture: false,
   withNamingFixture: false,
+  namingNotInstalled: false,
+  namingResult: undefined as unknown,
+  runtime: undefined as DesktopPluginRuntime | undefined,
   massAnalyzerHandler: undefined as undefined | (() => unknown)
+}));
+const nativeDialog = vi.hoisted(() => ({
+  desktop: false,
+  snapshot: undefined as import("../dialogs/dialogProtocol").DialogMessage | undefined,
+  listener: undefined as undefined | ((delivery: import("../dialogs/dialogTransport").DialogDelivery) => void),
+  close: vi.fn(async () => undefined)
+}));
+vi.mock("../dialogs/dialogTransport", () => ({
+  nativeDialogTransport: {
+    subscribe: async (handler: typeof nativeDialog.listener) => {
+      nativeDialog.listener = handler;
+      return () => { if (nativeDialog.listener === handler) nativeDialog.listener = undefined; };
+    },
+    open: async (snapshot: import("../dialogs/dialogProtocol").DialogMessage) => {
+      nativeDialog.snapshot = snapshot;
+      return { hostId: "naming-install", windowLabel: `dialog-main-${snapshot.dialogKind}-1` };
+    },
+    publish: async () => undefined,
+    close: nativeDialog.close
+  }
+}));
+vi.mock("../window-manager", async importOriginal => ({
+  ...await importOriginal<typeof import("../window-manager")>(),
+  isDesktopRuntime: () => nativeDialog.desktop
 }));
 vi.mock("./registerBundledPlugins", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
@@ -52,6 +79,7 @@ vi.mock("./registerBundledPlugins", async (importOriginal) => {
             contributes: { ...namingManifest.contributes, menus: [{ id: "menu.namingTest.run", title: "Name Structure Test", commandId: "plugin.namingTest.run", location: "analyze", requiredPermissions: [] }] } },
           options: { commandHandlers: { "plugin.namingTest.run": async context => {
             const result = await context.chemistry!.structureToName!({ objectId: namingMolecule.id });
+            bundled.namingResult = result;
             if (result.status === "named") await context.panels!.showReport("panel.namingTest.result", { title: "Name", sections: [{ kind: "chemicalName", label: "Name", name: result.name, kindLabel: result.kindLabel, warnings: result.warnings }] });
           } } }
         });
@@ -65,9 +93,13 @@ vi.mock("./registerBundledPlugins", async (importOriginal) => {
 vi.mock("./createPluginRuntime", async importOriginal => {
   const actual = await importOriginal<typeof import("./createPluginRuntime")>();
   const { fakeNamingEngine } = await import("./structureNamingTestFixtures");
-  return { ...actual, createPluginRuntime: (options: import("./createPluginRuntime").DesktopPluginRuntimeOptions) =>
-    actual.createPluginRuntime(bundled.withNamingFixture ? { ...options, structureNamingEngine: fakeNamingEngine(),
-      namingCanonicalizer: { canonicalize: async () => "CCO", version: "test" } } : options) };
+  return { ...actual, createPluginRuntime: (options: import("./createPluginRuntime").DesktopPluginRuntimeOptions) => {
+    const runtime = actual.createPluginRuntime(bundled.withNamingFixture ? { ...options,
+      structureNamingEngine: fakeNamingEngine(bundled.namingNotInstalled ? { ...namingInstalled, state: "notInstalled" } : undefined),
+      namingCanonicalizer: { canonicalize: async () => "CCO", version: "test" } } : options);
+    bundled.runtime = runtime;
+    return runtime;
+  } };
 });
 
 function installDomMocks(): void {
@@ -98,7 +130,13 @@ let container: HTMLElement | undefined;
 afterEach(() => {
   bundled.withRecognitionFixture = false;
   bundled.withNamingFixture = false;
+  bundled.namingNotInstalled = false;
+  bundled.namingResult = undefined;
+  bundled.runtime = undefined;
   bundled.massAnalyzerHandler = undefined;
+  nativeDialog.desktop = false;
+  nativeDialog.snapshot = undefined;
+  nativeDialog.listener = undefined;
   act(() => {
     root?.unmount();
   });
@@ -192,6 +230,42 @@ describe("MainWindow bundled plugin integration", () => {
     const name = await waitForElement(".plugin-report-chemical-name pre");
     expect(name.textContent).toBe("ethanol");
     expect(container.textContent).toContain("Preferred IUPAC name");
+  });
+
+  it("opens a native naming install dialog for the active tab without recreating the plugin runtime", async () => {
+    bundled.withNamingFixture = true;
+    bundled.namingNotInstalled = true;
+    nativeDialog.desktop = true;
+    installDomMocks();
+    container = document.createElement("div");
+    document.body.append(container);
+    const drawing = createPhase4Document();
+    drawing.pages[0]!.objects = [namingMolecule];
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(createElement(MainWindow, { initialDocument: drawing, initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false }));
+    });
+    const runtime = bundled.runtime;
+    expect(runtime).toBeDefined();
+
+    await click(container.querySelector<HTMLButtonElement>(".document-tab-new")!);
+    await click(container.querySelector<HTMLButtonElement>('[role="tab"]')!);
+    expect(bundled.runtime).toBe(runtime);
+
+    const invocation = runtime!.invokeCommand("plugin.namingTest.run");
+    await vi.waitFor(() => expect(nativeDialog.snapshot?.dialogKind).toBe("engineInstall"));
+    expect(nativeDialog.snapshot?.documentTabId).toBe("initial");
+    expect(document.querySelector(".structure-naming-host section")).toBeNull();
+    expect(bundled.namingResult).toBeUndefined();
+
+    await act(async () => {
+      nativeDialog.listener!({ senderWindowId: "main", windowLabel: "dialog-main-engineInstall-1", message: {
+        ...nativeDialog.snapshot!, type: "closed", data: { reason: "close" }
+      } });
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(bundled.namingResult).toEqual({ status: "engineNotInstalled" }));
+    await invocation;
   });
 
   it("opens the core plugin manager from the Plugins menu", async () => {

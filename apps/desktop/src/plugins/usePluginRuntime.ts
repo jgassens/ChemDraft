@@ -44,6 +44,7 @@ import type {
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
+import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 
 /**
  * Extract a user-facing message from a resolved plugin-command value that is a `{ ok: false }`
@@ -64,6 +65,8 @@ export interface PluginRuntimeProviders {
    *  File > New in one session are indistinguishable to the write-binding check. */
   getActiveDocumentKey?: () => string | undefined;
   getActiveDocumentTab?: () => Pick<ProposalDocumentTab, "id">;
+  /** MainWindow's native dialog authority, when this is a desktop document window. */
+  getDialogCoordinator?: () => DialogCoordinator | undefined;
   getDocumentTabTitle?: (tabId: string) => string | undefined;
   /** `warnings`: the asking invocation's collector, or undefined for a read that should stay silent. */
   getSelection: (warnings?: string[]) => PluginSelectionSnapshot;
@@ -178,7 +181,10 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   const { runtime, bundledPlugins } = ownerRef.current;
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
-  useEffect(() => mountStructureNamingHost(runtime.naming), [runtime]);
+  useEffect(() => mountStructureNamingHost(runtime.naming, {
+    coordinator: () => providersRef.current.getDialogCoordinator?.(),
+    documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
+  }), [runtime]);
   useEffect(() => {
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);

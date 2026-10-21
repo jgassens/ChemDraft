@@ -1595,7 +1595,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.21.11.55-opus";
+const CURRENT_BUILD_STAMP = "10.21.13.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10248,6 +10248,7 @@ export function MainWindow({
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
+    getDialogCoordinator: () => dialogCoordinatorRef.current,
     getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
     // `warnings` is the collector of the command invocation that is reading (see the plugin command
     // dispatch below); a read outside one gets none and stays silent.
