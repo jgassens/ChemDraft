@@ -72,6 +72,7 @@ const displayOnlyV2000Warnings = new Set([
 ]);
 
 const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
+const namingSupportedElements = new Set(["C", "H", "N", "O", "S", "P", "F", "Cl", "Br", "I", "B", "Si", "Se"]);
 
 /** Applies the metadata gates independently of the naming engine. */
 export function acceptOrthonymResult(raw: OrthonymRawResult):
@@ -83,9 +84,7 @@ export function acceptOrthonymResult(raw: OrthonymRawResult):
       ok: false,
       code,
       ...(raw.limitCode ? { limitCode: raw.limitCode } : {}),
-      reason: raw.limitCode
-        ? `The naming engine declined this structure (${raw.limitCode}).`
-        : "The naming engine declined this structure."
+      reason: namingDeclineReason(code)
     };
   }
 
@@ -94,12 +93,12 @@ export function acceptOrthonymResult(raw: OrthonymRawResult):
     : raw.tier === "systematic_verified"
       ? "systematicName"
       : undefined;
-  if (!kind) return notFullyVerified("The naming engine did not return a fully verified name.");
-  if (raw.opsin !== "verified") return notFullyVerified("The naming engine did not verify the name with OPSIN.");
-  if (raw.gateOutcome.startsWith("carveout:")) return notFullyVerified("The naming engine accepted the name through a carveout.");
-  if (raw.stereoUnexpressed) return notFullyVerified("The naming engine could not express all stereochemistry.");
+  if (!kind) return notFullyVerified();
+  if (raw.opsin !== "verified") return notFullyVerified();
+  if (raw.gateOutcome.startsWith("carveout:")) return notFullyVerified();
+  if (raw.stereoUnexpressed) return notFullyVerified();
   if (!raw.name || !raw.name.trim() || controlCharacter.test(raw.name)) {
-    return notFullyVerified("The naming engine did not return a usable verified name.");
+    return notFullyVerified();
   }
   return { ok: true, kind };
 }
@@ -120,7 +119,7 @@ export async function verifyNameRoundTrip(input: {
   if (!read.smiles) {
     return {
       verified: false,
-      reason: read.failureReason ?? "No verified name: the name could not be read back."
+      reason: "No verified name: the name could not be read back."
     };
   }
 
@@ -182,10 +181,12 @@ export async function nameStructure(deps: StructureNameDeps, molecule: MoleculeO
   try {
     raw = await deps.name(drawnCanonicalSmiles);
   } catch {
-    return decline("notFullyVerified", "The naming engine did not return a fully verified name.");
+    return decline("notFullyVerified", namingDeclineReason("notFullyVerified"));
   }
   const accepted = acceptOrthonymResult(raw);
-  if (!accepted.ok) return decline(accepted.code, accepted.reason, accepted.limitCode);
+  if (!accepted.ok) {
+    return decline(accepted.code, namingDeclineReason(accepted.code, molecule), accepted.limitCode);
+  }
 
   const roundTrip = await verifyNameRoundTrip({
     drawnCanonicalSmiles,
@@ -225,8 +226,24 @@ function limitDeclineCode(limitCode: string | null): Extract<StructureNameDeclin
   }
 }
 
-function notFullyVerified(reason: string): { ok: false; code: "notFullyVerified"; reason: string } {
-  return { ok: false, code: "notFullyVerified", reason };
+function namingDeclineReason(code: StructureNameDeclineCode, molecule?: MoleculeObject): string {
+  switch (code) {
+    case "unsupportedElement": {
+      const unsupportedElements = molecule
+        ? [...new Set(molecule.atoms.map((atom) => atom.element).filter((element) => !namingSupportedElements.has(element)))]
+        : [];
+      const elementList = unsupportedElements.length ? ` (${unsupportedElements.join(", ")})` : "";
+      return `Contains an element the naming engine doesn't support${elementList}.`;
+    }
+    case "unnameable": return "The naming engine could not name this structure.";
+    case "engineLimit": return "This structure is beyond what the naming engine can name.";
+    case "notFullyVerified": return "The naming engine could not fully verify a name for this structure.";
+    default: return "The naming engine declined this structure.";
+  }
+}
+
+function notFullyVerified(): { ok: false; code: "notFullyVerified"; reason: string } {
+  return { ok: false, code: "notFullyVerified", reason: namingDeclineReason("notFullyVerified") };
 }
 
 function decline(code: StructureNameDeclineCode, reason: string, limitCode?: string): StructureNameOutcome {

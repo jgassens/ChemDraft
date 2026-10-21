@@ -71,6 +71,17 @@ describe("acceptOrthonymResult", () => {
   ] as const)("%s follows the acceptance table", (_label, raw, expected) => {
     expect(acceptOrthonymResult(raw)).toMatchObject(expected);
   });
+
+  it.each([
+    verified({ tier: "candidate" }),
+    verified({ tier: "abstain", limitCode: "UNSUPPORTED_ELEMENT" }),
+    verified({ tier: "abstain", limitCode: "UNNAMEABLE" }),
+    verified({ tier: "abstain", limitCode: "TOO_COMPLEX" })
+  ])("keeps engine codes out of decline reasons", (raw) => {
+    const result = acceptOrthonymResult(raw);
+    expect(result).toMatchObject({ ok: false });
+    if (!result.ok) expect(result.reason).not.toMatch(/\b(?:UNSUPPORTED_ELEMENT|UNNAMEABLE|TOO_COMPLEX)\b/);
+  });
 });
 
 describe("verifyNameRoundTrip", () => {
@@ -134,6 +145,43 @@ describe("nameStructure", () => {
     await expect(nameStructure(deps({ readName: async () => ({ smiles: "NCC(=O)O" }), canonicalize: async (input) =>
       input === "NCC(=O)O" ? "NCC(=O)O" : "[NH3+]CC(=O)[O-]"
     }), molecule())).resolves.toMatchObject({ status: "declined", code: "noVerifiedName" });
+  });
+
+  it.each(["Fe", "Sn"])('identifies unsupported element %s without exposing its engine code', async (element) => {
+    const drawn = molecule({
+      atoms: [{ id: "a1", element, x: 0, y: 0, formalCharge: 0 }],
+      bonds: []
+    });
+    const result = await nameStructure(deps({
+      name: async () => verified({ tier: "abstain", limitCode: "UNSUPPORTED_ELEMENT" })
+    }), drawn);
+
+    expect(result).toMatchObject({
+      status: "declined",
+      code: "unsupportedElement",
+      limitCode: "UNSUPPORTED_ELEMENT",
+      reason: `Contains an element the naming engine doesn't support (${element}).`
+    });
+  });
+
+  it("keeps every decline reason free of all-caps engine codes", async () => {
+    const outcomes = await Promise.all([
+      nameStructure(deps({ readName: async () => ({ smiles: null, failureReason: "UNSUPPORTED_ELEMENT" }) }), molecule()),
+      nameStructure(deps({ name: async () => verified({ tier: "candidate" }) }), molecule()),
+      nameStructure(deps({ name: async () => verified({ tier: "abstain", limitCode: "UNSUPPORTED_ELEMENT" }) }), molecule()),
+      nameStructure(deps({ name: async () => verified({ tier: "abstain", limitCode: "UNNAMEABLE" }) }), molecule()),
+      nameStructure(deps({ name: async () => verified({ tier: "abstain", limitCode: "TOO_COMPLEX" }) }), molecule()),
+      nameStructure(deps({ canonicalize: async () => null }), molecule()),
+      nameStructure(deps({ canonicalize: async () => "C".repeat(5_001) }), molecule())
+    ]);
+
+    expect(outcomes.map((result) => result.status === "declined" && result.code)).toEqual([
+      "noVerifiedName", "notFullyVerified", "unsupportedElement", "unnameable", "engineLimit", "structureNotExact", "tooLarge"
+    ]);
+    for (const result of outcomes) {
+      expect(result.status).toBe("declined");
+      if (result.status === "declined") expect(result.reason).not.toMatch(/\b(?:UNSUPPORTED_ELEMENT|UNNAMEABLE|TOO_COMPLEX)\b/);
+    }
   });
 
   it("declines when the drawn structure cannot be canonicalized", async () => {
