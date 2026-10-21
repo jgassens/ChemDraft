@@ -33,6 +33,20 @@ const OPSIN_TIMEOUT_SECS: u64 = 30;
 /// scheduler's input-length guard.
 const MAX_NAME_LEN: usize = 2000;
 
+/// Options for reading a name with OPSIN.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OpsinOptions {
+    pub radicals: bool,
+}
+
+fn conversion_arguments(options: OpsinOptions) -> Vec<&'static str> {
+    let mut arguments = vec!["-o", "smi", "-n"];
+    if options.radicals {
+        arguments.push("-r");
+    }
+    arguments
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpsinStatus {
@@ -284,6 +298,16 @@ pub fn convert_with(
     jar: &std::path::Path,
     name: &str,
 ) -> Result<OpsinConversion, OpsinError> {
+    convert_with_options(java, jar, name, OpsinOptions { radicals: false })
+}
+
+/// Convert a chemical name with explicit OPSIN options.
+pub(crate) fn convert_with_options(
+    java: &std::path::Path,
+    jar: &std::path::Path,
+    name: &str,
+    options: OpsinOptions,
+) -> Result<OpsinConversion, OpsinError> {
     // The ONLY `invalidName` path: the input was refused before a process existed. Everything below
     // this line is the engine, and a failure there says nothing about the name.
     let name = validate_name(name).map_err(OpsinError::invalid_name)?;
@@ -302,7 +326,7 @@ pub fn convert_with(
     let mut child = command
         .arg("-jar")
         .arg(jar_arg)
-        .args(["-o", "smi", "-n"])
+        .args(conversion_arguments(options))
         // The child inherits the app's environment, and these three change how the JVM starts. Two
         // reasons to drop them. They can alter behaviour we have pinned (GC logging goes to STDOUT and
         // interleaves between result lines; a heap cap can make the JVM refuse to start at all), and
@@ -415,6 +439,14 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn enables_the_opsin_radical_flag_only_when_requested() {
+        let ordinary = conversion_arguments(OpsinOptions { radicals: false });
+        let radical = conversion_arguments(OpsinOptions { radicals: true });
+        assert_eq!(ordinary, ["-o", "smi", "-n"]);
+        assert_eq!(radical, ["-o", "smi", "-n", "-r"]);
     }
 
     #[test]
@@ -547,6 +579,19 @@ mod tests {
             .expect("tartaric acid");
         let smiles = tartaric.smiles.expect("tartaric acid should convert");
         assert!(smiles.contains('@'), "stereochemistry was lost: {smiles}");
+    }
+
+    #[test]
+    #[ignore = "requires the bundled OPSIN Java runtime"]
+    fn reads_a_radical_name_only_when_radicals_are_enabled() {
+        let (java, jar) = real_engine().expect("run scripts/build-opsin-runtime.sh first");
+
+        let ordinary = convert_with(&java, &jar, "methyl").expect("OPSIN call should succeed");
+        assert!(ordinary.smiles.is_none());
+
+        let radical = convert_with_options(&java, &jar, "methyl", OpsinOptions { radicals: true })
+            .expect("OPSIN call should succeed");
+        assert_eq!(radical.smiles.as_deref(), Some("[CH3]"));
     }
 
     #[test]
