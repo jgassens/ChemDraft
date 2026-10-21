@@ -22,6 +22,7 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use tauri::{Manager, Runtime};
 
+use crate::local_engine::process::lock_ignoring_poison as lock;
 use crate::WithoutConsoleWindow;
 
 /// How long OPSIN gets before we give up on it. A name is parsed in milliseconds once the JVM is up,
@@ -320,13 +321,15 @@ pub(crate) fn convert_with_options_cancellable(
     options: OpsinOptions,
     platform: &dyn crate::local_engine::platform::EnginePlatform,
     stopped: &dyn Fn() -> bool,
+    running: &ReadBackChild,
 ) -> Result<OpsinConversion, OpsinError> {
-    convert_with_control(java, jar, name, options, Some((platform, stopped)))
+    convert_with_control(java, jar, name, options, Some((platform, stopped, running)))
 }
 
 type ConversionControl<'a> = (
     &'a dyn crate::local_engine::platform::EnginePlatform,
     &'a dyn Fn() -> bool,
+    &'a ReadBackChild,
 );
 
 fn convert_with_control(
@@ -336,7 +339,7 @@ fn convert_with_control(
     options: OpsinOptions,
     control: Option<ConversionControl<'_>>,
 ) -> Result<OpsinConversion, OpsinError> {
-    if control.is_some_and(|(_, stopped)| stopped()) {
+    if control.is_some_and(|(_, stopped, _)| stopped()) {
         return Err(OpsinError::engine_failure("Naming read-back stopped."));
     }
     // The ONLY `invalidName` path: the input was refused before a process existed. Everything below
@@ -355,10 +358,10 @@ fn convert_with_control(
         command.current_dir(dir);
     }
     command.without_console_window();
-    if let Some((platform, _)) = control {
+    if let Some((platform, _, _)) = control {
         platform.configure_child(&mut command);
     }
-    let mut child = command
+    command
         .arg("-jar")
         .arg(jar_arg)
         .args(conversion_arguments(options))
@@ -372,34 +375,38 @@ fn convert_with_control(
         .env_remove("JDK_JAVA_OPTIONS")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            OpsinError::engine_failure(format!("Could not start the name parser: {error}"))
-        })?;
+        .stderr(Stdio::piped());
 
-    let sent = (|| {
+    let output = if let Some((_, stopped, running)) = control {
+        // Spawn and publish under the shutdown lock. Recheck while holding it so a worker
+        // cannot publish a JVM after shutdown has emptied the slot.
+        let (stdin, stdout, stderr) = {
+            let mut slot = lock(&running.child);
+            if stopped() {
+                return Err(OpsinError::engine_failure("Naming read-back stopped."));
+            }
+            let mut child = spawn_parser(&mut command)?;
+            let pipes = (
+                child.stdin.take().expect("piped stdin"),
+                child.stdout.take().expect("piped stdout"),
+                child.stderr.take().expect("piped stderr"),
+            );
+            *slot = Some(child);
+            pipes
+        };
+        if let Err(error) = send_name(stdin, name) {
+            running.kill_tree();
+            return Err(error);
+        }
+        wait_cancellable(running, stdout, stderr, OPSIN_TIMEOUT_SECS, stopped)
+    } else {
+        // Ordinary name-to-structure keeps its existing launch flags and timeout path.
+        let mut child = spawn_parser(&mut command)?;
         let stdin = child
             .stdin
-            .as_mut()
+            .take()
             .ok_or_else(|| OpsinError::engine_failure("Could not write to the name parser."))?;
-        // One name, one newline. Closing stdin is what makes OPSIN finish rather than wait for more.
-        writeln!(stdin, "{name}").map_err(|error| {
-            OpsinError::engine_failure(format!("Could not send the name: {error}"))
-        })?;
-        Ok::<_, OpsinError>(())
-    })();
-    if let Err(error) = sent {
-        if control.is_some() {
-            stop_read_back_child(&mut child);
-        }
-        return Err(error);
-    }
-    drop(child.stdin.take());
-
-    let output = if let Some((_, stopped)) = control {
-        wait_cancellable(child, OPSIN_TIMEOUT_SECS, stopped)
-    } else {
+        send_name(stdin, name)?;
         wait_with_timeout(child, OPSIN_TIMEOUT_SECS)
     }
     .map_err(OpsinError::engine_failure)?;
@@ -437,15 +444,53 @@ fn convert_with_control(
     }
 }
 
-fn stop_read_back_child(child: &mut std::process::Child) {
-    crate::local_engine::platform::kill_process_tree(child.id());
-    // Sweep after exit but before reaping: catches a fork racing the first Unix group kill.
-    let _ = crate::local_engine::platform::sweep_exited_process_group(child.id(), true);
-    let _ = child.wait();
+fn spawn_parser(command: &mut Command) -> Result<std::process::Child, OpsinError> {
+    command.spawn().map_err(|error| {
+        OpsinError::engine_failure(format!("Could not start the name parser: {error}"))
+    })
+}
+
+fn send_name(mut stdin: std::process::ChildStdin, name: &str) -> Result<(), OpsinError> {
+    // One name, one newline. Closing stdin makes OPSIN finish rather than wait for more.
+    writeln!(stdin, "{name}")
+        .map_err(|error| OpsinError::engine_failure(format!("Could not send the name: {error}")))
+}
+
+/// Only naming read-back registers here. Owning the Child lets shutdown kill and reap
+/// synchronously without depending on the request thread getting another timeslice.
+#[derive(Default)]
+pub(crate) struct ReadBackChild {
+    child: std::sync::Mutex<Option<std::process::Child>>,
+}
+
+impl ReadBackChild {
+    pub(crate) fn kill_tree(&self) {
+        Self::kill_locked(&mut lock(&self.child));
+    }
+
+    fn kill_locked(slot: &mut Option<std::process::Child>) {
+        if let Some(child) = slot.as_mut() {
+            crate::local_engine::platform::kill_process_tree(child.id());
+            let _ = child.kill();
+            // Sweep after exit but before reaping: catches a fork racing the Unix group kill.
+            let _ = crate::local_engine::platform::sweep_exited_process_group(child.id(), true);
+            // Clear only after reaping; never signal a PID that may have been reused.
+            if child.wait().is_ok() {
+                *slot = None;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked_pid(&self) -> Option<u32> {
+        lock(&self.child).as_ref().map(std::process::Child::id)
+    }
 }
 
 fn wait_cancellable(
-    mut child: std::process::Child,
+    running: &ReadBackChild,
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
     seconds: u64,
     stopped: &dyn Fn() -> bool,
 ) -> Result<std::process::Output, String> {
@@ -458,8 +503,8 @@ fn wait_cancellable(
     // descendant. Keep the leader unreaped until both close, so tree-kill still owns its pid.
     let (send, receive) = mpsc::channel();
     for (index, mut pipe) in [
-        Box::new(child.stdout.take().expect("piped stdout")) as Box<dyn Read + Send>,
-        Box::new(child.stderr.take().expect("piped stderr")) as Box<dyn Read + Send>,
+        Box::new(stdout) as Box<dyn Read + Send>,
+        Box::new(stderr) as Box<dyn Read + Send>,
     ]
     .into_iter()
     .enumerate()
@@ -485,9 +530,14 @@ fn wait_cancellable(
             None
         };
         if let Some(error) = error {
-            stop_read_back_child(&mut child);
+            running.kill_tree();
             return Err(error);
         }
+        // Shutdown owns this same lock, including the final reap and registration clear.
+        let mut slot = lock(&running.child);
+        let Some(child) = slot.as_mut() else {
+            return Err("Naming read-back stopped.".into());
+        };
         // Does not reap; clears descendants even when the leader exits first.
         let _ = crate::local_engine::platform::sweep_exited_process_group(child.id(), false);
         for (index, result) in receive.try_iter() {
@@ -496,6 +546,7 @@ fn wait_cancellable(
         if pipes.iter().all(Option::is_some) {
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    *slot = None;
                     return Ok(std::process::Output {
                         status,
                         stdout: pipes[0]
@@ -506,15 +557,16 @@ fn wait_cancellable(
                             .take()
                             .expect("stderr")
                             .map_err(|e| e.to_string())?,
-                    })
+                    });
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    stop_read_back_child(&mut child);
+                    ReadBackChild::kill_locked(&mut slot);
                     return Err(format!("The name parser failed: {error}"));
                 }
             }
         }
+        drop(slot);
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -571,6 +623,7 @@ pub(crate) fn build_sleeping_opsin_stub(java: &std::path::Path) {
             }
             let jar = PathBuf::from(&args[2]);
             if jar.file_stem().unwrap() == "fast" {
+                fs::write(jar.with_extension("started"), std::process::id().to_string()).unwrap();
                 println!("CCO\tethanol");
                 return;
             }
@@ -641,6 +694,7 @@ mod tests {
                 OpsinOptions { radicals: true },
                 platform.as_ref(),
                 &|| child_stop.load(Ordering::SeqCst),
+                &ReadBackChild::default(),
             );
             send.send(result).expect("result");
         });

@@ -107,6 +107,7 @@ struct SharedState {
     request_gate: Mutex<()>,
     process: Arc<Mutex<ProcessManager>>,
     kill: KillSwitch,
+    read_back_child: crate::opsin::ReadBackChild,
     cancels: AtomicU64,
     stops: AtomicU64,
 }
@@ -128,6 +129,7 @@ impl Default for NamingEngineState {
                 shut_down: AtomicBool::new(false),
                 request_gate: Mutex::new(()),
                 kill: process.kill_switch(),
+                read_back_child: crate::opsin::ReadBackChild::default(),
                 process: Arc::new(Mutex::new(process)),
                 cancels: AtomicU64::new(0),
                 stops: AtomicU64::new(0),
@@ -162,7 +164,11 @@ impl NamingEngineState {
     }
     pub fn shutdown(&self) {
         let state = &self.inner;
-        if state.shut_down.swap(true, Ordering::SeqCst) {
+        let already_shut_down = state.shut_down.swap(true, Ordering::SeqCst);
+        // Always join read-back cleanup, even if another shutdown is already in progress.
+        // force_exit must not terminate the parent while that caller is still killing Java.
+        state.read_back_child.kill_tree();
+        if already_shut_down {
             return;
         }
         state.stop_reaper.store(true, Ordering::SeqCst);
@@ -386,6 +392,7 @@ pub async fn naming_cancel(state: tauri::State<'_, NamingEngineState>) -> Result
 /// files. Their installing flag prevents another request until the operation ends.
 fn stop_naming_blocking(state: &SharedState) {
     state.stops.fetch_add(1, Ordering::SeqCst);
+    state.read_back_child.kill_tree();
     stop_sidecar_blocking(&state.process, &state.kill);
     drop(lock(&state.request_gate));
 }
@@ -438,6 +445,7 @@ fn read_back(
     launch: &LaunchPaths,
     platform: &dyn local_engine::platform::EnginePlatform,
     stopped: &dyn Fn() -> bool,
+    running: &crate::opsin::ReadBackChild,
 ) -> NameStructureRaw {
     let opsin_read_back = result
         .name
@@ -451,6 +459,7 @@ fn read_back(
                 crate::opsin::OpsinOptions { radicals: true },
                 platform,
                 stopped,
+                running,
             )
             .unwrap_or_else(|error| crate::opsin::OpsinConversion {
                 smiles: None,
@@ -520,7 +529,13 @@ pub async fn name_structure_raw<R: Runtime>(
                     other => other?,
                 }
             };
-            Ok(read_back(raw, &launch, platform.as_ref(), stopped))
+            Ok(read_back(
+                raw,
+                &launch,
+                platform.as_ref(),
+                stopped,
+                &state.read_back_child,
+            ))
         })
     })
     .await

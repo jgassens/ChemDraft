@@ -391,7 +391,13 @@ fn raw_contract_preserves_all_metadata_and_read_back_failure_without_policy() {
     raw.gate_outcome = "carveout:example".into();
     raw.stereo_unexpressed = true;
     let platform = install::current_platform().expect("platform");
-    let result = read_back(raw.clone(), &launch(&root.0), platform.as_ref(), &|| false);
+    let result = read_back(
+        raw.clone(),
+        &launch(&root.0),
+        platform.as_ref(),
+        &|| false,
+        &crate::opsin::ReadBackChild::default(),
+    );
     assert_eq!(result.result, raw);
     assert!(result
         .opsin_read_back
@@ -417,11 +423,15 @@ fn raw_contract_preserves_all_metadata_and_read_back_failure_without_policy() {
     assert!(value["opsinReadBack"]["smiles"].is_null());
     assert!(value["opsinReadBack"]["failureReason"].is_string());
     raw.name = None;
-    assert!(
-        read_back(raw, &launch(&root.0), platform.as_ref(), &|| false)
-            .opsin_read_back
-            .is_none()
-    );
+    assert!(read_back(
+        raw,
+        &launch(&root.0),
+        platform.as_ref(),
+        &|| false,
+        &crate::opsin::ReadBackChild::default()
+    )
+    .opsin_read_back
+    .is_none());
 }
 
 fn sleeping_read_back(root: &TestRoot) -> LaunchPaths {
@@ -442,6 +452,187 @@ fn wait_for_read_back(root: &TestRoot) {
     );
 }
 
+#[cfg(unix)]
+fn process_has_exited(pid: u32) -> bool {
+    let pid = libc::pid_t::try_from(pid).expect("valid child PID");
+    // SAFETY: signal 0 only checks existence. Shutdown must have killed AND reaped this child.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(windows)]
+fn process_has_exited(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, STILL_ACTIVE},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    // SAFETY: query-only handle to the stub; closed before returning on every path.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            assert_eq!(GetLastError(), ERROR_INVALID_PARAMETER);
+            return true;
+        }
+        let mut code = 0;
+        let result = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        assert_ne!(result, 0, "query stub exit code");
+        code != STILL_ACTIVE as u32
+    }
+}
+
+#[test]
+fn shutdown_reaps_opsin_read_back_before_returning_without_worker_cooperation() {
+    for forced in [false, true] {
+        let root = TestRoot::new(if forced {
+            "forced-read-back"
+        } else {
+            "exit-read-back"
+        });
+        let launch = sleeping_read_back(&root);
+        let state = NamingEngineState::default();
+        let worker_state = state.inner.clone();
+        let pause = Arc::new(AtomicBool::new(false));
+        let worker_pause = pause.clone();
+        let (paused_send, paused_receive) = std::sync::mpsc::channel();
+        let (resume_send, resume_receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let platform = install::current_platform().expect("platform");
+            let stopped = || {
+                if worker_pause.swap(false, Ordering::SeqCst) {
+                    paused_send.send(()).expect("paused notification");
+                    // Park outside the child lock: model a worker that never gets its next
+                    // timeslice once the Windows quit watchdog starts forcing app exit.
+                    resume_receive
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("resume worker");
+                }
+                worker_state.shut_down.load(Ordering::SeqCst)
+            };
+            read_back(
+                raw(),
+                &launch,
+                platform.as_ref(),
+                &stopped,
+                &worker_state.read_back_child,
+            )
+        });
+        wait_for_read_back(&root);
+        let pid = state
+            .inner
+            .read_back_child
+            .tracked_pid()
+            .expect("registered JVM");
+        pause.store(true, Ordering::SeqCst);
+        paused_receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("park read-back worker");
+        let started = Instant::now();
+        if forced {
+            // A concurrent earlier shutdown may have set this flag without finishing cleanup.
+            state.inner.shut_down.store(true, Ordering::SeqCst);
+            state.kill_for_forced_exit();
+        } else {
+            state.shutdown();
+        }
+        let elapsed = started.elapsed();
+        // Capture these BEFORE releasing the worker: polling cannot make this test pass.
+        let cleared = state.inner.read_back_child.tracked_pid().is_none();
+        let exited = process_has_exited(pid);
+        state.shutdown(); // repeated cleanup must leave the reaped child unregistered
+        resume_send.send(()).expect("resume");
+        let result = worker.join().expect("read-back worker");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown waited for the parser timeout"
+        );
+        assert!(cleared, "shutdown did not reap and clear the JVM");
+        assert!(exited, "JVM still running after shutdown returned");
+        assert!(result.opsin_read_back.expect("read-back").smiles.is_none());
+        // A killed descendant can remain a zombie until the OS reaps it. Verify it never
+        // reaches its delayed write, rather than treating a zombie PID as a live process.
+        std::thread::sleep(Duration::from_millis(3200));
+        assert!(
+            !root.0.join("opsin.survived").exists(),
+            "JVM descendant survived shutdown"
+        );
+    }
+}
+
+#[test]
+fn shutdown_between_initial_stop_check_and_child_registration_refuses_spawn() {
+    let root = TestRoot::new("exit-before-read-back-spawn");
+    let launch = launch(&root.0); // deliberately absent: reaching spawn would give a launch error
+    let state = NamingEngineState::default();
+    let worker_state = state.inner.clone();
+    let (checked_send, checked_receive) = std::sync::mpsc::channel();
+    let (resume_send, resume_receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let platform = install::current_platform().expect("platform");
+        let first_check = AtomicBool::new(true);
+        read_back(
+            raw(),
+            &launch,
+            platform.as_ref(),
+            &|| {
+                if first_check.swap(false, Ordering::SeqCst) {
+                    checked_send.send(()).expect("initial stop check");
+                    resume_receive
+                        .recv_timeout(Duration::from_secs(10))
+                        .expect("resume worker");
+                    false // stale result from just before shutdown
+                } else {
+                    worker_state.shut_down.load(Ordering::SeqCst)
+                }
+            },
+            &worker_state.read_back_child,
+        )
+    });
+    checked_receive
+        .recv_timeout(Duration::from_secs(2))
+        .expect("initial check");
+    state.shutdown();
+    resume_send.send(()).expect("resume");
+    let result = worker.join().expect("read-back worker");
+    assert_eq!(
+        result
+            .opsin_read_back
+            .expect("read-back")
+            .failure_reason
+            .as_deref(),
+        Some("Naming read-back stopped.")
+    );
+    assert_eq!(state.inner.read_back_child.tracked_pid(), None);
+}
+
+#[test]
+fn normal_opsin_read_back_completion_clears_registration_before_shutdown() {
+    let root = TestRoot::new("read-back-completed");
+    let mut launch = sleeping_read_back(&root);
+    launch.opsin = root.0.join("fast.jar");
+    let state = NamingEngineState::default();
+    let platform = install::current_platform().expect("platform");
+    let result = read_back(
+        raw(),
+        &launch,
+        platform.as_ref(),
+        &|| false,
+        &state.inner.read_back_child,
+    );
+    assert_eq!(
+        result.opsin_read_back.expect("read-back").smiles.as_deref(),
+        Some("CCO")
+    );
+    let pid = fs::read_to_string(root.0.join("fast.started"))
+        .expect("stub PID")
+        .parse()
+        .expect("PID");
+    assert!(process_has_exited(pid));
+    assert_eq!(state.inner.read_back_child.tracked_pid(), None);
+    state.shutdown();
+    assert_eq!(state.inner.read_back_child.tracked_pid(), None);
+}
+
 #[test]
 fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
     let root = TestRoot::new("cancel-read-back");
@@ -453,7 +644,13 @@ fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
     let worker = std::thread::spawn(move || {
         let platform = install::current_platform().expect("platform");
         let response = with_request(&worker_state, 0, 0, |stopped| {
-            Ok(read_back(raw(), &worker_launch, platform.as_ref(), stopped))
+            Ok(read_back(
+                raw(),
+                &worker_launch,
+                platform.as_ref(),
+                stopped,
+                &worker_state.read_back_child,
+            ))
         });
         send.send(response).expect("result");
     });
@@ -481,7 +678,13 @@ fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
     launch.opsin = root.0.join("fast.jar");
     let platform = install::current_platform().expect("platform");
     let retry = with_request(&state.inner, 1, 0, |stopped| {
-        Ok(read_back(raw(), &launch, platform.as_ref(), stopped))
+        Ok(read_back(
+            raw(),
+            &launch,
+            platform.as_ref(),
+            stopped,
+            &state.inner.read_back_child,
+        ))
     })
     .expect("retry is not busy");
     assert_eq!(
@@ -516,7 +719,13 @@ fn engine_operations_during_opsin_read_back_wait_and_refuse_a_raw_result() {
         let worker = std::thread::spawn(move || {
             let platform = install::current_platform().expect("platform");
             let response = with_request(&worker_state, 0, 0, |stopped| {
-                Ok(read_back(raw(), &launch, platform.as_ref(), stopped))
+                Ok(read_back(
+                    raw(),
+                    &launch,
+                    platform.as_ref(),
+                    stopped,
+                    &worker_state.read_back_child,
+                ))
             });
             send.send(response).expect("result");
         });
@@ -622,7 +831,13 @@ fn real_engine_ethanol_glycine_raw_and_iron_abstention() {
                 &|| false,
             )
             .expect("real naming");
-        read_back(raw, &launch, platform.as_ref(), &|| false)
+        read_back(
+            raw,
+            &launch,
+            platform.as_ref(),
+            &|| false,
+            &crate::opsin::ReadBackChild::default(),
+        )
     };
     let ethanol = request("CCO");
     assert_eq!(ethanol.result.name.as_deref(), Some("ethanol"));
