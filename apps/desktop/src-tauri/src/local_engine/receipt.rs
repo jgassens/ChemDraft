@@ -1,8 +1,8 @@
 //! Version dispatch and atomic receipt writes; schemas belong to engine adapters.
+use super::file_ops::{self, FileOps};
 use super::InstallError;
-use std::fs::{self, File};
-use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 /// Writes the receipt beside itself and renames it into place, so a crash mid-write leaves the
 /// old receipt or the new one, never half of one.
 pub fn write_receipt<S: super::EngineSpec>(
@@ -12,19 +12,31 @@ pub fn write_receipt<S: super::EngineSpec>(
 where
     S::Receipt: serde::Serialize,
 {
+    write_receipt_with_cancel::<S>(path, receipt, None)
+}
+
+pub(crate) fn write_receipt_with_cancel<S: super::EngineSpec>(
+    path: &Path,
+    receipt: &S::Receipt,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), InstallError>
+where
+    S::Receipt: serde::Serialize,
+{
+    let ops = FileOps::new::<S>(cancel);
     let bytes = serde_json::to_vec_pretty(receipt).map_err(|error| {
         InstallError::failed(format!("Could not encode install receipt: {error}"))
     })?;
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = Path::new(&temporary);
-    let written = File::create(temporary).and_then(|mut file| {
-        file.write_all(&bytes)?;
-        file.sync_all()
+    let written = ops.create(temporary).and_then(|mut file| {
+        ops.write_all(&mut file, temporary, &bytes)?;
+        ops.sync(&file, temporary)
     });
-    if let Err(error) = written.and_then(|()| fs::rename(temporary, path)) {
-        let _ = fs::remove_file(temporary);
-        return Err(S::failed_io(error));
+    if let Err(error) = written.and_then(|()| ops.rename(temporary, path)) {
+        let _ = ops.remove_file(temporary);
+        return Err(file_ops::failed::<S>(error));
     }
     Ok(())
 }

@@ -37,6 +37,34 @@ fn raw() -> protocol::RawResult {
         elapsed_ms: 25,
     }
 }
+
+#[test]
+fn install_io_diagnostics_keep_naming_prefixes_and_paths() {
+    use crate::local_engine::file_ops::{self, FileOps};
+    let root = TestRoot::new("io-diagnostics");
+    let from = root.0.join("naming-engine.partial");
+    let to = root.0.join("naming-engine");
+    let ops = FileOps::new::<install::NamingSpec>(None);
+    let error = ops
+        .rename(&from, &to)
+        .map_err(file_ops::failed::<install::NamingSpec>)
+        .unwrap_err();
+    assert!(error
+        .message
+        .starts_with("Naming engine file operation failed: could not rename "));
+    assert!(error.message.contains(from.to_string_lossy().as_ref()));
+    assert!(error.message.contains(to.to_string_lossy().as_ref()));
+
+    let config = to.join("venv").join("pyvenv.cfg");
+    let error = ops
+        .write(&config, b"home = missing")
+        .map_err(file_ops::relocation_failed::<install::NamingSpec>)
+        .unwrap_err();
+    assert!(error
+        .message
+        .starts_with("Could not relocate the naming environment: could not create file "));
+    assert!(error.message.contains(config.to_string_lossy().as_ref()));
+}
 fn result_line() -> String {
     let mut value = serde_json::to_value(raw()).expect("raw");
     value["type"] = "result".into();

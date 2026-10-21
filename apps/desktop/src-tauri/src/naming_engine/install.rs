@@ -1,10 +1,11 @@
-use std::{ffi::OsString, fs, path::Path};
+use std::{ffi::OsString, fs, path::Path, sync::atomic::AtomicBool};
 
 use super::{
     pins,
     receipt::{self, InstallReceipt},
 };
 use crate::local_engine::{self, EngineSpec, InstallError, InstallErrorCode, InstallPhase};
+use local_engine::file_ops::{self, FileOps};
 use local_engine::install::{Download, InstallContext, RunStep, RECEIPT_FILE};
 use local_engine::platform::EnginePlatform;
 
@@ -44,8 +45,18 @@ pub fn centres_path(root: &Path) -> std::path::PathBuf {
 
 pub fn verify_centres(root: &Path) -> Result<(), InstallError> {
     let path = centres_path(root);
-    let file = fs::File::open(&path).map_err(NamingSpec::failed_io)?;
-    let size = file.metadata().map_err(NamingSpec::failed_io)?.len();
+    let ops = FileOps::new::<NamingSpec>(None);
+    let file = ops
+        .run(format!("open file {}", path.display()), || {
+            fs::File::open(&path)
+        })
+        .map_err(file_ops::failed::<NamingSpec>)?;
+    let size = ops
+        .run(format!("inspect file {}", path.display()), || {
+            file.metadata()
+        })
+        .map_err(file_ops::failed::<NamingSpec>)?
+        .len();
     if size != pins::CENTRES_BYTES {
         return Err(InstallError::checksum(format!(
             "The centres jar at {} is {size} bytes; expected {}.",
@@ -159,7 +170,10 @@ impl EngineSpec for NamingSpec {
         Ok(())
     }
     fn extra_steps(context: &InstallContext<'_>) -> Result<(), InstallError> {
-        fs::create_dir_all(context.root.join("jars")).map_err(Self::failed_io)?;
+        let ops =
+            FileOps::new::<Self>(Some(context.cancel)).with_running(context.io.running_child());
+        ops.create_dir_all(&context.root.join("jars"))
+            .map_err(file_ops::failed::<Self>)?;
         context.io.download(
             Download {
                 url: pins::CENTRES_URL,
@@ -172,9 +186,11 @@ impl EngineSpec for NamingSpec {
             context.progress,
         )?;
         let licenses = context.root.join("LICENSES");
-        fs::create_dir_all(&licenses).map_err(Self::failed_io)?;
+        ops.create_dir_all(&licenses)
+            .map_err(file_ops::failed::<Self>)?;
         for (name, bytes) in LICENSE_FILES {
-            fs::write(licenses.join(name), bytes).map_err(Self::failed_io)?;
+            ops.write(&licenses.join(name), bytes)
+                .map_err(file_ops::failed::<Self>)?;
         }
         // Read only the installed distribution's recorded dist-info files, never a source tree.
         let script = "import importlib.metadata as m, pathlib, shutil, sys; d=m.distribution('orthonym'); out=pathlib.Path(sys.argv[1]); files=list(d.files or []); names=('LICENSE','NOTICE'); matches={n: next((p for p in files if '.dist-info/' in str(p).replace(chr(92),'/') and p.name==n), None) for n in names}; assert all(matches.values()), 'Orthonym dist-info LICENSE or NOTICE missing'; [shutil.copyfile(d.locate_file(p), out/('orthonym-'+n)) for n,p in matches.items()]";
@@ -225,6 +241,13 @@ impl EngineSpec for NamingSpec {
     }
     fn write_receipt(path: &Path, receipt: &InstallReceipt) -> Result<(), InstallError> {
         local_engine::receipt::write_receipt::<Self>(path, receipt)
+    }
+    fn write_receipt_with_cancel(
+        path: &Path,
+        receipt: &InstallReceipt,
+        cancel: &AtomicBool,
+    ) -> Result<(), InstallError> {
+        local_engine::receipt::write_receipt_with_cancel::<Self>(path, receipt, Some(cancel))
     }
     fn is_restorable(root: &Path, platform: &dyn EnginePlatform) -> bool {
         receipt::read_receipt(&root.join(RECEIPT_FILE))

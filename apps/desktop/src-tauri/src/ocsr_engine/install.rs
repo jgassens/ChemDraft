@@ -4,6 +4,7 @@ use super::progress;
 use super::receipt::{read_current_receipt, write_receipt, InstallReceipt};
 use super::{InstallError, InstallErrorCode, InstallPhase, InstallProgress};
 use crate::local_engine::{self, EngineSpec};
+use local_engine::file_ops::{self, FileOps};
 use local_engine::install::ProgressReporter;
 #[cfg(test)]
 use local_engine::install::RunWatch;
@@ -202,7 +203,10 @@ impl EngineSpec for MolScribeSpec {
             cancel,
             None,
         )?;
-        fs::remove_file(&molscribe_source).map_err(InstallError::failed_io)?;
+        FileOps::new::<Self>(Some(cancel))
+            .with_running(io.running_child())
+            .remove_file(&molscribe_source)
+            .map_err(file_ops::failed::<Self>)?;
 
         progress.report(message(
             InstallPhase::DownloadingModel,
@@ -244,6 +248,13 @@ impl EngineSpec for MolScribeSpec {
     fn write_receipt(path: &Path, receipt: &InstallReceipt) -> Result<(), InstallError> {
         write_receipt(path, receipt)
     }
+    fn write_receipt_with_cancel(
+        path: &Path,
+        receipt: &InstallReceipt,
+        cancel: &AtomicBool,
+    ) -> Result<(), InstallError> {
+        local_engine::receipt::write_receipt_with_cancel::<Self>(path, receipt, Some(cancel))
+    }
     fn is_restorable(root: &Path, platform: &dyn EnginePlatform) -> bool {
         is_restorable(root, platform)
     }
@@ -260,7 +271,12 @@ pub fn verify_layout(root: &Path, platform: &dyn EnginePlatform) -> Result<(), I
             )));
         }
     }
-    let size = fs::metadata(model).map_err(InstallError::failed_io)?.len();
+    let size = FileOps::new::<MolScribeSpec>(None)
+        .run(format!("inspect file {}", model.display()), || {
+            fs::metadata(&model)
+        })
+        .map_err(file_ops::failed::<MolScribeSpec>)?
+        .len();
     if size != pins::MODEL_BYTES {
         return Err(InstallError::checksum(format!(
             "The installed model is {size} bytes; expected {}.",

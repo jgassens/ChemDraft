@@ -543,6 +543,15 @@ the installer's junction relocation and venv launcher refresh are the other OS-s
 
 ## Adding Windows
 
+Both engine installers share the transient-lock policy in `local_engine/file_ops.rs`. On Windows,
+file operations on staged, final, previous and discarded trees retry only raw OS errors 5, 32 and
+33, with 50, 100, 200, 400, 800 and 1600 ms backoff (3.15 s total). Cancellation stops retries;
+cleanup/rollback retain their first attempt. Retries happen after owned children are reaped, never
+around a running uv/Python command. Failures name the operation and path(s), retain the engine's
+error prefix, and are logged to stderr with its log prefix. macOS remains single-attempt. This
+addresses suspected short-lived scanner locks observed in the naming-engine Windows install;
+Windows validation of the retry policy remains pending.
+
 A Windows install exposed two independent relocation problems. uv creates a directory junction for
 the managed Python's minor version; replacing it with a symlink failed with error 1314 for an ordinary
 user. Relocation preserves the junction through `FSCTL_SET_REPARSE_POINT`, using the existing

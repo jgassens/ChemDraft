@@ -5,6 +5,7 @@
 //! it, preserving each adapter's ordering and progress stream. Receipts and protocol diagnostics
 //! remain adapter-owned. Overall install-bar weights are currently a frontend concern; this module
 //! provides the original growth estimates and throttle without adding fields to emitted events.
+pub(crate) mod file_ops;
 pub mod install;
 pub mod pins;
 pub mod platform;
@@ -127,6 +128,13 @@ pub trait EngineSpec: Send + Sync + 'static {
     fn read_current_receipt(path: &std::path::Path) -> Option<Self::Receipt>;
     fn matches_pins(receipt: &Self::Receipt, platform: &dyn platform::EnginePlatform) -> bool;
     fn write_receipt(path: &std::path::Path, receipt: &Self::Receipt) -> Result<(), InstallError>;
+    fn write_receipt_with_cancel(
+        path: &std::path::Path,
+        receipt: &Self::Receipt,
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), InstallError> {
+        Self::write_receipt(path, receipt)
+    }
     fn is_restorable(root: &std::path::Path, platform: &dyn platform::EnginePlatform) -> bool;
 }
 

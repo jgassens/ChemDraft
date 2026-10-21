@@ -115,6 +115,18 @@ fn inspection_and_wait_errors_keep_the_pid_until_reaped() {
     child.fail_wait = true;
     running.kill_and_wait(&mut child);
     assert_eq!(running.tracked_pid(), Some(child.id()));
+    #[cfg(windows)]
+    {
+        let mut attempts = 0;
+        let result = crate::local_engine::file_ops::FileOps::new::<Stub>(None)
+            .with_running(Some(&running))
+            .run("remove staged tree while wait failed", || {
+                attempts += 1;
+                Err::<(), _>(io::Error::from_raw_os_error(5))
+            });
+        assert!(result.is_err());
+        assert_eq!(attempts, 1, "never retry while the child remains tracked");
+    }
     child.fail_wait = false;
     running.kill_and_wait(&mut child);
     assert_eq!(running.tracked_pid(), None);

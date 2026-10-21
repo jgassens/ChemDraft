@@ -72,8 +72,33 @@ variants mean the component totals need not add up exactly.
 
 An update retains the previous copy until the replacement passes its post-swap check.
 `REQUIRED_DISK_BYTES` therefore stays at 1,000,000,000 bytes: the approximately 800 MB worst-case
-peak plus a 25% margin. Windows sizes are **estimates from PyPI wheel sizes** (about 53 MB of
-wheels), pending a Windows install measured with the same sampling method.
+peak plus a 25% margin.
+
+A **Windows 11 x64** run on the same date, launched from Explorer as a normal user with fresh app
+data, measured about **296 MB peak disk use** for staging and cache together. The uv cache is on
+the same volume as the staged engine, so files are hardlinked and the peak is barely above the
+final engine. The final `naming-engine` contains about **265 MB of files**; its `install.json`
+records `diskBytes: 277380320` (277,380,320 bytes). Download size was not separately measured.
+These Windows measurements do not replace the larger macOS requirement above.
+
+## Transient Windows file locks
+
+That Windows run failed three times, then passed three times. Failures occurred during step 3,
+“Installing Orthonym dependencies”, about 20–35 seconds in, after uv's bytecode-compilation Python
+processes had run. The error was `Access is denied. (os error 5)`; no other application was known
+to be reading the directory. A short-lived Defender or search-indexer lock on newly written files
+is suspected, not confirmed.
+
+The shared `local_engine/file_ops.rs` helper labels installer IO failures with the operation and
+path (both paths for renames), retains the adapter's error prefix, and logs details to stderr with
+the engine's log prefix. On Windows only, raw OS errors **5, 32 and 33** (access denied, sharing
+violation, lock violation) get at most six retries after **50, 100, 200, 400, 800 and 1600 ms**,
+about **3.15 seconds** total backoff per operation. Other errors fail immediately. Cancellation is
+checked between attempts and during the waits; cleanup and rollback still get their first attempt
+after cancellation. Retries run only after installer-owned children have been reaped; a failed
+wait suppresses retries, and child commands themselves are never retried by this helper. The policy covers staging, extraction,
+owned file writes, receipts, relocation, launcher-rewrite cleanup, swap/rollback, and stale-tree
+removal. macOS keeps a single attempt.
 
 ## Spawn environment and integrity
 
@@ -196,10 +221,14 @@ These checks from the feature design must be run on Windows before release:
 - Whether the bare-`java` fallback finds `jre\bin\java.exe` from the scrubbed `PATH`.
 - `CREATE_NO_WINDOW`, so no console flashes for the sidecar or OPSIN.
 - The rdkit/lxml/pillow `win_amd64` cp312 wheels resolving under `--require-hashes`.
-- The measured Windows download and disk sizes, which feed `REQUIRED_DISK_BYTES` and progress weights.
+- Windows download size (not separately measured in the run above), plus repeat disk measurements
+  for update peaks and progress weights.
+- Repeated fresh installs with the transient-lock retry policy, cancellation during backoff, and
+  contextual operation/path diagnostics if a file remains locked beyond the retry budget.
 - Copy in the WebView2 panel window, and the dialog's ownership and focus (AGENTS.md §1).
 - The catalog URL capability on `http://tauri.localhost`.
 
-Windows clippy/tests and real install, cancel, uninstall and naming still require a Windows host.
+Windows clippy/tests, validation of the retry policy, and real cancel, uninstall and naming still
+require a Windows host. The install measurements above predate the retry fix.
 The ignored Rust real-engine test takes `CHEMDRAFT_NAMING_ENGINE_DIR` and checks ethanol, raw glycine
 zwitterion with OPSIN read-back, and `[Fe]` abstention. Unit tests require no installed engine.

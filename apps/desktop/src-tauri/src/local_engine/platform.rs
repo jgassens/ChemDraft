@@ -291,6 +291,11 @@ pub struct RunningChild {
 }
 
 impl RunningChild {
+    #[cfg(windows)]
+    pub(crate) fn has_child(&self) -> bool {
+        self.slot().is_some()
+    }
+
     /// Kills the running child's whole process tree, if a child is running. Returns at once.
     pub fn kill_tree(&self) {
         if let Some(pid) = *self.slot() {
