@@ -248,8 +248,9 @@ APPENDIX A. Licence texts the OPSIN jar's shaded components require us to reprod
 
 A.1 MSV (msv-core and xsdlib 2022.7) -- BSD-3-Clause
   Read from LICENSE.md of https://github.com/xmlark/msv (branch main). Applies to
-  everything in com/ctc/wstx/shaded/msv_core/ and msv/xsd_util/ except the
-  com.sun.msv.datatype.regexp classes (A.2).
+  everything in com/ctc/wstx/shaded/msv_core/ and msv/xsd_util/ except 28 of the 30
+  com.sun.msv.datatype.regexp classes (A.2); the other two, InternalImpl and
+  InternalImpl$1, carry this Oracle BSD-3 header.
 
     Copyright 2001-2013 Oracle and/or its affiliates. All rights reserved.
 
@@ -263,7 +264,7 @@ A.1 MSV (msv-core and xsdlib 2022.7) -- BSD-3-Clause
 
     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-A.2 MSV xsdlib, package com.sun.msv.datatype.regexp (30 classes) -- Apache Software License, Version 1.1
+A.2 MSV xsdlib, package com.sun.msv.datatype.regexp (28 of its 30 classes; InternalImpl and InternalImpl$1 are under A.1) -- Apache Software License, Version 1.1
   Read from the header of com/sun/msv/datatype/regexp/Op.java in
   xsdlib-2022.7-sources.jar (Maven Central); the sibling files read (Token.java) carry
   the identical header.
