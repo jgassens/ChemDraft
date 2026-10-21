@@ -381,7 +381,8 @@ async function combinedRecord(
     index,
     smilesWarnings,
     computeStructureIdentifiers,
-    molfile
+    molfile,
+    { requireEngineAtomStates: true }
   );
   const loss = smilesWarnings.find((warning) => warning.severity !== "info" &&
     !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"));

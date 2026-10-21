@@ -11,7 +11,7 @@ export interface StructureIdentifiers {
   smiles?: string;
   inchi?: string;
   inchiKey?: string;
-  /** Reparsed states in SMILES output order, when requested. */
+  /** Reparsed states in SMILES output order; empty when requested but unverified. */
   smilesAtomStates?: SmilesAtomState[];
   /** Output index → input CTAB index, supplied by RDKit's SMILES writer. */
   smilesAtomOrder?: number[];
@@ -52,17 +52,23 @@ export async function computeStructureIdentifiers(
       const smiles = molecule.get_smiles();
       if (smiles) {
         identifiers.smiles = smiles;
-        if (options.includeAtomStates && typeof molecule.get_prop === "function") {
-          // get_smiles sets this property to the exact traversal it just emitted. Retaining
-          // explicit H above keeps these indices aligned with the input CTAB atom block.
-          const value = molecule.get_prop("_smilesAtomOutputOrder");
-          const order: unknown = value ? JSON.parse(value) : undefined;
-          const states = await computeSmilesAtomStates(smiles);
-          if (states && Array.isArray(order) && order.length === states.length &&
-              order.every((index: unknown) => Number.isInteger(index) && Number(index) >= 0) &&
-              new Set(order).size === order.length) {
-            identifiers.smilesAtomStates = states;
-            identifiers.smilesAtomOrder = order as number[];
+        if (options.includeAtomStates) {
+          // Distinguish failed verification from identifier-only callers without a parser.
+          identifiers.smilesAtomStates = [];
+          try {
+            // get_smiles sets this property to the exact traversal it just emitted. Retaining
+            // explicit H above keeps these indices aligned with the input CTAB atom block.
+            const value = molecule.get_prop?.("_smilesAtomOutputOrder");
+            const order: unknown = value ? JSON.parse(value) : undefined;
+            const states = await computeSmilesAtomStates(smiles);
+            if (states && Array.isArray(order) && order.length === states.length &&
+                order.every((index: unknown) => Number.isInteger(index) && Number(index) >= 0) &&
+                new Set(order).size === order.length) {
+              identifiers.smilesAtomStates = states;
+              identifiers.smilesAtomOrder = order as number[];
+            }
+          } catch {
+            // Keep the SMILES, but leave explicit evidence that its atom states are unverified.
           }
         }
       }
