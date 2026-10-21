@@ -76,7 +76,7 @@ fn uv_large_stderr_is_drained_and_truncated() {
     let io = install::SystemInstallIo::<Stub>::from_builder(reqwest::blocking::Client::builder())
         .expect("system io");
     let script = if cfg!(windows) {
-        "for /L %i in (1,1,20000) do @echo 012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789 1>&2 & exit /b 2"
+        "(for /L %i in (1,1,20000) do @echo 012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789 1>&2) & echo final stderr line 1>&2 & exit /b 2"
     } else {
         "head -c 1100000 /dev/zero | tr '\\0' x >&2; printf '\\nfinal stderr line\\n' >&2; exit 2"
     };

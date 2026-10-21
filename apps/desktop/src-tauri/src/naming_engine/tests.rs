@@ -283,22 +283,33 @@ fn command_uses_bundled_jre_and_system_path_and_explicit_environment() {
     let args: Vec<_> = command.get_args().collect();
     assert_eq!(&args[..2], ["-I", "-B"]);
     let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+    #[cfg(windows)]
+    let env_value = |key: &str| {
+        vars.iter().find_map(|(candidate, value)| {
+            candidate
+                .to_string_lossy()
+                .eq_ignore_ascii_case(key)
+                .then_some(value)
+        })
+    };
+    #[cfg(not(windows))]
+    let env_value = |key: &str| vars.get(std::ffi::OsStr::new(key));
     for key in &POISON_KEYS[..5] {
-        assert_eq!(vars.get(std::ffi::OsStr::new(key)), Some(&None));
+        assert_eq!(env_value(key), Some(&None));
     }
     assert_eq!(
-        vars[std::ffi::OsStr::new("JAVA_HOME")],
+        env_value("JAVA_HOME").copied().flatten(),
         Some(launch.jre.as_os_str())
     );
     assert_eq!(
-        vars[std::ffi::OsStr::new("ORTHONYM_NO_DOWNLOAD")],
+        env_value("ORTHONYM_NO_DOWNLOAD").copied().flatten(),
         Some(std::ffi::OsStr::new("1"))
     );
     assert_eq!(
-        vars[std::ffi::OsStr::new("ORTHONYM_OPSIN_JAR")],
+        env_value("ORTHONYM_OPSIN_JAR").copied().flatten(),
         Some(launch.opsin.as_os_str())
     );
-    let path = vars[std::ffi::OsStr::new("PATH")].expect("path");
+    let path = env_value("PATH").copied().flatten().expect("path");
     let entries: Vec<_> = std::env::split_paths(path).collect();
     assert_eq!(entries[0], launch.jre.join("bin"));
     #[cfg(unix)]
