@@ -883,9 +883,7 @@ function RecognitionEngineRow({
       ) : null}
       {canInstall && status && onInstall ? (
         <p className="plugin-manager-update-status" data-testid="molscribe-engine-install-note">
-          Downloads about {naming ? "100 MB" : "2.5 GB"} and uses about {naming ? "0.3 GB" : "2.4 GB"} once installed. Needs
-          about {formatDiskBytes(status.requiredDiskBytes)} free while installing ({formatDiskBytes(status.freeDiskBytes)} free
-          now). It runs entirely on this computer.
+          Downloads about {naming ? "100 MB" : "2.5 GB"} and uses about {naming ? "0.3 GB" : "2.4 GB"} once installed. {installSpaceStatement(status.requiredDiskBytes, status.freeDiskBytes)} It runs entirely on this computer.
         </p>
       ) : null}
       <div className="plugin-manager-package-actions">
@@ -1006,6 +1004,7 @@ function RecognitionEngineDisclosure({ status }: { status?: EngineRowStatus | nu
   const shortOfSpace = status != null && status.freeDiskBytes < status.requiredDiskBytes;
   return (
     <div className="plugin-manager-engine-disclosure" data-testid="plugin-package-engine-disclosure">
+      {/* Measured 2026-10-21 on macOS arm64: du of the installed ocsr-engine directory was 2.4 GB. */}
       <p>
         <strong>Also installs the local recognition engine:</strong> a private Python, PyTorch and the MolScribe
         model — downloads about 2.5 GB and uses about 2.4 GB once installed. It runs entirely on this computer; images

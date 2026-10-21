@@ -158,6 +158,9 @@ The controller waits for the native cancel acknowledgement before reporting `can
 clearing its active request. Calls during that wait remain `busy`; a retry after `cancelled`
 cannot race the old native read-back. If cancellation IPC fails, it waits for the original request
 to settle before releasing controller state. Late results from a cancelled call are discarded.
+Known limitation: a cancel in the sub-millisecond window after the request is sent but before native
+registration can let that request finish and make an immediate retry report `busy` (pre-existing
+ordering window; `StructureNamingController.ts` ~173–175, `naming_engine/mod.rs` ~470–472).
 The TypeScript host must compare exact canonical isomeric SMILES through RDKit WASM, especially for
 glycine zwitterion, which Orthonym can name as neutral glycine. The independent read-back still
 shares OPSIN 2.9.0 with Orthonym and cannot catch a name both engines misread identically.

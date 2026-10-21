@@ -458,7 +458,9 @@ and Art toolbars open, including at 125%/150% display scale:
 - Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
   process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
 - Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
-  shown), `[13CH3]O`, a sodium salt, TEMPO (a radical). Glycine zwitterion is declined with no name;
+  shown), a sodium salt, TEMPO (a radical). Isotope-labelled structures cannot yet be drawn; their
+  exact-match handling is covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
+  Glycine zwitterion is declined with no name;
   `[Fe]` is declined as an unsupported element. A declined structure never shows a guessed name.
 - Select several molecules: one row each, capped at 10. Copy puts exactly the name on the clipboard
   and nothing else. Insert Name as Text adds one text object below the molecule with one undo entry;

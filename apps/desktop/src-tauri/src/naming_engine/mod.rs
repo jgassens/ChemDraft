@@ -390,14 +390,14 @@ fn stop_naming_blocking(state: &SharedState) {
 fn request_error(state: &SharedState, cancels: u64, stops: u64) -> Option<NamingError> {
     if state.cancels.load(Ordering::SeqCst) != cancels {
         Some(failure("cancelled", "Naming cancelled."))
-    } else if state.stops.load(Ordering::SeqCst) != stops
-        || state.shut_down.load(Ordering::SeqCst)
-        || state.installing.load(Ordering::SeqCst)
+    } else if state.stops.load(Ordering::SeqCst) != stops || state.shut_down.load(Ordering::SeqCst)
     {
         Some(failure(
             "engineCrashed",
             "The naming engine was stopped for app exit, installation or removal.",
         ))
+    } else if state.installing.load(Ordering::SeqCst) {
+        Some(failure("busy", "The naming engine is being installed."))
     } else {
         None
     }
@@ -470,6 +470,9 @@ pub async fn name_structure_raw<R: Runtime>(
     let state = app.state::<NamingEngineState>().inner.clone();
     let cancels_at_start = state.cancels.load(Ordering::SeqCst);
     let stops_at_start = state.stops.load(Ordering::SeqCst);
+    if state.installing.load(Ordering::SeqCst) {
+        return Err(failure("busy", "The naming engine is being installed."));
+    }
     let paths = install_paths(&app).map_err(|error| failure("engineCrashed", error.message))?;
     let platform = install::current_platform().map_err(|detail| failure("notInstalled", detail))?;
     let root = paths.final_dir_for::<NamingSpec>();

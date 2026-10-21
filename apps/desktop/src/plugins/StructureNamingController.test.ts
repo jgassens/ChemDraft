@@ -66,6 +66,13 @@ describe("StructureNamingController", () => {
     vi.mocked(engine.name).mockRejectedValue({ code, message: "Native failure" });
     expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toEqual({ status: "failed", code, message: "Native failure" });
   });
+  it("preserves the installing busy message from native naming", async () => {
+    const { controller, engine } = setup();
+    vi.mocked(engine.name).mockRejectedValue({ code: "busy", message: "The naming engine is being installed." });
+    expect(await controller.name(plugin, namingMolecule, new AbortController().signal)).toEqual({
+      status: "failed", code: "busy", message: "The naming engine is being installed."
+    });
+  });
   it("install failure reports failed installFailed", async () => {
     const { controller, engine, action } = setup("notInstalled");
     vi.mocked(engine.install).mockRejectedValue({ code: "network", message: "Download failed" });

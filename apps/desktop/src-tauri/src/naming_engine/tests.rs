@@ -528,6 +528,15 @@ fn stop_racing_a_completed_read_back_or_a_queued_request_never_returns_a_result(
 }
 
 #[test]
+fn request_error_during_install_reports_busy() {
+    let state = NamingEngineState::default();
+    state.inner.installing.store(true, Ordering::SeqCst);
+    let error = request_error(&state.inner, 0, 0).expect("install is busy");
+    assert_eq!(error.code, "busy");
+    assert_eq!(error.message, "The naming engine is being installed.");
+}
+
+#[test]
 fn capability_is_only_main_and_grants_exactly_six_commands() {
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../../capabilities/naming-engine.json"))
