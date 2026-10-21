@@ -30,8 +30,9 @@ export interface OrthonymRawResult {
 /** All chemistry services are supplied by the desktop (or, later, a headless caller). */
 export interface StructureNameDeps {
   /**
-   * Returns canonical isomeric SMILES for name read-back (and drawings when no identifier engine
-   * is supplied). A null result means the structure could not be canonicalised.
+   * Returns canonical isomeric SMILES with ordinary H atoms implicit, preserving isotopic H and
+   * stereo, for both sides of the name read-back comparison (and drawings without an identifier
+   * engine). A null result means the structure could not be canonicalised.
    */
   canonicalize: (structure: string) => Promise<string | null>;
   /** Export identifier engine, including atom-state correspondence when requested. */
@@ -127,13 +128,16 @@ export async function verifyNameRoundTrip(input: {
     };
   }
 
+  let canonicalDrawn: string | null;
   let canonicalReadBack: string | null;
   try {
+    canonicalDrawn = await input.canonicalize(input.drawnCanonicalSmiles);
     canonicalReadBack = await input.canonicalize(read.smiles);
   } catch {
+    canonicalDrawn = null;
     canonicalReadBack = null;
   }
-  if (canonicalReadBack !== input.drawnCanonicalSmiles) {
+  if (!canonicalDrawn || !canonicalReadBack || canonicalReadBack !== canonicalDrawn) {
     return { verified: false, reason: "No verified name: the name did not read back as exactly this structure." };
   }
   return { verified: true };
@@ -170,7 +174,11 @@ export async function nameStructure(deps: StructureNameDeps, molecule: MoleculeO
           canonicalizationFailed = true;
           return undefined;
         }
-      }
+      },
+      undefined,
+      // Identifier-only callers without atom-state evidence must fail closed. The canonicalize-
+      // only dependency remains available for callers without an export identifier engine.
+      deps.computeStructureIdentifiers ? { requireEngineAtomStates: true } : {}
     );
   } catch {
     return decline("structureNotExact", "The drawing could not be written as exact SMILES.");

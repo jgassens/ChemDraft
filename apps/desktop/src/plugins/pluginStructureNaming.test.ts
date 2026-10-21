@@ -6,6 +6,28 @@ import { nameStructureForPlugin, namingReadBack, scopedNamingMolecule } from "./
 import { fakeNamingEngine, namingInstalled, namingMolecule, namingRaw } from "./structureNamingTestFixtures";
 
 describe("pluginStructureNaming uses the real naming policy", () => {
+  it("compares implicit H while passing the atom-state-verified explicit-H reference to Orthonym", async () => {
+    const molecule = { ...namingMolecule, atoms: [
+      { id: "carbon", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "hydrogen", element: "H", x: 10, y: 0, formalCharge: 0 }
+    ], bonds: [{ id: "ch", fromAtomId: "carbon", toAtomId: "hydrogen", order: "single" as const }] };
+    const computeStructureIdentifiers = vi.fn(async () => ({
+      smiles: "[H]C", smilesAtomOrder: [1, 0], smilesAtomStates: [
+        { element: "H", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 0 },
+        { element: "C", formalCharge: 0, isotope: 0, nRad: 0, hydrogenCount: 4 }
+      ]
+    }));
+    const canonicalize = vi.fn(async (_structure: string) => "C");
+    const engine = fakeNamingEngine();
+    vi.mocked(engine.name).mockResolvedValue({ ...namingRaw, name: "methane", opsinReadBack: { smiles: "C", failureReason: null } });
+    const result = await nameStructureForPlugin(molecule, engine, namingInstalled, {
+      version: "test", canonicalize, computeStructureIdentifiers
+    });
+    expect(engine.name).toHaveBeenCalledExactlyOnceWith("[H]C");
+    expect(canonicalize.mock.calls).toEqual([["[H]C"], ["C"]]);
+    expect(result).toMatchObject({ status: "named", name: "methane" });
+  });
+
   it("passes export atom-state evidence through while canonicalizing the read-back separately", async () => {
     const molecule = { ...namingMolecule,
       atoms: [{ id: "radical", element: "C", x: 0, y: 0, formalCharge: 0, markRadicals: 1 }], bonds: [] };
@@ -13,7 +35,7 @@ describe("pluginStructureNaming uses the real naming policy", () => {
       smiles: "[CH3]", smilesAtomOrder: [0],
       smilesAtomStates: [{ element: "C", formalCharge: 0, isotope: 0, nRad: 1, hydrogenCount: 3 }]
     }));
-    const canonicalize = vi.fn(async () => "C");
+    const canonicalize = vi.fn(async (structure: string) => structure);
     const engine = fakeNamingEngine();
     vi.mocked(engine.name).mockResolvedValue({ ...namingRaw, opsinReadBack: { smiles: "C", failureReason: null } });
     const result = await nameStructureForPlugin(molecule, engine, namingInstalled, {
@@ -21,7 +43,7 @@ describe("pluginStructureNaming uses the real naming policy", () => {
     });
     expect(computeStructureIdentifiers).toHaveBeenCalledWith(expect.stringContaining("M  RAD"), { includeAtomStates: true });
     expect(engine.name).toHaveBeenCalledExactlyOnceWith("[CH3]");
-    expect(canonicalize).toHaveBeenCalledExactlyOnceWith("C");
+    expect(canonicalize.mock.calls).toEqual([["[CH3]"], ["C"]]);
     expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
   });
 

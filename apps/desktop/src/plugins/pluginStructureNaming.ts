@@ -35,7 +35,15 @@ export async function loadNamingCanonicalizer(): Promise<NamingCanonicalizer> {
   const version = module.version?.();
   if (!version) throw new Error("The loaded RDKit MinimalLib did not report its version.");
   return { version, computeStructureIdentifiers,
-    canonicalize: async structure => (await computeStructureIdentifiers(structure))?.smiles ?? null };
+    canonicalize: async structure => {
+      // Normalize ordinary explicit H on BOTH sides of the comparison, after export atom-state
+      // verification. RDKit's removeHs preserves stereo and keeps isotopic H (D/T) by default;
+      // never use removeAllHs or enable RemoveHsParameters.removeIsotopes here.
+      const molecule = module.get_mol(structure, JSON.stringify({ removeHs: true }));
+      if (!molecule) return null;
+      try { return molecule.get_smiles?.() || null; }
+      finally { molecule.delete(); }
+    } };
 }
 
 export async function nameStructureForPlugin(molecule: MoleculeObject, engine: StructureNamingEngine,

@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
-import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
-import { moleculeSmiles, verifyNameRoundTrip } from "@chemdraft/document-workflow-core";
+import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { moleculeSmiles, pastedStructureDepictionFromMolfile, verifyNameRoundTrip } from "@chemdraft/document-workflow-core";
 
 import { createPhase4Document, createSmilesMolecule } from "../documentWorkflow";
 import { registerRdkitWasmLoader } from "../rdkitWasmLoader";
@@ -30,6 +30,21 @@ function drawnMolecule(smiles: string) {
   return molecule;
 }
 
+async function drawnWithExplicitHydrogen(smiles: string) {
+  await loadNamingCanonicalizer();
+  const module = await ensureRdkit();
+  const source = module.get_mol(smiles, JSON.stringify({ removeHs: false }));
+  if (!source) throw new Error("Could not parse explicit-H test structure.");
+  try {
+    if (!source.set_new_coords || !source.get_molblock) throw new Error("RDKit lacks 2D depiction bindings.");
+    source.set_new_coords();
+    const molecule = createSmilesMolecule(createPhase4Document(), { x: 200, y: 200 },
+      pastedStructureDepictionFromMolfile(source.get_molblock()), smiles);
+    if (molecule.type !== "molecule") throw new Error("Expected a native molecule.");
+    return molecule;
+  } finally { source.delete(); }
+}
+
 function engineReading(smiles: string) {
   const engine = fakeNamingEngine();
   vi.mocked(engine.name).mockResolvedValue({
@@ -39,6 +54,56 @@ function engineReading(smiles: string) {
 }
 
 describe("structure naming with the real host RDKit canonicaliser", () => {
+  it.each([
+    ["L-alanine", "N[C@@H](C)C(=O)O", "named"],
+    ["D-alanine", "N[C@H](C)C(=O)O", "declined"]
+  ])("compares explicit-H L-alanine with a %s read-back", async (name, readBack, status) => {
+    // The ordinary SMILES depiction folds H into its neighbour during parsing. Import a
+    // hydrogen-retaining molfile so this fixture contains the real drawn H atom and bond.
+    const molecule = await drawnWithExplicitHydrogen("[H][C@@](C)(N)C(=O)O");
+    expect(molecule.atoms.filter(atom => atom.element === "H")).toHaveLength(1);
+    const hydrogen = molecule.atoms.find(atom => atom.element === "H")!;
+    const hydrogenBond = molecule.bonds.find(bond => bond.fromAtomId === hydrogen.id || bond.toAtomId === hydrogen.id)!;
+    expect(hydrogenBond).toBeDefined();
+    const engine = engineReading(readBack);
+    vi.mocked(engine.name).mockResolvedValue({
+      ...namingRaw, name, opsinReadBack: { smiles: readBack, failureReason: null }
+    });
+    const canonical = await loadNamingCanonicalizer();
+    const warnings: Parameters<typeof moleculeSmiles>[2] = [];
+    const reference = await moleculeSmiles(molecule, 0, warnings, canonical.computeStructureIdentifiers,
+      undefined, { requireEngineAtomStates: true });
+    expect(warnings).toEqual([]);
+    expect(reference).toContain("[H]");
+    expect(await canonical.canonicalize(reference)).toBe(await canonical.canonicalize("N[C@@H](C)C(=O)O"));
+
+    const result = await nameStructureForPlugin(molecule, engine, namingInstalled, canonical);
+    // Orthonym still receives the exact export reference, before H normalization for comparison.
+    expect(engine.name).toHaveBeenCalledExactlyOnceWith(reference);
+    if (status === "named") {
+      expect(result).toMatchObject({ status: "named", name: "L-alanine" });
+    } else {
+      expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
+      expect(result).not.toHaveProperty("name");
+    }
+  }, 60_000);
+
+  it.each([["D", 2], ["T", 3]] as const)("keeps isotopic %s in a drawn methane isotopologue", async (element, isotope) => {
+    const molecule = await drawnWithExplicitHydrogen("[H]C");
+    const hydrogen = molecule.atoms.find(atom => atom.element === "H")!;
+    expect(hydrogen).toBeDefined();
+    // Native D/T labels carry the isotope through the molfile writer (the depiction omits mass).
+    hydrogen.element = element;
+    const canonical = await loadNamingCanonicalizer();
+    const isotopeSmiles = `[${isotope}H]C`;
+    expect(await canonical.canonicalize(isotopeSmiles)).toContain(`[${isotope}H]`);
+    const engine = engineReading("C");
+    const result = await nameStructureForPlugin(molecule, engine, namingInstalled, canonical);
+    expect(engine.name).toHaveBeenCalledExactlyOnceWith(await canonical.canonicalize(isotopeSmiles));
+    expect(result).toMatchObject({ status: "declined", code: "noVerifiedName" });
+    expect(result).not.toHaveProperty("name");
+  }, 60_000);
+
   it.each([
     ["charge: glycine zwitterion versus neutral glycine", "[NH3+]CC(=O)[O-]", "NCC(=O)O"],
     ["stereo: L-alanine versus D-alanine", "N[C@@H](C)C(=O)O", "N[C@H](C)C(=O)O"],

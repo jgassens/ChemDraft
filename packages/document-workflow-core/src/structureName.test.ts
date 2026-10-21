@@ -85,6 +85,25 @@ describe("acceptOrthonymResult", () => {
 });
 
 describe("verifyNameRoundTrip", () => {
+  it("normalizes explicit H on both sides before comparing", async () => {
+    const canonicalize = vi.fn(async (_smiles: string) => "C[C@H](N)C(=O)O");
+    await expect(verifyNameRoundTrip({
+      drawnCanonicalSmiles: "[H][C@@](C)(N)C(=O)O",
+      name: "L-alanine",
+      readName: async () => ({ smiles: "N[C@@H](C)C(=O)O" }),
+      canonicalize
+    })).resolves.toEqual({ verified: true });
+    expect(canonicalize.mock.calls).toEqual([["[H][C@@](C)(N)C(=O)O"], ["N[C@@H](C)C(=O)O"]]);
+  });
+
+  it("declines when the drawn reference cannot be normalized", async () => {
+    await expect(verifyNameRoundTrip({
+      drawnCanonicalSmiles: "[H]C", name: "methane",
+      readName: async () => ({ smiles: "C" }),
+      canonicalize: async smiles => smiles === "C" ? "C" : null
+    })).resolves.toMatchObject({ verified: false });
+  });
+
   it("declines the glycine zwitterion when its name reads back as neutral glycine", async () => {
     await expect(verifyNameRoundTrip({
       drawnCanonicalSmiles: "[NH3+]CC(=O)[O-]",
@@ -117,6 +136,15 @@ describe("verifyNameRoundTrip", () => {
 });
 
 describe("nameStructure", () => {
+  it("requires atom-state evidence from an export identifier engine even without radicals", async () => {
+    const services = deps({ computeStructureIdentifiers: vi.fn(async () => ({ smiles: "CCO" })) });
+    await expect(nameStructure(services, molecule()))
+      .resolves.toMatchObject({ status: "declined", code: "structureNotExact" });
+    expect(services.computeStructureIdentifiers).toHaveBeenCalledWith(expect.any(String), { includeAtomStates: true });
+    expect(services.name).not.toHaveBeenCalled();
+    expect(services.readName).not.toHaveBeenCalled();
+  });
+
   it("names an exact structure after the canonical-SMILES round trip", async () => {
     await expect(nameStructure(deps(), molecule())).resolves.toMatchObject({
       status: "named", name: "ethanol", kind: "preferredIupacName", warnings: []
