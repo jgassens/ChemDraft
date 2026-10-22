@@ -40,6 +40,28 @@ function transform(text = '') {
   return matrix;
 }
 function length(x, y, matrix) { return Math.hypot(matrix[0]*x + matrix[2]*y, matrix[1]*x + matrix[3]*y); }
+function point(x, y, matrix) { return [matrix[0]*x + matrix[2]*y + matrix[4], matrix[1]*x + matrix[3]*y + matrix[5]]; }
+function nearest([x, y], atoms) {
+  let found, distance = Infinity;
+  for (const atom of atoms) {
+    const next = Math.hypot(x - atom[0], y - atom[1]);
+    if (next < distance) { found = atom; distance = next; }
+  }
+  return found;
+}
+
+function drawnBondLength(segment, atoms) {
+  const from = nearest(segment.slice(0, 2), atoms), to = nearest(segment.slice(2), atoms);
+  return from && to && from !== to ? Math.hypot(from[0] - to[0], from[1] - to[1]) : null;
+}
+function groupFor(groups, object) {
+  let group = groups.get(object);
+  if (!group) {
+    group = { lengths: [], primarySegments: [], atoms: [], widths: [] };
+    groups.set(object, group);
+  }
+  return group;
+}
 
 /** SVG exporter marks bonds with data-bond-id and native-bond-line, including paths in
  * sketch mode. Exclude text glyphs, arrow shafts, atom halos, hit targets and effect copies.
@@ -56,7 +78,14 @@ export function measureSvg(svg) {
       object: attrs['data-object-id'] ?? parent.object,
       ignored: parent.ignored || ['defs', 'clipPath', 'mask', 'filter', 'metadata'].includes(name) ||
         attrs['data-molecule-effect-source'] === 'true' || attrs['data-molecule-effect'] !== undefined };
-    if (attrs['data-object-type'] === 'molecule' && !frame.ignored && !groups.has(frame.object)) groups.set(frame.object, { lengths: [], widths: [] });
+    if (attrs['data-object-type'] === 'molecule' && !frame.ignored) groupFor(groups, frame.object);
+    if (!frame.ignored && attrs['data-atom-id'] !== undefined && Number.isFinite(Number(attrs.cx)) && Number.isFinite(Number(attrs.cy))) {
+      groupFor(groups, frame.object).atoms.push(point(Number(attrs.cx), Number(attrs.cy), frame.matrix));
+    }
+    // Labeled atoms have no circle marker; their group transform is their atom center.
+    if (!frame.ignored && attrs['data-atom-label'] !== undefined) {
+      groupFor(groups, frame.object).atoms.push(point(0, 0, frame.matrix));
+    }
     const isBond = attrs['data-bond-id'] !== undefined || /\bnative-bond-line\b/.test(attrs.class ?? '');
     if (isBond && !frame.ignored && ['line', 'path'].includes(name) &&
         !/hit-target|hover-decorator|bond-hash/.test(attrs.class ?? '') && frame.stroke !== 'none') {
@@ -79,10 +108,18 @@ export function measureSvg(svg) {
           else command = relative ? 'l' : 'L';
         }
       }
-      const group = groups.get(frame.object) ?? { lengths: [], widths: [] };
+      const group = groupFor(groups, frame.object);
       for (const [x1, y1, x2, y2] of segments) {
         const size = length(x2-x1, y2-y1, frame.matrix);
-        if (Number.isFinite(size) && size > 0) group.lengths.push(size);
+        if (Number.isFinite(size) && size > 0) {
+          group.lengths.push(size);
+          // Secondary double-bond strokes are intentionally short. Primary ink can
+          // also end at a label halo, so defer measuring it to atom centers below.
+          if (attrs['data-bond-segment'] !== 'secondary') {
+            const from = point(x1, y1, frame.matrix), to = point(x2, y2, frame.matrix);
+            group.primarySegments.push([...from, ...to]);
+          }
+        }
       }
       const scaleX = length(1, 0, frame.matrix), scaleY = length(0, 1, frame.matrix);
       // Anisotropic scaling makes effective line width depend on orientation.
@@ -94,8 +131,14 @@ export function measureSvg(svg) {
     }
     if (!tag.endsWith('/>')) stack.push(frame);
   }
-  return [...groups].map(([object, group]) => ({ object, bondLength: median(group.lengths), strokeWidth: median(group.widths),
-    segments: group.lengths.length, ...(group.unmeasurable ? { unmeasurable: group.unmeasurable } : {}) }));
+  return [...groups].map(([object, group]) => {
+    // Exported atom circles and label transforms identify true atom positions. Use
+    // primary bond endpoints snapped to those positions, not visible ink lengths:
+    // label knockouts shorten N/O/NH bonds and secondary double lines by design.
+    const corrected = group.primarySegments.map((segment) => drawnBondLength(segment, group.atoms)).filter((value) => value !== null);
+    return { object, bondLength: median(corrected.length ? corrected : group.primarySegments.map((segment) => Math.hypot(segment[2] - segment[0], segment[3] - segment[1]))), strokeWidth: median(group.widths),
+      segments: group.lengths.length, ...(group.unmeasurable ? { unmeasurable: group.unmeasurable } : {}) };
+  });
 }
 
 export async function checkStyle(images) {

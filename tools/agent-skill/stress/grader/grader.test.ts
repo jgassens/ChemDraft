@@ -93,6 +93,19 @@ beforeAll(async () => {
   await fixture('style-path', { style_consistency: true }, [render('CCC')], 'Figure.', { 'a.svg': '<svg><g transform="scale(2)" stroke-width="1"><path data-bond-id="b1" stroke="black" d="M 0 0 L 14 0 l 0 14"/></g></svg>', 'b.svg': svg(28) });
   const realSvg = await readFile(join(directory, 'fixtures/real-render.svg'), 'utf8');
   await fixture('style-real', { style_consistency: true }, [render('CCC')], 'Real CLI SVG.', { 'a.svg': realSvg, 'b.svg': realSvg });
+  const bond28 = await readFile(join(directory, 'fixtures/bond-length-28.svg'), 'utf8');
+  const bond40 = await readFile(join(directory, 'fixtures/bond-length-40.svg'), 'utf8');
+  const hetero28 = await readFile(join(directory, 'fixtures/bond-length-hetero-28.svg'), 'utf8');
+  await fixture('style-cli-bond-length-different', { style_consistency: true }, [render('C1=CC=CC=C1')], 'Bond length fixtures.',
+    { 'benzene-28.svg': bond28, 'benzene-40.svg': bond40 });
+  await fixture('style-cli-hetero-carbon', { style_consistency: true }, [render('N1=CC=CC=C1')], 'Bond length fixtures.',
+    { 'benzene-28.svg': bond28, 'pyridine-28.svg': hetero28 });
+  const d01Calls = JSON.parse(await readFile(join(directory, 'fixtures/d01/tool-calls.json'), 'utf8')) as Call[];
+  const d01 = await fixture('d01', { structures: [
+    { smiles: 'C1=CC=CC=C1' }, { smiles: 'N1=CC=CC=C1' }, { smiles: 'N1C=CC=C1' },
+    { smiles: 'O1C=CC=C1' }, { smiles: 'C1=CC=CC=CC=C1' }, { smiles: '[CH-]1C=CC=C1' }
+  ], set_match: true, style_consistency: true }, d01Calls, 'Aromaticity grid.');
+  await cp(join(directory, 'fixtures/d01/aromaticity.svg'), join(d01, 'work/aromaticity.svg'));
   await fixture('png-only', { style_consistency: true }, [render('CCC')], 'Figure.', { 'only.png': 'fixture placeholder' });
   await fixture('no-tool', full, [], 'I drew it.');
   await fixture('echo-only', full, [{ name: 'Bash', input: { command: 'echo "pnpm -s chemdraft render --smiles CCO"' } }]);
@@ -204,8 +217,13 @@ describe('automatic scoring on fixture run folders', () => {
   });
   it('measures SVG bond lines/paths, transforms and stroke width, including a real CLI SVG', () => {
     for (const id of ['style-same', 'style-path', 'style-real']) expect(autos.get(id)?.checks.A6.pass, id).toBe(true);
-    for (const id of ['style-different', 'style-width', 'png-only']) expect(autos.get(id)?.checks.A6.pass, id).toBe(false);
+    for (const id of ['style-different', 'style-width', 'style-cli-bond-length-different', 'png-only']) expect(autos.get(id)?.checks.A6.pass, id).toBe(false);
+    expect(autos.get('style-cli-hetero-carbon')?.checks.A6.pass).toBe(true);
     expect(JSON.stringify(autos.get('png-only')?.checks.A6.detail)).toContain('unmeasurable');
+  });
+  it('accepts the D01 PNG/SVG duplicate grid as one requested structure set', () => {
+    expect(autos.get('d01')?.checks.A2.pass).toBe(true);
+    expect(autos.get('d01')?.checks.A6.pass).toBe(true);
   });
   it('requires a ChemDraft call, distinguishes echo from execution, and excludes incomplete cases', () => {
     expect(autos.get('no-tool')?.checks.A8.pass).toBe(false); expect(autos.get('no-tool')?.checks.A1.pass).toBe(false);
