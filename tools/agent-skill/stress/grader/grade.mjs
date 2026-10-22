@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { args, readCases, saveJson, json, defaultCheckout, isMain, SCORING_VERSION } from './common.mjs';
 import { createChemistry } from './chemistry.mjs';
@@ -7,10 +7,18 @@ import { readRun, extract } from './extract.mjs';
 import { gradeCase, harnessResult } from './checks.mjs';
 import { VISUAL_INSTRUCTIONS, writeVisualPack } from './visual-pack.mjs';
 
+async function hasRunFolder(root, id) {
+  try { await access(join(root, id)); return true; }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
 export async function grade(options) {
   const allCases = await readCases(options.cases);
   if (options.ids) for (const id of options.ids) if (!allCases.some((item) => item.id === id)) throw new Error(`Unknown case id ${id}`);
-  const cases = options.ids ? allCases.filter((item) => options.ids.includes(item.id)) : allCases;
+  // A smoke/partial run is a normal grading input.  Do not manufacture harness
+  // failures for cases the runner was never asked to execute.
+  const cases = options.ids ? allCases.filter((item) => options.ids.includes(item.id)) :
+    (await Promise.all(allCases.map(async (item) => (await hasRunFolder(options.runs, item.id)) ? item : null))).filter(Boolean);
   const output = join(options.runs, 'grade'), visual = join(options.runs, 'visual-pack');
   await mkdir(output, { recursive: true });
   await mkdir(visual, { recursive: true });

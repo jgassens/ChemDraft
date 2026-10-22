@@ -12,6 +12,7 @@ type Auto = { id: string; status: string; auto: string | null; agent?: string | 
 type TestCase = { id: string; category: string; split: string; prompt: string; expect: Record<string, unknown>; rubric: string[] };
 type Call = { name: string; input: Record<string, unknown>; result?: unknown };
 const structure = 'C[C@@H](N)C(=O)O';
+const testosterone = 'C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=CC(=O)CC[C@]34C';
 const quinine = 'COC1=CC2=C(C=CN=C2C=C1)[C@H]([C@@H]3C[C@@H]4CCN3C[C@@H]4C=C)O';
 const render = (smiles: string): Call => ({ name: 'mcp__chemdraft__render_structure', input: { smiles } });
 const svg = (length: number, width = 2) => `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g data-object-id="m1"><line data-bond-id="b1" x1="10" y1="10" x2="${10+length}" y2="10" stroke="black" stroke-width="${width}"/></g></svg>`;
@@ -41,6 +42,10 @@ async function fixture(id: string, expectation: Record<string, unknown>, calls: 
 }
 function node(script: string, extra: string[] = []) {
   return execFileSync(process.execPath, [join(directory, script), '--cases', casesPath, '--runs', runs, ...extra],
+    { cwd: checkout, encoding: 'utf8', timeout: 90000, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+function nodeFor(runRoot: string, script: string, extra: string[] = []) {
+  return execFileSync(process.execPath, [join(directory, script), '--cases', casesPath, '--runs', runRoot, ...extra],
     { cwd: checkout, encoding: 'utf8', timeout: 90000, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
@@ -95,6 +100,23 @@ beforeAll(async () => {
     [{ name: 'Bash', input: { command: 'pnpm -s chemdraft render --batch "batch file.json" --format svg --out-dir images' } }]);
   await writeFile(join(batch, 'work', 'batch file.json'), JSON.stringify([{ name: 'a', smiles: 'CCO' }, { name: 'b', smiles: 'C/C=C\\C' }]));
   await fixture('cli-smiles', full, [{ name: 'Bash', input: { command: `pnpm -s chemdraft render --smiles '${structure}' --out a.svg` } }]);
+  // The Codex N05 smoke call has this wrapper and a quoted testosterone SMILES.
+  await fixture('cli-zsh-render', { structures: [{ smiles: testosterone }], full_stereo: true }, [{ name: 'Bash', input: { command: `/bin/zsh -lc "pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft render --smiles '${testosterone}' --out /expired/work/testosterone.svg"` } }]);
+  const shellGrid = await fixture('cli-zsh-heredoc', { structures: [
+    { smiles: 'C1=CC=CC=C1' }, { smiles: 'N1=CC=CC=C1' }, { smiles: 'N1C=CC=C1' },
+    { smiles: 'O1C=CC=C1' }, { smiles: 'C1=CC=CC=CC=C1' }, { smiles: '[CH-]1C=CC=C1' }
+  ], set_match: true }, [{ name: 'Bash', input: { command: `/bin/zsh -lc "cat > structures.json <<'EOF'
+[{\\"name\\":\\"benzene\\",\\"smiles\\":\\"C1=CC=CC=C1\\"},{\\"name\\":\\"pyridine\\",\\"smiles\\":\\"N1=CC=CC=C1\\"},{\\"name\\":\\"pyrrole\\",\\"smiles\\":\\"N1C=CC=C1\\"},{\\"name\\":\\"furan\\",\\"smiles\\":\\"O1C=CC=C1\\"},{\\"name\\":\\"cyclooctatetraene\\",\\"smiles\\":\\"C1=CC=CC=CC=C1\\"},{\\"name\\":\\"cyclopentadienyl anion\\",\\"smiles\\":\\"[CH-]1C=CC=C1\\"}]
+EOF
+pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft grid --batch /expired/work/structures.json --out /expired/work/aromaticity.svg"` } }]);
+  await mkdir(join(shellGrid, 'outputs'), { recursive: true });
+  await writeFile(join(shellGrid, 'outputs', 'aromaticity.svg'), svg(28));
+  await writeFile(join(shellGrid, 'outputs.json'), JSON.stringify([{ path: 'aromaticity.svg' }]));
+  await fixture('style-output-folder', { style_consistency: true }, [render('CCC')], 'Figure.');
+  const outputStyle = join(runs, 'style-output-folder');
+  await mkdir(join(outputStyle, 'outputs'), { recursive: true });
+  await writeFile(join(outputStyle, 'outputs', 'figure.svg'), svg(28));
+  await writeFile(join(outputStyle, 'outputs.json'), JSON.stringify([{ path: 'figure.svg' }]));
   await fixture('value', { cli_value_match: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['logp', 'tpsa'], tolerance: 0.05 } },
     [{ name: 'mcp__chemdraft__analyze_structure', input: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['rdkit.crippen-logp', 'rdkit.tpsa'] } }], 'Calculated logP: 1.35; TPSA: 49.33 Å².');
   await fixture('value-swapped', { cli_value_match: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['logp', 'tpsa'], tolerance: 0.05 } },
@@ -194,6 +216,13 @@ describe('automatic scoring on fixture run folders', () => {
     expect(autos.get('cli-smiles')?.auto).toBe('PASS'); expect(autos.get('cli-batch')?.checks.A2.pass).toBe(true);
     expect(autos.get('cli-batch')?.drawn[0]?.source).toContain('batch[0]');
   });
+  it('unwraps Codex zsh commands, recovers a removed heredoc batch, and uses runner outputs', () => {
+    expect(autos.get('cli-zsh-heredoc')?.checks.A1.pass).toBe(true);
+    expect(autos.get('cli-zsh-render')?.checks.A3.pass).toBe(true);
+    expect(autos.get('cli-zsh-render')?.checks.A8.pass).toBe(true);
+    expect(autos.get('cli-zsh-heredoc')?.drawn).toHaveLength(6);
+    expect(autos.get('style-output-folder')?.checks.A6.pass).toBe(true);
+  });
   it('canonicalises edited native graphs and accepts reported identities when document paths expired', () => {
     expect(autos.get('native-inline')?.checks.A1.pass).toBe(true);
     expect(autos.get('native-inline')?.drawn[0]?.canonical).toBe('CCN');
@@ -221,6 +250,7 @@ describe('report', () => {
     await writeFile(join(runs, 'codex/meta.json'), JSON.stringify({ id: 'codex', status: 'complete' }));
   });
   it('keeps splits and categories separate, excludes harness, labels pending V, and computes Wilson 95%', async () => {
+    await writeFile(join(runs, 'exact/meta.json'), JSON.stringify({ id: 'exact', status: 'complete', repoAccess: [{ classification: 'source-read', path: 'packages/chem-core/src/index.ts' }] }));
     node('report.mjs');
     const report = JSON.parse(await readFile(join(runs, 'grade/report.json'), 'utf8'));
     const dev = report.groups.find((group: { category: string; split: string }) => group.category === 'split-test' && group.split === 'dev');
@@ -231,6 +261,8 @@ describe('report', () => {
     expect(heldout.pass_rate.lower).toBeCloseTo(0, 12); expect(heldout.pass_rate.upper).toBeCloseTo(0.7934506856, 8);
     expect(report.visual_pending).toBe(true); expect(dev.checks.V.n).toBe(0); expect(report).not.toHaveProperty('overall');
     expect(report.groups.every((group: { split: string }) => ['dev', 'heldout'].includes(group.split))).toBe(true);
+    const sourceReads = report.groups.find((group: { category: string; split: string }) => group.category === 'test' && group.split === 'dev');
+    expect(sourceReads.repo_source_read_cases).toContain('exact');
   });
   it('merges visual pass/honest decline/fail, ranks wrong confidence first and bounds excerpts', async () => {
     const visual = cases.map((testCase) => ({ id: testCase.id,
@@ -246,5 +278,18 @@ describe('report', () => {
     expect(result('absolute-wrong').wrong_and_confident).toBe(true); expect(result('timeout').result).toBe('harness');
     expect(report.worst_failures[0].id).toBe('absolute-wrong');
     expect(report.worst_failures.every((item: { final_excerpt: string }) => item.final_excerpt.length <= 300)).toBe(true);
+  });
+  it('grades and reports only cases present in a partial run, naming cases not run', async () => {
+    const partial = join(root, 'partial-runs');
+    await mkdir(partial, { recursive: true });
+    await cp(join(runs, 'exact'), join(partial, 'exact'), { recursive: true });
+    nodeFor(partial, 'grade.mjs', ['--checkout', checkout]);
+    const automatic = JSON.parse(await readFile(join(partial, 'grade/auto.json'), 'utf8'));
+    expect(automatic.cases.map((item: { id: string }) => item.id)).toEqual(['exact']);
+    nodeFor(partial, 'report.mjs');
+    const report = JSON.parse(await readFile(join(partial, 'grade/report.json'), 'utf8'));
+    expect(report.cases.map((item: { id: string }) => item.id)).toEqual(['exact']);
+    expect(report.unrun_case_ids).toContain('codex');
+    expect(await readFile(join(partial, 'grade/report.md'), 'utf8')).toContain('Cases not run:');
   });
 });

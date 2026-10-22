@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { args, json, readCases, saveJson, isMain, CHECKS, CAUSES, SCORING_VERSION } from './common.mjs';
 
@@ -74,6 +74,7 @@ function groupResults(cases) {
     groups.push({ category, split, n: scored.length, pass: count('pass'), honest_decline: count('honest decline'), fail: count('fail'),
       wrong_and_confident: scored.filter((item) => item.wrong_and_confident).length, harness: all.length-scored.length,
       visual_pending: scored.filter((item) => item.visual_pending).length, pass_rate: wilson(count('pass'), scored.length), checks, causes });
+    groups.at(-1).repo_source_read_cases = all.filter((item) => item.repo_source_read).map((item) => item.id);
   }
   return groups;
 }
@@ -82,12 +83,12 @@ function referenceSmiles(expect) {
   return [...(expect.structures ?? []).map((item) => typeof item === 'string' ? item : item.smiles),
     ...['reactants', 'products', 'products_any_of', 'intermediates'].flatMap((role) => (expect.reaction?.[role] ?? []).map((item) => typeof item === 'string' ? item : item.smiles))];
 }
-export function buildReport(cases, automatic, visualEntries, finals = {}, agent = null) {
+export function buildReport(cases, automatic, visualEntries, finals = {}, agent = null, repoSourceReads = new Set(), unrunCaseIds = []) {
   const byId = new Map(automatic.cases.map((item) => [item.id, item]));
   if (byId.size !== automatic.cases.length) throw new Error('Duplicate automatic case ids');
   const visualPending = visualEntries === undefined;
   const visual = visualPending ? new Map() : validateVisual(visualEntries, cases);
-  const merged = cases.map((item) => mergeCase(item, byId.get(item.id), visual.get(item.id), visualPending));
+  const merged = cases.map((item) => ({ ...mergeCase(item, byId.get(item.id), visual.get(item.id), visualPending), repo_source_read: repoSourceReads.has(item.id) }));
   const worst = merged.filter((item) => item.result !== 'pass').map((item) => {
     const failed = CHECKS.filter((id) => item.checks[id]?.applies && item.checks[id].pass === false);
     return { id: item.id, category: item.category, split: item.split, result: item.result,
@@ -102,7 +103,7 @@ export function buildReport(cases, automatic, visualEntries, finals = {}, agent 
   return { scoring_version: SCORING_VERSION, automatic_scoring_version: automatic.scoring_version, agent,
     visual_pending: visualPending, mode: visualPending ? 'provisional automatic only; visual pending' : 'automatic + independent visual',
     sampling: 'One run per case (n = 1). Rates and Wilson 95% intervals are reported separately for each category and split; harness cases are excluded from scored n.',
-    groups: groupResults(merged), cases: merged, worst_failures: worst };
+    groups: groupResults(merged), cases: merged, unrun_case_ids: unrunCaseIds, worst_failures: worst };
 }
 
 const cell = (value) => String(value).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
@@ -115,9 +116,10 @@ export function markdown(report) {
   const lines = ['# ChemDraft stress report', '', `SCORING_VERSION = ${report.scoring_version}; automatic SCORING_VERSION = ${report.automatic_scoring_version}.`, '',
     `Agent: ${report.agent ?? 'unspecified'}.`, '',
     `Mode: **${report.mode}**.`, '', report.sampling, '',
-    '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Pass rate (Wilson 95%) |',
-    '|---|---|---:|---:|---:|---:|---:|---:|---|'];
-  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${rate(group.pass_rate)} |`);
+    `Cases not run: ${report.unrun_case_ids.length ? report.unrun_case_ids.map((id) => `\`${id}\``).join(', ') : 'none'}.`, '',
+    '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Repo source-read cases | Pass rate (Wilson 95%) |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|---|'];
+  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${group.repo_source_read_cases.map((id) => `\`${id}\``).join(', ') || '—'} | ${rate(group.pass_rate)} |`);
   lines.push('', '## Check pass rates', '', 'Each denominator includes only scored cases for which that check applies. V includes completed visual reviews only.', '',
     '| Category | Split | Check | Pass rate (Wilson 95%) |', '|---|---|---|---|');
   for (const group of report.groups) for (const [id, value] of Object.entries(group.checks)) lines.push(`| ${cell(group.category)} | ${group.split} | ${id} | ${id === 'V' && report.visual_pending ? 'Visual pending (n=0)' : rate(value)} |`);
@@ -138,25 +140,34 @@ export function markdown(report) {
 }
 
 export async function report(options) {
-  const cases = await readCases(options.cases), automatic = await json(join(options.runs, 'grade', 'auto.json'));
+  const allCases = await readCases(options.cases), automatic = await json(join(options.runs, 'grade', 'auto.json'));
   if (automatic.scoring_version !== SCORING_VERSION) throw new Error(`Automatic scoring version ${automatic.scoring_version} does not match ${SCORING_VERSION}`);
+  if (options.ids) for (const id of options.ids) if (!allCases.some((item) => item.id === id)) throw new Error(`Unknown case id ${id}`);
+  const hasRunFolder = async (id) => {
+    try { await access(join(options.runs, id)); return true; }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  };
+  const selected = options.ids ? allCases.filter((item) => options.ids.includes(item.id)) :
+    (await Promise.all(allCases.map(async (item) => (await hasRunFolder(item.id)) ? item : null))).filter(Boolean);
+  const unrunCaseIds = allCases.filter((item) => !selected.some((selectedCase) => selectedCase.id === item.id)).map((item) => item.id);
   const visual = options.visual ? await json(options.visual) : undefined, finals = {};
-  const agents = new Set();
-  for (const item of cases) {
+  const agents = new Set(), repoSourceReads = new Set();
+  for (const item of selected) {
     const meta = await json(join(options.runs, item.id, 'meta.json'));
     agents.add(meta.agent ?? null);
+    if ((meta.repoAccess ?? []).some((entry) => entry?.classification === 'source-read')) repoSourceReads.add(item.id);
     try { finals[item.id] = await readFile(join(options.runs, item.id, 'final.md'), 'utf8'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   if (agents.size !== 1) throw new Error(`Cannot mix runs from different agents in one report: ${[...agents].map((agent) => agent ?? 'unspecified').join(', ')}`);
-  const result = buildReport(cases, automatic, visual, finals, [...agents][0]);
+  const result = buildReport(selected, automatic, visual, finals, [...agents][0], repoSourceReads, unrunCaseIds);
   await mkdir(join(options.runs, 'grade'), { recursive: true });
   await saveJson(join(options.runs, 'grade', 'report.json'), result);
   await writeFile(join(options.runs, 'grade', 'report.md'), markdown(result));
   return result;
 }
 if (isMain(import.meta.url)) {
-  report(args(process.argv.slice(2), ['cases', 'runs', 'visual'])).catch((error) => {
+  report(args(process.argv.slice(2), ['cases', 'runs', 'visual', 'ids'])).catch((error) => {
     process.stderr.write(`Report failed: ${error.message}\n`); process.exitCode = 1;
   });
 }

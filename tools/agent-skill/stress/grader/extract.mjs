@@ -27,7 +27,7 @@ export async function readRun(folder) {
   if (meta.status !== 'complete') {
     let final = '';
     try { final = await readFile(join(folder, 'final.md'), 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const images = [...await filesUnder(join(folder, 'images')), ...await filesUnder(join(folder, 'work'))].filter((file) => /\.(png|svg)$/i.test(file));
+    const images = [...await filesUnder(join(folder, 'images')), ...await filesUnder(join(folder, 'outputs')), ...await filesUnder(join(folder, 'work'))].filter((file) => /\.(png|svg)$/i.test(file));
     return { folder, meta, calls: [], final, images };
   }
   const final = await readFile(join(folder, 'final.md'), 'utf8');
@@ -64,7 +64,7 @@ export async function readRun(folder) {
       call.result = index !== -1 ? saved[index].result : results.get(call.id);
     }
   } else calls.push(...saved);
-  const images = [...await filesUnder(join(folder, 'images')), ...await filesUnder(join(folder, 'work'))]
+  const images = [...await filesUnder(join(folder, 'images')), ...await filesUnder(join(folder, 'outputs')), ...await filesUnder(join(folder, 'work'))]
     .filter((file) => /\.(png|svg)$/i.test(file));
   return { folder, meta, calls, final, images };
 }
@@ -97,8 +97,24 @@ export function shellWords(command) {
   return words;
 }
 
+/** Codex records command executions as an explicit login shell invocation.  Unwrap
+ * only the argument passed to -c/-lc; command text is still lexed, never evaluated. */
+export function unwrapShell(command) {
+  let current = command;
+  for (;;) {
+    const words = shellWords(current);
+    const shell = words.findIndex((word) => /(?:^|[\\/])(?:zsh|bash)(?:\.exe)?$/i.test(word));
+    if (shell === -1) return current;
+    const flag = words.findIndex((word, index) => index > shell && /^(?:-[A-Za-z]*c[A-Za-z]*|--command)$/i.test(word));
+    if (flag === -1 || flag + 1 >= words.length) return current;
+    const next = words[flag + 1];
+    if (typeof next !== 'string' || next === current) return current;
+    current = next;
+  }
+}
+
 export function cliCalls(command) {
-  const tokens = shellWords(command), calls = [];
+  const tokens = shellWords(unwrapShell(command)), calls = [];
   let start = 0;
   for (let end = 0; end <= tokens.length; end++) {
     if (end !== tokens.length && ![';', '&', '|'].includes(tokens[end])) continue;
@@ -119,6 +135,35 @@ export function cliCalls(command) {
     calls.push({ verb, options, source: part.join(' ') });
   }
   return calls;
+}
+
+/** Capture retained shell heredocs without executing them.  The runner can remove
+ * work/ after a run, so a later --batch absolute path may only survive here. */
+export function heredocFiles(command) {
+  const files = new Map();
+  const source = unwrapShell(command);
+  // Backreferences cannot select one of three delimiter captures, so match each
+  // header and find its exact terminator separately.
+  const header = /(?:^|[;&\n]\s*)cat\s+>\s*(?:'([^']+)'|"([^"]+)"|([^\s<]+))\s+<<\s*(?:'([^']+)'|"([^"]+)"|([^\s]+))\s*\r?\n/gm;
+  for (const match of source.matchAll(header)) {
+    const file = match[1] ?? match[2] ?? match[3];
+    const delimiter = match[4] ?? match[5] ?? match[6];
+    const bodyStart = match.index + match[0].length;
+    const end = new RegExp(`(?:^|\\n)${delimiter.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:\\r?\\n|$)`, 'm').exec(source.slice(bodyStart));
+    if (!end) continue;
+    files.set(file.replace(/\\/g, '/'), source.slice(bodyStart, bodyStart + end.index).replace(/\r?\n$/, ''));
+  }
+  return files;
+}
+
+async function batchJobs(folder, requested, heredocs) {
+  try { return await json(await savedPath(folder, requested)); }
+  catch (error) {
+    const portable = requested.replace(/\\/g, '/');
+    const body = heredocs.get(portable) ?? heredocs.get(portable.split('/').at(-1));
+    if (body === undefined) throw error;
+    return JSON.parse(body);
+  }
 }
 
 async function savedPath(folder, requested) {
@@ -197,6 +242,7 @@ function documentSchemes(native) {
 
 export async function extract(run, chemistry, scratch) {
   const drawn = [], schemes = [], errors = [], documents = new Set();
+  const heredocs = new Map();
   let reached = false;
   const add = (smiles, source, extra = {}) => { if (typeof smiles === 'string' && smiles.trim()) drawn.push({ smiles, source, ...extra }); };
   const native = async (file, source, rendered = false) => {
@@ -247,7 +293,9 @@ export async function extract(run, chemistry, scratch) {
           if (file) await native(file, source, !failed);
         }
       } else if (['Bash', 'bash', 'Shell', 'shell'].includes(call.name)) {
-        for (const cli of cliCalls(input.command ?? '')) {
+        const command = input.command ?? '';
+        for (const [file, body] of heredocFiles(command)) heredocs.set(file, body);
+        for (const cli of cliCalls(command)) {
           reached = true;
           const option = (key) => cli.options[key]?.at(-1);
           if (cli.verb === 'name' && option('render')) {
@@ -256,7 +304,7 @@ export async function extract(run, chemistry, scratch) {
           }
           if (!['render', 'grid', 'reaction', 'document', 'render-document', 'export'].includes(cli.verb)) continue;
           if (cli.verb === 'render-document') { await native(await savedPath(run.folder, option('document')), `${source} --document`, !failed); continue; }
-          const jobs = option('batch') ? await json(await savedPath(run.folder, option('batch'))) : [{}];
+          const jobs = option('batch') ? await batchJobs(run.folder, option('batch'), heredocs) : [{}];
           for (const [i, job] of jobs.entries()) {
             if (cli.verb === 'reaction') {
               const scheme = { ...reactionInput({ ...job, rxn: job.rxn ?? option('rxn'),
