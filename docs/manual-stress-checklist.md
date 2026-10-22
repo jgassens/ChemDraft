@@ -1,5 +1,9 @@
 # Manual stress checklist
 
+Text editing (macOS and Windows): edit an existing text box next to another label. Confirm only
+one copy of its text is visible while typing, rich formatting remains intact, the other label stays
+visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

@@ -49,9 +49,10 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     delete window.__CHEMDRAFT_AGENT__;
   });
 
-  async function mount(tool = "tool.select", selected = false) {
+  async function mount(tool = "tool.select", selected = false, withSecondText = false) {
     let doc = insertNativeTextObject(createPhase4Document("Text editing"), { x: 200, y: 200 }, "Reaction conditions");
     objectId = doc.pages[0].objects.find(object => object.type === "text")!.id;
+    if (withSecondText) doc = insertNativeTextObject(doc, { x: 400, y: 300 }, "Other label");
     doc = selectDocumentObjects(doc, doc.pages[0].id, selected ? [objectId] : []);
     await act(async () => root.render(createElement(MainWindow, {
       initialDocument: doc, initialActiveToolCommandId: tool, initialCrosshairsVisible: false,
@@ -105,13 +106,13 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("No selection");
   }
 
-  function expectEditing() {
+  function expectEditing(objectCount = 1) {
     expect(editor()?.value).toBe("Reaction conditions");
     expect(editor()?.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(objectId);
     expect(document.activeElement).toBe(editor());
     expect(editor()?.selectionStart).toBe("Reaction conditions".length);
     expect(editor()?.selectionEnd).toBe("Reaction conditions".length);
-    expect(snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(snapshot().document.pages[0].objects).toHaveLength(objectCount);
   }
 
   it.each(["tool.select", "tool.text"])("double-clicks the painted glyph with %s without clearing selection", async tool => {
@@ -128,6 +129,37 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     await mount("tool.text");
     await click(glyph(), 1);
     expectEditing();
+  });
+
+  it("shows only the live edit preview, leaving other labels visible and restoring saved text on blur", async () => {
+    await mount("tool.text", false, true);
+    const visual = () => container.querySelector<SVGGElement>(`[data-page-svg-object-visual="${objectId}"]`)!;
+    const otherId = snapshot().document.pages[0].objects.find(object => object.id !== objectId)!.id;
+    const otherVisual = () => container.querySelector<SVGGElement>(`[data-page-svg-object-visual="${otherId}"]`)!;
+    expect(visual().getAttribute("visibility")).not.toBe("hidden");
+    await click(glyph(), 1);
+    expectEditing(2);
+    expect(visual().getAttribute("visibility")).toBe("hidden");
+    expect(visual().style.pointerEvents).toBe("none");
+    expect(otherVisual().getAttribute("visibility")).not.toBe("hidden");
+    expect(otherVisual().textContent).toContain("Other label");
+    expect(container.querySelectorAll(".text-object-edit-preview")).toHaveLength(1);
+    expect(container.querySelector(".text-object-edit-preview")?.textContent).toBe("Reaction conditions");
+
+    const input = editor()!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Updated conditions");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelector(".text-object-edit-preview")?.textContent).toBe("Updated conditions");
+    expect(visual().getAttribute("visibility")).toBe("hidden");
+    await act(async () => input.blur());
+    expect(editor()).toBeNull();
+    expect(container.querySelector(".text-object-edit-preview")).toBeNull();
+    expect(visual().getAttribute("visibility")).not.toBe("hidden");
+    expect(visual().style.pointerEvents).toBe("auto");
+    expect(visual().textContent).toContain("Updated conditions");
+    expect(snapshot().document.pages[0].objects).toHaveLength(2);
   });
 
   it("keeps editing through the second glyph press after Text restores Select", async () => {

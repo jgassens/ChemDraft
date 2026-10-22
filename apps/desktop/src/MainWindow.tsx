@@ -1602,7 +1602,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.21.18.22-codex";
+const CURRENT_BUILD_STAMP = "10.22.10.20-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -19489,6 +19489,7 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
+                  editingTextObjectId={activeTextEditObjectId}
                 />
                 <PageInteractionPortal target={interactionLayer}>
                 {activeNativeTemplateId && templatePreview ? (
@@ -25300,6 +25301,7 @@ function PageSvgSurfaceContent({
   objectOverlayFragments,
   objectTransformPreview,
   spinningObjectId,
+  editingTextObjectId,
   ...handlers
 }: {
   ariaLabel: string;
@@ -25311,6 +25313,8 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
+  /** The HTML editing preview owns this text's paint until its edit ends. */
+  editingTextObjectId?: string;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -25362,6 +25366,7 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
+            const editingText = object.type === "text" && object.id === editingTextObjectId;
             return (
               <g
                 key={object.id}
@@ -25369,8 +25374,9 @@ function PageSvgSurfaceContent({
                 data-object-type={object.type}
                 data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
                 opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                visibility={editingText ? "hidden" : undefined}
                 transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId ? "none" : "auto" }}
+                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
                 onPointerDown={event => handlers.onPointerDown(object.id, event)}
                 onPointerMove={event => handlers.onPointerMove(object.id, event)}
                 onPointerUp={event => handlers.onPointerUp(object.id, event)}

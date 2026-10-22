@@ -12,6 +12,11 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+## Editing text
+
+While editing an existing text box, only the live formatted preview is shown. The saved drawing
+returns with the updated content when editing ends; other labels remain visible throughout.
+
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,
 numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses

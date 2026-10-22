@@ -8,8 +8,19 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Branch `fix/text-edit-overlap`: prevent the saved SVG text from painting behind the live HTML
+text-edit preview. Hide only the edited object's SVG drawing until the edit ends; retain rich
+formatting, other labels, pointer routing, and restoration of the updated drawing on blur.
+
+Scope: `MainWindow.tsx`, `textObjectEdit.dom.test.ts`, desktop usage docs, manual checklist, and
+build stamp. No document schema or chemical identity changes.
+
+Browser acceptance: the contributor reports the behavior works in the local test version.
+Local checks: 152 text-editing/focus tests, root TypeScript checking, the browser production build,
+and `git diff --check` passed. Text-edit tests exercise Windows and macOS mappings.
+This slice remains in draft review until required CI and native Windows/macOS checks pass.
+Native verification is pending because Rust/Cargo and the C++ workload are unavailable here.
+An earlier full-suite attempt reported failures and did not complete; it is not a passing result.
 
 ---
 
