@@ -12,6 +12,8 @@ pub enum ArchiveKind {
     Raw,
     TarGz,
     Zip,
+    /// Extract every entry, preserving paths, with the traversal guards; `binary` is relative to the tree.
+    ZipTree,
 }
 #[derive(Debug, Clone)]
 pub struct ToolPin {
@@ -90,11 +92,10 @@ pub const PINS: [ToolPin; 6] = [
         platform: ToolPlatform::WindowsX64,
         version: CODEX_VERSION,
         url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-pc-windows-msvc.exe.zip",
-        size: SIZE_PENDING,
-        archive: ArchiveKind::Zip,
-        entry: "codex-x86_64-pc-windows-msvc.exe",
         size: 167080091,
         sha256: "dabdb4d16aaf10fea40b74811c96efddcd9138f122163b69ed604fcb3eb704c3",
+        archive: ArchiveKind::ZipTree,
+        entry: "codex-x86_64-pc-windows-msvc.exe",
         binary: "codex-x86_64-pc-windows-msvc.exe",
     },
 ];

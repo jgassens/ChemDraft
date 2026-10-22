@@ -45,8 +45,9 @@ describe("external tool pin script", () => {
   });
 
   it("reports a pin difference", () => {
-    expect(pinDiff("pub const CLAUDE_VERSION: &str = \"1\";\npub const PINS: [ToolPin; 6] = [\n];", "new")).toBe("Published external-tool pins differ from pins.rs.");
-    expect(pinDiff("prefix\npub const CLAUDE_VERSION: &str = \"1\";\npub const PINS: [ToolPin; 6] = [\n];", "pub const CLAUDE_VERSION: &str = \"1\";\npub const PINS: [ToolPin; 6] = [\n];")).toBe("");
+    const current = 'pub const CLAUDE_VERSION: &str = "1";\npub const CODEX_TAG: &str = "rust-v1";\npub const CODEX_VERSION: &str = "1";\npub const PINS: [ToolPin; 6] = [\n];';
+    expect(pinDiff(current, "new")).toBe("Published external-tool pins differ from pins.rs.");
+    expect(pinDiff(`prefix\n${current}`, current)).toBe("");
   });
 });
 

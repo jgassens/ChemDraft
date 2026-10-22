@@ -28,20 +28,8 @@ use std::{
 
 const RECEIPT: &str = "install.json";
 
-// The currently checked-in Windows Codex pin predates the ZipTree catalog kind.
-// Keep its packaged executable name and resources together when installing that pin.
-fn is_zip_tree(pin: &ToolPin) -> bool {
-    pin.tool == ToolId::Codex
-        && pin.platform == ToolPlatform::WindowsX64
-        && pin.archive == ArchiveKind::Zip
-}
-
 fn binary_name(pin: &ToolPin) -> &str {
-    if is_zip_tree(pin) {
-        pin.entry
-    } else {
-        pin.binary
-    }
+    pin.binary
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -324,15 +312,18 @@ pub(super) fn install_with_download(
     let binary = partial.join(binary_name(pin));
     match pin.archive {
         ArchiveKind::Raw => ops.rename(&archive, &binary).map_err(|e| ops.failed(e))?,
-        ArchiveKind::TarGz | ArchiveKind::Zip => {
-            let kind = if is_zip_tree(pin) {
-                ExtractKind::ZipTree
-            } else if pin.archive == ArchiveKind::TarGz {
-                ExtractKind::TarGz
-            } else {
-                ExtractKind::Zip
+        ArchiveKind::TarGz | ArchiveKind::Zip | ArchiveKind::ZipTree => {
+            let kind = match pin.archive {
+                ArchiveKind::TarGz => ExtractKind::TarGz,
+                ArchiveKind::Zip => ExtractKind::Zip,
+                ArchiveKind::ZipTree => ExtractKind::ZipTree,
+                ArchiveKind::Raw => unreachable!(),
             };
-            let destination = if is_zip_tree(pin) { &partial } else { &binary };
+            let destination = if pin.archive == ArchiveKind::ZipTree {
+                &partial
+            } else {
+                &binary
+            };
             extract_single_entry_with_ops(&archive, kind, pin.entry, destination, ops)?;
             ops.remove_file(&archive).map_err(|e| ops.failed(e))?;
         }

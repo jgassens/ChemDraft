@@ -789,13 +789,13 @@ fn windows_codex_tree_install_preserves_packaged_binary_resources_and_status() {
     ]);
     let mut pinned = pin(
         &body,
-        ArchiveKind::Zip,
+        ArchiveKind::ZipTree,
         "https://github.com/openai/codex/fixture",
     );
     pinned.tool = ToolId::Codex;
     pinned.platform = ToolPlatform::WindowsX64;
     pinned.entry = main;
-    pinned.binary = "codex.exe"; // The legacy pin must also preserve the packaged name.
+    pinned.binary = main;
     let result = install_with_download(
         &base.0,
         &pinned,

@@ -181,6 +181,22 @@ fn pins_are_complete_and_valid() {
     }
 }
 #[test]
+fn zip_tree_pin_binaries_are_safe_relative_paths() {
+    for pin in pins::PINS
+        .iter()
+        .filter(|pin| pin.archive == pins::ArchiveKind::ZipTree)
+    {
+        let path = std::path::Path::new(pin.binary);
+        assert!(path.is_relative(), "{}", pin.binary);
+        assert!(
+            path.components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "{}",
+            pin.binary
+        );
+    }
+}
+#[test]
 fn environment_is_an_allowlist_for_both_platforms() {
     let parent = map(&[
         ("HOME", "/home/user"),
