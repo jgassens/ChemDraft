@@ -1,6 +1,6 @@
 import { ChemDraftSyntheticStylePreset, type ChemDraftStylePreset, type NativeTextStyle } from "@chemdraft/chem-core";
 
-/** Physical contract for the owner's house style. Native coordinates remain canvas units. */
+/** Physical contract for the fixed document style. Native coordinates remain canvas units. */
 export const DocumentStyleScale = {
   pointsPerUnit: 14.4 / 22,
   marginPt: 4,
@@ -34,10 +34,20 @@ export const DocumentStylePreset = {
     multipleBondGapPx: units(14.4) * 0.18,
     bondHashSpacingPx: units(2.5),
     bondMarginWidthPx: units(1.6),
-    atomLabelFontFamily: "Arial",
+    atomLabelFontFamily: "Arial, Helvetica, sans-serif",
     atomLabelFontSizePx: units(10)
   }
 } as const satisfies ChemDraftStylePreset;
+
+/** Only these whole-molecule dimensions belong to document style. The preset id selects the
+ * explicit wedge width; native style resolution never uses it to replace colours. Keep appearance
+ * and all per-atom/per-bond overrides, including size maps, exactly as authored. */
+export const DocumentMoleculeSizeStyle = Object.fromEntries(([
+  "stylePresetId",
+  "bondLengthPx", "bondStrokeWidthPx", "bondBoldWidthPx", "bondSpacingMode", "bondSpacingPercent",
+  "multipleBondGapPx", "doubleBondInsetPx", "bondHashSpacingPx", "bondMarginWidthPx",
+  "chainAngleDegrees", "atomLabelFontFamily", "atomLabelFontSizePx"
+] as const).map((key) => [key, DocumentStylePreset.drawing[key]]));
 
 export const DocumentTextStyle = {
   fontFamily: DocumentStylePreset.drawing.atomLabelFontFamily,

@@ -7,7 +7,7 @@ are intended for workspace tools that need the same document and rendering path.
 ## Fixed-scale document figures
 
 `render`, `grid`, `reaction`, `render-document`, and `document` accept `--style fit|document`.
-`fit` is the unchanged default. Use `--style document` for the owner's house style:
+`fit` is the unchanged default. Use `--style document` for the fixed document style:
 
 | Setting | Physical value |
 | --- | --- |
@@ -36,11 +36,18 @@ Insert document-style SVG at its **natural size (100%) and never resize it**: ro
 and viewBox are in points, so every bond retains its physical length. PNG uses the same SVG
 at `--dpi <n>` (default 300, range 72–1200), giving 60 pixels per bond at 300 dpi. When inserting
 PNG, set its physical size to the returned `widthPt` and `heightPt` (72 pt = 1 inch); some word
-processors ignore image resolution. `--dpi` is valid only with document style. `--width`,
+processors ignore image resolution. `--dpi` is valid only with document style when PNG is written;
+SVG-only and build-only commands reject it with exit 2. `--width`,
 `--bond-length`, and `--padding` conflict with document style and return exit 2.
 Native building retains editable geometry; `render-document --style document` applies the preset
-to molecules and text, scales each molecule uniformly, and crops its first page. This option
-supports SVG/PNG/both; PDF and ChemDraft exports retain their existing native page-size contract.
+only to molecule size/geometry keys, preserves all colours, appearance toggles and per-atom/per-bond
+style maps, and scales the whole first page uniformly before cropping. The scale uses the median
+bond length of each molecule; when those lengths differ by more than 2%, it uses the median across
+molecules and emits a warning naming that value. Atom coordinates, object frames, arrows and control
+points, graphics, captions and page size scale together, preserving contacts and relative placement.
+Arrows and plain graphic strokes use 1.134 pt. Text uses Arial, Helvetica, sans-serif at 10 pt
+unless an explicit object/span size is present, in which case that size scales with the page.
+This option supports SVG/PNG/both; PDF and ChemDraft exports retain their existing native page-size contract.
 
 Result lines include `style`. Document-style figures also report `widthPt` and `heightPt`,
 and PNG results report `dpi`. Build-only `document` results report the physical content size;

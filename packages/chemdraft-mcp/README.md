@@ -18,11 +18,12 @@ For Claude Desktop, add this stanza to `claude_desktop_config.json`:
 
 `render_structure`, `render_grid`, `render_reaction`, and `render_document` accept optional
 `style: "fit" | "document"` (default `fit`) and `dpi` (document PNG, default 300,
-range 72–1200). `build_document` also accepts `style`, so building and rendering native JSON
+range 72–1200). `dpi` is rejected when no PNG is written, including `build_document`.
+`build_document` also accepts `style`, so building and rendering native JSON
 can use the same geometry. Document style rejects `width`, `bondLength`, and `padding` where
 those parameters exist; conflicts are returned as tool errors.
 
-The owner's house style uses 14.4 pt bonds, 1.134 pt lines, 2.268 pt bold bonds/wedges,
+The fixed document style uses 14.4 pt bonds, 1.134 pt lines, 2.268 pt bold bonds/wedges,
 18% double-bond spacing, 2.5 pt hash spacing, 1.6 pt bond margins, 120° chains, Arial 10 pt
 formula labels with subscripted counts, Arial 10 pt captions/conditions, and a fixed 4 pt
 outer margin. Grid cells grow rather than shrinking molecules. SVG dimensions and viewBox
@@ -30,7 +31,13 @@ are in points: **insert SVG at natural size (100%) and never resize it**. For PN
 reported `widthPt`/`heightPt` as the insertion size (72 pt = 1 inch); its pixel scale comes
 from `dpi` (60 pixels per bond at 300 dpi). JSON results record `style`, figure physical size,
 and PNG `dpi`. `render_document` document style supports SVG/PNG/both; PDF/ChemDraft retain
-native page size. See the [CLI details](../chemdraft-cli/README.md#fixed-scale-document-figures).
+native page size. Document style scales the whole first page uniformly, including molecules, object
+frames, arrow endpoints/control points, graphics, captions and page size. It uses each molecule’s
+median bond length; if those lengths differ by more than 2%, it uses the median across molecules and
+emits a warning naming that value. Colours, appearance toggles and all per-atom/per-bond style maps
+are preserved. Arrows and plain graphic strokes use 1.134 pt; text uses Arial, Helvetica, sans-serif
+at 10 pt unless an explicit object/span size is present, which scales with the page. See the [CLI
+details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 
 ## Tools
 

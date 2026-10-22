@@ -94,7 +94,10 @@ Layout must not change chemical identity.
 document figure style once, in `src/documentStyle.ts`. Native coordinates use 22 units per bond;
 the physical scale is 14.4/22 pt per unit. Canvas plans and exporters use those same dimensions,
 including the explicit bold/wedge width; export-engine wraps cropped SVG content in one scale
-transform and writes its root dimensions and viewBox in points. CLI fitting remains the default.
+transform and writes its root dimensions and viewBox in points. CLI fitting remains the default. Labels and text use the Arial, Helvetica, sans-serif font stack.
+`scalePageGeometry` scales every object frame, atom, arrow endpoint/control point, graphic geometry,
+text position and explicit text size, and page dimensions together. Molecule colours, appearance
+toggles and all per-atom/per-bond style maps remain unchanged.
 
 ## Selection arrangement
 

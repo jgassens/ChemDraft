@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createNativeReactionArrow } from "@chemdraft/document-workflow-core";
+import { DocumentStyleScale } from "@chemdraft/layout-engine";
 import { buildSmilesDocument, canonicalSmiles, currentMoleculeIdentityMolfile, renderSmilesToAssets } from "../document";
 import { runRenderCommand } from "./render";
 import { runGridCommand } from "./grid";
@@ -85,13 +87,13 @@ function measure(svg: string) {
     if (bonds.length) expect(Math.abs(median(bonds) - 14.4)).toBeLessThan(14.4 * 0.02);
     for (const stroke of strokes) expect(Math.abs(stroke - 1.134)).toBeLessThan(1.134 * 0.01);
     const fonts = [...root.querySelectorAll("[data-atom-label]")].map((label) => {
-      expect(label.getAttribute("font-family")).toBe("Arial");
+      expect(label.getAttribute("font-family")!.split(",")[0]).toBe("Arial");
       const size = Number(label.getAttribute("font-size")) * scale(label);
       expect(size).toBeCloseTo(10, 2); return size;
     });
     // Caption and conditions text share the physical text preset.
     for (const text of root.querySelectorAll("text[font-family]")) {
-      expect(text.getAttribute("font-family")).toBe("Arial");
+      expect(text.getAttribute("font-family")!.split(",")[0]).toBe("Arial");
       expect(Number(text.getAttribute("font-size")) * scale(text)).toBeCloseTo(10, 2);
     }
     const measured = { widthPt: box[2]!, heightPt: box[3]!, bondPt: bonds.length ? median(bonds) : null,
@@ -126,6 +128,80 @@ async function verifySvgIdentity(svg: string, inputs: string[]) {
 }
 
 describe("fixed-scale document figures", () => {
+  it("preserves colours and whole-page contact and caption placement through render-document", async () => {
+    const document = createEmptyDocument();
+    const mol: MoleculeObject = { id: "contact-molecule", type: "molecule", x: 100, y: 100, width: 28, height: 20,
+      rotation: 0, structure: "CCN", structureFormat: "smiles", superatoms: [], rGroups: [],
+      atoms: [{ id: "a", element: "C", x: 100, y: 110, formalCharge: 0 },
+        { id: "b", element: "C", x: 128, y: 110, formalCharge: 0 },
+        { id: "n", element: "N", x: 100, y: 82, formalCharge: 0 }],
+      bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+        { id: "an", fromAtomId: "a", toAtomId: "n", order: "single" }],
+      style: { bondColor: "#ff0000", atomLabelColor: "#00ff00", atomLabelBackgroundColor: "transparent",
+        atomLabelHideImplicitHydrogens: true } };
+    const arrow = createNativeReactionArrow(document, { x: 128, y: 110 }, { x: 210, y: 110 }, "forward");
+    document.pages[0]!.objects = [mol, arrow,
+      { id: "caption", type: "text", x: 100, y: 160, width: 100, height: 24,
+        rotation: 0, text: "Caption", spans: [], style: {} }];
+    const native = join(directory, "contact.json"), out = join(directory, "contact.svg");
+    await writeFile(native, JSON.stringify(document));
+    const result = capture();
+    expect(await runRenderDocumentCommand(["--document", native, "--out", out, "--style", "document"], result.io), result.lines.join("\n")).toBe(0);
+    const dom = new JSDOM(await readFile(out, "utf8"), { contentType: "image/svg+xml" });
+    try {
+      const root = dom.window.document.documentElement;
+      const bond = root.querySelector("[data-bond-id=ab] line") ?? root.querySelector("line[data-bond-id=ab]");
+      expect(bond).not.toBeNull();
+      const a = point(bond!, Number(bond!.getAttribute("x1")), Number(bond!.getAttribute("y1")));
+      const b = point(bond!, Number(bond!.getAttribute("x2")), Number(bond!.getAttribute("y2")));
+      expect(Math.hypot(b[0] - a[0], b[1] - a[1])).toBeCloseTo(14.4, 1);
+      expect(bond!.getAttribute("stroke")).toBe("#ff0000");
+      const shaft = root.querySelector("line[data-arrow-kind]")!;
+      const tail = point(shaft, Number(shaft.getAttribute("x1")), Number(shaft.getAttribute("y1")));
+      expect(Math.hypot(tail[0] - b[0], tail[1] - b[1])).toBeLessThan(0.5);
+      expect(Number(shaft.getAttribute("stroke-width")) * scale(shaft)).toBeCloseTo(1.134, 2);
+      const caption = root.querySelector("[data-object-id=caption]")!;
+      // Caption frame and molecule atom both follow the same page transform.
+      const expectedScale = 22 / 28 * DocumentStyleScale.pointsPerUnit;
+      const captionOrigin = point(caption, Number(caption.getAttribute("x")),
+        Number(caption.getAttribute("y")) - Number(caption.getAttribute("font-size")));
+      expect(captionOrigin[0] - a[0]).toBeCloseTo(0, 2);
+      expect(captionOrigin[1] - a[1]).toBeCloseTo(50 * expectedScale, 2);
+      expect(root.querySelector("[data-atom-label]")!.getAttribute("fill")).toBe("#00ff00");
+      expect(root.querySelector("[data-atom-label]")!.getAttribute("font-family")!.split(",")[0]).toBe("Arial");
+      expect(root.querySelector("[data-atom-label] [aria-hidden=true]")).toBeNull();
+    } finally { dom.window.close(); }
+    const mixed = structuredClone(mol);
+    mixed.id = "different-length";
+    mixed.atoms = mixed.atoms.map((atom) => ({ ...atom, x: atom.x * 2, y: atom.y * 2 }));
+    document.pages[0]!.objects.push(mixed);
+    await writeFile(native, JSON.stringify(document));
+    const mixedIo = capture();
+    expect(await runRenderDocumentCommand(["--document", native, "--out", out, "--style", "document"], mixedIo.io)).toBe(0);
+    expect(mixedIo.result().warnings).toEqual(expect.arrayContaining([expect.stringMatching(/median across molecules \(42 native units\)/)]));
+  }, 60_000);
+
+  it("rejects DPI whenever the command writes no PNG, including inferred SVG and batches", async () => {
+    const batch = join(directory, "dpi-batch.json");
+    await writeFile(batch, JSON.stringify([{ name: "a", smiles: "CC" }]));
+    const reactionBatch = join(directory, "dpi-reactions.json");
+    await writeFile(reactionBatch, JSON.stringify([{ name: "a", rxn: "CC>>CC", out: join(directory, "r.svg") }]));
+    const cases: [typeof runRenderCommand, string[]][] = [
+      [runDocumentCommand, ["--smiles", "CC", "--out", join(directory, "dpi.json")]],
+      [runRenderCommand, ["--smiles", "CC", "--out", join(directory, "dpi.svg")]],
+      [runRenderCommand, ["--batch", batch, "--out-dir", directory, "--format", "svg"]],
+      [runGridCommand, ["--batch", batch, "--out", join(directory, "dpi.svg")]],
+      [runReactionCommand, ["--rxn", "CC>>CC", "--out", join(directory, "dpi.svg")]],
+      [runReactionCommand, ["--batch", reactionBatch]],
+      ...["svg", "pdf", "chemdraft"].map((format): [typeof runRenderCommand, string[]] =>
+        [runRenderDocumentCommand, ["--document", "unused.json", "--out", join(directory, `dpi.${format}`)]])
+    ];
+    for (const [command, args] of cases) {
+      const result = capture();
+      expect(await command([...args, "--style", "document", "--dpi", "300"], result.io), args.join(" ")).toBe(2);
+      expect(result.errors.join("\n")).toMatch(/--dpi requires PNG output/);
+    }
+  });
   it("renders small and large structures, a grid and a reaction at one physical scale", async () => {
     const sizes = [];
     for (const structure of structures) {

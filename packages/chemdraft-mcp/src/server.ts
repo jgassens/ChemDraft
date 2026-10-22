@@ -358,12 +358,14 @@ export function createChemDraftMcpServer(
   server.registerTool("build_document", {
     description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
     inputSchema: {
+      dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
       smiles: z.string().min(1),
       bondLength: z.number().positive().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ style, smiles, bondLength, outDir }) => runTool(async () => {
+  }, async ({ style, dpi, smiles, bondLength, outDir }) => runTool(async () => {
+    if (dpi !== undefined) return errorResult("--dpi requires PNG output; build_document produces no raster.");
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.json`);
     const argv = ["--smiles", smiles, "--out", output];

@@ -6,7 +6,7 @@ import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-co
 import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
-import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle } from "../figureStyle";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
 import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, documentWithPhysicalStyle, renderDefaults,
   stereoCenterCounts, svgToPng, validateRasterWidth } from "../document";
 import { loadAgentDocument, validateDocumentOutputPath } from "../documentInput";
@@ -76,6 +76,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     if (!["svg", "png", "pdf", "chemdraft", "both"].includes(format)) {
       throw new CliUsageError("--format must be svg, png, pdf, chemdraft or both (or use a matching --out extension).");
     }
+    validateFigureDpi(figure, format === "png" || format === "both");
     if (figure.style === "document" && (format === "pdf" || format === "chemdraft")) {
       throw new CliUsageError("--style document requires --format svg, png or both; PDF and ChemDraft exports retain native page size.");
     }
@@ -99,10 +100,10 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     const name = basename(out);
     writeProgress(io, `Rendering document ${file}…`);
     try {
-      if (figure.style === "document") document = await documentWithPhysicalStyle(document);
       installNodeRendering();
       const warnings: ExportWarning[] = opened.warnings.map((warning) => ({ ...warning,
         objectId: warning.sourceObjectId, severity: "warning" }));
+      if (figure.style === "document") document = await documentWithPhysicalStyle(document, warnings);
       const molecules = await moleculeResults(document, warnings);
       const files: string[] = [];
       let physicalSize: { width: number; height: number } | undefined;

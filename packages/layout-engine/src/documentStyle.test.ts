@@ -15,7 +15,7 @@ describe("document physical style", () => {
     expect(drawing.bondHashSpacingPx * pt).toBeCloseTo(2.5, 10);
     expect(drawing.bondMarginWidthPx * pt).toBeCloseTo(1.6, 10);
     expect(drawing.chainAngleDegrees).toBe(120);
-    expect(drawing.atomLabelFontFamily).toBe("Arial");
+    expect(drawing.atomLabelFontFamily.split(",")[0]).toBe("Arial");
     expect(drawing.atomLabelFontSizePx * pt).toBeCloseTo(10, 10);
     expect(DocumentTextStyle.fontSizePx).toBe(drawing.atomLabelFontSizePx);
     expect(DocumentStyleScale.marginPt).toBe(4);

@@ -77,6 +77,22 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("rejects DPI on every tool format that produces no PNG", async () => {
+    const client = await connect();
+    const cases = [
+      { name: "build_document", args: { smiles: "CC" } },
+      { name: "render_structure", args: { smiles: "CC", format: "svg" } },
+      { name: "render_grid", args: { items: [{ name: "a", smiles: "CC" }], format: "svg" } },
+      { name: "render_reaction", args: { reactants: ["CC"], products: ["CC"], format: "svg" } },
+      ...["svg", "pdf", "chemdraft"].map((format) => ({ name: "render_document",
+        args: { documentJson: serializeDocument(createEmptyDocument()), format } }))
+    ];
+    for (const { name, args } of cases) {
+      const error = await client.callTool({ name, arguments: { ...args, style: "document", dpi: 300 } });
+      expect(error.isError, name).toBe(true);
+      expect(textBlocks(error.content).join("\n"), name).toMatch(/--dpi requires PNG output/);
+    }
+  });
   it("renders document style at its natural point size and surfaces conflicts", async () => {
     const client = await connect();
     const result = await client.callTool({ name: "render_structure", arguments: {

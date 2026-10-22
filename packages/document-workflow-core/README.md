@@ -15,7 +15,7 @@ desktop importers did not change.
 | File | Holds |
 |---|---|
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
-| `documentStyle.ts` | Apply layout-engine's physical document preset and uniform target bond length to native molecules and text |
+| `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, preserving colours, appearance toggles and all per-atom/per-bond style maps; apply only fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
@@ -59,3 +59,11 @@ desktop importers did not change.
 `src/boundary.test.ts` fails if any file here imports from `apps/`, React, Tauri, or the plugin and
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server
 imports from `apps/` again.
+
+`applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
+(objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
+bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming
+that value, preserving relative geometry rather than normalizing molecules separately. Later pages
+remain unchanged. Arrows/plain graphic strokes use the fixed document line width (1.134 pt);
+text defaults to Arial, Helvetica, sans-serif at 10 pt. Explicit object/span font sizes scale with
+the page. Only whole-molecule size/geometry style keys are replaced; other styling is preserved.

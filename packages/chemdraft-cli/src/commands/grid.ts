@@ -10,7 +10,7 @@ import {
 } from "@chemdraft/document-workflow-core";
 
 import { integerOption, numericOption, parseOptions, stringOption } from "../args";
-import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, type FigureStyleOptions } from "../figureStyle";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
@@ -118,6 +118,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     throw new CliUsageError("--out must end in .png or .svg.");
   }
 
+  validateFigureDpi(figure, extension === ".png");
   const requestedLabels = stringOption(parsed, "--labels") ?? "letters";
   if (requestedLabels !== "none" && requestedLabels !== "letters" && requestedLabels !== "names") {
     throw new CliUsageError(`--labels must be none, letters, or names; received "${requestedLabels}".`);

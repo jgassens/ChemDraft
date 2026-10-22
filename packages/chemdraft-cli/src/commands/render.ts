@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { numericOption, parseOptions, stringOption } from "../args";
-import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, type FigureStyleOptions } from "../figureStyle";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   renderDefaults,
   renderSmilesToAssets,
@@ -137,6 +137,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     if (format && format !== "both" && inferred && format !== inferred) {
       throw new CliUsageError(`--format ${format} conflicts with the --out extension ${extension}.`);
     }
+    validateFigureDpi(figure, (format ?? inferred) !== "svg");
     return {
       mode: "single",
       ...figure,
@@ -152,6 +153,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 
   if (!outDir) throw new CliUsageError("Batch mode requires --out-dir.");
   if (out) throw new CliUsageError("--out is only valid with --smiles.");
+  validateFigureDpi(figure, (format ?? "png") !== "svg");
   return {
     mode: "batch",
     ...figure,

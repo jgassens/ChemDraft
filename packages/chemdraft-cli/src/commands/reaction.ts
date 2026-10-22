@@ -18,7 +18,7 @@ import {
 } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
-import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, type FigureStyleOptions } from "../figureStyle";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
@@ -847,6 +847,7 @@ export async function runReactionCommand(
       return cliExitCode.ok;
     }
     const jobs = parsed.mode === "single" ? [parsed.job!] : await readReactionJobs(parsed);
+    validateFigureDpi(parsed, jobs.some((job) => outputFormat(job.out) === "png"));
     let allSucceeded = true;
     for (const job of jobs) {
       if (!await renderReactionJob(job, io)) allSucceeded = false;

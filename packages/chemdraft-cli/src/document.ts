@@ -10,7 +10,7 @@ import {
   type MoleculeBond,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { documentStyleSvg, exportDocumentToSvg } from "@chemdraft/export-engine";
+import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import {
   atomLabelHaloWidthPx,
@@ -488,7 +488,7 @@ export async function currentMoleculeIdentityMolfile(
 /** Restyling scales coordinates, so refresh the verified stored CTAB as well. In particular,
  * unknown E/Z flags must survive a scale change rather than being mistaken for a graph edit.
  */
-export async function documentWithPhysicalStyle(document: ChemDraftDocument): Promise<ChemDraftDocument> {
+export async function documentWithPhysicalStyle(document: ChemDraftDocument, warnings: ExportWarning[] = []): Promise<ChemDraftDocument> {
   const sources = new Map<string, { canonical: string; semantics: SourceBondSemantics }>();
   for (const page of document.pages) for (const molecule of page.objects) {
     if (molecule.type !== "molecule") continue;
@@ -496,7 +496,9 @@ export async function documentWithPhysicalStyle(document: ChemDraftDocument): Pr
     sources.set(molecule.id, { canonical: await canonicalSmiles(verified.contents, "input"),
       semantics: sourceBondSemantics(verified.contents) });
   }
-  let styled = applyDocumentStyle(document);
+  const styleWarnings: { code: string; message: string }[] = [];
+  let styled = applyDocumentStyle(document, styleWarnings);
+  warnings.push(...styleWarnings.map((warning) => ({ ...warning, severity: "warning" as const })));
   for (const page of styled.pages) for (const molecule of page.objects) {
     if (molecule.type !== "molecule") continue;
     const source = sources.get(molecule.id)!;

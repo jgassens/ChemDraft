@@ -4,7 +4,7 @@ import { serializeDocument } from "@chemdraft/chem-core";
 import { documentInventory, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { ensureRdkit } from "@chemdraft/rdkit-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
-import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle } from "../figureStyle";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
 import { buildSmilesDocument, documentPhysicalSize, type BuiltSmilesDocument } from "../document";
 import { validateDocumentOutputPath } from "../documentInput";
 import { CliUsageError, cliExitCode, defaultCliIo, handleCliError, parseNamedSmilesJob,
@@ -71,6 +71,7 @@ export async function runDocumentCommand(argv: readonly string[], io: CliIo = de
     if (argv.includes("--help")) { io.stdout(documentHelp); return cliExitCode.ok; }
     const parsed = parseOptions(argv, documentOptions);
     const figure = parseFigureStyle(parsed);
+    validateFigureDpi(figure, false);
     for (const flag of ["--width", "--padding"]) {
       if (parsed.options[flag] !== undefined) throw new CliUsageError(`${flag} is not supported by document.`);
     }

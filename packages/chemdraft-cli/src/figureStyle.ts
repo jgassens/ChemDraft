@@ -11,7 +11,7 @@ export const figureStyleHelp = `  --style fit|document            Fit (default) 
   --dpi <n>                       Document PNG resolution, 72–1200 (default 300)
 Document style uses a fixed 4 pt margin; --width, --bond-length and --padding conflict.`;
 
-export function parseFigureStyle(parsed: ParsedOptions): Required<FigureStyleOptions> {
+export function parseFigureStyle(parsed: ParsedOptions): FigureStyleOptions & { style: FigureStyle } {
   const style = stringOption(parsed, "--style") ?? "fit";
   if (!FigureStyles.includes(style as FigureStyle)) throw new CliUsageError("--style must be fit or document.");
   if (style === "document") {
@@ -22,7 +22,11 @@ export function parseFigureStyle(parsed: ParsedOptions): Required<FigureStyleOpt
   const value = stringOption(parsed, "--dpi");
   const dpi = value === undefined ? DocumentStyleScale.defaultDpi : numericOption(value, "--dpi");
   if (dpi < DocumentStyleScale.minDpi || dpi > DocumentStyleScale.maxDpi) throw new CliUsageError("--dpi must be between 72 and 1200.");
-  return { style: style as FigureStyle, dpi };
+  return { style: style as FigureStyle, ...(value === undefined ? {} : { dpi }) };
+}
+
+export function validateFigureDpi(options: FigureStyleOptions, producesPng: boolean): void {
+  if (options.dpi !== undefined && !producesPng) throw new CliUsageError("--dpi requires PNG output; no raster is produced by this command/format.");
 }
 
 export function figureStyleResult(options: FigureStyleOptions, viewBox?: { width: number; height: number }, png = false) {
