@@ -8,8 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+## Accessible whole-molecule rotation (`feature/molecule-rotation`)
+
+Expose the existing rigid in-plane rotation handle whenever one whole native molecule is selected,
+without requiring Shift. Add the command `layout.rotateMolecule` and a molecule context-menu entry
+that open the existing numeric rotation editor. Keep fragment rotation and 3D tilt behind their
+existing gestures. Reuse the current preview, cancellation and single-step undo behavior; do not
+relayout atoms, regenerate a conformer or change chemical identity. Scope: desktop command/UI wiring,
+behavioral rotation tests, desktop README, standing manual checklist and build stamp. Keep in flight
+until Windows and macOS native interaction checks are complete.
 
 ---
 

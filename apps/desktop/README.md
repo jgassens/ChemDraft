@@ -66,3 +66,14 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Rotate a molecule on the page
+
+Select one whole molecule with the selection tool. Its curved-arrow rotation handle is visible
+without holding Shift. Drag it to rotate on the page, or double-click it to enter an angle in degrees.
+You can also right-click the selected molecule and choose **Rotate molecule…**. Enter keeps the
+rotation; Escape cancels the preview. Undo restores the previous orientation in one step.
+Negative angles and a full 360-degree turn are supported. This rigid rotation preserves bond lengths,
+bond angles and chemical properties. Shift during a drag constrains rotation to 15-degree steps.
+The separate 3D tilt handle still requires Shift. Select the whole molecule: fragment rotation can
+stretch bonds that connect the selected fragment to the rest of the structure.

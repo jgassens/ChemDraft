@@ -11,7 +11,7 @@ export interface ModifierHintContext {
   interaction: ModifierHintInteraction;
   hoverTarget?: "molecule" | "arrow" | "object" | "empty";
   hasSelection: boolean;
-  /** Group rotation is already visible; only its molecule tilt handles need Shift. */
+  /** Whole-molecule and group rotation stay visible; their tilt handles need Shift. */
   selectionHandles?: "rotate" | "tilt" | "none";
   inlineEditing?: boolean;
   dualShaftArrow?: boolean;
