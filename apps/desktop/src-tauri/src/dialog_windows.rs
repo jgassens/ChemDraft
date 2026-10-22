@@ -52,11 +52,18 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 480.0),
             min_size: (420.0, 380.0),
         }),
+        "toolInstall" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Tool installation",
+            size: (520.0, 460.0),
+            min_size: (420.0, 380.0),
+        }),
         _ => Err("Unknown dialog kind".into()),
     }
 }
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
-    if kind == "engineInstall" {
+    if kind == "engineInstall" || kind == "toolInstall" {
         snapshot_title.to_string()
     } else {
         format!("{spec_title} — {snapshot_title}")
@@ -216,6 +223,99 @@ impl EngineInstallSnapshot {
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum EngineInstallAction {
     Install {},
+    CancelInstall {},
+    Close {},
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolInstallSnapshot {
+    title: String,
+    tool_name: String,
+    publisher: String,
+    version: String,
+    download_host: String,
+    download_bytes: u64,
+    plugin_name: String,
+    plugin_id: String,
+    disclosure: String,
+    required_disk_bytes: u64,
+    free_disk_bytes: u64,
+    state: ToolInstallState,
+    buttons: Vec<String>,
+}
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+enum ToolInstallState {
+    NotInstalled {},
+    Consent {},
+    Installed {},
+    Installing {
+        phase: String,
+        #[serde(rename = "bytesDone")]
+        bytes_done: Option<u64>,
+        #[serde(rename = "bytesTotal")]
+        bytes_total: Option<u64>,
+    },
+    Failed {
+        message: String,
+    },
+    Broken {
+        detail: String,
+    },
+}
+impl ToolInstallSnapshot {
+    fn valid(&self) -> bool {
+        let fields = [
+            (&self.title, 256),
+            (&self.tool_name, 80),
+            (&self.publisher, 80),
+            (&self.version, 40),
+            (&self.download_host, 128),
+            (&self.plugin_name, 128),
+            (&self.plugin_id, 256),
+            (&self.disclosure, 1024),
+        ];
+        if fields
+            .iter()
+            .any(|(s, max)| s.is_empty() || !bounded_text(s, *max))
+            || self.download_bytes > MAX_SAFE_INTEGER
+            || self.required_disk_bytes > MAX_SAFE_INTEGER
+            || self.free_disk_bytes > MAX_SAFE_INTEGER
+        {
+            return false;
+        }
+        let valid_state = match &self.state {
+            ToolInstallState::NotInstalled {}
+            | ToolInstallState::Consent {}
+            | ToolInstallState::Installed {} => true,
+            ToolInstallState::Failed { message } => bounded_text(message, 1024),
+            ToolInstallState::Broken { detail } => bounded_text(detail, 1024),
+            ToolInstallState::Installing {
+                phase,
+                bytes_done,
+                bytes_total,
+            } => {
+                bounded_text(phase, 128)
+                    && bytes_done.is_none_or(|n| n <= MAX_SAFE_INTEGER)
+                    && bytes_total.is_none_or(|n| n <= MAX_SAFE_INTEGER)
+            }
+        };
+        let buttons: &[&str] = match self.state {
+            ToolInstallState::NotInstalled {} => &["install", "close"],
+            ToolInstallState::Consent {} => &["allow", "close"],
+            ToolInstallState::Installing { .. } => &["cancelInstall", "close"],
+            ToolInstallState::Installed {}
+            | ToolInstallState::Failed { .. }
+            | ToolInstallState::Broken { .. } => &["close"],
+        };
+        valid_state && self.buttons == buttons
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum ToolInstallAction {
+    Install {},
+    Allow {},
     CancelInstall {},
     Close {},
 }
@@ -513,7 +613,7 @@ impl Message {
             || !token(&self.request_id)
             || self.snapshot_revision == 0
             || self.snapshot_revision > 9_007_199_254_740_991
-            || (self.dialog_kind == "engineInstall"
+            || ((self.dialog_kind == "engineInstall" || self.dialog_kind == "toolInstall")
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 3400)
         {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
@@ -523,10 +623,19 @@ impl Message {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
             }
+            "snapshot" if self.dialog_kind == "toolInstall" => {
+                serde_json::from_value::<ToolInstallSnapshot>(self.data.clone())
+                    .is_ok_and(|s| s.valid())
+            }
             "action" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallAction>(self.data.clone()).is_ok()
             }
-            "result" if self.dialog_kind == "engineInstall" => {
+            "action" if self.dialog_kind == "toolInstall" => {
+                serde_json::from_value::<ToolInstallAction>(self.data.clone()).is_ok()
+            }
+            "result"
+                if self.dialog_kind == "engineInstall" || self.dialog_kind == "toolInstall" =>
+            {
                 serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
                     matches!(r.status.as_str(), "accepted" | "cancelled" | "error")
                         && optional_string_fields(&self.data, &["error"])
@@ -827,7 +936,7 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
             .insert(message.request_id.clone(), message.clone());
         return Ok(true);
     }
-    if message.dialog_kind == "engineInstall" {
+    if message.dialog_kind == "engineInstall" || message.dialog_kind == "toolInstall" {
         let action = message.data["action"].as_str().unwrap_or_default();
         if !session.snapshot.data["buttons"]
             .as_array()
@@ -935,6 +1044,7 @@ pub(crate) async fn dialog_open(
         session.owner_channel = Some(channel);
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
+                || session.snapshot.dialog_kind == "toolInstall"
                 || session.terminal_request.is_none()
                 || session
                     .terminal_request
@@ -1814,6 +1924,78 @@ mod tests {
             "requiredDiskBytes":300000000, "freeDiskBytes":1000000000,
             "state":{"status":"notInstalled"}, "buttons":["install","close"]});
         message
+    }
+    fn tool_install_snapshot() -> Message {
+        let mut message = snapshot();
+        message.dialog_kind = "toolInstall".into();
+        message.data = json!({"title":"Install Claude Code", "toolName":"Claude Code", "publisher":"Anthropic", "version":"2.0.0", "downloadHost":"downloads.example.test", "downloadBytes":125000000,
+            "pluginName":"ChemDraft Assistant", "pluginId":"org.chemdraft.assistant", "disclosure":"Use is subject to terms.", "requiredDiskBytes":500000000, "freeDiskBytes":2000000000,
+            "state":{"status":"notInstalled"}, "buttons":["install","close"]});
+        message
+    }
+    #[test]
+    fn tool_install_validates_spec_buttons_labels_and_capability_matcher() {
+        let message = tool_install_snapshot();
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("toolInstall").unwrap();
+        assert!(spec.resizable);
+        assert_eq!(spec.size, (520.0, 460.0));
+        assert_eq!(
+            native_window_title("toolInstall", spec.title, "Install Claude Code"),
+            "Install Claude Code"
+        );
+        for (state, buttons) in [
+            (json!({"status":"consent"}), json!(["allow", "close"])),
+            (
+                json!({"status":"installing","phase":"Downloading","bytesDone":1,"bytesTotal":2}),
+                json!(["cancelInstall", "close"]),
+            ),
+            (json!({"status":"installed"}), json!(["close"])),
+            (
+                json!({"status":"failed","message":"Checksum mismatch"}),
+                json!(["close"]),
+            ),
+            (
+                json!({"status":"broken","detail":"Missing receipt"}),
+                json!(["close"]),
+            ),
+        ] {
+            let mut valid = message.clone();
+            valid.data["state"] = state;
+            valid.data["buttons"] = buttons;
+            assert!(valid.validate().is_ok());
+        }
+        for action in ["install", "allow", "cancelInstall", "close"] {
+            let mut valid = message.clone();
+            valid.message_type = "action".into();
+            valid.data = json!({"action":action});
+            assert!(valid.validate().is_ok());
+        }
+        for (field, value) in [
+            ("publisher", json!("")),
+            ("version", json!("x".repeat(41))),
+            ("downloadBytes", json!(-1)),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data[field] = value;
+            assert!(invalid.validate().is_err());
+        }
+        let mut invalid = message.clone();
+        invalid.data["state"] = json!({"status":"consent","extra":true});
+        assert!(invalid.validate().is_err());
+        invalid = message.clone();
+        invalid.data["buttons"] = json!(["allow", "install", "close"]);
+        assert!(invalid.validate().is_err());
+        assert!(is_dialog_label("dialog-main-toolInstall-12"));
+        for label in [
+            "dialog-main-toolInstall-../main",
+            "dialog-main-toolInstall-",
+            "dialog-main-toolInstall-12-extra",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+        let capability = include_str!("../capabilities/dialog-host.json");
+        assert!(capability.contains("dialog-main-toolInstall-*"));
     }
     #[test]
     fn engine_install_registration_validation_ownership_and_limits() {
