@@ -27,10 +27,10 @@ pub struct ToolPin {
     pub entry: &'static str,
     pub binary: &'static str,
 }
+pub const PIN_PENDING: &str = "PIN_PENDING";
 pub const CLAUDE_VERSION: &str = "2.1.308";
 pub const CODEX_TAG: &str = "rust-v0.163.0";
 pub const CODEX_VERSION: &str = "0.163.0";
-pub const PIN_PENDING: &str = "PIN_PENDING";
 pub const PINS: [ToolPin; 6] = [
     ToolPin {
         tool: ToolId::Claude,

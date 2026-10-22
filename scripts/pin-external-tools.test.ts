@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { formatToolPin, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
@@ -48,6 +49,16 @@ describe("external tool pin script", () => {
     const current = 'pub const CLAUDE_VERSION: &str = "1";\npub const CODEX_TAG: &str = "rust-v1";\npub const CODEX_VERSION: &str = "1";\npub const PINS: [ToolPin; 6] = [\n];';
     expect(pinDiff(current, "new")).toBe("Published external-tool pins differ from pins.rs.");
     expect(pinDiff(`prefix\n${current}`, current)).toBe("");
+  });
+
+  it("keeps the compared pins.rs block limited to pin declarations and ToolPin rows", () => {
+    const pins = readFileSync(new URL("../apps/desktop/src-tauri/src/external_tools/pins.rs", import.meta.url), "utf8");
+    const block = pins.match(/pub const CLAUDE_VERSION:[\s\S]*?^\];$/m)?.[0];
+    expect(block).toBeDefined();
+
+    const allowedLine = /^(?:pub const (?:CLAUDE_VERSION|CODEX_TAG|CODEX_VERSION): &str = ".*";|pub const PINS: \[ToolPin; 6\] = \[|ToolPin \{|tool: ToolId::(?:Claude|Codex),|platform: ToolPlatform::(?:DarwinArm64|DarwinX64|WindowsX64),|version: (?:CLAUDE_VERSION|CODEX_VERSION),|url: ".*",|size: \d+,|sha256: ".*",|archive: ArchiveKind::(?:Raw|TarGz|Zip|ZipTree),|entry: ".*",|binary: ".*",|\},|\];)$/;
+    const unexpectedLines = block!.split("\n").filter((line) => !allowedLine.test(line.trim()));
+    expect(unexpectedLines).toEqual([]);
   });
 });
 
