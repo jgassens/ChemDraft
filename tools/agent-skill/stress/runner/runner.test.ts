@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -24,6 +24,20 @@ async function fixtureCases() {
 }
 
 async function outDirectory() { const value = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-'))); temporary.push(value); return value; }
+
+async function fakeCheckout(withOpsin: boolean) {
+  const container = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-checkout-')));
+  temporary.push(container);
+  const directory = path.join(container, 'repo');
+  await mkdir(directory);
+  await cp(path.join(root, 'skills'), path.join(directory, 'skills'), { recursive: true });
+  if (withOpsin) {
+    const java = path.join(directory, 'apps/desktop/src-tauri/resources/opsin/jre/bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    await mkdir(path.dirname(java), { recursive: true });
+    await writeFile(java, 'fake java runtime');
+  }
+  return directory;
+}
 
 async function invoke(args: string[], env: Record<string, string | undefined> = {}, skipPreflight = true) {
   return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
@@ -93,12 +107,26 @@ describe('stress runner', () => {
     expect(result.code).toBe(2); expect(result.stderr).toContain('--out must be outside the repository');
   });
 
+  it('refuses an output directory in the checkout parent, including a sibling worktree', async () => {
+    const cases = await fixtureCases();
+    const result = await invoke(['--cases', cases, '--out', path.join(path.dirname(root), 'sibling-results'), '--checkout', root]);
+    expect(result.code).toBe(2); expect(result.stderr).toContain('--out must be outside the repository and its parent directory');
+  });
+
   it('requires the OPSIN runtime before starting either agent', async () => {
     const cases = await fixtureCases(); const out = await outDirectory();
-    const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], {}, false);
+    const checkout = await fakeCheckout(false);
+    const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout], {}, false);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain('OPSIN runtime is missing:');
     expect(existsSync(path.join(out, 'S01/meta.json'))).toBe(false);
+  });
+
+  it('accepts a fake checkout with the OPSIN runtime without consulting the real checkout', async () => {
+    const cases = await fixtureCases(); const out = await outDirectory(); const checkout = await fakeCheckout(true);
+    const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout], {}, false);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).status).toBe('complete');
   });
 
   async function codexFixture() {
@@ -166,6 +194,30 @@ describe('stress runner', () => {
     expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8'))).toMatchObject({ agent: 'codex', codexVersion: 'fake-codex 0.162.1', status: 'complete', model: 'fake-default-model', numTurns: 1,
       usage: { input_tokens: 20, cached_input_tokens: 10, output_tokens: 5 }, mcpServers: [{ name: 'chemdraft', status: 'connected' }], isolation: { verified: true, configuredMcpServers: ['chemdraft'] } });
     expect(JSON.parse(await readFile(path.join(out, 'run.json'), 'utf8')).agent).toBe('codex');
+  });
+
+  it('collects externally written outputs and records CLI checkout access', async () => {
+    const { out, args, env } = await codexFixture();
+    const external = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-external-')));
+    temporary.push(external);
+    const artifact = path.join(external, 'artifact.svg');
+    await writeFile(artifact, '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    await invoke(args, { ...env, FAKE_CODEX_OUTPUT_FILE: artifact, FAKE_CODEX_CHECKOUT: root });
+    const caseDir = path.join(out, 'S01');
+    const outputs = JSON.parse(await readFile(path.join(caseDir, 'outputs.json'), 'utf8'));
+    expect(outputs).toEqual([expect.objectContaining({ originalPath: artifact, copiedName: '001-artifact.svg', size: 41 })]);
+    expect(await readFile(path.join(caseDir, 'outputs/001-artifact.svg'), 'utf8')).toContain('<svg');
+    expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8')).repoAccess).toEqual([
+      expect.objectContaining({ tool: 'Bash', classification: 'cli' }),
+    ]);
+  });
+
+  it('records checkout source reads separately from CLI calls', async () => {
+    const { out, args, env } = await codexFixture();
+    await invoke(args, { ...env, FAKE_CODEX_SOURCE_READ: '1', FAKE_CODEX_CHECKOUT: root });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).repoAccess).toEqual([
+      expect.objectContaining({ tool: 'Bash', classification: 'source-read' }),
+    ]);
   });
 
   it('writes an explicit Codex model and records the model from session events when stdout omits it', async () => {

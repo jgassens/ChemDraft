@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { cp, lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -59,6 +60,141 @@ export function parseArgs(argv) {
 function isInside(repo, out) {
   const relative = path.relative(repo, out);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function isInsideOrParent(checkout, output) {
+  return isInside(checkout, output) || isInside(path.dirname(checkout), output);
+}
+
+const outputExtension = /\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json)$/i;
+
+function shellCommand(commandText) {
+  // Codex reports shell calls as /bin/zsh -lc '<command>'.  Keep the
+  // fallback unchanged for other shells and for malformed reports.
+  const match = commandText.match(/^\s*\/bin\/zsh\s+-lc\s+(['"])([\s\S]*)\1\s*$/);
+  return match ? match[2] : commandText;
+}
+
+function shellWords(commandText) {
+  const words = [];
+  const expression = /(?:'([^']*)'|"((?:\\.|[^"\\])*)"|([^\s'"\\><]+)|([><]{1,2}))/g;
+  for (const match of commandText.matchAll(expression)) {
+    if (match[4]) words.push(match[4]);
+    else words.push((match[1] ?? match[2] ?? match[3] ?? '').replace(/\\(.)/g, '$1'));
+  }
+  return words;
+}
+
+function commandOutputTargets(commandText) {
+  const words = shellWords(shellCommand(commandText));
+  const targets = [];
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    if (word === '--out' || word === '--out-dir') {
+      if (words[index + 1]) targets.push(words[++index]);
+    } else if (word.startsWith('--out=') || word.startsWith('--out-dir=')) {
+      targets.push(word.slice(word.indexOf('=') + 1));
+    } else if (/^\d*(?:>|>>)$/.test(word) && words[index + 1]) {
+      targets.push(words[++index]);
+    }
+  }
+  return targets;
+}
+
+function finalOutputTargets(final, work) {
+  const targets = new Set();
+  for (const match of final.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
+    const link = match[1].replace(/^<|>$/g, '');
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(link)) targets.add(path.resolve(work, link));
+  }
+  for (const match of final.matchAll(/(?:^|[\s("'])((?:\/[\w. -]+)+\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json))(?=$|[\s)'".,])/gi)) {
+    targets.add(match[1]);
+  }
+  return [...targets];
+}
+
+async function filesAtOutputTarget(target) {
+  let info;
+  try { info = await lstat(target); } catch { return []; }
+  if (info.isFile()) return outputExtension.test(target) ? [target] : [];
+  if (!info.isDirectory() || info.isSymbolicLink()) return [];
+  const files = [];
+  let oversized = false;
+  async function visit(directory) {
+    if (oversized) return;
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const current = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) await visit(current);
+      else if (entry.isFile()) {
+        files.push(current);
+        if (files.length > 50) { oversized = true; return; }
+      }
+      if (oversized) return;
+    }
+  }
+  await visit(target);
+  return oversized ? [] : files.filter((file) => outputExtension.test(file));
+}
+
+async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
+  const targets = new Set(finalOutputTargets(final, work));
+  for (const call of toolCalls) if (call.name === 'Bash' && typeof call.input?.command === 'string') {
+    for (const target of commandOutputTargets(call.input.command)) {
+      targets.add(path.isAbsolute(target) ? target : path.resolve(work, target));
+    }
+  }
+  const outputDir = path.join(caseDir, 'outputs');
+  await mkdir(outputDir, { recursive: true });
+  const manifest = [];
+  const copied = new Set();
+  for (const target of targets) {
+    for (const source of await filesAtOutputTarget(target)) {
+      const resolved = await realpath(source).catch(() => null);
+      if (!resolved || isInside(codexHome, resolved) || copied.has(resolved)) continue;
+      copied.add(resolved);
+      const copiedName = `${String(manifest.length + 1).padStart(3, '0')}-${path.basename(resolved)}`;
+      const destination = path.join(outputDir, copiedName);
+      await copyFile(resolved, destination);
+      const data = await readFile(resolved);
+      manifest.push({ originalPath: resolved, copiedName, size: (await stat(resolved)).size,
+        sha256: createHash('sha256').update(data).digest('hex') });
+    }
+  }
+  await writeFile(path.join(caseDir, 'outputs.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
+}
+
+function isCliCommand(commandText, checkout) {
+  const words = shellWords(shellCommand(commandText));
+  const pnpm = words.some((word) => path.basename(word) === 'pnpm' || word === 'pnpm');
+  const directory = words.findIndex((word) => word === '--dir');
+  return pnpm && directory >= 0 && path.resolve(words[directory + 1] ?? '') === checkout && words.slice(directory + 2).includes('chemdraft');
+}
+
+function inputStrings(value, strings = []) {
+  if (typeof value === 'string') strings.push(value);
+  else if (Array.isArray(value)) for (const child of value) inputStrings(child, strings);
+  else if (value && typeof value === 'object') for (const child of Object.values(value)) inputStrings(child, strings);
+  return strings;
+}
+
+function repoAccess(toolCalls, checkout) {
+  const accesses = [];
+  for (const call of toolCalls) {
+    if (call.name === 'Bash' && typeof call.input?.command === 'string') {
+      if (call.input.command.includes(checkout)) accesses.push({ tool: 'Bash', command: call.input.command,
+        classification: isCliCommand(call.input.command, checkout) ? 'cli' : 'source-read' });
+    } else if (['Read', 'Grep', 'Glob'].includes(call.name)) {
+      for (const value of inputStrings(call.input)) if (value.includes(checkout)) {
+        accesses.push({ tool: call.name, path: value, classification: 'source-read' });
+        break;
+      }
+    }
+  }
+  return accesses;
 }
 
 async function command(command, args, options = {}) {
@@ -161,7 +297,7 @@ async function markHalted(caseItem, options, shared) {
   const now = new Date().toISOString();
   const meta = { id: caseItem.id, status: 'halted-usage', exitCode: null, startedAt: now, endedAt: now, durationMs: 0,
     model: options.model, ...versionMeta(options, shared), skillSha256: null, checkoutHead: shared.checkoutHead,
-    numTurns: 0, usage: null, total_cost_usd: null, mcpServers: [], tools: [], reason: 'usage' };
+    numTurns: 0, usage: null, total_cost_usd: null, mcpServers: [], tools: [], repoAccess: [], reason: 'usage' };
   await writeMeta(caseDir, meta);
   return meta;
 }
@@ -224,6 +360,7 @@ async function runOne(caseItem, options, shared, stderr) {
   await writeFile(path.join(caseDir, 'tool-calls.json'), `${JSON.stringify(parsed.toolCalls, null, 2)}\n`);
   await saveToolAssets(parsed.assetEvents ?? events, path.join(caseDir, 'images'));
   await writeFile(path.join(caseDir, 'files.json'), `${JSON.stringify(await listFiles(work), null, 2)}\n`);
+  await collectOutputs(caseDir, work, codexHome, parsed.final, parsed.toolCalls);
   let status = executed.timedOut ? 'timeout' : executed.exitCode === 0 && !parsed.failed ? 'complete' : 'error';
   let reason = executed.timedOut ? 'timeout' : status === 'complete' ? undefined : executed.stderr || `${options.agent} exited unsuccessfully`;
   if (isolationLeak) { status = 'error'; reason = 'isolation-leak'; }
@@ -232,7 +369,8 @@ async function runOne(caseItem, options, shared, stderr) {
     model: options.agent === 'codex' ? parsed.model : options.model, ...versionMeta(options, shared), skillSha256: await hashTree(copied), checkoutHead: shared.checkoutHead,
     numTurns: parsed.numTurns, usage: parsed.usage ?? parsed.result?.usage ?? null, total_cost_usd: parsed.result?.total_cost_usd ?? null,
     mcpServers: parsed.mcpServers ?? parsed.init?.mcp_servers ?? parsed.init?.mcpServers ?? [], tools: parsed.tools ?? parsed.init?.tools ?? [],
-    isolation: { verified: parsed.isolated, ...(options.agent === 'codex' ? { configuredMcpServers: ['chemdraft'], skillPath: copied } : {}) }, ...(reason ? { reason } : {}) };
+    isolation: { verified: parsed.isolated, ...(options.agent === 'codex' ? { configuredMcpServers: ['chemdraft'], skillPath: copied } : {}) },
+    repoAccess: repoAccess(parsed.toolCalls, options.checkout), ...(reason ? { reason } : {}) };
   await writeMeta(caseDir, meta);
   return { meta, stderr: executed.stderr };
 }
@@ -241,7 +379,7 @@ export async function run(options, io = {}) {
   const stderr = io.stderr ?? ((line) => process.stderr.write(`${line}\n`));
   options.checkout = await realpath(path.resolve(options.checkout));
   options.out = path.resolve(options.out);
-  if (isInside(options.checkout, options.out)) throw new Error('--out must be outside the repository');
+  if (isInsideOrParent(options.checkout, options.out)) throw new Error('--out must be outside the repository and its parent directory');
   const casesData = JSON.parse(await readFile(options.cases, 'utf8'));
   let cases = casesData.cases.filter((item) => options.split === 'all' || item.split === options.split);
   if (options.ids) {
