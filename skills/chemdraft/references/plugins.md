@@ -11,7 +11,7 @@ user action from configuring a headless tool.
 |---|---|
 | NMR Shift Predictor (`org.chemdraft.nmr.predictor`) | Desktop plugin; `nmr` / `predict_nmr` loads a separate owner-trusted source checkout |
 | Name to Structure (OPSIN) (`org.chemdraft.opsin.nameToStructure`) | Desktop insertion plugin; `name` / `name_to_structure` independently uses the bundled OPSIN runtime, without loading this plugin |
-| Orthonym (`org.chemdraft.naming.orthonym`, v0.1.0) | Desktop-only structure-to-name plugin from `github.com/jgassens/ChemDraft-Orthonym-Plugin`; no CLI/MCP structure-to-name capability |
+| Orthonym | Desktop-only structure-to-name plugin from `github.com/jgassens/ChemDraft-Orthonym-Plugin`; no CLI/MCP structure-to-name capability |
 | Structure from Image (MolScribe) (`org.chemdraft.ocsr.molscribe`) | Experimental desktop-only recognition, through proposal review; no CLI/MCP image-recognition tool |
 
 MolScribe runs locally, with a host-managed engine installed only on

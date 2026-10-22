@@ -190,9 +190,11 @@ physical size, not a fitted width. Check contrast against the slide
 background. Keep the SMILES/options.
 Known limitation: `render` still paints an opaque white patch behind each
 atom label (the O and OH here) on a transparent background. On a coloured
-slide, build the figure with `document`, set
+slide, build the figure with `document --style document`, set
 `molecule.style.atomLabelBackgroundColor` to `"transparent"`, and render it
-with `render-document --background transparent` ([art](art.md)).
+with `render-document --style document --background transparent`
+([art](art.md)). This document-style path keeps the figure's colours and the
+transparent label background; it changes only its fixed physical sizes.
 
 ## 10. Human hand-edit loop via CDXML
 

@@ -397,6 +397,14 @@ describe("ChemDraft agent skill drift guard", () => {
     expect(unread).toEqual([]);
   });
 
+  it("keeps the skill description discoverable for representative requests", () => {
+    const description = frontmatter(entrypoint).description;
+    expect(description.length).toBeLessThan(1024);
+    for (const phrase of ["R/S", "NMR", "pKa", "CDXML", "hand-sketched", "grid", "name"]) {
+      expect(description).toContain(phrase);
+    }
+  });
+
   it("keeps fixed-scale document figures aligned with CLI, MCP, and README", () => {
     const documentCommands = ["render", "grid", "reaction", "render-document", "document"];
     const cliReadme = read(join(root, "packages", "chemdraft-cli", "README.md"));
@@ -420,7 +428,7 @@ describe("ChemDraft agent skill drift guard", () => {
     const plugins = read(join(skillRoot, "references", "plugins.md"));
     for (const text of [entrypoint, plugins]) {
       expect(text).toContain("Orthonym");
-      expect(text).toContain("org.chemdraft.naming.orthonym");
+      expect(text).toContain("github.com/jgassens/ChemDraft-Orthonym-Plugin");
       expect(text).toContain("CLI and MCP cannot name a structure");
       expect(text).toMatch(/Never invent or recall a structure name|invent or recall a structure-to-name result/);
     }

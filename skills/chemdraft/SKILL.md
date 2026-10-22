@@ -1,6 +1,6 @@
 ---
 name: chemdraft
-description: Use ChemDraft to draw molecules, make fixed-scale document-style figures for Word, handouts, exams, reports and slides, name a drawn structure through the desktop plugin, convert names to structures, analyze chemistry, render grids and reactions, export files, and use plugins. Never draw molecules, invent structure names, or quote chemistry numbers from memory.
+description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (coloured or shaded rings, ring letters, highlighted substructures, colour-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Make same-scale document-style figures inserted at natural size; name a structure through the app plugin, not headless. Never draw molecules by hand or quote chemistry numbers from memory.
 ---
 
 # ChemDraft
@@ -178,8 +178,7 @@ must say so. E/Z geometry is also checked through `stereo`.
 ## Structure to name
 
 The desktop app can name a drawn structure only through the Orthonym plugin
-(`org.chemdraft.naming.orthonym`, v0.1.0, from
-`github.com/jgassens/ChemDraft-Orthonym-Plugin`). Once installed, it adds
+from `github.com/jgassens/ChemDraft-Orthonym-Plugin`. Once installed, it adds
 Structure > Convert Structure to Name, Analyze-menu entries, and Insert Name
 as Text. Its local naming engine installs only when the user asks. Before a
 name is shown, OPSIN parses it back and RDKit compares its canonical isomeric
