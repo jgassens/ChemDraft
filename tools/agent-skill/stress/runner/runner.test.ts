@@ -25,9 +25,9 @@ async function fixtureCases() {
 
 async function outDirectory() { const value = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-'))); temporary.push(value); return value; }
 
-async function invoke(args: string[], env: Record<string, string | undefined> = {}) {
+async function invoke(args: string[], env: Record<string, string | undefined> = {}, skipPreflight = true) {
   return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [runner, ...args], { cwd: root, env: { ...process.env, CHEMDRAFT_STRESS_CLAUDE_BIN: fakeClaude, CHEMDRAFT_STRESS_CODEX_BIN: fakeCodex, CHEMDRAFT_STRESS_AGENTCTL_BIN: fakeAgentctl, ...env } });
+    const child = spawn(process.execPath, [runner, ...(skipPreflight ? ['--skip-preflight'] : []), ...args], { cwd: root, env: { ...process.env, CHEMDRAFT_STRESS_CLAUDE_BIN: fakeClaude, CHEMDRAFT_STRESS_CODEX_BIN: fakeCodex, CHEMDRAFT_STRESS_AGENTCTL_BIN: fakeAgentctl, ...env } });
     let stdout = '', stderr = '';
     child.stdout.on('data', (data) => { stdout += data; });
     child.stderr.on('data', (data) => { stderr += data; });
@@ -93,6 +93,14 @@ describe('stress runner', () => {
     expect(result.code).toBe(2); expect(result.stderr).toContain('--out must be outside the repository');
   });
 
+  it('requires the OPSIN runtime before starting either agent', async () => {
+    const cases = await fixtureCases(); const out = await outDirectory();
+    const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], {}, false);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('OPSIN runtime is missing:');
+    expect(existsSync(path.join(out, 'S01/meta.json'))).toBe(false);
+  });
+
   async function codexFixture() {
     const cases = await fixtureCases(); const out = await outDirectory();
     const sourceHome = path.join(out, 'source-home');
@@ -132,6 +140,8 @@ describe('stress runner', () => {
     expect(config).toContain(`args = ${JSON.stringify(['-s', '--dir', root, 'chemdraft-mcp'])}`);
     expect(config).toContain('command = "pnpm"');
     expect(config).toContain('approval_policy = "never"');
+    expect(config).toContain('default_tools_approval_mode = "approve"');
+    expect(config).toContain('[features]\nplugins = false');
     expect(config).toContain('sandbox_mode = "workspace-write"');
     expect(config).toContain('network_access = true');
     expect(config).toContain(`writable_roots = [${JSON.stringify(path.join(caseDir, 'work'))}]`);
@@ -151,6 +161,7 @@ describe('stress runner', () => {
     expect((await readFile(path.join(caseDir, 'images/001-mcp__chemdraft__render_structure.png'))).subarray(1, 4).toString()).toBe('PNG');
     expect(await readFile(path.join(caseDir, 'final.md'), 'utf8')).toBe('Finished drawing.');
     expect(await readFile(path.join(caseDir, 'transcript.jsonl'), 'utf8')).toContain('iVBORw0KGgo');
+    expect(await readFile(path.join(caseDir, 'stderr.log'), 'utf8')).toBe('');
     expect(JSON.parse(await readFile(path.join(caseDir, 'files.json'), 'utf8'))).toEqual([expect.objectContaining({ path: 'drawing.txt', size: 16 })]);
     expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8'))).toMatchObject({ agent: 'codex', codexVersion: 'fake-codex 0.162.1', status: 'complete', model: 'fake-default-model', numTurns: 1,
       usage: { input_tokens: 20, cached_input_tokens: 10, output_tokens: 5 }, mcpServers: [{ name: 'chemdraft', status: 'connected' }], isolation: { verified: true, configuredMcpServers: ['chemdraft'] } });
@@ -192,15 +203,30 @@ describe('stress runner', () => {
     expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(false);
   });
 
-  it.each(['FAKE_CODEX_EXTRA_MCP', 'FAKE_CODEX_FAILED_MCP'])('fails Codex isolation for %s', async (flag) => {
+  it('fails Codex isolation when events name another MCP server', async () => {
     const { out, args, env } = await codexFixture();
-    await invoke(args, { ...env, [flag]: '1' });
-    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation', isolation: { verified: false } });
+    await invoke(args, { ...env, FAKE_CODEX_EXTRA_MCP: '1' });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak', isolation: { verified: false } });
   });
 
-  it('accepts a Codex MCP startup event without a tool call', async () => {
+  it('fails Codex isolation when a plugins folder appears or stderr names another MCP server', async () => {
+    for (const envFlag of [{ FAKE_CODEX_PLUGIN_LEAK: '1' }, { FAKE_CODEX_STDERR_MCP_LEAK: '1' }]) {
+      const { out, args, env } = await codexFixture();
+      await invoke(args, { ...env, ...envFlag });
+      expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak', isolation: { verified: false } });
+      expect(await readFile(path.join(out, 'S01/stderr.log'), 'utf8')).toBe(envFlag.FAKE_CODEX_STDERR_MCP_LEAK ? 'rmcp auth error for mcp.box.com\n' : '');
+    }
+  });
+
+  it('accepts a Codex run with zero ChemDraft calls when config and leak checks pass', async () => {
     const { out, args, env } = await codexFixture();
     await invoke(args, { ...env, FAKE_CODEX_STARTUP_ONLY: '1' });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'complete', isolation: { verified: true } });
+  });
+
+  it('keeps a failed ChemDraft MCP call isolated because it still names our server', async () => {
+    const { out, args, env } = await codexFixture();
+    await invoke(args, { ...env, FAKE_CODEX_FAILED_MCP: '1' });
     expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'complete', isolation: { verified: true } });
   });
 

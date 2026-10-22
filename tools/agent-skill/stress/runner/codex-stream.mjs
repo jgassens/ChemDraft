@@ -52,8 +52,10 @@ export function inspectCodexStream(events) {
       if (item.arguments !== undefined || item.input !== undefined) call.input = jsonValue(item.arguments ?? item.input);
       if (item.result != null) call.result = mcpResult(item.result);
       else if (item.error) call.result = { isError: true, content: [{ type: 'text', text: typeof item.error === 'string' ? item.error : JSON.stringify(item.error) }] };
-      if (server === 'chemdraft' && event.type === 'item.completed' && item.status === 'completed' &&
-        !item.error && item.result != null && !call.result?.isError && !call.result?.is_error) connected = true;
+      // A completed or failed call both prove Codex addressed this named MCP server.
+      // Do not turn a tool failure into an isolation failure: the case result reports
+      // that failure separately.
+      if (server === 'chemdraft' && event.type === 'item.completed') connected = true;
     } else {
       call.name = 'Bash';
       if (item.command !== undefined) call.input = { command: item.command };
@@ -67,7 +69,9 @@ export function inspectCodexStream(events) {
     { content: [{ type: 'tool_result', tool_use_id: String(index), content: call.result?.content ?? [] }] },
   ]);
   return { toolCalls: withoutBase64(rawCalls), assetEvents, final, model, numTurns, usage, failed,
-    isolated: connected && servers.size === 1 && servers.has('chemdraft'),
+    // Runner-level config and filesystem checks complete Codex isolation. Keep this
+    // event-only signal for callers that need the observed server names.
+    isolated: servers.size === 0 || (servers.size === 1 && servers.has('chemdraft')),
     mcpServers: [...servers].map((name) => ({ name, status: name === 'chemdraft' && connected ? 'connected' : 'unknown' })),
     tools: [...new Set(rawCalls.map((call) => call.name))] };
 }

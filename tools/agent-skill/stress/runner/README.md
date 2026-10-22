@@ -10,7 +10,10 @@ node tools/agent-skill/stress/runner/run.mjs --cases /path/to/cases.json --out /
 `--ids S01,S02`, `--split dev|heldout|all`, `--timeout-min`, `--concurrency`,
 `--checkout`, `--force`, and `--dry-run`. Claude defaults to
 `claude-sonnet-5-5`; Codex keeps its own default unless `--model` is supplied.
-`--max-turns` applies only to Claude; Codex is bounded by the case timeout.
+`--max-turns` applies only to Claude; Codex is bounded by the case timeout. The
+runner refuses to start either agent unless the checkout has the built OPSIN Java
+runtime at `apps/desktop/src-tauri/resources/opsin/jre/bin/java` (`java.exe` on
+Windows). `--skip-preflight` exists only for fake-runner tests.
 Completed cases resume only for the same agent; use separate output directories
 when comparing agents or models, or `--force` to replace an attempt.
 
@@ -42,9 +45,11 @@ copied from `CHEMDRAFT_STRESS_CODEX_AUTH_HOME` (default `~/.codex-openai`);
 missing auth fails clearly. Source settings, plugins, and instructions are not
 copied. Treat the output directory as private: it contains that copied auth.
 The generated `config.toml` contains only the optional model, unattended
-approval/workspace/network settings, and `[mcp_servers.chemdraft]` launching
-`pnpm -s --dir <checkout> chemdraft-mcp`. Shell commands can write the working
-directory and access the network for lookups such as PubChem.
+approval/workspace/network settings, `[features] plugins = false`, and
+`[mcp_servers.chemdraft]` launching `pnpm -s --dir <checkout> chemdraft-mcp`.
+That server has `default_tools_approval_mode = "approve"`, so tool calls can run
+under Codex's otherwise `never` approval policy. Shell commands can write the
+working directory and access the network for lookups such as PubChem.
 
 The ChemDraft skill is copied, with symlinks dereferenced, to
 `$CODEX_HOME/skills/chemdraft`. This uses Codex's user skill location; the
@@ -53,11 +58,15 @@ installed binary's embedded skill documentation references
 The copied home and initial work directory are checked for `AGENTS.md`.
 Codex may subsequently create its own session/cache files in the isolated home.
 
-Isolation succeeds only if events show a connected/ready ChemDraft MCP server
-or a successful ChemDraft MCP call, no observed server has another name, and
-the generated config is unchanged. Metadata records the check and the sole
-configured server. No real Codex or Claude inference was run to verify this
-runner; tests use fixture executables.
+Isolation succeeds when the generated config remains unchanged (and therefore
+contains only ChemDraft with plugins disabled), no `plugins/` folder appears in
+`CODEX_HOME`, and neither events nor saved `stderr.log` names another MCP
+server. A completed or failed ChemDraft MCP call is positive evidence that the
+server is ours; a run with no ChemDraft calls is still isolated and complete if
+those configuration and leak checks pass. A leak makes the case `error` with
+reason `isolation-leak`. Metadata records the check and the sole configured
+server. No real Codex or Claude inference was run to verify this runner; tests
+use fixture executables.
 
 ## Events and outputs
 
