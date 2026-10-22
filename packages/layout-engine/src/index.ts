@@ -1,3 +1,5 @@
+export { DocumentStylePreset, DocumentStyleScale, DocumentTextStyle, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
+
 import {
   DefaultNativeDrawingStyle,
   drawnLabelBondSide,
@@ -68,6 +70,7 @@ import { formatNumber } from "./formatNumber";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
+import { DocumentStylePreset } from "./documentStyle";
 
 export {
   ArrangementLayouts, ArrangementGridAlignments, planObjectArrangement,
@@ -6153,6 +6156,8 @@ function nativeDashedBondDashes(
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
+  // The physical preset specifies its broad wedge end explicitly, like its bold bonds.
+  if (drawingStyle.stylePresetId === DocumentStylePreset.id) return drawingStyle.bondBoldWidthPx;
   // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
   // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
   // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining

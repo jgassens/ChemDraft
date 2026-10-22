@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { numericOption, parseOptions, stringOption } from "../args";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, type FigureStyleOptions } from "../figureStyle";
 import {
   renderDefaults,
   renderSmilesToAssets,
@@ -29,7 +30,7 @@ export interface RenderJob {
   smiles: string;
 }
 
-interface ParsedArguments {
+interface ParsedArguments extends FigureStyleOptions {
   mode: "single" | "batch";
   jobsFile?: string;
   out?: string;
@@ -53,6 +54,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 Names are trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options:
+${figureStyleHelp}
   --width <px>                    PNG width, 16–4000 (default: 600)
   --background white|transparent SVG/PNG background (default: white)
   --bond-length <px>              Depicted bond length (default: ${renderDefaults.bondLength}, the desktop paste value)
@@ -67,6 +69,7 @@ Output:
   Exit 0 when every structure succeeds, 1 when any render fails, and 2 for bad arguments.`;
 
 const renderOptions = {
+  ...figureStyleOptions,
   "--smiles": { kind: "value" },
   "--batch": { kind: "value" },
   "--out": { kind: "value" },
@@ -82,6 +85,7 @@ const renderOptions = {
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, renderOptions);
+  const figure = parseFigureStyle(parsed);
   if (parsed.positionals.length > 0) {
     throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
   }
@@ -135,6 +139,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     }
     return {
       mode: "single",
+      ...figure,
       smiles,
       out,
       format: format ?? inferred!,
@@ -149,6 +154,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   if (out) throw new CliUsageError("--out is only valid with --smiles.");
   return {
     mode: "batch",
+    ...figure,
     jobsFile,
     outDir,
     format: format ?? "png",
@@ -196,6 +202,8 @@ async function renderJob(
   try {
     const rendered = await renderSmilesToAssets(job.smiles, {
       name: job.name,
+      style: args.style,
+      dpi: args.dpi,
       width: args.width,
       background: args.background,
       bondLength: args.bondLength,
@@ -210,6 +218,7 @@ async function renderJob(
       name: job.name,
       smiles: job.smiles,
       ok: true,
+      ...figureStyleResult(args, rendered.viewBox, args.format !== "svg"),
       files,
       engine: rendered.engine,
       stereoCenters: rendered.stereoCenters,
@@ -224,7 +233,7 @@ async function renderJob(
     const namedMessage = message.includes(job.smiles)
       ? message
       : `Unable to render SMILES "${job.smiles}": ${message}`;
-    writeJsonLine(io, { name: job.name, smiles: job.smiles, ok: false, error: namedMessage });
+    writeJsonLine(io, { name: job.name, smiles: job.smiles, ok: false, style: args.style ?? "fit", error: namedMessage });
     writeProgress(io, `Failed ${job.name}: ${namedMessage}`);
     return false;
   }

@@ -28,6 +28,8 @@ import { runRenderCommand } from "../../chemdraft-cli/src/commands/render";
 import { runStereoCommand } from "../../chemdraft-cli/src/commands/stereo";
 import type { CliExitCode, CliIo, JsonLineResult } from "../../chemdraft-cli/src/output";
 
+import { FigureStyles } from "../../chemdraft-cli/src/figureStyle";
+
 export type CliCommand = (argv: readonly string[], io: CliIo) => Promise<CliExitCode>;
 type OutputFileKind = "image" | "text" | "resource";
 type OutputFile = { path: string; kind: OutputFileKind };
@@ -356,15 +358,17 @@ export function createChemDraftMcpServer(
   server.registerTool("build_document", {
     description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
     inputSchema: {
+      style: z.enum(FigureStyles).optional(),
       smiles: z.string().min(1),
       bondLength: z.number().positive().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, bondLength, outDir }) => runTool(async () => {
+  }, async ({ style, smiles, bondLength, outDir }) => runTool(async () => {
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.json`);
     const argv = ["--smiles", smiles, "--out", output];
     if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
+    if (style !== undefined) argv.push("--style", style);
     const outcome = await runCommand(runtime.dependencies.commands.document, argv);
     return response(runtime, outcome, succeeded(outcome) ? exportFiles(outcome.result, "json") : []);
   }));
@@ -372,6 +376,8 @@ export function createChemDraftMcpServer(
   server.registerTool("render_document", {
     description: "Render styled native JSON or a ChemDraft envelope from documentPath or inline documentJson. Reports current graph canonical SMILES, stereo counts and export warnings. SVG/PNG/PDF render the first page; ChemDraft retains all pages.",
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       documentPath: z.string().min(1).optional(),
       documentJson: z.string().min(1).optional(),
       format: z.enum(["svg", "png", "pdf", "chemdraft", "both"]).optional(),
@@ -380,7 +386,7 @@ export function createChemDraftMcpServer(
       padding: z.number().nonnegative().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ documentPath, documentJson, format = "png", width, background, padding, outDir }) => runTool(async () => {
+  }, async ({ style, dpi, documentPath, documentJson, format = "png", width, background, padding, outDir }) => runTool(async () => {
     if (Number(documentPath !== undefined) + Number(documentJson !== undefined) !== 1) {
       return errorResult("Provide exactly one of documentPath or documentJson.");
     }
@@ -395,6 +401,8 @@ export function createChemDraftMcpServer(
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);
     if (padding !== undefined) argv.push("--padding", String(padding));
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.renderDocument, argv);
     const files = !succeeded(outcome) ? [] : format === "pdf" || format === "chemdraft"
       ? exportFiles(outcome.result, format) : visualFiles(outcome.result);
@@ -404,6 +412,8 @@ export function createChemDraftMcpServer(
   server.registerTool("render_structure", {
     description: `Render a SMILES structure as PNG, SVG, or both. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       smiles: z.string().min(1),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
@@ -412,7 +422,7 @@ export function createChemDraftMcpServer(
       format: z.enum(["png", "svg", "both"]).optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, width, background, bondLength, padding, format = "png", outDir }) => runTool(async () => {
+  }, async ({ style, dpi, smiles, width, background, bondLength, padding, format = "png", outDir }) => runTool(async () => {
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.${format === "svg" ? "svg" : "png"}`);
     const argv = ["--smiles", smiles, "--out", output, "--format", format];
@@ -420,6 +430,8 @@ export function createChemDraftMcpServer(
     if (background !== undefined) argv.push("--background", background);
     if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
     if (padding !== undefined) argv.push("--padding", String(padding));
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.render, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));
@@ -427,6 +439,8 @@ export function createChemDraftMcpServer(
   server.registerTool("render_grid", {
     description: `Render named SMILES entries as a PNG or SVG grid. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       items: z.array(z.object({ name: z.string().min(1), smiles: z.string().min(1) })).min(1),
       labels: z.enum(["none", "letters", "names"]).optional(),
       columns: z.number().int().positive().optional(),
@@ -438,6 +452,8 @@ export function createChemDraftMcpServer(
       outDir: z.string().min(1).optional()
     }
   }, async ({
+    style,
+    dpi,
     items,
     labels,
     columns,
@@ -460,6 +476,8 @@ export function createChemDraftMcpServer(
     if (gutter !== undefined) argv.push("--gutter", String(gutter));
     if (padding !== undefined) argv.push("--padding", String(padding));
     if (background !== undefined) argv.push("--background", background);
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.grid, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));
@@ -467,6 +485,8 @@ export function createChemDraftMcpServer(
   server.registerTool("render_reaction", {
     description: `Render a reaction as a PNG or SVG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       reactionSmiles: z.string().min(1).optional(),
       reactants: z.array(z.string().min(1)).min(1).optional(),
       agents: z.array(z.string().min(1)).optional(),
@@ -479,6 +499,8 @@ export function createChemDraftMcpServer(
       outDir: z.string().min(1).optional()
     }
   }, async ({
+    style,
+    dpi,
     reactionSmiles,
     reactants,
     agents,
@@ -512,6 +534,8 @@ export function createChemDraftMcpServer(
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.reaction, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));

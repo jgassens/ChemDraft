@@ -15,6 +15,7 @@ desktop importers did not change.
 | File | Holds |
 |---|---|
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
+| `documentStyle.ts` | Apply layout-engine's physical document preset and uniform target bond length to native molecules and text |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |

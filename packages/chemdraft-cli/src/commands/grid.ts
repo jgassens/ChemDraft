@@ -3,12 +3,14 @@ import { dirname, extname } from "node:path";
 
 import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { DocumentTextStyle } from "@chemdraft/layout-engine";
 import {
   insertNativeTextObject,
   nativeTextObjectSizeForText
 } from "@chemdraft/document-workflow-core";
 
 import { integerOption, numericOption, parseOptions, stringOption } from "../args";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
@@ -41,7 +43,7 @@ export interface GridJob {
 export type GridLabels = "none" | "letters" | "names";
 type GridOutputFormat = "png" | "svg";
 
-export interface RenderGridOptions {
+export interface RenderGridOptions extends FigureStyleOptions {
   columns?: number;
   labels: GridLabels;
   width: number;
@@ -73,6 +75,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 Every entry is validated before the image is written: a bad SMILES fails the entire grid.
 
 Options:
+${figureStyleHelp}
   --columns <N>                  Number of columns (default: automatic)
   --labels none|letters|names    Cell labels (default: letters)
   --width <px>                   PNG width (default: ${renderDefaults.width}; ignored for SVG)
@@ -86,6 +89,8 @@ Output:
   Exit 0 on success, 1 when the grid cannot be rendered, and 2 for bad arguments.`;
 
 const gridOptions = {
+  "--bond-length": { kind: "value" },
+  ...figureStyleOptions,
   "--batch": { kind: "value" },
   "--out": { kind: "value" },
   "--columns": { kind: "value" },
@@ -100,6 +105,8 @@ const gridOptions = {
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, gridOptions);
+  const figure = parseFigureStyle(parsed);
+  if (parsed.options["--bond-length"] !== undefined) throw new CliUsageError("--bond-length is not supported by grid.");
   if (parsed.positionals.length > 0) throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
 
   const jobsFile = stringOption(parsed, "--batch");
@@ -134,6 +141,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
 
   return {
     jobsFile,
+    ...figure,
     out,
     format: extension.slice(1) as GridOutputFormat,
     columns: stringOption(parsed, "--columns") === undefined
@@ -169,7 +177,7 @@ function letterLabel(index: number): string {
   return label;
 }
 
-async function prepareEntries(jobs: readonly GridJob[], labels: GridLabels, io: CliIo): Promise<MeasuredEntry[]> {
+async function prepareEntries(jobs: readonly GridJob[], labels: GridLabels, io: CliIo, style: FigureStyleOptions["style"]): Promise<MeasuredEntry[]> {
   installNodeEngines();
   const entries: MeasuredEntry[] = [];
   for (let index = 0; index < jobs.length; index += 1) {
@@ -177,6 +185,7 @@ async function prepareEntries(jobs: readonly GridJob[], labels: GridLabels, io: 
     writeProgress(io, `Preparing ${job.name}…`);
     const built = await buildSmilesDocument(job.smiles.trim(), {
       name: job.name,
+      style,
       bondLength: renderDefaults.bondLength
     });
     const bounds = documentVisualBounds(built.document);
@@ -239,19 +248,25 @@ export async function renderGrid(
   args: RenderGridOptions,
   io: CliIo = defaultCliIo
 ): Promise<RenderedGrid> {
-  const entries = await prepareEntries(jobs, args.labels, io);
+  const entries = await prepareEntries(jobs, args.labels, io, args.style);
+  const textStyle = args.style === "document" ? DocumentTextStyle : {};
   const columns = Math.min(entries.length, args.columns ?? automaticColumns(entries, args.gutter));
   const rows = Math.ceil(entries.length / columns);
   const moleculeWidth = Math.max(...entries.map((entry) => entry.width));
   const moleculeHeight = Math.max(...entries.map((entry) => entry.height));
   const labelGap = args.labels === "none" ? 0 : 8;
   const labelHeight = args.labels === "none" ? 0 : Math.max(
-    ...entries.map((entry) => nativeTextObjectSizeForText(entry.label!).height)
+    ...entries.map((entry) => nativeTextObjectSizeForText(entry.label!, textStyle).height)
   );
-  const cellWidth = moleculeWidth + args.gutter;
+  const cellWidth = (args.style === "document" ? Math.max(moleculeWidth,
+    ...entries.map((entry) => entry.label === null ? 0 : nativeTextObjectSizeForText(entry.label, textStyle).width)) : moleculeWidth) + args.gutter;
   const cellHeight = moleculeHeight + labelGap + labelHeight + args.gutter;
   const margin = 24;
   let document = createEmptyDocument({ title: "ChemDraft grid" });
+  if (args.style === "document") document = { ...document, pages: document.pages.map((page) => ({
+    ...page, width: margin * 2 + columns * cellWidth, height: margin * 2 + rows * cellHeight,
+    layout: { ...page.layout, presetId: "custom", widthPx: margin * 2 + columns * cellWidth, heightPx: margin * 2 + rows * cellHeight }
+  })) };
   const cells = entries.map((entry, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
@@ -266,10 +281,10 @@ export async function renderGrid(
       visualY - entry.bounds.minY
     ));
     if (entry.label !== null) {
-      const size = nativeTextObjectSizeForText(entry.label);
+      const size = nativeTextObjectSizeForText(entry.label, textStyle);
       const x = cellX + (cellWidth - size.width) / 2;
       const y = cellY + moleculeHeight + labelGap;
-      document = insertNativeTextObject(document, { x, y }, entry.label);
+      document = insertNativeTextObject(document, { x, y }, entry.label, textStyle);
     }
     return { name: entry.name, smiles: entry.smiles, label: entry.label, column, row };
   });
@@ -281,11 +296,13 @@ export async function renderGrid(
     exported.contents,
     document,
     args.padding,
-    args.background
+    args.background,
+    false,
+    args.style
   );
   return {
     svg: cropped.svg,
-    png: svgToPng(cropped.svg, args.width),
+    png: svgToPng(cropped.svg, args.width, args.style, args.dpi),
     document,
     viewBox: cropped.viewBox,
     columns,
@@ -315,6 +332,7 @@ export async function runGridCommand(
       writeJsonLine(io, {
         name: "grid",
         ok: true,
+        ...figureStyleResult(args, rendered.viewBox, args.format === "png"),
         warnings: rendered.warnings,
         out: args.out,
         columns: rendered.columns,
@@ -333,6 +351,7 @@ export async function runGridCommand(
       writeJsonLine(io, {
         name: "grid",
         ok: false,
+        style: args.style ?? "fit",
         error: message,
         ...(failingJob ? { smiles: failingJob.smiles } : {})
       });

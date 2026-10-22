@@ -4,12 +4,15 @@ import { serializeDocument } from "@chemdraft/chem-core";
 import { documentInventory, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { ensureRdkit } from "@chemdraft/rdkit-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
-import { buildSmilesDocument, type BuiltSmilesDocument } from "../document";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle } from "../figureStyle";
+import { buildSmilesDocument, documentPhysicalSize, type BuiltSmilesDocument } from "../document";
 import { validateDocumentOutputPath } from "../documentInput";
 import { CliUsageError, cliExitCode, defaultCliIo, handleCliError, parseNamedSmilesJob,
   readBatchFile, resultExitCode, writeJsonLine, writeProgress, type CliIo } from "../output";
 
 const documentOptions = {
+  "--width": { kind: "value" }, "--padding": { kind: "value" },
+  ...figureStyleOptions,
   "--smiles": { kind: "value" }, "--batch": { kind: "value" },
   "--out": { kind: "value" }, "--out-dir": { kind: "value" },
   "--bond-length": { kind: "value" }, "--help": { kind: "boolean" }
@@ -20,6 +23,7 @@ Usage:
   pnpm -s chemdraft document --smiles <SMILES> --out <doc.json> [--bond-length <px>]
   pnpm -s chemdraft document --batch <jobs.json> --out-dir <dir> [--bond-length <px>]
 Batch: [{"name":"decalin","smiles":"C1CCC2CCCCC2C1"}].
+${figureStyleHelp}
 inputAtomIndex is the 0-based SMILES atom token index, or null when no verified mapping exists.
 Exit 0 all jobs succeeded, 1 a job failed, 2 invalid arguments or batch input.`;
 
@@ -66,6 +70,10 @@ export async function runDocumentCommand(argv: readonly string[], io: CliIo = de
   try {
     if (argv.includes("--help")) { io.stdout(documentHelp); return cliExitCode.ok; }
     const parsed = parseOptions(argv, documentOptions);
+    const figure = parseFigureStyle(parsed);
+    for (const flag of ["--width", "--padding"]) {
+      if (parsed.options[flag] !== undefined) throw new CliUsageError(`${flag} is not supported by document.`);
+    }
     if (parsed.positionals.length) throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
     const smiles = stringOption(parsed, "--smiles"), batch = stringOption(parsed, "--batch");
     const out = stringOption(parsed, "--out"), outDir = stringOption(parsed, "--out-dir");
@@ -88,19 +96,21 @@ export async function runDocumentCommand(argv: readonly string[], io: CliIo = de
     for (const [index, job] of jobs.entries()) {
       writeProgress(io, `Building document ${job.name}…`);
       try {
-        const built = await buildSmilesDocument(job.smiles, { name: job.name, bondLength });
+        const built = await buildSmilesDocument(job.smiles, { name: job.name, bondLength, style: figure.style });
         const indices = await inputAtomIndices(built);
         const inventory = documentInventory(built.document, new Map([[built.molecule.id, indices]]));
         const file = files[index]!;
         await mkdir(dirname(file), { recursive: true });
         await writeFile(file, serializeDocument(built.document));
         writeJsonLine(io, { name: job.name, smiles: built.smiles, ok: true, document: file,
+          ...figureStyleResult(figure, figure.style === "document" ? documentPhysicalSize(built.document) : undefined),
           files: [file], ...inventory, engine: built.engine, canonicalSmiles: built.sourceCanonicalSmiles,
           warnings: [...built.warnings, ...(indices.some((value) => value === null)
             ? ["Input atom mapping unavailable; inputAtomIndex is null for unmapped atoms."] : [])] });
       } catch (error) {
         allSucceeded = false;
         writeJsonLine(io, { name: job.name, smiles: job.smiles, ok: false,
+          ...figureStyleResult(figure),
           error: error instanceof Error ? error.message : String(error) });
       }
     }

@@ -14,6 +14,24 @@ For Claude Desktop, add this stanza to `claude_desktop_config.json`:
 {"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<path-to-chemdraw-checkout>","chemdraft-mcp"]}}}
 ```
 
+## Document style
+
+`render_structure`, `render_grid`, `render_reaction`, and `render_document` accept optional
+`style: "fit" | "document"` (default `fit`) and `dpi` (document PNG, default 300,
+range 72–1200). `build_document` also accepts `style`, so building and rendering native JSON
+can use the same geometry. Document style rejects `width`, `bondLength`, and `padding` where
+those parameters exist; conflicts are returned as tool errors.
+
+The owner's house style uses 14.4 pt bonds, 1.134 pt lines, 2.268 pt bold bonds/wedges,
+18% double-bond spacing, 2.5 pt hash spacing, 1.6 pt bond margins, 120° chains, Arial 10 pt
+formula labels with subscripted counts, Arial 10 pt captions/conditions, and a fixed 4 pt
+outer margin. Grid cells grow rather than shrinking molecules. SVG dimensions and viewBox
+are in points: **insert SVG at natural size (100%) and never resize it**. For PNG, use the
+reported `widthPt`/`heightPt` as the insertion size (72 pt = 1 inch); its pixel scale comes
+from `dpi` (60 pixels per bond at 300 dpi). JSON results record `style`, figure physical size,
+and PNG `dpi`. `render_document` document style supports SVG/PNG/both; PDF/ChemDraft retain
+native page size. See the [CLI details](../chemdraft-cli/README.md#fixed-scale-document-figures).
+
 ## Tools
 
 - `render_structure` — render a SMILES structure as PNG, SVG, or both.
