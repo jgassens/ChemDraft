@@ -53,8 +53,11 @@ Windows probes `%USERPROFILE%\.local\bin`, `%LOCALAPPDATA%\Microsoft\WinGet\Link
 `%APPDATA%\npm`, `%ProgramFiles%\nodejs`, then process PATH/PATHEXT; `.exe` is preferred and
 `.cmd`/`.bat` shims are never executed. Probes run `--version` (10 s, 64 KiB) and the tool-specific
 auth status command (15 s, 64 KiB). Claude needs at least 2.1.259; Codex needs at least 0.162.1.
-Claude parses stdout JSON (`loggedIn: true`) with exit 0. Codex requires exit 0 and `Logged in`
-at the start of stdout or stderr; `codex login status` normally writes its result to stderr.
+Claude requires stdout JSON `loggedIn: true`, exit 0, and `authMethod` of `claude.ai` or
+`oauth_token`. API-key methods (`api_key`, `api_key_helper`, `third_party`) retain their method
+but report signed out with a subscription-login hint: run environments strip API keys and
+`--setting-sources ""` excludes `apiKeyHelper`. Codex requires exit 0 and `Logged in`
+at the start of any line of stdout or stderr; `codex login status` normally writes its result to stderr.
 
 Managed files live below app-local data `external-tools/<tool>/<version>/`; conversations use
 `external-tools/runs/<pluginId>/<conversationId>/`, created privately and reused by follow-ups.
@@ -93,7 +96,9 @@ the real login directory is preserved, and hooks are disabled explicitly. The tw
 by default in pinned Claude 2.1.308 (`cc-plugin-agents-md@builtin` and
 `cc-plugin-plugin-authoring@builtin`) are also explicitly disabled: settings-source isolation
 alone does not disable built-in plugins. The init parity assertion catches newly enabled plugins
-when pins change.
+when pins change. `EndConversation` may remain alongside MCP tools: the
+[CLI reference](https://code.claude.com/docs/en/cli-reference) specifies that `--tools ""`
+removes it only when no MCP tools remain.
 
 ```text
 codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-config --ignore-rules
@@ -152,12 +157,16 @@ unknown/ignored flag or setting diagnostics. This covers the retained `-c` keys,
 optional MCP and reasoning settings. The Claude check compares every rendered flag (including
 resume, model, and effort) with `--help`; its documented hidden `--max-turns` and
 `--system-prompt-file` flags have an explicit allowlist. It also runs the rendered first-turn
-command in an empty working directory with a one-line stream-JSON prompt, an unreachable
+command in a temporary working directory planted with `.claude/settings.json` (a SessionStart
+hook that writes a marker, plus an enabled plugin), a skill, a slash command, `.mcp.json` with a
+`planted` server, and `CLAUDE.md`. It uses a one-line stream-JSON prompt, an unreachable
 `127.0.0.1` MCP endpoint and the nonexistent model `chemdraft-parity-check-does-not-exist`, so no
 model call can succeed. It reads stream-JSON until `system/init` (60 s limit), then kills the
 process and checks that tools are only `mcp__chemdraft__*` or `EndConversation`, the only MCP
 server is `chemdraft`, plugins and commands/skills are empty, and no hook events appeared. The
-test adds `--include-hook-events` for visibility. If the CLI reports "not logged in" before init,
+test also requires the hook marker to be absent, adds `--include-hook-events` for visibility,
+and adds `--no-session-persistence` to avoid leaving a test transcript in `~/.claude/projects`.
+That persistence flag is test-only; product runs retain transcripts for resume. If the CLI reports "not logged in" before init,
 it prints a clear skip message; rerun on a logged-in host to verify init. Consult the CLI reference
 before adding a new help exception. Run these checks on macOS and Windows before changing pins or
 releasing. Recorded auth fixtures under `external_tools/fixtures/auth/` cover both CLIs' signed-in

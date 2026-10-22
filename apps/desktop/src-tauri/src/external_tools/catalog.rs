@@ -160,20 +160,27 @@ impl ToolSpec {
             ToolId::Claude => {
                 let json: serde_json::Value =
                     serde_json::from_str(stdout).unwrap_or(serde_json::Value::Null);
+                let auth_method = json.get("authMethod").and_then(|v| v.as_str());
+                let logged_in =
+                    code == Some(0) && json.get("loggedIn").and_then(|v| v.as_bool()) == Some(true);
                 AuthStatus {
-                    signed_in: code == Some(0)
-                        && json.get("loggedIn").and_then(|v| v.as_bool()) == Some(true),
-                    auth_method: json
-                        .get("authMethod")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned),
+                    signed_in: logged_in
+                        && matches!(auth_method, Some("claude.ai" | "oauth_token")),
+                    auth_method: auth_method.map(str::to_owned),
+                    detail: (logged_in
+                        && matches!(auth_method, Some("api_key" | "api_key_helper" | "third_party")))
+                    .then(|| "Signed in with an API key; ChemDraft runs use your Claude subscription login — sign in with claude auth login".to_owned()),
                 }
             }
             ToolId::Codex => AuthStatus {
                 // Codex login status normally writes its human-readable result to stderr.
                 signed_in: code == Some(0)
-                    && (stdout.starts_with("Logged in") || stderr.starts_with("Logged in")),
+                    && stdout
+                        .lines()
+                        .chain(stderr.lines())
+                        .any(|line| line.starts_with("Logged in")),
                 auth_method: None,
+                detail: None,
             },
         }
     }
@@ -197,6 +204,8 @@ pub struct AuthStatus {
     pub signed_in: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

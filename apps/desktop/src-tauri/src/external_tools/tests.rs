@@ -94,6 +94,50 @@ fn version_and_auth_parsers_fail_closed() {
     );
 }
 #[test]
+fn claude_auth_method_fixtures_require_subscription_login() {
+    for (method, signed_in, has_detail) in [
+        ("claude.ai", true, false),
+        ("oauth_token", true, false),
+        ("api_key", false, true),
+        ("api_key_helper", false, true),
+        ("third_party", false, true),
+        ("none", false, false),
+        ("unknown", false, false),
+    ] {
+        let fixture = serde_json::json!({"loggedIn": true, "authMethod": method});
+        let auth = ToolId::Claude
+            .spec()
+            .parse_auth(Some(0), &fixture.to_string(), "");
+        assert_eq!(auth.signed_in, signed_in, "{method}");
+        assert_eq!(auth.auth_method.as_deref(), Some(method));
+        assert_eq!(auth.detail.is_some(), has_detail, "{method}");
+        if let Some(detail) = auth.detail {
+            assert!(detail.contains("claude auth login"));
+            assert!(detail.contains("subscription login"));
+        }
+    }
+}
+
+#[test]
+fn codex_auth_accepts_status_after_warning_on_either_stream() {
+    let fixture = "Warning: optional configuration unavailable\nLogged in using ChatGPT\n";
+    for (stdout, stderr) in [(fixture, ""), ("", fixture)] {
+        assert!(
+            ToolId::Codex
+                .spec()
+                .parse_auth(Some(0), stdout, stderr)
+                .signed_in
+        );
+        assert!(
+            !ToolId::Codex
+                .spec()
+                .parse_auth(Some(1), stdout, stderr)
+                .signed_in
+        );
+    }
+}
+
+#[test]
 fn recorded_auth_status_fixtures() {
     let claude = ToolId::Claude.spec();
     let signed_in = claude.parse_auth(
@@ -448,9 +492,36 @@ fn pinned_claude_accepts_rendered_run() {
         );
     }
 
-    // A distinct cwd avoids project configuration while preserving the user's own login.
+    // Plant project configuration so isolation is exercised even on a clean host.
     let run_dir = temp.0.join("run");
     fs::create_dir(&run_dir).unwrap();
+    let claude_dir = run_dir.join(".claude");
+    fs::create_dir_all(claude_dir.join("skills/planted-skill")).unwrap();
+    fs::create_dir_all(claude_dir.join("commands")).unwrap();
+    let hook_marker = run_dir.join("planted-hook-marker");
+    // Relative command works in both the Unix shell and Windows cmd.exe.
+    fs::write(claude_dir.join("settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo planted > planted-hook-marker"}]}]},
+            "enabledPlugins": {"planted@planted": true}
+        })).unwrap()).unwrap();
+    fs::write(claude_dir.join("skills/planted-skill/SKILL.md"),
+        "---\nname: planted-skill\ndescription: Planted parity skill.\n---\nReport planted skill.\n").unwrap();
+    fs::write(
+        claude_dir.join("commands/planted.md"),
+        "Report planted command.",
+    )
+    .unwrap();
+    fs::write(
+        run_dir.join(".mcp.json"),
+        r#"{"mcpServers":{"planted":{"type":"http","url":"http://127.0.0.1:1/mcp/planted"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        run_dir.join("CLAUDE.md"),
+        "Planted project instructions for parity check.",
+    )
+    .unwrap();
     let system_prompt = temp.0.join("system-prompt.md");
     let mcp_config = temp.0.join("claude-mcp.json");
     fs::write(&system_prompt, "ChemDraft CLI parity check.").unwrap();
@@ -471,6 +542,8 @@ fn pinned_claude_accepts_rendered_run() {
     ]);
     // Observability only: surface lifecycle events to detect hooks before init.
     rendered.args.push("--include-hook-events".into());
+    // Test-only: no resume needed, and no transcript left in the user's login directory.
+    rendered.args.push("--no-session-persistence".into());
     let environment = env::child_env(
         ProbePlatform::current(),
         &parent,
@@ -520,6 +593,10 @@ fn pinned_claude_accepts_rendered_run() {
         run.wait_finished(Duration::from_secs(5)),
         "Claude parity process did not stop"
     );
+    assert!(
+        !hook_marker.exists(),
+        "Claude ran the planted SessionStart hook"
+    );
     assert!(bounded_output, "Claude parity exceeded the output cap");
     for event in &events {
         for field in ["type", "subtype"] {
@@ -547,6 +624,8 @@ fn assert_claude_init_is_restricted(init: &serde_json::Value) {
     let tools = init["tools"].as_array().expect("init must list tools");
     for tool in tools {
         let name = tool.as_str().expect("tool name must be a string");
+        // CLI reference: https://code.claude.com/docs/en/cli-reference
+        // --tools "" removes EndConversation only when no MCP tools remain.
         assert!(
             name.starts_with("mcp__chemdraft__") || name == "EndConversation",
             "Unexpected Claude tool: {name}"
@@ -1169,11 +1248,48 @@ fn cached_stub(state: &ExternalToolsState, tool: ToolId) {
                 auth: catalog::AuthStatus {
                     signed_in: true,
                     auth_method: Some("claude.ai".into()),
+                    detail: None,
                 },
                 probed_at: "2026-10-22T00:00:00Z".into(),
             })
         })
         .unwrap();
+}
+
+#[test]
+fn status_preserves_subscription_login_hint_for_api_key_auth() {
+    if current_platform().is_none() {
+        return;
+    }
+    let temp = TempDir::new();
+    let state = ExternalToolsState::default();
+    state
+        .probes
+        .get_or_probe(ToolId::Claude, true, || {
+            Ok(probe::ProbeResult {
+                path: stub().to_owned(),
+                version: "2.1.308".into(),
+                auth: ToolId::Claude.spec().parse_auth(
+                    Some(0),
+                    r#"{"loggedIn":true,"authMethod":"api_key_helper"}"#,
+                    "",
+                ),
+                probed_at: "2026-10-22T00:00:00Z".into(),
+            })
+        })
+        .unwrap();
+    let status = status_impl(
+        &temp.0,
+        &state,
+        ToolId::Claude,
+        false,
+        None,
+        &ParentEnv::new(),
+    )
+    .unwrap();
+    assert_eq!(status.signed_in, Some(false));
+    assert_eq!(status.auth_method.as_deref(), Some("api_key_helper"));
+    assert!(status.detail.unwrap().contains("claude auth login"));
 }
 
 #[test]

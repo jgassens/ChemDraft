@@ -487,7 +487,7 @@ fn status_impl(
             status.signed_in = Some(result.auth.signed_in);
             status.auth_method = result.auth.auth_method;
             status.probed_at = result.probed_at;
-            status.detail = None;
+            status.detail = result.auth.detail;
         }
         Err(detail) => {
             status.state = if detail == "Tool is not installed." {
