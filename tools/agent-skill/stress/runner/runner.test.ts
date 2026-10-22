@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -13,7 +13,7 @@ const fakeAgentctl = path.join(root, 'tools/agent-skill/stress/runner/fixtures/f
 const temporary: string[] = [];
 
 async function fixtureCases() {
-  const directory = await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-cases-'));
+  const directory = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-cases-')));
   temporary.push(directory);
   const file = path.join(directory, 'cases.json');
   await writeFile(file, JSON.stringify({ cases: [
@@ -23,7 +23,7 @@ async function fixtureCases() {
   return file;
 }
 
-async function outDirectory() { const value = await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-')); temporary.push(value); return value; }
+async function outDirectory() { const value = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-'))); temporary.push(value); return value; }
 
 async function invoke(args: string[], env: Record<string, string | undefined> = {}) {
   return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
