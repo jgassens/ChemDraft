@@ -21,6 +21,8 @@ fn main() {
             "external_tool_sign_in",
             "external_tool_consent_set",
             "external_tool_consent_list",
+            "external_tool_consent_revoke",
+            "external_tool_consent_clear_plugin",
             "external_tool_run_start",
             "external_tool_run_poll",
             "external_tool_run_cancel",

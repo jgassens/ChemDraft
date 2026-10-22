@@ -1237,6 +1237,8 @@ pub fn run() {
             external_tools::external_tool_sign_in,
             external_tools::external_tool_consent_set,
             external_tools::external_tool_consent_list,
+            external_tools::external_tool_consent_revoke,
+            external_tools::external_tool_consent_clear_plugin,
             external_tools::external_tool_run_start,
             external_tools::external_tool_run_poll,
             external_tools::external_tool_run_cancel,

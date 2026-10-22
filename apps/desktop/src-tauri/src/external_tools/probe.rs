@@ -2,12 +2,15 @@
 use super::{
     catalog::{AuthStatus, RenderedRun, ToolId, ToolSpec},
     env::{self, ParentEnv},
-    run::{OutputStream, RunStatus, ToolRun},
+    run::{CaptureError, RunStatus, ToolRun},
 };
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -196,6 +199,7 @@ pub struct ProbeResult {
 #[derive(Default)]
 pub struct ProbeCache {
     entries: Mutex<HashMap<ToolId, CachedProbe>>,
+    generation: AtomicU64,
     pub login_path: LoginShellPath,
 }
 type CachedProbe = (Instant, Result<ProbeResult, String>);
@@ -206,20 +210,29 @@ impl ProbeCache {
         refresh: bool,
         probe: impl FnOnce() -> Result<ProbeResult, String>,
     ) -> Result<ProbeResult, String> {
-        let mut entries = self.entries.lock().unwrap();
-        if !refresh {
-            if let Some((at, value)) = entries.get(&tool) {
-                if at.elapsed() < Duration::from_secs(30) {
-                    return value.clone();
+        let generation = {
+            let entries = self.entries.lock().unwrap();
+            if !refresh {
+                if let Some((at, value)) = entries.get(&tool) {
+                    if at.elapsed() < Duration::from_secs(30) {
+                        return value.clone();
+                    }
                 }
             }
-        }
+            self.generation.load(Ordering::SeqCst)
+        };
         let value = probe();
-        entries.insert(tool, (Instant::now(), value.clone()));
+        let mut entries = self.entries.lock().unwrap();
+        // An install, uninstall or sign-in during the probe invalidates its result.
+        if self.generation.load(Ordering::SeqCst) == generation {
+            entries.insert(tool, (Instant::now(), value.clone()));
+        }
         value
     }
     pub fn invalidate(&self, tool: ToolId) {
-        self.entries.lock().unwrap().remove(&tool);
+        let mut entries = self.entries.lock().unwrap();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        entries.remove(&tool);
     }
 }
 pub fn probe_tool(
@@ -299,48 +312,22 @@ pub(super) fn execute(
         timeout,
         Some(cap),
     )?;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let mut cursor = 0;
-    loop {
-        let poll = run.poll(cursor, 5000, 100);
-        cursor = poll.next_cursor;
-        if run.output_limit_exceeded() {
-            run.wait_finished(Duration::from_secs(3));
-            return Err("External tool probe exceeded its output limit.".into());
-        }
-        let drained = poll.lines.is_empty();
-        for line in poll.lines {
-            if line.truncated || stdout.len() + stderr.len() + line.text.len() + 1 > cap {
-                run.cancel(super::run::KillReason::Cancelled);
-                run.wait_finished(Duration::from_secs(3));
-                return Err("External tool probe exceeded its output limit.".into());
+    let output = run
+        .capture_output(cap, || false)
+        .map_err(|error| match error {
+            CaptureError::OutputLimit => {
+                "External tool probe exceeded its output limit.".to_owned()
             }
-            let output = if line.stream == OutputStream::Stdout {
-                &mut stdout
-            } else {
-                &mut stderr
-            };
-            output.push_str(&line.text);
-            output.push('\n');
-        }
-        if poll.dropped_lines > 0 {
-            run.cancel(super::run::KillReason::Cancelled);
-            run.wait_finished(Duration::from_secs(3));
-            return Err("External tool probe exceeded its output limit.".into());
-        }
-        match poll.status {
-            RunStatus::Running => (),
-            RunStatus::Exited { code, .. } if drained => {
-                return Ok(ProbeOutput {
-                    code,
-                    stdout,
-                    stderr,
-                })
-            }
-            RunStatus::Exited { .. } => (),
-            RunStatus::Killed { .. } => return Err("External tool probe timed out.".into()),
-            RunStatus::Failed { message } => return Err(message),
-        }
+            CaptureError::Cancelled => "External tool probe was cancelled.".to_owned(),
+        })?;
+    match output.status {
+        RunStatus::Exited { code, .. } => Ok(ProbeOutput {
+            code,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        }),
+        RunStatus::Killed { .. } => Err("External tool probe timed out.".into()),
+        RunStatus::Failed { message } => Err(message),
+        RunStatus::Running => unreachable!("capture_output drains a finished run"),
     }
 }

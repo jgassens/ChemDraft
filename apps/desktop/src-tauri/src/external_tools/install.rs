@@ -5,7 +5,7 @@ use super::{
     nonce,
     pins::{ArchiveKind, ToolPin, ToolPlatform, PIN_PENDING},
     probe::ProbePlatform,
-    run::{KillReason, RunStatus, ToolRun},
+    run::{CaptureError, RunStatus, ToolRun},
     ExternalToolStatus, ManagedTool, ToolInstallPhase, ToolInstallProgress, ToolSource, ToolState,
 };
 use crate::local_engine::{
@@ -434,55 +434,31 @@ fn verify_version(
         Some(64 * 1024),
     )
     .map_err(InstallError::failed)?;
-    let mut cursor = 0;
-    let mut output = String::new();
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            run.cancel(KillReason::Cancelled);
-            run.wait_finished(Duration::from_secs(3));
-            return check_cancel(cancel);
-        }
-        let poll = run.poll(cursor, 5000, 100);
-        cursor = poll.next_cursor;
-        let drained = poll.lines.is_empty();
-        if run.output_limit_exceeded() || poll.dropped_lines > 0 {
-            run.cancel(KillReason::Cancelled);
-            run.wait_finished(Duration::from_secs(3));
+    let output = match run.capture_output(64 * 1024, || cancel.load(Ordering::SeqCst)) {
+        Ok(output) => output,
+        Err(CaptureError::Cancelled) => return Err(crate::local_engine::download::cancelled()),
+        Err(CaptureError::OutputLimit) => {
             return Err(InstallError::failed(
                 "Tool --version exceeded its output limit.",
-            ));
+            ))
         }
-        for line in poll.lines {
-            if line.truncated || output.len() + line.text.len() > 64 * 1024 {
-                run.cancel(KillReason::Cancelled);
-                run.wait_finished(Duration::from_secs(3));
-                return Err(InstallError::failed(
-                    "Tool --version exceeded its output limit.",
-                ));
-            }
-            output.push_str(&line.text);
-            output.push('\n');
+    };
+    match output.status {
+        RunStatus::Exited { code: Some(0), .. }
+            if output.stdout.contains(pin.version) || output.stderr.contains(pin.version) =>
+        {
+            Ok(())
         }
-        match poll.status {
-            RunStatus::Running => (),
-            RunStatus::Exited { code: Some(0), .. } if drained && output.contains(pin.version) => {
-                return Ok(())
-            }
-            RunStatus::Exited { .. } if drained => {
-                return Err(InstallError::failed(format!(
-                    "{} --version did not report pinned version {}.",
-                    pin.tool.spec().display_name,
-                    pin.version
-                )))
-            }
-            RunStatus::Exited { .. } => (),
-            RunStatus::Killed { .. } => {
-                return Err(InstallError::failed(
-                    "Tool --version did not finish within 20 seconds.",
-                ))
-            }
-            RunStatus::Failed { message } => return Err(InstallError::failed(message)),
-        }
+        RunStatus::Exited { .. } => Err(InstallError::failed(format!(
+            "{} --version did not report pinned version {}.",
+            pin.tool.spec().display_name,
+            pin.version
+        ))),
+        RunStatus::Killed { .. } => Err(InstallError::failed(
+            "Tool --version did not finish within 20 seconds.",
+        )),
+        RunStatus::Failed { message } => Err(InstallError::failed(message)),
+        RunStatus::Running => unreachable!("capture_output drains a finished run"),
     }
 }
 
@@ -572,6 +548,11 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         path: None,
         version: None,
         pinned_version: pin.version.into(),
+        pinned_download_bytes: pin.size,
+        free_disk_bytes: base
+            .ancestors()
+            .find(|p| p.is_dir())
+            .and_then(|p| free_disk_bytes(p).ok()),
         managed: None,
         signed_in: None,
         auth_method: None,
@@ -632,4 +613,38 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         }
     }
     status
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn redirect_hosts_rejects_unapproved_vendor_urls() {
+        for tool in [ToolId::Claude, ToolId::Codex] {
+            let mut pin = super::super::pins::pin_for(tool, ToolPlatform::DarwinArm64).clone();
+            let expected: &[&str] = if tool == ToolId::Claude {
+                &[]
+            } else {
+                &["release-assets.githubusercontent.com"]
+            };
+            assert_eq!(redirect_hosts(&pin).unwrap(), expected);
+            for url in [
+                "http://downloads.claude.ai/tool",
+                "http://github.com/tool",
+                "https://user@downloads.claude.ai/tool",
+                "https://user:pass@github.com/tool",
+                "https://downloads.claude.ai.evil.example/tool",
+                "https://github.com.evil.example/tool",
+                "https://downloads.claude.ai:8443/tool",
+                "https://github.com:8443/tool",
+                "https://evil.example/tool",
+                "file:///tool",
+                "not a URL",
+            ] {
+                pin.url = url;
+                assert!(redirect_hosts(&pin).is_err(), "accepted {url} for {tool:?}");
+            }
+        }
+    }
 }

@@ -1016,9 +1016,13 @@ describe("uninstallPlugin", () => {
   it("terminates the worker, unregisters, deletes the staged files, and forgets the record", async () => {
     const { fs, runtime, result, worker } = await installFixture();
     expect(runtime.host.getPlugin(PLUGIN_ID)).toBeDefined();
+    const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
+    const cancelRuns = vi.spyOn(runtime.externalTools, "cancelAllForPlugin");
 
     await uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor });
 
+    expect(clearConsent).toHaveBeenCalledWith(PLUGIN_ID);
+    expect(cancelRuns).toHaveBeenCalledWith(PLUGIN_ID);
     expect(worker.terminated()).toBe(true);
     expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
     expect(runtime.host.commands.has(COMMAND_ID)).toBe(false);

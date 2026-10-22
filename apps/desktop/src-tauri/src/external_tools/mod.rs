@@ -12,6 +12,8 @@ pub mod run;
 pub mod terminal;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_tests;
 
 use crate::local_engine::InstallError;
 use catalog::{identifier, Effort, RenderedRun, ToolId};
@@ -82,6 +84,8 @@ pub struct ExternalToolStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub pinned_version: String,
+    pub pinned_download_bytes: u64,
+    pub free_disk_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub managed: Option<ManagedTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,6 +111,7 @@ pub struct ExternalToolRunRequest {
     pub resume_id: Option<String>,
     pub model: Option<String>,
     pub effort: Option<Effort>,
+    #[serde(default)]
     pub mcp_session_id: String,
     pub timeout_ms: Option<u64>,
 }
@@ -425,6 +430,7 @@ fn status_impl(
     }
     if platform.is_none() {
         status.state = ToolState::Unsupported;
+        status.pinned_download_bytes = 0;
         status.can_install = false;
         status.detail = Some("External tools are unsupported on this platform.".into());
         return Ok(status);
@@ -573,15 +579,11 @@ impl ExternalToolsState {
         Ok(())
     }
     fn run_by_id(&self, id: &str) -> Result<Arc<ToolRun>, ExternalToolRunError> {
-        self.inner
-            .lock()
-            .unwrap()
-            .runs
-            .get(id)
-            .map(|e| e.run.clone())
-            .ok_or_else(|| {
-                ExternalToolRunError::new(RunErrorCode::UnknownRun, "Unknown external tool run.")
-            })
+        let mut inner = self.inner.lock().unwrap();
+        inner.runs.retain(|_, entry| !entry.run.removable());
+        inner.runs.get(id).map(|e| e.run.clone()).ok_or_else(|| {
+            ExternalToolRunError::new(RunErrorCode::UnknownRun, "Unknown external tool run.")
+        })
     }
 }
 
@@ -673,10 +675,13 @@ pub async fn external_tool_sign_in<R: Runtime>(
     tauri::async_runtime::spawn_blocking(move || {
         let base = base_dir(&app)?;
         let state = app.state::<ExternalToolsState>();
-        let _mutation = state.mutation.lock().unwrap();
         let parent = std::env::vars().collect();
         let status = status_impl(&base, &state, tool, false, None, &parent)?;
-        if !matches!(status.state, ToolState::Installed) {
+        let _mutation = state.mutation.lock().unwrap();
+        if !matches!(status.state, ToolState::Installed)
+            || !status.path.as_ref().is_some_and(|p| p.is_file())
+            || state.installing.load(Ordering::SeqCst)
+        {
             return Err("External tool is not installed or is busy.".into());
         }
         let mut spec = tool.spec();
@@ -725,6 +730,55 @@ pub async fn external_tool_consent_set<R: Runtime>(
             }
         }
         Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn external_tool_consent_revoke<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+    plugin_id: String,
+) -> Result<(), String> {
+    external_tool_consent_set(app, tool, plugin_id, false).await
+}
+
+fn consent_clear_plugin_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    plugin_id: &str,
+) -> Result<(), String> {
+    let _mutation = state.mutation.lock().unwrap();
+    consent::ConsentStore::new(base)
+        .clear_for_plugin(plugin_id)
+        .map_err(|e| e.to_string())?;
+    let runs: Vec<_> = state
+        .inner
+        .lock()
+        .unwrap()
+        .runs
+        .values()
+        .filter(|entry| entry.plugin_id == plugin_id)
+        .map(|entry| entry.run.clone())
+        .collect();
+    for run in runs {
+        run.cancel(KillReason::PluginUnregistered);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn external_tool_consent_clear_plugin<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    plugin_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        consent_clear_plugin_impl(
+            &base_dir(&app)?,
+            &app.state::<ExternalToolsState>(),
+            &plugin_id,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -780,7 +834,6 @@ fn run_start_impl(
 ) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
     request.validate()?;
     validate_mcp_session(&request)?;
-    let _mutation = state.mutation.lock().unwrap();
     {
         let _consent = state.consent_lock.lock().unwrap();
         if !consent::ConsentStore::new(base)
@@ -795,13 +848,39 @@ fn run_start_impl(
     }
     let status = status_impl(base, state, request.tool, false, None, parent)
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
+    // Probing may execute vendor code for seconds. Serialize only the commit, and
+    // re-check consent and executable availability after taking the mutation lock.
+    let _mutation = state.mutation.lock().unwrap();
+    if !consent::ConsentStore::new(base)
+        .get(request.tool, &request.plugin_id)
+        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?
+    {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::NotConsented,
+            "Plugin has no consent for this tool.",
+        ));
+    }
+    if state
+        .install_snapshot
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(tool, _)| *tool == request.tool)
+    {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::Busy,
+            "This tool is being installed.",
+        ));
+    }
     if matches!(status.state, ToolState::Installing) {
         return Err(ExternalToolRunError::new(
             RunErrorCode::Busy,
             "This tool is being installed.",
         ));
     }
-    if !matches!(status.state, ToolState::Installed) {
+    if !matches!(status.state, ToolState::Installed)
+        || !status.path.as_ref().is_some_and(|p| p.is_file())
+    {
         return Err(ExternalToolRunError::new(
             RunErrorCode::NotInstalled,
             "External tool is not installed.",
@@ -909,14 +988,19 @@ fn conversation_clear_impl(
     if !valid_plugin_id(plugin) || !identifier(conversation, 8, 64) {
         return Err("Invalid conversation identity.".into());
     }
+    let status = if tool == ToolId::Claude {
+        status_impl(base, state, tool, false, None, parent).ok()
+    } else {
+        None
+    };
     let _mutation = state.mutation.lock().unwrap();
     // Both tools share the conversation directory; stop both before removing it.
     for active in [ToolId::Claude, ToolId::Codex] {
         state.stop_runs(active, Some((plugin, conversation)))?;
     }
     let dir = conversation_dir(base, plugin, conversation).map_err(|e| e.to_string())?;
-    if tool == ToolId::Claude {
-        if let Ok(status) = status_impl(base, state, tool, false, None, parent) {
+    if !state.installing.load(Ordering::SeqCst) {
+        if let Some(status) = status {
             if let Some(program) = status
                 .path
                 .filter(|_| matches!(status.state, ToolState::Installed))

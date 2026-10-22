@@ -814,6 +814,8 @@ export async function uninstallPlugin(options: {
 
   closePluginPanels(runtime, pluginId);
   descriptor?.deactivate?.();
+  runtime.externalTools.cancelAllForPlugin(pluginId);
+  await runtime.externalTools.consentClearPlugin(pluginId);
   if (runtime.host.getPlugin(pluginId)) {
     runtime.unregisterPlugin(pluginId);
   }

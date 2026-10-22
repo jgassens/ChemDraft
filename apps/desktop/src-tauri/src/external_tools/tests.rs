@@ -358,6 +358,24 @@ fn login_shell_markers_and_probe_cache() {
     );
 }
 
+#[test]
+fn probing_releases_cache_lock_and_does_not_store_invalidated_results() {
+    let cache = probe::ProbeCache::default();
+    cache
+        .get_or_probe(ToolId::Claude, false, || {
+            // This would deadlock if the cache mutation lock were held during probing.
+            cache.invalidate(ToolId::Claude);
+            Err("stale".into())
+        })
+        .unwrap_err();
+    assert_eq!(
+        cache
+            .get_or_probe(ToolId::Claude, false, || Err("fresh".into()))
+            .unwrap_err(),
+        "fresh"
+    );
+}
+
 fn stub() -> &'static Path {
     static STUB: OnceLock<PathBuf> = OnceLock::new();
     STUB.get_or_init(||{
@@ -570,7 +588,7 @@ fn capability_is_main_only_and_exactly_matches_registered_commands() {
                 .strip_prefix("external_tools::")
         })
         .collect();
-    assert_eq!(commands.len(), 11);
+    assert_eq!(commands.len(), 13);
     let expected: BTreeSet<_> = commands
         .iter()
         .map(|c| format!("allow-{}", c.replace('_', "-")))
@@ -997,6 +1015,115 @@ fn consent_round_trip_revocation_and_plugin_clear() {
     let entries: Vec<consent::Consent> =
         serde_json::from_slice(&fs::read(temp.0.join("consents.json")).unwrap()).unwrap();
     assert_eq!(entries.len(), 1);
+}
+
+#[test]
+fn consent_transactions_serialize_across_store_instances() {
+    let temp = TempDir::new();
+    let barrier = Arc::new(std::sync::Barrier::new(16));
+    let threads: Vec<_> = (0..16)
+        .map(|i| {
+            let store = consent::ConsentStore::new(&temp.0);
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                store
+                    .set(ToolId::Claude, &format!("org.test.plugin{i}"), true)
+                    .unwrap();
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(
+        consent::ConsentStore::new(&temp.0).list().unwrap().len(),
+        16
+    );
+    let state = ExternalToolsState::default();
+    consent_clear_plugin_impl(&temp.0, &state, "org.test.plugin0").unwrap();
+    let store = consent::ConsentStore::new(&temp.0);
+    assert_eq!(store.list().unwrap().len(), 15);
+    assert!(!store.get(ToolId::Claude, "org.test.plugin0").unwrap());
+    assert!(store.get(ToolId::Claude, "org.test.plugin1").unwrap());
+}
+
+#[test]
+fn clearing_plugin_consent_cancels_only_that_plugins_runs() {
+    let temp = TempDir::new();
+    let state = ExternalToolsState::default();
+    let first = request(ToolId::Claude, "conversation_1");
+    let mut other = request(ToolId::Codex, "conversation_2");
+    other.plugin_id = "org.test.other".into();
+    for req in [&first, &other] {
+        consent::ConsentStore::new(&temp.0)
+            .set(req.tool, &req.plugin_id, true)
+            .unwrap();
+    }
+    let first_run = state
+        .start(
+            &temp.0,
+            &first,
+            rendered(&["sleep"], None),
+            &ParentEnv::new(),
+            false,
+        )
+        .unwrap();
+    let other_run = state
+        .start(
+            &temp.0,
+            &other,
+            rendered(&["sleep"], None),
+            &ParentEnv::new(),
+            false,
+        )
+        .unwrap();
+    consent_clear_plugin_impl(&temp.0, &state, &first.plugin_id).unwrap();
+    let run = state.run_by_id(&first_run.run_id).unwrap();
+    assert!(run.wait_finished(Duration::from_secs(5)));
+    assert_eq!(
+        run.status(),
+        RunStatus::Killed {
+            reason: KillReason::PluginUnregistered
+        }
+    );
+    assert!(state
+        .run_by_id(&other_run.run_id)
+        .unwrap()
+        .status()
+        .is_running());
+    let store = consent::ConsentStore::new(&temp.0);
+    assert!(!store.get(first.tool, &first.plugin_id).unwrap());
+    assert!(store.get(other.tool, &other.plugin_id).unwrap());
+    state.shutdown();
+}
+
+#[test]
+fn status_sizes_use_each_platform_pin_and_the_install_volume() {
+    let temp = TempDir::new();
+    for pin in &pins::PINS {
+        let status = install::managed_status(&temp.0.join("not-created-yet"), pin);
+        assert_eq!(status.pinned_download_bytes, pin.size);
+        assert!(status.free_disk_bytes.is_some());
+    }
+}
+
+#[test]
+fn run_request_accepts_absent_or_empty_mcp_session() {
+    let mut value = serde_json::to_value(request(ToolId::Claude, "conversation_1")).unwrap();
+    value.as_object_mut().unwrap().remove("mcpSessionId");
+    let absent: ExternalToolRunRequest = serde_json::from_value(value.clone()).unwrap();
+    absent.validate().unwrap();
+    validate_mcp_session(&absent).unwrap();
+    value["mcpSessionId"] = serde_json::json!("");
+    validate_mcp_session(&serde_json::from_value(value.clone()).unwrap()).unwrap();
+    value["mcpSessionId"] = serde_json::json!("session_123");
+    assert_eq!(
+        validate_mcp_session(&serde_json::from_value(value).unwrap())
+            .unwrap_err()
+            .code,
+        RunErrorCode::InvalidArgs
+    );
 }
 #[test]
 fn probe_execution_uses_version_and_auth_contracts() {

@@ -9,8 +9,9 @@ import type {
   PluginExternalToolStatus
 } from "@chemdraft/plugin-api";
 
-export interface ExternalToolInstallProgress { phase: string; message: string; bytesDone?: number; bytesTotal?: number }
-export interface ExternalToolStatus extends PluginExternalToolStatus { publisher?: string; progress?: ExternalToolInstallProgress }
+export type ExternalToolInstallProgress = NonNullable<PluginExternalToolStatus["progress"]>;
+export interface ExternalToolStatus extends PluginExternalToolStatus { publisher: string; progress?: ExternalToolInstallProgress }
+export interface ExternalToolConsent { tool: PluginExternalToolId; pluginId: string; granted: boolean; at: string }
 export interface ExternalToolsEngine {
   status(tool: PluginExternalToolId, refresh?: boolean, pluginId?: string): Promise<ExternalToolStatus>;
   install(tool: PluginExternalToolId, onProgress: (progress: ExternalToolInstallProgress) => void): Promise<unknown>;
@@ -18,7 +19,9 @@ export interface ExternalToolsEngine {
   uninstall(tool: PluginExternalToolId): Promise<void>;
   signIn(tool: PluginExternalToolId): Promise<{ launched: boolean; method: "terminal.command" | "newConsole"; detail?: string }>;
   consentSet(tool: PluginExternalToolId, pluginId: string, granted: boolean): Promise<void>;
-  consentList(): Promise<unknown>;
+  consentRevoke(tool: PluginExternalToolId, pluginId: string): Promise<void>;
+  consentClearPlugin(pluginId: string): Promise<void>;
+  consentList(): Promise<ExternalToolConsent[]>;
   runStart(request: PluginExternalToolRunRequest & { pluginId: string }): Promise<PluginExternalToolRunHandle>;
   runPoll(request: PluginExternalToolPollRequest): Promise<PluginExternalToolRunPoll>;
   runCancel(runId: string): Promise<void>;
@@ -44,14 +47,16 @@ export class TauriExternalToolsEngine implements ExternalToolsEngine {
   async uninstall(tool: PluginExternalToolId): Promise<void> { await this.call<void>("external_tool_uninstall", { tool }); }
   signIn(tool: PluginExternalToolId) { return this.call<{ launched: boolean; method: "terminal.command" | "newConsole"; detail?: string }>("external_tool_sign_in", { tool }); }
   async consentSet(tool: PluginExternalToolId, pluginId: string, granted: boolean): Promise<void> { await this.call<void>("external_tool_consent_set", { tool, pluginId, granted }); }
-  consentList(): Promise<unknown> { return this.call("external_tool_consent_list"); }
+  async consentRevoke(tool: PluginExternalToolId, pluginId: string): Promise<void> { await this.call<void>("external_tool_consent_revoke", { tool, pluginId }); }
+  async consentClearPlugin(pluginId: string): Promise<void> { await this.call<void>("external_tool_consent_clear_plugin", { pluginId }); }
+  consentList(): Promise<ExternalToolConsent[]> { return this.call("external_tool_consent_list"); }
   runStart(request: PluginExternalToolRunRequest & { pluginId: string }): Promise<PluginExternalToolRunHandle> { return this.call("external_tool_run_start", { request }); }
   runPoll(request: PluginExternalToolPollRequest): Promise<PluginExternalToolRunPoll> { return this.call("external_tool_run_poll", { runId: request.runId, cursor: request.cursor, maxLines: request.maxLines, waitMs: request.waitMs }); }
   async runCancel(runId: string): Promise<void> { await this.call<void>("external_tool_run_cancel", { runId }); }
   async conversationClear(request: PluginExternalToolClearConversationRequest & { pluginId: string }): Promise<void> { await this.call<void>("external_tool_conversation_clear", { tool: request.tool, pluginId: request.pluginId, conversationId: request.conversationId }); }
 }
 
-const unsupported = (tool: PluginExternalToolId): ExternalToolStatus => ({ tool, state: "unsupported", pinnedVersion: "", canInstall: false, consented: false, probedAt: new Date(0).toISOString(), detail: "External tools are available only in a supported ChemDraft desktop build." });
+const unsupported = (tool: PluginExternalToolId): ExternalToolStatus => ({ tool, publisher: tool === "claude" ? "Anthropic" : "OpenAI", state: "unsupported", pinnedVersion: "", pinnedDownloadBytes: 0, freeDiskBytes: null, canInstall: false, consented: false, probedAt: new Date(0).toISOString(), detail: "External tools are available only in a supported ChemDraft desktop build." });
 /** Browser builds never pretend an OS process can be launched. */
 export class UnsupportedExternalToolsEngine implements ExternalToolsEngine {
   async status(tool: PluginExternalToolId): Promise<ExternalToolStatus> { return unsupported(tool); }
@@ -60,7 +65,9 @@ export class UnsupportedExternalToolsEngine implements ExternalToolsEngine {
   async uninstall(): Promise<void> { throw new Error("unsupported"); }
   async signIn(): Promise<{ launched: boolean; method: "terminal.command" | "newConsole" }> { throw new Error("unsupported"); }
   async consentSet(): Promise<void> { throw new Error("unsupported"); }
-  async consentList(): Promise<unknown> { return []; }
+  async consentRevoke(): Promise<void> { throw new Error("unsupported"); }
+  async consentClearPlugin(): Promise<void> {}
+  async consentList(): Promise<ExternalToolConsent[]> { return []; }
   async runStart(): Promise<PluginExternalToolRunHandle> { throw new Error("unsupported"); }
   async runPoll(): Promise<PluginExternalToolRunPoll> { throw new Error("unsupported"); }
   async runCancel(): Promise<void> { throw new Error("unsupported"); }

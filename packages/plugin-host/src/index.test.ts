@@ -83,7 +83,7 @@ describe("CommandRegistry", () => {
 
 describe("external tools", () => {
   it("gates tools, re-checks its permission, reports an absent host, and cancels runs on unregister", async () => {
-    const status = { tool: "codex" as const, state: "installed" as const, pinnedVersion: "1", canInstall: true, consented: true, probedAt: timestamp };
+    const status = { tool: "codex" as const, publisher: "OpenAI", state: "installed" as const, pinnedVersion: "1", pinnedDownloadBytes: 123, freeDiskBytes: null, canInstall: true, consented: true, probedAt: timestamp };
     const externalTools = {
       status: vi.fn(async () => status),
       install: vi.fn(async () => status),
@@ -106,7 +106,7 @@ describe("external tools", () => {
       await context.tools!.status({ tool: "codex" });
       await context.tools!.install({ tool: "codex" });
       await context.tools!.signIn({ tool: "codex" });
-      await context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s", mcpSessionId: "mcp" });
+      await context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s" });
       await context.tools!.poll({ runId: "run", cursor: 0 });
       await context.tools!.cancel({ runId: "run" });
       await context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" });

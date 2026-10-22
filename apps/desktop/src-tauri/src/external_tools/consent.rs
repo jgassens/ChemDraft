@@ -15,15 +15,16 @@ pub struct Consent {
     pub granted: bool,
     pub at: String,
 }
+// Commands construct stores independently. Protect the whole read-modify-write
+// transaction across every instance, including callers outside the Tauri state.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
 pub struct ConsentStore {
     path: PathBuf,
-    lock: Mutex<()>,
 }
 impl ConsentStore {
     pub fn new(base: &Path) -> Self {
         Self {
             path: base.join("consents.json"),
-            lock: Mutex::new(()),
         }
     }
     fn read(&self) -> io::Result<Vec<Consent>> {
@@ -43,21 +44,21 @@ impl ConsentStore {
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
     pub fn get(&self, tool: ToolId, plugin_id: &str) -> io::Result<bool> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = STORE_LOCK.lock().unwrap();
         Ok(self
             .read()?
             .iter()
             .any(|c| c.tool == tool && c.plugin_id == plugin_id && c.granted))
     }
     pub fn list(&self) -> io::Result<Vec<Consent>> {
-        let _guard = self.lock.lock().unwrap();
+        let _guard = STORE_LOCK.lock().unwrap();
         self.read()
     }
     pub fn set(&self, tool: ToolId, plugin_id: &str, granted: bool) -> io::Result<()> {
         if !super::valid_plugin_id(plugin_id) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let _guard = self.lock.lock().unwrap();
+        let _guard = STORE_LOCK.lock().unwrap();
         let mut entries = self.read()?;
         entries.retain(|c| c.tool != tool || c.plugin_id != plugin_id);
         entries.push(Consent {
@@ -72,7 +73,10 @@ impl ConsentStore {
         self.set(tool, plugin_id, false)
     }
     pub fn clear_for_plugin(&self, plugin_id: &str) -> io::Result<()> {
-        let _guard = self.lock.lock().unwrap();
+        if !super::valid_plugin_id(plugin_id) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let _guard = STORE_LOCK.lock().unwrap();
         let mut entries = self.read()?;
         entries.retain(|c| c.plugin_id != plugin_id);
         self.write(&entries)

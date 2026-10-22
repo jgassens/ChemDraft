@@ -1253,18 +1253,28 @@ export interface PluginRecognitionAPI {
 }
 
 export const PluginExternalToolIdSchema = z.enum(["claude", "codex"]);
+export const PluginExternalToolInstallProgressSchema = z.object({
+  phase: z.enum(["checkingDisk", "downloading", "verifying", "installing", "done"]),
+  message: z.string(),
+  bytesDone: z.number().int().nonnegative().optional(),
+  bytesTotal: z.number().int().nonnegative().optional()
+}).strict();
 export const PluginExternalToolStatusSchema = z
   .object({
     tool: PluginExternalToolIdSchema,
+    publisher: z.string(),
     state: z.enum(["installed", "missing", "broken", "installing", "unsupported"]),
     source: z.enum(["user", "managed"]).optional(),
     path: z.string().optional(),
     version: z.string().optional(),
     pinnedVersion: z.string(),
+    pinnedDownloadBytes: z.number().int().nonnegative(),
+    freeDiskBytes: z.number().int().nonnegative().nullable(),
     managed: z.object({ version: z.string(), path: z.string() }).strict().optional(),
     signedIn: z.boolean().optional(),
     authMethod: z.string().optional(),
     detail: z.string().optional(),
+    progress: PluginExternalToolInstallProgressSchema.optional(),
     canInstall: z.boolean(),
     consented: z.boolean(),
     probedAt: z.string()
@@ -1279,7 +1289,7 @@ export const PluginExternalToolRunRequestSchema = z
     resumeId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
     model: z.string().regex(/^[a-z0-9.-]{1,64}$/).optional(),
     effort: z.enum(["low", "medium", "high"]).optional(),
-    mcpSessionId: z.string().min(1),
+    mcpSessionId: z.string().regex(/^[A-Za-z0-9_-]{0,128}$/).optional(),
     timeoutMs: z.number().int().min(1_000).max(1_800_000).optional()
   })
   .strict();
@@ -1288,7 +1298,7 @@ export const PluginExternalToolRunHandleSchema = z
   .strict();
 export const PluginExternalToolRunStatusSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("running") }).strict(),
-  z.object({ state: z.literal("exited"), code: z.number().int().nullable(), signal: z.string().optional(), durationMs: z.number().nonnegative() }).strict(),
+  z.object({ state: z.literal("exited"), code: z.number().int().nullable(), signal: z.number().int().nullable().optional(), durationMs: z.number().int().nonnegative() }).strict(),
   z.object({ state: z.literal("killed"), reason: z.enum(["cancelled", "timeout", "appExit", "pluginUnregistered"]) }).strict(),
   z.object({ state: z.literal("failed"), message: z.string().min(1) }).strict()
 ]);
@@ -1303,6 +1313,16 @@ export const PluginExternalToolRunPollSchema = z
 export const PluginExternalToolStatusRequestSchema = z.object({ tool: PluginExternalToolIdSchema, refresh: z.boolean().optional() }).strict();
 export const PluginExternalToolInstallRequestSchema = z.object({ tool: PluginExternalToolIdSchema }).strict();
 export const PluginExternalToolSignInResultSchema = z.object({ launched: z.boolean(), method: z.enum(["terminal.command", "newConsole"]), detail: z.string().optional() }).strict();
+export const PluginExternalToolRunErrorSchema = z.object({
+  code: z.enum(["notInstalled", "notConsented", "busy", "invalidArgs", "unknownRun", "notOwner", "spawnFailed", "limit"]),
+  message: z.string()
+}).strict();
+export const PluginExternalToolConsentListSchema = z.array(z.object({
+  tool: PluginExternalToolIdSchema,
+  pluginId: z.string(),
+  granted: z.boolean(),
+  at: z.string()
+}).strict());
 export const PluginExternalToolPollRequestSchema = z
   .object({ runId: z.string().min(1), cursor: z.number().int().nonnegative(), maxLines: z.number().int().positive().max(5_000).optional(), waitMs: z.number().int().nonnegative().max(1_000).optional() })
   .strict();

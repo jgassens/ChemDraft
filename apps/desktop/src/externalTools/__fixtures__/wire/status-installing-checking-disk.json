@@ -1,0 +1,15 @@
+{
+  "canInstall": true,
+  "consented": false,
+  "freeDiskBytes": 4000000000,
+  "pinnedDownloadBytes": 274675680,
+  "pinnedVersion": "2.1.308",
+  "probedAt": "2026-10-22T12:00:00Z",
+  "progress": {
+    "message": "Installing the tool.",
+    "phase": "checkingDisk"
+  },
+  "publisher": "Anthropic",
+  "state": "installing",
+  "tool": "claude"
+}

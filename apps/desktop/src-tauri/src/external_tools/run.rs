@@ -71,6 +71,17 @@ pub struct ExternalToolRunPoll {
     pub status: RunStatus,
 }
 
+pub(super) struct CapturedOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: RunStatus,
+}
+
+pub(super) enum CaptureError {
+    Cancelled,
+    OutputLimit,
+}
+
 struct Buffer {
     lines: VecDeque<OutputLine>,
     bytes: usize,
@@ -79,6 +90,7 @@ struct Buffer {
     status: RunStatus,
     cancel: Option<KillReason>,
     polled_finished_at: Option<Instant>,
+    finished_at: Option<Instant>,
     captured_bytes: usize,
     output_limit_exceeded: bool,
 }
@@ -200,6 +212,7 @@ impl ToolRun {
                 status: RunStatus::Running,
                 cancel: None,
                 polled_finished_at: None,
+                finished_at: None,
                 captured_bytes: 0,
                 output_limit_exceeded: false,
             }),
@@ -320,6 +333,7 @@ impl ToolRun {
                 .cancel
                 .map(|reason| RunStatus::Killed { reason })
                 .unwrap_or(status);
+            b.finished_at = Some(Instant::now());
             shared.changed.notify_all();
         });
         Ok(run)
@@ -364,6 +378,52 @@ impl ToolRun {
     pub(super) fn output_limit_exceeded(&self) -> bool {
         self.shared.buffer.lock().unwrap().output_limit_exceeded
     }
+    /// Drain a bounded probe/version run, including output buffered before exit.
+    pub(super) fn capture_output(
+        &self,
+        cap: usize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<CapturedOutput, CaptureError> {
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut cursor = 0;
+        loop {
+            if cancelled() {
+                self.cancel(KillReason::Cancelled);
+                self.wait_finished(Duration::from_secs(3));
+                return Err(CaptureError::Cancelled);
+            }
+            let poll = self.poll(cursor, 5000, 100);
+            cursor = poll.next_cursor;
+            let drained = poll.lines.is_empty();
+            if self.output_limit_exceeded() || poll.dropped_lines > 0 {
+                self.cancel(KillReason::Cancelled);
+                self.wait_finished(Duration::from_secs(3));
+                return Err(CaptureError::OutputLimit);
+            }
+            for line in poll.lines {
+                if line.truncated || stdout.len() + stderr.len() + line.text.len() + 1 > cap {
+                    self.cancel(KillReason::Cancelled);
+                    self.wait_finished(Duration::from_secs(3));
+                    return Err(CaptureError::OutputLimit);
+                }
+                let output = if line.stream == OutputStream::Stdout {
+                    &mut stdout
+                } else {
+                    &mut stderr
+                };
+                output.push_str(&line.text);
+                output.push('\n');
+            }
+            if !poll.status.is_running() && drained {
+                return Ok(CapturedOutput {
+                    stdout,
+                    stderr,
+                    status: poll.status,
+                });
+            }
+        }
+    }
     pub fn cancel(&self, reason: KillReason) {
         let mut b = self.shared.buffer.lock().unwrap();
         if b.status.is_running() && b.cancel.is_none() {
@@ -384,9 +444,13 @@ impl ToolRun {
     }
     pub fn removable(&self) -> bool {
         let b = self.shared.buffer.lock().unwrap();
-        b.polled_finished_at
-            .is_some_and(|at| at.elapsed() >= Duration::from_secs(60))
+        retention_expired(b.finished_at, b.polled_finished_at, Instant::now())
     }
+}
+
+fn retention_expired(finished: Option<Instant>, polled: Option<Instant>, now: Instant) -> bool {
+    finished.is_some_and(|at| now.duration_since(at) >= Duration::from_secs(10 * 60))
+        || polled.is_some_and(|at| now.duration_since(at) >= Duration::from_secs(60))
 }
 
 fn reader(
@@ -537,5 +601,41 @@ impl Drop for WindowsJob {
         unsafe {
             windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn finished_runs_expire_even_without_a_poll() {
+        let at = Instant::now();
+        assert!(!retention_expired(
+            None,
+            None,
+            at + Duration::from_secs(1000)
+        ));
+        assert!(!retention_expired(
+            Some(at),
+            None,
+            at + Duration::from_secs(599)
+        ));
+        assert!(retention_expired(
+            Some(at),
+            None,
+            at + Duration::from_secs(600)
+        ));
+        let polled = at + Duration::from_secs(10);
+        assert!(!retention_expired(
+            Some(at),
+            Some(polled),
+            at + Duration::from_secs(69)
+        ));
+        assert!(retention_expired(
+            Some(at),
+            Some(polled),
+            at + Duration::from_secs(70)
+        ));
     }
 }

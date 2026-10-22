@@ -17,5 +17,9 @@ describe("TauriExternalToolsEngine", () => {
     expect(invoke).toHaveBeenLastCalledWith("external_tool_run_poll", { runId: "run", cursor: 2, maxLines: 3, waitMs: 4 });
     await engine.runStart({ tool: "codex", pluginId: "plugin", conversationId: "conversation", prompt: "p", systemPrompt: "s", mcpSessionId: "" });
     expect(invoke).toHaveBeenLastCalledWith("external_tool_run_start", { request: expect.objectContaining({ pluginId: "plugin" }) });
+    await engine.consentRevoke("claude", "plugin");
+    expect(invoke).toHaveBeenLastCalledWith("external_tool_consent_revoke", { tool: "claude", pluginId: "plugin" });
+    await engine.consentClearPlugin("plugin");
+    expect(invoke).toHaveBeenLastCalledWith("external_tool_consent_clear_plugin", { pluginId: "plugin" });
   });
 });
