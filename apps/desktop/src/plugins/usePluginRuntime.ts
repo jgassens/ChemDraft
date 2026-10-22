@@ -45,6 +45,7 @@ import type {
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
+import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 
 /**
@@ -183,6 +184,10 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
 
   const [version, bumpVersion] = useReducer((value: number) => value + 1, 0);
   useEffect(() => mountStructureNamingHost(runtime.naming, {
+    coordinator: () => providersRef.current.getDialogCoordinator?.(),
+    documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
+  }), [runtime]);
+  useEffect(() => presentExternalToolInstall(runtime.externalTools, {
     coordinator: () => providersRef.current.getDialogCoordinator?.(),
     documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
   }), [runtime]);
