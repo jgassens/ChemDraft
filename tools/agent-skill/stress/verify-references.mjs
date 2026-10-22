@@ -236,15 +236,28 @@ async function buildLock() {
 }
 
 /** Compare the generated lock exactly; stored diagnostics are checkout-relative. */
-export function referenceLockForComparison(lock) {
-  return stableJson(lock);
+export function referenceLockForComparison(lock, { skipP10Opsin = false } = {}) {
+  if (!skipP10Opsin) return stableJson(lock);
+  const comparable = structuredClone(lock);
+  if (comparable.specialVerifications?.P10) {
+    const { opsinOk, opsinSmiles, canonicalIsomericSmiles, equalsReference, error, ...p10 } = comparable.specialVerifications.P10;
+    comparable.specialVerifications.P10 = p10;
+  }
+  return stableJson(comparable);
+}
+
+export function p10RuntimeMissing(lock) {
+  const p10 = lock.specialVerifications?.P10;
+  return p10?.opsinOk === false && typeof p10.error === "string" && /(?:Java|OPSIN).*?(?:missing|not found|unavailable)|(?:missing|not found|unavailable).*?(?:Java|OPSIN)/i.test(p10.error);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const lock = await buildLock();
   if (checkOnly) {
     const existing = JSON.parse(await readFile(lockPath, "utf8"));
-    if (referenceLockForComparison(existing) !== referenceLockForComparison(lock)) throw new Error("references.lock.json is stale; run verify-references.mjs without --check.");
+    const skipP10Opsin = p10RuntimeMissing(lock);
+    if (skipP10Opsin) process.stderr.write("P10 OPSIN check skipped: runtime missing\n");
+    if (referenceLockForComparison(existing, { skipP10Opsin }) !== referenceLockForComparison(lock, { skipP10Opsin })) throw new Error("references.lock.json is stale; run verify-references.mjs without --check.");
   } else {
     await writeFile(lockPath, stableJson(lock));
   }

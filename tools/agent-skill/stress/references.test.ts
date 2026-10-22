@@ -18,10 +18,22 @@ describe('portable reference snapshot', () => {
 
   it('compares chemistry exactly while ignoring the location of a missing local Java runtime', async () => {
     const lock = JSON.parse(await readFile(new URL('./references.lock.json', import.meta.url), 'utf8'));
-    const relocated = structuredClone(lock);
-    relocated.specialVerifications.P10.error = relocated.specialVerifications.P10.error.replace(/at "[^"]+"/, 'at "C:\\work\\java.exe"');
-    expect(referenceLockForComparison(relocated)).toBe(referenceLockForComparison(lock));
+    const macCopy = structuredClone(lock);
+    const windowsCopy = structuredClone(lock);
+    macCopy.specialVerifications.P10.error = 'OPSIN runtime missing at "/opt/homebrew/bin/java"';
+    windowsCopy.specialVerifications.P10.error = 'OPSIN runtime missing at "C:\\Program Files\\Java\\bin\\java.exe"';
+    expect(referenceLockForComparison(macCopy, { skipP10Opsin: true })).toBe(referenceLockForComparison(windowsCopy, { skipP10Opsin: true }));
+    const relocated = structuredClone(macCopy);
     relocated.references[0].unspecifiedStereoCenters++;
-    expect(referenceLockForComparison(relocated)).not.toBe(referenceLockForComparison(lock));
+    expect(referenceLockForComparison(relocated)).not.toBe(referenceLockForComparison(macCopy));
+  });
+
+  it('ignores only P10 OPSIN when the runtime is missing during --check', async () => {
+    const lock = JSON.parse(await readFile(new URL('./references.lock.json', import.meta.url), 'utf8'));
+    const generated = structuredClone(lock);
+    generated.specialVerifications.P10 = { ...generated.specialVerifications.P10, opsinOk: false, error: 'Java missing' };
+    expect(referenceLockForComparison(lock, { skipP10Opsin: true })).toBe(referenceLockForComparison(generated, { skipP10Opsin: true }));
+    generated.references[0].unspecifiedStereoCenters++;
+    expect(referenceLockForComparison(lock, { skipP10Opsin: true })).not.toBe(referenceLockForComparison(generated, { skipP10Opsin: true }));
   });
 });
