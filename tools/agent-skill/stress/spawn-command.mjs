@@ -50,4 +50,3 @@ export function spawnCommandSpec(command, args, {
     args: ['/d', '/s', '/c', `${quoteWindowsCmdArgument(resolved)} ${commandArgs.map(quoteWindowsCmdArgument).join(' ')}`],
   };
 }
-

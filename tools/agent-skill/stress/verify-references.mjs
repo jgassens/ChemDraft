@@ -206,6 +206,14 @@ async function buildLock() {
     const p10Result = p10.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))[0];
     if (!p10Result) throw new Error("chemdraft name produced no P10 result.");
     const p10Reference = rows.find((row) => row.caseId === "P10")?.smiles;
+    const [p10Canonical] = p10Result.ok
+      ? await batch("analyze", [{ name: "p10-opsin", smiles: p10Result.smiles }], temporaryDirectory, "analyze-p10-opsin")
+      : [];
+    if (p10Result.ok && !p10Canonical?.ok) throw new Error("OPSIN result failed ChemDraft canonicalization.");
+    const p10ReferenceCanonical = references.find((row) => row.caseId === "P10")?.canonicalIsomericSmiles;
+    const error = typeof p10Result.error === "string"
+      ? p10Result.error.replaceAll(repo, "<checkout>")
+      : undefined;
     return {
       schemaVersion: 1,
       generator: "tools/agent-skill/stress/verify-references.mjs",
@@ -216,8 +224,9 @@ async function buildLock() {
           referenceSmiles: p10Reference,
           opsinOk: p10Result.ok,
           opsinSmiles: p10Result.smiles,
-          equalsReference: p10Result.ok ? p10Result.smiles === p10Reference : null,
-          ...(p10Result.ok ? {} : { error: p10Result.error })
+          canonicalIsomericSmiles: p10Canonical?.summary.canonicalSmiles.value,
+          equalsReference: p10Result.ok ? p10Canonical.summary.canonicalSmiles.value === p10ReferenceCanonical : null,
+          ...(p10Result.ok ? {} : { error })
         }
       }
     };
@@ -226,16 +235,9 @@ async function buildLock() {
   }
 }
 
-/** A missing local OPSIN runtime is recorded in the original lock. Its checkout
- * location is environmental, so compare the diagnostic with just that path
- * normalised. All chemistry and the rest of the diagnostic still compare exactly. */
+/** Compare the generated lock exactly; stored diagnostics are checkout-relative. */
 export function referenceLockForComparison(lock) {
-  const copy = structuredClone(lock);
-  const verification = copy.specialVerifications?.P10;
-  if (verification?.opsinOk === false && typeof verification.error === 'string') {
-    verification.error = verification.error.replace(/missing bundled Java executable at "[^"]+"/, 'missing bundled Java executable at "<checkout-runtime>"');
-  }
-  return stableJson(copy);
+  return stableJson(lock);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
