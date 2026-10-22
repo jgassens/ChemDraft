@@ -66,3 +66,19 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Paired bracket tools
+
+Select a pair to show its lower-right **label, repeat count, or range** field. Enter text such as
+`n`, `12`, or `5–10`, then press Enter or click away to keep it. Escape discards the current edit;
+clear the field to remove the label. Each completed edit is one Undo step. The text belongs to
+the pair and follows its movement and resizing. Native saves and SVG/PDF preserve the label;
+the empty editor placeholder is never exported. This is a drawing annotation, not polymer chemistry.
+
+Main and Art offer separate **Paired Square Brackets** and **Paired Curly Brackets** tools beside
+the original single-bracket tools. Drag across a region to draw both facing sides, or click to
+place a default-size pair. The pair is one object: select it to move or resize both sides together.
+Escape or pointer cancellation discards the preview, and insertion is one Undo step.
+Drawing brackets does not change the enclosed molecule. Native saves preserve the pair and SVG/PDF
+render both sides. Existing CDXML bracket-placeholder warnings still apply; this adds no polymer
+semantics or visible-CDXML bracket compatibility.

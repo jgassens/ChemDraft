@@ -1,4 +1,6 @@
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
+import { BracketLabelEditor } from "./BracketLabelEditor";
+import { updateNativeBracketPairLabel } from "./documentWorkflow";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
@@ -215,6 +217,7 @@ import {
   type PageSvgFragment,
   type PageSvgRenderPlan,
   bracketGlyphPathD,
+  pairedBracketGlyphPathD,
   planReactionArrowGeometry,
   projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
   projectedPlaneSvgTransformForObject,
@@ -508,6 +511,8 @@ import {
   applyReactionArrowToolAtPoint,
   stretchNativeReactionArrowTo,
   bracketKindForToolCommand,
+  pairedBracketKindForToolCommand,
+  insertNativeBracketPair,
   insertNativeBracket,
   applyNativeChainTool,
   applyFormulaTextFormatting,
@@ -954,7 +959,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "bracket-pair";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -963,6 +968,7 @@ type NativePlacementDragState = {
   bondStyle?: NativeBondDisplayStyle;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
+  bracketPairKind?: "square" | "curly";
   chainAnchor?: NativeChainAnchor;
   /** Flexible chain variant: the zig-zag follows the accumulated pointer path. */
   chainFlexible?: boolean;
@@ -1602,7 +1608,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.22.10.32-codex";
+const CURRENT_BUILD_STAMP = "10.22.21.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -6602,6 +6608,10 @@ export function MainWindow({
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
   }, [replacePresentDocument]);
+
+  const updateBracketLabel = useCallback((objectId: string, label: string) => {
+    commitDocumentChange(current => updateNativeBracketPairLabel(current, objectId, label), "Edit Bracket Label");
+  }, [commitDocumentChange]);
 
   const convertCommittedText = useCallback((objectId: string) => {
     if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
@@ -12885,9 +12895,12 @@ export function MainWindow({
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
+      | { kind: "bracket-pair"; bracketKind: "square" | "curly" }
   ): boolean => {
     const startDocument = documentRef.current;
-    const placementDocument = placement.kind === "template"
+    const placementDocument = placement.kind === "bracket-pair"
+      ? insertNativeBracketPair(startDocument, point, placement.bracketKind)
+      : placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
       : placement.kind === "arrow"
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
@@ -12914,6 +12927,7 @@ export function MainWindow({
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      bracketPairKind: placement.kind === "bracket-pair" ? placement.bracketKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
@@ -12926,7 +12940,7 @@ export function MainWindow({
     // initial press: the arrow appears once the pointer moves (custom length/angle) or the press is
     // released (default-length arrow). Bonds, templates, and chains keep their press-time preview,
     // where seeing the placement under the cursor is the point.
-    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow";
+    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow" && placement.kind !== "bracket-pair";
     replacePresentDocument(paintsOnPress ? placementDocument : startDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -13294,6 +13308,9 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "bracket-pair" && drag.bracketPairKind) {
+      return insertNativeBracketPair(drag.startDocument, drag.startPoint, drag.bracketPairKind, point);
+    }
     if (drag.kind === "arrow") {
       // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
       return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
@@ -13347,7 +13364,7 @@ export function MainWindow({
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
-    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
+    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket-pair" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -13401,7 +13418,7 @@ export function MainWindow({
     const label = nativePlacementStatusLabel(drag);
     const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
       ? "Inserted angled"
-      : drag.kind === "chain"
+      : drag.kind === "chain" || drag.kind === "bracket-pair"
         ? "Inserted"
         : "Inserted rotated";
     // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
@@ -15078,6 +15095,16 @@ export function MainWindow({
     }
 
     {
+      const pairKind = pairedBracketKindForToolCommand(activeToolState.activeCommandId);
+      if (pairKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        startNativePlacementDrag(event, point, { kind: "bracket-pair", bracketKind: pairKind });
+        return;
+      }
+    }
+
+    {
       const bracketKind = bracketKindForToolCommand(activeToolState.activeCommandId);
       if (bracketKind) {
         event.preventDefault();
@@ -16448,6 +16475,16 @@ export function MainWindow({
         setStatus("Can't grow a chain from that atom");
       }
       return;
+    }
+
+    {
+      const pairKind = pairedBracketKindForToolCommand(activeToolState.activeCommandId);
+      if (pairKind && point) {
+        event.preventDefault();
+        event.stopPropagation();
+        startNativePlacementDrag(event, point, { kind: "bracket-pair", bracketKind: pairKind });
+        return;
+      }
     }
 
     {
@@ -19067,6 +19104,7 @@ export function MainWindow({
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
     onTextChange: updateTextObjectContent,
+    onBracketLabelChange: updateBracketLabel,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
     isTextPlaceholderPending,
@@ -21566,6 +21604,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "bracket-pair") return `${drag.bracketPairKind} bracket pair`;
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
   }
@@ -25606,6 +25645,7 @@ function reactSvgAttributeName(name: string): string {
     "stroke-opacity": "strokeOpacity",
     "stroke-width": "strokeWidth",
     "text-anchor": "textAnchor",
+    "xml:space": "xmlSpace",
     "text-decoration": "textDecoration",
     "vector-effect": "vectorEffect"
   }[name] ?? name;
@@ -25703,6 +25743,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel,
   onContextMenu,
   onTextChange,
+  onBracketLabelChange,
   onTextEditFinish,
   onTextSelectionChange,
   isTextPlaceholderPending,
@@ -25780,6 +25821,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
+  onBracketLabelChange(objectId: string, label: string): void;
   onTextEditFinish(objectId?: string): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
@@ -26798,7 +26840,17 @@ function DocumentObjectViewContent({
         onContextMenu={handleObjectContextMenu}
       >
         <BracketGlyph object={object} projection={artObjectProjection} />
-        {chrome(artObjectTransformFrame)}
+        {chrome(<>
+          {artObjectTransformFrame}
+          {object.paired && selected && !inGroupSelection ? (
+            <div style={{ position: "absolute", inset: 0, pointerEvents: "none",
+              transform: artObjectProjection?.matrix
+                ? `matrix(${artObjectProjection.matrix.a}, ${artObjectProjection.matrix.b}, ${artObjectProjection.matrix.c}, ${artObjectProjection.matrix.d}, 0, 0)`
+                : undefined, transformOrigin: "50% 50%" }}>
+              <BracketLabelEditor object={object} onCommit={onBracketLabelChange} />
+            </div>
+          ) : null}
+        </>)}
       </div>
     );
   }
@@ -27209,7 +27261,9 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
-  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
+  const pathD = object.paired
+    ? pairedBracketGlyphPathD(object.bracketKind, width, height)
+    : bracketGlyphPathD(object.bracketKind, width, height);
   return (
     <svg
       className="bracket-glyph"

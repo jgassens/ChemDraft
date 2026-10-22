@@ -685,6 +685,29 @@
               }
             },
             {
+              "commandId": "tool.pairedCurlyBracket",
+              "title": "Paired Curly Brackets",
+              "icon": "bracePair",
+              "category": "annotation",
+              "id": "tool.pairedCurlyBracket",
+              "kind": "button",
+              "label": "Paired Curly Brackets",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.pairedCurlyBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Paired Curly Brackets",
+                "shortcut": null,
+                "description": "Drag to draw a matching pair. Click for a default-size pair."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
               "commandId": "tool.squareBracket",
               "title": "Square Bracket Tool",
               "icon": "bracket",
@@ -701,6 +724,29 @@
               "tooltip": {
                 "title": "Square Bracket Tool",
                 "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.pairedSquareBracket",
+              "title": "Paired Square Brackets",
+              "icon": "bracket",
+              "category": "annotation",
+              "id": "tool.pairedSquareBracket",
+              "kind": "button",
+              "label": "Paired Square Brackets",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.pairedSquareBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Paired Square Brackets",
+                "shortcut": null,
+                "description": "Drag to draw a matching pair. Click for a default-size pair."
               },
               "layout": {
                 "colSpan": 1,
@@ -2648,6 +2694,29 @@
               }
             },
             {
+              "commandId": "tool.pairedCurlyBracket",
+              "title": "Paired Curly Brackets",
+              "icon": "bracePair",
+              "category": "annotation",
+              "id": "tool.pairedCurlyBracket",
+              "kind": "button",
+              "label": "Paired Curly Brackets",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.pairedCurlyBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Paired Curly Brackets",
+                "shortcut": null,
+                "description": "Drag to draw a matching pair. Click for a default-size pair."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
               "commandId": "tool.squareBracket",
               "title": "Square Bracket Tool",
               "icon": "bracket",
@@ -2664,6 +2733,29 @@
               "tooltip": {
                 "title": "Square Bracket Tool",
                 "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.pairedSquareBracket",
+              "title": "Paired Square Brackets",
+              "icon": "bracket",
+              "category": "annotation",
+              "id": "tool.pairedSquareBracket",
+              "kind": "button",
+              "label": "Paired Square Brackets",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.pairedSquareBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Paired Square Brackets",
+                "shortcut": null,
+                "description": "Drag to draw a matching pair. Click for a default-size pair."
               },
               "layout": {
                 "colSpan": 1,

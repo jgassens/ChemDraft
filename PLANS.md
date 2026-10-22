@@ -8,8 +8,24 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+## Separate paired-bracket tools (`feature/paired-brackets`)
+
+Add `tool.pairedSquareBracket` and `tool.pairedCurlyBracket` beside the existing single-bracket
+controls, preserving their commands and click behavior. A new pair is one native bracket object
+with optional `paired: true`; legacy objects omit this field and keep their existing rendering.
+A click inserts a default pair and a drag sets its rectangular extent in either direction. Reuse
+the placement capture, preview, cancel and undo paths, and the existing bracket move/resize controls.
+The layout engine owns the matching paths for canvas and SVG/PDF export. Cover serialization,
+geometry, chemistry preservation, toolbar routing, pointer capture, cancellation and undo/redo.
+Scope: bracket schema/rendering, desktop tools and placement, tests, documentation and build stamp.
+Native Windows/macOS verification remains required before closeout. No polymer semantics or new
+CDXML compatibility claims are part of this slice.
+
+Extension: selected pairs expose an inline lower-right label editor for plain text, a repeat count,
+or a range, using the existing optional `label` field. Enter/blur commits one undo entry, Escape
+discards the draft, and an empty value removes visible text. The layout engine owns placement for
+the canvas and SVG/PDF output. Save/reopen, move/resize, rotation/projection, text escaping and
+click-away editing must be covered; native focus/IME and scaling remain manual checks.
 
 ---
 

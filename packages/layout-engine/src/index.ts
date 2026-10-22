@@ -4692,6 +4692,26 @@ export function bracketGlyphPathD(
   return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
+/** A matching pair within one frame, with a fixed maximum arm width as the gap grows. */
+export function pairedBracketGlyphPathD(
+  kind: BracketObject["bracketKind"], width: number, height: number,
+  project?: (point: LayoutPoint) => LayoutPoint
+): string {
+  const armWidth = Math.min(16, Math.max(width / 3, 1));
+  const left = bracketGlyphPathD(kind, armWidth, height, project);
+  const right = bracketGlyphPathD(kind, armWidth, height, point => {
+    const mirrored = { x: Math.max(width - 1, 0) - point.x, y: point.y };
+    return project ? project(mirrored) : mirrored;
+  });
+  return `${left} ${right}`;
+}
+
+/** Local baseline, just outside the lower right side. Shared by the editor and exports. */
+export function bracketLabelLayout(object: BracketObject) {
+  return { x: Math.max(object.width, 1) + 3, y: Math.max(object.height, 1) + 4,
+    fontSize: 14, fontFamily: "Arial, sans-serif" } as const;
+}
+
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
@@ -4705,13 +4725,25 @@ function bracketObjectFragment(object: BracketObject, layerIndex: number): PageS
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
       transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height, project),
+      d: object.paired
+        ? pairedBracketGlyphPathD(object.bracketKind, width, height, project)
+        : bracketGlyphPathD(object.bracketKind, width, height, project),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,
       "stroke-linecap": "round",
       "stroke-linejoin": "round"
-    })
+    }),
+    ...(object.paired && object.label ? [elementFragment("text", `bracket-label-${object.id}`, {
+      class: "bracket-label",
+      x: object.x + bracketLabelLayout(object).x,
+      y: object.y + bracketLabelLayout(object).y,
+      "font-size": bracketLabelLayout(object).fontSize,
+      "font-family": bracketLabelLayout(object).fontFamily,
+      fill: "#172026",
+      "xml:space": "preserve",
+      transform: projection ? projectedPlaneSvgTransformForObject(object) : undefined
+    }, [textFragment(`bracket-label-text-${object.id}`, object.label)])] : [])
   ]);
 }
 

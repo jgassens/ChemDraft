@@ -299,6 +299,22 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
   },
   {
+    commandId: "tool.pairedCurlyBracket",
+    title: "Paired Curly Brackets",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracePair",
+    usageHint: usageHint("drag to enclose a region", "click for a default pair, resize both sides together", "Esc cancels")
+  },
+  {
+    commandId: "tool.pairedSquareBracket",
+    title: "Paired Square Brackets",
+    kind: "bracket",
+    category: "annotation",
+    icon: "bracket",
+    usageHint: usageHint("drag to enclose a region", "click for a default pair, resize both sides together", "Esc cancels")
+  },
+  {
     commandId: "tool.dagger",
     title: "Dagger Symbol Tool",
     kind: "text",

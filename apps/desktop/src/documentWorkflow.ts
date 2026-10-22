@@ -4750,6 +4750,38 @@ export function bracketKindForToolCommand(commandId: string): BracketObject["bra
   return bracketKindByToolCommandId.get(commandId);
 }
 
+export function pairedBracketKindForToolCommand(commandId: string): "square" | "curly" | undefined {
+  return commandId === "tool.pairedSquareBracket" ? "square"
+    : commandId === "tool.pairedCurlyBracket" ? "curly" : undefined;
+}
+
+export const nativeBracketPairDefaultSize = { width: 120, height: 80 } as const;
+
+/** Plain display text, not polymer chemistry. Preserve the pair's frame and selection. */
+export function updateNativeBracketPairLabel(
+  document: ChemDraftDocument, objectId: string, label: string
+): ChemDraftDocument {
+  const object = document.pages.flatMap(page => page.objects).find(item => item.id === objectId);
+  if (object?.type !== "bracket" || !object.paired || (object.label ?? "") === label) return document;
+  return applyPatch(document, { op: "updateObject", objectId, changes: { label } }, { now: phase4Timestamp });
+}
+
+/** One paired bracket object: no molecule coordinates or chemistry are changed. */
+export function insertNativeBracketPair(
+  document: ChemDraftDocument, start: PagePoint, kind: "square" | "curly", end?: PagePoint
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const rawWidth = end ? Math.abs(end.x - start.x) : nativeBracketPairDefaultSize.width;
+  const rawHeight = end ? Math.abs(end.y - start.y) : nativeBracketPairDefaultSize.height;
+  const width = Math.min(page.width, Math.max(32, rawWidth));
+  const height = Math.min(page.height, Math.max(16, rawHeight));
+  const x = clamp(end ? Math.min(start.x, end.x) : start.x - width / 2, 0, Math.max(0, page.width - width));
+  const y = clamp(end ? Math.min(start.y, end.y) : start.y - height / 2, 0, Math.max(0, page.height - height));
+  const placed = insertNativeBracket(document, start, kind);
+  return applyPatch(placed, { op: "updateObject", objectId: placed.selection.objectIds[0],
+    changes: { paired: true, x, y, width, height } }, { now: phase4Timestamp });
+}
+
 export const nativeBracketDefaultSize = { width: 16, height: 64 } as const;
 
 /** Click placement: a default-size bracket centered on the click point, clamped to the page. */
