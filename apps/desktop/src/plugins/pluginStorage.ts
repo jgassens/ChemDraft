@@ -1,4 +1,5 @@
 import type { PluginStorage } from "@chemdraft/plugin-api";
+import { invoke } from "@tauri-apps/api/core";
 import { isDesktopRuntime } from "../window-manager";
 
 /** Where a storage failure is reported. Defaults to the console; tests pass their own sink. */
@@ -31,7 +32,6 @@ export function createPersistentPluginStorage(
   const refresh = async (): Promise<void> => {
     if (!isDesktopRuntime() || persistDisabled) return;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const contents = await invoke<string | null>("plugin_storage_read", { pluginId });
       let parsed: unknown = {};
       try {
@@ -60,7 +60,6 @@ export function createPersistentPluginStorage(
     try {
       const valueJson = entry.deleted ? null : JSON.stringify(entry.value);
       if (valueJson === undefined) throw new Error("The value cannot be represented as JSON");
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("plugin_storage_mutate", { pluginId, key, valueJson });
       pending.delete(key);
     } catch (error) {

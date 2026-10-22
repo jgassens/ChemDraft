@@ -7130,7 +7130,7 @@ fn close_window_menu_item<R: Runtime>(
 }
 
 #[cfg(target_os = "macos")]
-fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+fn main_menu_closes_tab(label: &str) -> bool {
     menu_closes_document_tab(
         label,
         DOCUMENT_VIEW_MENUS
@@ -7207,7 +7207,7 @@ fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     });
     if tauri_window
         .as_ref()
-        .is_some_and(|window| main_menu_closes_tab(app, window.label()))
+        .is_some_and(|window| main_menu_closes_tab(window.label()))
     {
         if let Err(error) = dispatch_dom_command_event(
             tauri_window.as_ref().expect("checked key document"),
