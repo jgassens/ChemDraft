@@ -7578,3 +7578,12 @@ textarea:focus-visible,
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+.document-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  white-space: nowrap;
+}
+.document-zoom-controls .icon-button { width: 24px; height: 24px; padding: 2px; flex: 0 0 24px; }
+.document-zoom-controls select { width: 76px; height: 24px; font-size: 12px; }

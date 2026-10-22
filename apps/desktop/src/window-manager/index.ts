@@ -11,6 +11,44 @@ import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayo
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./tauriEvents";
+import { isDocumentZoomState, type DocumentZoomState } from "../documentZoom";
+
+export const TOOLSET_ZOOM_EVENT = "chemdraft://toolset-zoom";
+export const TOOLSET_ZOOM_REQUEST_EVENT = "chemdraft://toolset-zoom-request";
+
+/** Small viewport-only channel: wheel zoom must not retransmit inspector reports. */
+export async function broadcastToolsetZoom(payload: DocumentZoomState): Promise<void> {
+  if (!isDocumentZoomState(payload)) return;
+  dispatchDomToolsetEvent(TOOLSET_ZOOM_EVENT, payload);
+  if (isDesktopRuntime()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(TOOLSET_ZOOM_EVENT, payload);
+  }
+}
+export async function requestToolsetZoom(): Promise<void> {
+  dispatchDomToolsetEvent(TOOLSET_ZOOM_REQUEST_EVENT, {});
+  if (isDesktopRuntime()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(TOOLSET_ZOOM_REQUEST_EVENT);
+  }
+}
+export async function listenForToolsetZoom(handler: (state: DocumentZoomState) => void): Promise<Unlisten> {
+  const receive = (value: unknown) => { if (isDocumentZoomState(value)) handler(value); };
+  const stopDom = listenForDomToolsetEvent(TOOLSET_ZOOM_EVENT, event => receive(event.detail));
+  if (!isDesktopRuntime()) return stopDom;
+  try {
+    const stopNative = await listenTauriEvent(TOOLSET_ZOOM_EVENT, event => receive(event.payload));
+    return () => { stopDom(); stopNative(); };
+  } catch (error) { stopDom(); throw error; }
+}
+export async function listenForToolsetZoomRequests(handler: () => void): Promise<Unlisten> {
+  const stopDom = listenForDomToolsetEvent(TOOLSET_ZOOM_REQUEST_EVENT, handler);
+  if (!isDesktopRuntime()) return stopDom;
+  try {
+    const stopNative = await listenTauriEvent(TOOLSET_ZOOM_REQUEST_EVENT, handler);
+    return () => { stopDom(); stopNative(); };
+  } catch (error) { stopDom(); throw error; }
+}
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";

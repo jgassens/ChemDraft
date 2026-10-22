@@ -24,6 +24,20 @@
           "id": "core.main.items",
           "items": [
             {
+              "id": "widget.core.documentZoom",
+              "kind": "control",
+              "label": "Document Zoom",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.documentZoom"
+              },
+              "submenu": null,
+              "layout": {
+                "colSpan": 6,
+                "rowSpan": 1
+              }
+            },
+            {
               "commandId": "tool.select",
               "title": "Selection Tool",
               "icon": "select",
