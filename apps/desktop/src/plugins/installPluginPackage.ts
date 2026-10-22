@@ -812,16 +812,7 @@ export async function uninstallPlugin(options: {
     );
   }
 
-  // Only plugins granted the tools capability can have a persisted external-tool consent. Besides
-  // avoiding a needless native round-trip for every other plugin, this keeps an unavailable consent
-  // store from affecting an uninstall that could never need it. Capture the registration before it
-  // is removed: disabled installs still provide their descriptor, while active legacy callers can
-  // still be identified through the host registration.
   const registered = runtime.host.getPlugin(pluginId);
-  const mayHaveExternalToolConsent =
-    descriptor?.manifest.permissions.includes("assistant.run") ||
-    registered?.manifest.permissions.includes("assistant.run") ||
-    false;
 
   closePluginPanels(runtime, pluginId);
   descriptor?.deactivate?.();
@@ -843,12 +834,10 @@ export async function uninstallPlugin(options: {
   // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
   // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
   // half-uninstalled plugin.
-  if (mayHaveExternalToolConsent) {
-    try {
-      await runtime.externalTools.consentClearPlugin(pluginId);
-    } catch (error) {
-      console.warn(`Uninstalling "${pluginId}": could not clear external-tool consent.`, error);
-    }
+  try {
+    await runtime.externalTools.consentClearPlugin(pluginId);
+  } catch (error) {
+    console.warn(`Uninstalling "${pluginId}": could not clear external-tool consent.`, error);
   }
 
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package

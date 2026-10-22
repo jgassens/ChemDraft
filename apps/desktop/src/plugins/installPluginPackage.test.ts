@@ -1013,15 +1013,24 @@ describe("pruneOrphanedPluginPackages", () => {
 
 describe("uninstallPlugin", () => {
   // Criterion 5
-  it("terminates the worker, unregisters, deletes the staged files, and forgets the record without external-tool consent", async () => {
+  it("always attempts consent cleanup, and a cleanup failure never blocks uninstall", async () => {
     const { fs, runtime, result, worker } = await installFixture();
     expect(runtime.host.getPlugin(PLUGIN_ID)).toBeDefined();
-    const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
+    const clearConsent = vi
+      .spyOn(runtime.externalTools, "consentClearPlugin")
+      .mockRejectedValueOnce(new Error("consents.json could not be written"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cancelRuns = vi.spyOn(runtime.externalTools, "cancelAllForPlugin");
 
-    await uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor });
+    await expect(
+      uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor })
+    ).resolves.toBeUndefined();
 
-    expect(clearConsent).not.toHaveBeenCalled();
+    expect(clearConsent).toHaveBeenCalledWith(PLUGIN_ID);
+    expect(warn).toHaveBeenCalledWith(
+      `Uninstalling "${PLUGIN_ID}": could not clear external-tool consent.`,
+      expect.objectContaining({ message: "consents.json could not be written" })
+    );
     expect(cancelRuns).toHaveBeenCalledWith(PLUGIN_ID);
     expect(worker.terminated()).toBe(true);
     expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
@@ -1029,6 +1038,7 @@ describe("uninstallPlugin", () => {
     expect(runtime.host.listMenuContributions().some((menu) => menu.contribution.commandId === COMMAND_ID)).toBe(false);
     expect(fs.pathsUnder(`installed-plugins/${PLUGIN_ID}/`)).toEqual([]);
     expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    warn.mockRestore();
   });
 
   it("clears external-tool consent for a plugin that can hold it", async () => {
@@ -1039,6 +1049,35 @@ describe("uninstallPlugin", () => {
     const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
 
     await uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor });
+
+    expect(clearConsent).toHaveBeenCalledWith(PLUGIN_ID);
+  });
+
+  it("clears consent granted before an update removed assistant.run", async () => {
+    const zip = await createPackage({
+      manifest: manifestDocument({ version: "1.0.0", permissions: ["ui.menu", "ui.panel", "assistant.run"] })
+    });
+    const { fs, runtime, result: installed } = await installFixture({ zip });
+    const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
+    const inspection = await updateInspection("2.0.0", { permissions: ["ui.menu", "ui.panel"] });
+    const updated = await updateInstalledPluginPackage({
+      runtime,
+      fs,
+      current: installedCatalogEntry(installed),
+      inspection,
+      disabled: false,
+      origin: ORIGIN,
+      createWorker: () => createFakeWorker().handle
+    });
+
+    expect(updated.descriptor.manifest.permissions).not.toContain("assistant.run");
+    await uninstallPlugin({
+      runtime,
+      fs,
+      pluginId: PLUGIN_ID,
+      record: updated.record,
+      descriptor: updated.descriptor
+    });
 
     expect(clearConsent).toHaveBeenCalledWith(PLUGIN_ID);
   });
