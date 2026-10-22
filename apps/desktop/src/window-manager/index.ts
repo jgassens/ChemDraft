@@ -2,7 +2,7 @@ import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportP
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
-import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
+import type { ArtInspectorEffectKind, ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
@@ -341,7 +341,7 @@ export interface ToolsetFlyoutSnapshot {
  * no per-kind windows to keep in sync, and no way for a stale kind to coexist.
  */
 export type ToolsetPopoverContent =
-  | { kind: "artColor" }
+  | { kind: "artColor"; effectKind?: ArtInspectorEffectKind }
   | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot };
 
 /** Where the popover's top-left belongs, in global logical coordinates. Rides the content

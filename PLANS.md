@@ -8,8 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+## Native effect-color picker (`fix/effect-color-picker-window`)
+
+Route the Art toolbar's Effect color picker through the existing native palette popover so it
+is not clipped by the palette webview. Carry the selected Glow/Shadow/Sketch target with the
+popover content and use that effect's color and preview/commit commands. Preserve ordinary
+Fill/Stroke behavior and the inline browser fallback. Cover native request routing, effect color
+fidelity, window reuse and dismissal. Scope: the palette/popover components, widget and window-manager
+contracts, focused tests, build stamp and standing manual checklist. Keep this slice in flight
+until real Windows and macOS popup placement and editing are verified.
 
 ---
 

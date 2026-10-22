@@ -11,6 +11,7 @@ import type { ToolbarPaletteItemModel } from "../toolsets";
 // (which imports the context *value* from here).
 import type { ToolbarPopoverAnchor } from "../ToolPalette";
 import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
+import type { ArtInspectorEffectKind } from "../artInspectorModel";
 
 /**
  * Live state + callbacks a toolbar widget (style controls, ring/molecule inspector) needs to render
@@ -40,7 +41,7 @@ export interface ToolbarWidgetState {
   molecularInspectorStale?: boolean;
   onInvoke: (commandId: string) => void;
   onColorPickerOpenChange?: (open: boolean) => void;
-  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor) => void;
+  onRequestColorPopover?: (anchor: ToolbarPopoverAnchor, effectKind?: ArtInspectorEffectKind) => void;
   onArtStylePreview?: (commandId: string) => void;
   onArtStyleCommit?: (commandId: string) => void;
   onArtStyleCancel?: () => void;

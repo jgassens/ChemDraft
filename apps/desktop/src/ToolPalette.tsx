@@ -2441,7 +2441,15 @@ function ArtToolbarStyleControls() {
               data-art-effect-color-trigger={visibleEffectKind}
               data-palette-control="true"
               style={{ "--picker-color": currentEffectColor } as CSSProperties}
-              onClick={() => {
+              onClick={(event) => {
+                if (onRequestColorPopover) {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setColorOpen(false);
+                  setEffectColorOpen(false);
+                  setGradientStopColorOpen(false);
+                  onRequestColorPopover({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, visibleEffectKind);
+                  return;
+                }
                 setColorOpen(false);
                 setGradientStopColorOpen(false);
                 setEffectColorOpen((open) => !open);
@@ -2450,7 +2458,7 @@ function ArtToolbarStyleControls() {
               <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
               <span className="toolbar-color-trigger-label">Effect</span>
             </button>
-            {effectColorOpen ? (
+            {effectColorOpen && !onRequestColorPopover ? (
               <div
                 className="art-color-popover art-effect-color-popover"
                 role="dialog"

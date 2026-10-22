@@ -20,6 +20,15 @@ and Dock reopen. Cold-open a file from Finder/Explorer, relaunch after an update
 file/launch again while running: the main window must appear, preserving its live frame and maximized
 state when already visible. Repeat with session recovery and crash-report consent pending.
 
+Effect color popovers (native Windows and macOS): select a molecule, open Color Controls, enable
+Glow and click Effect. The complete picker must open in its own window beyond the Art palette's
+edge; all wheel, channel, hex and palette controls must be reachable. Preview and commit a color:
+only the intended effect changes, with existing cancel/undo behavior. Repeat for Shadow and Sketch,
+then reopen Glow, switch to Shadow and open Fill/Stroke: each must show its own current color with
+no stale draft. Escape and outside clicks dismiss; reopening must work. Repeat near screen edges
+and at Windows 100%, 150% and 200% scale across mixed-DPI monitors. The inline web fallback must
+still open and edit effect colors when no native popover callback is supplied.
+
 Nested plugin workers (packaged macOS and Windows builds): install the NMR Shift Predictor package,
 select a molecule, and invoke prediction from real menu input. On Windows/WebView2, confirm the
 entry bootstrap loads with the unchanged installed-plugin CSP, the nested module imports from its
