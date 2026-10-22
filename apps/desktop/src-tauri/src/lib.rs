@@ -885,6 +885,7 @@ pub fn run() {
         .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
+        .manage(external_tools::ExternalToolsState::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
@@ -1001,6 +1002,7 @@ pub fn run() {
                         APP_QUITTING.store(true, Ordering::SeqCst);
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        external_tools::shutdown(window.app_handle());
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
@@ -1173,6 +1175,7 @@ pub fn run() {
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
+            external_tools::setup(app);
             let naming = app.state::<naming_engine::NamingEngineState>();
             naming.start_idle_reaper();
             naming.remove_stale_staging(app);
@@ -1227,6 +1230,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            external_tools::external_tool_status,
+            external_tools::external_tool_install,
+            external_tools::external_tool_cancel_install,
+            external_tools::external_tool_uninstall,
+            external_tools::external_tool_sign_in,
+            external_tools::external_tool_consent_set,
+            external_tools::external_tool_consent_list,
+            external_tools::external_tool_run_start,
+            external_tools::external_tool_run_poll,
+            external_tools::external_tool_run_cancel,
+            external_tools::external_tool_conversation_clear,
             diagnose_download_host,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
@@ -1328,6 +1342,7 @@ pub fn run() {
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                    external_tools::shutdown(app);
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
             }
@@ -1337,6 +1352,7 @@ pub fn run() {
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                external_tools::shutdown(app);
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
             // Dock-icon click with no visible windows; a macOS-only event.
@@ -8216,6 +8232,7 @@ mod tests {
         send_sync::<QuitFlow>();
         send_sync::<tauri::AppHandle<tauri::Wry>>();
         send_sync::<ocsr_engine::OcsrEngineState>();
+        send_sync::<external_tools::ExternalToolsState>();
         send_sync::<naming_engine::NamingEngineState>();
     }
 
@@ -8460,13 +8477,14 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),
-            include_str!("../capabilities/download-diagnosis.json")
+            include_str!("../capabilities/download-diagnosis.json"),
+            include_str!("../capabilities/external-tools.json")
         );
 
         let handler_start = lib_source

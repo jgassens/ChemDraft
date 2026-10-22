@@ -251,28 +251,30 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
             ] {
                 args.extend(strings(&["-c", setting]));
             }
-            for (key, value) in [
-                ("mcp_servers.chemdraft.url", input.mcp_url),
-                (
-                    "mcp_servers.chemdraft.bearer_token_env_var",
-                    "CHEMDRAFT_MCP_TOKEN",
-                ),
-            ] {
-                args.extend([
-                    "-c".into(),
-                    format!(
-                        "{key}={}",
-                        serde_json::to_string(value).expect("string serialization")
+            if !input.mcp_url.is_empty() {
+                for (key, value) in [
+                    ("mcp_servers.chemdraft.url", input.mcp_url),
+                    (
+                        "mcp_servers.chemdraft.bearer_token_env_var",
+                        "CHEMDRAFT_MCP_TOKEN",
                     ),
-                ]);
-            }
-            for setting in [
-                "mcp_servers.chemdraft.required=true",
-                "mcp_servers.chemdraft.default_tools_approval_mode=\"auto\"",
-                "mcp_servers.chemdraft.startup_timeout_sec=30",
-                "mcp_servers.chemdraft.tool_timeout_sec=120",
-            ] {
-                args.extend(strings(&["-c", setting]));
+                ] {
+                    args.extend([
+                        "-c".into(),
+                        format!(
+                            "{key}={}",
+                            serde_json::to_string(value).expect("string serialization")
+                        ),
+                    ]);
+                }
+                for setting in [
+                    "mcp_servers.chemdraft.required=true",
+                    "mcp_servers.chemdraft.default_tools_approval_mode=\"auto\"",
+                    "mcp_servers.chemdraft.startup_timeout_sec=30",
+                    "mcp_servers.chemdraft.tool_timeout_sec=120",
+                ] {
+                    args.extend(strings(&["-c", setting]));
+                }
             }
             args.extend([
                 "-c".into(),

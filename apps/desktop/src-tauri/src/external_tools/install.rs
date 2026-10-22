@@ -556,6 +556,7 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
     let path = root.join(pin.binary);
     let mut status = ExternalToolStatus {
         tool: pin.tool,
+        publisher: pin.tool.spec().publisher.into(),
         state: ToolState::Missing,
         source: None,
         path: None,

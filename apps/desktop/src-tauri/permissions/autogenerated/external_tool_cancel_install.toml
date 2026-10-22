@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-cancel-install"
+description = "Enables the external_tool_cancel_install command without any pre-configured scope."
+commands.allow = ["external_tool_cancel_install"]
+
+[[permission]]
+identifier = "deny-external-tool-cancel-install"
+description = "Denies the external_tool_cancel_install command without any pre-configured scope."
+commands.deny = ["external_tool_cancel_install"]

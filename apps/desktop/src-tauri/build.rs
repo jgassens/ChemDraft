@@ -14,6 +14,17 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "diagnose_download_host",
+            "external_tool_status",
+            "external_tool_install",
+            "external_tool_cancel_install",
+            "external_tool_uninstall",
+            "external_tool_sign_in",
+            "external_tool_consent_set",
+            "external_tool_consent_list",
+            "external_tool_run_start",
+            "external_tool_run_poll",
+            "external_tool_run_cancel",
+            "external_tool_conversation_clear",
             "read_plugin_package",
             "dialog_open",
             "dialog_request",

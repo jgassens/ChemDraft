@@ -49,6 +49,10 @@ impl ConsentStore {
             .iter()
             .any(|c| c.tool == tool && c.plugin_id == plugin_id && c.granted))
     }
+    pub fn list(&self) -> io::Result<Vec<Consent>> {
+        let _guard = self.lock.lock().unwrap();
+        self.read()
+    }
     pub fn set(&self, tool: ToolId, plugin_id: &str, granted: bool) -> io::Result<()> {
         if !super::valid_plugin_id(plugin_id) {
             return Err(io::ErrorKind::InvalidInput.into());

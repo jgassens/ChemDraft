@@ -1,5 +1,5 @@
-//! Host-owned external CLI runner. Tauri registration and install orchestration are separate tasks.
-#![allow(dead_code)] // A1 supplies the core; A3 wires its public API into Tauri commands.
+//! Host-owned external CLI runner and main-window-only Tauri boundary.
+#![allow(dead_code)] // Some catalog/platform helpers are exercised on the other platform or by tests.
 pub mod catalog;
 pub mod consent;
 pub mod env;
@@ -13,6 +13,7 @@ pub mod terminal;
 #[cfg(test)]
 mod tests;
 
+use crate::local_engine::InstallError;
 use catalog::{identifier, Effort, RenderedRun, ToolId};
 use run::{KillReason, ToolRun};
 use serde::{Deserialize, Serialize};
@@ -20,9 +21,13 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
+use tauri::{ipc::Channel, Manager, Runtime};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +73,7 @@ pub struct ToolInstallProgress {
 #[serde(rename_all = "camelCase")]
 pub struct ExternalToolStatus {
     pub tool: ToolId,
+    pub publisher: String,
     pub state: ToolState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ToolSource>,
@@ -121,7 +127,7 @@ impl ExternalToolRunRequest {
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".-".contains(&b))
             })
-            || !identifier(&self.mcp_session_id, 1, 128)
+            || (!self.mcp_session_id.is_empty() && !identifier(&self.mcp_session_id, 1, 128))
             || self
                 .timeout_ms
                 .is_some_and(|n| !(1000..=1_800_000).contains(&n))
@@ -173,6 +179,7 @@ pub struct OwnedRun {
     pub tool: ToolId,
     pub plugin_id: String,
     pub conversation_id: String,
+    pub mcp_session_id: String,
     pub run: Arc<ToolRun>,
 }
 #[derive(Default)]
@@ -186,6 +193,12 @@ pub struct ExternalToolsInner {
 pub struct ExternalToolsState {
     pub inner: Mutex<ExternalToolsInner>,
     pub probes: probe::ProbeCache,
+    installing: AtomicBool,
+    cancel_install: AtomicBool,
+    install_snapshot: Mutex<Option<(ToolId, Option<ToolInstallProgress>)>>,
+    /// Serializes filesystem mutations, consent replacement and run starts/clears.
+    mutation: Mutex<()>,
+    consent_lock: Mutex<()>,
 }
 impl ExternalToolsState {
     /// The command layer must check permissions/consent and render a host-owned template first.
@@ -264,6 +277,7 @@ impl ExternalToolsState {
                 tool: request.tool,
                 plugin_id: request.plugin_id.clone(),
                 conversation_id: request.conversation_id.clone(),
+                mcp_session_id: request.mcp_session_id.clone(),
                 run,
             },
         );
@@ -287,6 +301,7 @@ impl ExternalToolsState {
         Ok(entry.run.clone())
     }
     pub fn shutdown(&self) {
+        self.cancel_install.store(true, Ordering::SeqCst);
         let (runs, dirs) = {
             let mut state = self.inner.lock().unwrap();
             state.shutting_down = true;
@@ -368,5 +383,594 @@ pub fn remove_stale_runs(base: &Path) -> std::io::Result<()> {
         Ok(_) => fs::remove_dir_all(runs),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+fn base_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|p| p.join("external-tools"))
+        .map_err(|e| e.to_string())
+}
+
+fn current_platform() -> Option<pins::ToolPlatform> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some(pins::ToolPlatform::DarwinArm64),
+        ("macos", "x86_64") => Some(pins::ToolPlatform::DarwinX64),
+        ("windows", "x86_64") => Some(pins::ToolPlatform::WindowsX64),
+        _ => None,
+    }
+}
+
+fn status_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    tool: ToolId,
+    refresh: bool,
+    plugin_id: Option<&str>,
+    parent: &env::ParentEnv,
+) -> Result<ExternalToolStatus, String> {
+    let platform = current_platform();
+    let pin = pins::pin_for(tool, platform.unwrap_or(pins::ToolPlatform::DarwinArm64));
+    let mut status = install::managed_status(base, pin);
+    {
+        let _consent = state.consent_lock.lock().unwrap();
+        status.consented = match plugin_id {
+            Some(id) if valid_plugin_id(id) => consent::ConsentStore::new(base)
+                .get(tool, id)
+                .map_err(|e| e.to_string())?,
+            Some(_) => return Err("Invalid plugin id.".into()),
+            None => false,
+        };
+    }
+    if platform.is_none() {
+        status.state = ToolState::Unsupported;
+        status.can_install = false;
+        status.detail = Some("External tools are unsupported on this platform.".into());
+        return Ok(status);
+    }
+    if let Some((installing_tool, progress)) = state.install_snapshot.lock().unwrap().as_ref() {
+        if *installing_tool == tool {
+            status.state = ToolState::Installing;
+            status.progress = progress.clone();
+            return Ok(status);
+        }
+    }
+    let result = state.probes.get_or_probe(tool, refresh, || {
+        let run_dir = base.join("probes");
+        private_dir(&run_dir).map_err(|e| e.to_string())?;
+        let probe_platform = probe::ProbePlatform::current();
+        let home = env::get(parent, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or("");
+        let mut paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, None);
+        let mut candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+        if probe_platform == probe::ProbePlatform::MacOS && !matches!(candidate, probe::Candidate::Runnable(_)) {
+            if let Some(shell) = env::get(parent, "SHELL") {
+                if let Ok(path) = state.probes.login_path.capture(Path::new(shell), parent, &run_dir) {
+                    paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, Some(&path));
+                    candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+                }
+            }
+        }
+        let user = match candidate {
+            probe::Candidate::Runnable(path) => Some(probe::probe_tool(&tool.spec(), &path, parent, &run_dir, false)),
+            probe::Candidate::ShimNeedsResolution(_) => Some(Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into())),
+            probe::Candidate::Missing => None,
+        };
+        if let Some(Ok(result)) = user.as_ref() { return Ok(result.clone()); }
+        if let Some(managed) = status.managed.as_ref() {
+            return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true);
+        }
+        user.unwrap_or_else(|| Err(status.detail.clone().unwrap_or_else(|| "Tool is not installed.".into())))
+    });
+    match result {
+        Ok(result) => {
+            status.state = ToolState::Installed;
+            status.source = Some(
+                if status
+                    .managed
+                    .as_ref()
+                    .is_some_and(|m| m.path == result.path)
+                {
+                    ToolSource::Managed
+                } else {
+                    ToolSource::User
+                },
+            );
+            status.path = Some(result.path);
+            status.version = Some(result.version);
+            status.signed_in = Some(result.auth.signed_in);
+            status.auth_method = result.auth.auth_method;
+            status.probed_at = result.probed_at;
+            status.detail = None;
+        }
+        Err(detail) => {
+            status.state = if detail == "Tool is not installed." {
+                ToolState::Missing
+            } else {
+                ToolState::Broken
+            };
+            status.detail = Some(detail);
+        }
+    }
+    // An install may have begun while a slow probe was running.
+    if let Some((active, progress)) = state.install_snapshot.lock().unwrap().as_ref() {
+        if *active == tool {
+            status.state = ToolState::Installing;
+            status.progress = progress.clone();
+        }
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn external_tool_status<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+    refresh: Option<bool>,
+    plugin_id: Option<String>,
+) -> Result<ExternalToolStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        status_impl(
+            &base_dir(&app)?,
+            &app.state::<ExternalToolsState>(),
+            tool,
+            refresh.unwrap_or(false),
+            plugin_id.as_deref(),
+            &std::env::vars().collect(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+struct ResetInstall<'a>(&'a ExternalToolsState);
+impl Drop for ResetInstall<'_> {
+    fn drop(&mut self) {
+        *self.0.install_snapshot.lock().unwrap() = None;
+        self.0.installing.store(false, Ordering::SeqCst);
+    }
+}
+impl ExternalToolsState {
+    fn begin_install(&self, tool: ToolId) -> Result<ResetInstall<'_>, InstallError> {
+        let inner = self.inner.lock().unwrap();
+        if inner.shutting_down {
+            return Err(InstallError::failed("External tools are shutting down."));
+        }
+        if self
+            .installing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(InstallError::failed(
+                "An external tool installation is already running.",
+            ));
+        }
+        self.cancel_install.store(false, Ordering::SeqCst);
+        *self.install_snapshot.lock().unwrap() = Some((tool, None));
+        Ok(ResetInstall(self))
+    }
+    fn stop_runs(&self, tool: ToolId, conversation: Option<(&str, &str)>) -> Result<(), String> {
+        let runs: Vec<_> = self
+            .inner
+            .lock()
+            .unwrap()
+            .runs
+            .values()
+            .filter(|e| {
+                e.tool == tool
+                    && conversation.is_none_or(|(p, c)| e.plugin_id == p && e.conversation_id == c)
+            })
+            .map(|e| e.run.clone())
+            .collect();
+        for run in &runs {
+            run.cancel(KillReason::Cancelled);
+        }
+        for run in runs {
+            if !run.wait_finished(Duration::from_secs(5)) {
+                return Err("External tool did not stop; its files were retained.".into());
+            }
+        }
+        Ok(())
+    }
+    fn run_by_id(&self, id: &str) -> Result<Arc<ToolRun>, ExternalToolRunError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .runs
+            .get(id)
+            .map(|e| e.run.clone())
+            .ok_or_else(|| {
+                ExternalToolRunError::new(RunErrorCode::UnknownRun, "Unknown external tool run.")
+            })
+    }
+}
+
+#[tauri::command]
+pub async fn external_tool_install<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+    on_progress: Channel<ToolInstallProgress>,
+) -> Result<ManagedTool, InstallError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = base_dir(&app).map_err(InstallError::failed)?;
+        let pin = pins::pin_for(
+            tool,
+            current_platform()
+                .ok_or_else(|| InstallError::unsupported("Unsupported external tool platform."))?,
+        );
+        let state = app.state::<ExternalToolsState>();
+        let _reset = state.begin_install(tool)?;
+        let _mutation = state.mutation.lock().unwrap();
+        state.stop_runs(tool, None).map_err(InstallError::failed)?;
+        let result = install::install(
+            &base,
+            pin,
+            &std::env::vars().collect(),
+            &state.cancel_install,
+            &install::SystemSignatureChecker,
+            |progress| {
+                *state.install_snapshot.lock().unwrap() = Some((tool, Some(progress.clone())));
+                let _ = on_progress.send(progress);
+            },
+        );
+        state.probes.invalidate(tool);
+        result
+    })
+    .await
+    .map_err(|e| InstallError::failed(e.to_string()))?
+}
+
+#[tauri::command]
+pub fn external_tool_cancel_install(state: tauri::State<'_, ExternalToolsState>, tool: ToolId) {
+    if state
+        .install_snapshot
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(active, _)| *active == tool)
+    {
+        state.cancel_install.store(true, Ordering::SeqCst);
+    }
+}
+
+fn uninstall_impl(base: &Path, state: &ExternalToolsState, tool: ToolId) -> Result<(), String> {
+    let _mutation = state.mutation.lock().unwrap();
+    if state.installing.load(Ordering::SeqCst) {
+        return Err("An external tool installation is running.".into());
+    }
+    state.stop_runs(tool, None)?;
+    let root = base.join(tool.as_str());
+    // Never follow a substituted managed root into a user's installation.
+    match fs::symlink_metadata(&root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Managed tool directory must not be a symbolic link.".into())
+        }
+        Ok(_) => fs::remove_dir_all(root).map_err(|e| e.to_string())?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.to_string()),
+    }
+    state.probes.invalidate(tool);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn external_tool_uninstall<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        uninstall_impl(&base_dir(&app)?, &app.state::<ExternalToolsState>(), tool)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn external_tool_sign_in<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+) -> Result<terminal::SignInLaunch, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base = base_dir(&app)?;
+        let state = app.state::<ExternalToolsState>();
+        let _mutation = state.mutation.lock().unwrap();
+        let parent = std::env::vars().collect();
+        let status = status_impl(&base, &state, tool, false, None, &parent)?;
+        if !matches!(status.state, ToolState::Installed) {
+            return Err("External tool is not installed or is busy.".into());
+        }
+        let mut spec = tool.spec();
+        spec.program = status.path.ok_or("External tool executable is missing.")?;
+        let launch = terminal::launch_sign_in(
+            probe::ProbePlatform::current(),
+            &spec,
+            &base.join("signin"),
+            &parent,
+            matches!(status.source, Some(ToolSource::Managed)),
+            terminal::spawn_terminal,
+        );
+        state.probes.invalidate(tool);
+        launch
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn external_tool_consent_set<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+    plugin_id: String,
+    granted: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<ExternalToolsState>();
+        let _mutation = state.mutation.lock().unwrap();
+        let _consent = state.consent_lock.lock().unwrap();
+        consent::ConsentStore::new(&base_dir(&app)?)
+            .set(tool, &plugin_id, granted)
+            .map_err(|e| e.to_string())?;
+        if !granted {
+            let runs: Vec<_> = state
+                .inner
+                .lock()
+                .unwrap()
+                .runs
+                .values()
+                .filter(|e| e.tool == tool && e.plugin_id == plugin_id)
+                .map(|e| e.run.clone())
+                .collect();
+            for run in runs {
+                run.cancel(KillReason::Cancelled);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn external_tool_consent_list<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<consent::Consent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<ExternalToolsState>();
+        let _consent = state.consent_lock.lock().unwrap();
+        consent::ConsentStore::new(&base_dir(&app)?)
+            .list()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+const MCP_SESSIONS_AVAILABLE: bool = false;
+fn validate_mcp_session(request: &ExternalToolRunRequest) -> Result<(), ExternalToolRunError> {
+    // TODO(assistant-mcp): PR B run⇄session binding must validate ownership and supply the Rust-only URL/token before enabling this.
+    if !MCP_SESSIONS_AVAILABLE && !request.mcp_session_id.is_empty() {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::InvalidArgs,
+            "MCP sessions are not available in this build",
+        ));
+    }
+    Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
+}
+
+fn run_start_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    request: ExternalToolRunRequest,
+    parent: &env::ParentEnv,
+) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
+    request.validate()?;
+    validate_mcp_session(&request)?;
+    let _mutation = state.mutation.lock().unwrap();
+    {
+        let _consent = state.consent_lock.lock().unwrap();
+        if !consent::ConsentStore::new(base)
+            .get(request.tool, &request.plugin_id)
+            .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?
+        {
+            return Err(ExternalToolRunError::new(
+                RunErrorCode::NotConsented,
+                "Plugin has no consent for this tool.",
+            ));
+        }
+    }
+    let status = status_impl(base, state, request.tool, false, None, parent)
+        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
+    if matches!(status.state, ToolState::Installing) {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::Busy,
+            "This tool is being installed.",
+        ));
+    }
+    if !matches!(status.state, ToolState::Installed) {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::NotInstalled,
+            "External tool is not installed.",
+        ));
+    }
+    // Check before staging files: another turn must never overwrite a live run's input.
+    if state.inner.lock().unwrap().runs.values().any(|e| {
+        (e.tool == request.tool
+            || (e.plugin_id == request.plugin_id && e.conversation_id == request.conversation_id))
+            && e.run.status().is_running()
+    }) {
+        return Err(ExternalToolRunError::new(
+            RunErrorCode::Busy,
+            "This tool already has an active run.",
+        ));
+    }
+    let cwd = conversation_dir(base, &request.plugin_id, &request.conversation_id)
+        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?;
+    let system = cwd.join("system-prompt.md");
+    let config = cwd.join("claude-mcp.json");
+    write_private(&system, request.system_prompt.as_bytes())
+        .and_then(|()| write_private(&config, br#"{"mcpServers":{}}"#))
+        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?;
+    let mut spec = request.tool.spec();
+    spec.program = status.path.ok_or_else(|| {
+        ExternalToolRunError::new(
+            RunErrorCode::NotInstalled,
+            "External tool executable is missing.",
+        )
+    })?;
+    let managed = matches!(status.source, Some(ToolSource::Managed));
+    let rendered = catalog::render_run(
+        &spec,
+        catalog::ToolRunInputs {
+            run_dir: &cwd,
+            prompt_file: &request.prompt,
+            system_prompt_file: &system,
+            mcp_config_file: &config,
+            mcp_url: "",
+            resume_id: request.resume_id.as_deref(),
+            model: request.model.as_deref(),
+            effort: request.effort,
+            managed_copy: managed,
+        },
+    )
+    .map_err(|e| ExternalToolRunError::new(RunErrorCode::InvalidArgs, e))?;
+    state.start(base, &request, rendered, parent, managed)
+}
+
+#[tauri::command]
+pub async fn external_tool_run_start<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    request: ExternalToolRunRequest,
+) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base =
+            base_dir(&app).map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
+        run_start_impl(
+            &base,
+            &app.state::<ExternalToolsState>(),
+            request,
+            &std::env::vars().collect(),
+        )
+    })
+    .await
+    .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn external_tool_run_poll<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    run_id: String,
+    cursor: u64,
+    max_lines: Option<usize>,
+    wait_ms: Option<u64>,
+) -> Result<run::ExternalToolRunPoll, ExternalToolRunError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(app.state::<ExternalToolsState>().run_by_id(&run_id)?.poll(
+            cursor,
+            max_lines.unwrap_or(5000).clamp(1, 5000),
+            wait_ms.unwrap_or(0).min(1000),
+        ))
+    })
+    .await
+    .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?
+}
+
+#[tauri::command]
+pub fn external_tool_run_cancel(
+    state: tauri::State<'_, ExternalToolsState>,
+    run_id: String,
+) -> Result<(), ExternalToolRunError> {
+    state.run_by_id(&run_id)?.cancel(KillReason::Cancelled);
+    Ok(())
+}
+
+fn conversation_clear_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    tool: ToolId,
+    plugin: &str,
+    conversation: &str,
+    parent: &env::ParentEnv,
+) -> Result<(), String> {
+    if !valid_plugin_id(plugin) || !identifier(conversation, 8, 64) {
+        return Err("Invalid conversation identity.".into());
+    }
+    let _mutation = state.mutation.lock().unwrap();
+    // Both tools share the conversation directory; stop both before removing it.
+    for active in [ToolId::Claude, ToolId::Codex] {
+        state.stop_runs(active, Some((plugin, conversation)))?;
+    }
+    let dir = conversation_dir(base, plugin, conversation).map_err(|e| e.to_string())?;
+    if tool == ToolId::Claude {
+        if let Ok(status) = status_impl(base, state, tool, false, None, parent) {
+            if let Some(program) = status
+                .path
+                .filter(|_| matches!(status.state, ToolState::Installed))
+            {
+                let _ = probe::execute(
+                    &program,
+                    &["purge", &dir.to_string_lossy(), "--yes"],
+                    parent,
+                    base,
+                    matches!(status.source, Some(ToolSource::Managed)),
+                    Duration::from_secs(15),
+                    64 * 1024,
+                );
+            }
+        }
+    }
+    fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut inner = state.inner.lock().unwrap();
+    inner
+        .conversations
+        .remove(&(plugin.to_owned(), conversation.to_owned()));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn external_tool_conversation_clear<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    tool: ToolId,
+    plugin_id: String,
+    conversation_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        conversation_clear_impl(
+            &base_dir(&app)?,
+            &app.state::<ExternalToolsState>(),
+            tool,
+            &plugin_id,
+            &conversation_id,
+            &std::env::vars().collect(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub fn shutdown<R: Runtime>(app: &tauri::AppHandle<R>) {
+    app.state::<ExternalToolsState>().shutdown();
+}
+
+pub fn setup<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Ok(base) = base_dir(app) {
+        // Setup completes before the frontend can start a run; stale runs contain no user files.
+        if let Err(error) = remove_stale_runs(&base) {
+            eprintln!("Could not remove stale external tool runs: {error}");
+        }
     }
 }

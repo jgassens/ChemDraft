@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-uninstall"
+description = "Enables the external_tool_uninstall command without any pre-configured scope."
+commands.allow = ["external_tool_uninstall"]
+
+[[permission]]
+identifier = "deny-external-tool-uninstall"
+description = "Denies the external_tool_uninstall command without any pre-configured scope."
+commands.deny = ["external_tool_uninstall"]
