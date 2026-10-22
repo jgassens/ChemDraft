@@ -496,6 +496,8 @@ export const TextObjectSchema = BaseObjectSchema.extend({
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
   bracketKind: degradingEnum(["square", "round", "curly", "polymer", "unknown"]),
+  /** Both facing sides share this object's frame; absent on legacy single brackets. */
+  paired: z.boolean().optional(),
   label: z.string().optional(),
   containedObjectIds: z.array(IdSchema).default([])
 }).strict();

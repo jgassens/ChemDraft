@@ -7520,6 +7520,19 @@ textarea:focus-visible,
 .bracket-object.document-object-overlay {
   pointer-events: none !important;
 }
+
+.bracket-label-editor {
+  position: absolute;
+  pointer-events: auto !important;
+  height: calc(20px * var(--page-scale, 1));
+  line-height: calc(18px * var(--page-scale, 1));
+  padding: 0 2px;
+  border: 1px solid #647b80;
+  background: white;
+  color: #172026;
+  box-sizing: border-box;
+  z-index: 5;
+}
 .molecule-object.document-object-overlay:not(.native-molecule-object) {
   border-color: transparent;
   background: transparent;

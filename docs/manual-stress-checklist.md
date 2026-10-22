@@ -617,3 +617,24 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Separate paired-bracket tools
+
+On Windows and macOS, select each paired style and enter `n`, `12`, and `5–10` in its lower-right
+field. Verify Enter, Tab/blur and clicking empty canvas preserve the draft once, Escape discards it,
+clearing removes the text, and Undo/Redo restores each completed edit. Text entry must not trigger
+drawing shortcuts or move the bracket. Check IME composition, zoom and 100%/200% scaling; selection
+changes must not lose a committed label. Move/resize/rotate/tilt the pair, save/reopen and compare
+SVG/PDF output with the canvas. Labels near page edges can extend beyond the page; position the pair
+so the entire label fits before exporting. Confirm empty placeholders are not printed or exported.
+
+On native Windows and macOS, find Paired Square Brackets and Paired Curly Brackets in Main and Art.
+Confirm the original square/curly tools still place one bracket. For each new tool, click to place
+a default pair, then drag in all four directions around a molecule. Repeat starting the press on
+the molecule, crossing the edge of the page and releasing outside the start object. Check the last
+release position is used, both sides face inward, the gap stays open, and the molecule is unchanged.
+Escape and pointer cancellation must restore the original drawing without an Undo entry. Undo/Redo
+must remove/restore the complete pair in one step. Select a pair with Select, move and resize it,
+and check the sides remain aligned. Save/reopen a native file and export SVG/PDF; both sides must
+match the canvas. Check a legacy file containing single brackets too. On Windows repeat at 100%/200%
+display scaling and with a palette on a second monitor; on macOS check the native palette routing.
