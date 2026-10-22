@@ -1,5 +1,10 @@
 # Manual stress checklist
 
+Text formatting (macOS and Windows): select two or more text boxes and change font family, then
+font size. Every selected box must update regardless of creation/selection order; unselected labels
+and selected molecules must stay unchanged. Each command must undo/redo all boxes in one step and
+preserve selection. Highlight characters inside one box and confirm only that range is formatted.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

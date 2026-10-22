@@ -1602,7 +1602,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.22.10.32-codex";
+const CURRENT_BUILD_STAMP = "10.22.11.54-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -6701,7 +6701,10 @@ export function MainWindow({
     const activeTextObject = activeTextEditObjectId
       ? findDocumentObject(currentDocument, activeTextEditObjectId)
       : undefined;
-    const selectedTextObject = getSelectedTextObject(currentDocument) ?? (
+    const selectedTextObjects = currentDocument.selection.objectIds
+      .map((id) => findDocumentObject(currentDocument, id))
+      .filter((object): object is TextObject => object?.type === "text");
+    const selectedTextObject = selectedTextObjects[0] ?? (
       activeTextObject?.type === "text" ? activeTextObject : undefined
     );
     const snapshotTextObject = !selectedTextObject && snapshotTextSelection
@@ -6719,7 +6722,7 @@ export function MainWindow({
         : undefined
     );
     const hasSelectedTextRange = Boolean(
-      selectedTextRange && selectedTextRange.start !== selectedTextRange.end
+      selectedTextObjects.length <= 1 && selectedTextRange && selectedTextRange.start !== selectedTextRange.end
     );
     const textScript = textScriptForCommand(commandId);
     if (textScript) {
@@ -6783,9 +6786,14 @@ export function MainWindow({
     }
 
     if (selected) {
+      // A character selection belongs to its editor. Whole-object formatting instead
+      // updates every selected text box, committed together as one Undo entry.
       const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
         ? updateNativeTextObjectStyleRange(currentDocument, selected.id, selectedTextRange, stylePatch as Record<string, unknown>)
-        : updateNativeTextObjectStyle(currentDocument, selected.id, stylePatch));
+        : (selectedTextObjects.length ? selectedTextObjects : [selected]).reduce(
+          (nextDocument, object) => updateNativeTextObjectStyle(nextDocument, object.id, stylePatch),
+          currentDocument
+        ));
       setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
       setActiveEditorObjectId(undefined);
       setStatus(changed ? "Updated selected text style" : "Selected text style unchanged");

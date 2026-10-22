@@ -8,8 +8,18 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Branch `fix/multi-text-formatting`: apply font family and size commands to every selected text
+box in one Undo step, preserving selection. Keep character-range edits scoped to their active
+editor, and leave unselected text and non-text objects unchanged. A stale range must not override
+a multi-box selection. Scope: MainWindow command routing, dedicated DOM regressions, desktop usage
+notes, the shared manual checklist, and build stamp `10.22.11.54-codex`.
+
+The isolated branch passes 106 relevant tests across five suites, root TypeScript checking,
+the browser production build, and whitespace checks. Regressions exercise both platform mappings,
+both selection orders, mixed selections, untouched labels, one-step Undo/Redo, and editor ranges.
+The contributor tried the combined local test build; native Windows/WebView2 and macOS hands-on
+verification of this isolated branch remains pending.
+This contribution stays in draft review until required CI and native checks pass.
 
 ---
 

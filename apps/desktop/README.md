@@ -66,3 +66,9 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Format selected text boxes
+
+Select several text boxes, then choose a font or size to apply it to all selected boxes in one
+Undo step. Unselected labels and non-text objects keep their formatting. When editing inside
+a text box with characters highlighted, formatting applies only to those characters.
