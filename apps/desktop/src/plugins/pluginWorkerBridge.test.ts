@@ -912,7 +912,7 @@ describe("tools survive the worker boundary", () => {
   it("round-trips every external-tools method and omits it without assistant.run", async () => {
     const manifest = parsePluginManifest({
       id: "org.test.tools-worker", name: "Worker Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
-      permissions: ["assistant.run"], contributes: { commands: [{ id: "plugin.toolsWorker.run", title: "Run" }] }
+      permissions: ["assistant.run", "native.execute"], contributes: { commands: [{ id: "plugin.toolsWorker.run", title: "Run" }] }
     });
     const statuses = import.meta.glob("../externalTools/__fixtures__/wire/status-installed-managed.json", { eager: true, import: "default" });
     const status = Object.values(statuses)[0]! as PluginExternalToolStatus;

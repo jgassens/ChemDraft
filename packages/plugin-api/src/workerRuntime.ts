@@ -98,6 +98,14 @@ export function runPluginWorker(
 ): void {
   const permissions = new Set<PluginPermission>(registration.manifest.permissions);
   const has = (permission: PluginPermission): boolean => permissions.has(permission);
+  const requirePermission = (permission: PluginPermission): void => {
+    if (!has(permission)) {
+      throw new PluginWorkerCapabilityError({
+        code: "PLUGIN_PERMISSION_DENIED",
+        message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
+      });
+    }
+  };
 
   let nextCapabilityId = 1;
   const pendingCapabilities = new Map<
@@ -215,16 +223,21 @@ export function runPluginWorker(
           }
         : undefined;
 
-    const tools: PluginToolsAPI | undefined = has("assistant.run")
+    const callTools = (method: CapabilityMethodOf<"tools">, request: unknown): Promise<unknown> => {
+      requirePermission("assistant.run");
+      requirePermission("native.execute");
+      return call("tools", method, [request]);
+    };
+    const tools: PluginToolsAPI | undefined = has("assistant.run") && has("native.execute")
       ? {
-          status: (request) => call("tools", "status", [request]) as ReturnType<PluginToolsAPI["status"]>,
-          install: (request) => call("tools", "install", [request]) as ReturnType<PluginToolsAPI["install"]>,
-          signIn: (request) => call("tools", "signIn", [request]) as ReturnType<PluginToolsAPI["signIn"]>,
-          run: (request) => call("tools", "run", [request]) as ReturnType<PluginToolsAPI["run"]>,
-          poll: (request) => call("tools", "poll", [request]) as ReturnType<PluginToolsAPI["poll"]>,
-          cancel: (request) => call("tools", "cancel", [request]) as ReturnType<PluginToolsAPI["cancel"]>,
+          status: (request) => callTools("status", request) as ReturnType<PluginToolsAPI["status"]>,
+          install: (request) => callTools("install", request) as ReturnType<PluginToolsAPI["install"]>,
+          signIn: (request) => callTools("signIn", request) as ReturnType<PluginToolsAPI["signIn"]>,
+          run: (request) => callTools("run", request) as ReturnType<PluginToolsAPI["run"]>,
+          poll: (request) => callTools("poll", request) as ReturnType<PluginToolsAPI["poll"]>,
+          cancel: (request) => callTools("cancel", request) as ReturnType<PluginToolsAPI["cancel"]>,
           clearConversation: (request) =>
-            call("tools", "clearConversation", [request]) as ReturnType<PluginToolsAPI["clearConversation"]>
+            callTools("clearConversation", request) as ReturnType<PluginToolsAPI["clearConversation"]>
         }
       : undefined;
 
@@ -301,14 +314,7 @@ export function runPluginWorker(
       analysis,
       chemistry,
       hasPermission: has,
-      requirePermission: (permission) => {
-        if (!has(permission)) {
-          throw new PluginWorkerCapabilityError({
-            code: "PLUGIN_PERMISSION_DENIED",
-            message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
-          });
-        }
-      }
+      requirePermission
     };
   };
 

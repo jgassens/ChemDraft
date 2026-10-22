@@ -146,6 +146,24 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it.each<{ permissions: PluginManifest["permissions"]; present: boolean }>([
+    { permissions: [], present: false },
+    { permissions: ["assistant.run"], present: false },
+    { permissions: ["native.execute"], present: false },
+    { permissions: ["assistant.run", "native.execute"], present: true }
+  ])("exposes tools stubs with $permissions only when both permissions are declared", async ({ permissions, present }) => {
+    const endpoint = new ControlledEndpoint();
+    let toolsPresent: boolean | undefined;
+    runPluginWorker({
+      // Exercise the runtime gate even for an unvalidated manifest with assistant.run alone.
+      manifest: { ...manifest([]), permissions },
+      commandHandlers: { [commandId]: (context) => { toolsPresent = context.tools !== undefined; } }
+    }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    expect(toolsPresent).toBe(present);
+  });
+
   it("announces readiness with the protocol version and the plugin's apiVersion", () => {
     const endpoint = new ControlledEndpoint();
     runPluginWorker({ manifest: manifest(["selection.read"]), commandHandlers: {} }, endpoint);

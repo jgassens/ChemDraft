@@ -14,7 +14,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
  * `PluginRecognitionAPI.recognizeStructure`; 0.1.7 adds host-owned local
  * `PluginChemistryAPI.structureToName` and the `chemicalName` report section.
- * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permission `assistant.run`).
+ * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permissions `assistant.run` and `native.execute`).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -260,6 +260,13 @@ export const PluginManifestSchema = z
     addDuplicateIssue(manifest.permissions, ["permissions"], "permission", ctx);
 
     const declaredPermissions = new Set(manifest.permissions);
+    if (declaredPermissions.has("assistant.run") && !declaredPermissions.has("native.execute")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["permissions"],
+        message: `Plugin "${manifest.id}" declares "assistant.run" without "native.execute". External tools spawn processes; declare both permissions.`
+      });
+    }
     for (const { path, permissions } of collectContributionPermissions(manifest.contributes)) {
       for (const permission of permissions) {
         if (!declaredPermissions.has(permission)) {
@@ -1379,7 +1386,7 @@ export interface PluginCommandContext {
   /** Present only with image.read + ml.inference + model.load + native.execute. The host owns any
    * local-engine install and never delegates model download authority to plugin code. */
   recognition?: PluginRecognitionAPI;
-  /** Present only when the plugin declares "assistant.run". */
+  /** Present only when the plugin declares both "assistant.run" and "native.execute". */
   tools?: PluginToolsAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;

@@ -629,7 +629,7 @@ export class PluginHost {
               this.recognizeStructureForPlugin(pluginId, invocationToken, image)
           }
         : undefined;
-    const tools: PluginToolsAPI | undefined = this.hasPermission(pluginId, "assistant.run")
+    const tools: PluginToolsAPI | undefined = this.hasPermission(pluginId, "assistant.run") && this.hasPermission(pluginId, "native.execute")
       ? {
           status: (request) => this.externalToolStatusForPlugin(pluginId, request),
           install: (request) => this.externalToolInstallForPlugin(pluginId, invocationToken, request),
@@ -1072,6 +1072,7 @@ export class PluginHost {
 
   private externalToolsFor(pluginId: string): { id: string; name: string } {
     this.requirePermission(pluginId, "assistant.run");
+    this.requirePermission(pluginId, "native.execute");
     if (!this.externalTools) {
       throw new PluginHostError("This host provides no external tools.");
     }

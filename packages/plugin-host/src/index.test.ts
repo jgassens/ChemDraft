@@ -82,7 +82,24 @@ describe("CommandRegistry", () => {
 });
 
 describe("external tools", () => {
-  it("gates tools, re-checks its permission, reports an absent host, and cancels runs on unregister", async () => {
+  it.each<{ permissions: PluginPermission[]; present: boolean }>([
+    { permissions: [], present: false },
+    { permissions: ["assistant.run"], present: false },
+    { permissions: ["native.execute"], present: false },
+    { permissions: ["assistant.run", "native.execute"], present: true }
+  ])("exposes tools with $permissions only when both permissions are granted", ({ permissions, present }) => {
+    const host = new PluginHost();
+    const plugin = host.registerPlugin({
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run", "native.execute"]
+    });
+    // Start with a valid manifest, then simulate permission revocation to exercise the context gate
+    // independently of install-time validation (which refuses assistant.run alone).
+    plugin.permissions = new Set(permissions);
+    expect(host.createCommandContext(plugin.manifest.id).tools !== undefined).toBe(present);
+  });
+
+  it("re-checks both permissions for every method, reports an absent host, and cancels runs on unregister", async () => {
     const status = { tool: "codex" as const, publisher: "OpenAI", state: "installed" as const, pinnedVersion: "1", pinnedDownloadBytes: 123, freeDiskBytes: null, canInstall: true, consented: true, probedAt: timestamp };
     const externalTools = {
       status: vi.fn(async () => status),
@@ -97,7 +114,7 @@ describe("external tools", () => {
     const host = new PluginHost({ externalTools });
     let retainedTools: PluginCommandContext["tools"];
     const manifest = {
-      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x", permissions: ["assistant.run"],
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x", permissions: ["assistant.run", "native.execute"],
       contributes: { commands: [{ id: "plugin.tools.run", title: "Run" }] }
     };
     host.registerPlugin(manifest, { commandHandlers: { "plugin.tools.run": async (context) => {
@@ -110,10 +127,30 @@ describe("external tools", () => {
       await context.tools!.poll({ runId: "run", cursor: 0 });
       await context.tools!.cancel({ runId: "run" });
       await context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" });
+
+      const calls = [
+        () => context.tools!.status({ tool: "codex" }),
+        () => context.tools!.install({ tool: "codex" }),
+        () => context.tools!.signIn({ tool: "codex" }),
+        () => context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s" }),
+        () => context.tools!.poll({ runId: "run", cursor: 0 }),
+        () => context.tools!.cancel({ runId: "run" }),
+        () => context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" })
+      ];
+      const plugin = host.getPlugin(manifest.id)!;
+      const granted = plugin.permissions;
+      for (const missing of ["assistant.run", "native.execute"] as const) {
+        plugin.permissions = new Set([...granted].filter((permission) => permission !== missing));
+        for (const call of calls) {
+          await expect(call()).rejects.toThrow(`requires permission "${missing}"`);
+        }
+      }
+      plugin.permissions = granted;
     } } });
     await host.invokeCommand("plugin.tools.run");
-    expect(externalTools.status).toHaveBeenCalledOnce();
-    expect(externalTools.clearConversation).toHaveBeenCalledOnce();
+    for (const method of [externalTools.status, externalTools.install, externalTools.signIn, externalTools.run, externalTools.poll, externalTools.cancel, externalTools.clearConversation]) {
+      expect(method).toHaveBeenCalledOnce();
+    }
     host.unregisterPlugin(manifest.id);
     expect(externalTools.cancelAllForPlugin).toHaveBeenCalledWith(manifest.id);
     await expect(retainedTools!.status({ tool: "codex" })).rejects.toThrow(/not registered/);
@@ -1681,6 +1718,17 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
 });
 
 describe("validateTrustedPluginManifest", () => {
+  it("refuses assistant.run without native.execute before registration", () => {
+    const candidate = {
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run"]
+    };
+    expect(() => validateTrustedPluginManifest(candidate)).toThrow(/assistant\.run.*without.*native\.execute/);
+    const host = new PluginHost();
+    expect(() => host.registerPlugin(candidate)).toThrow(/assistant\.run.*without.*native\.execute/);
+    expect(host.listPlugins()).toEqual([]);
+  });
+
   it("returns a parsed manifest with contribution defaults", () => {
     const manifest = validateTrustedPluginManifest({
       id: "org.chemdraft.demo",

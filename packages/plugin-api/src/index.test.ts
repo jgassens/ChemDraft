@@ -173,6 +173,21 @@ describe("createStructureSourceFingerprint", () => {
 });
 
 describe("validatePluginManifest", () => {
+  it("refuses assistant.run without native.execute and accepts the permission pair", () => {
+    const candidate = {
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run"]
+    };
+    const result = validatePluginManifest(candidate);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      'permissions: Plugin "org.test.tools" declares "assistant.run" without "native.execute". External tools spawn processes; declare both permissions.'
+    ]);
+    expect(() => parsePluginManifest(candidate)).toThrow(/assistant\.run.*without.*native\.execute/);
+    expect(validatePluginManifest({ ...candidate, permissions: ["assistant.run", "native.execute"] }).ok).toBe(true);
+    expect(validatePluginManifest({ ...candidate, permissions: ["native.execute"] }).ok).toBe(true);
+  });
+
   it("accepts a manifest with command, menu, panel, toolbar, and recognizer contributions", () => {
     const result = validatePluginManifest({
       id: "org.chemdraft.demo",

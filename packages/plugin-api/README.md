@@ -9,6 +9,9 @@ External-tool wire schemas are checked against Rust-generated JSON in
 with `CHEMDRAFT_UPDATE_WIRE_FIXTURES=1 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml wire_fixtures_are_current`,
 then run `pnpm vitest run --configLoader runner packages/plugin-api/src/externalToolsWire.test.ts`.
 PR A runs may omit `mcpSessionId` (or pass an empty string); non-empty sessions require PR B.
+API 0.1.8 exposes `context.tools` only with both `assistant.run` and `native.execute`; every method
+re-checks both permissions. Manifest validation refuses `assistant.run` without `native.execute`
+because external tools spawn processes.
 
 API 0.1.7 adds `chemistry.structureToName`, limited to a molecule in the current selection and gated
 on `chemistry.compute`, `native.execute`, and `selection.read`. API 0.1.6 adds `recognition.recognizeStructure`, limited to an image returned by

@@ -114,7 +114,9 @@ Disabling, unregistering, or terminating the plugin while its prompt is open als
 ## External tools (0.1.8)
 
 `context.tools` lets a plugin use host-managed AI command-line tools (`claude` and `codex`). Declare
-`assistant.run` and `apiVersion: "^0.1.8"`; without that permission the capability is absent. The
+both `assistant.run` and `native.execute`, and `apiVersion: "^0.1.8"`. The capability is absent
+without either permission, and every method re-checks both when called. Manifest validation refuses
+`assistant.run` without `native.execute` because external tools spawn processes. The
 host obtains consent separately for each plugin and each tool, so a plugin must be prepared for
 install or run to be declined.
 
