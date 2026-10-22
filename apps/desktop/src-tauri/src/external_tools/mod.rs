@@ -3,6 +3,9 @@
 pub mod catalog;
 pub mod consent;
 pub mod env;
+pub mod install;
+#[cfg(test)]
+mod install_tests;
 pub mod pins;
 pub mod probe;
 pub mod run;
@@ -42,7 +45,7 @@ pub struct ManagedTool {
     pub version: String,
     pub path: PathBuf,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolInstallPhase {
     CheckingDisk,

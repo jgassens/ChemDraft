@@ -5,6 +5,7 @@
 //! it, preserving each adapter's ordering and progress stream. Receipts and protocol diagnostics
 //! remain adapter-owned. Overall install-bar weights are currently a frontend concern; this module
 //! provides the original growth estimates and throttle without adding fields to emitted events.
+pub mod download;
 pub(crate) mod file_ops;
 pub mod install;
 pub mod pins;
