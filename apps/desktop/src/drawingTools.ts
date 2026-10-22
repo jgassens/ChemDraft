@@ -86,6 +86,22 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
+    commandId: "tool.doubleBond",
+    title: "Double Bond",
+    kind: "bond",
+    category: "structure",
+    icon: "doubleBond",
+    usageHint: usageHint("click canvas or atom", "click bond to set its order", "Esc exits")
+  },
+  {
+    commandId: "tool.tripleBond",
+    title: "Triple Bond",
+    kind: "bond",
+    category: "structure",
+    icon: "tripleBond",
+    usageHint: usageHint("click canvas or atom", "click bond to set its order", "Esc exits")
+  },
+  {
     commandId: "tool.wedgeBond",
     title: "Solid Wedge Bond",
     kind: "bond",

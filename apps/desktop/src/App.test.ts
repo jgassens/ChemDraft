@@ -2840,6 +2840,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.eraser",
       "tool.text",
       "tool.bond",
+      "tool.doubleBond",
+      "tool.tripleBond",
       "tool.wedgeBond",
       "tool.hashedBond",
       "tool.dashedBond",

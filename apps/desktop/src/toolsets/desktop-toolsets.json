@@ -196,6 +196,50 @@
               }
             },
             {
+              "commandId": "tool.doubleBond",
+              "title": "Double Bond",
+              "icon": "doubleBond",
+              "category": "structure",
+              "id": "tool.doubleBond",
+              "kind": "button",
+              "label": "Double Bond",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.doubleBond"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Double Bond",
+                "description": "Draw a double bond or click a bond to set its order."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.tripleBond",
+              "title": "Triple Bond",
+              "icon": "tripleBond",
+              "category": "structure",
+              "id": "tool.tripleBond",
+              "kind": "button",
+              "label": "Triple Bond",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.tripleBond"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Triple Bond",
+                "description": "Draw a triple bond or click a bond to set its order."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
               "commandId": "tool.wedgeBond",
               "title": "Solid Wedge Bond",
               "icon": "bond",
