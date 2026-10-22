@@ -1,0 +1,2 @@
+{"type":"response.created","response":{"id":"codex-fixture"}}
+{"type":"response.output_item.done","item":{"type":"function_call","name":"mcp__chemdraft__render_structure","arguments":"{\"smiles\":\"wrong\"}"}}
