@@ -41,7 +41,7 @@ export const DocumentStylePreset = {
 
 /** Only these whole-molecule dimensions belong to document style. The preset id selects the
  * explicit wedge width; native style resolution never uses it to replace colours. Keep appearance
- * and all per-atom/per-bond overrides, including size maps, exactly as authored. */
+ * overrides; page scaling adjusts pixel dimensions in per-atom/per-bond size maps. */
 export const DocumentMoleculeSizeStyle = Object.fromEntries(([
   "stylePresetId",
   "bondLengthPx", "bondStrokeWidthPx", "bondBoldWidthPx", "bondSpacingMode", "bondSpacingPercent",

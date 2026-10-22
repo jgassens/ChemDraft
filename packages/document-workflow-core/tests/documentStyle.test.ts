@@ -27,23 +27,53 @@ describe("applyDocumentStyle", () => {
       .toBeCloseTo(2.268, 2);
     expect(wedge.attrs.fill).toBe("#ff0000");
   });
-  it("owns only size keys and preserves every other style and style map exactly", () => {
-    const document = createEmptyDocument(), mol = molecule();
+  it("scales pixel overrides while preserving colours and dimensionless styling", () => {
+    const document = createEmptyDocument(), mol = molecule("m", 44);
     mol.style = { bondColor: "#ff0000", atomLabelColor: "#00ff00", atomLabelBackgroundColor: "transparent",
       stylePresetId: "custom", atomLabelHideImplicitHydrogens: true, atomIndicatorShowAtomNumbers: true,
       bondIndicatorShowReaction: false, atomLabelFontWeight: 700, bondLineCap: "round",
       bondColors: { ab: "#112233" }, atomLabelColors: { a: "blue" },
-      bondLengths: { ab: 40 }, bondStrokeWidths: { ab: 7 }, atomLabelFontSizes: { a: 21 },
+      bondLengths: { ab: 44 }, bondStrokeWidths: { ab: 4 }, bondBoldWidths: { ab: 8 },
+      bondMultipleBondGaps: { ab: 6 }, bondDoubleBondInsets: { ab: 2 },
+      bondMarginWidths: { ab: 10 }, bondHashSpacings: { ab: 12 }, bondOverlapClearances: { ab: 14 },
+      atomLabelFontSizes: { a: 20 }, atomLabelPaddings: { a: 4 }, atomLabelBondClearances: { a: 6 },
+      bondSpacingPercents: { ab: 18 }, atomLabelFontWeights: { a: 700 },
+      atomLabelPaddingPx: 4, atomLabelBondClearancePx: 6, bondOverlapClearancePx: 8,
+      visualEffects: [{ kind: "shadow", color: "red", opacity: 0.5, offsetX: 4, offsetY: -6, blurPx: 8, spreadPx: 2 },
+        { kind: "sketch", strokeWidth: 4, roughness: 1.5, bowing: 0.8, seed: 7 }],
       atomLabelFontFamilies: { a: "Courier" }, bondStrokeWidthPx: 3, atomLabelFontSizePx: 20 };
     const original = structuredClone(mol);
     document.pages[0]!.objects = [mol];
     const styled = applyDocumentStyle(document).pages[0]!.objects[0]!;
     if (styled.type !== "molecule") throw new Error("fixture type");
-    expect(styled.style).toEqual({ ...original.style, ...DocumentMoleculeSizeStyle });
+    const scaledOverrides = {
+      bondLengths: { ab: 22 }, bondStrokeWidths: { ab: 2 }, bondBoldWidths: { ab: 4 },
+      bondMultipleBondGaps: { ab: 3 }, bondDoubleBondInsets: { ab: 1 },
+      bondMarginWidths: { ab: 5 }, bondHashSpacings: { ab: 6 }, bondOverlapClearances: { ab: 7 },
+      atomLabelFontSizes: { a: 10 }, atomLabelPaddings: { a: 2 }, atomLabelBondClearances: { a: 3 },
+      atomLabelPaddingPx: 2, atomLabelBondClearancePx: 3, bondOverlapClearancePx: 4,
+      visualEffects: [{ kind: "shadow", color: "red", opacity: 0.5, offsetX: 2, offsetY: -3, blurPx: 4, spreadPx: 1 },
+        { kind: "sketch", strokeWidth: 2, roughness: 1.5, bowing: 0.8, seed: 7 }]
+    };
+    expect(styled.style).toEqual({ ...original.style, ...scaledOverrides, ...DocumentMoleculeSizeStyle });
     for (const [key, value] of Object.entries(original.style)) {
-      if (!(key in DocumentMoleculeSizeStyle)) expect(styled.style[key]).toEqual(value);
+      if (!(key in DocumentMoleculeSizeStyle) && !(key in scaledOverrides)) expect(styled.style[key]).toEqual(value);
     }
     expect(mol).toEqual(original);
+  });
+
+  it("renders a 4-unit bond stroke at 2 units when 44-unit bonds scale to 22", () => {
+    const document = createEmptyDocument(), mol = molecule("m", 44);
+    mol.bonds[0]!.id = "b";
+    mol.style.bondStrokeWidths = { b: 4 };
+    document.pages[0]!.objects = [mol];
+    const page = applyDocumentStyle(document).pages[0]!;
+    const bond = planPageSvgRender(page).fragments.flatMap(elementFragments)
+      .find((fragment) => String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === "b")!;
+    expect(Number(bond.attrs["stroke-width"])).toBe(2);
+    const styled = page.objects[0]!;
+    if (styled.type !== "molecule") throw new Error("fixture type");
+    expect(styled.atoms[1]!.x - styled.atoms[0]!.x).toBe(22);
   });
 
   it("scales all page geometry together while keeping explicit text sizes and chemistry", () => {
@@ -91,7 +121,8 @@ describe("applyDocumentStyle", () => {
     expect(highlight.data.cornerRadiusPx).toBeCloseTo(5 * scale);
     expect(highlight.style.fillColor).toBe("yellow");
     expect(arrow.style.strokeWidth as number * DocumentStyleScale.pointsPerUnit).toBeCloseTo(1.134);
-    expect(highlight.style.strokeWidth! * DocumentStyleScale.pointsPerUnit).toBeCloseTo(1.134);
+    expect(highlight.style.strokeWidth).toBeCloseTo(5 * scale);
+    expect(curve.style.strokeWidth! * DocumentStyleScale.pointsPerUnit).toBeCloseTo(1.134);
     expect(curve.data.pathNodes![0]!.outControl!.x).toBeCloseTo(140 * scale);
     expect(curve.data.arcCenter!.x).toBeCloseTo(150 * scale);
     expect(curve.data.arcRadiusX).toBeCloseTo(20 * scale);
@@ -101,17 +132,44 @@ describe("applyDocumentStyle", () => {
       expect(pathCoordinates[index]).toBeCloseTo(value * scale, 5);
     }
     expect(mechanism.controlPoints[0]!.x).toBeCloseTo(180 * scale);
+    expect(mechanism.style.strokeWidth as number * DocumentStyleScale.pointsPerUnit).toBeCloseTo(1.134);
+  });
+
+  it("scales authored graphic strokes, defaults absent strokes, and leaves image styles untouched", () => {
+    const document = createEmptyDocument();
+    const graphics = (["rect", "ellipse", "path", "image"] as const).flatMap((graphicKind) =>
+      [undefined, 8].map((strokeWidth) => ({
+        id: `${graphicKind}-${strokeWidth}`, type: "graphic" as const, graphicKind,
+        x: 10, y: 20, width: 80, height: 40, rotation: 0, data: {},
+        style: { fillColor: "yellow", ...(strokeWidth === undefined ? {} : { strokeWidth }) }
+      })));
+    document.pages[0]!.objects = [molecule("m", 44), ...graphics];
+    const original = structuredClone(document);
+    const result = applyDocumentStyle(document);
+    for (const [index, source] of graphics.entries()) {
+      const graphic = result.pages[0]!.objects[index + 1]!;
+      expect(graphic.style).toEqual(source.graphicKind === "image" ? source.style : {
+        ...source.style, strokeWidth: source.style.strokeWidth === undefined
+          ? DocumentMoleculeSizeStyle.bondStrokeWidthPx : 4
+      });
+      expect(graphic.width).toBe(40);
+    }
+    expect(document).toEqual(original);
   });
 
   it("uses the median of molecule medians and warns only above 2% without distorting layout", () => {
     const document = createEmptyDocument();
-    document.pages[0]!.objects = [molecule("a", 28), molecule("b", 56)];
+    document.pages[0]!.objects = [molecule("a", 28), molecule("b", 55.99999999999997)];
     const warnings: CompatibilityWarning[] = [];
     const result = applyDocumentStyle(document, warnings);
     expect(warnings).toEqual([expect.objectContaining({ code: "document_style.mixed_bond_lengths",
       message: expect.stringMatching(/median across molecules \(42 native units\)/) })]);
     const lengths = result.pages[0]!.objects.map((object) => object.width);
     expect(lengths[1]! / lengths[0]!).toBeCloseTo(2);
+    document.pages[0]!.objects = [molecule("a", 28), molecule("b", 56.2468)];
+    const decimalWarnings: CompatibilityWarning[] = [];
+    applyDocumentStyle(document, decimalWarnings);
+    expect(decimalWarnings[0]!.message).toContain("(42.12 native units)");
     document.pages[0]!.objects = [molecule("a", 28), molecule("b", 28.5)];
     const similarWarnings: CompatibilityWarning[] = [];
     applyDocumentStyle(document, similarWarnings);

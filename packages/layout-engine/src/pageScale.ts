@@ -18,8 +18,14 @@ export function representativeMoleculeBondLength(molecule: MoleculeObject): numb
   }));
 }
 
+const moleculePixelMaps = [
+  "bondLengths", "bondStrokeWidths", "bondBoldWidths", "bondMultipleBondGaps",
+  "bondDoubleBondInsets", "bondMarginWidths", "bondHashSpacings", "bondOverlapClearances",
+  "atomLabelFontSizes", "atomLabelPaddings", "atomLabelBondClearances"
+];
+
 /** Scale the page about its origin, preserving contact, spacing, rotation and object identity.
- * Molecular style maps are deliberately untouched. Explicit text dimensions follow the page.
+ * Explicit style dimensions follow the page; colours and dimensionless settings stay authored.
  */
 export function scalePageGeometry(page: DocumentPage, scale: number): DocumentPage {
   const point = <T extends Point>(value: T): T => ({ ...value, x: value.x * scale, y: value.y * scale });
@@ -31,11 +37,33 @@ export function scalePageGeometry(page: DocumentPage, scale: number): DocumentPa
     }
     return scaled;
   };
+  const moleculeStyle = (style: MoleculeObject["style"]) => {
+    const scaled = { ...style };
+    for (const [key, value] of Object.entries(style)) {
+      if (key.endsWith("Px") && typeof value === "number") scaled[key] = value * scale;
+      if (moleculePixelMaps.includes(key) && value && typeof value === "object" && !Array.isArray(value)) {
+        scaled[key] = Object.fromEntries(Object.entries(value).map(([id, size]) =>
+          [id, typeof size === "number" ? size * scale : size]));
+      }
+    }
+    for (const key of ["visualEffects", "inactiveVisualEffects", "effects", "inactiveEffects"]) {
+      const effects = style[key];
+      if (!Array.isArray(effects)) continue;
+      scaled[key] = effects.map((effect: Record<string, unknown>) => {
+        const result = { ...effect };
+        for (const dimension of ["offsetX", "offsetY", "blurPx", "spreadPx", "strokeWidth"]) {
+          if (typeof effect[dimension] === "number") result[dimension] = effect[dimension] * scale;
+        }
+        return result;
+      });
+    }
+    return scaled;
+  };
   const objects = page.objects.map((object): DocumentObject => {
     const frame = { x: object.x * scale, y: object.y * scale,
       width: object.width * scale, height: object.height * scale };
     switch (object.type) {
-      case "molecule": return { ...object, ...frame,
+      case "molecule": return { ...object, ...frame, style: moleculeStyle(object.style),
         atoms: object.atoms.map((atom) => ({ ...point(atom),
           ...(atom.labelOffset ? { labelOffset: point(atom.labelOffset) } : {}) })),
         superatoms: object.superatoms.map((item) => ({ ...item, attachmentPoints: item.attachmentPoints.map(anchor) })),
@@ -71,7 +99,8 @@ export function scalePageGeometry(page: DocumentPage, scale: number): DocumentPa
           const marker = data[key];
           if (marker?.sizePx !== undefined) data[key] = { ...marker, sizePx: marker.sizePx * scale };
         }
-        return { ...object, ...frame, data };
+        return { ...object, ...frame, data, style: object.graphicKind !== "image" && object.style.strokeWidth !== undefined
+          ? { ...object.style, strokeWidth: object.style.strokeWidth * scale } : object.style };
       }
       default: return { ...object, ...frame };
     }

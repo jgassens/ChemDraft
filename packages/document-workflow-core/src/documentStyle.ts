@@ -15,7 +15,7 @@ export function applyDocumentStyle(document: ChemDraftDocument, warnings: Compat
   const representative = medianLength(lengths);
   if (lengths.length > 1 && Math.max(...lengths) / Math.min(...lengths) > 1.02) {
     warnings.push({ code: "document_style.mixed_bond_lengths",
-      message: `Mixed molecule bond lengths differ by more than 2%; using the median across molecules (${representative} native units) to scale the whole page uniformly. Individual bond lengths remain proportional.` });
+      message: `Mixed molecule bond lengths differ by more than 2%; using the median across molecules (${Number(representative!.toFixed(2))} native units) to scale the whole page uniformly. Individual bond lengths remain proportional.` });
   }
   const scaled = scalePageGeometry(page, representative === undefined ? 1 : DocumentStylePreset.drawing.bondLengthPx / representative);
   return { ...document, pages: [{ ...scaled, objects: scaled.objects.map((object) => {
@@ -24,7 +24,11 @@ export function applyDocumentStyle(document: ChemDraftDocument, warnings: Compat
       style: { ...object.style, fontFamily: DocumentTextStyle.fontFamily,
         fontSizePx: object.style.fontSizePx ?? DocumentTextStyle.fontSizePx },
       spans: object.spans.map((span) => ({ ...span, style: { ...span.style, fontFamily: DocumentTextStyle.fontFamily } })) };
-    if (object.type === "graphic" || object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
+    if (object.type === "graphic" && object.graphicKind !== "image") {
+      return { ...object, style: { ...object.style,
+        strokeWidth: object.style.strokeWidth ?? DocumentStylePreset.drawing.bondStrokeWidthPx } };
+    }
+    if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") {
       return { ...object, style: { ...object.style, strokeWidth: DocumentStylePreset.drawing.bondStrokeWidthPx } };
     }
     return object;

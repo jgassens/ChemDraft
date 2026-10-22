@@ -97,7 +97,8 @@ including the explicit bold/wedge width; export-engine wraps cropped SVG content
 transform and writes its root dimensions and viewBox in points. CLI fitting remains the default. Labels and text use the Arial, Helvetica, sans-serif font stack.
 `scalePageGeometry` scales every object frame, atom, arrow endpoint/control point, graphic geometry,
 text position and explicit text size, and page dimensions together. Molecule colours, appearance
-toggles and all per-atom/per-bond style maps remain unchanged.
+toggles remain unchanged; pixel-valued molecule styles, per-atom/per-bond maps and visual-effect
+dimensions scale with the page.
 
 ## Selection arrangement
 
