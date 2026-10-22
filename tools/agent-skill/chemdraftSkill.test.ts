@@ -75,27 +75,42 @@ function commandSources(): Map<string, ts.SourceFile> {
 /** Follow parseOptions' actual second argument, including inline objects. */
 function acceptedFlags(source: ts.SourceFile): Set<string> {
   const declarations = new Map<string, ts.Expression>();
-  visit(source, (node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      declarations.set(node.name.text, unwrap(node.initializer));
-    }
-  });
+  // Shared figure flags live beside the commands. Follow that deliberately
+  // static spread so the drift guard sees the actual parser contract.
+  for (const optionSource of [source, syntax(join(dirname(source.fileName), "..", "figureStyle.ts"))]) {
+    visit(optionSource, (node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        declarations.set(node.name.text, unwrap(node.initializer));
+      }
+    });
+  }
   const flags = new Set<string>();
+  const collect = (definition: ts.Expression): void => {
+    definition = unwrap(definition);
+    if (ts.isIdentifier(definition)) {
+      const resolved = declarations.get(definition.text);
+      if (!resolved) throw new Error(`Cannot resolve option definition ${definition.text}`);
+      collect(resolved);
+      return;
+    }
+    if (!ts.isObjectLiteralExpression(definition)) throw new Error("Unresolved CLI option definition");
+    for (const entry of definition.properties) {
+      if (ts.isSpreadAssignment(entry)) { collect(entry.expression); continue; }
+      if (!ts.isPropertyAssignment(entry) || !ts.isStringLiteral(entry.name) ||
+        !entry.name.text.startsWith("--")) throw new Error("Unresolved CLI option definition");
+      flags.add(entry.name.text);
+    }
+  };
   let parsers = 0;
   visit(source, (node) => {
     if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression) ||
       node.expression.text !== "parseOptions") return;
     parsers++;
     let definition: ts.Expression | undefined = node.arguments[1] && unwrap(node.arguments[1]);
-    if (definition && ts.isIdentifier(definition)) definition = declarations.get(definition.text);
-    if (!definition || !ts.isObjectLiteralExpression(definition)) {
+    if (!definition) {
       throw new Error(`Cannot resolve option definitions in ${source.fileName}`);
     }
-    for (const entry of definition.properties) {
-      if (!ts.isPropertyAssignment(entry) || !ts.isStringLiteral(entry.name) ||
-        !entry.name.text.startsWith("--")) throw new Error("Unresolved CLI option definition");
-      flags.add(entry.name.text);
-    }
+    collect(definition);
   });
   if (parsers !== 1 || flags.size === 0) throw new Error(`CLI parser shape changed: ${source.fileName}`);
   return flags;
@@ -380,6 +395,37 @@ describe("ChemDraft agent skill drift guard", () => {
       join(root, "packages", "chemdraft-mcp", "README.md")];
     const unread = textStyleDocs.filter((path) => /\bfontSize(?!Px)\s*:/.test(read(path)));
     expect(unread).toEqual([]);
+  });
+
+  it("keeps fixed-scale document figures aligned with CLI, MCP, and README", () => {
+    const documentCommands = ["render", "grid", "reaction", "render-document", "document"];
+    const cliReadme = read(join(root, "packages", "chemdraft-cli", "README.md"));
+    expect(entrypoint).toContain("--style document");
+    expect(entrypoint).toContain("style: \"document\"");
+    expect(entrypoint).toContain("--dpi");
+    expect(entrypoint).toMatch(/Never scale, zoom, stretch or crop a structure/);
+    expect(entrypoint).toContain("natural size (100%)");
+    for (const command of documentCommands) {
+      expect(flags.get(command), `${command} accepts document style`).toContain("--style");
+      expect(flags.get(command), `${command} accepts document PNG DPI`).toContain("--dpi");
+    }
+    expect(cliReadme).toContain("--style fit|document");
+    expect(cliReadme).toContain("--dpi <n>");
+    expect(documentedFlagErrors(cliReadme, flags)).toEqual([]);
+    const mcp = read(join(root, "packages", "chemdraft-mcp", "src", "server.ts"));
+    expect(mcp.match(/style: z\.enum\(FigureStyles\)\.optional\(\)/g)).toHaveLength(documentCommands.length);
+  });
+
+  it("states the verified desktop-only structure-to-name path", () => {
+    const plugins = read(join(skillRoot, "references", "plugins.md"));
+    for (const text of [entrypoint, plugins]) {
+      expect(text).toContain("Orthonym");
+      expect(text).toContain("org.chemdraft.naming.orthonym");
+      expect(text).toContain("CLI and MCP cannot name a structure");
+      expect(text).toMatch(/Never invent or recall a structure name|invent or recall a structure-to-name result/);
+    }
+    expect(entrypoint).toContain("OPSIN parses it back");
+    expect(entrypoint).toMatch(/canonical isomeric\s+SMILES/);
   });
 
   it("documents recipe 11's native grouping and editable fill limitation", () => {
