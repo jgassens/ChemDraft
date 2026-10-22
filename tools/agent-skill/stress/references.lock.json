@@ -3444,10 +3444,10 @@
     "P10": {
       "query": "(1S,2S)-2-aminocyclohexan-1-ol",
       "referenceSmiles": "N[C@H]1CCCC[C@@H]1O",
-      "opsinOk": false,
-      "opsinSmiles": null,
-      "equalsReference": null,
-      "error": "OPSIN engine is unavailable: missing bundled Java executable at \"/Users/jeremiahgassensmith/.agentctl/runs/run-20261022-164635-aca2a5/worktrees/set-fix/apps/desktop/src-tauri/resources/opsin/jre/bin/java\". Build it with scripts/build-opsin-runtime.sh."
+      "opsinOk": true,
+      "opsinSmiles": "N[C@@H]1[C@H](CCCC1)O",
+      "canonicalIsomericSmiles": "N[C@H]1CCCC[C@@H]1O",
+      "equalsReference": true
     }
   }
 }
