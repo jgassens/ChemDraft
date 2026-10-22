@@ -62,7 +62,7 @@ published version.
 
 ### GitHub Actions path
 
-The manual-dispatch [Windows release workflow](../../.github/workflows/windows-release.yml) builds
+This is the only release path (owner rule, 2026-10-22). The manual-dispatch [Windows release workflow](../../.github/workflows/windows-release.yml) builds
 the installer on `windows-latest`, optionally Authenticode-signs the CI artifact through SignPath
 Foundation, then signs the **final installer bytes** for the Tauri updater and generates `latest.json`.
 The [signing guide](windows-signing.md) covers the owner's SignPath application, trusted build setup,
@@ -75,9 +75,11 @@ explicit warnings and dry-run output. Optional uploads refuse published releases
 publishes a release or commits the feed. Review both platform artifacts from the same commit/version,
 publish the joint release, then commit the generated feed to `main` only after its installer URL works.
 
-### Existing Windows VM path
+### Windows VM path (retired)
 
-This path stays valid. Its updater signature does not provide Authenticode signing. If Authenticode
+Retired for releases (owner rule, 2026-10-22): publish only installers built by the GitHub Actions
+path above. These steps remain for reference and for local test installers; never publish a
+VM-built installer. Its updater signature does not provide Authenticode signing. If Authenticode
 is applied separately, do it **before** the final `tauri signer sign` and manifest generation: an
 existing `.sig` is invalid once any installer bytes change. SignPath Foundation requires verifiable
 CI builds; submitting a VM-built installer through the workflow is not supported.
