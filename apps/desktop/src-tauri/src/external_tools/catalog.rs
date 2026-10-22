@@ -2,6 +2,75 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Audited default-on features for the pinned Codex CLI. These grant no additional tools or
+/// external reach. The pinned-binary parity test requires every default-on feature to be classified.
+pub const CODEX_FEATURES_KEEP: &[&str] = &[
+    "api_key_model_discovery", // Model catalog discovery; no model-callable capability.
+    "auth_elicitation",        // Authentication flow for the explicitly configured MCP server.
+    "compaction_image_budget", // Context compaction accounting; does not expose image tools.
+    "content_item_kinds",      // Message content representation, not a tool registration.
+    "enable_request_compression", // Compresses existing API traffic; adds no destination.
+    "system_proxy_fallback",   // Transport for existing requests, not model-directed networking.
+    "tool_call_mcp_elicitation", // Protocol replies for the explicitly configured MCP server.
+    "unbounded_connection_retries", // Retry policy for existing connections, not new reach.
+];
+
+/// All other default-on features are denied, including removed compatibility switches (no-ops)
+/// and convenience features whose reach is unnecessary or uncertain. Use --disable, not legacy
+/// tools.* settings. Keep this list explicit so pin upgrades require a deliberate review.
+pub const CODEX_FEATURES_DISABLE: &[&str] = &[
+    "apps",                               // Connected applications.
+    "browser_annotation_api",             // Browser interaction.
+    "browser_use",                        // Browser tools.
+    "browser_use_external",               // External browser access.
+    "browser_use_full_cdp_access",        // Full browser debugging protocol access.
+    "code_mode_host",                     // Code execution host.
+    "collaboration_modes",                // Removed compatibility switch; no need to retain it.
+    "computer_use",                       // Computer interaction tools.
+    "daemon_auto_start",                  // Background process startup.
+    "fast_mode",                          // Unnecessary execution mode.
+    "goals",                              // Autonomous goal management.
+    "guardian_approval",                  // Alternative approval machinery; host uses never.
+    "guardian_reuse_parent_compaction",   // Guardian context reuse is unnecessary.
+    "hooks",                              // User-configured command execution.
+    "image_generation",                   // External image generation tools.
+    "in_app_browser",                     // In-app browser surface.
+    "in_app_chat",                        // In-app chat surface.
+    "in_app_dictation",                   // Audio input surface.
+    "in_app_local_automation",            // Local automation access.
+    "in_app_updates",                     // App update machinery.
+    "in_app_voice",                       // Voice interaction surface.
+    "instant_interrupt",                  // Unneeded experimental turn handling.
+    "item_ids",                           // Removed compatibility switch.
+    "memories",                           // Persistent context outside the conversation.
+    "mentions_v2",                        // Extra context discovery.
+    "multi_agent",                        // Delegated agents.
+    "plugin_sharing",                     // Plugin distribution.
+    "plugins",                            // Additional plugin capabilities.
+    "realtime_conversation",              // Realtime interaction surface.
+    "remote_plugin",                      // Remote plugin loading.
+    "resize_all_images",                  // Removed compatibility switch.
+    "shell_snapshot",                     // Shell environment capture.
+    "shell_tool",                         // Shell execution.
+    "skill_mcp_dependency_install",       // Skill-triggered MCP installation.
+    "skill_search",                       // Skills beyond the host instructions.
+    "sleep_tool",                         // Additional model-callable tool.
+    "sqlite",                             // Removed compatibility switch.
+    "steer",                              // Removed compatibility switch.
+    "terminal_resize_reflow",             // Removed compatibility switch.
+    "tool_search_always_defer_mcp_tools", // Removed tool-discovery switch.
+    "tool_suggest",                       // Additional tool discovery.
+    "tui_app_server",                     // Removed compatibility switch.
+    "ultrafast_mode",                     // Unnecessary execution mode.
+    "unified_exec",                       // Process execution.
+    "unified_exec_tty",                   // Interactive process execution.
+    "unified_exec_zsh_fork",              // Removed execution switch.
+    "view_image",                         // Local image access is a feature, not tools.view_image.
+    "workspace_dependencies",             // Workspace dependency discovery.
+    "worktrees",                          // Worktree management.
+    "write_stdin_approval", // Process input approval is unnecessary without execution.
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolId {
@@ -84,7 +153,7 @@ impl ToolSpec {
             _ => false,
         }
     }
-    pub fn parse_auth(&self, code: Option<i32>, stdout: &str) -> AuthStatus {
+    pub fn parse_auth(&self, code: Option<i32>, stdout: &str, stderr: &str) -> AuthStatus {
         match self.tool {
             ToolId::Claude => {
                 let json: serde_json::Value =
@@ -99,7 +168,9 @@ impl ToolSpec {
                 }
             }
             ToolId::Codex => AuthStatus {
-                signed_in: code == Some(0) && stdout.starts_with("Logged in"),
+                // Codex login status normally writes its human-readable result to stderr.
+                signed_in: code == Some(0)
+                    && (stdout.starts_with("Logged in") || stderr.starts_with("Logged in")),
                 auth_method: None,
             },
         }
@@ -240,11 +311,14 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
             } else {
                 args.extend(strings(&["-c", "sandbox_mode=\"read-only\""]));
             }
+            debug_assert!(CODEX_FEATURES_KEEP
+                .iter()
+                .all(|feature| !CODEX_FEATURES_DISABLE.contains(feature)));
+            for feature in CODEX_FEATURES_DISABLE {
+                args.extend(strings(&["--disable", feature]));
+            }
             for setting in [
                 "approval_policy=\"never\"",
-                "features.shell_tool=false",
-                "features.unified_exec=false",
-                "tools.view_image=false",
                 "web_search=\"disabled\"",
                 "check_for_update_on_startup=false",
                 "analytics.enabled=false",

@@ -1,5 +1,5 @@
 use super::*;
-use catalog::{render_run, ToolRunInputs};
+use catalog::{render_run, ToolRunInputs, CODEX_FEATURES_DISABLE, CODEX_FEATURES_KEEP};
 use env::ParentEnv;
 use probe::{Candidate, ProbePlatform};
 use run::{OutputStream, RunStatus};
@@ -57,7 +57,7 @@ fn version_and_auth_parsers_fail_closed() {
     assert!(claude.supports_version("2.1.259"));
     assert!(!claude.supports_version("2.1.258"));
     assert!(!claude.supports_version("bogus"));
-    let auth = claude.parse_auth(Some(0), r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    let auth = claude.parse_auth(Some(0), r#"{"loggedIn":true,"authMethod":"claude.ai"}"#, "");
     assert!(auth.signed_in);
     assert_eq!(auth.auth_method.as_deref(), Some("claude.ai"));
     for (code, json) in [
@@ -66,15 +66,32 @@ fn version_and_auth_parsers_fail_closed() {
         (Some(0), r#"{"loggedIn":"true"}"#),
         (Some(0), "garbage"),
     ] {
-        assert!(!claude.parse_auth(code, json).signed_in);
+        assert!(
+            !claude
+                .parse_auth(code, json, "Logged in using ChatGPT")
+                .signed_in
+        );
     }
     assert!(
         codex
-            .parse_auth(Some(0), "Logged in using ChatGPT")
+            .parse_auth(Some(0), "Logged in using ChatGPT", "")
             .signed_in
     );
-    assert!(!codex.parse_auth(Some(1), "Logged in").signed_in);
-    assert!(!codex.parse_auth(Some(0), "noise Logged in").signed_in);
+    assert!(!codex.parse_auth(Some(1), "", "Logged in").signed_in);
+    assert!(!codex.parse_auth(Some(0), "", "noise Logged in").signed_in);
+    assert!(
+        codex
+            .parse_auth(Some(0), "", "Logged in using ChatGPT\n")
+            .signed_in
+    );
+    for code in [Some(0), Some(1), None] {
+        assert!(!codex.parse_auth(code, "", "Not logged in\n").signed_in);
+    }
+    assert!(
+        !claude
+            .parse_auth(Some(0), "", r#"{"loggedIn":true}"#)
+            .signed_in
+    );
 }
 #[test]
 fn run_templates_first_turn_and_resume() {
@@ -134,8 +151,17 @@ fn run_templates_first_turn_and_resume() {
                 assert_eq!(run.args[0], "exec");
                 assert_eq!(run.args.last().unwrap(), "-");
                 assert_eq!(run.stdin.as_deref(), Some(inputs(None).prompt_file));
-                assert!(run.args.contains(&"features.shell_tool=false".into()));
-                assert!(run.args.contains(&"features.unified_exec=false".into()));
+                let disabled: Vec<_> = run
+                    .args
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--disable")
+                    .map(|pair| pair[1].as_str())
+                    .collect();
+                assert_eq!(disabled, CODEX_FEATURES_DISABLE);
+                assert!(!run
+                    .args
+                    .iter()
+                    .any(|arg| arg.starts_with("features.") || arg.starts_with("tools.")));
                 assert!(run.args.contains(&"approval_policy=\"never\"".into()));
                 assert!(run
                     .args
@@ -167,6 +193,220 @@ fn run_templates_first_turn_and_resume() {
         assert!(render_run(&tool.spec(), input).is_err());
     }
 }
+#[test]
+fn codex_feature_policy_has_no_duplicates_or_overlap() {
+    let mut classified = std::collections::HashSet::new();
+    for feature in CODEX_FEATURES_KEEP.iter().chain(CODEX_FEATURES_DISABLE) {
+        assert!(
+            classified.insert(feature),
+            "Feature classified twice: {feature}"
+        );
+    }
+}
+
+// Deliberately opt-in: release checks must use the pins, not whichever CLI happens to be on PATH.
+// Isolate config/auth so features list reports defaults, not a developer's feature overrides.
+fn pinned_cli(tool: ToolId, variable: &str, dir: &Path) -> Option<(catalog::ToolSpec, ParentEnv)> {
+    let Some(binary) = std::env::var_os(variable) else {
+        eprintln!("Skipping pinned CLI parity: {variable} is unset.");
+        return None;
+    };
+    let mut spec = tool.spec();
+    spec.program = fs::canonicalize(binary).expect("pinned CLI binary must exist");
+    let private_home = dir.join("home");
+    fs::create_dir_all(&private_home).unwrap();
+    let mut parent: ParentEnv = std::env::vars().collect();
+    for key in [
+        "HOME",
+        "USERPROFILE",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    ] {
+        parent.insert(key.into(), private_home.to_string_lossy().into_owned());
+    }
+    let version = parity_probe(&spec, spec.version_args, &parent, dir);
+    let expected = match tool {
+        ToolId::Claude => pins::CLAUDE_VERSION,
+        ToolId::Codex => pins::CODEX_VERSION,
+    };
+    assert_eq!(version.code, Some(0), "{}", version.stderr);
+    assert_eq!(
+        spec.parse_version(&version.stdout).as_deref(),
+        Some(expected),
+        "{variable} must point at the pinned version"
+    );
+    Some((spec, parent))
+}
+
+fn parity_probe(
+    spec: &catalog::ToolSpec,
+    args: &[&str],
+    parent: &ParentEnv,
+    dir: &Path,
+) -> probe::ProbeOutput {
+    probe::execute(
+        &spec.program,
+        args,
+        parent,
+        dir,
+        true,
+        Duration::from_secs(30),
+        1024 * 1024,
+    )
+    .expect("pinned CLI parity probe must finish within 30 seconds and the output cap")
+}
+
+fn codex_feature_rows(output: &str) -> Vec<(&str, bool)> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            let name = fields.next().expect("feature name");
+            // The stage can contain spaces (e.g. 'under development'); the last field is the default.
+            let enabled = match fields.next_back() {
+                Some("true") => true,
+                Some("false") => false,
+                _ => panic!("Unexpected features list row: {line}"),
+            };
+            (name, enabled)
+        })
+        .collect()
+}
+
+#[test]
+fn codex_feature_rows_parse_multiword_stages() {
+    assert_eq!(
+        codex_feature_rows("apps stable true\nexperimental_tool under development false\n"),
+        [("apps", true), ("experimental_tool", false)]
+    );
+}
+
+#[test]
+#[ignore = "set CHEMDRAFT_PINNED_CODEX to the pinned native binary; run before updating pins"]
+fn pinned_codex_accepts_rendered_run() {
+    let temp = TempDir::new();
+    let Some((spec, parent)) = pinned_cli(ToolId::Codex, "CHEMDRAFT_PINNED_CODEX", &temp.0) else {
+        return;
+    };
+    let output = parity_probe(&spec, &["features", "list"], &parent, &temp.0);
+    assert_eq!(output.code, Some(0), "{}", output.stderr);
+    let features = codex_feature_rows(&output.stdout);
+    assert!(!features.is_empty(), "features list must report features");
+    for feature in CODEX_FEATURES_KEEP.iter().chain(CODEX_FEATURES_DISABLE) {
+        assert!(
+            features.iter().any(|(name, _)| name == feature),
+            "Classified feature missing from pinned CLI: {feature}"
+        );
+    }
+    for (name, enabled) in features {
+        assert!(
+            !enabled
+                || CODEX_FEATURES_KEEP.contains(&name)
+                || CODEX_FEATURES_DISABLE.contains(&name),
+            "Unclassified default-on Codex feature: {name}"
+        );
+    }
+
+    let system_prompt = temp.0.join("system-prompt.md");
+    fs::write(&system_prompt, "ChemDraft CLI parity check.").unwrap();
+    let mut input = inputs(None);
+    input.run_dir = &temp.0;
+    input.system_prompt_file = &system_prompt;
+    input.effort = Some(Effort::High);
+    let mut rendered = render_run(&spec, input).unwrap();
+    // An undefined provider exits before ignored-setting diagnostics are emitted. Instead use a
+    // valid local provider whose required key is absent from the scrubbed environment: config
+    // validation completes, then authentication fails before any model request. Disable the MCP
+    // connection for this check while still parsing every rendered MCP setting.
+    rendered.args.splice(
+        rendered.args.len() - 1..rendered.args.len() - 1,
+        [
+            "-c".into(),
+            "model=\"chemdraft-parity-check-does-not-exist\"".into(),
+            "-c".into(),
+            "model_provider=\"chemdraft-parity\"".into(),
+            "-c".into(),
+            "model_providers.chemdraft-parity={name=\"Parity\",base_url=\"http://127.0.0.1:1\",env_key=\"CHEMDRAFT_PARITY_NO_SUCH_KEY\",wire_api=\"responses\"}".into(),
+            "-c".into(),
+            "mcp_servers.chemdraft.enabled=false".into(),
+        ],
+    );
+    let environment = env::child_env(
+        ProbePlatform::current(),
+        &parent,
+        &spec.program,
+        &temp.0,
+        true,
+    );
+    let run = ToolRun::spawn_with_output_limit(
+        rendered,
+        &temp.0,
+        &environment,
+        Duration::from_secs(30),
+        Some(1024 * 1024),
+    )
+    .unwrap();
+    let output = run
+        .capture_output(1024 * 1024, || false)
+        .unwrap_or_else(|_| panic!("Pinned CLI exceeded the parity output cap"));
+    assert!(
+        matches!(output.status, RunStatus::Exited { code: Some(code), .. } if code != 0),
+        "{:?}",
+        output.status
+    );
+    let diagnostics = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
+    assert!(
+        diagnostics.contains("missing environment variable: `chemdraft_parity_no_such_key`"),
+        "Must finish config validation and fail local authentication: {diagnostics}"
+    );
+    for line in diagnostics.lines() {
+        assert!(
+            ![
+                "unrecognized",
+                "ignored",
+                "ignoring",
+                "unknown",
+                "unexpected argument"
+            ]
+            .iter()
+            .any(|word| line.contains(word)),
+            "Pinned CLI rejected a flag or setting: {line}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "set CHEMDRAFT_PINNED_CLAUDE to the pinned native binary; run before updating pins"]
+fn pinned_claude_accepts_rendered_run() {
+    let temp = TempDir::new();
+    let Some((spec, parent)) = pinned_cli(ToolId::Claude, "CHEMDRAFT_PINNED_CLAUDE", &temp.0)
+    else {
+        return;
+    };
+    let help = parity_probe(&spec, &["--help"], &parent, &temp.0);
+    assert_eq!(help.code, Some(0), "{}", help.stderr);
+    // Claude --help does not list every supported flag. These hidden flags are documented in the
+    // Claude Code CLI reference (https://code.claude.com/docs/en/cli-reference) and Appendix A of
+    // the assistant design. Check that reference before treating a newly missing flag as invalid.
+    const UNLISTED_FLAGS: &[&str] = &["--max-turns", "--system-prompt-file"];
+    let mut input = inputs(Some("thread_123"));
+    input.model = Some("model-1.2");
+    input.effort = Some(Effort::High);
+    let rendered = render_run(&spec, input).unwrap();
+    for flag in rendered.args.iter().filter(|arg| arg.starts_with('-')) {
+        assert!(
+            help.stdout
+                .split_whitespace()
+                .any(|word| word.trim_end_matches(',') == flag)
+                || UNLISTED_FLAGS.contains(&flag.as_str()),
+            "Pinned Claude help is missing {flag}; check the CLI reference"
+        );
+    }
+}
+
 #[test]
 fn pins_are_complete_and_valid() {
     assert_eq!(pins::PINS.len(), 6);
@@ -387,7 +627,9 @@ fn main() {
  let args:Vec<_>=env::args().collect();
  match args.get(1).map(String::as_str).unwrap_or("") {
   "--version"=>{println!("2.1.296 (Claude Code)");},
+  "codex-version"=>{println!("codex-cli 0.163.0");},
   "auth"=>{println!("{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}");},
+  "login"=>{eprintln!("Logged in using ChatGPT");},
   "lines"=>{
    println!("out-1");io::stdout().flush().unwrap();thread::sleep(Duration::from_millis(60));
    eprintln!("err-1");io::stderr().flush().unwrap();thread::sleep(Duration::from_millis(60));
@@ -714,8 +956,12 @@ fn codex_without_mcp_keeps_restrictions_without_a_required_server() {
     input.mcp_url = "";
     let run = render_run(&ToolId::Codex.spec(), input).unwrap();
     assert!(!run.args.iter().any(|s| s.starts_with("mcp_servers.")));
-    assert!(run.args.contains(&"features.shell_tool=false".into()));
-    assert!(run.args.contains(&"features.unified_exec=false".into()));
+    for feature in CODEX_FEATURES_DISABLE {
+        assert!(run
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--disable", feature]));
+    }
 }
 
 fn cached_stub(state: &ExternalToolsState, tool: ToolId) {
@@ -1138,6 +1384,14 @@ fn probe_execution_uses_version_and_auth_contracts() {
     .unwrap();
     assert_eq!(result.version, "2.1.296");
     assert!(result.auth.signed_in);
+    let mut codex = ToolId::Codex.spec();
+    codex.version_args = &["codex-version"];
+    let result = probe::probe_tool(&codex, stub(), &ParentEnv::new(), &temp.0, false).unwrap();
+    assert_eq!(result.version, "0.163.0");
+    assert!(
+        result.auth.signed_in,
+        "Codex auth must read captured stderr"
+    );
 }
 
 #[test]

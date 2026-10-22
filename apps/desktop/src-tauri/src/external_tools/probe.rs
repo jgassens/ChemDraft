@@ -281,7 +281,7 @@ pub fn probe_tool(
     Ok(ProbeResult {
         path: path.to_owned(),
         version,
-        auth: spec.parse_auth(auth.code, &auth.stdout),
+        auth: spec.parse_auth(auth.code, &auth.stdout, &auth.stderr),
         probed_at: chrono::Utc::now().to_rfc3339(),
     })
 }

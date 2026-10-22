@@ -46,6 +46,8 @@ Windows probes `%USERPROFILE%\.local\bin`, `%LOCALAPPDATA%\Microsoft\WinGet\Link
 `%APPDATA%\npm`, `%ProgramFiles%\nodejs`, then process PATH/PATHEXT; `.exe` is preferred and
 `.cmd`/`.bat` shims are never executed. Probes run `--version` (10 s, 64 KiB) and the tool-specific
 auth status command (15 s, 64 KiB). Claude needs at least 2.1.259; Codex needs at least 0.162.1.
+Claude parses stdout JSON (`loggedIn: true`) with exit 0. Codex requires exit 0 and `Logged in`
+at the start of stdout or stderr; `codex login status` normally writes its result to stderr.
 
 Managed files live below app-local data `external-tools/<tool>/<version>/`; conversations use
 `external-tools/runs/<pluginId>/<conversationId>/`, created privately and reused by follow-ups.
@@ -70,10 +72,60 @@ Claude receives a newline-terminated stream-JSON user message on stdin. Its conf
 host MCP URL when supplied; this PR currently stages an empty `mcpServers` config and passes no URL.
 
 ```text
-codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-config --ignore-rules [--sandbox read-only | -c sandbox_mode="read-only"] -c approval_policy="never" -c features.shell_tool=false -c features.unified_exec=false -c tools.view_image=false -c web_search="disabled" -c check_for_update_on_startup=false -c analytics.enabled=false [-c mcp_servers.chemdraft.url="<url>" -c mcp_servers.chemdraft.bearer_token_env_var="CHEMDRAFT_MCP_TOKEN" -c mcp_servers.chemdraft.required=true -c mcp_servers.chemdraft.default_tools_approval_mode="auto" -c mcp_servers.chemdraft.startup_timeout_sec=30 -c mcp_servers.chemdraft.tool_timeout_sec=120] -c model_instructions_file="<run>/system-prompt.md" [-m <model>] [-c model_reasoning_effort="low|medium|high"] -
+codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-config --ignore-rules
+  [--sandbox read-only | -c sandbox_mode="read-only"]
+  --disable apps --disable browser_annotation_api --disable browser_use
+  --disable browser_use_external --disable browser_use_full_cdp_access --disable code_mode_host
+  --disable collaboration_modes --disable computer_use --disable daemon_auto_start
+  --disable fast_mode --disable goals --disable guardian_approval
+  --disable guardian_reuse_parent_compaction --disable hooks --disable image_generation
+  --disable in_app_browser --disable in_app_chat --disable in_app_dictation
+  --disable in_app_local_automation --disable in_app_updates --disable in_app_voice
+  --disable instant_interrupt --disable item_ids --disable memories --disable mentions_v2
+  --disable multi_agent --disable plugin_sharing --disable plugins --disable realtime_conversation
+  --disable remote_plugin --disable resize_all_images --disable shell_snapshot --disable shell_tool
+  --disable skill_mcp_dependency_install --disable skill_search --disable sleep_tool
+  --disable sqlite --disable steer --disable terminal_resize_reflow
+  --disable tool_search_always_defer_mcp_tools --disable tool_suggest --disable tui_app_server
+  --disable ultrafast_mode --disable unified_exec --disable unified_exec_tty
+  --disable unified_exec_zsh_fork --disable view_image --disable workspace_dependencies
+  --disable worktrees --disable write_stdin_approval
+  -c approval_policy="never" -c web_search="disabled" -c check_for_update_on_startup=false
+  -c analytics.enabled=false
+  [-c mcp_servers.chemdraft.url="<url>"
+   -c mcp_servers.chemdraft.bearer_token_env_var="CHEMDRAFT_MCP_TOKEN"
+   -c mcp_servers.chemdraft.required=true -c mcp_servers.chemdraft.default_tools_approval_mode="auto"
+   -c mcp_servers.chemdraft.startup_timeout_sec=30 -c mcp_servers.chemdraft.tool_timeout_sec=120]
+  -c model_instructions_file="<run>/system-prompt.md" [-m <model>]
+  [-c model_reasoning_effort="low|medium|high"] -
 ```
 
 Codex receives the prompt directly on stdin. Both templates reject dangerous bypass flags.
+First turns and resumes apply the same explicit `CODEX_FEATURES_DISABLE` policy. Image viewing
+is controlled by the `view_image` feature. `CODEX_FEATURES_KEEP` retains only model discovery,
+MCP authentication/elicitation, content/compaction bookkeeping, compression, proxy fallback, and
+connection retry behavior; each entry has a rationale in `catalog.rs`. Every other default-on
+feature, including removed compatibility switches, is disabled. Pin upgrades must classify any
+new default-on feature before shipping.
+
+Two ignored release parity tests exercise native binaries supplied by `CHEMDRAFT_PINNED_CODEX`
+and `CHEMDRAFT_PINNED_CLAUDE` (absolute paths). Each verifies the binary's version against `pins.rs`
+and uses isolated configuration/auth directories. An unset variable skips its test successfully.
+
+```text
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tests::pinned_codex_accepts_rendered_run -- --ignored --nocapture
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tests::pinned_claude_accepts_rendered_run -- --ignored --nocapture
+```
+
+The Codex check parses `features list`, requires every classified name to exist, and fails on any
+unclassified default-on feature. It then runs the rendered first-turn arguments with a local test
+provider requiring an absent API key and the MCP connection disabled: config validation finishes,
+then authentication fails before a model request. A 30 s timeout bounds the check, which rejects
+unknown/ignored flag or setting diagnostics. This covers the retained `-c` keys, including the
+optional MCP and reasoning settings. The Claude check compares every rendered
+flag (including resume, model, and effort) with `--help`; its documented hidden `--max-turns` and
+`--system-prompt-file` flags have an explicit allowlist. Consult the CLI reference before adding a
+new help exception. Run these checks on macOS and Windows before changing pins or releasing.
 
 Every child starts with `env_clear()`. The allowlist keeps `HOME`, `USER`, `LOGNAME`, `LANG`,
 `LC_*`, `XDG_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, proxy variables, certificate variables, and
