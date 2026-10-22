@@ -19,56 +19,58 @@ pub const CODEX_FEATURES_KEEP: &[&str] = &[
 /// and convenience features whose reach is unnecessary or uncertain. Use --disable, not legacy
 /// tools.* settings. Keep this list explicit so pin upgrades require a deliberate review.
 pub const CODEX_FEATURES_DISABLE: &[&str] = &[
-    "apps",                               // Connected applications.
-    "browser_annotation_api",             // Browser interaction.
-    "browser_use",                        // Browser tools.
-    "browser_use_external",               // External browser access.
-    "browser_use_full_cdp_access",        // Full browser debugging protocol access.
-    "code_mode_host",                     // Code execution host.
-    "collaboration_modes",                // Removed compatibility switch; no need to retain it.
-    "computer_use",                       // Computer interaction tools.
-    "daemon_auto_start",                  // Background process startup.
-    "fast_mode",                          // Unnecessary execution mode.
-    "goals",                              // Autonomous goal management.
-    "guardian_approval",                  // Alternative approval machinery; host uses never.
-    "guardian_reuse_parent_compaction",   // Guardian context reuse is unnecessary.
-    "hooks",                              // User-configured command execution.
-    "image_generation",                   // External image generation tools.
-    "in_app_browser",                     // In-app browser surface.
-    "in_app_chat",                        // In-app chat surface.
-    "in_app_dictation",                   // Audio input surface.
-    "in_app_local_automation",            // Local automation access.
-    "in_app_updates",                     // App update machinery.
-    "in_app_voice",                       // Voice interaction surface.
-    "instant_interrupt",                  // Unneeded experimental turn handling.
-    "item_ids",                           // Removed compatibility switch.
-    "memories",                           // Persistent context outside the conversation.
-    "mentions_v2",                        // Extra context discovery.
-    "multi_agent",                        // Delegated agents.
-    "plugin_sharing",                     // Plugin distribution.
-    "plugins",                            // Additional plugin capabilities.
-    "realtime_conversation",              // Realtime interaction surface.
-    "remote_plugin",                      // Remote plugin loading.
-    "resize_all_images",                  // Removed compatibility switch.
-    "shell_snapshot",                     // Shell environment capture.
-    "shell_tool",                         // Shell execution.
-    "skill_mcp_dependency_install",       // Skill-triggered MCP installation.
-    "skill_search",                       // Skills beyond the host instructions.
-    "sleep_tool",                         // Additional model-callable tool.
-    "sqlite",                             // Removed compatibility switch.
-    "steer",                              // Removed compatibility switch.
-    "terminal_resize_reflow",             // Removed compatibility switch.
+    "api_key_cyber_access_programs", // Additional access programs are unnecessary.
+    "apps",                          // Connected applications.
+    "browser_annotation_api",        // Browser interaction.
+    "browser_use",                   // Browser tools.
+    "browser_use_external",          // External browser access.
+    "browser_use_full_cdp_access",   // Full browser debugging protocol access.
+    "cli_daybreak",                  // Unneeded CLI mode; reach is not audited.
+    "code_mode_host",                // Code execution host.
+    "code_mode_interrupt",           // Code execution control is unnecessary.
+    "collaboration_modes",           // Removed compatibility switch; no need to retain it.
+    "computer_use",                  // Computer interaction tools.
+    "daemon_auto_start",             // Background process startup.
+    "fast_mode",                     // Unnecessary execution mode.
+    "goals",                         // Autonomous goal management.
+    "guardian_approval",             // Alternative approval machinery; host uses never.
+    "guardian_reuse_parent_compaction", // Guardian context reuse is unnecessary.
+    "hooks",                         // User-configured command execution.
+    "image_generation",              // External image generation tools.
+    "in_app_browser",                // In-app browser surface.
+    "in_app_chat",                   // In-app chat surface.
+    "in_app_dictation",              // Audio input surface.
+    "in_app_local_automation",       // Local automation access.
+    "in_app_updates",                // App update machinery.
+    "in_app_voice",                  // Voice interaction surface.
+    "instant_interrupt",             // Unneeded experimental turn handling.
+    "item_ids",                      // Removed compatibility switch.
+    "memories",                      // Persistent context outside the conversation.
+    "mentions_v2",                   // Extra context discovery.
+    "multi_agent",                   // Delegated agents.
+    "plugin_sharing",                // Plugin distribution.
+    "plugins",                       // Additional plugin capabilities.
+    "realtime_conversation",         // Realtime interaction surface.
+    "remote_plugin",                 // Remote plugin loading.
+    "resize_all_images",             // Removed compatibility switch.
+    "shell_snapshot",                // Shell environment capture.
+    "shell_tool",                    // Shell execution.
+    "skill_mcp_dependency_install",  // Skill-triggered MCP installation.
+    "skill_search",                  // Skills beyond the host instructions.
+    "sleep_tool",                    // Additional model-callable tool.
+    "sqlite",                        // Removed compatibility switch.
+    "steer",                         // Removed compatibility switch.
+    "terminal_resize_reflow",        // Removed compatibility switch.
     "tool_search_always_defer_mcp_tools", // Removed tool-discovery switch.
-    "tool_suggest",                       // Additional tool discovery.
-    "tui_app_server",                     // Removed compatibility switch.
-    "ultrafast_mode",                     // Unnecessary execution mode.
-    "unified_exec",                       // Process execution.
-    "unified_exec_tty",                   // Interactive process execution.
-    "unified_exec_zsh_fork",              // Removed execution switch.
-    "view_image",                         // Local image access is a feature, not tools.view_image.
-    "workspace_dependencies",             // Workspace dependency discovery.
-    "worktrees",                          // Worktree management.
-    "write_stdin_approval", // Process input approval is unnecessary without execution.
+    "tool_suggest",                  // Additional tool discovery.
+    "tui_app_server",                // Removed compatibility switch.
+    "ultrafast_mode",                // Unnecessary execution mode.
+    "unified_exec",                  // Process execution.
+    "unified_exec_tty",              // Interactive process execution.
+    "view_image",                    // Local image access is a feature, not tools.view_image.
+    "workspace_dependencies",        // Workspace dependency discovery.
+    "worktrees",                     // Worktree management.
+    "write_stdin_approval",          // Process input approval is unnecessary without execution.
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -279,7 +281,15 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
                 "--system-prompt-file",
             ]));
             args.push(path(input.system_prompt_file));
-            args.extend(strings(&["--settings", r#"{"disableAllHooks":true}"#]));
+            // Keep the subscription login, but never load user/project plugins or skills.
+            args.extend(strings(&[
+                "--setting-sources",
+                "",
+                "--disable-slash-commands",
+            ]));
+            // 2.1.308 loads these built-in plugins even with settings sources disabled.
+            // The init parity test requires an empty plugin list on each pin upgrade.
+            args.extend(strings(&["--settings", r#"{"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-plugin-authoring@builtin":false}}"#]));
             if let Some(id) = input.resume_id {
                 args.extend(strings(&["--resume", id]));
             }

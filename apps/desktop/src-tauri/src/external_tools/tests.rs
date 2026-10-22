@@ -94,6 +94,43 @@ fn version_and_auth_parsers_fail_closed() {
     );
 }
 #[test]
+fn recorded_auth_status_fixtures() {
+    let claude = ToolId::Claude.spec();
+    let signed_in = claude.parse_auth(
+        Some(0),
+        include_str!("fixtures/auth/claude-signed-in.json"),
+        "",
+    );
+    assert!(signed_in.signed_in);
+    assert_eq!(signed_in.auth_method.as_deref(), Some("claude.ai"));
+    let signed_out = claude.parse_auth(
+        Some(1),
+        include_str!("fixtures/auth/claude-signed-out.json"),
+        "",
+    );
+    assert!(!signed_out.signed_in);
+    assert_eq!(signed_out.auth_method.as_deref(), Some("none"));
+    let codex = ToolId::Codex.spec();
+    assert!(
+        codex
+            .parse_auth(
+                Some(0),
+                "",
+                include_str!("fixtures/auth/codex-signed-in.stderr")
+            )
+            .signed_in
+    );
+    assert!(
+        !codex
+            .parse_auth(
+                Some(1),
+                "",
+                include_str!("fixtures/auth/codex-signed-out.stderr")
+            )
+            .signed_in
+    );
+}
+#[test]
 fn run_templates_first_turn_and_resume() {
     for tool in [ToolId::Claude, ToolId::Codex] {
         for resume in [None, Some("thread_123")] {
@@ -135,8 +172,11 @@ fn run_templates_first_turn_and_resume() {
                     "40",
                     "--system-prompt-file",
                     "/runs/conversation/system-prompt.md",
+                    "--setting-sources",
+                    "",
+                    "--disable-slash-commands",
                     "--settings",
-                    r#"{"disableAllHooks":true}"#,
+                    r#"{"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-plugin-authoring@builtin":false}}"#,
                 ];
                 assert_eq!(run.args[..expected.len()], expected);
                 if let Some(id) = resume {
@@ -205,7 +245,7 @@ fn codex_feature_policy_has_no_duplicates_or_overlap() {
 }
 
 // Deliberately opt-in: release checks must use the pins, not whichever CLI happens to be on PATH.
-// Isolate config/auth so features list reports defaults, not a developer's feature overrides.
+// Codex needs isolated config/auth to report defaults; Claude needs the real subscription login.
 fn pinned_cli(tool: ToolId, variable: &str, dir: &Path) -> Option<(catalog::ToolSpec, ParentEnv)> {
     let Some(binary) = std::env::var_os(variable) else {
         eprintln!("Skipping pinned CLI parity: {variable} is unset.");
@@ -213,18 +253,20 @@ fn pinned_cli(tool: ToolId, variable: &str, dir: &Path) -> Option<(catalog::Tool
     };
     let mut spec = tool.spec();
     spec.program = fs::canonicalize(binary).expect("pinned CLI binary must exist");
-    let private_home = dir.join("home");
-    fs::create_dir_all(&private_home).unwrap();
     let mut parent: ParentEnv = std::env::vars().collect();
-    for key in [
-        "HOME",
-        "USERPROFILE",
-        "CODEX_HOME",
-        "CLAUDE_CONFIG_DIR",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-    ] {
-        parent.insert(key.into(), private_home.to_string_lossy().into_owned());
+    if tool == ToolId::Codex {
+        let private_home = dir.join("home");
+        fs::create_dir_all(&private_home).unwrap();
+        for key in [
+            "HOME",
+            "USERPROFILE",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+        ] {
+            parent.insert(key.into(), private_home.to_string_lossy().into_owned());
+        }
     }
     let version = parity_probe(&spec, spec.version_args, &parent, dir);
     let expected = match tool {
@@ -403,6 +445,159 @@ fn pinned_claude_accepts_rendered_run() {
                 .any(|word| word.trim_end_matches(',') == flag)
                 || UNLISTED_FLAGS.contains(&flag.as_str()),
             "Pinned Claude help is missing {flag}; check the CLI reference"
+        );
+    }
+
+    // A distinct cwd avoids project configuration while preserving the user's own login.
+    let run_dir = temp.0.join("run");
+    fs::create_dir(&run_dir).unwrap();
+    let system_prompt = temp.0.join("system-prompt.md");
+    let mcp_config = temp.0.join("claude-mcp.json");
+    fs::write(&system_prompt, "ChemDraft CLI parity check.").unwrap();
+    fs::write(
+        &mcp_config,
+        r#"{"mcpServers":{"chemdraft":{"type":"http","url":"http://127.0.0.1:1/mcp/parity"}}}"#,
+    )
+    .unwrap();
+    let mut input = inputs(None);
+    input.run_dir = &run_dir;
+    input.prompt_file = "ChemDraft parity check.";
+    input.system_prompt_file = &system_prompt;
+    input.mcp_config_file = &mcp_config;
+    let mut rendered = render_run(&spec, input).unwrap();
+    rendered.args.extend([
+        "--model".into(),
+        "chemdraft-parity-check-does-not-exist".into(),
+    ]);
+    // Observability only: surface lifecycle events to detect hooks before init.
+    rendered.args.push("--include-hook-events".into());
+    let environment = env::child_env(
+        ProbePlatform::current(),
+        &parent,
+        &spec.program,
+        &run_dir,
+        true,
+    );
+    let run = ToolRun::spawn_with_output_limit(
+        rendered,
+        &run_dir,
+        &environment,
+        Duration::from_secs(60),
+        Some(1024 * 1024),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut cursor = 0;
+    let mut diagnostics = String::new();
+    let mut events = Vec::new();
+    let mut init = None;
+    let mut bounded_output = true;
+    while Instant::now() < deadline {
+        let poll = run.poll(cursor, 5000, 100);
+        cursor = poll.next_cursor;
+        let drained = poll.lines.is_empty();
+        bounded_output &= poll.dropped_lines == 0 && !run.output_limit_exceeded();
+        for line in poll.lines {
+            bounded_output &= !line.truncated;
+            diagnostics.push_str(&line.text);
+            diagnostics.push('\n');
+            if line.stream == OutputStream::Stdout {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line.text) {
+                    if event["type"] == "system" && event["subtype"] == "init" {
+                        init = Some(event.clone());
+                    }
+                    events.push(event);
+                }
+            }
+        }
+        if init.is_some() || !bounded_output || (!poll.status.is_running() && drained) {
+            break;
+        }
+    }
+    // Always kill/reap before assertions (including failure), leaving no CLI behind.
+    run.cancel(run::KillReason::Cancelled);
+    assert!(
+        run.wait_finished(Duration::from_secs(5)),
+        "Claude parity process did not stop"
+    );
+    assert!(bounded_output, "Claude parity exceeded the output cap");
+    for event in &events {
+        for field in ["type", "subtype"] {
+            assert!(
+                !event[field]
+                    .as_str()
+                    .is_some_and(|s| s.to_ascii_lowercase().contains("hook")),
+                "Claude emitted a hook event: {event}"
+            );
+        }
+    }
+    // Some installations reject unauthenticated print mode before emitting init.
+    if init.is_none() && diagnostics.to_ascii_lowercase().contains("not logged in") {
+        eprintln!("Skipping Claude init parity: pinned CLI reports not logged in; rerun with the user's subscription login available.");
+        return;
+    }
+    let init = init.unwrap_or_else(|| {
+        panic!("Claude did not emit system/init within 60 seconds: {diagnostics}")
+    });
+    assert_claude_init_is_restricted(&init);
+}
+
+// Fail closed on unexpected init shapes as well as unexpected capabilities.
+fn assert_claude_init_is_restricted(init: &serde_json::Value) {
+    let tools = init["tools"].as_array().expect("init must list tools");
+    for tool in tools {
+        let name = tool.as_str().expect("tool name must be a string");
+        assert!(
+            name.starts_with("mcp__chemdraft__") || name == "EndConversation",
+            "Unexpected Claude tool: {name}"
+        );
+    }
+    let servers = init["mcp_servers"]
+        .as_array()
+        .expect("init must list MCP servers");
+    assert_eq!(
+        servers.len(),
+        1,
+        "init must list only the configured MCP server"
+    );
+    assert_eq!(servers[0]["name"], "chemdraft");
+    assert_eq!(
+        init["plugins"]
+            .as_array()
+            .expect("init must list plugins")
+            .len(),
+        0,
+        "Claude loaded plugins: {}",
+        init["plugins"]
+    );
+    for (key, value) in init.as_object().expect("init must be an object") {
+        if key == "slash_commands" || key.to_ascii_lowercase().contains("skill") {
+            assert!(
+                value.as_array().is_some_and(Vec::is_empty),
+                "Claude exposed commands/skills in {key}: {value}"
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_init_restriction_assertions_reject_extra_capabilities() {
+    let init = serde_json::json!({"tools":["EndConversation", "mcp__chemdraft__draw"], "mcp_servers":[{"name":"chemdraft","status":"failed"}], "plugins":[], "slash_commands":[], "skills":[]});
+    assert_claude_init_is_restricted(&init);
+    for (key, value) in [
+        ("tools", serde_json::json!(["Bash"])),
+        ("tools", serde_json::json!(["mcp__other__draw"])),
+        ("mcp_servers", serde_json::json!([{"name":"other"}])),
+        ("mcp_servers", serde_json::json!([])),
+        ("plugins", serde_json::json!([{"name":"user-plugin"}])),
+        ("slash_commands", serde_json::json!(["user-command"])),
+        ("skills", serde_json::json!(["user-skill"])),
+    ] {
+        let mut bad = init.clone();
+        bad[key] = value;
+        assert!(
+            std::panic::catch_unwind(|| assert_claude_init_is_restricted(&bad)).is_err(),
+            "Accepted unexpected {key}"
         );
     }
 }

@@ -1,9 +1,45 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { formatToolPin, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
+import { formatToolPin, hostToolPins, parityCommand, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
 
 describe("external tool pin script", () => {
+  it("selects both host binaries on macOS and Windows and skips unsupported hosts", () => {
+    const pins = ["DarwinArm64", "DarwinX64", "WindowsX64"].flatMap((platform) =>
+      ["Claude", "Codex"].map((tool) => ({ tool, platform })));
+    for (const [platform, arch, expected] of [
+      ["darwin", "arm64", "DarwinArm64"],
+      ["darwin", "x64", "DarwinX64"],
+      ["win32", "x64", "WindowsX64"]
+    ]) {
+      expect(hostToolPins(pins, platform, arch)).toEqual(pins.filter((pin) => pin.platform === expected));
+    }
+    expect(hostToolPins(pins, "linux", "x64")).toEqual([]);
+    expect(hostToolPins(pins, "win32", "arm64")).toEqual([]);
+    expect(hostToolPins(pins.filter((pin) => pin.tool === "Codex"), "darwin", "arm64")).toEqual([{ tool: "Codex", platform: "DarwinArm64" }]);
+  });
+
+  it("constructs the cargo parity command with verified paths and preserves the login environment", () => {
+    const command = parityCommand({ Claude: "C:\\Temp Dir\\claude.exe", Codex: "C:\\Temp Dir\\codex.exe" }, {
+      HOME: "/real home", CLAUDE_CONFIG_DIR: "/real config", USERPROFILE: "C:\\Users\\Chemist", PATH: "cargo-path",
+      CHEMDRAFT_PINNED_CLAUDE: "unverified", chemdraft_pinned_codex: "unverified"
+    });
+    expect(command.command).toBe("cargo");
+    expect(command.args).toEqual(["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "pinned_", "--", "--include-ignored", "--nocapture"]);
+    expect(command.options).toMatchObject({ shell: false, stdio: "inherit", env: {
+      HOME: "/real home", CLAUDE_CONFIG_DIR: "/real config", USERPROFILE: "C:\\Users\\Chemist", PATH: "cargo-path",
+      CHEMDRAFT_PINNED_CLAUDE: "C:\\Temp Dir\\claude.exe", CHEMDRAFT_PINNED_CODEX: "C:\\Temp Dir\\codex.exe"
+    } });
+    expect(command.options.cwd).toBe(fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, ""));
+    expect(command.options.env).not.toHaveProperty("chemdraft_pinned_codex");
+  });
+
+  it("does not inherit a parity binary for a tool absent on the host", () => {
+    expect(parityCommand({ Codex: "/verified/codex" }, {
+      CHEMDRAFT_PINNED_CLAUDE: "/unverified/claude", CHEMDRAFT_PINNED_CODEX: "/unverified/codex"
+    }).options.env).toEqual({ CHEMDRAFT_PINNED_CODEX: "/verified/codex" });
+  });
   it("formats a ToolPin exactly as pins.rs does", () => {
     expect(formatToolPin({ tool: "Claude", platform: "DarwinArm64", version: "CLAUDE_VERSION", url: "https://example.test/claude", size: 42, sha256: "abc", archive: "Raw", entry: "claude", binary: "claude" })).toBe(`    ToolPin {\n        tool: ToolId::Claude,\n        platform: ToolPlatform::DarwinArm64,\n        version: CLAUDE_VERSION,\n        url: "https://example.test/claude",\n        size: 42,\n        sha256: "abc",\n        archive: ArchiveKind::Raw,\n        entry: "claude",\n        binary: "claude",\n    },`);
   });

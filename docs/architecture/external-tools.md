@@ -36,7 +36,14 @@ Each pins the version, URL, size, SHA-256, archive type, single archive entry, a
 Run `node scripts/pin-external-tools.mjs` to fetch Claude's latest release and manifest and the
 latest `openai/codex` GitHub release, verify/archive-inspect the Codex downloads, and print the Rust
 constants and rows. Use `node scripts/pin-external-tools.mjs --check` before a release; it exits 1
-when that rendered block differs from `pins.rs`. Managed copies run with updates disabled.
+when that rendered block differs from `pins.rs`. When pins match, `--check` also downloads the
+host Claude binary from the manifest's release URL, reuses the downloaded host Codex archive,
+verifies both sizes and SHA-256 hashes, extracts them and makes the executables runnable. It runs
+`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml pinned_ -- --include-ignored --nocapture`
+with `CHEMDRAFT_PINNED_CODEX` and `CHEMDRAFT_PINNED_CLAUDE` pointing at those verified binaries;
+a failing test makes `--check` fail. A tool with no pinned binary for the host platform/architecture
+is explicitly skipped. Temporary downloads and binaries are removed afterward. Managed copies
+run with updates disabled.
 
 ## Discovery, installation, and sign-in
 
@@ -59,23 +66,41 @@ Sign-in is explicit user interaction. macOS creates a private, executable
 login` or `codex login` in Terminal. Windows launches `%ComSpec% /D /K` in a new console with the
 native executable and the same login arguments. The UI refreshes status; it does not infer success.
 
+## How each CLI finds its own login
+
+Claude uses `HOME` to find `~/.claude`, honouring `CLAUDE_CONFIG_DIR` when set. On macOS its
+Keychain entry is keyed to that config directory; on Windows credentials live in
+`%USERPROFILE%\.claude\.credentials.json` (or the configured directory). Codex uses `$CODEX_HOME`
+or `~/.codex/auth.json`. The environment allowlist preserves `HOME`, `CLAUDE_CONFIG_DIR`, and
+`CODEX_HOME`, plus Windows `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, and `LOCALAPPDATA`,
+so the CLI can find its own subscription login. API-key variables are deliberately not passed:
+a shell key must not silently change the account or billing method. ChemDraft never reads or
+copies these credentials itself.
+
 ## Run contracts
 
 These are the templates rendered by `catalog.rs` (optional resume/model/effort arguments are added
 only when supplied):
 
 ```text
-claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --strict-mcp-config --mcp-config <run>/claude-mcp.json --tools "" --allowedTools mcp__chemdraft__* --permission-mode dontAsk --permission-prompts none --max-turns 40 --system-prompt-file <run>/system-prompt.md --settings {"disableAllHooks":true} [--resume <id>] [--model <model>] [--effort low|medium|high]
+claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --strict-mcp-config --mcp-config <run>/claude-mcp.json --tools "" --allowedTools mcp__chemdraft__* --permission-mode dontAsk --permission-prompts none --max-turns 40 --system-prompt-file <run>/system-prompt.md --setting-sources "" --disable-slash-commands --settings {"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-plugin-authoring@builtin":false}} [--resume <id>] [--model <model>] [--effort low|medium|high]
 ```
 
 Claude receives a newline-terminated stream-JSON user message on stdin. Its config points at the
 host MCP URL when supplied; this PR currently stages an empty `mcpServers` config and passes no URL.
+Settings sources and slash commands are disabled to exclude user/project plugins and skills;
+the real login directory is preserved, and hooks are disabled explicitly. The two plugins enabled
+by default in pinned Claude 2.1.308 (`cc-plugin-agents-md@builtin` and
+`cc-plugin-plugin-authoring@builtin`) are also explicitly disabled: settings-source isolation
+alone does not disable built-in plugins. The init parity assertion catches newly enabled plugins
+when pins change.
 
 ```text
 codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-config --ignore-rules
   [--sandbox read-only | -c sandbox_mode="read-only"]
-  --disable apps --disable browser_annotation_api --disable browser_use
-  --disable browser_use_external --disable browser_use_full_cdp_access --disable code_mode_host
+  --disable api_key_cyber_access_programs --disable apps --disable browser_annotation_api --disable browser_use
+  --disable browser_use_external --disable browser_use_full_cdp_access --disable cli_daybreak
+  --disable code_mode_host --disable code_mode_interrupt
   --disable collaboration_modes --disable computer_use --disable daemon_auto_start
   --disable fast_mode --disable goals --disable guardian_approval
   --disable guardian_reuse_parent_compaction --disable hooks --disable image_generation
@@ -88,7 +113,7 @@ codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-c
   --disable sqlite --disable steer --disable terminal_resize_reflow
   --disable tool_search_always_defer_mcp_tools --disable tool_suggest --disable tui_app_server
   --disable ultrafast_mode --disable unified_exec --disable unified_exec_tty
-  --disable unified_exec_zsh_fork --disable view_image --disable workspace_dependencies
+  --disable view_image --disable workspace_dependencies
   --disable worktrees --disable write_stdin_approval
   -c approval_policy="never" -c web_search="disabled" -c check_for_update_on_startup=false
   -c analytics.enabled=false
@@ -110,7 +135,9 @@ new default-on feature before shipping.
 
 Two ignored release parity tests exercise native binaries supplied by `CHEMDRAFT_PINNED_CODEX`
 and `CHEMDRAFT_PINNED_CLAUDE` (absolute paths). Each verifies the binary's version against `pins.rs`
-and uses isolated configuration/auth directories. An unset variable skips its test successfully.
+and runs in a temporary directory. Codex isolates configuration/auth directories to inspect the
+CLI's defaults; Claude preserves the user's login environment to exercise its actual init event.
+An unset variable skips its test with a message.
 
 ```text
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tests::pinned_codex_accepts_rendered_run -- --ignored --nocapture
@@ -122,10 +149,19 @@ unclassified default-on feature. It then runs the rendered first-turn arguments 
 provider requiring an absent API key and the MCP connection disabled: config validation finishes,
 then authentication fails before a model request. A 30 s timeout bounds the check, which rejects
 unknown/ignored flag or setting diagnostics. This covers the retained `-c` keys, including the
-optional MCP and reasoning settings. The Claude check compares every rendered
-flag (including resume, model, and effort) with `--help`; its documented hidden `--max-turns` and
-`--system-prompt-file` flags have an explicit allowlist. Consult the CLI reference before adding a
-new help exception. Run these checks on macOS and Windows before changing pins or releasing.
+optional MCP and reasoning settings. The Claude check compares every rendered flag (including
+resume, model, and effort) with `--help`; its documented hidden `--max-turns` and
+`--system-prompt-file` flags have an explicit allowlist. It also runs the rendered first-turn
+command in an empty working directory with a one-line stream-JSON prompt, an unreachable
+`127.0.0.1` MCP endpoint and the nonexistent model `chemdraft-parity-check-does-not-exist`, so no
+model call can succeed. It reads stream-JSON until `system/init` (60 s limit), then kills the
+process and checks that tools are only `mcp__chemdraft__*` or `EndConversation`, the only MCP
+server is `chemdraft`, plugins and commands/skills are empty, and no hook events appeared. The
+test adds `--include-hook-events` for visibility. If the CLI reports "not logged in" before init,
+it prints a clear skip message; rerun on a logged-in host to verify init. Consult the CLI reference
+before adding a new help exception. Run these checks on macOS and Windows before changing pins or
+releasing. Recorded auth fixtures under `external_tools/fixtures/auth/` cover both CLIs' signed-in
+and signed-out status formats without executing binaries.
 
 Every child starts with `env_clear()`. The allowlist keeps `HOME`, `USER`, `LOGNAME`, `LANG`,
 `LC_*`, `XDG_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, proxy variables, certificate variables, and
