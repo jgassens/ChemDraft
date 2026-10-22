@@ -785,11 +785,14 @@ fn request_error_during_install_reports_busy() {
 }
 
 #[test]
-fn capability_is_only_main_and_grants_exactly_six_commands() {
+fn capability_is_only_document_windows_and_grants_exactly_six_commands() {
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../../capabilities/naming-engine.json"))
             .expect("capability");
-    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(
+        capability["windows"],
+        serde_json::json!(["main", "document-*"])
+    );
     assert!(capability.get("webviews").is_none());
     assert!(capability.get("remote").is_none());
     let expected = serde_json::json!([

@@ -49,6 +49,10 @@ vi.mock("../window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("../window-manager")>(),
   isDesktopRuntime: () => nativeDialog.desktop
 }));
+vi.mock("../window-manager/tauriEvents", async importOriginal => ({
+  ...await importOriginal<typeof import("../window-manager/tauriEvents")>(),
+  listenCurrentWindowEvent: async () => () => {}
+}));
 vi.mock("./registerBundledPlugins", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./registerBundledPlugins")>();
   const { recognitionFixtureDescriptor } = await import("../testSupport/recognitionFixturePlugin");
@@ -277,13 +281,15 @@ describe("MainWindow bundled plugin integration", () => {
     const runtime = bundled.runtime;
     expect(runtime).toBeDefined();
 
+    const initialTab = container.querySelector<HTMLButtonElement>('[role="tab"]')!;
     await click(container.querySelector<HTMLButtonElement>(".document-tab-new")!);
-    await click(container.querySelector<HTMLButtonElement>('[role="tab"]')!);
+    await click(initialTab);
+    expect(initialTab.getAttribute("aria-selected")).toBe("true");
     expect(bundled.runtime).toBe(runtime);
 
     const invocation = runtime!.invokeCommand("plugin.namingTest.run");
     await vi.waitFor(() => expect(nativeDialog.snapshot?.dialogKind).toBe("engineInstall"));
-    expect(nativeDialog.snapshot?.documentTabId).toBe("initial");
+    expect(nativeDialog.snapshot?.documentTabId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(document.querySelector(".structure-naming-host section")).toBeNull();
     expect(bundled.namingResult).toBeUndefined();
 

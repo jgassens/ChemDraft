@@ -1,3 +1,5 @@
+import { transferHistoryDocuments, validateTabTransfer, type TabTransfer } from "./documentTabTransfer";
+import { newDocumentWindow, listDocumentWindows, stageDocumentTabTransfer, takeDocumentTabTransfer, acceptDocumentTabTransfer, documentTabTransferStatus, cancelDocumentTabTransfer, claimDocumentFile, releaseDocumentFile, documentWindowCommand, broadcastSharedToolsetLayoutState, listenForSharedToolsetLayoutState } from "./window-manager";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
@@ -1602,7 +1604,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.22.10.32-codex";
+const CURRENT_BUILD_STAMP = "10.22.14.51-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2107,13 +2109,13 @@ export function MainWindow({
   const [moveArrowPreviewObjects, setMoveArrowPreviewObjects] = useState<ObjectTransformPreviewState["arrowPreviewObjects"]>();
   const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
-  const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
-  const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
+  const [documentTabs, setDocumentTabs] = useState<Array<{ id: string; title: string }>>(() => [{ id: crypto.randomUUID(), title: initialDocument?.title ?? "Untitled" }]);
+  const [activeDocumentTabId, setActiveDocumentTabId] = useState<string>(documentTabs[0]!.id);
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
-  const activeDocumentTabIdRef = useRef("initial");
+  const activeDocumentTabIdRef = useRef<string>(documentTabs[0]!.id);
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
@@ -2132,6 +2134,9 @@ export function MainWindow({
     status: string;
     pageFit?: ImportedPageFitPromptState;
   }>());
+  const transferRunningRef = useRef(false);
+  const savingDocumentTabsRef = useRef(new Set<string>());
+  const [transferBusy, setTransferBusy] = useState(false);
   const pendingTabScrollRef = useRef<{ left: number; top: number } | undefined>(undefined);
   const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
   const [quitPromptReady, setQuitPromptReady] = useState<number>();
@@ -3031,7 +3036,7 @@ export function MainWindow({
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
   ): boolean => {
-    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    if (quitMutationFrozenRef.current || transferRunningRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3061,7 +3066,7 @@ export function MainWindow({
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string
   ): boolean => {
-    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    if (quitMutationFrozenRef.current || transferRunningRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const nextDocument = typeof nextDocumentOrUpdate === "function"
       ? nextDocumentOrUpdate(currentHistory.present)
@@ -3095,7 +3100,7 @@ export function MainWindow({
     nextDocument: ChemDraftDocument,
     undoLabel?: string
   ) => {
-    if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    if (quitMutationFrozenRef.current || transferRunningRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     const currentHistory = documentHistoryRef.current;
     const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
@@ -8126,9 +8131,9 @@ export function MainWindow({
     installDocumentTab(id);
   }, [closeTabPrompt, installDocumentTab, snapshotDocumentTab]);
 
-  const addDocumentTab = useCallback((title: string) => {
+  const addDocumentTab = useCallback((title: string, reservedId?: string) => {
     snapshotDocumentTab();
-    const id = crypto.randomUUID();
+    const id = reservedId ?? crypto.randomUUID();
     const tabs = [...documentTabsRef.current, { id, title }];
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -8167,6 +8172,8 @@ export function MainWindow({
       snapshotDocumentTab();
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
+    const removedPath = documentTabSnapshotsRef.current.get(id)?.file.path;
+    if (removedPath && isDesktopRuntime() && !transferRunningRef.current) void releaseDocumentFile(removedPath, id).catch(() => {});
     documentTabSnapshotsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
     browserFileKeysRef.current.delete(id);
@@ -8212,7 +8219,7 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ) => {
-    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+    if (closeTabPromptRef.current || quitInteractionRef.current || transferRunningRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       return;
@@ -8228,46 +8235,65 @@ export function MainWindow({
       activateDocumentTab(existing.id);
       return;
     }
-    const opened = openNativeDocument(contents);
-    const resolvedOpen = await resolveOpenResultDocument(opened);
-    if (quitInteractionRef.current) {
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      return;
+    const reservedTabId = crypto.randomUUID();
+    let releaseReservation = false;
+    if (path && isDesktopRuntime()) {
+      const claim = await claimDocumentFile(path, reservedTabId);
+      if (!claim.owned) return;
+      releaseReservation = true;
     }
-    if (!resolvedOpen) {
-      throw new Error(formatOpenFailure(opened.warnings));
+    try {
+      if (quitInteractionRef.current || transferRunningRef.current) {
+        pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+        return;
+      }
+      const opened = openNativeDocument(contents);
+      const resolvedOpen = await resolveOpenResultDocument(opened);
+      if (quitInteractionRef.current || transferRunningRef.current) {
+        pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+        return;
+      }
+      if (!resolvedOpen) {
+        throw new Error(formatOpenFailure(opened.warnings));
+      }
+      const fitRecommendation = resolvedOpen.source === "external-cdxml"
+        ? recommendImportedPageFit(resolvedOpen.document)
+        : undefined;
+      const dirty = options?.dirty ?? false;
+      snapshotDocumentTab();
+      const replacedPristineId = nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+        ? undefined : activeDocumentTabIdRef.current;
+      addDocumentTab(displayName, reservedTabId);
+      const id = activeDocumentTabIdRef.current;
+      // The new identity prevents late actions from targeting the opened file. A pristine tab's
+      // replacement is removed below, keeping the visible tab count unchanged.
+      void dialogCoordinatorRef.current?.closeTab(id);
+      exportGrantsRef.current.delete(id);
+      if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
+      const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
+      documentTabsRef.current = tabs;
+      setDocumentTabs(tabs);
+      nonPristineTabsRef.current.add(id);
+      if (browserKey) browserFileKeysRef.current.set(id, browserKey);
+      resetDocumentHistory(resolvedOpen.document, { path, dirty });
+      releaseReservation = false;
+      if (replacedPristineId) removeDocumentTab(replacedPristineId);
+      clearDocumentInteractionState({ clearSpin3dModelCache: true });
+      tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
+      setPageFitPrompt(tabPageFitRef.current);
+      const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+      const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
+      tabWarningsRef.current = warningsReport;
+      setOpenWarningsReport(warningsReport);
+      const openStatus = options?.statusOverride
+        ?? formatOpenStatus(displayName, sourceLabel, opened.warnings);
+      setStatus(fitRecommendation
+        ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
+        : openStatus);
+    } finally {
+      if (releaseReservation && path) await releaseDocumentFile(path, reservedTabId);
     }
-    const fitRecommendation = resolvedOpen.source === "external-cdxml"
-      ? recommendImportedPageFit(resolvedOpen.document)
-      : undefined;
-    const dirty = options?.dirty ?? false;
-    snapshotDocumentTab();
-    if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)) addDocumentTab(displayName);
-    const id = activeDocumentTabIdRef.current;
-    // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
-    // synchronously before replacing the history; late actions must never target the opened file.
-    void dialogCoordinatorRef.current?.closeTab(id);
-    exportGrantsRef.current.delete(id);
-    if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
-    const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
-    documentTabsRef.current = tabs;
-    setDocumentTabs(tabs);
-    nonPristineTabsRef.current.add(id);
-    if (browserKey) browserFileKeysRef.current.set(id, browserKey);
-    resetDocumentHistory(resolvedOpen.document, { path, dirty });
-    clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
-    setPageFitPrompt(tabPageFitRef.current);
-    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
-    const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
-    tabWarningsRef.current = warningsReport;
-    setOpenWarningsReport(warningsReport);
-    const openStatus = options?.statusOverride
-      ?? formatOpenStatus(displayName, sourceLabel, opened.warnings);
-    setStatus(fitRecommendation
-      ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
-      : openStatus);
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, removeDocumentTab, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -8301,7 +8327,7 @@ export function MainWindow({
         }
       }
     })();
-  }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
+  }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen, transferBusy]);
 
   const acceptPageFitRecommendation = useCallback(() => {
     if (!pageFitPrompt) {
@@ -8593,7 +8619,12 @@ export function MainWindow({
               const resolved = await resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              restored.push({ session, opened, resolved, history, candidateIndex, id: crypto.randomUUID() });
+              const id: string = session.tabId && !restored.some((entry) => entry.id === session.tabId) ? session.tabId : crypto.randomUUID();
+              if (session.path) {
+                const claim = await claimDocumentFile(session.path, id);
+                if (!claim.owned) throw new Error("This restored file already belongs to another window");
+              }
+              restored.push({ session, opened, resolved, history, candidateIndex, id });
             } catch {
               skipped.push(rawTab);
             }
@@ -8735,6 +8766,7 @@ export function MainWindow({
         return {
           ...buildDocumentSessionEnvelope(payload, snapshot.file,
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
+          tabId: tab.id,
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
           openWarnings: snapshot.warnings
@@ -8766,6 +8798,157 @@ export function MainWindow({
   }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
 
 
+  const moveDocumentTab = useCallback(async (chooseExisting: boolean) => {
+    if (!isDesktopRuntime() || transferRunningRef.current || quitInteractionRef.current || closeTabPromptRef.current) return;
+    const id = activeDocumentTabIdRef.current;
+    const block = pluginRuntimeRef.current?.documentTabTransferBlockReason(id);
+    if (block || savingDocumentTabsRef.current.size) {
+      setStatus(block ?? "Finish saving before moving a document"); return;
+    }
+    let transferId: string | undefined;
+    try {
+      let targetLabel: string;
+      if (chooseExisting) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const current = getCurrentWindow().label;
+        const windows = (await listDocumentWindows()).filter((entry) => entry.label !== current);
+        if (!windows.length) { setStatus("Open another document window first"); return; }
+        targetLabel = "";
+        for (const entry of windows) {
+          const choice = await nativePrompt({ title: "Move tab to window", kind: "info",
+            message: entry.title + " (" + entry.label + ")",
+            choices: [{ id: "move", label: "Move Here" }, ...(windows.length > 1 ? [{ id: "next", label: "Next Window" }] : []), { id: "cancel", label: "Cancel", cancel: true }] }, async () => "cancel");
+          if (choice === "cancel") return;
+          if (choice === "move") { targetLabel = entry.label; break; }
+        }
+        if (!targetLabel) return;
+      } else targetLabel = await newDocumentWindow();
+      if (activeDocumentTabIdRef.current !== id || savingDocumentTabsRef.current.size || quitInteractionRef.current) { setStatus("The document changed while choosing a window; try moving it again"); return; }
+      const lateBlock = pluginRuntimeRef.current?.documentTabTransferBlockReason(id);
+      if (lateBlock) { setStatus(lateBlock); return; }
+      // End drafts before freezing. No live worker, dialog or plugin capability crosses windows.
+      snapshotDocumentTab();
+      const state = documentTabSnapshotsRef.current.get(id)!;
+      const snapshot: TabTransfer<typeof state> = { version: 1,
+        title: documentTabsRef.current.find((tab) => tab.id === id)!.title,
+        pristine: !nonPristineTabsRef.current.has(id), browserFileKey: browserFileKeysRef.current.get(id),
+        undoLabels: transferHistoryDocuments(state.history).map((document) => documentUndoLabelsRef.current.get(document) ?? null), state };
+      transferRunningRef.current = true; setTransferBusy(true);
+      await writeDocumentSessionNow({ strict: true });
+      const transfer = await stageDocumentTabTransfer(targetLabel, id, snapshot);
+      transferId = transfer.transferId;
+      const deadline = Date.now() + 30000;
+      for (;;) {
+        const status = await documentTabTransferStatus(transferId);
+        if (status === "accepted") {
+          const closeEmptiedSource = documentTabsRef.current.length === 1 && unrestoredSessionTabsRef.current.length === 0;
+          removeDocumentTab(id);
+          await writeDocumentSessionNow({ strict: true });
+          setStatus("Document moved to another window");
+          if (closeEmptiedSource) await documentWindowCommand("close_document_window");
+          return;
+        }
+        if (status === "cancelled" || Date.now() >= deadline) throw new Error("The destination did not accept the document; it remains here");
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 150));
+      }
+    } catch (error) {
+      if (transferId) {
+        // Cancellation races acceptance: never resume editing a tab whose owner already changed.
+        await cancelDocumentTabTransfer(transferId).catch(() => {});
+        if (await documentTabTransferStatus(transferId).catch(() => "pending") === "accepted") {
+          removeDocumentTab(id);
+          await writeDocumentSessionNow().catch(() => {});
+        }
+      }
+      setStatus("Move failed: " + (error instanceof Error ? error.message : String(error)));
+    } finally { transferRunningRef.current = false; setTransferBusy(false); }
+  }, [removeDocumentTab, snapshotDocumentTab, writeDocumentSessionNow]);
+
+  // Native staging survives destination startup. Poll only after hydration so restore cannot replace it.
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false, polling = false;
+    const receive = async () => {
+      if (disposed || polling || !documentSessionHydratedRef.current || transferRunningRef.current || quitInteractionRef.current || closeTabPromptRef.current) return;
+      polling = true;
+      try {
+        const transfer = await takeDocumentTabTransfer();
+        if (!transfer || disposed) return;
+        const moved = validateTabTransfer<NonNullable<ReturnType<typeof documentTabSnapshotsRef.current.get>>>(transfer.snapshot);
+        if (documentTabsRef.current.some((tab) => tab.id === transfer.tabId)) throw new Error("The moved tab already exists in this window");
+        snapshotDocumentTab();
+        const previousId = activeDocumentTabIdRef.current;
+        const previousTabs = documentTabsRef.current;
+        const replacePristineTarget = previousTabs.length === 1 && !nonPristineTabsRef.current.has(previousId)
+          && !fileStateRef.current.path && !fileStateRef.current.dirty
+          && documentIsBlank(documentRef.current) && unrestoredSessionTabsRef.current.length === 0;
+        transferRunningRef.current = true; setTransferBusy(true);
+        try {
+          documentTabSnapshotsRef.current.set(transfer.tabId, moved.state);
+          transferHistoryDocuments(moved.state.history).forEach((document, index) => {
+            const label = moved.undoLabels[index]; if (label) documentUndoLabelsRef.current.set(document, label);
+          });
+          if (!moved.pristine) nonPristineTabsRef.current.add(transfer.tabId);
+          if (moved.browserFileKey) browserFileKeysRef.current.set(transfer.tabId, moved.browserFileKey);
+          documentTabsRef.current = [...previousTabs, { id: transfer.tabId, title: moved.title }];
+          setDocumentTabs(documentTabsRef.current);
+          installDocumentTab(transfer.tabId);
+          await writeDocumentSessionNow({ strict: true });
+          await acceptDocumentTabTransfer(transfer.transferId);
+          if (replacePristineTarget) {
+            removeDocumentTab(previousId);
+            await writeDocumentSessionNow({ strict: true });
+          }
+        } catch (error) {
+          // Native acceptance is authoritative, including a reply lost after a successful commit.
+          if (await documentTabTransferStatus(transfer.transferId).catch(() => "pending") !== "accepted") {
+            documentTabsRef.current = previousTabs; setDocumentTabs(previousTabs);
+            installDocumentTab(previousId);
+            documentTabSnapshotsRef.current.delete(transfer.tabId);
+            nonPristineTabsRef.current.delete(transfer.tabId); browserFileKeysRef.current.delete(transfer.tabId);
+            await cancelDocumentTabTransfer(transfer.transferId).catch(() => {});
+            await writeDocumentSessionNow().catch(() => {});
+            throw error;
+          }
+        } finally { transferRunningRef.current = false; setTransferBusy(false); }
+      } catch (error) { setStatus("Move failed: " + (error instanceof Error ? error.message : String(error))); }
+      finally { polling = false; }
+    };
+    const timer = window.setInterval(() => { void receive(); }, 200);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [installDocumentTab, removeDocumentTab, snapshotDocumentTab, writeDocumentSessionNow]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false; const stops: Array<() => void> = [];
+    const keep = (stop: () => void) => { if (disposed) stop(); else stops.push(stop); };
+    void listenCurrentWindowEvent<{ tabId: string }>("chemdraft://activate-document-tab", (event) => {
+      if (typeof event.payload?.tabId === "string" && !transferRunningRef.current) activateDocumentTab(event.payload.tabId);
+    }).then(keep);
+    void listenCurrentWindowEvent("chemdraft://close-document-window-request", () => {
+      if (!transferRunningRef.current) void documentWindowCommand("close_document_window").catch((error: unknown) => setStatus("Close failed: " + String(error)));
+    }).then(keep);
+    void listenCurrentWindowEvent("chemdraft://quit-cancelled", () => {
+      quitInteractionRef.current = false; quitMutationFrozenRef.current = false;
+      quitPromptBusyRef.current = false; setQuitSaveBusy(false); setQuitPromptOpen(undefined);
+    }).then(keep);
+    return () => { disposed = true; stops.forEach((stop) => stop()); };
+  }, [activateDocumentTab]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false; let stop: (() => void) | undefined;
+    void listenCurrentWindowEvent<{ requestId: number }>("chemdraft://flush-document-workspace", (event) => {
+      void (async () => {
+        let error: string | undefined;
+        try { await writeDocumentSessionNow({ strict: true }); }
+        catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
+        await documentWindowCommand("document_workspace_flushed", { requestId: event.payload.requestId, error });
+      })().catch((failure: unknown) => setStatus("Session flush failed: " + String(failure)));
+    }).then((listener) => { if (disposed) listener(); else stop = listener; });
+    return () => { disposed = true; stop?.(); };
+  }, [writeDocumentSessionNow]);
+
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
   // for the pending autosave first so an edit inside the debounce window survives relaunch.
   useEffect(() => {
@@ -8774,10 +8957,14 @@ export function MainWindow({
     }
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void listenForQuitFlushRequest(async () => {
-      await dialogCoordinatorRef.current?.dispose("quit");
-      await writeDocumentSessionNow();
-      await confirmQuitAfterFlush();
+    void listenForQuitFlushRequest(async (requestId) => {
+      for (const tab of documentTabsRef.current) await dialogCoordinatorRef.current?.closeTab(tab.id);
+      try {
+        await writeDocumentSessionNow({ strict: true });
+        await confirmQuitAfterFlush(requestId);
+      } catch (error) {
+        setStatus("Session flush failed: " + (error instanceof Error ? error.message : String(error)));
+      }
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -8819,8 +9006,13 @@ export function MainWindow({
         if (!dirty) {
           quitMutationFrozenRef.current = true;
           if (await resumeQuitAfterPrompt(requestId)) {
-            await writeDocumentSessionNow();
-            await confirmPromptedQuit(requestId);
+            try {
+              await writeDocumentSessionNow({ strict: true });
+              await confirmPromptedQuit(requestId);
+            } catch (error) {
+              setStatus("Session flush failed: " + (error instanceof Error ? error.message : String(error)));
+              await cancelQuit(requestId);
+            }
           }
           return;
         }
@@ -8864,7 +9056,7 @@ export function MainWindow({
       }
       const outcome = await runUpdateFlow(
         mode,
-        tauriUpdateFlowDeps({ setStatus, flushSession: () => writeDocumentSessionNow({ strict: true }) })
+        tauriUpdateFlowDeps({ setStatus, flushSession: () => documentWindowCommand<void>("flush_document_workspace") })
       );
       if (outcome !== "check-failed") {
         writeLastAutoCheck(safeLocalStorage(), Date.now());
@@ -9076,6 +9268,7 @@ export function MainWindow({
   }, keptDrawingsPromptReady ? keptDrawingsPrompt : undefined, true, async () => "cancel");
 
   const saveDocumentTabById = useCallback(async (savingTabId: string, forceSaveAs: boolean): Promise<boolean> => {
+    if (transferRunningRef.current || savingDocumentTabsRef.current.has(savingTabId)) return false;
     const active = savingTabId === activeDocumentTabIdRef.current;
     const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
     const savingDocument = active ? documentRef.current : snapshot?.history.present;
@@ -9104,6 +9297,9 @@ export function MainWindow({
       documentTabsRef.current = tabs;
       setDocumentTabs(tabs);
     };
+    savingDocumentTabsRef.current.add(savingTabId);
+    let claimedPath: string | undefined;
+    let saveSucceeded = false;
     try {
       if (!isDesktopRuntime()) {
         downloadText(payload.filename, payload.contents, payload.mimeType);
@@ -9122,14 +9318,22 @@ export function MainWindow({
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);
+      const claim = await claimDocumentFile(finalPath, savingTabId);
+      if (!claim.owned) { setStatus("This file is already open in another document window"); return false; }
+      claimedPath = finalPath;
       await writeNativeTextFile(finalPath, payload.contents);
       finishSave(finalPath);
+      saveSucceeded = true;
+      if (savingFileState.path && savingFileState.path !== finalPath) await releaseDocumentFile(savingFileState.path, savingTabId);
       return true;
     } catch (error) {
       const message = `Save failed: ${error instanceof Error ? error.message : String(error)}`;
       setStatus(message);
       if (closeTabPromptRef.current === savingTabId) setCloseTabSaveMessage(message);
       return false;
+    } finally {
+      savingDocumentTabsRef.current.delete(savingTabId);
+      if (!saveSucceeded && claimedPath && claimedPath !== savingFileState.path) void releaseDocumentFile(claimedPath, savingTabId).catch(() => {});
     }
   }, [documentForFlush]);
 
@@ -9217,7 +9421,7 @@ export function MainWindow({
       }
       // Re-arm grace before session IPC so a stalled flush still arms #99's exit watchdog.
       if (!await resumeQuitAfterPrompt(requestId)) return;
-      await writeDocumentSessionNow();
+      await writeDocumentSessionNow({ strict: true });
       await confirmPromptedQuit(requestId);
     } catch (error) {
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
@@ -9592,6 +9796,9 @@ export function MainWindow({
         if (action.id === "document.closeTab") requestCloseDocumentTab();
         if (action.id === "document.nextTab") cycleDocumentTab(1);
         if (action.id === "document.previousTab") cycleDocumentTab(-1);
+        if (action.id === "document.newWindow") { await newDocumentWindow(); return; }
+        if (action.id === "document.moveTabToNewWindow") { await moveDocumentTab(false); return; }
+        if (action.id === "document.moveTabToWindow") { await moveDocumentTab(true); return; }
         if (action.id === "document.new") {
           newDocumentTab();
         }
@@ -10170,6 +10377,7 @@ export function MainWindow({
   }, [
     activateDocumentTab,
     newDocumentTab,
+    moveDocumentTab,
     cycleDocumentTab,
     documentTabs,
     requestCloseDocumentTab,
@@ -10807,7 +11015,7 @@ export function MainWindow({
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
-    if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current || transferRunningRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
@@ -10987,7 +11195,7 @@ export function MainWindow({
   // Commit a toolbar layout state: rebuild the registry, reconcile which palettes are open, and
   // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
   // applies immediately — no draft that can drift out of sync) from a final close.
-  const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
+  const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean, shared = false) => {
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
     const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);
@@ -11016,10 +11224,12 @@ export function MainWindow({
     void broadcastToolsetLayoutState(next).catch(() => undefined);
     // Report a persistence failure on the status line instead of swallowing it (a lost write used to
     // look like a successful save), and still resolve so the chain survives for the next edit.
-    layoutSaveChainRef.current = layoutSaveChainRef.current
-      .then(() => saveToolsetLayoutState(next))
-      .then(() => broadcastToolsetLayoutState(next))
-      .catch(() => setStatus("Couldn't save toolbar customization; your last change may not persist"));
+    if (!shared) {
+      layoutSaveChainRef.current = layoutSaveChainRef.current
+        .then(() => saveToolsetLayoutState(next))
+        .then(() => Promise.all([broadcastToolsetLayoutState(next), broadcastSharedToolsetLayoutState(next)]))
+        .catch(() => setStatus("Couldn't save toolbar customization; your last change may not persist"));
+    }
     if (closeDialog) {
       setCustomizeToolbarsOpen(false);
     }
@@ -12575,6 +12785,14 @@ export function MainWindow({
   // a listener the moment it attached: the gap Tauri 2.11's unlisten cannot survive (tauriEvents.ts).
   const commitToolbarLayoutRef = useRef(commitToolbarLayout);
   commitToolbarLayoutRef.current = commitToolbarLayout;
+  useEffect(() => {
+    let disposed = false; let stop: (() => void) | undefined;
+    void listenForSharedToolsetLayoutState((raw) => {
+      try { commitToolbarLayoutRef.current(parseToolsetLayoutState(raw), false, true); }
+      catch { setStatus("Another window sent an unreadable toolbar layout"); }
+    }).then((listener) => { if (disposed) listener(); else stop = listener; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, []);
   const setCustomizeModeRef = useRef(setCustomizeMode);
   setCustomizeModeRef.current = setCustomizeMode;
   useEffect(() => {
@@ -19150,6 +19368,8 @@ export function MainWindow({
         effectiveNativePalette ? "native-shell" : "web-shell",
         showAppMenuBar ? "has-app-menu-bar" : ""
       ].filter(Boolean).join(" ")}
+      inert={transferBusy || undefined}
+      aria-busy={transferBusy || undefined}
       aria-label="ChemDraft desktop workspace"
       data-active-tool={activeToolState.activeCommandId}
       data-active-tool-kind={activeToolState.activeKind}

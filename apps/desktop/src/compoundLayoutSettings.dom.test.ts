@@ -8,7 +8,9 @@ import { broadcastCompoundLayoutSettings, listenForCompoundLayoutSettings, COMPO
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const native = vi.hoisted(() => ({emit: vi.fn(), listen: vi.fn(), unlisten: vi.fn()}));
-vi.mock("@tauri-apps/api/event", () => ({emit: native.emit, listen: native.listen}));
+vi.mock("@tauri-apps/api/event", () => ({emitTo: native.emit, listen: native.listen}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: () => ({ listen: native.listen }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getAllWindows: async () => [{label:"main"},{label:"document-2"}] }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeEach(() => { vi.stubGlobal("localStorage", new MemoryStorage()); });
 afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
@@ -33,7 +35,8 @@ describe("compound layout preference synchronization", () => {
     callback({payload:{enabled:"true"}});expect(handler).not.toHaveBeenCalled();
     callback({payload:{enabled:true}});expect(handler).toHaveBeenCalledWith({enabled:true});
     await broadcastCompoundLayoutSettings({enabled:false});
-    expect(native.emit).toHaveBeenCalledWith(COMPOUND_LAYOUT_SETTINGS_EVENT,{enabled:false});
+    expect(native.emit).toHaveBeenCalledWith("main",COMPOUND_LAYOUT_SETTINGS_EVENT,{enabled:false});
+    expect(native.emit).toHaveBeenCalledWith("document-2",COMPOUND_LAYOUT_SETTINGS_EVENT,{enabled:false});
     stop();expect(native.unlisten).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "naming-engine",
-  "description": "Allow only the main document window to install, manage, invoke and cancel the optional local naming engine after explicit user action.",
-  "windows": ["main"],
+  "description": "Allow document windows to install, manage, invoke and cancel the optional local naming engine after explicit user action.",
+  "windows": ["main", "document-*"],
   "permissions": [
     "allow-naming-engine-status",
     "allow-naming-engine-install",

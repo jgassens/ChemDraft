@@ -108,6 +108,31 @@ describe("core capability grants", () => {
         (typeof permission === "string" ? permission : permission.identifier) === "allow-suspend-toolset-windows"));
 
     expect(grants.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
-    expect(grants[0]!.capability.windows).toEqual(["main"]);
+    expect(grants[0]!.capability.windows).toEqual(["main", "document-*"]);
   });
+  it("grants document lifecycle, transfer, session and mutation commands only to document windows", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory).filter((name) => name.endsWith(".json")).map((name) => ({
+      name, capability: JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        windows: string[]; permissions: (string | { identifier: string })[];
+      }
+    }));
+    const commands = [
+      "new-document-window", "close-document-window", "list-document-windows",
+      "stage-document-tab-transfer", "take-document-tab-transfer", "document-tab-transfer-chunk", "accept-document-tab-transfer",
+      "document-tab-transfer-status", "cancel-document-tab-transfer", "claim-document-file", "release-document-file",
+      "load-document-session", "save-document-session", "quit-after-flush", "flush-document-workspace", "document-workspace-flushed",
+      "plugin-storage-mutate", "set-toolbars-menu", "sync-plugin-menu-items", "open-plugin-panel-window",
+      "read-clipboard-payload", "write-clipboard-text-items", "write-clipboard-image"
+    ];
+    for (const command of commands) {
+      const permission = "allow-" + command;
+      const matching = grants.filter(({ capability }) => capability.permissions.some((value) =>
+        (typeof value === "string" ? value : value.identifier) === permission));
+      expect(matching.length, permission).toBeGreaterThan(0);
+      for (const { capability } of matching) expect(capability.windows, permission).toEqual(["main", "document-*"]);
+    }
+    expect(grants.some(({ capability }) => capability.permissions.includes("allow-plugin-storage-write"))).toBe(false);
+  });
+
 });

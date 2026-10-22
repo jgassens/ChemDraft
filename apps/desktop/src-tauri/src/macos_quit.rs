@@ -73,7 +73,7 @@ unsafe extern "C" fn should_terminate(
         }
     };
     if super::should_prompt_appkit_quit(
-        super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
+        true, // Every ordinary quit flushes all document windows, even with save prompts disabled.
         super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
         reason,
     ) {

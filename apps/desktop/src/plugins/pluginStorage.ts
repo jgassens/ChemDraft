@@ -1,125 +1,75 @@
 import type { PluginStorage } from "@chemdraft/plugin-api";
+import { invoke } from "@tauri-apps/api/core";
 import { isDesktopRuntime } from "../window-manager";
-
-const WRITE_DEBOUNCE_MS = 250;
 
 /** Where a storage failure is reported. Defaults to the console; tests pass their own sink. */
 export type PluginStorageDiagnostic = (message: string) => void;
 
 /**
- * Disk-backed PluginStorage: one JSON file per plugin under
- * app_data_dir/plugins/<pluginId>/storage.json, loaded once into memory and written
- * through with a short debounce. In the browser build it degrades to in-memory behind the
- * same interface, so plugin code never branches on platform.
- *
- * Read and write failures are distinguished from ordinary absence and reported. A read that
- * *fails* is not an empty file: flattening the two let the first `set()` persist an empty map over
- * a storage.json that was perfectly fine. After a failed read this degrades to in-memory for the
- * rest of the session rather than overwriting a file it could not see.
+ * Native storage is authoritative across document windows. Every operation reads its latest
+ * snapshot; writes mutate one key under the native lock rather than replacing a cached map.
+ * Writes are awaited, so closing a document cannot discard a pending debounce. Failed reads
+ * degrade to memory for this instance, and failed writes retain local values for its caller.
  */
 export function createPersistentPluginStorage(
   pluginId: string,
   onDiagnostic: PluginStorageDiagnostic = (message) => console.error(message)
 ): PluginStorage {
-  const values = new Map<string, unknown>();
-  let loaded: Promise<void> | undefined;
-  let writeTimer: ReturnType<typeof setTimeout> | undefined;
-  // Set when the existing contents could not be read, so persisting would clobber them.
+  let values = new Map<string, unknown>();
+  const pending = new Map<string, { deleted: boolean; value?: unknown }>();
   let persistDisabled = false;
-
+  let queue = Promise.resolve();
   const report = (message: string, error: unknown): void => {
     const detail = error instanceof Error ? error.message : String(error);
     onDiagnostic(`Plugin storage for "${pluginId}": ${message} (${detail})`);
   };
-
-  /**
-   * Load once, and NEVER reject.
-   *
-   * The result is memoised, so a rejected promise would be permanent: `if (!loaded)` is false
-   * forever, there is no retry, and every later get/set/delete/listKeys would throw for the rest of
-   * the session — with no diagnostic, because the failure never reached the handler below. Any
-   * failure to see the existing contents therefore degrades this session to in-memory instead,
-   * which is the documented contract.
-   */
-  const ensureLoaded = (): Promise<void> => {
-    if (!loaded) {
-      loaded = (async () => {
-        if (!isDesktopRuntime()) {
-          return;
-        }
-        try {
-          // Inside the try on purpose: the dynamic import can fail too (a chunk that will not
-          // load), and that is just as much "we cannot see the file" as a read error is.
-          const { invoke } = await import("@tauri-apps/api/core");
-          const contents = await invoke<string | null>("plugin_storage_read", { pluginId });
-          if (!contents) {
-            return;
-          }
-          try {
-            const parsed = JSON.parse(contents) as Record<string, unknown>;
-            Object.entries(parsed).forEach(([key, value]) => values.set(key, value));
-          } catch (error) {
-            // Corrupt file: start fresh rather than failing every plugin call, and keep writing
-            // enabled because overwriting is the repair. Say so, though — the next save destroys
-            // whatever was in there, and that should not happen quietly.
-            report("could not be parsed and will be overwritten by the next save", error);
-          }
-        } catch (error) {
-          // Absent is `null` from the Rust side; anything else means the file may exist and hold
-          // data we never saw, so a later write could destroy it. Keep this session in memory.
-          persistDisabled = true;
-          report("could not be read, so changes will not be saved this session", error);
-        }
-      })();
-    }
-    return loaded;
+  // Serialize this instance's reads/writes while Rust serializes mutations across all windows.
+  const run = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = queue.then(operation);
+    queue = result.then(() => undefined, () => undefined);
+    return result;
   };
-
-  const scheduleWrite = (): void => {
-    if (!isDesktopRuntime() || persistDisabled) {
-      return;
+  const refresh = async (): Promise<void> => {
+    if (!isDesktopRuntime() || persistDisabled) return;
+    try {
+      const contents = await invoke<string | null>("plugin_storage_read", { pluginId });
+      let parsed: unknown = {};
+      try {
+        parsed = contents ? JSON.parse(contents) : {};
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected a storage object");
+      } catch (error) {
+        report("could not be parsed and will be repaired by the next save", error);
+        parsed = {};
+      }
+      values = new Map(Object.entries(parsed as Record<string, unknown>));
+      for (const [key, entry] of pending) {
+        if (entry.deleted) values.delete(key);
+        else values.set(key, entry.value);
+      }
+    } catch (error) {
+      persistDisabled = true;
+      report("could not be read, so changes will not be saved this session", error);
     }
-    if (writeTimer !== undefined) {
-      clearTimeout(writeTimer);
-    }
-    writeTimer = setTimeout(() => {
-      writeTimer = undefined;
-      void (async () => {
-        try {
-          // The whole body is guarded, not just the invoke. The dynamic import can fail, and
-          // JSON.stringify throws on a cyclic value or a BigInt that a plugin stored quite
-          // legitimately — and this runs detached from the caller, so anything escaping here is an
-          // unhandled rejection: no diagnostic, and no sign that nothing was saved.
-          const { invoke } = await import("@tauri-apps/api/core");
-          const contents = JSON.stringify(Object.fromEntries(values.entries()));
-          await invoke("plugin_storage_write", { pluginId, contents });
-        } catch (error) {
-          // The debounce already resolved the caller's `set()`, so this cannot be surfaced as a
-          // rejection there — but it must not vanish either. Values stay readable in memory.
-          report("could not be saved", error);
-        }
-      })();
-    }, WRITE_DEBOUNCE_MS);
   };
-
+  const mutate = async (key: string, entry: { deleted: boolean; value?: unknown }): Promise<void> => {
+    await refresh();
+    if (entry.deleted) values.delete(key);
+    else values.set(key, entry.value);
+    pending.set(key, entry);
+    if (!isDesktopRuntime() || persistDisabled) return;
+    try {
+      const valueJson = entry.deleted ? null : JSON.stringify(entry.value);
+      if (valueJson === undefined) throw new Error("The value cannot be represented as JSON");
+      await invoke("plugin_storage_mutate", { pluginId, key, valueJson });
+      pending.delete(key);
+    } catch (error) {
+      report("could not be saved", error);
+    }
+  };
   return {
-    async get(key) {
-      await ensureLoaded();
-      return values.get(key) as never;
-    },
-    async set(key, value) {
-      await ensureLoaded();
-      values.set(key, value);
-      scheduleWrite();
-    },
-    async delete(key) {
-      await ensureLoaded();
-      values.delete(key);
-      scheduleWrite();
-    },
-    async listKeys() {
-      await ensureLoaded();
-      return [...values.keys()].sort();
-    }
+    get: key => run(async () => { await refresh(); return values.get(key) as never; }),
+    set: (key, value) => run(() => mutate(key, { deleted: false, value })),
+    delete: key => run(() => mutate(key, { deleted: true })),
+    listKeys: () => run(async () => { await refresh(); return [...values.keys()].sort(); })
   };
 }

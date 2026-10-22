@@ -3,7 +3,6 @@
   "identifier": "main-and-tool-palette",
   "description": "Allow the ChemDraft document window and native toolset windows to use core window/event APIs and the narrow toolset command bridge.",
   "windows": [
-    "main",
     "toolset-*",
     "spin3d-debugger",
     "preferences"
@@ -16,23 +15,10 @@
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:webview:allow-set-webview-focus",
-    "allow-open-toolset-window",
-    "allow-close-toolset-window",
-    "allow-list-toolset-window-states",
     "allow-load-toolset-customization-state",
     "allow-save-toolset-customization-state",
-    "allow-load-document-session",
-    "allow-save-document-session",
-    "allow-set-toolbars-menu",
     "allow-focus-main-document-window",
     "allow-focus-main-document-window-if-app-active",
-    "allow-set-menu-checked",
-    "allow-set-keybinding-scheme",
-    "allow-open-problem-report-email",
-    "allow-take-pending-crash-report",
-    "allow-plugin-storage-read",
-    "allow-plugin-storage-write",
-    "allow-open-plugin-panel-window",
     "allow-open-toolset-popover",
     "allow-prewarm-toolset-popover",
     "allow-prewarm-toolset-tooltip",
@@ -40,241 +26,14 @@
     "allow-show-toolset-tooltip-window",
     "allow-hide-toolset-tooltip-window",
     "allow-set-current-window-global-position",
-    "allow-quit-after-flush",
     "allow-close-toolset-popover",
     "allow-set-toolset-window-focusable",
     "core:window:allow-show",
     "core:window:allow-hide",
     "allow-route-toolset-command",
-    "allow-sync-plugin-menu-items",
-    "allow-read-clipboard-payload",
-    "allow-write-clipboard-text-items",
-    "allow-write-clipboard-image",
-    "allow-toggle-spin3d-debugger-window",
-    "allow-toggle-preferences-window",
-    "allow-agent-bridge-status",
     "allow-window-logical-position",
-    "allow-take-pending-open-document",
-    "allow-engine3d-sidecar-status",
-    "allow-engine3d-sidecar-start-session",
-    "allow-engine3d-sidecar-send-session",
-    "allow-engine3d-sidecar-poll-session",
-    "allow-engine3d-sidecar-stop-session",
-    "allow-opsin-status",
-    "allow-opsin-name-to-structure",
-    "allow-rasterize-svg",
     "allow-list-system-fonts",
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins.json"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-file",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-stat",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins.json"
-        },
-        {
-          "path": "$APPDATA/installed-plugins.json.tmp"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-mkdir",
-      "allow": [
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-remove",
-      "allow": [
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-rename",
-      "allow": [
-        {
-          "path": "$APPDATA/installed-plugins.json"
-        },
-        {
-          "path": "$APPDATA/installed-plugins.json.tmp"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-dir",
-      "allow": [
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-exists",
-      "allow": [
-        {
-          "path": "$HOME/**"
-        },
-        {
-          "path": "$DOCUMENT/**"
-        },
-        {
-          "path": "$DESKTOP/**"
-        },
-        {
-          "path": "$DOWNLOAD/**"
-        },
-        {
-          "path": "$TEMP/**"
-        },
-        {
-          "path": "$APPDATA/installed-plugins.json"
-        },
-        {
-          "path": "$APPDATA/installed-plugins"
-        },
-        {
-          "path": "$APPDATA/installed-plugins/**"
-        }
-      ]
-    }
+    "allow-document-window-owner",
+    "core:window:allow-get-all-windows"
   ]
 }

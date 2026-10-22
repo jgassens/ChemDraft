@@ -1,5 +1,6 @@
 mod dialog_windows;
 mod document_session;
+mod document_windows;
 mod download_diagnosis;
 mod export;
 mod fonts;
@@ -16,6 +17,7 @@ mod ocsr_engine;
 mod opsin;
 mod panel_window;
 mod plugin_package;
+mod plugin_storage;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
@@ -60,6 +62,203 @@ use objc2_foundation::NSString;
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+static DOCUMENT_WINDOW_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn owner_document_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Option<tauri::WebviewWindow<R>> {
+    if document_windows::registered_document_label(app, label) {
+        return app.get_webview_window(label);
+    }
+    document_windows::utility_owner(app, label).and_then(|owner| app.get_webview_window(&owner))
+}
+
+fn validate_built_utility_owner<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    owner: &str,
+) -> Result<(), String> {
+    if document_windows::registered_document_label(window.app_handle(), owner)
+        && document_windows::utility_owner(window.app_handle(), window.label()).as_deref()
+            == Some(owner)
+    {
+        return Ok(());
+    }
+    if let Some(directory) = window.app_handle().try_state::<ToolsetWindowDirectory>() {
+        directory
+            .labels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(window.label());
+    }
+    UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .closed(window.label());
+    let _ = window.destroy();
+    Err("The document owner closed during utility creation".into())
+}
+
+fn close_document_utilities<R: Runtime>(app: &tauri::AppHandle<R>, owner: &str) {
+    let _ = stop_owned_engine3d_sidecar_sessions(&app.state::<Engine3dSidecarSessions>(), owner);
+    dialog_windows::dismiss_owner(app, owner, "ownerClose");
+    let utilities: Vec<_> = app
+        .webview_windows()
+        .into_values()
+        .filter(|window| {
+            document_windows::utility_owner(app, window.label()).as_deref() == Some(owner)
+        })
+        .collect();
+    for label in document_windows::utility_labels_for_owner(app, owner) {
+        app.state::<ToolsetWindowDirectory>()
+            .labels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&label);
+        UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .closed(&label);
+    }
+    // Native destruction is not a user visibility choice and must not hide peers' toolbars.
+    if let Ok(mut labels) = app.state::<ToolsetWindowDirectory>().labels.lock() {
+        for window in &utilities {
+            labels.remove(window.label());
+        }
+    }
+    for window in utilities {
+        let _ = window.destroy();
+    }
+}
+
+fn calling_document_owner<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    caller: &str,
+) -> Result<String, String> {
+    if document_windows::registered_document_label(app, caller) {
+        return Ok(caller.into());
+    }
+    document_windows::utility_owner(app, caller)
+        .filter(|owner| document_windows::registered_document_label(app, owner))
+        .ok_or_else(|| "The calling window has no document owner".into())
+}
+fn owned_utility_label(owner: &str, label: &str) -> String {
+    if owner == MAIN_WINDOW_LABEL {
+        label.into()
+    } else {
+        format!("{label}--{owner}")
+    }
+}
+
+#[tauri::command]
+fn document_window_owner(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<String, String> {
+    calling_document_owner(&app, window.label())
+}
+
+#[tauri::command]
+async fn new_document_window(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<String, String> {
+    if !document_windows::registered_document_label(&app, window.label()) {
+        return Err("Only document windows can create document windows".into());
+    }
+    if document_windows::DIRECTORY.lock().unwrap().quit.is_some() {
+        return Err("Cannot create a document while close or quit decisions are pending".into());
+    }
+    create_document_window(&app).map(|window| window.label().to_string())
+}
+
+fn create_document_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    let label = loop {
+        let label = format!(
+            "document-{}",
+            DOCUMENT_WINDOW_COUNTER.fetch_add(1, Ordering::SeqCst)
+        );
+        let reserved = {
+            let directory = document_windows::DIRECTORY.lock().unwrap();
+            directory.labels.contains(&label) || directory.sessions.contains_key(&label)
+        };
+        if !reserved && app.get_webview_window(&label).is_none() {
+            break label;
+        }
+    };
+    create_document_window_with_label(app, &label)
+}
+
+fn create_document_window_with_label<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    let _creation = lock_window_creation()?;
+    if label != MAIN_WINDOW_LABEL
+        && !label
+            .strip_prefix("document-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("Invalid document window label".into());
+    }
+    if app.get_webview_window(label).is_some() {
+        return Err("A document window with this label already exists".into());
+    }
+    document_windows::register_document(app, label);
+    let built = WebviewWindowBuilder::new(app, label, WebviewUrl::App("/".into()))
+        .title(main_window_title())
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 640.0)
+        .visible(false)
+        .focused(false)
+        .resizable(true)
+        .accept_first_mouse(true)
+        .center()
+        .build();
+    let window = match built {
+        Ok(window) => window,
+        Err(error) => {
+            document_windows::unregister_document(app, label);
+            return Err(error.to_string());
+        }
+    };
+    let initialized = (|| -> Result<(), String> {
+        configure_document_webview(&window)?;
+        #[cfg(not(target_os = "macos"))]
+        window
+            .set_menu(create_app_menu(app).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+        document_windows::set_active(app, label);
+        let frame = saved_document_geometry(&load_toolset_layout_state(app), label);
+        if let Some(frame) = frame {
+            main_window_placement::reveal_after_preparation(
+                |errors| restore_main_window_geometry(&window, &frame, errors),
+                |maximized| main_window_placement::show(&window, maximized),
+                || window.set_focus().map_err(|error| error.to_string()),
+            )?;
+        } else {
+            window.show().map_err(|error| error.to_string())?;
+            window.set_focus().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = initialized {
+        close_document_utilities(app, label);
+        let _ = window.destroy();
+        document_windows::unregister_document(app, label);
+        return Err(error);
+    }
+    Ok(window)
+}
+
+#[tauri::command]
+fn active_document_window_label(app: tauri::AppHandle) -> Result<String, String> {
+    document_windows::active_document_window(&app)
+        .map(|window| window.label().to_string())
+        .ok_or_else(|| "No document window is available".into())
+}
 
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
@@ -94,7 +293,6 @@ const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 const CLOSE_WINDOW_FILE_MENU_ID: &str = "app.closeWindow.file";
 #[cfg(target_os = "macos")]
 const CLOSE_WINDOW_WINDOW_MENU_ID: &str = "app.closeWindow.window";
-const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
 #[cfg(target_os = "macos")]
@@ -230,6 +428,9 @@ trait QuitHost: Clone + Send + 'static {
         let _ = request_id;
         self.ask_document_to_flush()
     }
+    fn grace_expired(&self, flow: &'static QuitFlow, _request_id: u64) {
+        quit_now_with(flow, self, QuitReason::GraceExpired);
+    }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
     /// Ends the process now, from the watchdog thread.
@@ -238,19 +439,73 @@ trait QuitHost: Clone + Send + 'static {
 
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
-        // Native sessions settle before the final document flush, even with an unresponsive renderer.
-        dialog_windows::dismiss_owned(self, "quit");
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
-                .is_ok()
+        let (labels, flush_id) = {
+            let mut d = document_windows::DIRECTORY.lock().unwrap();
+            if d.quit.is_none() {
+                let participants = d.labels.clone();
+                d.quit = Some(document_windows::WindowQuit {
+                    remaining: participants.clone(),
+                    participants,
+                    prompting: None,
+                    close_only: false,
+                    flush_id: 0,
+                });
+            }
+            let q = d.quit.as_mut().unwrap();
+            q.prompting = None;
+            q.remaining = q.participants.clone();
+            q.flush_id = document_windows::NEXT_FLUSH_ID.fetch_add(1, Ordering::SeqCst);
+            (q.remaining.clone(), q.flush_id)
+        };
+        let mut sent = false;
+        for label in labels {
+            dialog_windows::dismiss_owner(self, &label, "quit");
+            sent |= document_windows::emit_document_event(
+                self,
+                &label,
+                QUIT_FLUSH_REQUEST_EVENT,
+                serde_json::json!({"requestId":flush_id}),
+            )
+            .is_ok();
+        }
+        sent
     }
 
     fn ask_document_to_prompt(&self, request_id: u64) -> bool {
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
+        let label = {
+            let mut d = document_windows::DIRECTORY.lock().unwrap();
+            if d.quit.is_none() {
+                let participants = d.labels.clone();
+                d.quit = Some(document_windows::WindowQuit {
+                    remaining: participants.clone(),
+                    participants,
+                    prompting: None,
+                    close_only: false,
+                    flush_id: 0,
+                });
+            }
+            let q = d.quit.as_mut().unwrap();
+            q.prompting = q.remaining.first().cloned();
+            q.prompting.clone()
+        };
+        label.is_some_and(|label| {
+            self.emit_to(&label, QUIT_PROMPT_REQUEST_EVENT, request_id)
                 .is_ok()
+        })
+    }
+
+    fn grace_expired(&self, flow: &'static QuitFlow, request_id: u64) {
+        let close_only = document_windows::DIRECTORY
+            .lock()
+            .unwrap()
+            .quit
+            .as_ref()
+            .is_some_and(|q| q.close_only);
+        if close_only {
+            cancel_window_quit(self, request_id);
+        } else {
+            quit_now_with(flow, self, QuitReason::GraceExpired);
+        }
     }
 
     fn exit(&self) {
@@ -303,10 +558,25 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .is_some_and(|q| q.close_only)
+    {
+        return;
+    }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            let owner = document_windows::DIRECTORY
+                .lock()
+                .unwrap()
+                .quit
+                .as_ref()
+                .and_then(|q| q.prompting.clone());
+            if let Some(window) = owner.and_then(|label| app.get_webview_window(&label)) {
                 let reveal = window.clone();
                 let _ = window.run_on_main_thread(move || {
                     let _ = reveal.unminimize();
@@ -378,7 +648,8 @@ fn arm_prompt_grace<H: QuitHost>(
         thread::sleep(flow.flush_grace);
         let prompt = flow.prompt.lock().unwrap();
         if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
-            quit_now_with(flow, &host, QuitReason::GraceExpired);
+            drop(prompt);
+            host.grace_expired(flow, request_id);
         }
     });
 }
@@ -427,12 +698,164 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 /// 3 s grace ran out. Deciding here touches atomics, starts the watchdog and posts the exit request,
 /// none of which needs the main thread.
 #[tauri::command]
-async fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+async fn quit_after_flush(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<(), String> {
+    document_windows::authorize(&app, window.label())?;
+    finish_window_flush(&app, window.label(), request_id);
+    Ok(())
+}
+
+fn finish_window_flush<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, request_id: u64) {
+    let close_only = {
+        let mut d = document_windows::DIRECTORY.lock().unwrap();
+        let Some(q) = d.quit.as_mut() else { return };
+        if !q.acknowledge_flush(label, request_id) {
+            return;
+        }
+        q.close_only
+    };
+    if close_only {
+        close_flushed_document(app, label);
+    } else {
+        quit_now_with(&QUIT, app, QuitReason::FlushConfirmed);
+    }
+}
+
+fn close_flushed_document<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    #[cfg(target_os = "macos")]
+    if document_windows::document_windows(app).len() <= 1 {
+        dialog_windows::dismiss_owner(app, label, "ownerClose");
+        for utility in app.webview_windows().into_values() {
+            if document_windows::utility_owner(app, utility.label()).as_deref() == Some(label) {
+                let _ = utility.hide();
+            }
+        }
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.hide();
+        }
+        document_windows::DIRECTORY.lock().unwrap().quit = None;
+        QUIT.requested.store(false, Ordering::SeqCst);
+        let mut p = QUIT.prompt.lock().unwrap();
+        p.0 += 1;
+        p.1 = QuitPromptPhase::Idle;
+        return;
+    }
+    close_document_utilities(app, label);
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.destroy();
+    }
+    document_windows::unregister_document(app, label);
+    let mut d = document_windows::DIRECTORY.lock().unwrap();
+    d.sessions.remove(label);
+    if let Err(error) = persist_workspace(app, &d) {
+        eprintln!("Could not persist closed document window: {error}");
+    }
+    d.quit = None;
+    QUIT.requested.store(false, Ordering::SeqCst);
+    // Retire every outstanding grace timer for this close generation.
+    let mut prompt = QUIT.prompt.lock().unwrap();
+    prompt.0 += 1;
+    prompt.1 = QuitPromptPhase::Idle;
+}
+
+#[tauri::command]
+async fn close_document_window(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    document_windows::authorize(&app, window.label())?;
+    if quit_in_progress() || prompt_waits_for_user(&QUIT) {
+        return Ok(());
+    }
+    if document_windows::document_windows(&app).len() <= 1 {
+        #[cfg(not(target_os = "macos"))]
+        {
+            request_quit(&app);
+            return Ok(());
+        }
+    }
+    let labels = vec![window.label().to_string()];
+    document_windows::DIRECTORY.lock().unwrap().quit = Some(document_windows::WindowQuit {
+        participants: labels.clone(),
+        remaining: labels,
+        prompting: None,
+        close_only: true,
+        flush_id: 0,
+    });
+    if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
+        request_prompted_quit_with(&QUIT, &app);
+    } else {
+        // Reuse the prompted grace generation, without presenting a prompt.
+        let id = {
+            let mut p = QUIT.prompt.lock().unwrap();
+            p.0 += 1;
+            p.1 = QuitPromptPhase::Flushing;
+            p.0
+        };
+        QUIT.requested.store(true, Ordering::SeqCst);
+        let flush_id = document_windows::NEXT_FLUSH_ID.fetch_add(1, Ordering::SeqCst);
+        document_windows::DIRECTORY
+            .lock()
+            .unwrap()
+            .quit
+            .as_mut()
+            .unwrap()
+            .flush_id = flush_id;
+        document_windows::emit_document_event(
+            &app,
+            window.label(),
+            QUIT_FLUSH_REQUEST_EVENT,
+            serde_json::json!({"requestId":flush_id}),
+        )?;
+        arm_window_close_grace(&app, window.label().to_string(), id);
+    }
+    Ok(())
+}
+
+fn arm_window_close_grace<R: Runtime>(app: &tauri::AppHandle<R>, label: String, id: u64) {
+    let app = app.clone();
+    thread::spawn(move || {
+        thread::sleep(QUIT_FLUSH_GRACE);
+        if *QUIT.prompt.lock().unwrap() == (id, QuitPromptPhase::Flushing) {
+            eprintln!("ChemDraft: window session flush timed out; keeping the document open");
+            cancel_window_quit(&app, id);
+            let _ = app.emit_to(&label, "chemdraft://quit-cancelled", ());
+        }
+    });
+}
+
+fn cancel_window_quit<R: Runtime>(app: &tauri::AppHandle<R>, request_id: u64) -> bool {
+    // Flushing may fail too: do not leave peers frozen after a persistence error.
+    {
+        let mut p = QUIT.prompt.lock().unwrap();
+        if p.0 != request_id || QUIT.quitting.load(Ordering::SeqCst) {
+            return false;
+        }
+        p.0 += 1;
+        p.1 = QuitPromptPhase::Idle;
+    }
+    QUIT.requested.store(false, Ordering::SeqCst);
+    let labels = {
+        let mut d = document_windows::DIRECTORY.lock().unwrap();
+        d.quit.take().map(|q| q.participants).unwrap_or_default()
+    };
+    for label in labels {
+        let _ = app.emit_to(&label, "chemdraft://quit-cancelled", ());
+    }
+    true
 }
 
 fn authorize_quit_window(label: &str) -> Result<(), String> {
-    if label == MAIN_WINDOW_LABEL {
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .labels
+        .iter()
+        .any(|v| v == label)
+    {
         Ok(())
     } else {
         Err("Only the document window can control quit prompts.".into())
@@ -455,6 +878,7 @@ fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> b
     true
 }
 
+#[cfg(test)]
 fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> bool {
     let mut prompt = flow.prompt.lock().unwrap();
     if request_id == 0
@@ -488,6 +912,16 @@ async fn prepare_quit_prompt(
     request_id: u64,
 ) -> Result<bool, String> {
     authorize_quit_window(window.label())?;
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .and_then(|q| q.prompting.as_deref())
+        != Some(window.label())
+    {
+        return Ok(false);
+    }
     if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
         || QUIT.quitting.load(Ordering::SeqCst)
     {
@@ -515,14 +949,38 @@ async fn quit_prompt_showing(
     request_id: u64,
 ) -> Result<bool, String> {
     authorize_quit_window(window.label())?;
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .and_then(|q| q.prompting.as_deref())
+        != Some(window.label())
+    {
+        return Ok(false);
+    }
     let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
     Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
 }
 
 #[tauri::command]
-async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
+async fn cancel_quit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<bool, String> {
     authorize_quit_window(window.label())?;
-    Ok(cancel_quit_with(&QUIT, request_id))
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .and_then(|q| q.prompting.as_deref())
+        != Some(window.label())
+    {
+        return Ok(false);
+    }
+    Ok(cancel_window_quit(&app, request_id))
 }
 
 #[tauri::command]
@@ -542,6 +1000,17 @@ async fn resume_quit_after_prompt(
     request_id: u64,
 ) -> Result<bool, String> {
     authorize_quit_window(window.label())?;
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .and_then(|q| q.prompting.as_deref())
+        != Some(window.label())
+    {
+        return Ok(false);
+    }
+    // Re-arm bounded persistence grace after the user decision, retaining #99 timing.
     Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
 }
 
@@ -552,9 +1021,50 @@ async fn confirm_prompted_quit(
     request_id: u64,
 ) -> Result<(), String> {
     authorize_quit_window(window.label())?;
-    let prompt = QUIT.prompt.lock().unwrap();
-    if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
-        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    if document_windows::DIRECTORY
+        .lock()
+        .unwrap()
+        .quit
+        .as_ref()
+        .and_then(|q| q.prompting.as_deref())
+        != Some(window.label())
+    {
+        return Ok(());
+    }
+    let (next, close_only, done) = {
+        let mut d = document_windows::DIRECTORY.lock().unwrap();
+        let Some(q) = d.quit.as_mut() else {
+            return Ok(());
+        };
+        if QUIT.prompt.lock().unwrap().0 != request_id {
+            return Ok(());
+        }
+        q.remaining.retain(|v| v != window.label());
+        q.prompting = q.remaining.first().cloned();
+        (q.prompting.clone(), q.close_only, q.remaining.is_empty())
+    };
+    if let Some(label) = next {
+        let next_id = {
+            let mut p = QUIT.prompt.lock().unwrap();
+            p.0 += 1;
+            p.1 = QuitPromptPhase::AwaitingWindow;
+            p.0
+        };
+        app.emit_to(&label, QUIT_PROMPT_REQUEST_EVENT, next_id)
+            .map_err(|e| e.to_string())?;
+        arm_prompt_grace(&QUIT, &app, next_id, QuitPromptPhase::AwaitingWindow);
+    } else if done {
+        {
+            let mut p = QUIT.prompt.lock().unwrap();
+            p.1 = QuitPromptPhase::Flushing;
+        }
+        QUIT.requested.store(true, Ordering::SeqCst);
+        if close_only {
+            close_flushed_document(&app, window.label());
+        } else {
+            app.ask_document_to_flush();
+            arm_prompt_grace(&QUIT, &app, request_id, QuitPromptPhase::Flushing);
+        }
     }
     Ok(())
 }
@@ -575,6 +1085,10 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "clipboard.copyAs.svg",
     "clipboard.copyAs.png",
     "document.new",
+    "document.newWindow",
+    "document.closeTab",
+    "document.moveTabToWindow",
+    "document.moveTabToNewWindow",
     "document.open",
     "document.save",
     "document.saveAs",
@@ -690,6 +1204,7 @@ struct NativeOpenDocumentPayload {
 
 #[derive(Default)]
 struct PendingOpenDocument {
+    target_label: Mutex<Option<String>>,
     payload: Mutex<Option<NativeOpenDocumentPayload>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
@@ -724,7 +1239,7 @@ struct Engine3dSidecarSessions {
     // Each session is behind its own Arc<Mutex>, so the map lock is only held for the brief
     // lookup + clone — never across the (up to 250ms) output wait. That keeps start/stop and
     // other sessions from serializing behind one session's blocking collect.
-    sessions: Mutex<HashMap<String, Arc<Mutex<Engine3dManagedSession>>>>,
+    sessions: Mutex<HashMap<String, OwnedEngine3dSession>>,
 }
 
 #[derive(Default)]
@@ -733,6 +1248,12 @@ struct ToolsetWindowDirectory {
     // '-'), so it can't be reversed by parsing — we record the mapping when the window is created.
     // This lets label->id resolution and window enumeration stop scanning the manifest.
     labels: Mutex<HashMap<String, String>>,
+}
+
+#[derive(Clone)]
+struct OwnedEngine3dSession {
+    owner: String,
+    session: Arc<Mutex<Engine3dManagedSession>>,
 }
 
 struct Engine3dManagedSession {
@@ -816,6 +1337,8 @@ struct ToolsetLayoutState {
     /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     main_window: Option<MainWindowGeometry>,
+    #[serde(default)]
+    document_windows: HashMap<String, MainWindowGeometry>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -824,6 +1347,7 @@ impl Default for ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
             main_window: None,
+            document_windows: HashMap::new(),
         }
     }
 }
@@ -924,7 +1448,7 @@ pub fn run() {
                 // Reset before the new page can install its focus listener or acquire a lease.
                 panel_window::reset_for_webview(&webview.window());
             }
-            if webview.label() == MAIN_WINDOW_LABEL
+            if document_windows::registered_document_label(webview.app_handle(), webview.label())
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
                 // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
@@ -970,39 +1494,26 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            if window.label() == MAIN_WINDOW_LABEL {
+            if document_windows::registered_document_label(window.app_handle(), window.label()) {
                 match event {
-                    // macOS: closing the document window hides it and the app lives on in the
-                    // Dock (RunEvent::Reopen brings it back).
-                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if !prompt_waits_for_user(&QUIT) {
-                            dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
-                            if let Err(error) = window.hide() {
-                                eprintln!("Could not hide ChemDraft main window: {error}");
-                            }
-                        }
-                    }
-                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
-                    // prewarmed popovers would keep a windowless process alive: closing the
-                    // document window quits — after the document flushes its pending autosave.
-                    #[cfg(not(target_os = "macos"))]
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        request_quit(window.app_handle());
+                        let _ = window.app_handle().emit_to(
+                            window.label(),
+                            "chemdraft://close-document-window-request",
+                            (),
+                        );
                     }
                     WindowEvent::Destroyed => {
-                        // The close button only hides the main window, so its actual destruction
-                        // means the app is dying — including SIGTERM teardowns that never fire
-                        // ExitRequested. Raise the quit flag so palette destruction that follows
-                        // isn't recorded as user closes.
-                        APP_QUITTING.store(true, Ordering::SeqCst);
-                        dialog_windows::dismiss_owned(window.app_handle(), "quit");
-                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
-                        window
-                            .state::<naming_engine::NamingEngineState>()
-                            .shutdown();
+                        close_document_utilities(window.app_handle(), window.label());
+                        document_windows::unregister_document(window.app_handle(), window.label());
+                        if document_windows::document_windows(window.app_handle()).is_empty() {
+                            APP_QUITTING.store(true, Ordering::SeqCst);
+                            window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                            window
+                                .state::<naming_engine::NamingEngineState>()
+                                .shutdown();
+                        }
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -1020,6 +1531,9 @@ pub fn run() {
                         }
                     }
                     WindowEvent::Focused(true) => {
+                        document_windows::set_active(window.app_handle(), window.label());
+                        #[cfg(target_os = "macos")]
+                        let _ = reinstall_app_menu(window.app_handle());
                         schedule_suspended_utility_restore(window.app_handle());
                     }
                     _ => {}
@@ -1069,7 +1583,7 @@ pub fn run() {
                     #[cfg(windows)]
                     if let (Ok(panel), Some(main)) = (
                         window.hwnd(),
-                        window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
+                        owner_document_window(window.app_handle(), window.label()),
                     ) {
                         let _ = panel_window::return_focus_to_document(panel.0, &main);
                     }
@@ -1096,7 +1610,8 @@ pub fn run() {
                         );
                     }
                     if let Err(error) = window.app_handle().emit_to(
-                        MAIN_WINDOW_LABEL,
+                        calling_document_owner(window.app_handle(), window.label())
+                            .unwrap_or_default(),
                         PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
                         window.label(),
                     ) {
@@ -1183,6 +1698,8 @@ pub fn run() {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
             }
 
+            document_windows::register_document(app, MAIN_WINDOW_LABEL);
+            document_windows::set_active(app, MAIN_WINDOW_LABEL);
             #[cfg(not(target_os = "macos"))]
             if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
                 eprintln!("Could not install the ChemDraft menu: {error}");
@@ -1241,6 +1758,21 @@ pub fn run() {
             list_toolset_window_states,
             load_toolset_customization_state,
             save_toolset_customization_state,
+            document_window_owner,
+            document_windows::flush_document_workspace,
+            document_windows::document_workspace_flushed,
+            document_windows::list_document_windows,
+            document_windows::stage_document_tab_transfer,
+            document_windows::take_document_tab_transfer,
+            document_windows::document_tab_transfer_chunk,
+            document_windows::accept_document_tab_transfer,
+            document_windows::document_tab_transfer_status,
+            document_windows::cancel_document_tab_transfer,
+            document_windows::claim_document_file,
+            document_windows::release_document_file,
+            close_document_window,
+            new_document_window,
+            active_document_window_label,
             load_document_session,
             save_document_session,
             set_toolbars_menu,
@@ -1249,7 +1781,7 @@ pub fn run() {
             set_menu_checked,
             set_keybinding_scheme,
             plugin_storage_read,
-            plugin_storage_write,
+            plugin_storage_mutate,
             open_plugin_panel_window,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
@@ -1392,7 +1924,7 @@ fn main_window_frame_action(visible: bool, has_saved_frame: bool) -> MainWindowF
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+    let window = match document_windows::active_document_window(app) {
         Some(window) => window,
         None => create_main_window(app)?,
     };
@@ -1419,7 +1951,8 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
             let geometry = if keep_frame {
                 None
             } else {
-                load_toolset_layout_state(app).main_window
+                let state = load_toolset_layout_state(app);
+                saved_document_geometry(&state, window.label())
             };
             match main_window_frame_action(keep_frame, geometry.is_some()) {
                 MainWindowFrameAction::Keep => false,
@@ -1513,8 +2046,7 @@ fn focus_main_document_window_impl<R: Runtime>(
     ) {
         return Ok(false);
     }
-    let window = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let window = document_windows::active_document_window(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
 
     window
@@ -1592,6 +2124,7 @@ mod window_title_tests {
 fn create_main_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    document_windows::register_document(app, MAIN_WINDOW_LABEL);
     let title = main_window_title();
     if let Some(config) = app
         .config()
@@ -1620,6 +2153,30 @@ fn create_main_window<R: Runtime>(
         .visible(false)
         .build()
         .map_err(|error| error.to_string())
+}
+
+fn saved_document_geometry(layout: &ToolsetLayoutState, owner: &str) -> Option<MainWindowGeometry> {
+    if owner == MAIN_WINDOW_LABEL {
+        layout.main_window
+    } else {
+        layout.document_windows.get(owner).copied()
+    }
+}
+fn update_document_geometry(
+    layout: &mut ToolsetLayoutState,
+    owner: &str,
+    update: MainWindowGeometryUpdate,
+    frame: Option<MainWindowGeometry>,
+) {
+    if owner == MAIN_WINDOW_LABEL {
+        update_main_window_geometry(&mut layout.main_window, update, frame);
+    } else {
+        let mut saved = layout.document_windows.get(owner).copied();
+        update_main_window_geometry(&mut saved, update, frame);
+        if let Some(frame) = saved {
+            layout.document_windows.insert(owner.into(), frame);
+        }
+    }
 }
 
 /// Window geometry supplied by JS (which owns the toolbar registry) when opening a palette, so Rust
@@ -1809,9 +2366,7 @@ async fn suspend_toolset_windows(
     suspended: bool,
     focus_export_session_id: Option<String>,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
-        return Err("Only the document window can suspend floating windows.".into());
-    }
+    document_windows::authorize(&app, window.label())?;
     let _creation = match lock_window_creation() {
         Ok(guard) => guard,
         Err(error) => {
@@ -1835,8 +2390,7 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let main = app
-                .get_webview_window(MAIN_WINDOW_LABEL)
+            let main = document_windows::active_document_window(&app)
                 .ok_or_else(|| "ChemDraft utility suspension owner disappeared.".to_string())?;
             let document_minimized = main.is_minimized().unwrap_or(true);
             let mut snapshot: Vec<_> = windows
@@ -1939,7 +2493,7 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
         let Ok(_creation) = lock_window_creation() else {
             return;
         };
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = document_windows::active_document_window(&app) else {
             return;
         };
         let restore_app = app.clone();
@@ -1974,8 +2528,7 @@ fn restore_utility_labels<R: Runtime>(
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    if document_windows::active_document_window(app)
         .is_none_or(|main| main.is_minimized().unwrap_or(true))
     {
         return Ok(());
@@ -2000,7 +2553,7 @@ fn restore_utility_labels<R: Runtime>(
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = document_windows::active_document_window(app) else {
             break;
         };
         if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
@@ -2069,8 +2622,7 @@ fn restore_utility_in_document_group<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
     let app = window.app_handle();
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = owner_document_window(app, window.label())
         .ok_or_else(|| "ChemDraft utility restore owner disappeared.".to_string())?;
     if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
         return Err("ChemDraft utility restore owner is not visible; retrying.".into());
@@ -2279,17 +2831,19 @@ fn lock_window_creation_with(
 #[tauri::command]
 async fn open_toolset_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
     window: Option<ToolsetWindowGeometry>,
 ) -> Result<ToolsetWindowState, String> {
+    let owner = calling_document_owner(&app, caller.label())?;
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
-        return toolset_state(&app, &toolset_id);
+        return toolset_state(&app, &toolset_id, &owner);
     }
-    ensure_toolset_window(&app, &toolset_id, window.as_ref())?;
+    ensure_toolset_window(&app, &toolset_id, window.as_ref(), &owner)?;
     set_toolset_menu_checked(&app, &toolset_id, true)?;
 
-    let state = toolset_state(&app, &toolset_id)?;
+    let state = toolset_state(&app, &toolset_id, &owner)?;
     let _ = emit_toolset_window_state_to_main(&app, &state);
     Ok(state)
 }
@@ -2297,12 +2851,17 @@ async fn open_toolset_window(
 #[tauri::command]
 fn close_toolset_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
 ) -> Result<ToolsetWindowState, String> {
+    let owner = calling_document_owner(&app, caller.label())?;
     if utility_windows_suspended() {
-        return toolset_state(&app, &toolset_id);
+        return toolset_state(&app, &toolset_id, &owner);
     }
-    let window = app.get_webview_window(&toolset_window_label(&toolset_id));
+    let window = app.get_webview_window(&owned_utility_label(
+        &owner,
+        &toolset_window_label(&toolset_id),
+    ));
     if let Some(window) = window.as_ref() {
         if let Some(position) = current_toolset_window_position(window) {
             // Best-effort, exactly like the `Moved` handler. Remembering where the palette was is
@@ -2329,7 +2888,11 @@ fn close_toolset_window(
 }
 
 #[tauri::command]
-fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindowState>, String> {
+fn list_toolset_window_states(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<Vec<ToolsetWindowState>, String> {
+    let owner = calling_document_owner(&app, caller.label())?;
     // Report the state of every palette window we've opened this session (from the directory),
     // rather than scanning the manifest. The JS reconciler only cares about which are open.
     let toolset_ids: Vec<String> = {
@@ -2339,7 +2902,7 @@ fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindow
     };
     toolset_ids
         .iter()
-        .map(|toolset_id| toolset_state(&app, toolset_id))
+        .map(|toolset_id| toolset_state(&app, toolset_id, &owner))
         .collect()
 }
 
@@ -2441,53 +3004,229 @@ fn save_toolset_customization_state(
     write_file_atomic(&path, &contents)
 }
 
+/// The lock covers read/merge/write so one renderer can never overwrite its peers.
+fn ensure_workspace_loaded<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let mut d = document_windows::DIRECTORY.lock().unwrap();
+    if d.loaded {
+        return Ok(());
+    }
+    let path = document_session_path(app)?;
+    if let Some(contents) = read_optional_file(&path)? {
+        let value: serde_json::Value = serde_json::from_str(&contents)
+            .map_err(|e| format!("Document session is invalid: {e}"))?;
+        if value
+            .get("workspaceVersion")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+        {
+            let windows = value
+                .get("windows")
+                .and_then(serde_json::Value::as_object)
+                .ok_or("Invalid document workspace")?;
+            for (label, session) in windows {
+                d.sessions.insert(label.clone(), session.clone());
+            }
+            if let Some(active) = value
+                .get("activeWindow")
+                .and_then(serde_json::Value::as_str)
+                .filter(|label| windows.contains_key(*label))
+            {
+                d.active = Some(active.into());
+            }
+            let mut restored_active = d.active.take();
+            promote_saved_document_to_main(&mut d.sessions, &mut restored_active);
+            d.active = restored_active;
+        } else {
+            d.sessions.insert(MAIN_WINDOW_LABEL.into(), value);
+        }
+    }
+    d.loaded = true;
+    Ok(())
+}
+
+/// The configured main window always exists at launch. If its last tab was moved away,
+/// restore the surviving document in that window instead of adding an empty one.
+fn promote_saved_document_to_main(
+    sessions: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    active: &mut Option<String>,
+) -> Option<String> {
+    if sessions.contains_key(MAIN_WINDOW_LABEL) {
+        return None;
+    }
+    let source = active
+        .as_deref()
+        .filter(|label| is_restorable_document_label(label) && sessions.contains_key(*label))
+        .map(str::to_owned)
+        .or_else(|| {
+            sessions
+                .keys()
+                .find(|label| is_restorable_document_label(label))
+                .cloned()
+        })?;
+    let session = sessions.remove(&source)?;
+    sessions.insert(MAIN_WINDOW_LABEL.into(), session);
+    if active.as_deref() == Some(&source) {
+        *active = Some(MAIN_WINDOW_LABEL.into());
+    }
+    Some(source)
+}
+
+fn is_restorable_document_label(label: &str) -> bool {
+    label
+        .strip_prefix("document-")
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod workspace_main_promotion_tests {
+    use super::{promote_saved_document_to_main, MAIN_WINDOW_LABEL};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn promotes_active_survivor_without_losing_peer_or_recovery_record() {
+        let mut sessions = BTreeMap::from([
+            ("document-2".into(), json!({"tabs":[{"id":"first"}]})),
+            ("document-3".into(), json!({"tabs":[{"id":"active"}]})),
+            ("recovery-future".into(), json!({"opaque":true})),
+        ]);
+        let mut active = Some("document-3".into());
+        assert_eq!(
+            promote_saved_document_to_main(&mut sessions, &mut active).as_deref(),
+            Some("document-3")
+        );
+        assert_eq!(active.as_deref(), Some(MAIN_WINDOW_LABEL));
+        assert_eq!(sessions[MAIN_WINDOW_LABEL]["tabs"][0]["id"], "active");
+        assert!(sessions.contains_key("document-2"));
+        assert!(sessions.contains_key("recovery-future"));
+        assert!(!sessions.contains_key("document-3"));
+    }
+
+    #[test]
+    fn existing_main_and_unknown_labels_are_not_reassigned() {
+        let mut sessions = BTreeMap::from([
+            ("main".into(), json!({"tabs":[{"id":"main"}]})),
+            ("document-2".into(), json!({"tabs":[{"id":"peer"}]})),
+        ]);
+        let mut active = Some("document-2".into());
+        assert_eq!(
+            promote_saved_document_to_main(&mut sessions, &mut active),
+            None
+        );
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(active.as_deref(), Some("document-2"));
+        sessions.remove("main");
+        sessions.remove("document-2");
+        sessions.insert("recovery-future".into(), json!({"opaque":true}));
+        assert_eq!(
+            promote_saved_document_to_main(&mut sessions, &mut active),
+            None
+        );
+        assert_eq!(sessions.len(), 1);
+    }
+}
+fn persist_workspace<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    d: &document_windows::Directory,
+) -> Result<(), String> {
+    let value = serde_json::json!({"workspaceVersion":1,"windows":d.persisted_sessions(),"activeWindow":d.active});
+    write_file_atomic(
+        &document_session_path(app)?,
+        &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+    )
+}
 #[tauri::command]
-fn load_document_session(
+async fn load_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<Option<serde_json::Value>, String> {
-    if window.label() != MAIN_WINDOW_LABEL {
-        return Err("Only the main document window can restore the document session".into());
+    document_windows::authorize(&app, window.label())?;
+    ensure_workspace_loaded(&app)?;
+    // The initial window recreates the other persisted owners once. Register/build on this
+    // command's worker, never while holding the directory or on the UI thread.
+    if window.label() == MAIN_WINDOW_LABEL {
+        let restored_active = document_windows::DIRECTORY.lock().unwrap().active.clone();
+        let labels = {
+            let d = document_windows::DIRECTORY.lock().unwrap();
+            d.sessions
+                .keys()
+                .filter(|l| {
+                    l.as_str() != MAIN_WINDOW_LABEL
+                        && l.strip_prefix("document-")
+                            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+                        && !d.labels.contains(l)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for label in labels {
+            super_create_restored_document(&app, &label)?;
+        }
+        if let Some(label) = restored_active {
+            if let Some(active) = app.get_webview_window(&label) {
+                document_windows::set_active(&app, &label);
+                active.set_focus().map_err(|error| error.to_string())?;
+            }
+        }
     }
-    let path = document_session_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
-        return Ok(None);
+    let mut session = {
+        document_windows::DIRECTORY
+            .lock()
+            .unwrap()
+            .sessions
+            .get(window.label())
+            .cloned()
     };
-
-    let mut session = serde_json::from_str(&contents)
-        .map_err(|error| format!("Document session is invalid: {error}"))?;
-    document_session::restore_file_scopes(&mut session, |path| {
-        use tauri_plugin_fs::FsExt;
-        let scope = app
-            .try_fs_scope()
-            .ok_or("File access scope is unavailable")?;
-        scope.allow_file(path).map_err(|error| error.to_string())?;
-        if !scope.is_allowed(path) {
-            return Err("File access could not be restored".into());
-        }
-        if let Some(scopes) = app.try_state::<tauri::scope::Scopes>() {
-            scopes.allow_file(path).map_err(|error| error.to_string())?;
-        }
-        Ok(())
-    });
-    Ok(Some(session))
+    if let Some(session) = session.as_mut() {
+        document_session::restore_file_scopes(session, |path| {
+            use tauri_plugin_fs::FsExt;
+            let scope = app
+                .try_fs_scope()
+                .ok_or("File access scope is unavailable")?;
+            scope.allow_file(path).map_err(|e| e.to_string())?;
+            if !scope.is_allowed(path) {
+                return Err("File access could not be restored".into());
+            }
+            if let Some(scopes) = app.try_state::<tauri::scope::Scopes>() {
+                scopes.allow_file(path).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        });
+    }
+    Ok(session)
 }
-
-/// The working document's autosave (serialized contents + file association). JS owns the envelope
-/// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
-/// opaque JSON, exactly like the toolbar customization state.
+fn super_create_restored_document<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Result<(), String> {
+    create_document_window_with_label(app, label).map(|_| ())
+}
 #[tauri::command]
 fn save_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: serde_json::Value,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
-        return Err("Only the main document window can persist the document session".into());
+    document_windows::authorize(&app, window.label())?;
+    ensure_workspace_loaded(&app)?;
+    let mut d = document_windows::DIRECTORY.lock().unwrap();
+    // Native owner identity selects exactly one record. Keep unreadable peer recovery data.
+    let mut state = state;
+    for (tab, owner) in &d.transferred_tabs {
+        if owner != window.label() {
+            document_windows::remove_session_tab(&mut state, tab);
+        }
     }
-    let path = document_session_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    let previous = d.sessions.insert(window.label().into(), state);
+    if let Err(error) = persist_workspace(&app, &d) {
+        if let Some(previous) = previous {
+            d.sessions.insert(window.label().into(), previous);
+        } else {
+            d.sessions.remove(window.label());
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
@@ -2497,6 +3236,7 @@ fn save_document_session(
 #[tauri::command]
 fn set_toolbars_menu(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     entries: Vec<ToolbarMenuEntry>,
     rulers_visible: bool,
     crosshairs_visible: bool,
@@ -2509,6 +3249,11 @@ fn set_toolbars_menu(
         crosshairs_visible,
         has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
     };
+    document_windows::authorize(&app, caller.label())?;
+    let previous_owner_view = DOCUMENT_VIEW_MENUS
+        .lock()
+        .unwrap()
+        .insert(caller.label().into(), view_state);
     // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
     // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
     // visibility or rulers/crosshairs toggle; most pushes only move checkmarks, and a full rebuild
@@ -2521,9 +3266,14 @@ fn set_toolbars_menu(
         *guard = (entries.clone(), view_state);
         update
     };
-    if update == ToolbarsMenuUpdate::Unchanged {
-        return Ok(());
-    }
+    let update = if update == ToolbarsMenuUpdate::Unchanged {
+        if previous_owner_view == Some(view_state) {
+            return Ok(());
+        }
+        ToolbarsMenuUpdate::Rebuild
+    } else {
+        update
+    };
     app.clone()
         .run_on_main_thread(move || {
             let result = if update == ToolbarsMenuUpdate::ChecksOnly {
@@ -2553,26 +3303,50 @@ fn set_toolbars_menu(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn focus_main_document_window(app: tauri::AppHandle) -> Result<(), String> {
-    focus_main_document_window_impl(&app, MainWindowFocusMode::Force).map(|_| ())
+fn focus_calling_document(
+    app: &tauri::AppHandle,
+    caller: &str,
+    mode: MainWindowFocusMode,
+) -> Result<bool, String> {
+    let owner = owner_document_window(app, caller)
+        .or_else(|| {
+            if matches!(
+                caller,
+                PREFERENCES_WINDOW_LABEL | SPIN3D_DEBUGGER_WINDOW_LABEL
+            ) {
+                document_windows::active_document_window(app)
+            } else {
+                None
+            }
+        })
+        .ok_or("The document owner is no longer available")?;
+    let target = owner.clone();
+    run_on_main_thread_blocking(&owner, move || {
+        if !should_raise_main_window(mode, foreground_belongs_to_app()) {
+            return Ok(false);
+        }
+        target.unminimize().map_err(|error| error.to_string())?;
+        if !target.is_visible().unwrap_or(false) {
+            target.show().map_err(|error| error.to_string())?;
+        }
+        focus_native_document_window(&target)?;
+        target.set_focus().map_err(|error| error.to_string())?;
+        Ok(true)
+    })?
 }
-
 #[tauri::command]
-fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Check NSApplication and raise on the same AppKit thread, even if this command's caller
-        // is later moved to a worker. A missing main-thread marker must never authorize a raise.
-        let window = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .ok_or_else(|| "Main document window is not available.".to_string())?;
-        run_on_main_thread_blocking(&window, move || {
-            focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
-        })?
-    }
-    #[cfg(not(target_os = "macos"))]
-    focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
+fn focus_main_document_window(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    focus_calling_document(&app, window.label(), MainWindowFocusMode::Force).map(|_| ())
+}
+#[tauri::command]
+fn focus_main_document_window_if_app_active(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    focus_calling_document(&app, window.label(), MainWindowFocusMode::OnlyIfAppActive)
 }
 
 /// JS owns menu check state now: after the main window changes toolset visibility it
@@ -2581,12 +3355,23 @@ fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<boo
 #[tauri::command]
 fn set_menu_checked(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     command_id: String,
     checked: bool,
 ) -> Result<(), String> {
     let command_id = command_id.trim();
     if command_id.is_empty() {
         return Err("Menu command id cannot be empty.".to_string());
+    }
+    document_windows::authorize(&app, caller.label())?;
+    if matches!(command_id, "view.toggleRulers" | "view.toggleCrosshairs") {
+        let mut menus = DOCUMENT_VIEW_MENUS.lock().unwrap();
+        let state = menus.entry(caller.label().into()).or_default();
+        if command_id == "view.toggleRulers" {
+            state.rulers_visible = checked;
+        } else {
+            state.crosshairs_visible = checked;
+        }
     }
     set_check_menu_item_checked(&app, command_id, checked)
 }
@@ -2622,8 +3407,6 @@ mod plugin_storage_id_tests {
     }
 }
 
-const PLUGIN_STORAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
-
 fn plugin_storage_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_id: &str,
@@ -2642,32 +3425,28 @@ fn plugin_storage_path<R: Runtime>(
 
 #[tauri::command]
 fn plugin_storage_read(app: tauri::AppHandle, plugin_id: String) -> Result<Option<String>, String> {
-    let path = plugin_storage_path(&app, &plugin_id)?;
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
+    plugin_storage::read(&plugin_storage_path(&app, &plugin_id)?)
 }
 
 #[tauri::command]
-fn plugin_storage_write(
+fn plugin_storage_mutate(
     app: tauri::AppHandle,
     plugin_id: String,
-    contents: String,
+    key: String,
+    value_json: Option<String>,
 ) -> Result<(), String> {
-    if contents.len() > PLUGIN_STORAGE_MAX_BYTES {
-        return Err(format!(
-            "Plugin storage payload exceeds {PLUGIN_STORAGE_MAX_BYTES} bytes."
-        ));
-    }
-    let path = plugin_storage_path(&app, &plugin_id)?;
-    write_file_atomic(&path, &contents)
+    plugin_storage::mutate(
+        &plugin_storage_path(&app, &plugin_id)?,
+        key,
+        value_json.as_deref(),
+    )
 }
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPluginPanelRequest {
+    #[serde(skip)]
+    owner_window_id: String,
     panel_id: String,
     title: String,
     width: Option<f64>,
@@ -2822,7 +3601,7 @@ async fn set_plugin_panel_input_focus(
             // A blur caused by clicking the document/another app must not raise or activate it.
             if was_focused {
                 #[cfg(windows)]
-                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
+                if let Some(main) = owner_document_window(target.app_handle(), target.label()) {
                     panel_window::return_focus_to_document(
                         target.hwnd().map_err(|error| error.to_string())?.0,
                         &main,
@@ -2874,10 +3653,11 @@ mod plugin_panel_label_tests {
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
         state.lock().unwrap().begin([], None);
         state.lock().unwrap().begin([], None);
-        let request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
+        let mut request: OpenPluginPanelRequest = serde_json::from_value(serde_json::json!({
             "panelId": "panel.test", "title": "Analyze", "focus": true
         }))
         .unwrap();
+        request.owner_window_id = "main".into();
         for _ in 0..2 {
             dispatch_plugin_panel_open(&state, request.clone(), false, |_| {
                 panic!("must not build or parent while suspended")
@@ -3126,13 +3906,20 @@ mod plugin_panel_label_tests {
 #[tauri::command]
 async fn open_plugin_panel_window(
     app: tauri::AppHandle,
-    request: OpenPluginPanelRequest,
+    caller: tauri::WebviewWindow,
+    mut request: OpenPluginPanelRequest,
 ) -> Result<(), String> {
+    request.owner_window_id = calling_document_owner(&app, caller.label())?;
     if !is_valid_plugin_storage_id(&request.panel_id) {
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
     let _creation = lock_window_creation()?;
+    let label = owned_utility_label(
+        &request.owner_window_id,
+        &plugin_panel_window_label(&request.panel_id),
+    );
+    document_windows::register_utility_owner(&app, &label, &request.owner_window_id)?;
     dispatch_plugin_panel_open(
         &UTILITY_SUSPENSION,
         request,
@@ -3155,7 +3942,13 @@ fn dispatch_plugin_panel_open(
     {
         let mut state = suspension.lock().unwrap_or_else(|p| p.into_inner());
         if state.active() {
-            state.defer_panel(plugin_panel_window_label(&request.panel_id), request);
+            state.defer_panel(
+                owned_utility_label(
+                    &request.owner_window_id,
+                    &plugin_panel_window_label(&request.panel_id),
+                ),
+                request,
+            );
             return Ok(());
         }
     }
@@ -3172,15 +3965,14 @@ fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    if document_windows::active_document_window(app)
         .is_none_or(|main| main.is_minimized().unwrap_or(true))
     {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = document_windows::active_document_window(app) else {
             return Ok(());
         };
         if !run_on_main_thread_blocking(&main, foreground_belongs_to_app)? {
@@ -3249,7 +4041,11 @@ fn build_or_show_plugin_panel<R: Runtime>(
     if quit_in_progress() {
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
-    let label = plugin_panel_window_label(&request.panel_id);
+    let label = owned_utility_label(
+        &request.owner_window_id,
+        &plugin_panel_window_label(&request.panel_id),
+    );
+    document_windows::register_utility_owner(app, &label, &request.owner_window_id)?;
     let presentation = request.presentation(restoring);
     if let Some(window) = app.get_webview_window(&label) {
         if restoring {
@@ -3270,7 +4066,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
 
     let width = request.width.unwrap_or(380.0);
     let height = request.height.unwrap_or(520.0);
-    let position = analysis_window_initial_position(app, width, height);
+    let position = analysis_window_initial_position(app, &request.owner_window_id, width, height);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
@@ -3294,7 +4090,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
     if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
-        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Some(main) = app.get_webview_window(&request.owner_window_id) {
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
     }
@@ -3302,6 +4098,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
+    validate_built_utility_owner(&window, &request.owner_window_id)?;
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
         panel_window::install_resize_hit_test(&target)
@@ -3323,10 +4120,11 @@ fn build_or_show_plugin_panel<R: Runtime>(
 
 fn analysis_window_initial_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    owner: &str,
     width: f64,
     height: f64,
 ) -> Option<tauri::LogicalPosition<f64>> {
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = app.get_webview_window(owner)?;
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
@@ -3522,7 +4320,7 @@ fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, chi
     if !should_attach_as_document_child(label) {
         return;
     }
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owner_document_window(app, label) else {
         return;
     };
     let Ok(main_ptr) = main.ns_window() else {
@@ -3638,13 +4436,13 @@ mod document_key_after_unhide_tests {
 }
 
 #[cfg(target_os = "macos")]
-fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
-    let pointer = app
-        .get_webview_window(MAIN_WINDOW_LABEL)?
+fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<objc2::rc::Retained<NSWindow>> {
+    MainThreadMarker::new()?;
+    let pointer = document_windows::active_document_window(app)?
         .ns_window()
         .ok()?;
-    // The main window is never destroyed while the app runs (closing only hides it).
-    unsafe { (pointer as *mut NSWindow).as_ref() }
+    // Keep the native document alive for this main-thread operation even when windows can close.
+    unsafe { objc2::rc::Retained::retain(pointer as *mut NSWindow) }
 }
 
 /// Records whether the document was key at Cmd+H, and restores it after the app is active again.
@@ -3709,12 +4507,15 @@ fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
 #[tauri::command]
 async fn open_toolset_popover(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
     kind: String,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
-    let label = toolset_popover_window_label(&toolset_id);
+    let owner = calling_document_owner(&app, caller.label())?;
+    let label = owned_utility_label(&owner, &toolset_popover_window_label(&toolset_id));
+    document_windows::register_utility_owner(&app, &label, &owner)?;
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return Ok(());
@@ -3730,6 +4531,7 @@ async fn open_toolset_popover(
         // can nudge an NSWindow's frame, and the first open after a prewarm used to land the
         // popover away from its anchor. An explicit LogicalPosition set is the final word in
         // both the warm and cold paths.
+        validate_built_utility_owner(&window, &owner)?;
         configure_toolset_popover_window(&window, false)?;
         set_window_global_logical_position(&window, x, y)?;
         return Ok(());
@@ -3745,8 +4547,14 @@ async fn open_toolset_popover(
 /// user-visible open then takes the warm path (reposition + content push + self-reveal, a frame or
 /// two). The `prewarm=1` route param tells the webview to stay hidden until real content arrives.
 #[tauri::command]
-async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
-    let label = toolset_popover_window_label(&toolset_id);
+async fn prewarm_toolset_popover(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    toolset_id: String,
+) -> Result<(), String> {
+    let owner = calling_document_owner(&app, caller.label())?;
+    let label = owned_utility_label(&owner, &toolset_popover_window_label(&toolset_id));
+    document_windows::register_utility_owner(&app, &label, &owner)?;
     let _creation = lock_window_creation()?;
     if app.get_webview_window(&label).is_some() {
         return Ok(());
@@ -3761,9 +4569,12 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
 /// toolbars appeared that much later. Nothing needs the tooltip before the first hover, and
 /// show/hide already no-op while it doesn't exist. Every palette asks; the first ask builds it.
 #[tauri::command]
-async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
+async fn prewarm_toolset_tooltip(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    build_toolset_tooltip_window(&app)
+    build_toolset_tooltip_window(&app, &calling_document_owner(&app, caller.label())?)
 }
 
 fn build_toolset_popover_window(
@@ -3775,6 +4586,8 @@ fn build_toolset_popover_window(
     x: f64,
     y: f64,
 ) -> Result<(), String> {
+    let owner = document_windows::utility_owner(app, label).ok_or("Missing popover owner")?;
+    document_windows::authorize(app, &owner)?;
     let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
     let window = utility_window_builder(
         WebviewWindowBuilder::new(
@@ -3788,6 +4601,7 @@ fn build_toolset_popover_window(
             ),
         ),
         app,
+        &document_windows::utility_owner(app, label).ok_or("Missing popover owner")?,
     )
     .title("ChemDraft color picker")
     // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
@@ -3810,6 +4624,7 @@ fn build_toolset_popover_window(
     .build()
     .map_err(|error| error.to_string())?;
 
+    validate_built_utility_owner(&window, &owner)?;
     configure_toolset_popover_window(&window, false)?;
     // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
@@ -3834,8 +4649,16 @@ fn configure_toolset_popover_window<R: Runtime>(
 }
 
 #[tauri::command]
-fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+fn close_toolset_popover(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    toolset_id: String,
+) -> Result<(), String> {
+    let owner = calling_document_owner(&app, caller.label())?;
+    if let Some(window) = app.get_webview_window(&owned_utility_label(
+        &owner,
+        &toolset_popover_window_label(&toolset_id),
+    )) {
         window.hide().map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -3853,10 +4676,15 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
 #[tauri::command]
 fn set_toolset_window_focusable(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     toolset_id: String,
     focusable: bool,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
+    let owner = calling_document_owner(&app, caller.label())?;
+    if let Some(window) = app.get_webview_window(&owned_utility_label(
+        &owner,
+        &toolset_window_label(&toolset_id),
+    )) {
         window
             .set_focusable(focusable)
             .map_err(|error| error.to_string())?;
@@ -3903,13 +4731,17 @@ const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
 #[tauri::command]
 fn show_toolset_tooltip_window(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
     }
-    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+    let owner = calling_document_owner(&app, caller.label())?;
+    let Some(window) =
+        app.get_webview_window(&owned_utility_label(&owner, TOOLSET_TOOLTIP_WINDOW_LABEL))
+    else {
         return Ok(());
     };
     // Placing and showing in one command halves the tooltip's IPC round trips (it used to be
@@ -3983,8 +4815,14 @@ fn show_toolset_popover_window(window: tauri::WebviewWindow) -> Result<(), Strin
 /// API instead took a different IPC path, so a hide sent right after a show could land first and
 /// strand the tooltip visible over the palette.
 #[tauri::command]
-fn hide_toolset_tooltip_window(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
+fn hide_toolset_tooltip_window(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<(), String> {
+    let owner = calling_document_owner(&app, caller.label())?;
+    let Some(window) =
+        app.get_webview_window(&owned_utility_label(&owner, TOOLSET_TOOLTIP_WINDOW_LABEL))
+    else {
         return Ok(());
     };
     window.hide().map_err(|error| error.to_string())
@@ -4096,21 +4934,21 @@ fn set_current_window_global_position(
 /// doesn't pay the cold-webview load. The `toolset-` label prefix gives it the palette capability
 /// set; it is NOT in the ToolsetWindowDirectory, so the pointer feed never treats it as a hoverable
 /// palette.
-fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
-    if app
-        .get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL)
-        .is_some()
-    {
+fn build_toolset_tooltip_window(app: &tauri::AppHandle, owner: &str) -> Result<(), String> {
+    let label = owned_utility_label(owner, TOOLSET_TOOLTIP_WINDOW_LABEL);
+    document_windows::register_utility_owner(app, &label, owner)?;
+    if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
 
     let window = utility_window_builder(
         WebviewWindowBuilder::new(
             app,
-            TOOLSET_TOOLTIP_WINDOW_LABEL,
+            &label,
             WebviewUrl::App("/?window=toolsetTooltip".into()),
         ),
         app,
+        owner,
     )
     .title("ChemDraft tooltip")
     // The JS side sizes this to the rendered text before every show.
@@ -4125,6 +4963,7 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     .build()
     .map_err(|error| error.to_string())?;
 
+    validate_built_utility_owner(&window, owner)?;
     configure_toolset_utility_window(&window, false)?;
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
     // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
@@ -4151,7 +4990,11 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
+fn route_toolset_command(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command_id: String,
+) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
     }
@@ -4160,8 +5003,15 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
-    emit_command_to_main(&app, command_id)?;
-    if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
+    let owner =
+        owner_document_window(&app, window.label()).ok_or("Document owner no longer exists")?;
+    dispatch_dom_command_event(
+        &owner,
+        &ToolsetCommandPayload {
+            command_id: command_id.into(),
+        },
+    )?;
+    if let Err(error) = owner.set_focus() {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
         );
@@ -4229,7 +5079,7 @@ fn write_clipboard_image_checked(app: &tauri::AppHandle, png_bytes: &[u8]) -> Re
 /// clipboard ownerless, and every SetClipboardData after it fails.
 #[cfg(windows)]
 fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
-    app.get_webview_window(MAIN_WINDOW_LABEL)
+    document_windows::active_document_window(app)
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
         .unwrap_or(std::ptr::null_mut())
@@ -4632,7 +5482,7 @@ fn window_is_covered_by_document<R: Runtime>(window: &tauri::WebviewWindow<R>) -
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
 
-    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owner_document_window(window.app_handle(), window.label()) else {
         return false;
     };
     let (Ok(main_hwnd), Ok(target_hwnd)) = (main.hwnd(), window.hwnd()) else {
@@ -4803,9 +5653,12 @@ fn engine3d_sidecar_status() -> Engine3dSidecarStatus {
 
 #[tauri::command]
 fn engine3d_sidecar_start_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     lines: Vec<String>,
     sessions: tauri::State<'_, Engine3dSidecarSessions>,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
+    document_windows::authorize(&app, window.label())?;
     let lines = normalize_engine3d_protocol_lines(lines, true)?;
     let path = resolve_engine3d_sidecar_path(std::env::var(ENGINE3D_SIDECAR_ENV_VAR).ok())
         .ok_or_else(|| {
@@ -4815,33 +5668,48 @@ fn engine3d_sidecar_start_session(
             )
         })?;
 
-    start_engine3d_sidecar_session_from_path(&path, &lines, &sessions)
+    let output =
+        start_engine3d_sidecar_session_from_path(&path, &lines, &sessions, window.label())?;
+    if !document_windows::registered_document_label(&app, window.label()) {
+        let _ = stop_owned_engine3d_sidecar_sessions(&sessions, window.label());
+        return Err("The document owner closed during sidecar startup".into());
+    }
+    Ok(output)
 }
 
 #[tauri::command]
 fn engine3d_sidecar_send_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     process_session_id: String,
     lines: Vec<String>,
     sessions: tauri::State<'_, Engine3dSidecarSessions>,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
+    document_windows::authorize(&app, window.label())?;
     let lines = normalize_engine3d_protocol_lines(lines, false)?;
-    send_engine3d_sidecar_session_lines(&process_session_id, &lines, &sessions)
+    send_engine3d_sidecar_session_lines(&process_session_id, &lines, &sessions, window.label())
 }
 
 #[tauri::command]
 fn engine3d_sidecar_poll_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     process_session_id: String,
     sessions: tauri::State<'_, Engine3dSidecarSessions>,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    poll_engine3d_sidecar_session(&process_session_id, &sessions)
+    document_windows::authorize(&app, window.label())?;
+    poll_engine3d_sidecar_session(&process_session_id, &sessions, window.label())
 }
 
 #[tauri::command]
 fn engine3d_sidecar_stop_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     process_session_id: String,
     sessions: tauri::State<'_, Engine3dSidecarSessions>,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    stop_engine3d_sidecar_session(&process_session_id, &sessions)
+    document_windows::authorize(&app, window.label())?;
+    stop_engine3d_sidecar_session(&process_session_id, &sessions, window.label())
 }
 
 fn engine3d_sidecar_status_from(env_override: Option<String>) -> Engine3dSidecarStatus {
@@ -4979,16 +5847,27 @@ fn start_engine3d_sidecar_session_from_path(
     path: &Path,
     lines: &[String],
     sessions: &Engine3dSidecarSessions,
+    owner: &str,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    stop_all_engine3d_sidecar_sessions(sessions)?;
+    let mut command = Command::new(path);
+    command.arg("--stdio");
+    start_engine3d_sidecar_session_with_command(command, lines, sessions, owner)
+}
+
+fn start_engine3d_sidecar_session_with_command(
+    mut command: Command,
+    lines: &[String],
+    sessions: &Engine3dSidecarSessions,
+    owner: &str,
+) -> Result<Engine3dSidecarSessionOutput, String> {
+    stop_owned_engine3d_sidecar_sessions(sessions, owner)?;
 
     let process_session_id = format!(
         "engine3d-sidecar-{}-{}",
         std::process::id(),
         ENGINE3D_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let mut child = Command::new(path)
-        .arg("--stdio")
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5022,22 +5901,35 @@ fn start_engine3d_sidecar_session_from_path(
         .sessions
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
-    guard.insert(process_session_id.clone(), Arc::new(Mutex::new(session)));
+    guard.insert(
+        process_session_id.clone(),
+        OwnedEngine3dSession {
+            owner: owner.into(),
+            session: Arc::new(Mutex::new(session)),
+        },
+    );
     output.process_session_id = process_session_id;
     Ok(output)
 }
 
-fn stop_all_engine3d_sidecar_sessions(sessions: &Engine3dSidecarSessions) -> Result<(), String> {
+fn stop_owned_engine3d_sidecar_sessions(
+    sessions: &Engine3dSidecarSessions,
+    owner: &str,
+) -> Result<(), String> {
     let process_session_ids = {
         let guard = sessions
             .sessions
             .lock()
             .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
-        guard.keys().cloned().collect::<Vec<_>>()
+        guard
+            .iter()
+            .filter(|(_, entry)| entry.owner == owner)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
     };
 
     for process_session_id in process_session_ids {
-        let _ = stop_engine3d_sidecar_session(&process_session_id, sessions);
+        let _ = stop_engine3d_sidecar_session(&process_session_id, sessions, owner);
     }
 
     Ok(())
@@ -5047,6 +5939,7 @@ fn stop_all_engine3d_sidecar_sessions(sessions: &Engine3dSidecarSessions) -> Res
 fn engine3d_session_handle(
     process_session_id: &str,
     sessions: &Engine3dSidecarSessions,
+    owner: &str,
 ) -> Result<Arc<Mutex<Engine3dManagedSession>>, String> {
     let guard = sessions
         .sessions
@@ -5054,16 +5947,20 @@ fn engine3d_session_handle(
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
     guard
         .get(process_session_id)
-        .cloned()
-        .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())
+        .filter(|entry| entry.owner == owner)
+        .map(|entry| entry.session.clone())
+        .ok_or_else(|| {
+            "Interactive 3D sidecar session is not active for this document window.".to_string()
+        })
 }
 
 fn send_engine3d_sidecar_session_lines(
     process_session_id: &str,
     lines: &[String],
     sessions: &Engine3dSidecarSessions,
+    owner: &str,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let handle = engine3d_session_handle(process_session_id, sessions, owner)?;
     let mut session = handle
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
@@ -5079,8 +5976,9 @@ fn send_engine3d_sidecar_session_lines(
 fn poll_engine3d_sidecar_session(
     process_session_id: &str,
     sessions: &Engine3dSidecarSessions,
+    owner: &str,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
-    let handle = engine3d_session_handle(process_session_id, sessions)?;
+    let handle = engine3d_session_handle(process_session_id, sessions, owner)?;
     let mut session = handle
         .lock()
         .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
@@ -5097,15 +5995,25 @@ fn poll_engine3d_sidecar_session(
 fn stop_engine3d_sidecar_session(
     process_session_id: &str,
     sessions: &Engine3dSidecarSessions,
+    owner: &str,
 ) -> Result<Engine3dSidecarSessionOutput, String> {
     let handle = {
         let mut guard = sessions
             .sessions
             .lock()
             .map_err(|_| "Interactive 3D sidecar session state is poisoned.".to_string())?;
+        if !guard
+            .get(process_session_id)
+            .is_some_and(|entry| entry.owner == owner)
+        {
+            return Err(
+                "Interactive 3D sidecar session is not active for this document window.".into(),
+            );
+        }
         guard
             .remove(process_session_id)
-            .ok_or_else(|| "Interactive 3D sidecar session is not active.".to_string())?
+            .expect("authorized session")
+            .session
     };
     let mut session = handle
         .lock()
@@ -5269,8 +6177,18 @@ fn engine3d_target_triple() -> &'static str {
 
 #[tauri::command]
 fn take_pending_open_document(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    document_windows::authorize(&app, window.label())?;
+    let target = state
+        .target_label
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if target.as_deref().unwrap_or(MAIN_WINDOW_LABEL) != window.label() {
+        return Ok(None);
+    }
     let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
     Ok(pending.take())
 }
@@ -5367,6 +6285,18 @@ fn emit_menu_command<R: Runtime>(
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
     if target_label == MAIN_WINDOW_LABEL {
+        if let Some(label) = focused_label
+            .as_deref()
+            .filter(|label| document_windows::registered_document_label(app, label))
+        {
+            return dispatch_dom_command_event(
+                &app.get_webview_window(label)
+                    .ok_or("Document window closed")?,
+                &ToolsetCommandPayload {
+                    command_id: command_id.into(),
+                },
+            );
+        }
         return emit_command_to_main(app, command_id);
     }
     let target = app
@@ -5384,8 +6314,7 @@ fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> Result<(), String> {
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = document_windows::active_document_window(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
     let payload = ToolsetCommandPayload {
         command_id: command_id.to_string(),
@@ -5401,12 +6330,9 @@ fn dispatch_dom_command_event<R: Runtime>(
     main: &tauri::WebviewWindow<R>,
     payload: &ToolsetCommandPayload,
 ) -> Result<(), String> {
-    let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let event_json = serde_json::to_string(DOM_COMMAND_EVENT).map_err(|error| error.to_string())?;
-    main.eval(format!(
-        "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
-    ))
-    .map_err(|error| error.to_string())
+    main.app_handle()
+        .emit_to(main.label(), "chemdraft://native-command", payload.clone())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -5479,9 +6405,16 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
+    let target = document_windows::active_document_window(app)
+        .map(|window| window.label().to_string())
+        .unwrap_or_else(|| MAIN_WINDOW_LABEL.into());
+    *state
+        .target_label
+        .lock()
+        .map_err(|error| error.to_string())? = Some(target.clone());
     let delivery = state.record(
         payload.clone(),
-        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
+        document_windows::active_document_window(app).is_some(),
     )?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
@@ -5493,7 +6426,7 @@ fn deliver_opened_document<R: Runtime>(
     if let Err(error) = ensure_main_window_visible(app) {
         eprintln!("Could not show ChemDraft main window for opened document: {error}");
     }
-    emit_open_document_to_main(app, &payload)
+    emit_open_document_to_main(app, &target, &payload)
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -5573,12 +6506,13 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
 
 fn emit_open_document_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    target_label: &str,
     payload: &NativeOpenDocumentPayload,
 ) -> Result<(), String> {
     // Deliver via the Tauri event for a running window; a cold start (window not yet
     // listening) is covered by the pending-document state drained on mount. We deliberately
     // do not `eval` document contents into the webview to avoid a script-injection surface.
-    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+    document_windows::emit_document_event(app, target_label, OPEN_DOCUMENT_EVENT, payload.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -5586,12 +6520,15 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    if document_windows::active_document_window(app).is_none() {
         return Ok(());
     }
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
-        .map_err(|error| error.to_string())
+    for window in document_windows::document_windows(app) {
+        app.emit_to(window.label(), TOOLSET_WINDOW_STATE_EVENT, state.clone())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// The checkable View-menu toggle states that must survive a full menu rebuild. `set_toolbars_menu`
@@ -5605,6 +6542,13 @@ struct ViewMenuState {
     crosshairs_visible: bool,
     has_multiple_document_tabs: bool,
 }
+
+static DOCUMENT_PLUGIN_MENUS: std::sync::LazyLock<
+    Mutex<HashMap<String, Vec<PluginMenuItemInput>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static DOCUMENT_VIEW_MENUS: std::sync::LazyLock<Mutex<HashMap<String, ViewMenuState>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl Default for ViewMenuState {
     fn default() -> Self {
@@ -5622,15 +6566,21 @@ impl Default for ViewMenuState {
 #[tauri::command]
 fn sync_plugin_menu_items(
     app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
     items: Vec<PluginMenuItemInput>,
 ) -> Result<(), String> {
+    document_windows::authorize(&app, caller.label())?;
+    let previous_owner_items = DOCUMENT_PLUGIN_MENUS
+        .lock()
+        .unwrap()
+        .insert(caller.label().into(), items.clone());
     {
         let state = app.state::<PluginNativeMenuItems>();
         let mut guard = state.0.lock().map_err(|error| error.to_string())?;
         // The webview re-sends the list on every plugin host/panel change (each report push, panel
         // open/close), almost always unchanged. A rebuild swaps the whole menu bar — on Windows two
         // SetMenu calls that resize the document's client area — so identical syncs are dropped.
-        if *guard == items {
+        if *guard == items && previous_owner_items.as_ref() == Some(&items) {
             return Ok(());
         }
         *guard = items;
@@ -5716,13 +6666,52 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
 /// so the old menu is only freed once nothing refers to it. Keep this on the main thread.
 fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
-    app.set_menu(menu)?;
+    {
+        let active = document_windows::active_document_window(app);
+        let state = active.as_ref().and_then(|window| {
+            DOCUMENT_VIEW_MENUS
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .copied()
+        });
+        if let Some(view) = state {
+            let (entries, _) = current_toolbars_menu_model(app);
+            let plugins = active
+                .as_ref()
+                .and_then(|window| {
+                    DOCUMENT_PLUGIN_MENUS
+                        .lock()
+                        .unwrap()
+                        .get(window.label())
+                        .cloned()
+                })
+                .unwrap_or_default();
+            app.set_menu(create_app_menu_for_toolsets(app, &entries, view, &plugins)?)?;
+        } else {
+            app.set_menu(menu)?;
+        }
+    }
     #[cfg(not(target_os = "macos"))]
     {
-        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-            return Ok(());
-        };
-        window.set_menu(menu)?;
+        let (entries, default_view) = current_toolbars_menu_model(app);
+        for window in document_windows::document_windows(app) {
+            let view = DOCUMENT_VIEW_MENUS
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .copied()
+                .unwrap_or(default_view);
+            let plugins = DOCUMENT_PLUGIN_MENUS
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .cloned()
+                .unwrap_or_default();
+            let next = create_app_menu_for_toolsets(app, &entries, view, &plugins)?;
+            window.set_menu(next)?;
+        }
+        let _ = menu;
     }
     Ok(())
 }
@@ -5899,6 +6888,27 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 true,
                 &[
                     &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.newWindow",
+                        "New Window",
+                        true,
+                        Some("CmdOrCtrl+Shift+N"),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.moveTabToNewWindow",
+                        "Move Tab to New Window",
+                        true,
+                        None::<&str>,
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        "document.moveTabToWindow",
+                        "Move Tab to Window...",
+                        true,
+                        None::<&str>,
+                    )?,
                     &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
                     &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
                     &MenuItem::with_id(
@@ -5944,6 +6954,14 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         app,
                         CLOSE_WINDOW_FILE_MENU_ID,
                         view_state.has_multiple_document_tabs,
+                    )?,
+                    #[cfg(not(target_os = "macos"))]
+                    &MenuItem::with_id(
+                        app,
+                        "document.closeTab",
+                        "Close Canvas Tab",
+                        true,
+                        None::<&str>,
                     )?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::close_window(app, None)?,
@@ -6112,18 +7130,26 @@ fn close_window_menu_item<R: Runtime>(
 }
 
 #[cfg(target_os = "macos")]
-fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+fn main_menu_closes_tab(label: &str) -> bool {
     menu_closes_document_tab(
         label,
-        current_toolbars_menu_model(app)
-            .1
+        DOCUMENT_VIEW_MENUS
+            .lock()
+            .unwrap()
+            .get(label)
+            .copied()
+            .unwrap_or_default()
             .has_multiple_document_tabs,
     )
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn menu_closes_document_tab(label: &str, has_multiple_document_tabs: bool) -> bool {
-    label == MAIN_WINDOW_LABEL && has_multiple_document_tabs
+    (label == MAIN_WINDOW_LABEL
+        || label
+            .strip_prefix("document-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+        && has_multiple_document_tabs
 }
 
 #[cfg(test)]
@@ -6181,9 +7207,14 @@ fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     });
     if tauri_window
         .as_ref()
-        .is_some_and(|window| main_menu_closes_tab(app, window.label()))
+        .is_some_and(|window| main_menu_closes_tab(window.label()))
     {
-        if let Err(error) = emit_command_to_main(app, "document.closeTab") {
+        if let Err(error) = dispatch_dom_command_event(
+            tauri_window.as_ref().expect("checked key document"),
+            &ToolsetCommandPayload {
+                command_id: "document.closeTab".into(),
+            },
+        ) {
             eprintln!("Could not close the active document tab: {error}");
         }
         return;
@@ -6415,8 +7446,10 @@ fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
     geometry: Option<&ToolsetWindowGeometry>,
+    owner: &str,
 ) -> Result<(), String> {
-    let label = toolset_window_label(toolset_id);
+    let label = owned_utility_label(owner, &toolset_window_label(toolset_id));
+    document_windows::register_utility_owner(app, &label, owner)?;
 
     if let Some(window) = app.get_webview_window(&label) {
         // Already built — but it may have been created (or dragged) offscreen earlier, or the
@@ -6471,6 +7504,7 @@ fn ensure_toolset_window<R: Runtime>(
             WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
         ),
         app,
+        owner,
     )
     .title(title)
     .inner_size(width, height)
@@ -6501,6 +7535,7 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
+    validate_built_utility_owner(&window, owner)?;
     configure_toolset_utility_window(&window, true)?;
     Ok(())
 }
@@ -6770,12 +7805,13 @@ fn configure_toolset_utility_window<R: Runtime>(
 fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
     app: &tauri::AppHandle<R>,
+    owner: &str,
 ) -> WebviewWindowBuilder<'a, R, M> {
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
         match app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+            .get_webview_window(owner)
             .and_then(|main| main.hwnd().ok())
         {
             Some(owner) => builder.owner_raw(owner),
@@ -6784,7 +7820,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, owner);
         builder
     }
 }
@@ -6792,8 +7828,12 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
 fn toolset_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
+    owner: &str,
 ) -> Result<ToolsetWindowState, String> {
-    match app.get_webview_window(&toolset_window_label(toolset_id)) {
+    match app.get_webview_window(&owned_utility_label(
+        owner,
+        &toolset_window_label(toolset_id),
+    )) {
         Some(window) => {
             let actual_visible = window.is_visible().unwrap_or(false);
             let visible = UTILITY_SUSPENSION
@@ -6985,8 +8025,7 @@ fn toolset_frame_is_transient<R: Runtime>(
     window: &tauri::Window<R>,
 ) -> bool {
     let palette_minimized = window.is_minimized().unwrap_or(false);
-    let document_minimized = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let document_minimized = owner_document_window(app, window.label())
         .is_some_and(|main| main.is_minimized().unwrap_or(false));
     toolset_frame_state_is_transient(palette_minimized, document_minimized)
 }
@@ -7124,7 +8163,7 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
         None
     };
     update_toolset_layout_state(window.app_handle(), |layout_state| {
-        update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
+        update_document_geometry(layout_state, window.label(), update, normal_frame);
     })
 }
 
@@ -7382,26 +8421,40 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     command_id: &str,
     checked: bool,
 ) -> Result<(), String> {
-    // Off macOS the menu lives on the document window, not the app (see `install_app_menu`).
     #[cfg(target_os = "macos")]
-    let menu = app.menu();
+    let menus: Vec<_> = app
+        .menu()
+        .into_iter()
+        .map(|menu| {
+            (
+                document_windows::active_document_window(app)
+                    .map(|window| window.label().to_string())
+                    .unwrap_or_default(),
+                menu,
+            )
+        })
+        .collect();
     #[cfg(not(target_os = "macos"))]
-    let menu = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .and_then(|window| window.menu());
-    let Some(menu) = menu else {
-        return Ok(());
-    };
-    let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) else {
-        return Ok(());
-    };
-    let Some(check_item) = item.as_check_menuitem() else {
-        return Ok(());
-    };
-
-    check_item
-        .set_checked(checked)
-        .map_err(|error| error.to_string())
+    let menus: Vec<_> = document_windows::document_windows(app)
+        .into_iter()
+        .filter_map(|window| window.menu().map(|menu| (window.label().to_string(), menu)))
+        .collect();
+    for (label, menu) in menus {
+        let view = DOCUMENT_VIEW_MENUS.lock().unwrap().get(&label).copied();
+        let checked = match (command_id, view) {
+            ("view.toggleRulers", Some(view)) => view.rulers_visible,
+            ("view.toggleCrosshairs", Some(view)) => view.crosshairs_visible,
+            _ => checked,
+        };
+        if let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) {
+            if let Some(check_item) = item.as_check_menuitem() {
+                check_item
+                    .set_checked(checked)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn find_menu_item_by_id<R: Runtime>(
@@ -7975,7 +9028,17 @@ mod tests {
 
     #[test]
     fn quit_prompt_commands_and_capabilities_are_document_only() {
+        assert!(authorize_quit_window("document-999999").is_err());
+        let previous_labels = {
+            let mut directory = document_windows::DIRECTORY.lock().unwrap();
+            let previous = directory.labels.clone();
+            directory
+                .labels
+                .extend(["main".into(), "document-2".into()]);
+            previous
+        };
         assert!(authorize_quit_window("main").is_ok());
+        assert!(authorize_quit_window("document-2").is_ok());
         for label in [
             "preferences",
             "toolset-bonds",
@@ -7986,7 +9049,10 @@ mod tests {
         }
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         let default = include_str!("../capabilities/default.json");
         for permission in [
             "allow-cancel-quit",
@@ -7998,6 +9064,7 @@ mod tests {
         ] {
             assert!(!default.contains(permission));
         }
+        document_windows::DIRECTORY.lock().unwrap().labels = previous_labels;
     }
 
     #[test]
@@ -8181,8 +9248,7 @@ mod tests {
         // checkout matches and this test's own quoted text never does.
         let lines: Vec<&str> = include_str!("lib.rs").lines().map(str::trim).collect();
         let declared_async = lines.windows(2).any(|pair| {
-            pair[0] == "#[tauri::command]"
-                && pair[1] == "async fn quit_after_flush(app: tauri::AppHandle) {"
+            pair[0] == "#[tauri::command]" && pair[1].starts_with("async fn quit_after_flush(")
         });
         assert!(declared_async);
     }
@@ -8277,6 +9343,7 @@ mod tests {
 
         // And a good file still round-trips.
         let saved = ToolsetLayoutState {
+            document_windows: HashMap::new(),
             version: 1,
             toolsets: HashMap::new(),
             main_window: Some(MainWindowGeometry {
@@ -8459,7 +9526,8 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
+            include_str!("../capabilities/document-windows.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
@@ -8771,7 +9839,7 @@ mod tests {
 
     #[test]
     fn default_capability_allows_native_export_file_writes() {
-        let capability = include_str!("../capabilities/default.json");
+        let capability = include_str!("../capabilities/document-windows.json");
         let parsed: serde_json::Value =
             serde_json::from_str(capability).expect("default capability should parse");
         let permissions = parsed
@@ -8783,7 +9851,10 @@ mod tests {
         let dialogs: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/document-dialogs.json"))
                 .expect("document dialogs capability should parse");
-        assert_eq!(dialogs["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            dialogs["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         expect_true(
             dialogs["permissions"]
                 .as_array()
@@ -8809,7 +9880,10 @@ mod tests {
         let capture: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/screen-capture.json"))
                 .expect("screen capture capability should parse");
-        assert_eq!(capture["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capture["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         let permissions = capture["permissions"]
             .as_array()
             .expect("screen capture permissions");
@@ -8838,7 +9912,7 @@ mod tests {
 
     #[test]
     fn default_capability_allows_atomic_plugin_catalog_writes() {
-        let capability = include_str!("../capabilities/default.json");
+        let capability = include_str!("../capabilities/document-windows.json");
         let parsed: serde_json::Value =
             serde_json::from_str(capability).expect("default capability should parse");
         let permissions = parsed
@@ -8872,7 +9946,7 @@ mod tests {
 
     #[test]
     fn default_capability_allows_toolset_startup_commands() {
-        let capability = include_str!("../capabilities/default.json");
+        let capability = include_str!("../capabilities/document-windows.json");
         let parsed: serde_json::Value =
             serde_json::from_str(capability).expect("default capability should parse");
         let permissions = parsed
@@ -8899,7 +9973,7 @@ mod tests {
 
     #[test]
     fn default_capability_allows_only_narrow_engine3d_commands() {
-        let capability = include_str!("../capabilities/default.json");
+        let capability = include_str!("../capabilities/document-windows.json");
         let parsed: serde_json::Value =
             serde_json::from_str(capability).expect("default capability should parse");
         let permissions = parsed
@@ -9173,10 +10247,12 @@ mod tests {
                     .to_string(),
             ],
             &sessions,
+            "main",
         )
         .expect("fake sidecar should start");
-        let start_poll = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
-            .expect("fake sidecar should still be active");
+        let start_poll =
+            poll_engine3d_sidecar_session(&start.process_session_id, &sessions, "main")
+                .expect("fake sidecar should still be active");
         let start_lines = start
             .stdout_lines
             .iter()
@@ -9194,8 +10270,9 @@ mod tests {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
-            let polled = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
-                .expect("fake sidecar should still be active while waiting for startup output");
+            let polled =
+                poll_engine3d_sidecar_session(&start.process_session_id, &sessions, "main")
+                    .expect("fake sidecar should still be active while waiting for startup output");
             start_lines.extend(polled.stdout_lines);
         }
         expect_true(start_lines.contains(&"ready-event".to_string()));
@@ -9207,9 +10284,10 @@ mod tests {
             &start.process_session_id,
             &["{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"updateDrag\",\"sessionId\":\"s1\",\"atomId\":\"a1\",\"target\":{\"x\":1,\"y\":2,\"z\":3}}".to_string()],
             &sessions,
+            "main",
         )
         .expect("fake sidecar should receive forwarded command");
-        let sent_poll = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
+        let sent_poll = poll_engine3d_sidecar_session(&start.process_session_id, &sessions, "main")
             .expect("fake sidecar should still be active after send");
         let sent_lines = sent
             .stdout_lines
@@ -9225,8 +10303,10 @@ mod tests {
                 break;
             }
             thread::sleep(Duration::from_millis(20));
-            let polled = poll_engine3d_sidecar_session(&start.process_session_id, &sessions)
-                .expect("fake sidecar should still be active while waiting for forwarded output");
+            let polled =
+                poll_engine3d_sidecar_session(&start.process_session_id, &sessions, "main").expect(
+                    "fake sidecar should still be active while waiting for forwarded output",
+                );
             sent_lines.extend(polled.stdout_lines);
         }
 
@@ -9235,10 +10315,12 @@ mod tests {
                 .contains(&"{\"protocolVersion\":2,\"requestId\":\"r2\",\"type\":\"updateDrag\",\"sessionId\":\"s1\",\"atomId\":\"a1\",\"target\":{\"x\":1,\"y\":2,\"z\":3}}".to_string()),
         );
 
-        let stopped = stop_engine3d_sidecar_session(&start.process_session_id, &sessions)
+        let stopped = stop_engine3d_sidecar_session(&start.process_session_id, &sessions, "main")
             .expect("fake sidecar should stop");
         expect_eq(start.process_session_id.clone(), stopped.process_session_id);
-        expect_true(poll_engine3d_sidecar_session(&start.process_session_id, &sessions).is_err());
+        expect_true(
+            poll_engine3d_sidecar_session(&start.process_session_id, &sessions, "main").is_err(),
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -9260,7 +10342,7 @@ mod tests {
         fs::set_permissions(&path, permissions).expect("fixture should be executable");
 
         let sessions = Engine3dSidecarSessions::default();
-        let started = start_engine3d_sidecar_session_from_path(&path, &[], &sessions)
+        let started = start_engine3d_sidecar_session_from_path(&path, &[], &sessions, "main")
             .expect("fake sidecar should start");
 
         let mut stderr_text = started.stderr;
@@ -9270,7 +10352,7 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(20));
             if let Ok(polled) =
-                poll_engine3d_sidecar_session(&started.process_session_id, &sessions)
+                poll_engine3d_sidecar_session(&started.process_session_id, &sessions, "main")
             {
                 if !polled.stderr.is_empty() {
                     stderr_text.push('\n');
@@ -9280,7 +10362,7 @@ mod tests {
         }
         expect_true(stderr_text.contains("fake-sidecar-log"));
 
-        let _ = stop_engine3d_sidecar_session(&started.process_session_id, &sessions);
+        let _ = stop_engine3d_sidecar_session(&started.process_session_id, &sessions, "main");
         let _ = fs::remove_file(path);
     }
 
@@ -9312,6 +10394,7 @@ mod tests {
                     .to_string(),
             ],
             &sessions,
+            "main",
         )
         .expect("first fake sidecar should start");
         let second = start_engine3d_sidecar_session_from_path(
@@ -9321,13 +10404,18 @@ mod tests {
                     .to_string(),
             ],
             &sessions,
+            "main",
         )
         .expect("second fake sidecar should replace first");
 
-        expect_true(poll_engine3d_sidecar_session(&first.process_session_id, &sessions).is_err());
-        expect_true(poll_engine3d_sidecar_session(&second.process_session_id, &sessions).is_ok());
+        expect_true(
+            poll_engine3d_sidecar_session(&first.process_session_id, &sessions, "main").is_err(),
+        );
+        expect_true(
+            poll_engine3d_sidecar_session(&second.process_session_id, &sessions, "main").is_ok(),
+        );
 
-        let _ = stop_engine3d_sidecar_session(&second.process_session_id, &sessions);
+        let _ = stop_engine3d_sidecar_session(&second.process_session_id, &sessions, "main");
         let _ = fs::remove_file(path);
     }
 
@@ -9528,5 +10616,144 @@ mod tests {
 
     fn expect_eq<T: PartialEq + std::fmt::Debug>(expected: T, actual: T) {
         assert_eq!(expected, actual);
+    }
+}
+
+#[cfg(test)]
+mod multi_window_ownership_tests {
+    use super::*;
+    #[test]
+    fn utility_groups_are_distinct_and_preserve_main_labels() {
+        assert_eq!(
+            owned_utility_label("main", "toolset-core-main"),
+            "toolset-core-main"
+        );
+        assert_eq!(
+            owned_utility_label("document-1", "toolset-core-main"),
+            "toolset-core-main--document-1"
+        );
+        assert_ne!(
+            owned_utility_label("document-1", "toolset-tooltip"),
+            owned_utility_label("document-2", "toolset-tooltip")
+        );
+    }
+    #[test]
+    fn document_frames_remain_independent_and_skip_transient_moves() {
+        let mut layout = ToolsetLayoutState::default();
+        let main = MainWindowGeometry {
+            x: 10.0,
+            y: 20.0,
+            width: 900.0,
+            height: 640.0,
+            maximized: false,
+        };
+        let peer = MainWindowGeometry {
+            x: -1600.0,
+            y: 40.0,
+            width: 1200.0,
+            height: 800.0,
+            maximized: false,
+        };
+        update_document_geometry(
+            &mut layout,
+            "main",
+            MainWindowGeometryUpdate::SaveFrame,
+            Some(main),
+        );
+        update_document_geometry(
+            &mut layout,
+            "document-2",
+            MainWindowGeometryUpdate::SaveFrame,
+            Some(peer),
+        );
+        update_document_geometry(
+            &mut layout,
+            "document-2",
+            MainWindowGeometryUpdate::Skip,
+            Some(main),
+        );
+        assert_eq!(saved_document_geometry(&layout, "main"), Some(main));
+        assert_eq!(saved_document_geometry(&layout, "document-2"), Some(peer));
+        assert_eq!(saved_document_geometry(&layout, "document-3"), None);
+        update_document_geometry(
+            &mut layout,
+            "document-2",
+            MainWindowGeometryUpdate::MarkMaximized,
+            None,
+        );
+        assert_eq!(
+            saved_document_geometry(&layout, "document-2"),
+            Some(MainWindowGeometry {
+                maximized: true,
+                ..peer
+            })
+        );
+        assert_eq!(saved_document_geometry(&layout, "main"), Some(main));
+        let legacy = serde_json::json!({ "version":1, "toolsets":{}, "mainWindow": main });
+        let decoded: ToolsetLayoutState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(saved_document_geometry(&decoded, "main"), Some(main));
+        assert_eq!(saved_document_geometry(&decoded, "document-2"), None);
+    }
+    // Invoked only by the child command below. The ordinary suite returns immediately.
+    #[test]
+    fn engine3d_owned_fixture_child() {
+        if std::env::var_os("CHEMDRAFT_TEST_SIDECAR_CHILD").is_none() {
+            return;
+        }
+        for line in std::io::stdin().lock().lines() {
+            println!("{}", line.unwrap());
+        }
+    }
+    #[test]
+    fn sidecar_sessions_are_isolated_by_document_owner() {
+        let sessions = Engine3dSidecarSessions::default();
+        let start = |owner: &str| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "multi_window_ownership_tests::engine3d_owned_fixture_child",
+                    "--nocapture",
+                ])
+                .env("CHEMDRAFT_TEST_SIDECAR_CHILD", "1");
+            start_engine3d_sidecar_session_with_command(command, &[], &sessions, owner)
+                .unwrap()
+                .process_session_id
+        };
+        let first = start("main");
+        let peer = start("document-2");
+        assert!(engine3d_session_handle(&first, &sessions, "main")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        assert!(send_engine3d_sidecar_session_lines(&first, &[], &sessions, "document-2").is_err());
+        assert!(poll_engine3d_sidecar_session(&first, &sessions, "document-2").is_err());
+        assert!(stop_engine3d_sidecar_session(&first, &sessions, "document-2").is_err());
+        let replacement = start("main");
+        assert!(engine3d_session_handle(&first, &sessions, "main").is_err());
+        assert!(engine3d_session_handle(&peer, &sessions, "document-2")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        stop_owned_engine3d_sidecar_sessions(&sessions, "main").unwrap();
+        assert!(engine3d_session_handle(&replacement, &sessions, "main").is_err());
+        assert!(engine3d_session_handle(&peer, &sessions, "document-2")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        stop_owned_engine3d_sidecar_sessions(&sessions, "document-2").unwrap();
+        assert!(sessions.sessions.lock().unwrap().is_empty());
     }
 }

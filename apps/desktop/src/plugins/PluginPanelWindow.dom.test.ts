@@ -36,7 +36,7 @@ import {
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
+const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : command === "document_window_owner" ? "main" : true));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -76,14 +76,14 @@ const tauriEvents = vi.hoisted(() => {
     }
   };
 });
-vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen, emit: tauriEvents.emit, emitTo: async (_target: string, event: string, payload: unknown) => tauriEvents.emit(event, payload) }));
 // Inject the native attachment at the bridge boundary while retaining safeTauriListen's real
 // readiness/cleanup logic. This also avoids dynamic-import mock resolution through linked deps.
 vi.mock("../window-manager/tauriEvents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../window-manager/tauriEvents")>();
   return {
     ...actual,
-    listenTauriEvent: (name: string, handler: EventCallback<unknown>) =>
+    listenCurrentWindowEvent: (name: string, handler: EventCallback<unknown>) =>
       actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
         wrapped({ event: name, id: 1, payload })), handler).attached
   };
@@ -93,7 +93,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main", hide: async () => undefined }),
+  getAllWindows: async () => [{ label: "plugin-panel-test" }] }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

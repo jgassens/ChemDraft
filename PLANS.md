@@ -8,8 +8,23 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Multiple document windows on branch `multi-window`, based on upstream/main df025e39.
+The tabs prerequisite (#102), #99 QuitFlow and optional quit prompt (#144) are merged.
+Use f3ad30c6 as reference, preserving current native dialog and toolbar architecture.
+
+Design: Open targets the active document window; already-open files activate their owner.
+Move Tab transfers history, file state, selection and viewport with confirmed receipt before
+source removal. An emptied source closes. Closing a window does not quit its peers.
+App Quit coordinates optional Save/Discard/Cancel decisions and flushes all window sessions
+through QuitFlow before exit, retaining its bounded grace and Windows watchdog.
+Document events use emit_to with explicit labels. Document commands are granted only to
+document windows. Each document has full menus; toolbar marks synchronize. Utility ownership
+is assigned at creation, never changed with SetWindowLongPtrW.
+
+Fresh independent design and implementation reviews cover native/security/platforms and
+session/transfer/quit correctness. Verify lint, Vitest, cargo fmt/clippy/tests and available
+hands-on checks; macOS requires a separate host. No push without user approval.
+Scope: desktop document/window/session/menu/permission code, tests and architecture/manual docs.
 
 ---
 

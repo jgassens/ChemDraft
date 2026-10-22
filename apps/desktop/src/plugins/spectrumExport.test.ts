@@ -17,17 +17,31 @@ const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(undefined)
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn(async (command: string) => command === "document_window_owner" ? "main" : undefined)
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: nativeWriteTextFile }));
 const bridgeEmit = vi.hoisted(() => vi.fn());
 const bridgeListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 vi.mock("@tauri-apps/api/event", () => ({
   emit: bridgeEmit,
+  emitTo: async (_target: string, event: string, payload: unknown) => bridgeEmit(event, payload),
   listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
     bridgeListeners.set(name, handler);
     return () => bridgeListeners.delete(name);
   }
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ label: "plugin-panel-v1x61x62" }),
+  getAllWindows: async () => [{ label: "main" }, { label: "plugin-panel-v1x61x62" }]
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      bridgeListeners.set(name, handler);
+      return () => bridgeListeners.delete(name);
+    }
+  })
 }));
 
 const originalClipboardItem = globalThis.ClipboardItem;

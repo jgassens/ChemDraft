@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // and nativePrompt) runs in the document window; other windows route through it. Any grant counts,
 // including the deprecated aliases: in tauri-plugin-dialog 2.7 allow-ask and allow-confirm both
 // allow the message command, and dialog:default allows message, open and save.
-const DIALOG_WINDOWS = ["main"];
+const DIALOG_WINDOWS = ["main", "document-*"];
 const SUSPEND_TOOLSET_WINDOWS_PERMISSION = "allow-suspend-toolset-windows";
 const capabilitiesDir = new URL("../src-tauri/capabilities/", import.meta.url);
 
@@ -27,7 +27,7 @@ describe("dialog capabilities", () => {
       "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
-    expect(owner.windows).toEqual(["main"]);
+    expect(owner.windows).toEqual(DIALOG_WINDOWS);
     expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {

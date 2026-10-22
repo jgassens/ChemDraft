@@ -13,7 +13,7 @@ import { saveKeybindingSettings } from "./keybindingSettings";
 import { saveAskToSaveBeforeQuit, loadAskToSaveBeforeQuit } from "./quitSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { createViewportState } from "@chemdraft/viewport-engine";
-import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
+import { DOM_COMMAND_EVENT, setToolbarsMenu, claimDocumentFile, releaseDocumentFile, type ToolsetWindowState } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { applyPatches, type DocumentPatch, type MoleculeObject } from "@chemdraft/chem-core";
@@ -42,6 +42,10 @@ const native = vi.hoisted(() => ({
   session: undefined as unknown,
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
+  newWindow: vi.fn<() => Promise<string>>(),
+  stageTransfer: vi.fn<(target: string, tabId: string, snapshot: unknown) => Promise<{ transferId: string; targetLabel: string }>>(),
+  transferStatus: vi.fn<() => Promise<"pending" | "accepted" | "cancelled">>(),
+  cancelTransfer: vi.fn<() => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
   quit: vi.fn(),
   promptQuit: undefined as undefined | ((id: number) => Promise<void>),
@@ -79,6 +83,15 @@ vi.mock("./window-manager", async (original) => ({
   isDesktopRuntime: () => native.desktop,
   loadDocumentSession: native.load,
   saveDocumentSession: native.saveSession,
+  claimDocumentFile: vi.fn(async () => ({ owned: true, windowLabel: "main", tabId: "test" })),
+  releaseDocumentFile: vi.fn(async () => {}),
+  takeDocumentTabTransfer: vi.fn(async () => null),
+  newDocumentWindow: native.newWindow,
+  stageDocumentTabTransfer: native.stageTransfer,
+  documentTabTransferStatus: native.transferStatus,
+  cancelDocumentTabTransfer: native.cancelTransfer,
+  broadcastSharedToolsetLayoutState: vi.fn(async () => {}),
+  listenForSharedToolsetLayoutState: vi.fn(async () => () => {}),
   loadToolsetLayoutState: native.loadToolsetLayout,
   openToolsetWindow: native.openToolset,
   listToolsetWindowStates: native.listToolsets,
@@ -205,6 +218,10 @@ describe("documents in one window", () => {
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
     native.saveSession.mockImplementation(async (value) => { native.session = JSON.parse(JSON.stringify(value)); });
+    native.newWindow.mockReset().mockResolvedValue("document-2");
+    native.stageTransfer.mockReset().mockResolvedValue({ transferId: "transfer-1", targetLabel: "document-2" });
+    native.transferStatus.mockReset().mockResolvedValue("accepted");
+    native.cancelTransfer.mockReset().mockResolvedValue(undefined);
     native.savePicker.mockResolvedValue(null);
     native.writeFile.mockResolvedValue();
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -242,6 +259,36 @@ describe("documents in one window", () => {
     container.innerHTML = "";
     await mount();
   }
+
+  it("moves complete undo state only after destination acceptance", async () => {
+    await paste("Moved first edit");
+    await paste("Moved second edit");
+    await command("document.new"); // Keep a peer tab so this source window stays open.
+    await activate(0);
+    await command("edit.undo");
+    const original = bridge().snapshot().document;
+    await command("document.moveTabToNewWindow");
+    expect(native.stageTransfer).toHaveBeenCalledOnce();
+    const moved = native.stageTransfer.mock.calls[0]![2] as { state: { history: { past: unknown[]; present: unknown; future: unknown[] } }; undoLabels: unknown[] };
+    expect(moved.state.history.present).toEqual(original);
+    expect(moved.state.history.past.length).toBeGreaterThan(0);
+    expect(moved.state.history.future).toHaveLength(1);
+    expect(moved.undoLabels).toHaveLength(moved.state.history.past.length + 2);
+    expect(tabs()).toHaveLength(1);
+    expect(bridge().snapshot().document.pages[0]!.objects).toHaveLength(0);
+  });
+
+  it("retains the original drawing and undo history when destination cancels a move", async () => {
+    await paste("Keep this drawing");
+    const original = bridge().snapshot().document;
+    native.transferStatus.mockResolvedValue("cancelled");
+    await command("document.moveTabToNewWindow");
+    expect(native.cancelTransfer).toHaveBeenCalledWith("transfer-1");
+    expect(bridge().snapshot().document).toEqual(original);
+    expect(tabs()).toHaveLength(1);
+    await command("edit.undo");
+    expect(bridge().snapshot().document.pages[0]!.objects).toHaveLength(0);
+  });
 
   it.each(["/Users/chemist/drawing.chemdraft", "D:\\drawings\\drawing.chemdraft", "D:\\drawings\\drawing.cdxml"])(
     "saves a restored dirty named tab directly to %s without a picker", async (path) => {
@@ -338,7 +385,7 @@ describe("documents in one window", () => {
   }
   it("native spacing previews without an overlay and saves to the original inactive tab with one undo", async () => {
     const before = await spacingDrawing(); await command("layout.adjustArrangementSpacing");
-    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "arrangementSpacing", documentTabId: "initial" });
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "arrangementSpacing", documentTabId: expect.any(String) });
     expect(container.querySelector('.arrangement-spacing-dialog')).toBeNull(); await readySpacing();
     await spacingMessage({ action: "preview", percent: 80 });
     await vi.waitFor(() => expect(native.dialogPublish).toHaveBeenCalled());
@@ -375,7 +422,7 @@ describe("documents in one window", () => {
   it("native Page Size stays modeless and applies to its originating inactive tab with one undo entry", async () => {
     const originalLayout = bridge().snapshot().document.pages[0]!.layout;
     await command("page.setSizeCustom");
-    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", documentTabId: "initial", data: { title: "Untitled" } });
+    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", documentTabId: expect.any(String), data: { title: "Untitled" } });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     await command("document.new"); expect(active()).toBe(1);
     const otherLayout = bridge().snapshot().document.pages[0]!.layout;
@@ -406,7 +453,7 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().document).toEqual(opened.document);
     expect(bridge().snapshot().file.dirty).toBe(false);
     await command("page.setSizeCustom");
-    expect(native.dialogSnapshot!.documentTabId).toBe(oldSession.documentTabId);
+    expect(native.dialogSnapshot!.documentTabId).not.toBe(oldSession.documentTabId);
     expect(native.dialogSnapshot!.sessionId).not.toBe(oldSession.sessionId);
     await act(async () => native.dialogListener!({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1",
       message: { ...oldSession, type: "closed", data: { reason: "destroy" } } }));
@@ -879,6 +926,36 @@ describe("documents in one window", () => {
     expect(tabs()[1]!.textContent).toBe("Untitled");
     expect(bridge().snapshot().file).toEqual({ dirty: false });
     expect(bridge().snapshot().page.objectCount).toBe(0);
+  });
+
+  it("activates a peer window's file before parsing invalid external disk changes", async () => {
+    const path = "D:\\drawings\\already-open.chemdraft";
+    const original = bridge().snapshot().document;
+    vi.mocked(claimDocumentFile).mockResolvedValueOnce({ owned: false, windowLabel: "document-2", tabId: "peer-tab" });
+    vi.mocked(openNativeDocument).mockClear();
+    vi.mocked(releaseDocumentFile).mockClear();
+    native.picker.mockResolvedValueOnce(path);
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode("invalid external replacement"));
+    await command("document.open");
+    expect(claimDocumentFile).toHaveBeenCalledWith(path, expect.any(String));
+    expect(openNativeDocument).not.toHaveBeenCalled();
+    expect(releaseDocumentFile).not.toHaveBeenCalled();
+    expect(tabs()).toHaveLength(1);
+    expect(bridge().snapshot().document).toEqual(original);
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Open failed");
+  });
+
+  it("releases a new file reservation when document parsing fails", async () => {
+    const path = "D:\\drawings\\invalid.chemdraft";
+    vi.mocked(claimDocumentFile).mockClear();
+    vi.mocked(releaseDocumentFile).mockClear();
+    native.picker.mockResolvedValueOnce(path);
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode("invalid drawing"));
+    await command("document.open");
+    const reservedTabId = vi.mocked(claimDocumentFile).mock.calls[0]![1];
+    expect(releaseDocumentFile).toHaveBeenCalledExactlyOnceWith(path, reservedTabId);
+    expect(tabs()).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Open failed");
   });
 
   it("Open reuses a pristine Untitled, adds after a file is open, and activates an already open file", async () => {

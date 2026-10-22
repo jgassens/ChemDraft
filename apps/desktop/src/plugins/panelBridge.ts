@@ -1,9 +1,26 @@
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
-import { isDesktopRuntime } from "../window-manager";
-import { listenTauriEvent } from "../window-manager/tauriEvents";
+import { isDesktopRuntime, currentDocumentWindowOwner, ownedUtilityWindowLabel } from "../window-manager";
+import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
+
+/** Route document reports only to that owner's panels; panel actions return to their owner. */
+async function emitOwnedPanelEvent<T>(eventName: string, payload: T): Promise<void> {
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const { getCurrentWindow, getAllWindows } = await import("@tauri-apps/api/window");
+  const current = getCurrentWindow().label;
+  const owner = await currentDocumentWindowOwner();
+  if (current !== owner) { await emitTo(owner, eventName, payload); return; }
+  if (isPanelIdentity(payload)) {
+    await emitTo(ownedUtilityWindowLabel(owner, PLUGIN_PANEL_WINDOW_LABEL_PREFIX + pluginPanelWindowId(payload.pluginId, payload.panelId)), eventName, payload);
+    return;
+  }
+  // Receipts carry opaque request IDs; only this document's panel group can observe them.
+  const targets = (await getAllWindows()).filter(window => window.label.startsWith(PLUGIN_PANEL_WINDOW_LABEL_PREFIX) &&
+    (owner === "main" ? !window.label.includes("--document-") : window.label.endsWith("--" + owner)));
+  await Promise.all(targets.map(window => emitTo(window.label, eventName, payload)));
+}
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
 export const PLUGIN_PANEL_REQUEST_EVENT = "chemdraft://plugin-panel-request";
@@ -174,12 +191,12 @@ export async function requestSaveTextFileFromMain(
   const requestId = `save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let unlisten: (() => void) | undefined;
   try {
-    const { emit } = await import("@tauri-apps/api/event");
+    const emit = emitOwnedPanelEvent;
     let answer: (result: SaveTextFileResult) => void = () => undefined;
     const answered = new Promise<SaveTextFileResult>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenCurrentWindowEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isSaveResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.result);
       }
@@ -205,7 +222,7 @@ export async function respondToSaveTextFile(requestId: string, result: SaveTextF
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
 }
 
@@ -234,12 +251,12 @@ export async function requestProposalDecision(
   let unlisten: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { emit } = await import("@tauri-apps/api/event");
+    const emit = emitOwnedPanelEvent;
     let answer: (outcome: ProposalDecisionOutcome) => void = () => undefined;
     const answered = new Promise<ProposalDecisionOutcome>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenCurrentWindowEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isProposalResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.proposal);
       }
@@ -270,7 +287,7 @@ export async function respondToProposalDecision(requestId: string, outcome: Prop
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<AnalysisWindowProposalResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
     requestId,
     proposal: { ok: outcome.ok, message: outcome.message }
@@ -292,12 +309,12 @@ export async function requestCopyAnalysisText(text: string): Promise<boolean> {
   const requestId = `copy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let unlisten: (() => void) | undefined;
   try {
-    const { emit } = await import("@tauri-apps/api/event");
+    const emit = emitOwnedPanelEvent;
     let answer: (ok: boolean) => void = () => undefined;
     const answered = new Promise<boolean>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+    unlisten = await listenCurrentWindowEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
       if (isCopyResult(event.payload) && event.payload.requestId === requestId) {
         answer(event.payload.ok);
       }
@@ -319,7 +336,7 @@ export async function respondToCopyMolecularInspector(requestId: string, ok: boo
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<AnalysisWindowCopyResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, ok });
 }
 
@@ -329,7 +346,7 @@ export async function broadcastPluginPanelReport(payload: PluginPanelReportPaylo
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<PluginPanelReportPayload>(PLUGIN_PANEL_REPORT_EVENT, payload);
 }
 
@@ -339,7 +356,7 @@ export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSna
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<AnalysisWindowSnapshotPayload>(ANALYSIS_WINDOW_SNAPSHOT_EVENT, payload);
 }
 
@@ -367,7 +384,7 @@ export async function requestAnalysisWindowAction(action: AnalysisWindowAction):
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<AnalysisWindowAction>(ANALYSIS_WINDOW_ACTION_EVENT, action);
 }
 
@@ -401,7 +418,7 @@ export async function requestPluginPanelReport(identity: PluginPanelIdentity): P
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit(PLUGIN_PANEL_REQUEST_EVENT, identity);
 }
 
@@ -438,7 +455,7 @@ export async function broadcastPluginPanelStaleness(payload: PluginPanelStalenes
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit<PluginPanelStalenessPayload>(PLUGIN_PANEL_STALENESS_EVENT, payload);
 }
 
@@ -462,7 +479,7 @@ export async function requestPluginPanelRerun(identity: PluginPanelIdentity): Pr
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit(PLUGIN_PANEL_RERUN_EVENT, identity);
 }
 
@@ -477,7 +494,7 @@ export async function notifyPluginPanelClosed(identity: PluginPanelIdentity): Pr
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
+  const emit = emitOwnedPanelEvent;
   await emit(PLUGIN_PANEL_CLOSED_EVENT, identity);
 }
 
@@ -511,7 +528,7 @@ export function listenForNativePanelWindowCloses(handler: (identity: PluginPanel
 /** The panel behind a native `plugin-panel-<windowId>` label, for the app's own encoded ids only. */
 export function pluginPanelIdentityFromWindowLabel(label: string): PluginPanelIdentity | undefined {
   return label.startsWith(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
-    ? parsePluginPanelWindowId(label.slice(PLUGIN_PANEL_WINDOW_LABEL_PREFIX.length))
+    ? parsePluginPanelWindowId(label.slice(PLUGIN_PANEL_WINDOW_LABEL_PREFIX.length).replace(/--document-[0-9]+$/, ""))
     : undefined;
 }
 
@@ -550,7 +567,7 @@ function attachTauriListener<T>(
   let ready = Promise.resolve();
 
   if (isDesktopRuntime()) {
-    ready = listenTauriEvent<T>(eventName, (event) => {
+    ready = listenCurrentWindowEvent<T>(eventName, (event) => {
       if (!cancelled && validate(event.payload)) {
         handler(event.payload);
       }

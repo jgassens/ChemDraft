@@ -127,10 +127,13 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_permission_is_main_window_only() {
+    fn diagnosis_permission_is_document_windows_only() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/download-diagnosis.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         assert_eq!(
             capability["permissions"],
             serde_json::json!(["allow-diagnose-download-host"])
