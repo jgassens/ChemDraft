@@ -39,12 +39,12 @@ describe("native title dragging", () => {
     vi.restoreAllMocks();
   });
 
-  async function mount(surface: "palette" | "panel"): Promise<void> {
+  async function mount(surface: "palette" | "panel", toolsetId = "core.main"): Promise<void> {
     // Mount with the real web event transport, then enable only the native drag invocation.
     // No unrelated window sizing/focus IPC needs to be mocked for this call-path regression.
     await act(async () => {
       root.render(surface === "palette"
-        ? createElement(PaletteWindow, { toolsetId: "core.main" })
+        ? createElement(PaletteWindow, { toolsetId })
         : createElement(PluginPanelWindow, { panelId: pluginPanelWindowId("org.test.demo", "panel.demo.result") }));
     });
     for (const owner of container.querySelectorAll<HTMLElement>(".palette-title, main")) {
@@ -114,6 +114,37 @@ describe("native title dragging", () => {
   it("routes the palette content grip through that same single path", async () => {
     await mount("palette");
     await press(container.querySelector<HTMLElement>("[data-palette-content-drag-grip]")!);
+    expectOneCompensatedDrag();
+  });
+
+  it.each([true, false])("leaves inspector scrollbar-owner presses to the browser (pointer: %s)", async (pointer) => {
+    await mount("palette", "core.drawnStructureSettings");
+    const scroller = container.querySelector<HTMLElement>(".molecule-inspector-panel-body")!;
+    expect(scroller).not.toBeNull();
+    // Native scrollbar thumbs have no DOM node. WebView2 can target their scrolling div;
+    // jsdom tests event routing only, so actual thumb scrolling still needs a desktop check.
+    const down = pointerEvent("pointerdown", 7);
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    await dispatch(scroller, ...(pointer ? [down, mouseDown] : [mouseDown]));
+    expect(down.defaultPrevented).toBe(false);
+    expect(mouseDown.defaultPrevented).toBe(false);
+    expect(container.querySelector<HTMLElement>("main")!.setPointerCapture).not.toHaveBeenCalled();
+    expect(native.invoke.mock.calls.filter(([command]) => command === "start_window_drag")).toEqual([]);
+    expect(native.drag).not.toHaveBeenCalled();
+    expect(native.move).not.toHaveBeenCalled();
+    await press(container.querySelector<HTMLElement>(".palette-title-label")!);
+    expectOneCompensatedDrag();
+  });
+
+  it("does not drag from unmarked palette background", async () => {
+    await mount("palette");
+    await press(container.querySelector<HTMLElement>("main")!);
+    expect(native.invoke.mock.calls.filter(([command]) => command === "start_window_drag")).toEqual([]);
+  });
+
+  it("keeps the content grip's mouse-only fallback on the compensated path", async () => {
+    await mount("palette");
+    await press(container.querySelector<HTMLElement>("[data-palette-content-drag-grip]")!, false);
     expectOneCompensatedDrag();
   });
 
