@@ -27,15 +27,16 @@ export function codexArgs(prompt) {
 
 function codexConfig(options, work) {
   // JSON string quoting is also valid TOML basic-string quoting for these paths.
-  return `${options.model ? `model = ${JSON.stringify(options.model)}\n` : ''}approval_policy = "never"\nsandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [${JSON.stringify(work)}]\n\n[mcp_servers.chemdraft]\ncommand = "pnpm"\nargs = ${JSON.stringify(['-s', '--dir', options.checkout, 'chemdraft-mcp'])}\n`;
+  return `${options.model ? `model = ${JSON.stringify(options.model)}\n` : ''}approval_policy = "never"\nsandbox_mode = "workspace-write"\n\n[features]\nplugins = false\n\n[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [${JSON.stringify(work)}]\n\n[mcp_servers.chemdraft]\ncommand = "pnpm"\nargs = ${JSON.stringify(['-s', '--dir', options.checkout, 'chemdraft-mcp'])}\ndefault_tools_approval_mode = "approve"\n`;
 }
 
 export function parseArgs(argv) {
-  const result = { ...DEFAULTS, ids: null, force: false, dryRun: false, checkout: defaultCheckout };
+  const result = { ...DEFAULTS, ids: null, force: false, dryRun: false, skipPreflight: false, checkout: defaultCheckout };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force') result.force = true;
     else if (arg === '--dry-run') result.dryRun = true;
+    else if (arg === '--skip-preflight') result.skipPreflight = true;
     else if (arg === '--agent') {
       const value = argv[++i];
       if (!['claude', 'codex'].includes(value)) throw new Error(`Unsupported agent: ${value}`);
@@ -139,6 +140,20 @@ function assertCaseId(id) {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Unsafe case id: ${id}`);
 }
 
+function opsinJava(checkout) {
+  return path.join(checkout, 'apps', 'desktop', 'src-tauri', 'resources', 'opsin', 'jre', 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+}
+
+function codexStderrHasMcpLeak(stderr) {
+  // Codex/RMCP diagnostics include names such as `mcp.box.com`. Do not treat a
+  // generic "MCP tool call" diagnostic as a server observation.
+  const names = [
+    ...stderr.matchAll(/\b(?:r?mcp)\.([A-Za-z0-9_-]+)/gi),
+    ...stderr.matchAll(/\bMCP\s+server\s+(?:named\s+)?["'`]?([A-Za-z0-9_-]+)/gi),
+  ].map((match) => match[1].toLowerCase());
+  return names.some((name) => name !== 'chemdraft');
+}
+
 async function markHalted(caseItem, options, shared) {
   assertCaseId(caseItem.id);
   const caseDir = path.join(options.out, caseItem.id);
@@ -191,12 +206,19 @@ async function runOne(caseItem, options, shared, stderr) {
     { cwd: work, timeoutMs: options.timeoutMin * 60_000, env: options.agent === 'codex' ? { ...process.env, CODEX_HOME: codexHome } : process.env });
   const endedAt = new Date().toISOString();
   await writeFile(path.join(caseDir, 'transcript.jsonl'), executed.stdout);
+  if (options.agent === 'codex') await writeFile(path.join(caseDir, 'stderr.log'), executed.stderr);
   const events = parseStream(executed.stdout);
   const parsed = options.agent === 'codex' ? inspectCodexStream(events) : inspectStream(events);
+  let isolationLeak = false;
   if (options.agent === 'codex') {
     parsed.model ??= await sessionModel(codexHome);
-    // The generated config is the evidence that no other MCP server is configured.
-    parsed.isolated &&= await readFile(configPath, 'utf8') === config;
+    // The generated config is the evidence that only ChemDraft is configured and
+    // bundled plugins are disabled. Runtime evidence must not name another server.
+    const configUnchanged = await readFile(configPath, 'utf8') === config;
+    const pluginFolderCreated = existsSync(path.join(codexHome, 'plugins'));
+    const eventMcpLeak = (parsed.mcpServers ?? []).some(({ name }) => name !== 'chemdraft');
+    isolationLeak = pluginFolderCreated || eventMcpLeak || codexStderrHasMcpLeak(executed.stderr);
+    parsed.isolated &&= configUnchanged && !isolationLeak;
   }
   await writeFile(path.join(caseDir, 'final.md'), parsed.final);
   await writeFile(path.join(caseDir, 'tool-calls.json'), `${JSON.stringify(parsed.toolCalls, null, 2)}\n`);
@@ -204,7 +226,8 @@ async function runOne(caseItem, options, shared, stderr) {
   await writeFile(path.join(caseDir, 'files.json'), `${JSON.stringify(await listFiles(work), null, 2)}\n`);
   let status = executed.timedOut ? 'timeout' : executed.exitCode === 0 && !parsed.failed ? 'complete' : 'error';
   let reason = executed.timedOut ? 'timeout' : status === 'complete' ? undefined : executed.stderr || `${options.agent} exited unsuccessfully`;
-  if (status !== 'timeout' && !parsed.isolated) { status = 'error'; reason = 'isolation'; }
+  if (isolationLeak) { status = 'error'; reason = 'isolation-leak'; }
+  else if (status !== 'timeout' && !parsed.isolated) { status = 'error'; reason = 'isolation'; }
   const meta = { id: caseItem.id, status, exitCode: executed.exitCode, startedAt, endedAt, durationMs: Date.now() - started,
     model: options.agent === 'codex' ? parsed.model : options.model, ...versionMeta(options, shared), skillSha256: await hashTree(copied), checkoutHead: shared.checkoutHead,
     numTurns: parsed.numTurns, usage: parsed.usage ?? parsed.result?.usage ?? null, total_cost_usd: parsed.result?.total_cost_usd ?? null,
@@ -231,6 +254,10 @@ export async function run(options, io = {}) {
   if (options.dryRun) {
     for (const item of cases) stderr(`dry-run ${JSON.stringify(commandPreview(item))}`);
     return { agent: options.agent, arguments: options, cases: cases.map((item) => ({ id: item.id, status: 'dry-run' })), totals: { durationMs: 0, total_cost_usd: 0 } };
+  }
+  if (!options.skipPreflight) {
+    const java = opsinJava(options.checkout);
+    if (!existsSync(java)) throw new Error(`OPSIN runtime is missing: ${java}. Build it with node scripts/build-opsin-runtime.mjs, or use --skip-preflight only for runner tests.`);
   }
   await mkdir(options.out, { recursive: true });
   const shared = { binary, agentctl: process.env.CHEMDRAFT_STRESS_AGENTCTL_BIN || 'agentctl',

@@ -9,6 +9,7 @@ if (process.argv.includes('--version')) {
 if (process.env.FAKE_CODEX_TRACE) {
   await writeFile(process.env.FAKE_CODEX_TRACE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME }));
 }
+if (process.env.FAKE_CODEX_PLUGIN_LEAK) await mkdir(path.join(process.env.CODEX_HOME, 'plugins'), { recursive: true });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const model = process.env.FAKE_CODEX_MODEL ?? 'fake-default-model';
 const call = { id: 'item_1', type: 'mcp_tool_call', server: 'chemdraft', tool: 'render_structure', arguments: { smiles: 'C' } };
@@ -19,13 +20,15 @@ const events = [
   { type: 'item.completed', item: { ...call, status: 'completed', result: { content: [
     { type: 'image', mimeType: 'image/png', data: png },
     { type: 'text', text: '<svg xmlns="http://www.w3.org/2000/svg"></svg>' },
-  ] } } },
+  ] }, error: null } },
   { type: 'item.started', item: { id: 'item_2', type: 'command_execution', command: 'echo drawn', status: 'in_progress' } },
   { type: 'item.completed', item: { id: 'item_2', type: 'command_execution', command: 'echo drawn', aggregated_output: 'drawn\n', exit_code: 0, status: 'completed' } },
   { type: 'item.completed', item: { id: 'item_3', type: 'agent_message', text: 'Finished drawing.' } },
   { type: 'turn.completed', usage: { input_tokens: 20, cached_input_tokens: 10, output_tokens: 5 } },
 ];
-if (process.env.FAKE_CODEX_EXTRA_MCP) events.splice(1, 0, { type: 'mcp_startup_update', server: 'other', status: { state: 'ready' } });
+if (process.env.FAKE_CODEX_EXTRA_MCP) events.splice(2, 0, { type: 'item.completed', item: {
+  id: 'item_other', type: 'mcp_tool_call', server: 'other', tool: 'unexpected', arguments: {}, result: { content: [] }, error: null, status: 'completed',
+} });
 if (process.env.FAKE_CODEX_FAILED_MCP) {
   events[3].item.status = 'failed';
   events[3].item.error = { message: 'MCP call failed' };
@@ -54,4 +57,5 @@ if (process.env.FAKE_CODEX_SESSION_MODEL) {
   await writeFile(path.join(sessions, 'fake.jsonl'), `${JSON.stringify({ type: 'turn_context', payload: { model } })}\n`);
 }
 await writeFile('drawing.txt', 'Agent artifact.\n');
+if (process.env.FAKE_CODEX_STDERR_MCP_LEAK) process.stderr.write('rmcp auth error for mcp.box.com\n');
 process.stdout.write(`${events.map(JSON.stringify).join('\n')}\n`);
