@@ -4,7 +4,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::network_error::{self, download_tls_policy, DownloadPlatform};
@@ -145,6 +145,10 @@ pub trait InstallIo: Send + Sync {
 pub struct SystemInstallIo<S: EngineSpec> {
     spec: std::marker::PhantomData<S>,
     client: Option<reqwest::blocking::Client>,
+    // The blocking client executes redirects on its runtime thread. Serialize sends so its
+    // diagnostic observer cannot mix destinations from concurrent downloads on this client.
+    request_gate: Mutex<()>,
+    redirect_url: Arc<Mutex<Option<reqwest::Url>>>,
     pub(crate) running: Arc<RunningChild>,
 }
 
@@ -154,6 +158,8 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         Self {
             spec: std::marker::PhantomData,
             client: None,
+            request_gate: Mutex::new(()),
+            redirect_url: Arc::default(),
             running,
         }
     }
@@ -172,7 +178,18 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         // still completes, while a dead connection fails — and a cancel is noticed — within a
         // minute.
         let policy = download_tls_policy(DownloadPlatform::current());
+        let redirect_url = Arc::new(Mutex::new(None));
+        let observed_url = Arc::clone(&redirect_url);
         let client = builder
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                // Observe the proposed HTTP destination, delegating ALL redirect decisions to
+                // the default policy. Policy errors keep their own URL below. reqwest 0.12.28
+                // otherwise attaches the INITIAL URL to redirected transport errors.
+                if matches!(attempt.url().scheme(), "http" | "https") {
+                    *observed_url.lock().unwrap() = Some(attempt.url().clone());
+                }
+                reqwest::redirect::Policy::default().redirect(attempt)
+            }))
             .tls_built_in_webpki_certs(policy.webpki_roots)
             .tls_built_in_native_certs(policy.native_roots)
             .connect_timeout(Duration::from_secs(30))
@@ -185,6 +202,8 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         Ok(Self {
             spec: std::marker::PhantomData,
             client: Some(client),
+            request_gate: Mutex::new(()),
+            redirect_url,
             running: Arc::default(),
         })
     }
@@ -307,16 +326,37 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         progress: &dyn ProgressReporter,
     ) -> Result<(), InstallError> {
         check_cancel::<S>(cancel)?;
+        let request_guard = self.request_gate.lock().unwrap();
+        *self.redirect_url.lock().unwrap() = None;
         let mut response = self
             .client
             .as_ref()
             .ok_or_else(|| InstallError::network("Downloads are disabled during engine recovery"))?
             .get(spec.url)
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| {
-                InstallError::network(network_error::download_error_message(&error))
+            .map_err(|mut error| {
+                // Prefer reqwest's URL, except its known initial-URL fallback after a followed
+                // redirect. Keep redirect-policy errors' own URLs and status errors unchanged.
+                if !error.is_redirect() && error.url().is_none_or(|url| url.as_str() == spec.url) {
+                    if let Some(url) = self.redirect_url.lock().unwrap().take() {
+                        error = error.with_url(url);
+                    }
+                }
+                let fallback_host = reqwest::Url::parse(spec.url).ok();
+                InstallError::network(network_error::log_failure(network_error::classify_error(
+                    &error,
+                    error
+                        .url()
+                        .and_then(|url| url.host_str())
+                        .or_else(|| fallback_host.as_ref().and_then(|url| url.host_str()))
+                        .unwrap_or("download server"),
+                )))
             })?;
+        *self.redirect_url.lock().unwrap() = None;
+        drop(request_guard);
+        response = response.error_for_status().map_err(|error| {
+            InstallError::network(network_error::download_error_message(&error))
+        })?;
         if let (Some(expected), Some(reported)) = (spec.size, response.content_length()) {
             if expected != reported {
                 return Err(InstallError::checksum(format!(

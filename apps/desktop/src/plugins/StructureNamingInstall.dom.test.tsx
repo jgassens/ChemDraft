@@ -91,6 +91,19 @@ it("Cancel installation calls the native cancellation and displays neutral cance
   expect(container.textContent).toContain("Installation was cancelled.");
   expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was cancelled.");
 });
+it.each([
+  ["Couldn't reach github.com: the connection timed out.", "Couldn't reach github.com: the connection timed out."],
+  ["", "The naming engine could not be downloaded. Check your connection and try again."],
+  ["offline", "The naming engine could not be downloaded. Check your connection and try again."],
+  ["Couldn't reach github.com: https://user:password@github.com/asset?sig=secret#fragment", "Couldn't reach github.com: https://github.com/asset"]
+])("shows a safe native network diagnostic or fallback (%s)", async (message, expected) => {
+  const h = setup();
+  vi.mocked(h.engine.install).mockRejectedValue({ code: "network", message });
+  const { result } = await h.start();
+  await act(async () => h.button("Install").click());
+  expect(await result).toMatchObject({ status: "failed", code: "installFailed" });
+  expect(container.querySelector('[role="alert"]')?.textContent).toBe(expected);
+});
 it("shows broken detail and Install engine again", async () => {
   const h = setup("broken"); const { result } = await h.start();
   expect(container.textContent).toContain("Damaged receipt");

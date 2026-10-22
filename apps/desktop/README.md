@@ -21,6 +21,13 @@ catalog/asset hosts, with no redirects and bounded connect/total timeouts. A suc
 only that the host was reachable on retry, not that the original transfer succeeded.
 System proxies remain enabled (environment and static OS settings); reqwest does not evaluate
 PAC/WPAD scripts. Windows app updates retain their separate reqwest 0.13 OS verifier and proxy path.
+Proxy exclusions apply separately to each redirect destination: excluding `github.com` does not
+exclude `release-assets.githubusercontent.com` or `objects.githubusercontent.com`. The engine
+downloader observes redirects while delegating every redirect decision to reqwest's default policy.
+This corrects reqwest 0.12.28's original-URL fallback on redirected transport failures, so a failed
+asset connection names the asset host. Other error URLs and HTTP status diagnostics retain their
+request/response host. Both engine install dialogs show redacted native network diagnostics, with
+generic download guidance when no recognised diagnostic is available.
 
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,

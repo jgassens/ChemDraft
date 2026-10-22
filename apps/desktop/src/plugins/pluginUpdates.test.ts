@@ -146,6 +146,9 @@ describe("host-managed plugin update catalog", () => {
       });
       await expect(prepareOfficialPluginInstall(PLUGIN_ID, { fetch, invoke })).rejects.toThrow(diagnosedMessage);
       expect(invoke).toHaveBeenCalledWith("diagnose_download_host", { host: stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com" });
+      expect(warn).toHaveBeenCalledWith(
+        `Download transport failure for ${stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com"}: error sending request for url (https://release-assets.githubusercontent.com/github-production-release-asset/1/package`
+      );
       const logs = warn.mock.calls.flat().join(" ");
       for (const secret of ["?", "sig=", "jwt=", "secret-token", "secret-signature"]) expect(logs).not.toContain(secret);
     } finally { warn.mockRestore(); }
