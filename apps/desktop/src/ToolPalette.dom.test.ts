@@ -11,6 +11,7 @@ import { toolbarAsset } from "./toolbarAssets";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
 import {
   objectEffectDisableCommandId,
+  objectEffectColorCommandId,
   objectEffectOpacityCommandId,
   objectEffectSizeCommandId,
   objectCustomColorCommandId,
@@ -308,6 +309,32 @@ describe("ToolPalette art color popover", () => {
     expect(onRequestColorPopover).toHaveBeenCalledWith({ left: 12, top: 34, right: 60, bottom: 58 });
     // …and the inline (clipped) popover must NOT render — the window hosts it instead.
     expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it("opens the Glow effect picker in the native popover instead of the clipped palette", () => {
+    const onRequestColorPopover = vi.fn();
+    renderPalette({ currentArtStyle: effectArtInspectorModel(), onRequestColorPopover });
+    const trigger = container.querySelector<HTMLButtonElement>('[data-art-effect-color-trigger="glow"]')!;
+    expect(trigger).not.toBeNull();
+    Object.defineProperty(trigger, "getBoundingClientRect", {
+      value: () => ({ left: 12, top: 34, right: 60, bottom: 58 })
+    });
+    act(() => trigger.click());
+    expect(onRequestColorPopover).toHaveBeenCalledExactlyOnceWith(
+      { left: 12, top: 34, right: 60, bottom: 58 }, "glow"
+    );
+    expect(container.querySelector(".art-effect-color-popover")).toBeNull();
+  });
+
+  it("keeps the inline effect picker working when there is no native callback", () => {
+    const { onCommit, onPreview } = renderPalette({ currentArtStyle: effectArtInspectorModel() });
+    act(() => container.querySelector<HTMLButtonElement>('[data-art-effect-color-trigger="glow"]')!.click());
+    const picker = container.querySelector<HTMLElement>(".art-effect-color-popover")!;
+    expect(picker).not.toBeNull();
+    const hex = picker.querySelector<HTMLInputElement>(".color-hex-field input")!;
+    act(() => changeRangeValue(hex, "#abcdef"));
+    expect(onPreview).toHaveBeenCalledWith(objectEffectColorCommandId("glow", "#abcdef"));
+    expect(onCommit).toHaveBeenCalledWith(objectEffectColorCommandId("glow", "#abcdef"));
   });
 
   it("uses shared color picker palettes for art colors", () => {

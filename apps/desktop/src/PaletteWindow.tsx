@@ -22,6 +22,7 @@ import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/Tool
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { SHELL_COMMAND_IDS } from "./shellCommandIds";
+import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
@@ -755,8 +756,8 @@ export function PaletteWindow({
   // Clicking the swatch always (re)opens + repositions — deliberately NOT a toggle: the panel hides
   // itself on app-deactivate (hidesOnDeactivate), which a local "is it open?" flag can't observe, so
   // a toggle would go stale and eat the next click. Dismissal is Escape / click-away / app-deactivate.
-  const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
-    openPopover(anchor, "artColor", { kind: "artColor" });
+  const openArtColorPopover = (anchor: ToolbarPopoverAnchor, effectKind?: ArtInspectorEffectKind) => {
+    openPopover(anchor, "artColor", { kind: "artColor", effectKind });
     // Make sure the freshly shown picker reflects the current object's colour.
     void requestToolsetTextStyle().catch(() => undefined);
   };
