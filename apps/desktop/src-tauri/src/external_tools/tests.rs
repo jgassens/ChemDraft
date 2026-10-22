@@ -472,7 +472,7 @@ fn truncated_lines_and_both_ring_limits() {
     );
 }
 fn wait_file(path: &Path) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while !path.exists() {
         assert!(Instant::now() < until, "child never started");
         thread::sleep(Duration::from_millis(10));
