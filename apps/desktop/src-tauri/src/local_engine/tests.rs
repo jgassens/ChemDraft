@@ -26,7 +26,6 @@ const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 
 #[test]
 fn redirected_download_honours_proxy_exclusion_and_names_failing_destination() {
-    use std::io::{Read, Write};
     use std::net::TcpListener;
 
     let direct = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -41,12 +40,8 @@ fn redirected_download_honours_proxy_exclusion_and_names_failing_destination() {
         for _ in 0..2 {
             loop {
                 match direct.accept() {
-                    Ok((mut stream, _)) => {
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(3)))
-                            .unwrap();
-                        let _ = stream.read(&mut [0; 4096]);
-                        write!(stream, "HTTP/1.1 302 Found\r\nLocation: https://localhost:{}/asset?sig=secret-signature\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", proxy_address.port()).unwrap();
+                    Ok((stream, _)) => {
+                        crate::network_test_http::reply(stream, format!("HTTP/1.1 302 Found\r\nLocation: https://localhost:{}/asset?sig=secret-signature\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", proxy_address.port()).as_bytes());
                         break;
                     }
                     Err(error)

@@ -10,6 +10,8 @@ mod macos_quit;
 mod main_window_placement;
 mod naming_engine;
 mod network_error;
+#[cfg(test)]
+mod network_test_http;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;

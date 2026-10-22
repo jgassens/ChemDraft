@@ -1,11 +1,5 @@
 use super::*;
-use std::{
-    fmt,
-    io::{Read, Write},
-    net::TcpListener,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt, io::Read, net::TcpListener, sync::Arc, time::Duration};
 
 #[derive(Debug)]
 struct Wrapped(&'static str, Box<dyn Error + Send + Sync>);
@@ -278,6 +272,26 @@ fn redacts_malformed_urls_and_sensitive_suffixes_with_unusual_delimiters() {
 }
 
 #[test]
+fn redacts_whole_url_tokens_and_restores_only_trailing_punctuation() {
+    for suffix in [")", ".", ",", ")).,"] {
+        assert_eq!(
+            redact_urls(&format!(
+                "request https://github.com/path?sig=secret{suffix} client"
+            )),
+            format!("request https://github.com/path{suffix} client")
+        );
+        assert_eq!(
+            redact_urls(&format!("request https://github.com/path{suffix} client")),
+            format!("request https://github.com/path{suffix} client")
+        );
+    }
+    assert_eq!(
+        redact_urls("request https://github.com/path?sig=ab)cd client"),
+        "request https://github.com/path client"
+    );
+}
+
+#[test]
 fn real_closed_port_is_refused_and_signed_url_is_redacted() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -405,13 +419,14 @@ fn real_http_status_and_proxy_auth_are_distinguished() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let _ = stream.read(&mut [0; 4096]);
-            write!(
+            let (stream, _) = listener.accept().unwrap();
+            crate::network_test_http::reply(
                 stream,
-                "HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
+                format!(
+                    "HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            );
         });
         let error = client()
             .get(format!("http://{address}/"))
@@ -437,11 +452,11 @@ fn real_proxy_tunnel_407_uses_proxy_message() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let _ = stream.read(&mut [0; 4096]);
-        stream
-            .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n")
-            .unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        crate::network_test_http::reply(
+            stream,
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+        );
     });
     let error = reqwest::blocking::Client::builder()
         .no_proxy()

@@ -1377,13 +1377,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("address");
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("connection");
-            let _ = stream.read(&mut [0; 4096]);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
-                )
-                .expect("partial body");
+            let (stream, _) = listener.accept().expect("connection");
+            crate::network_test_http::reply(
+                stream,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+            );
         });
         let interrupted = download(&format!(
             "http://{address}/artifact?sig=secret-signature&jwt=secret-token"

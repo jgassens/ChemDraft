@@ -93,7 +93,10 @@ pub fn redact_urls(text: &str) -> String {
         // Consume the whole non-whitespace token. Punctuation in a malformed URL or its query
         // must not separate a sensitive suffix from the URL we redact.
         let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        clean.push_str(&redact_url(&rest[..end]));
+        let token = &rest[..end];
+        let url = token.trim_end_matches([')', '.', ',']);
+        clean.push_str(&redact_url(url));
+        clean.push_str(&token[url.len()..]);
         rest = &rest[end..];
     }
     clean.push_str(rest);

@@ -130,7 +130,10 @@ export function redactUrl(value: string): string {
 export function redactUrls(text: string): string {
   // Consume the whole non-whitespace token. Punctuation in a malformed URL or its query must not
   // separate a sensitive suffix from the URL we redact.
-  return text.replace(/https?:\/\/\S+/gi, redactUrl);
+  return text.replace(/https?:\/\/\S+/gi, (token) => {
+    const url = token.replace(/[).,]+$/, "");
+    return redactUrl(url) + token.slice(url.length);
+  });
 }
 
 export function isNetworkDownloadFailure(message: string): boolean {

@@ -147,7 +147,7 @@ describe("host-managed plugin update catalog", () => {
       await expect(prepareOfficialPluginInstall(PLUGIN_ID, { fetch, invoke })).rejects.toThrow(diagnosedMessage);
       expect(invoke).toHaveBeenCalledWith("diagnose_download_host", { host: stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com" });
       expect(warn).toHaveBeenCalledWith(
-        `Download transport failure for ${stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com"}: error sending request for url (https://release-assets.githubusercontent.com/github-production-release-asset/1/package`
+        `Download transport failure for ${stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com"}: error sending request for url (https://release-assets.githubusercontent.com/github-production-release-asset/1/package)`
       );
       const logs = warn.mock.calls.flat().join(" ");
       for (const secret of ["?", "sig=", "jwt=", "secret-token", "secret-signature"]) expect(logs).not.toContain(secret);
@@ -300,6 +300,18 @@ describe("host-managed plugin update catalog", () => {
     const expected = url.includes("[invalid") ? "[redacted URL]" : "https://github.com/path";
     expect(redactUrl(url)).toBe(expected);
     expect(redactUrls(`outer ${url} next`)).toBe(`outer ${expected} next`);
+  });
+
+  it.each([")", ".", ",", ")).,"])("preserves trailing URL punctuation: %s", (suffix) => {
+    for (const query of ["", "?sig=secret"]) {
+      expect(redactUrls(`request https://github.com/path${query}${suffix} client`))
+        .toBe(`request https://github.com/path${suffix} client`);
+    }
+  });
+
+  it("redacts query text on both sides of an internal closing parenthesis", () => {
+    expect(redactUrls("request https://github.com/path?sig=ab)cd client"))
+      .toBe("request https://github.com/path client");
   });
 
   it("compiles the complete official plugin catalog into the host", () => {
