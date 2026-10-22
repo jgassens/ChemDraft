@@ -370,6 +370,47 @@ fn codex_feature_rows_parse_multiword_stages() {
     );
 }
 
+fn classify_codex_features(features: &[(&str, bool)]) -> Result<(), String> {
+    for feature in CODEX_FEATURES_KEEP.iter().chain(CODEX_FEATURES_DISABLE) {
+        if !features.iter().any(|(name, _)| name == feature) {
+            eprintln!("Classified Codex feature not listed on this platform: {feature}");
+        }
+    }
+    for &(name, enabled) in features {
+        if enabled
+            && !CODEX_FEATURES_KEEP.contains(&name)
+            && !CODEX_FEATURES_DISABLE.contains(&name)
+        {
+            return Err(format!("Unclassified default-on Codex feature: {name}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn codex_feature_classification_tolerates_platform_specific_entries() {
+    // macOS omits the Windows-only KEEP entry; either platform may omit other policy entries.
+    let macos = codex_feature_rows("apps stable true\nauth_elicitation stable true\n");
+    assert!(!macos.iter().any(|(name, _)| *name == "secret_auth_storage"));
+    assert_eq!(classify_codex_features(&macos), Ok(()));
+    let windows = codex_feature_rows(
+        "apps stable true\nauth_elicitation stable true\nsecret_auth_storage stable true\n",
+    );
+    assert_eq!(classify_codex_features(&windows), Ok(()));
+}
+
+#[test]
+fn codex_feature_classification_rejects_unknown_default_on() {
+    assert_eq!(
+        classify_codex_features(&codex_feature_rows("unknown_tool stable true\n")),
+        Err("Unclassified default-on Codex feature: unknown_tool".into())
+    );
+    assert_eq!(
+        classify_codex_features(&codex_feature_rows("unknown_tool stable false\n")),
+        Ok(())
+    );
+}
+
 #[test]
 #[ignore = "set CHEMDRAFT_PINNED_CODEX to the pinned native binary; run before updating pins"]
 fn pinned_codex_accepts_rendered_run() {
@@ -381,20 +422,7 @@ fn pinned_codex_accepts_rendered_run() {
     assert_eq!(output.code, Some(0), "{}", output.stderr);
     let features = codex_feature_rows(&output.stdout);
     assert!(!features.is_empty(), "features list must report features");
-    for feature in CODEX_FEATURES_KEEP.iter().chain(CODEX_FEATURES_DISABLE) {
-        assert!(
-            features.iter().any(|(name, _)| name == feature),
-            "Classified feature missing from pinned CLI: {feature}"
-        );
-    }
-    for (name, enabled) in features {
-        assert!(
-            !enabled
-                || CODEX_FEATURES_KEEP.contains(&name)
-                || CODEX_FEATURES_DISABLE.contains(&name),
-            "Unclassified default-on Codex feature: {name}"
-        );
-    }
+    classify_codex_features(&features).unwrap_or_else(|message| panic!("{message}"));
 
     let system_prompt = temp.0.join("system-prompt.md");
     fs::write(&system_prompt, "ChemDraft CLI parity check.").unwrap();

@@ -74,7 +74,11 @@ native executable and the same login arguments. The UI refreshes status; it does
 Claude uses `HOME` to find `~/.claude`, honouring `CLAUDE_CONFIG_DIR` when set. On macOS its
 Keychain entry is keyed to that config directory; on Windows credentials live in
 `%USERPROFILE%\.claude\.credentials.json` (or the configured directory). Codex uses `$CODEX_HOME`
-or `~/.codex/auth.json`. The environment allowlist preserves `HOME`, `CLAUDE_CONFIG_DIR`, and
+or the default `~/.codex` directory (`%USERPROFILE%\.codex` on Windows) as its home.
+Codex can keep its own login in `auth.json` there or in OS secret storage; pinned Windows
+Codex 0.163.0 enables `secret_auth_storage` for OS storage such as Windows Credential Manager.
+ChemDraft keeps that feature enabled so an existing Codex login remains accessible; it grants
+no tool to the model. The environment allowlist preserves `HOME`, `CLAUDE_CONFIG_DIR`, and
 `CODEX_HOME`, plus Windows `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, and `LOCALAPPDATA`,
 so the CLI can find its own subscription login. API-key variables are deliberately not passed:
 a shell key must not silently change the account or billing method. ChemDraft never reads or
@@ -105,7 +109,7 @@ codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-c
   [--sandbox read-only | -c sandbox_mode="read-only"]
   --disable api_key_cyber_access_programs --disable apps --disable browser_annotation_api --disable browser_use
   --disable browser_use_external --disable browser_use_full_cdp_access --disable cli_daybreak
-  --disable code_mode_host --disable code_mode_interrupt
+  --disable code_mode --disable code_mode_host --disable code_mode_interrupt
   --disable collaboration_modes --disable computer_use --disable daemon_auto_start
   --disable fast_mode --disable goals --disable guardian_approval
   --disable guardian_reuse_parent_compaction --disable hooks --disable image_generation
@@ -133,8 +137,8 @@ codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-c
 Codex receives the prompt directly on stdin. Both templates reject dangerous bypass flags.
 First turns and resumes apply the same explicit `CODEX_FEATURES_DISABLE` policy. Image viewing
 is controlled by the `view_image` feature. `CODEX_FEATURES_KEEP` retains only model discovery,
-MCP authentication/elicitation, content/compaction bookkeeping, compression, proxy fallback, and
-connection retry behavior; each entry has a rationale in `catalog.rs`. Every other default-on
+MCP authentication/elicitation, Codex login storage, content/compaction bookkeeping, compression,
+proxy fallback, and connection retry behavior; each entry has a rationale in `catalog.rs`. Every other default-on
 feature, including removed compatibility switches, is disabled. Pin upgrades must classify any
 new default-on feature before shipping.
 
@@ -149,8 +153,11 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tes
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tests::pinned_claude_accepts_rendered_run -- --ignored --nocapture
 ```
 
-The Codex check parses `features list`, requires every classified name to exist, and fails on any
-unclassified default-on feature. It then runs the rendered first-turn arguments with a local test
+The Codex check parses `features list` and fails on any unclassified default-on feature reported
+by that platform's binary. Feature availability differs by platform: for example,
+`secret_auth_storage` is listed by pinned Windows Codex but absent on macOS. Classified KEEP or
+DISABLE entries absent from the current platform's list are logged and accepted.
+It then runs the rendered first-turn arguments with a local test
 provider requiring an absent API key and the MCP connection disabled: config validation finishes,
 then authentication fails before a model request. A 30 s timeout bounds the check, which rejects
 unknown/ignored flag or setting diagnostics. This covers the retained `-c` keys, including the

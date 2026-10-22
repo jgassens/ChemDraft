@@ -10,7 +10,10 @@ pub const CODEX_FEATURES_KEEP: &[&str] = &[
     "compaction_image_budget", // Context compaction accounting; does not expose image tools.
     "content_item_kinds",      // Message content representation, not a tool registration.
     "enable_request_compression", // Compresses existing API traffic; adds no destination.
-    "system_proxy_fallback",   // Transport for existing requests, not model-directed networking.
+    // Codex's own login in OS secret storage (Windows), not a model-callable capability;
+    // disabling could hide a user's existing Codex login.
+    "secret_auth_storage",
+    "system_proxy_fallback", // Transport for existing requests, not model-directed networking.
     "tool_call_mcp_elicitation", // Protocol replies for the explicitly configured MCP server.
     "unbounded_connection_retries", // Retry policy for existing connections, not new reach.
 ];
@@ -26,6 +29,7 @@ pub const CODEX_FEATURES_DISABLE: &[&str] = &[
     "browser_use_external",          // External browser access.
     "browser_use_full_cdp_access",   // Full browser debugging protocol access.
     "cli_daybreak",                  // Unneeded CLI mode; reach is not audited.
+    "code_mode",                     // Unneeded without its host; avoids unavailable-host noise.
     "code_mode_host",                // Code execution host.
     "code_mode_interrupt",           // Code execution control is unnecessary.
     "collaboration_modes",           // Removed compatibility switch; no need to retain it.
