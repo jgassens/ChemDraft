@@ -215,6 +215,15 @@ it and turning as the bond swings to its other side (the overlay opens on the co
 not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
 centred on the atom.
 
+## External tools (macOS and Windows)
+
+Install Claude Code and Codex from the dialog: confirm download progress, cancel part way through,
+then retry successfully. Confirm the consent dialog names Anthropic or OpenAI and says the page
+leaves the computer. Probe must find Homebrew, npm, WinGet, and `~/.local/bin` installs, while never
+running a `.cmd` shim. Start sign-in: it opens Terminal on macOS / a new console on Windows, then
+refresh status until it flips. Quit during a run and confirm no `claude`, `codex`, or `node` process
+remains. On Windows, confirm no console flash and that the Job Object kills child processes.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

@@ -9,6 +9,7 @@ Key architecture notes:
 - `3d-spin-flatten.md` — Spin 3D flattening and placement architecture.
 - `composited-page-editor-model.md`
 - `dependency-inventory.md` — Dependency and vendored-binary inventory.
+- `external-tools.md` — Host-owned Claude Code/Codex discovery, consent, and execution.
 - `over-under-crossing-model.md`
 - `export-engines-build-plan.md`
 - `save-open-and-file-format.md`
