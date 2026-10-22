@@ -41,9 +41,11 @@ Only retained run artifacts are read for document/batch paths. The grader never 
 shell text. Missing or ambiguous retained inputs, malformed run files, and grader errors are
 harness failures. Agent SMILES that RDKit cannot parse fail applicable structure checks.
 
-SVG measurements use ChemDraft's `data-bond-id` lines and straight paths, inherited stroke width,
-and uniform transforms; they exclude arrows, text, effect copies, and hit targets. Each molecule
-has its own median measurement, including inside grids. The largest-to-smallest ratio must be
+SVG measurements use ChemDraft's `data-bond-id` primary lines and straight paths, inherited stroke width,
+and uniform transforms; they exclude arrows, text, effect copies, and hit targets. When the exporter
+marks atom centers (including labeled-atom transforms), bond length is the median primary-bond
+distance between those centers: visible ink is deliberately shortened at labels and for secondary
+double-bond lines. Each molecule has its own median measurement, including inside grids. The largest-to-smallest ratio must be
 at most 1.05 for both median bond length and stroke width. A PNG without a retained SVG sharing
 its basename is marked unmeasurable (A6 fails, with a separate diagnostic). Curved bond paths,
 non-uniform transforms, and drawings without measurable bond segments also fail as unmeasurable.

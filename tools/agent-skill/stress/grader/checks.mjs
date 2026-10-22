@@ -35,6 +35,25 @@ function assignment(drawn, refs) {
     pairs: [...owners].map(([drawn, reference]) => ({ drawn, reference })) };
 }
 
+/** A PNG and SVG export of one drawing are often separate tool calls.  For an
+ * exact set, count each canonical structure once across calls, while retaining
+ * repeated items from a single call as genuine duplicate grid entries. */
+function distinctDrawingCalls(drawn) {
+  const retained = [], seenAcrossCalls = new Set(), seenInCall = new Map();
+  for (const item of drawn) {
+    // Extraction sources are deliberately prefixed with this stable call id.
+    const call = /^call\[\d+\]/.exec(item.source)?.[0] ?? item.source;
+    const key = item.error ? `invalid:${item.smiles}` : item.canonical;
+    const inCall = seenInCall.get(call) ?? new Set();
+    const repeatedInCall = inCall.has(key);
+    inCall.add(key);
+    seenInCall.set(call, inCall);
+    if (repeatedInCall || !seenAcrossCalls.has(key)) retained.push(item);
+    seenAcrossCalls.add(key);
+  }
+  return retained;
+}
+
 const aliases = { logp: 'log\\s*P|Crippen(?:[- ]logP)?', tpsa: 'TPSA|(?:topological\\s+)?polar\\s+surface(?:\\s+area)?',
   hbd: 'HBD|hydrogen[- ]bond\\s+donors?', hba: 'HBA|hydrogen[- ]bond\\s+acceptors?',
   'monoisotopic-mass': 'monoisotopic(?:\\s+mass)?|exact\\s+mass', 'average-mass': 'average\\s+mass|molecular\\s+weight' };
@@ -100,7 +119,8 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
       { references: refs, missing: missing.map((ref) => ref.smiles), errors: extracted.errors });
   }
   if (expect.set_match || expect.set_contains) {
-    const result = assignment(drawn, refs);
+    const setDrawn = expect.set_match ? distinctDrawingCalls(drawn) : drawn;
+    const result = assignment(setDrawn, refs);
     checks.A2 = check(true, extracted.reached && !extracted.errors.length && result.missing.length === 0 &&
       (!expect.set_match || result.extra.length === 0),
     { mode: expect.set_match ? 'set_match' : 'set_contains', ...result, references: refs, errors: extracted.errors });
