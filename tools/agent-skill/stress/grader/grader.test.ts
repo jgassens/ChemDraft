@@ -4,6 +4,14 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-expect-error Harness modules are intentionally plain JavaScript.
+import { gradeCase } from './checks.mjs';
+// @ts-expect-error Harness modules are intentionally plain JavaScript.
+import { extract } from './extract.mjs';
+// @ts-expect-error Harness modules are intentionally plain JavaScript.
+import { saveToolAssets } from '../runner/stream.mjs';
+// @ts-expect-error Harness modules are intentionally plain JavaScript.
+import { checkStyle } from './style.mjs';
 
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const checkout = resolve(directory, '../../../..');
@@ -65,6 +73,7 @@ beforeAll(async () => {
   await fixture('unspecified', full, [render('CC(N)C(=O)O')]);
   await fixture('unspecified-double', { structures: [{ smiles: 'C/C=C/C' }], full_stereo: true }, [render('CC=CC')]);
   await fixture('quinine-reference', { structures: [{ smiles: quinine }], full_stereo: true }, [render(quinine)]);
+  await fixture('N07', { structures: [{ smiles: quinine }], full_stereo: true }, [render(quinine)]);
   await fixture('quinine-extra-unspecified', { structures: [{ smiles: quinine }], full_stereo: true },
     [render(quinine.replace('[C@H]([C@@H]3', '[CH]([C@@H]3'))]);
   await fixture('duplicate', { structures: [{ smiles: 'CCO' }, { smiles: 'CC' }], set_match: true },
@@ -81,6 +90,17 @@ beforeAll(async () => {
   await fixture('missing-conditions', { reaction }, [{ name: 'mcp__chemdraft__render_reaction', input: { reactionSmiles: 'CC(=O)O.CCO>>CCOC(C)=O' } }]);
   await fixture('reaction', { reaction }, [{ name: 'mcp__chemdraft__render_reaction', input: { reactants: ['CC(=O)O', 'CCO'], products: ['CCOC(C)=O'], conditions: 'H₂SO₄' } }]);
   await fixture('reaction-tool-failed', { reaction }, [{ name: 'mcp__chemdraft__render_reaction', input: { reactants: ['CC(=O)O', 'CCO'], products: ['CCOC(C)=O'], conditions: 'H₂SO₄' }, result: { isError: true, content: [{ type: 'text', text: 'Renderer failed' }] } }]);
+  await fixture('reaction-corrected', { reaction }, [
+    { name: 'mcp__chemdraft__render_reaction', input: { reactionSmiles: 'invalid>reaction' } },
+    { name: 'mcp__chemdraft__render_reaction', input: { reactionSmiles: 'malformed' }, result: { isError: true } },
+    { name: 'mcp__chemdraft__render_reaction', input: { reactants: ['CC(=O)O', 'CCO'], products: ['CCOC(C)=O'], conditions: 'H₂SO₄' } },
+  ]);
+  await fixture('structure-corrected', { structures: [{ smiles: structure }], full_stereo: true, set_match: true }, [
+    { ...render('broken SMILES'), result: { is_error: true } }, render('broken SMILES'), render(structure),
+  ]);
+  await fixture('document-corrected', { structures: [{ smiles: structure }] }, [
+    { name: 'mcp__chemdraft__render_document', input: { documentJson: '{}' } }, render(structure),
+  ]);
   await fixture('reaction-any', { reaction: { reactants: ['CCBr'], products_any_of: ['CCO', 'CCN'], conditions_regex: ['NaOH'] } },
     [{ name: 'mcp__chemdraft__render_reaction', input: { reactionSmiles: 'CCBr>[Na+].[OH-]>CCO' },
       result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, reactants: ['CCBr'], products: ['CCO'], agentTexts: [{ text: 'NaOH' }] }) }] } }]);
@@ -107,12 +127,23 @@ beforeAll(async () => {
   ], set_match: true, style_consistency: true }, d01Calls, 'Aromaticity grid.');
   await cp(join(directory, 'fixtures/d01/aromaticity.svg'), join(d01, 'work/aromaticity.svg'));
   await fixture('png-only', { style_consistency: true }, [render('CCC')], 'Figure.', { 'only.png': 'fixture placeholder' });
+  const both = await fixture('mcp-both', { style_consistency: true }, [{ name: 'mcp__chemdraft__render_structure', input: { smiles: 'CCC', format: 'both' } }]);
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const assets = await saveToolAssets([
+    { content: [{ type: 'tool_use', id: 'both', name: 'mcp__chemdraft__render_structure' }] },
+    { content: [{ type: 'tool_result', tool_use_id: 'both', content: [
+      { type: 'image', mimeType: 'image/png', data: png }, { type: 'text', text: svg(28) },
+    ] }] },
+  ], join(both, 'images'));
+  await writeFile(join(both, 'assets.json'), JSON.stringify(assets));
   await fixture('no-tool', full, [], 'I drew it.');
   await fixture('echo-only', full, [{ name: 'Bash', input: { command: 'echo "pnpm -s chemdraft render --smiles CCO"' } }]);
   const batch = await fixture('cli-batch', { structures: [{ smiles: 'CCO' }, { smiles: 'C/C=C\\C' }], set_match: true },
     [{ name: 'Bash', input: { command: 'pnpm -s chemdraft render --batch "batch file.json" --format svg --out-dir images' } }]);
   await writeFile(join(batch, 'work', 'batch file.json'), JSON.stringify([{ name: 'a', smiles: 'CCO' }, { name: 'b', smiles: 'C/C=C\\C' }]));
   await fixture('cli-smiles', full, [{ name: 'Bash', input: { command: `pnpm -s chemdraft render --smiles '${structure}' --out a.svg` } }]);
+  await fixture('cli-cmd', { structures: [{ smiles: 'CCO' }] }, [{ name: 'Bash', input: { command: String.raw`cmd /c "pnpm -s --dir C:\path chemdraft render --smiles CCO --out C:\Users\x\a.svg"` } }]);
+  await fixture('cli-powershell', { structures: [{ smiles: 'C/C=C\\C' }] }, [{ name: 'Bash', input: { command: String.raw`pwsh -Command "pnpm -s --dir C:\path chemdraft render --smiles 'C/C=C\C' --out C:\Users\x\a.svg"` } }]);
   // The Codex N05 smoke call has this wrapper and a quoted testosterone SMILES.
   await fixture('cli-zsh-render', { structures: [{ smiles: testosterone }], full_stereo: true }, [{ name: 'Bash', input: { command: `/bin/zsh -lc "pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft render --smiles '${testosterone}' --out /expired/work/testosterone.svg"` } }]);
   const shellGrid = await fixture('cli-zsh-heredoc', { structures: [
@@ -131,7 +162,7 @@ pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft grid --ba
   await writeFile(join(outputStyle, 'outputs', 'figure.svg'), svg(28));
   await writeFile(join(outputStyle, 'outputs.json'), JSON.stringify([{ path: 'figure.svg' }]));
   await fixture('value', { cli_value_match: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['logp', 'tpsa'], tolerance: 0.05 } },
-    [{ name: 'mcp__chemdraft__analyze_structure', input: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['rdkit.crippen-logp', 'rdkit.tpsa'] } }], 'Calculated logP: 1.35; TPSA: 49.33 Å².');
+    [{ name: 'mcp__chemdraft__analyze_structure', input: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['rdkit.crippen-logp', 'rdkit.tpsa'] } }], "Calculated logP: 1.35; TPSA: 49.33 Å² (for comparison, octanol's logP is ~3).");
   await fixture('value-swapped', { cli_value_match: { smiles: 'CC(=O)NC1=CC=C(C=C1)O', methods: ['logp', 'tpsa'], tolerance: 0.05 } },
     [{ name: 'mcp__chemdraft__analyze_structure', input: { smiles: 'CC(=O)NC1=CC=C(C=C1)O' } }], 'logP: 49.33; TPSA: 1.35 Å².');
   const timeout = await fixture('timeout', full, []);
@@ -190,6 +221,46 @@ describe('automatic scoring on fixture run folders', () => {
     expect(autos.get('unspecified-double')?.checks.A3.pass).toBe(false);
     expect(autos.get('quinine-reference')?.checks.A3.pass).toBe(true);
     expect(autos.get('quinine-extra-unspecified')?.checks.A3.pass).toBe(false);
+    expect(autos.get('N07')?.checks.A3).toMatchObject({ pass: true, detail: { counts: [
+      expect.objectContaining({ referenceCountSource: 'lock', referenceCounts: { unspecifiedStereoCenters: 1, unspecifiedDoubleBonds: 0 } })
+    ] } });
+  });
+  it('ignores failed and corrected input calls while retaining extraction diagnostics', () => {
+    expect(autos.get('reaction-corrected')?.checks.A5).toMatchObject({ pass: true, detail: { errors: [expect.stringContaining('Invalid reaction'), expect.stringContaining('tool returned an error')] } });
+    expect(autos.get('structure-corrected')?.auto).toBe('PASS');
+    expect(autos.get('document-corrected')?.auto).toBe('PASS');
+  });
+  it('pairs runner-saved PNG/SVG from a single MCP format both call', () => {
+    expect(autos.get('mcp-both')?.checks.A6).toMatchObject({ pass: true, detail: { unmeasurable: [] } });
+  });
+  it('recognises Windows CLI wrappers and preserves their SMILES and paths', () => {
+    expect(autos.get('cli-cmd')?.auto).toBe('PASS');
+    expect(autos.get('cli-powershell')?.auto).toBe('PASS');
+  });
+  it('keeps missing retained files and chemistry engine crashes as harness failures', async () => {
+    const folder = join(runs, 'exact');
+    const run = { folder, calls: [{ name: 'mcp__chemdraft__render_document', input: { documentPath: 'missing.json' } }] };
+    const missing = await extract(run, {}, join(root, 'scratch'));
+    expect(missing.harnessErrors).toEqual([expect.stringContaining('Retained run file is missing')]);
+    const engine = await extract({ ...run, calls: [{ name: 'mcp__chemdraft__render_document', input: { documentJson: '{}' } }] },
+      { native: async () => { throw new Error('engine crashed'); } }, join(root, 'scratch'));
+    expect(engine.harnessErrors).toEqual([expect.stringContaining('engine crashed')]);
+    const item = cases.find((item) => item.id === 'exact');
+    const result = await gradeCase(item, { meta: { status: 'complete' } }, engine, {});
+    expect(result.status).toBe('harness');
+    await expect(gradeCase(item, { meta: { status: 'complete' } }, { drawn: [{ smiles: 'CC', source: 'call[0]' }], errors: [], reached: true },
+      { canonical: async () => { throw new Error('engine crashed'); } })).rejects.toThrow('engine crashed');
+  });
+  it('pairs copied assets by their original Windows basename without pairing unrelated calls', async () => {
+    const folder = join(runs, 'mcp-both', 'images');
+    const files = [join(folder, '001-mcp__chemdraft__render_structure.png'), join(folder, '002-mcp__chemdraft__render_structure.svg')];
+    const assets = [
+      { path: files[0], toolCallIndex: 0, originalPath: 'C:\\old\\figure.png' },
+      { path: files[1], toolCallIndex: 1, originalPath: 'C:\\old\\figure.svg' },
+    ];
+    expect((await checkStyle(files, assets)).pass).toBe(true);
+    assets[1].originalPath = 'C:\\old\\unrelated.svg';
+    expect((await checkStyle(files, assets)).pass).toBe(false);
   });
   it('uses Codex tool-calls.json rather than its non-Claude event transcript', () => {
     expect(autos.get('codex')?.checks.A1.pass).toBe(true);
@@ -281,6 +352,17 @@ describe('report', () => {
     expect(report.groups.every((group: { split: string }) => ['dev', 'heldout'].includes(group.split))).toBe(true);
     const sourceReads = report.groups.find((group: { category: string; split: string }) => group.category === 'test' && group.split === 'dev');
     expect(sourceReads.repo_source_read_cases).toContain('exact');
+    const publicReport = await readFile(join(runs, 'grade/report.md'), 'utf8');
+    const heldoutReport = await readFile(join(runs, 'grade/report-heldout.md'), 'utf8');
+    expect(publicReport).toContain('| split-test | heldout |');
+    expect(publicReport).not.toContain('Fixture request split-heldout');
+    expect(publicReport).not.toContain('uncomputed');
+    expect(publicReport).not.toContain('### split-heldout');
+    expect(publicReport).toContain('### absolute-wrong');
+    expect(heldoutReport.split('\n')[0]).toBe('For the final adjudicator only, not for anyone fixing the skill.');
+    expect(heldoutReport).toContain('Fixture request split-heldout');
+    expect(heldoutReport).toContain('uncomputed');
+    expect(heldoutReport).not.toContain('### absolute-wrong');
   });
   it('merges visual pass/honest decline/fail, ranks wrong confidence first and bounds excerpts', async () => {
     const visual = cases.map((testCase) => ({ id: testCase.id,
@@ -309,5 +391,6 @@ describe('report', () => {
     expect(report.cases.map((item: { id: string }) => item.id)).toEqual(['exact']);
     expect(report.unrun_case_ids).toContain('codex');
     expect(await readFile(join(partial, 'grade/report.md'), 'utf8')).toContain('Cases not run:');
+    expect(await readFile(join(partial, 'grade/report.md'), 'utf8')).not.toContain('split-heldout');
   });
 });

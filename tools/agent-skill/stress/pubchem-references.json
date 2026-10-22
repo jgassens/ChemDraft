@@ -1,0 +1,284 @@
+{
+ "dexibuprofen": {
+  "CID": 39912,
+  "MolecularFormula": "C13H18O2",
+  "SMILES": "C[C@@H](C1=CC=C(C=C1)CC(C)C)C(=O)O",
+  "IUPACName": "(2S)-2-[4-(2-methylpropyl)phenyl]propanoic acid"
+ },
+ "L-alanine": {
+  "CID": 5950,
+  "MolecularFormula": "C3H7NO2",
+  "SMILES": "C[C@@H](C(=O)O)N",
+  "IUPACName": "(2S)-2-aminopropanoic acid"
+ },
+ "(R)-butan-2-ol": {
+  "CID": 84682,
+  "MolecularFormula": "C4H10O",
+  "SMILES": "CC[C@@H](C)O",
+  "IUPACName": "(2R)-butan-2-ol"
+ },
+ "L-tartaric acid": {
+  "CID": 444305,
+  "MolecularFormula": "C4H6O6",
+  "SMILES": "[C@@H]([C@H](C(=O)O)O)(C(=O)O)O",
+  "IUPACName": "(2R,3R)-2,3-dihydroxybutanedioic acid"
+ },
+ "meso-tartaric acid": {
+  "CID": 447315,
+  "MolecularFormula": "C4H6O6",
+  "SMILES": "[C@@H]([C@@H](C(=O)O)O)(C(=O)O)O",
+  "IUPACName": "(2R,3S)-2,3-dihydroxybutanedioic acid"
+ },
+ "cis-2-butene": {
+  "CID": 5287573,
+  "MolecularFormula": "C4H8",
+  "SMILES": "C/C=C\\C",
+  "IUPACName": "(Z)-but-2-ene"
+ },
+ "tamoxifen": {
+  "CID": 2733526,
+  "MolecularFormula": "C26H29NO",
+  "SMILES": "CC/C(=C(\\C1=CC=CC=C1)/C2=CC=C(C=C2)OCCN(C)C)/C3=CC=CC=C3",
+  "IUPACName": "2-[4-[(Z)-1,2-diphenylbut-1-enyl]phenoxy]-N,N-dimethylethanamine"
+ },
+ "L-phenylalanine": {
+  "CID": 6140,
+  "MolecularFormula": "C9H11NO2",
+  "SMILES": "C1=CC=C(C=C1)C[C@@H](C(=O)O)N",
+  "IUPACName": "(2S)-2-amino-3-phenylpropanoic acid"
+ },
+ "(-)-menthol": {
+  "CID": 16666,
+  "MolecularFormula": "C10H20O",
+  "SMILES": "C[C@@H]1CC[C@H]([C@@H](C1)O)C(C)C",
+  "IUPACName": "(1R,2S,5R)-5-methyl-2-propan-2-ylcyclohexan-1-ol"
+ },
+ "trans-decalin": {
+  "CID": 7044,
+  "MolecularFormula": "C10H18",
+  "SMILES": "C1CCC2CCCCC2C1",
+  "IUPACName": "1,2,3,4,4a,5,6,7,8,8a-decahydronaphthalene"
+ },
+ "cis-decalin": {
+  "CID": 7044,
+  "MolecularFormula": "C10H18",
+  "SMILES": "C1CCC2CCCCC2C1",
+  "IUPACName": "1,2,3,4,4a,5,6,7,8,8a-decahydronaphthalene"
+ },
+ "cis-hydrindane": {
+  "CID": 643587,
+  "MolecularFormula": "C9H16",
+  "SMILES": "C1CC[C@H]2CCC[C@H]2C1",
+  "IUPACName": "(3aR,7aS)-2,3,3a,4,5,6,7,7a-octahydro-1H-indene"
+ },
+ "L-threonine": {
+  "CID": 6288,
+  "MolecularFormula": "C4H9NO3",
+  "SMILES": "C[C@H]([C@@H](C(=O)O)N)O",
+  "IUPACName": "(2S,3R)-2-amino-3-hydroxybutanoic acid"
+ },
+ "cis-1,2-dimethylcyclohexane": {
+  "CID": 16628,
+  "MolecularFormula": "C8H16",
+  "SMILES": "C[C@@H]1CCCC[C@@H]1C",
+  "IUPACName": "cis-(1S,2R)-1,2-dimethylcyclohexane"
+ },
+ "trans-stilbene": {
+  "CID": 638088,
+  "MolecularFormula": "C14H12",
+  "SMILES": "C1=CC=C(C=C1)/C=C/C2=CC=CC=C2",
+  "IUPACName": "(E)-stilbene"
+ },
+ "(-)-ephedrine": {
+  "CID": 9294,
+  "MolecularFormula": "C10H15NO",
+  "SMILES": "C[C@@H]([C@@H](C1=CC=CC=C1)O)NC",
+  "IUPACName": "(1R,2S)-2-(methylamino)-1-phenylpropan-1-ol"
+ },
+ "beta-D-glucopyranose": {
+  "CID": 64689,
+  "MolecularFormula": "C6H12O6",
+  "SMILES": "C([C@@H]1[C@H]([C@@H]([C@H]([C@@H](O1)O)O)O)O)O",
+  "IUPACName": "(2R,3R,4S,5S,6R)-6-(hydroxymethyl)oxane-2,3,4,5-tetrol"
+ },
+ "alpha-D-glucopyranose": {
+  "CID": 79025,
+  "MolecularFormula": "C6H12O6",
+  "SMILES": "C([C@@H]1[C@H]([C@@H]([C@H]([C@H](O1)O)O)O)O)O",
+  "IUPACName": "(2S,3R,4S,5S,6R)-6-(hydroxymethyl)oxane-2,3,4,5-tetrol"
+ },
+ "beta-D-ribofuranose": {
+  "CID": 447347,
+  "MolecularFormula": "C5H10O5",
+  "SMILES": "C([C@@H]1[C@H]([C@H]([C@@H](O1)O)O)O)O",
+  "IUPACName": "(2R,3R,4S,5R)-5-(hydroxymethyl)oxolane-2,3,4-triol"
+ },
+ "aldehydo-D-glucose": {
+  "CID": 107526,
+  "MolecularFormula": "C6H12O6",
+  "SMILES": "C([C@H]([C@H]([C@@H]([C@H](C=O)O)O)O)O)O",
+  "IUPACName": "(2R,3S,4R,5R)-2,3,4,5,6-pentahydroxyhexanal"
+ },
+ "D-fructose": {
+  "CID": 2723872,
+  "MolecularFormula": "C6H12O6",
+  "SMILES": "C1[C@H]([C@H]([C@@H](C(O1)(CO)O)O)O)O",
+  "IUPACName": "(3S,4R,5R)-2-(hydroxymethyl)oxane-2,3,4,5-tetrol"
+ },
+ "strychnine": {
+  "CID": 441071,
+  "MolecularFormula": "C21H22N2O2",
+  "SMILES": "C1CN2CC3=CCO[C@H]4CC(=O)N5[C@H]6[C@H]4[C@H]3C[C@H]2[C@@]61C7=CC=CC=C75",
+  "IUPACName": "(4aR,5aS,8aR,13aS,15aS,15bR)-4a,5,5a,7,8,13a,15,15a,15b,16-decahydro-2H-4,6-methanoindolo[3,2,1-ij]oxepino[2,3,4-de]pyrrolo[2,3-h]quinolin-14-one"
+ },
+ "paclitaxel": {
+  "CID": 36314,
+  "MolecularFormula": "C47H51NO14",
+  "SMILES": "CC1=C2[C@H](C(=O)[C@@]3([C@H](C[C@@H]4[C@]([C@H]3[C@@H]([C@@](C2(C)C)(C[C@@H]1OC(=O)[C@@H]([C@H](C5=CC=CC=C5)NC(=O)C6=CC=CC=C6)O)O)OC(=O)C7=CC=CC=C7)(CO4)OC(=O)C)O)C)OC(=O)C",
+  "IUPACName": "[(1S,2S,3R,4S,7R,9S,10S,12R,15S)-4,12-diacetyloxy-15-[(2R,3S)-3-benzamido-2-hydroxy-3-phenylpropanoyl]oxy-1,9-dihydroxy-10,14,17,17-tetramethyl-11-oxo-6-oxatetracyclo[11.3.1.03,10.04,7]heptadec-13-en-2-yl] benzoate"
+ },
+ "morphine": {
+  "CID": 5288826,
+  "MolecularFormula": "C17H19NO3",
+  "SMILES": "CN1CC[C@]23[C@@H]4[C@H]1CC5=C2C(=C(C=C5)O)O[C@H]3[C@H](C=C4)O",
+  "IUPACName": "(4R,4aR,7S,7aR,12bS)-3-methyl-2,4,4a,7,7a,13-hexahydro-1H-4,12-methanobenzofuro[3,2-e]isoquinoline-7,9-diol"
+ },
+ "cholesterol": {
+  "CID": 5997,
+  "MolecularFormula": "C27H46O",
+  "SMILES": "C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@]1(CC[C@H]3[C@H]2CC=C4[C@@]3(CC[C@@H](C4)O)C)C",
+  "IUPACName": "(3S,8S,9S,10R,13R,14S,17R)-10,13-dimethyl-17-[(2R)-6-methylheptan-2-yl]-2,3,4,7,8,9,11,12,14,15,16,17-dodecahydro-1H-cyclopenta[a]phenanthren-3-ol"
+ },
+ "testosterone": {
+  "CID": 6013,
+  "MolecularFormula": "C19H28O2",
+  "SMILES": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=CC(=O)CC[C@]34C",
+  "IUPACName": "(8R,9S,10R,13S,14S,17S)-17-hydroxy-10,13-dimethyl-1,2,6,7,8,9,11,12,14,15,16,17-dodecahydrocyclopenta[a]phenanthren-3-one"
+ },
+ "estradiol": {
+  "CID": 5757,
+  "MolecularFormula": "C18H24O2",
+  "SMILES": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=C3C=CC(=C4)O",
+  "IUPACName": "(8R,9S,13S,14S,17S)-13-methyl-6,7,8,9,11,12,14,15,16,17-decahydrocyclopenta[a]phenanthrene-3,17-diol"
+ },
+ "quinine": {
+  "CID": 3034034,
+  "MolecularFormula": "C20H24N2O2",
+  "SMILES": "COC1=CC2=C(C=CN=C2C=C1)[C@H]([C@@H]3C[C@@H]4CCN3C[C@@H]4C=C)O",
+  "IUPACName": "(R)-[(2S,4S,5R)-5-ethenyl-1-azabicyclo[2.2.2]octan-2-yl]-(6-methoxyquinolin-4-yl)methanol"
+ },
+ "penicillin G": {
+  "CID": 5904,
+  "MolecularFormula": "C16H18N2O4S",
+  "SMILES": "CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)CC3=CC=CC=C3)C(=O)O)C",
+  "IUPACName": "(2S,5R,6R)-3,3-dimethyl-7-oxo-6-[(2-phenylacetyl)amino]-4-thia-1-azabicyclo[3.2.0]heptane-2-carboxylic acid"
+ },
+ "artemisinin": {
+  "CID": 68827,
+  "MolecularFormula": "C15H22O5",
+  "SMILES": "C[C@@H]1CC[C@H]2[C@H](C(=O)O[C@H]3[C@@]24[C@H]1CC[C@](O3)(OO4)C)C",
+  "IUPACName": "(1R,4S,5R,8S,9R,12S,13R)-1,5,9-trimethyl-11,14,15,16-tetraoxatetracyclo[10.3.1.04,13.08,13]hexadecan-10-one"
+ },
+ "erythromycin": {
+  "CID": 12560,
+  "MolecularFormula": "C37H67NO13",
+  "SMILES": "CC[C@@H]1[C@@]([C@@H]([C@H](C(=O)[C@@H](C[C@@]([C@@H]([C@H]([C@@H]([C@H](C(=O)O1)C)O[C@H]2C[C@@]([C@H]([C@@H](O2)C)O)(C)OC)C)O[C@H]3[C@@H]([C@H](C[C@H](O3)C)N(C)C)O)(C)O)C)C)O)(C)O",
+  "IUPACName": "(3R,4S,5S,6R,7R,9R,11R,12R,13S,14R)-6-[(2S,3R,4S,6R)-4-(dimethylamino)-3-hydroxy-6-methyloxan-2-yl]oxy-14-ethyl-7,12,13-trihydroxy-4-[(2R,4R,5S,6S)-5-hydroxy-4-methoxy-4,6-dimethyloxan-2-yl]oxy-3,5,7,9,11,13-hexamethyl-oxacyclotetradecane-2,10-dione"
+ },
+ "(+)-camphor": {
+  "CID": 159055,
+  "MolecularFormula": "C10H16O",
+  "SMILES": "C[C@@]12CC[C@@H](C1(C)C)CC2=O",
+  "IUPACName": "(1R,4R)-1,7,7-trimethylbicyclo[2.2.1]heptan-2-one"
+ },
+ "reserpine": {
+  "CID": 5770,
+  "MolecularFormula": "C33H40N2O9",
+  "SMILES": "CO[C@H]1[C@@H](C[C@@H]2CN3CCC4=C([C@H]3C[C@@H]2[C@@H]1C(=O)OC)NC5=C4C=CC(=C5)OC)OC(=O)C6=CC(=C(C(=C6)OC)OC)OC",
+  "IUPACName": "methyl (1R,15S,17R,18R,19S,20S)-6,18-dimethoxy-17-(3,4,5-trimethoxybenzoyl)oxy-1,3,11,12,14,15,16,17,18,19,20,21-dodecahydroyohimban-19-carboxylate"
+ },
+ "tetrodotoxin": {
+  "CID": 11174599,
+  "MolecularFormula": "C11H17N3O8",
+  "SMILES": "C([C@@]1([C@H]2[C@@H]3[C@H](N=C(N[C@@]34[C@@H]([C@@H]1O[C@]([C@H]4O)(O2)O)O)N)O)O)O",
+  "IUPACName": "(1R,5R,6R,7R,9S,11S,12S,13S,14S)-3-amino-14-(hydroxymethyl)-8,10-dioxa-2,4-diazatetracyclo[7.3.1.17,11.01,6]tetradec-3-ene-5,9,12,13,14-pentol"
+ },
+ "prostaglandin E2": {
+  "CID": 5280360,
+  "MolecularFormula": "C20H32O5",
+  "SMILES": "CCCCC[C@@H](/C=C/[C@H]1[C@@H](CC(=O)[C@@H]1C/C=C\\CCCC(=O)O)O)O",
+  "IUPACName": "(Z)-7-[(1R,2R,3R)-3-hydroxy-2-[(E,3S)-3-hydroxyoct-1-enyl]-5-oxocyclopentyl]hept-5-enoic acid"
+ },
+ "(R)-carvone": {
+  "CID": 439570,
+  "MolecularFormula": "C10H14O",
+  "SMILES": "CC1=CC[C@H](CC1=O)C(=C)C",
+  "IUPACName": "(5R)-2-methyl-5-prop-1-en-2-ylcyclohex-2-en-1-one"
+ },
+ "(S)-carvone": {
+  "CID": 16724,
+  "MolecularFormula": "C10H14O",
+  "SMILES": "CC1=CC[C@@H](CC1=O)C(=C)C",
+  "IUPACName": "(5S)-2-methyl-5-prop-1-en-2-ylcyclohex-2-en-1-one"
+ },
+ "caffeine": {
+  "CID": 2519,
+  "MolecularFormula": "C8H10N4O2",
+  "SMILES": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+  "IUPACName": "1,3,7-trimethylpurine-2,6-dione"
+ },
+ "paracetamol": {
+  "CID": 1983,
+  "MolecularFormula": "C8H9NO2",
+  "SMILES": "CC(=O)NC1=CC=C(C=C1)O",
+  "IUPACName": "N-(4-hydroxyphenyl)acetamide"
+ },
+ "(R)-1-phenylethanol": {
+  "CID": 637516,
+  "MolecularFormula": "C8H10O",
+  "SMILES": "C[C@H](C1=CC=CC=C1)O",
+  "IUPACName": "(1R)-1-phenylethanol"
+ },
+ "sorbic acid": {
+  "CID": 643460,
+  "MolecularFormula": "C6H8O2",
+  "SMILES": "C/C=C/C=C/C(=O)O",
+  "IUPACName": "(2E,4E)-hexa-2,4-dienoic acid"
+ },
+ "(S)-2-butanol": {
+  "CID": 444683,
+  "MolecularFormula": "C4H10O",
+  "SMILES": "CC[C@H](C)O",
+  "IUPACName": "(2S)-butan-2-ol"
+ },
+ "trans-1,2-dibromocyclohexane": {
+  "CID": 98506,
+  "MolecularFormula": "C6H10Br2",
+  "SMILES": "C1CC[C@H]([C@@H](C1)Br)Br",
+  "IUPACName": "trans-(1R,2R)-1,2-dibromocyclohexane"
+ },
+ "(R)-2-bromobutane": {
+  "CID": 637147,
+  "MolecularFormula": "C4H9Br",
+  "SMILES": "CC[C@@H](C)Br",
+  "IUPACName": "(2R)-2-bromobutane"
+ },
+ "(S)-naproxen": {
+  "CID": 156391,
+  "MolecularFormula": "C14H14O3",
+  "SMILES": "C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O",
+  "IUPACName": "(2S)-2-(6-methoxynaphthalen-2-yl)propanoic acid"
+ },
+ "codeine": {
+  "CID": 5284371,
+  "MolecularFormula": "C18H21NO3",
+  "SMILES": "CN1CC[C@]23[C@@H]4[C@H]1CC5=C2C(=C(C=C5)OC)O[C@H]3[C@H](C=C4)O",
+  "IUPACName": "(4R,4aR,7S,7aR,12bS)-9-methoxy-3-methyl-2,4,4a,7,7a,13-hexahydro-1H-4,12-methanobenzofuro[3,2-e]isoquinolin-7-ol"
+ },
+ "meso-2,3-dibromobutane": {
+  "CID": 98508,
+  "MolecularFormula": "C4H8Br2",
+  "SMILES": "C[C@H]([C@H](C)Br)Br",
+  "IUPACName": "(2R,3S)-2,3-dibromobutane"
+ }
+}

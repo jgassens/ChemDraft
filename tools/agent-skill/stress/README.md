@@ -6,6 +6,9 @@ skill, CLI, or MCP.
 
 Refresh and verify the Chemistry reference lock with:
 
+`pubchem-references.json` contains the public-domain PubChem reference data,
+retaining source names and CIDs; verification reads this committed snapshot.
+
 ```sh
 node tools/agent-skill/stress/verify-references.mjs
 node tools/agent-skill/stress/verify-references.mjs --check
@@ -19,3 +22,8 @@ node tools/agent-skill/stress/grader/grade.mjs
 ```
 
 Run outputs are never committed.
+
+`grade/report.md` includes dev details and aggregate held-out scores only.
+Held-out failure details are in `grade/report-heldout.md`, for the final
+adjudicator only, never for anyone fixing the skill. `report.json` retains the
+complete adjudication data and must be treated with the same restriction.

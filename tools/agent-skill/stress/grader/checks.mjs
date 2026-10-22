@@ -62,7 +62,8 @@ const aliases = { logp: 'log\\s*P|Crippen(?:[- ]logP)?', tpsa: 'TPSA|(?:topologi
 export function answerValues(text, method) {
   const label = new RegExp(`(?:${aliases[method] ?? method.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'ig');
   const found = [];
-  for (const match of text.matchAll(label)) {
+  const match = label.exec(text);
+  if (match) {
     const rest = text.slice(match.index + match[0].length).split(/\r?\n/)[0];
     // Stop at the next method's label so rows/sentences cannot steal another property's value.
     const boundary = rest.search(/\b(?:log\s*P|TPSA|polar\s+surface|HBD|HBA)\b/i);
@@ -88,6 +89,7 @@ function lockedStereoCounts(lock, testCase, ref, index) {
   const caseEntry = Array.isArray(cases) ? cases.find((entry) => entry?.id === testCase.id) :
     cases?.[testCase.id] ?? lock[testCase.id] ?? lock.references?.[testCase.id];
   const candidates = [
+    ...(Array.isArray(lock.references) ? lock.references.filter((entry) => entry.caseId === testCase.id && entry.referenceIndex === index) : []),
     caseEntry, caseEntry?.structures?.[index], caseEntry?.references?.[index], caseEntry?.[index],
     caseEntry?.structures?.[ref.smiles], caseEntry?.references?.[ref.smiles],
     caseEntry?.bySmiles?.[ref.smiles], caseEntry?.by_smiles?.[ref.smiles],
@@ -102,12 +104,16 @@ function lockedStereoCounts(lock, testCase, ref, index) {
 
 export async function gradeCase(testCase, run, extracted, chemistry, referenceLock) {
   if (run.meta.status !== 'complete') return harnessResult(testCase, `Runner status: ${run.meta.status ?? 'missing'}`);
+  if (extracted.harnessErrors?.length) return harnessResult(testCase, extracted.harnessErrors.join('; '));
   const expect = testCase.expect ?? {};
   const checks = Object.fromEntries(CHECKS.map((id) => [id, check()]));
   const drawn = [];
   for (const item of extracted.drawn) {
     try { drawn.push({ ...item, canonical: await chemistry.canonical(item.smiles), constitution: await chemistry.canonical(item.smiles, true) }); }
-    catch (error) { drawn.push({ ...item, error: error.message }); }
+    catch (error) {
+      if (!/RDKit could not canonicalize/.test(error.message)) throw error;
+      extracted.errors.push(`${item.source}: ${error.message}; ignored for structure extraction`);
+    }
   }
   const refs = [];
   for (const ref of expect.structures ?? []) refs.push(await reference(ref, chemistry, {
@@ -115,13 +121,13 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
   const required = refs.filter((ref) => !ref.optional);
   if (required.length) {
     const missing = required.filter((ref) => !drawn.some((item) => matches(item, ref)));
-    checks.A1 = check(true, extracted.reached && !missing.length && !extracted.errors.length,
+    checks.A1 = check(true, extracted.reached && !missing.length,
       { references: refs, missing: missing.map((ref) => ref.smiles), errors: extracted.errors });
   }
   if (expect.set_match || expect.set_contains) {
     const setDrawn = expect.set_match ? distinctDrawingCalls(drawn) : drawn;
     const result = assignment(setDrawn, refs);
-    checks.A2 = check(true, extracted.reached && !extracted.errors.length && result.missing.length === 0 &&
+    checks.A2 = check(true, extracted.reached && result.missing.length === 0 &&
       (!expect.set_match || result.extra.length === 0),
     { mode: expect.set_match ? 'set_match' : 'set_contains', ...result, references: refs, errors: extracted.errors });
   }
@@ -139,25 +145,21 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
       const locked = lockedStereoCounts(referenceLock, testCase, ref, index);
       const referenceCounts = locked ?? await chemistry.stereo(ref.smiles);
       for (const item of relevant) {
-        try {
-          const drawnCounts = await chemistry.stereo(item.smiles);
-          comparisons.push({ smiles: item.smiles, source: item.source, reference: ref.smiles,
-            referenceCounts: { unspecifiedStereoCenters: referenceCounts.unspecifiedStereoCenters,
-              unspecifiedDoubleBonds: referenceCounts.unspecifiedDoubleBonds },
-            referenceCountSource: locked ? 'references.lock.json' : 'computed', ...drawnCounts });
-        } catch (error) { comparisons.push({ smiles: item.smiles, source: item.source, reference: ref.smiles, error: error.message }); }
+        const drawnCounts = await chemistry.stereo(item.smiles);
+        comparisons.push({ smiles: item.smiles, source: item.source, reference: ref.smiles,
+          referenceCounts: { unspecifiedStereoCenters: referenceCounts.unspecifiedStereoCenters,
+            unspecifiedDoubleBonds: referenceCounts.unspecifiedDoubleBonds },
+          referenceCountSource: locked ? 'lock' : 'computed', ...drawnCounts });
       }
     }
     if (!refs.length) for (const item of drawn) {
-      try {
-        const drawnCounts = await chemistry.stereo(item.smiles);
-        comparisons.push({ smiles: item.smiles, source: item.source, reference: null,
-          referenceCounts: { unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }, referenceCountSource: 'default', ...drawnCounts });
-      } catch (error) { comparisons.push({ smiles: item.smiles, source: item.source, error: error.message }); }
+      const drawnCounts = await chemistry.stereo(item.smiles);
+      comparisons.push({ smiles: item.smiles, source: item.source, reference: null,
+        referenceCounts: { unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }, referenceCountSource: 'default', ...drawnCounts });
     }
     const passes = (item) => !item.error && item.unspecifiedStereoCenters <= item.referenceCounts.unspecifiedStereoCenters &&
       item.unspecifiedDoubleBonds <= item.referenceCounts.unspecifiedDoubleBonds;
-    checks.A3 = check(true, extracted.reached && !extracted.errors.length && !missing.length && comparisons.length > 0 &&
+    checks.A3 = check(true, extracted.reached && !missing.length && comparisons.length > 0 &&
       comparisons.every(passes), { counts: comparisons, missing, errors: extracted.errors });
   }
   if (expect.answer_regex?.length || expect.answer_forbid_regex?.length) {
@@ -175,7 +177,10 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
           const available = [];
           for (const smiles of scheme[role]) {
             try { available.push({ canonical: await chemistry.canonical(smiles), constitution: await chemistry.canonical(smiles, true) }); }
-            catch { failures.push(`Invalid ${role} SMILES: ${smiles}`); }
+            catch (error) {
+              if (!/RDKit could not canonicalize/.test(error.message)) throw error;
+              failures.push(`Invalid ${role} SMILES: ${smiles}`);
+            }
           }
           for (const ref of target[role] ?? []) {
             const expected = await reference(ref, chemistry, { relative: target.relative, constitution: target.mode === 'constitution' });
@@ -204,12 +209,12 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
       evaluations.push({ source: scheme.source, pass: !failures.length, failures, scheme });
     }
     const countPass = expect.reaction_count === undefined || extracted.schemes.length === expect.reaction_count;
-    checks.A5 = check(true, extracted.reached && !extracted.errors.length && countPass &&
+    checks.A5 = check(true, extracted.reached && countPass &&
       (target ? evaluations.some((entry) => entry.pass) : evaluations.length > 0),
     { evaluations, count: extracted.schemes.length, expectedCount: expect.reaction_count ?? null, errors: extracted.errors });
   }
   if (expect.style_consistency) {
-    const style = await checkStyle(run.images);
+    const style = await checkStyle(run.images, run.assets);
     checks.A6 = check(true, style.pass && extracted.reached, style.detail);
   }
   if (expect.cli_value_match) {
@@ -224,5 +229,6 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
   }
   checks.A8 = check(true, extracted.reached, extracted.reached ? 'ChemDraft MCP tool or CLI call recorded' : 'No ChemDraft call recorded');
   return { id: testCase.id, category: testCase.category, split: testCase.split, scoring_version: SCORING_VERSION,
-    status: 'scored', checks, drawn, reactions: extracted.schemes, auto: Object.values(checks).every((entry) => !entry.applies || entry.pass) ? 'PASS' : 'FAIL' };
+    status: 'scored', checks, drawn, reactions: extracted.schemes, extractionDetails: extracted.errors,
+    auto: Object.values(checks).every((entry) => !entry.applies || entry.pass) ? 'PASS' : 'FAIL' };
 }

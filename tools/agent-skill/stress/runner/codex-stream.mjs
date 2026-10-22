@@ -17,6 +17,7 @@ function mcpResult(value) {
 export function inspectCodexStream(events) {
   const calls = new Map();
   const servers = new Set();
+  const fileChanges = new Map();
   let connected = false, final = '', model = null, numTurns = 0, usage = null, failed = false;
   for (const envelope of events) {
     const event = envelope.type === 'event_msg' ? envelope.payload : envelope;
@@ -38,6 +39,7 @@ export function inspectCodexStream(events) {
     }
     const item = event.item;
     if (!item || !['item.started', 'item.updated', 'item.completed'].includes(event.type)) continue;
+    if (item.type === 'file_change') fileChanges.set(item.id, item.changes ?? []);
     if (item.type === 'agent_message' && event.type === 'item.completed' && item.phase !== 'commentary') final = item.text ?? '';
     if (!['mcp_tool_call', 'command_execution'].includes(item.type)) continue;
     const key = item.id ?? item.call_id ?? item.callId;
@@ -59,7 +61,8 @@ export function inspectCodexStream(events) {
     } else {
       call.name = 'Bash';
       if (item.command !== undefined) call.input = { command: item.command };
-      if (event.type === 'item.completed') call.result = { content: [{ type: 'text', text: item.aggregated_output ?? item.aggregatedOutput ?? item.output ?? '' }] };
+      if (event.type === 'item.completed') call.result = { ...(item.exit_code || item.exitCode || item.status === 'failed' ? { isError: true } : {}),
+        content: [{ type: 'text', text: item.aggregated_output ?? item.aggregatedOutput ?? item.output ?? '' }] };
     }
   }
   const rawCalls = [...calls.values()];
@@ -68,7 +71,7 @@ export function inspectCodexStream(events) {
     { content: [{ type: 'tool_use', id: String(index), name: call.name }] },
     { content: [{ type: 'tool_result', tool_use_id: String(index), content: call.result?.content ?? [] }] },
   ]);
-  return { toolCalls: withoutBase64(rawCalls), assetEvents, final, model, numTurns, usage, failed,
+  return { toolCalls: withoutBase64(rawCalls), assetEvents, fileChanges: [...fileChanges.values()].flat(), final, model, numTurns, usage, failed,
     // Runner-level config and filesystem checks complete Codex isolation. Keep this
     // event-only signal for callers that need the observed server names.
     isolated: servers.size === 0 || (servers.size === 1 && servers.has('chemdraft')),

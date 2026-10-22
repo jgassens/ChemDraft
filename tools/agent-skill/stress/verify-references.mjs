@@ -6,6 +6,7 @@
  */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { spawnCommandSpec } from "./spawn-command.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../..");
 const casesPath = join(here, "cases.json");
 const lockPath = join(here, "references.lock.json");
-const pubchemPath = "/Users/jeremiahgassensmith/programming/chemdraw-wt/_stress-notes/pubchem.json";
+export const pubchemPath = join(here, "pubchem-references.json");
 const checkOnly = process.argv.includes("--check");
 
 function stableJson(value) {
@@ -51,7 +52,8 @@ function withoutStereo(smiles) {
 
 function runProcess(command, args) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
+    const specification = spawnCommandSpec(command, args);
+    const child = spawn(specification.command, specification.args, { cwd: repo, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -224,11 +226,24 @@ async function buildLock() {
   }
 }
 
-const lock = await buildLock();
-const rendered = stableJson(lock);
-if (checkOnly) {
-  const existing = await readFile(lockPath, "utf8");
-  if (existing !== rendered) throw new Error("references.lock.json is stale; run verify-references.mjs without --check.");
-} else {
-  await writeFile(lockPath, rendered);
+/** A missing local OPSIN runtime is recorded in the original lock. Its checkout
+ * location is environmental, so compare the diagnostic with just that path
+ * normalised. All chemistry and the rest of the diagnostic still compare exactly. */
+export function referenceLockForComparison(lock) {
+  const copy = structuredClone(lock);
+  const verification = copy.specialVerifications?.P10;
+  if (verification?.opsinOk === false && typeof verification.error === 'string') {
+    verification.error = verification.error.replace(/missing bundled Java executable at "[^"]+"/, 'missing bundled Java executable at "<checkout-runtime>"');
+  }
+  return stableJson(copy);
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const lock = await buildLock();
+  if (checkOnly) {
+    const existing = JSON.parse(await readFile(lockPath, "utf8"));
+    if (referenceLockForComparison(existing) !== referenceLockForComparison(lock)) throw new Error("references.lock.json is stale; run verify-references.mjs without --check.");
+  } else {
+    await writeFile(lockPath, stableJson(lock));
+  }
 }

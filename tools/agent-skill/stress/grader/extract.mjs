@@ -1,3 +1,5 @@
+import { commandWords, shellWords, unwrapShell } from '../shell-words.mjs';
+export { shellWords, unwrapShell } from '../shell-words.mjs';
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join, resolve, basename, relative } from 'node:path';
 import { json, filesUnder, inside } from './common.mjs';
@@ -66,55 +68,14 @@ export async function readRun(folder) {
   } else calls.push(...saved);
   const images = [...await filesUnder(join(folder, 'images')), ...await filesUnder(join(folder, 'outputs')), ...await filesUnder(join(folder, 'work'))]
     .filter((file) => /\.(png|svg)$/i.test(file));
-  return { folder, meta, calls, final, images };
+  let assets = [];
+  try { assets = (await json(join(folder, 'assets.json'))).map((asset) => ({ ...asset, path: resolve(folder, asset.path) })); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return { folder, meta, calls, final, images, assets };
 }
 
-/** Lex shell arguments, never evaluate commands from the agent transcript. Supports POSIX
- * single/double quotes and PowerShell-style quoted paths; backslashes in SMILES survive. */
-export function shellWords(command) {
-  const words = [];
-  let word = '', active = false, quote = '';
-  const push = () => { if (active) words.push(word); word = ''; active = false; };
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-    if (quote) {
-      if (char === quote) { quote = ''; continue; }
-      if (char === '\\' && quote === '"' && /["\\$`\n]/.test(command[i + 1] ?? '')) {
-        word += command[++i] === '\n' ? '' : command[i];
-      } else word += char;
-    } else if (char === "'" || char === '"') { quote = char; active = true; }
-    else if (char === '\\' && i + 1 < command.length && /[\s'"\\;&|]/.test(command[i + 1])) {
-      const next = command[++i]; if (next !== '\n') { word += next; active = true; }
-    } else if (char === '#' && !active) {
-      while (i < command.length && command[i] !== '\n') i++;
-      push(); words.push(';');
-    } else if (/\s/.test(char)) { push(); if (char === '\n') words.push(';'); }
-    else if (/[;&|]/.test(char)) { push(); words.push(char); }
-    else { word += char; active = true; }
-  }
-  if (quote) throw new Error('Unterminated quoted CLI command');
-  push();
-  return words;
-}
-
-/** Codex records command executions as an explicit login shell invocation.  Unwrap
- * only the argument passed to -c/-lc; command text is still lexed, never evaluated. */
-export function unwrapShell(command) {
-  let current = command;
-  for (;;) {
-    const words = shellWords(current);
-    const shell = words.findIndex((word) => /(?:^|[\\/])(?:zsh|bash)(?:\.exe)?$/i.test(word));
-    if (shell === -1) return current;
-    const flag = words.findIndex((word, index) => index > shell && /^(?:-[A-Za-z]*c[A-Za-z]*|--command)$/i.test(word));
-    if (flag === -1 || flag + 1 >= words.length) return current;
-    const next = words[flag + 1];
-    if (typeof next !== 'string' || next === current) return current;
-    current = next;
-  }
-}
-
-export function cliCalls(command) {
-  const tokens = shellWords(unwrapShell(command)), calls = [];
+export function cliCalls(command, options = {}) {
+  const tokens = commandWords(command, options), calls = [];
   let start = 0;
   for (let end = 0; end <= tokens.length; end++) {
     if (end !== tokens.length && ![';', '&', '|'].includes(tokens[end])) continue;
@@ -142,12 +103,16 @@ export function cliCalls(command) {
 export function heredocFiles(command) {
   const files = new Map();
   const source = unwrapShell(command);
-  // Backreferences cannot select one of three delimiter captures, so match each
-  // header and find its exact terminator separately.
-  const header = /(?:^|[;&\n]\s*)cat\s+>\s*(?:'([^']+)'|"([^"]+)"|([^\s<]+))\s+<<\s*(?:'([^']+)'|"([^"]+)"|([^\s]+))\s*\r?\n/gm;
+  const header = /(?:^|[;&\n])\s*(cat|tee)\s+([^\r\n]+)\r?\n/gm;
   for (const match of source.matchAll(header)) {
-    const file = match[1] ?? match[2] ?? match[3];
-    const delimiter = match[4] ?? match[5] ?? match[6];
+    const words = shellWords(match[2], { shell: 'posix' });
+    const delimiterAt = words.indexOf('<<');
+    if (delimiterAt === -1 || !words[delimiterAt + 1]) continue;
+    const delimiter = words[delimiterAt + 1];
+    const outputAt = words.indexOf('>');
+    const file = outputAt !== -1 ? words[outputAt + 1] : match[1] === 'tee' ?
+      words.find((word, index) => index !== delimiterAt && index !== delimiterAt + 1 && !word.startsWith('-')) : null;
+    if (!file) continue;
     const bodyStart = match.index + match[0].length;
     const end = new RegExp(`(?:^|\\n)${delimiter.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:\\r?\\n|$)`, 'm').exec(source.slice(bodyStart));
     if (!end) continue;
@@ -241,23 +206,28 @@ function documentSchemes(native) {
 }
 
 export async function extract(run, chemistry, scratch) {
-  const drawn = [], schemes = [], errors = [], documents = new Set();
+  const drawn = [], schemes = [], errors = [], harnessErrors = [], documents = new Set();
   const heredocs = new Map();
   let reached = false;
   const add = (smiles, source, extra = {}) => { if (typeof smiles === 'string' && smiles.trim()) drawn.push({ smiles, source, ...extra }); };
   const native = async (file, source, rendered = false) => {
     documents.add(resolve(file));
-    const recovered = await chemistry.native(file);
-    for (const molecule of recovered.molecules) add(molecule.smiles, `${source}#${molecule.objectId}`);
-    if (rendered) schemes.push(...documentSchemes(recovered).map((scheme) => ({ ...scheme, source })));
+    try {
+      const recovered = await chemistry.native(file);
+      for (const molecule of recovered.molecules) add(molecule.smiles, `${source}#${molecule.objectId}`);
+      if (rendered) schemes.push(...documentSchemes(recovered).map((scheme) => ({ ...scheme, source })));
+    }
+    catch (error) { error.harness = !error.agentInput && !['SyntaxError', 'ZodError'].includes(error.name); throw error; }
   };
   for (let index = 0; index < run.calls.length; index++) {
+    const drawnBefore = drawn.length, schemesBefore = schemes.length;
     const call = run.calls[index], input = call.input ?? {}, objects = resultObjects(call.result);
     const source = `call[${index}] ${call.name}`;
     const failed = call.result?.isError === true || call.result?.is_error === true || objects.some((object) => object.ok === false || object.isError === true || object.is_error === true);
     try {
       if (call.name?.startsWith('mcp__chemdraft__')) {
         reached = true;
+        if (failed) { errors.push(`${source}: tool returned an error; ignored for structure extraction`); continue; }
         const tool = call.name.slice('mcp__chemdraft__'.length);
         if (['render_structure', 'build_document', 'export_structure'].includes(tool)) {
           add(input.smiles, `${source}.smiles`);
@@ -295,8 +265,12 @@ export async function extract(run, chemistry, scratch) {
       } else if (['Bash', 'bash', 'Shell', 'shell'].includes(call.name)) {
         const command = input.command ?? '';
         for (const [file, body] of heredocFiles(command)) heredocs.set(file, body);
-        for (const cli of cliCalls(command)) {
+        // Claude's Bash tool is POSIX on both hosts (Git Bash on Windows).
+        // Explicit cmd/PowerShell wrappers still choose their own payload rules.
+        const shell = /^bash$/i.test(call.name) ? 'posix' : undefined;
+        for (const cli of cliCalls(command, { shell })) {
           reached = true;
+          if (failed) { errors.push(`${source}: tool returned an error; ignored for structure extraction`); continue; }
           const option = (key) => cli.options[key]?.at(-1);
           if (cli.verb === 'name' && option('render')) {
             const named = objects.find((object) => object.ok === true && typeof object.smiles === 'string');
@@ -321,7 +295,12 @@ export async function extract(run, chemistry, scratch) {
           }
         }
       }
-    } catch (error) { errors.push(`${source}: ${error.message}`); }
+    } catch (error) {
+      drawn.length = drawnBefore; schemes.length = schemesBefore;
+      const message = `${source}: ${error.message}`;
+      if (error.harness || /Retained run file is missing or ambiguous/.test(error.message)) harnessErrors.push(message);
+      else errors.push(`${message}; ignored for structure extraction`);
+    }
   }
   // Native documents the agent wrote without sending to a rendering tool still count.
   for (const file of await filesUnder(join(run.folder, 'work'))) {
@@ -330,7 +309,7 @@ export async function extract(run, chemistry, scratch) {
     try { value = await json(file); } catch { continue; }
     if (value?.schema !== 'chemdraft.document.v1' && !value?.document?.pages && !value?.pages) continue;
     try { await native(file, `work/${relative(join(run.folder, 'work'), file)}`); }
-    catch (error) { errors.push(`${file}: ${error.message}`); }
+    catch (error) { (error.harness ? harnessErrors : errors).push(`${file}: ${error.message}`); }
   }
-  return { drawn, schemes, errors, reached };
+  return { drawn, schemes, errors, harnessErrors, reached };
 }

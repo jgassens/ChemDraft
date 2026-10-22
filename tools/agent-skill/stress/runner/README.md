@@ -28,6 +28,20 @@ so normal OAuth sign-in and automatic skill discovery remain available.
 The init event must report only the connected `chemdraft` MCP server and the
 `chemdraft` skill; otherwise the case records an isolation error.
 
+A live probe on 2026-10-22 with Claude Code 2.1.x showed that
+`--setting-sources project` excludes `~/.claude/CLAUDE.md`, user skills and
+hooks. The runner also rejects init skill names found in `~/.claude/skills`
+other than `chemdraft` as `isolation-leak`.
+
+For both agents, every ancestor of `--out` is checked for `CLAUDE.md`,
+`AGENTS.md`, `.claude/` and `.codex/`, through the home directory (or filesystem
+root for outputs outside home). Only the user's own `~/.claude` and `~/.codex`
+folders are exempt. Symlink destinations are checked too. Checkout git status
+is recorded before the run and after each case. New changes set
+`checkoutModified: true` and fail isolation. Claude Write/Edit/NotebookEdit and
+Codex file-change events inside the checkout are audited as `source-write` and
+also fail isolation, including writes reverted before the status check.
+
 For unattended operation it uses `--dangerously-skip-permissions`,
 `--permission-mode bypassPermissions`, `--permission-prompts none`, and
 `--allowedTools` for Bash, the named file/search/web/skill tools, and
@@ -72,7 +86,10 @@ use fixture executables.
 ## Events and outputs
 
 Both agents produce `transcript.jsonl`, `final.md`, `tool-calls.json`, `images/`,
-`files.json`, `outputs/`, `outputs.json`, and `meta.json`. After each case, the
+`files.json`, `outputs/`, `outputs.json`, `assets.json`, and `meta.json`. The
+assets manifest associates saved images and copied outputs with their zero-based
+tool call index and original path when available; A6 pairs PNG/SVG from the same
+call or original basename. After each case, the
 runner copies supported output files named in the final report or passed through
 `--out`, `--out-dir`, or shell redirection into `outputs/`; `outputs.json`
 records each original path, copied name, byte size, and SHA-256. Paths under the
@@ -103,8 +120,9 @@ the runner also checks JSONL session events under that case's isolated
 reports it, metadata records `model: null`; it never guesses a default.
 
 The usage guard checks `agentctl usage --json` before each new case: Claude's
-`claude` pool is unchanged; Codex requires at least 15% in the `openai` pool
-and halts if that pool cannot be read. Exit code 3 means usage halted work;
+`claude` pool and Codex's `openai` pool each halt below 15%. If usage cannot be
+read or the relevant pool is missing/invalid, both warn on stderr and proceed.
+Exit code 3 means usage halted work;
 case failures/timeouts are recorded in metadata as before.
 
 ## Verification

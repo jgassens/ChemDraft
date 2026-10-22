@@ -38,8 +38,8 @@ export async function grade(options) {
       else {
         const extracted = await extract(run, chemistry, scratch);
         // Missing artifacts are a harness problem, not evidence of wrong chemistry.
-        if (extracted.errors.some((message) => /Retained run file is missing or ambiguous/.test(message))) {
-          result = harnessResult(testCase, extracted.errors.join('; '));
+        if (extracted.harnessErrors.length) {
+          result = harnessResult(testCase, extracted.harnessErrors.join('; '));
         } else result = await gradeCase(testCase, run, extracted, chemistry, referenceLock);
       }
     } catch (error) { result = harnessResult(testCase, error.stack ?? error.message); }

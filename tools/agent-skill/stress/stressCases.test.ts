@@ -78,5 +78,7 @@ describe("agent-skill stress cases", () => {
     expect(lock.references.map((entry: { caseId: string; referenceIndex: number }) => `${entry.caseId}:${entry.referenceIndex}`).sort())
       .toEqual(referenceKeys(cases));
     expect(readFileSync(resolve(directory, "SCORING.md"), "utf8")).toContain("SCORING_VERSION");
+    expect(readFileSync(resolve(directory, "SCORING.md"), "utf8")).toContain('Cases whose `expect` has `mechanism: true` (R04, R05, R07, R12) or `answer_key: true` (D02, the key part) are judged by the visual check only; their automatic result is A8 plus any other listed check.');
+    expect(readFileSync(resolve(directory, "runner/README.md"), "utf8")).toContain('A live probe on 2026-10-22 with Claude Code 2.1.x');
   });
 });

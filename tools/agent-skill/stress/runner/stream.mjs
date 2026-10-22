@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 const safeName = (value) => String(value || 'tool').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -25,7 +27,7 @@ function names(items) {
   return (Array.isArray(items) ? items : []).map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean);
 }
 
-export function inspectStream(events) {
+export function inspectStream(events, { userSkillsPath = path.join(homedir(), '.claude', 'skills') } = {}) {
   const init = events.find(isInit);
   const result = [...events].reverse().find((event) => event?.type === 'result');
   const uses = new Map();
@@ -42,21 +44,28 @@ export function inspectStream(events) {
       }
       if (block?.type === 'tool_result') {
         const call = uses.get(block.tool_use_id);
-        if (call) call.result = withoutBase64(block.content);
+        if (call) call.result = block.is_error ? { is_error: true, content: withoutBase64(block.content) } : withoutBase64(block.content);
       }
     }
   }
 
   const servers = init?.mcp_servers ?? init?.mcpServers ?? [];
   const skills = init?.skills ?? init?.available_skills ?? [];
+  const leakedSkills = names(skills).filter((name) => name !== 'chemdraft' &&
+    !/[\\/]|^\.\.?$/.test(name) && existsSync(path.join(userSkillsPath, name)) && statSync(path.join(userSkillsPath, name)).isDirectory());
   const isolated = Array.isArray(servers) && servers.length === 1 &&
-    servers[0]?.name === 'chemdraft' && servers[0]?.status === 'connected' && names(skills).includes('chemdraft');
+    servers[0]?.name === 'chemdraft' && servers[0]?.status === 'connected' && names(skills).includes('chemdraft') && !leakedSkills.length;
   const final = result?.result ?? result?.final ?? result?.message?.content ?? '';
   return {
     init,
     result,
     toolCalls,
     isolated,
+    isolationLeak: leakedSkills.length > 0,
+    leakedSkills,
+    failed: result?.is_error === true || /^error(?:_|$)/.test(result?.subtype ?? ''),
+    failureReason: result?.is_error === true || /^error(?:_|$)/.test(result?.subtype ?? '') ?
+      [result?.subtype, ...(result?.errors ?? []), typeof final === 'string' ? final : ''].filter(Boolean).join(': ') : null,
     final: typeof final === 'string' ? final : JSON.stringify(final),
     numTurns: result?.num_turns ?? result?.numTurns ?? assistantTurns,
   };
@@ -96,9 +105,10 @@ export async function saveToolAssets(events, imageDir) {
   const written = [];
   for (const event of events) {
     for (const block of contentOf(event)) {
-      if (block?.type === 'tool_use') tools.set(block.id, block.name);
+      if (block?.type === 'tool_use' && !tools.has(block.id)) tools.set(block.id, { name: block.name, index: tools.size });
       if (block?.type !== 'tool_result') continue;
-      const tool = safeName(tools.get(block.tool_use_id));
+      const producer = tools.get(block.tool_use_id);
+      const tool = safeName(producer?.name);
       const blocks = Array.isArray(block.content) ? block.content : [block.content];
       for (const item of blocks) {
         if (!item || typeof item === 'string') continue;
@@ -112,7 +122,8 @@ export async function saveToolAssets(events, imageDir) {
         const filename = image ? `${prefix}.png` : svg ? `${prefix}.svg` : `${prefix}.${extensionFor((item.resource ?? item).mimeType)}`;
         const destination = path.join(imageDir, filename);
         await writeFile(destination, image || blob ? Buffer.from(image || blob, 'base64') : item.text, image || blob ? undefined : 'utf8');
-        written.push(filename);
+        written.push({ path: `images/${filename}`, toolCallIndex: producer?.index ?? null,
+          toolCallId: block.tool_use_id, originalPath: item.resource?.uri ?? null });
       }
     }
   }

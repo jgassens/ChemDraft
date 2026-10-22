@@ -1,3 +1,5 @@
+import { commandWords } from '../shell-words.mjs';
+import { spawnCommandSpec } from '../spawn-command.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -68,25 +70,8 @@ function isInsideOrParent(checkout, output) {
 
 const outputExtension = /\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json)$/i;
 
-function shellCommand(commandText) {
-  // Codex reports shell calls as /bin/zsh -lc '<command>'.  Keep the
-  // fallback unchanged for other shells and for malformed reports.
-  const match = commandText.match(/^\s*\/bin\/zsh\s+-lc\s+(['"])([\s\S]*)\1\s*$/);
-  return match ? match[2] : commandText;
-}
-
-function shellWords(commandText) {
-  const words = [];
-  const expression = /(?:'([^']*)'|"((?:\\.|[^"\\])*)"|([^\s'"\\><]+)|([><]{1,2}))/g;
-  for (const match of commandText.matchAll(expression)) {
-    if (match[4]) words.push(match[4]);
-    else words.push((match[1] ?? match[2] ?? match[3] ?? '').replace(/\\(.)/g, '$1'));
-  }
-  return words;
-}
-
-function commandOutputTargets(commandText) {
-  const words = shellWords(shellCommand(commandText));
+export function commandOutputTargets(commandText, options = {}) {
+  const words = commandWords(commandText, options);
   const targets = [];
   for (let index = 0; index < words.length; index++) {
     const word = words[index];
@@ -105,7 +90,7 @@ function finalOutputTargets(final, work) {
   const targets = new Set();
   for (const match of final.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
     const link = match[1].replace(/^<|>$/g, '');
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(link)) targets.add(path.resolve(work, link));
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(link) || /^[a-z]:[\\/]/i.test(link)) targets.add(path.resolve(work, link));
   }
   for (const match of final.matchAll(/(?:^|[\s("'])((?:\/[\w. -]+)+\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json))(?=$|[\s)'".,])/gi)) {
     targets.add(match[1]);
@@ -140,17 +125,25 @@ async function filesAtOutputTarget(target) {
 }
 
 async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
-  const targets = new Set(finalOutputTargets(final, work));
-  for (const call of toolCalls) if (call.name === 'Bash' && typeof call.input?.command === 'string') {
+  const targets = new Map(finalOutputTargets(final, work).map((target) => [target, null]));
+  for (const [toolCallIndex, call] of toolCalls.entries()) if (call.name === 'Bash' && typeof call.input?.command === 'string') {
     for (const target of commandOutputTargets(call.input.command)) {
-      targets.add(path.isAbsolute(target) ? target : path.resolve(work, target));
+      targets.set(path.isAbsolute(target) ? target : path.resolve(work, target), toolCallIndex);
     }
+  } else if (call.name?.startsWith('mcp__chemdraft__')) {
+    const visit = (value) => {
+      if (typeof value === 'string') {
+        try { visit(JSON.parse(value)); } catch { if (outputExtension.test(value) && !/[\r\n]/.test(value)) targets.set(path.resolve(work, value), toolCallIndex); }
+      } else if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) if (!['data', 'blob'].includes(key)) visit(child);
+    };
+    visit(call.result);
   }
   const outputDir = path.join(caseDir, 'outputs');
   await mkdir(outputDir, { recursive: true });
   const manifest = [];
   const copied = new Set();
-  for (const target of targets) {
+  for (const [target, toolCallIndex] of targets) {
     for (const source of await filesAtOutputTarget(target)) {
       const resolved = await realpath(source).catch(() => null);
       if (!resolved || isInside(codexHome, resolved) || copied.has(resolved)) continue;
@@ -159,7 +152,7 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
       const destination = path.join(outputDir, copiedName);
       await copyFile(resolved, destination);
       const data = await readFile(resolved);
-      manifest.push({ originalPath: resolved, copiedName, size: (await stat(resolved)).size,
+      manifest.push({ originalPath: resolved, copiedName, toolCallIndex, size: (await stat(resolved)).size,
         sha256: createHash('sha256').update(data).digest('hex') });
     }
   }
@@ -167,11 +160,12 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
   return manifest;
 }
 
-function isCliCommand(commandText, checkout) {
-  const words = shellWords(shellCommand(commandText));
-  const pnpm = words.some((word) => path.basename(word) === 'pnpm' || word === 'pnpm');
+function isCliCommand(commandText, checkout, { platform = process.platform } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path;
+  const words = commandWords(commandText, { platform });
+  const pnpm = words.some((word) => /(?:^|[\\/])pnpm(?:\.cmd|\.exe)?$/i.test(word));
   const directory = words.findIndex((word) => word === '--dir');
-  return pnpm && directory >= 0 && path.resolve(words[directory + 1] ?? '') === checkout && words.slice(directory + 2).includes('chemdraft');
+  return pnpm && directory >= 0 && paths.resolve(words[directory + 1] ?? '') === paths.resolve(checkout) && words.slice(directory + 2).includes('chemdraft');
 }
 
 function inputStrings(value, strings = []) {
@@ -181,12 +175,21 @@ function inputStrings(value, strings = []) {
   return strings;
 }
 
-function repoAccess(toolCalls, checkout) {
+export function repoAccess(toolCalls, checkout, { platform = process.platform, work = checkout, fileChanges = [] } = {}) {
   const accesses = [];
+  const paths = platform === 'win32' ? path.win32 : path;
+  const inCheckout = (value) => {
+    const relative = paths.relative(paths.resolve(checkout), paths.resolve(work, value));
+    return relative === '' || relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+  };
   for (const call of toolCalls) {
     if (call.name === 'Bash' && typeof call.input?.command === 'string') {
       if (call.input.command.includes(checkout)) accesses.push({ tool: 'Bash', command: call.input.command,
-        classification: isCliCommand(call.input.command, checkout) ? 'cli' : 'source-read' });
+        classification: isCliCommand(call.input.command, checkout, { platform }) ? 'cli' : 'source-read' });
+    } else if (['Write', 'Edit', 'NotebookEdit'].includes(call.name)) {
+      for (const value of [call.input?.file_path, call.input?.path, call.input?.notebook_path].filter((value) => typeof value === 'string')) {
+        if (inCheckout(value)) accesses.push({ tool: call.name, path: value, classification: 'source-write' });
+      }
     } else if (['Read', 'Grep', 'Glob'].includes(call.name)) {
       for (const value of inputStrings(call.input)) if (value.includes(checkout)) {
         accesses.push({ tool: call.name, path: value, classification: 'source-read' });
@@ -194,59 +197,13 @@ function repoAccess(toolCalls, checkout) {
       }
     }
   }
+  for (const change of fileChanges) if (typeof change.path === 'string' && inCheckout(change.path)) {
+    accesses.push({ tool: 'file_change', path: change.path, classification: 'source-write' });
+  }
   return accesses;
 }
 
-function pathValue(environment) {
-  return environment.PATH ?? environment.Path ?? '';
-}
-
-// cmd.exe parses this one command-line argument before the npm .cmd shim sees
-// it.  Quote each value so shell metacharacters remain data, and double percent
-// signs because npm's shims are batch files (where %% represents a literal %).
-export function quoteWindowsCmdArgument(value) {
-  return `"${String(value)
-    .replace(/(["])/g, '\\$1')
-    .replace(/([%])/g, '%%')
-    .replace(/([\^&|<>()])/g, '^$1')}"`;
-}
-
-export function resolveWindowsCommand(command, {
-  platform = process.platform,
-  environment = process.env,
-  exists = existsSync,
-} = {}) {
-  if (platform !== 'win32' || path.win32.dirname(command) !== '.') return command;
-  const extensions = command.includes('.')
-    ? ['']
-    : (environment.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
-  for (const directory of pathValue(environment).split(';').filter(Boolean)) {
-    for (const extension of extensions) {
-      const candidate = path.win32.join(directory, `${command}${extension}`);
-      if (exists(candidate)) return candidate;
-    }
-  }
-  return command;
-}
-
-export function spawnCommandSpec(command, args, {
-  platform = process.platform,
-  environment = process.env,
-  exists = existsSync,
-} = {}) {
-  // Node fixtures work on Windows too, without relying on executable shebangs.
-  const binary = command.endsWith('.mjs') ? process.execPath : command;
-  const commandArgs = command.endsWith('.mjs') ? [command, ...args] : args;
-  if (platform !== 'win32') return { command: binary, args: commandArgs };
-
-  const resolved = resolveWindowsCommand(binary, { platform, environment, exists });
-  if (!/\.(?:cmd|bat)$/i.test(resolved)) return { command: resolved, args: commandArgs };
-  return {
-    command: 'cmd.exe',
-    args: ['/d', '/s', '/c', `${quoteWindowsCmdArgument(resolved)} ${commandArgs.map(quoteWindowsCmdArgument).join(' ')}`],
-  };
-}
-
+export { quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from '../spawn-command.mjs';
 async function command(command, args, options = {}) {
   return new Promise((resolve) => {
     let stdout = '', stderr = '';
@@ -272,20 +229,50 @@ async function command(command, args, options = {}) {
   });
 }
 
-async function usageAllowsStart(agentctl, agent, stderr) {
+export async function usageAllowsStart(agentctl, agent, stderr) {
   const checked = await command(agentctl, ['usage', '--json']);
-  if (checked.exitCode !== 0) { stderr(`warning: could not read usage guard: ${checked.stderr || 'agentctl failed'}`); return agent !== 'codex'; }
+  if (checked.exitCode !== 0) { stderr(`warning: could not read usage guard: ${checked.stderr || 'agentctl failed'}`); return true; }
   try {
     const data = JSON.parse(checked.stdout);
     const pool = data.pools?.find((item) => item.pool === (agent === 'codex' ? 'openai' : 'claude'));
-    if (agent === 'codex' && !Number.isFinite(pool?.remaining_percent)) { stderr('warning: OpenAI usage pool is missing or invalid; refusing to start Codex'); return false; }
+    if (!Number.isFinite(pool?.remaining_percent)) { stderr(`warning: ${agent} usage pool is missing or invalid; proceeding`); return true; }
     return !(typeof pool?.remaining_percent === 'number' && pool.remaining_percent < 15);
-  } catch { stderr('warning: could not parse usage guard JSON'); return agent !== 'codex'; }
+  } catch { stderr('warning: could not parse usage guard JSON'); return true; }
+}
+
+/** Reject inherited project instructions, including ancestors reached through symlinks. */
+export async function assertOutputIsolation(output, { home = homedir() } = {}) {
+  let current = path.resolve(output);
+  const directories = new Set();
+  for (;;) {
+    directories.add(current);
+    try { directories.add(await realpath(current)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const parent = path.dirname(current);
+    if (parent === current || current === path.resolve(home)) break;
+    current = parent;
+  }
+  for (const directory of directories) {
+    let ancestor = directory;
+    for (;;) {
+      for (const entry of ['CLAUDE.md', 'AGENTS.md', '.claude', '.codex']) {
+        if ((entry === '.claude' || entry === '.codex') && ancestor === path.resolve(home)) continue;
+        if (existsSync(path.join(ancestor, entry))) throw new Error(`--out inherits agent instructions: ${path.join(ancestor, entry)}`);
+      }
+      // Include home itself, but never inspect its parents for home descendants.
+      if (ancestor === path.resolve(home) || path.dirname(ancestor) === ancestor) break;
+      ancestor = path.dirname(ancestor);
+    }
+  }
+}
+
+export function checkoutChanges(before, after) {
+  const prior = new Set((before ?? '').split('\n').filter(Boolean));
+  return (after ?? '').split('\n').filter((line) => line && !prior.has(line));
 }
 
 async function gitValue(checkout, args) {
   const value = await command('git', args, { cwd: checkout });
-  return value.exitCode === 0 ? value.stdout.trim() : null;
+  return value.exitCode === 0 ? value.stdout.trimEnd() : null;
 }
 
 async function copiedSkill(source, destination) {
@@ -395,8 +382,8 @@ async function runOne(caseItem, options, shared, stderr) {
   await writeFile(path.join(caseDir, 'transcript.jsonl'), executed.stdout);
   if (options.agent === 'codex') await writeFile(path.join(caseDir, 'stderr.log'), executed.stderr);
   const events = parseStream(executed.stdout);
-  const parsed = options.agent === 'codex' ? inspectCodexStream(events) : inspectStream(events);
-  let isolationLeak = false;
+  const parsed = options.agent === 'codex' ? inspectCodexStream(events) : inspectStream(events, { userSkillsPath: options.userSkillsPath });
+  let isolationLeak = parsed.isolationLeak ?? false;
   if (options.agent === 'codex') {
     parsed.model ??= await sessionModel(codexHome);
     // The generated config is the evidence that only ChemDraft is configured and
@@ -409,11 +396,19 @@ async function runOne(caseItem, options, shared, stderr) {
   }
   await writeFile(path.join(caseDir, 'final.md'), parsed.final);
   await writeFile(path.join(caseDir, 'tool-calls.json'), `${JSON.stringify(parsed.toolCalls, null, 2)}\n`);
-  await saveToolAssets(parsed.assetEvents ?? events, path.join(caseDir, 'images'));
+  const assets = await saveToolAssets(parsed.assetEvents ?? events, path.join(caseDir, 'images'));
   await writeFile(path.join(caseDir, 'files.json'), `${JSON.stringify(await listFiles(work), null, 2)}\n`);
-  await collectOutputs(caseDir, work, codexHome, parsed.final, parsed.toolCalls);
+  const outputs = await collectOutputs(caseDir, work, codexHome, parsed.final, parsed.toolCalls);
+  assets.push(...outputs.map((output) => ({ ...output, path: `outputs/${output.copiedName}` })));
+  await writeFile(path.join(caseDir, 'assets.json'), `${JSON.stringify(assets, null, 2)}\n`);
+  const checkoutStatusAfter = await gitValue(options.checkout, ['status', '--porcelain', '--untracked-files=all']);
+  const newCheckoutChanges = checkoutChanges(shared.checkoutStatusBefore, checkoutStatusAfter);
+  const checkoutModified = newCheckoutChanges.length > 0;
+  const accesses = repoAccess(parsed.toolCalls, options.checkout, { work, fileChanges: parsed.fileChanges });
+  isolationLeak ||= checkoutModified || accesses.some((access) => access.classification === 'source-write');
+  parsed.isolated &&= !isolationLeak;
   let status = executed.timedOut ? 'timeout' : executed.exitCode === 0 && !parsed.failed ? 'complete' : 'error';
-  let reason = executed.timedOut ? 'timeout' : status === 'complete' ? undefined : executed.stderr || `${options.agent} exited unsuccessfully`;
+  let reason = executed.timedOut ? 'timeout' : status === 'complete' ? undefined : parsed.failureReason || executed.stderr || `${options.agent} exited unsuccessfully`;
   if (isolationLeak) { status = 'error'; reason = 'isolation-leak'; }
   else if (status !== 'timeout' && !parsed.isolated) { status = 'error'; reason = 'isolation'; }
   const meta = { id: caseItem.id, status, exitCode: executed.exitCode, startedAt, endedAt, durationMs: Date.now() - started,
@@ -421,7 +416,8 @@ async function runOne(caseItem, options, shared, stderr) {
     numTurns: parsed.numTurns, usage: parsed.usage ?? parsed.result?.usage ?? null, total_cost_usd: parsed.result?.total_cost_usd ?? null,
     mcpServers: parsed.mcpServers ?? parsed.init?.mcp_servers ?? parsed.init?.mcpServers ?? [], tools: parsed.tools ?? parsed.init?.tools ?? [],
     isolation: { verified: parsed.isolated, ...(options.agent === 'codex' ? { configuredMcpServers: ['chemdraft'], skillPath: copied } : {}) },
-    repoAccess: repoAccess(parsed.toolCalls, options.checkout), ...(reason ? { reason } : {}) };
+    checkoutModified, checkoutStatusBefore: shared.checkoutStatusBefore, checkoutStatusAfter, newCheckoutChanges,
+    repoAccess: accesses, ...(reason ? { reason } : {}) };
   await writeMeta(caseDir, meta);
   return { meta, stderr: executed.stderr };
 }
@@ -431,6 +427,7 @@ export async function run(options, io = {}) {
   options.checkout = await realpath(path.resolve(options.checkout));
   options.out = path.resolve(options.out);
   if (isInsideOrParent(options.checkout, options.out)) throw new Error('--out must be outside the repository and its parent directory');
+  await assertOutputIsolation(options.out, { home: options.home });
   const casesData = JSON.parse(await readFile(options.cases, 'utf8'));
   let cases = casesData.cases.filter((item) => options.split === 'all' || item.split === options.split);
   if (options.ids) {
@@ -450,7 +447,8 @@ export async function run(options, io = {}) {
   }
   await mkdir(options.out, { recursive: true });
   const shared = { binary, agentctl: process.env.CHEMDRAFT_STRESS_AGENTCTL_BIN || 'agentctl',
-    agentVersion: null, checkoutHead: await gitValue(options.checkout, ['rev-parse', 'HEAD']) };
+    agentVersion: null, checkoutHead: await gitValue(options.checkout, ['rev-parse', 'HEAD']),
+    checkoutStatusBefore: await gitValue(options.checkout, ['status', '--porcelain', '--untracked-files=all']) };
   if (options.agent === 'codex') {
     shared.codexAuth = path.join(process.env.CHEMDRAFT_STRESS_CODEX_AUTH_HOME || path.join(homedir(), '.codex-openai'), 'auth.json');
     if (!existsSync(shared.codexAuth)) throw new Error(`Codex auth.json is missing: ${shared.codexAuth}. Set CHEMDRAFT_STRESS_CODEX_AUTH_HOME to the signed-in source home.`);
