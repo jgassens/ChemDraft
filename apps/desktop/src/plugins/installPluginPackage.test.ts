@@ -1043,7 +1043,7 @@ describe("uninstallPlugin", () => {
 
   it("clears external-tool consent for a plugin that can hold it", async () => {
     const zip = await createPackage({
-      manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "assistant.run"] })
+      manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "assistant.run", "native.execute"] })
     });
     const { fs, runtime, result } = await installFixture({ zip });
     const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
@@ -1055,7 +1055,7 @@ describe("uninstallPlugin", () => {
 
   it("clears consent granted before an update removed assistant.run", async () => {
     const zip = await createPackage({
-      manifest: manifestDocument({ version: "1.0.0", permissions: ["ui.menu", "ui.panel", "assistant.run"] })
+      manifest: manifestDocument({ version: "1.0.0", permissions: ["ui.menu", "ui.panel", "assistant.run", "native.execute"] })
     });
     const { fs, runtime, result: installed } = await installFixture({ zip });
     const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
@@ -1084,7 +1084,7 @@ describe("uninstallPlugin", () => {
 
   it("completes uninstall when external-tool consent cleanup rejects", async () => {
     const zip = await createPackage({
-      manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "assistant.run"] })
+      manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "assistant.run", "native.execute"] })
     });
     const { fs, runtime, result, worker } = await installFixture({ zip });
     const clearConsent = vi
