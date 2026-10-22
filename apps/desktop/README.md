@@ -1,5 +1,24 @@
 # ChemDraft Desktop
 
+## Main toolbar zoom
+
+The Main toolbar's **Document Zoom** control has Zoom Out/Zoom In icons and a dropdown with
+25%, 50%, 75%, 100%, 200% and 400% presets. Its value follows wheel/pinch gestures and keyboard
+shortcuts too, showing an intermediate percentage when appropriate. Each document tab retains
+its own view. Zoom affects the view only: it does not resize molecules, change exported page
+dimensions, mark the drawing dirty or create Undo entries. The default zoom range is 25%–850%.
+Toolbar icons and presets zoom about the visible drawing area's center, including after scrolling.
+Wheel/pinch gestures keep the pointer as their anchor. At scroll boundaries, the browser may clamp
+the position when a smaller page fits into the workspace.
+
+The control is available as **Document Zoom** in Customize Main Toolbar. If a saved custom layout
+does not include it, add the widget from the gallery or restore toolbar defaults. Detached palettes
+receive small validated zoom updates from the document window; they do not own a separate zoom.
+
+The buttons and their zoom shortcuts use fixed stops: 25%, 50%, 75%, 100%, 125%, 150%, 200%,
+300%, 400%, 600%, 850%. From an intermediate wheel-zoom value, they choose the next stop in the
+requested direction. Wheel/pinch stays smooth; the dropdown keeps its six presets.
+
 Preferences includes “Ask to save unsaved changes before quitting”, off by default.
 When enabled, quitting with dirty tabs offers Save / Don't Save / Cancel in a native message
 box, with an accessible in-window fallback if the native box cannot open. Save writes every

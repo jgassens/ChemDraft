@@ -426,9 +426,10 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
       "layout.alignRight"
     ]);
     expect(order.indexOf("core.main.divider.6")).toBeLessThan(order.indexOf("tool.text"));
-    expect(order.slice(order.indexOf("tool.text"), order.indexOf("tool.text") + 4)).toEqual([
+    expect(order.slice(order.indexOf("tool.text"), order.indexOf("tool.text") + 5)).toEqual([
       "tool.text",
       "tool.select",
+      "widget.core.documentZoom",
       "tool.lasso",
       "tool.eraser"
     ]);
@@ -460,14 +461,15 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
       ]
     });
     const [items] = getToolsetItemGroups("core.main", registry);
-    expect(items.slice(0, 5).map((item) => item.id)).toEqual([
+    expect(items.slice(0, 6).map((item) => item.id)).toEqual([
+      "widget.core.documentZoom",
       "tool.select",
       "tool.lasso",
       "tool.eraser",
       "tool.text",
       "core.main.divider.1"
     ]);
-    expect(items.slice(5, 8).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
+    expect(items.slice(6, 9).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
   });
 
   it("applies a legacy addition at its section-relative position after flattening", () => {

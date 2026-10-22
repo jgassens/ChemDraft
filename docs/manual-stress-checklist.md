@@ -617,3 +617,29 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+## Main toolbar document zoom
+
+Check repeated Zoom In/Out and zoom shortcuts walk 25%, 50%, 75%, 100%, 125%, 150%, 200%, 300%,
+400%, 600%, 850% forward/backward. Wheel/pinch must still produce smooth intermediate values;
+the next button press chooses the adjacent stop in its direction (e.g. 156.3% → 200% or 150%).
+The dropdown must still offer only its original six presets plus the current intermediate display.
+
+Scroll horizontally and vertically so the page center is off-screen. Mark a visible point near the
+workspace center; Zoom In/Out and presets must keep that point at the visible center, within normal
+pixel rounding when scrolling is unconstrained. Repeat with rulers shown/hidden and while a scrollbar
+appears/disappears. Zooming out at a scroll limit may clamp the view. Wheel zoom must still anchor
+to the pointer. A zoom followed immediately by a tab switch must not scroll the newly active tab.
+
+On native Windows and macOS, find Zoom Out, the percentage dropdown and Zoom In on Main. Select
+25%, 50%, 75%, 100%, 200% and 400%; verify the page/rulers change and molecule coordinates and
+exported page dimensions do not. At 25%, Zoom Out is disabled; zoom to the 850% ceiling and check
+Zoom In is disabled. Ordinary icon presses invoke once, including the first click on an inactive
+palette. Dropdown mouse/keyboard selection, Tab, Escape and focus return must remain usable without
+moving the palette or triggering drawing tools. Confirm 100% → Zoom In gives 125% and shows it.
+
+Wheel/pinch and zoom shortcuts must refresh the dropdown. Switch tabs with different zoom levels,
+close/reopen Main, open a new tab and restore an older saved session whose zoom floor was 50%:
+the widget must follow the active drawing and the 25% preset must work. Zoom must not mark a clean
+document dirty or add Undo entries. Customize, move/remove/re-add the Document Zoom widget and
+restore defaults. Check toolbar content-fit sizing on both platforms, narrow windows, Windows
+100%/200% scaling, a second monitor and macOS Retina. These native checks remain pending locally.

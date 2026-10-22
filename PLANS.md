@@ -8,8 +8,28 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+## Main toolbar document zoom (`feature/toolbar-zoom`)
+
+Expose the existing document zoom engine through a command-backed Main toolbar widget with
+Zoom Out/Zoom In icons and 25%, 50%, 75%, 100%, 200%, 400% presets. The dropdown shows the actual
+zoom after commands, wheel/pinch gestures and tab switches, including intermediate values.
+Lower the default floor to 25% and normalize older restored document views so all presets work.
+Reuse native palette command routing and add a small validated zoom-state/request channel;
+wheel zoom must not retransmit large inspector reports. Keep the widget available to toolbar
+customization. Zoom changes the view only, without document edits, dirty state or undo entries.
+Scope: toolbar/widget manifest, command registration, viewport limits, native/browser state sync,
+regression tests, usage/manual checks and build stamp. Native Windows/macOS checks remain pending.
+
+Centering correction: toolbar icons, presets and their keyboard commands keep the drawing point
+under the visible workspace center fixed, measuring the rendered page and adjusting scroll after
+layout. Recompute the destination center when scrollbars change; exclude rulers and borders. Wheel
+zoom retains its pointer anchor. Cover scrolled views, rulers on/off and changing scrollbar sizes;
+ignore a pending correction if the document changes before its animation frame runs.
+
+Button-step refinement: Zoom In/Out (and the same command shortcuts) walk 25%, 50%, 75%, 100%,
+125%, 150%, 200%, 300%, 400%, 600%, 850% in either direction. From a smooth wheel value, choose
+the next stop in the requested direction. Preserve smooth wheel/pinch, the six dropdown presets
+and visible-center anchoring. Cover the full step ladder, limits and intermediate values.
 
 ---
 

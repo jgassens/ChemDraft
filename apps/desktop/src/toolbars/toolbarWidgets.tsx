@@ -11,6 +11,7 @@ import type { ToolbarPaletteItemModel } from "../toolsets";
 // (which imports the context *value* from here).
 import type { ToolbarPopoverAnchor } from "../ToolPalette";
 import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
+import type { DocumentZoomState } from "../documentZoom";
 
 /**
  * Live state + callbacks a toolbar widget (style controls, ring/molecule inspector) needs to render
@@ -20,6 +21,7 @@ import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
  * renderer looks each one up in its registry rather than reading a hardcoded `show*Controls` boolean.
  */
 export interface ToolbarWidgetState {
+  currentZoom?: DocumentZoomState;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   currentObjectColor?: string;
@@ -75,6 +77,7 @@ export const WIDGET_CONTROL_ID_PREFIX = "widget.";
 
 /** Canonical widget ids, used both as manifest `controlId`s and registry keys. */
 export const TOOLBAR_WIDGET_IDS = {
+  documentZoom: "widget.core.documentZoom",
   mainStyleControls: "widget.core.mainStyleControls",
   textStyleControls: "widget.core.textStyleControls",
   artStyleControls: "widget.core.artStyleControls",
@@ -118,5 +121,6 @@ export function isGridWidgetItem(item: ToolbarPaletteItemModel): boolean {
  *  (24px + gap) to fit each widget's intrinsic content. Widgets not listed here re-add as appended
  *  sections (legacy behavior). */
 export const TOOLBAR_WIDGET_GRID_SPANS: Readonly<Record<string, { colSpan: number; rowSpan: number }>> = {
+  [TOOLBAR_WIDGET_IDS.documentZoom]: { colSpan: 6, rowSpan: 1 },
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 12, rowSpan: 2 }
 };

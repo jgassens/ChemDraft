@@ -40,6 +40,7 @@ import {
   usePaletteButtonInvoke
 } from "./toolbars/toolbarCells";
 import { MainStyleWidget } from "./toolbars/mainStyleWidget";
+import { DocumentZoomControls } from "./toolbars/DocumentZoomControls";
 import {
   TOOLTIP_DELAY_MS,
   useNativeFloatingTooltip,
@@ -543,6 +544,10 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
   string,
   { gridMode: ToolbarWidgetGridMode; className: string; title: string; render: () => ReactNode }
 > = {
+  [TOOLBAR_WIDGET_IDS.documentZoom]: {
+    gridMode: "append", className: "document-zoom-palette", title: "Document Zoom",
+    render: () => <DocumentZoomControls />
+  },
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: {
     gridMode: "append",
     className: "main-style-palette",
