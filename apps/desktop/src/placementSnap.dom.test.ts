@@ -71,7 +71,22 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(molecules(current())).toEqual(before);
     expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   }
-  const tools = ["tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];
+  it.each(["double", "triple"])("sets a clicked bond to %s and supports Undo/Redo", async (order) => {
+    await mount(`tool.${order}Bond`, insertNativeSingleBondMolecule(createPhase4Document("Set order"), { x: 240, y: 240 }));
+    const before = molecules(current());
+    const molecule = before[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())[0].bonds[0].order).toBe(order);
+    expect(molecules(current())[0].atoms).toEqual(molecule.atoms);
+    await undoOnce(before);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(molecules(current())[0].bonds[0].order).toBe(order);
+  });
+
+  const tools = ["tool.doubleBond", "tool.tripleBond", "tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];
 
   it.each(tools.flatMap((tool) => [false, true].map((alt) => [tool, alt] as const)))("aims %s from an atom (Alt: %s), previews and commits once", async (tool, alt) => {
     const seed = insertNativeSingleBondMolecule(createPhase4Document("Seed"), { x: 240, y: 240 });
@@ -96,11 +111,12 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(placed.bonds.slice(0, 1)).toEqual(before[0].bonds);
     expect(placed.atoms).toHaveLength(3);
     expect(placed.bonds).toHaveLength(2);
+    expect(placed.bonds[1].order).toBe(tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single");
     const terminal = placed.atoms[2];
     expect(angle(source, terminal)).toBeCloseTo(alt ? 23 : 30, 8);
     expect(terminal.x - source.x).toBeCloseTo(previewEnd.x - previewStart.x, 8);
     expect(terminal.y - source.y).toBeCloseTo(previewEnd.y - previewStart.y, 8);
-    expect(placed.structure).toBe("CCC");
+    expect(placed.structure).toBe(tool === "tool.doubleBond" ? "CC=C" : tool === "tool.tripleBond" ? "CC#C" : "CCC");
     await undoOnce(before);
   });
 
@@ -149,6 +165,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await pointer("pointerdown", start);
     await pointer("pointermove", pointAt(start, 23), page(), alt);
     const preview = molecules(current())[0];
+    expect(preview.bonds[0].order).toBe(tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single");
     expect(preview.atoms[0]).toMatchObject(start);
     expect(angle(preview.atoms[0], preview.atoms[1])).toBeCloseTo(alt ? 23 : 30, 8);
     expect(Math.hypot(preview.atoms[1].x - start.x, preview.atoms[1].y - start.y)).toBeCloseTo(nativeBondLengthPx, 8);
@@ -213,9 +230,9 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await undoOnce(before);
   });
 
-  it("connects existing atoms without moving them to the angle grid", async () => {
+  it.each(["tool.bond", "tool.doubleBond", "tool.tripleBond"])("connects existing atoms with %s without moving them to the angle grid", async (tool) => {
     const seed = applyNativeChainTool(createPhase4Document("Close chain"), { x: 240, y: 240 }, { x: 315, y: 269 });
-    await mount("tool.bond", seed);
+    await mount(tool, seed);
     const before = molecules(current());
     const source = before[0].atoms[0];
     const target = before[0].atoms.at(-1)!;
@@ -227,7 +244,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     const placed = molecules(current())[0];
     expect(placed.atoms).toEqual(before[0].atoms);
     expect(placed.bonds).toHaveLength(before[0].bonds.length + 1);
-    expect(placed.bonds.at(-1)).toMatchObject({ fromAtomId: source.id, toAtomId: target.id });
+    expect(placed.bonds.at(-1)).toMatchObject({ fromAtomId: source.id, toAtomId: target.id, order: tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single" });
     await undoOnce(before);
   });
 });

@@ -703,6 +703,7 @@ function artArcTool(
 }
 
 export interface NativeBondToolOptions {
+  bondOrder?: NativeBondOrderValue;
   bondStyle?: NativeBondDisplayStyle;
 }
 
@@ -959,7 +960,7 @@ export function createNativeSingleBondMolecule(
     id: "bond_001",
     fromAtomId: leftAtom.id,
     toAtomId: rightAtom.id,
-    order: "single",
+    order: options.bondOrder ?? "single",
     ...nativeBondDisplayObject(options.bondStyle)
   }] satisfies MoleculeBond[];
   const geometry = moleculeGeometryFromAtoms(atoms);
@@ -1384,9 +1385,15 @@ export function applyNativeChainTool(
   );
 }
 
+export function nativeBondOrderForToolCommand(commandId: string): NativeBondOrderValue {
+  return commandId === "tool.doubleBond" ? "double" : commandId === "tool.tripleBond" ? "triple" : "single";
+}
+
 export function nativeBondStyleForToolCommand(commandId: string): NativeBondToolStyle | undefined {
   switch (commandId) {
     case "tool.bond":
+    case "tool.doubleBond":
+    case "tool.tripleBond":
       return "solid";
     case "tool.wedgeBond":
       return "wedge";
@@ -7155,6 +7162,10 @@ export function applySingleBondToolAtPoint(
   }
 
   if (!extended) {
+    // A requested multiple bond at an atom must fail as a whole when valence refuses it.
+    if (options.bondOrder && options.bondOrder !== "single" &&
+        (findNativeMoleculeAtomHit(selected, point) ||
+         previewNativeMoleculeBondGrowth(selected, point, page.width, page.height))) return document;
     return insertNativeSingleBondMolecule(document, point, options);
   }
 
@@ -18931,7 +18942,13 @@ function extendNativeCarbonGraph(
     }
   ];
 
-  return refreshNativeSingleBondGraph(molecule, atoms, bonds);
+  const addedBond = bonds[bonds.length - 1];
+  const order = options.bondOrder ?? "single";
+  if (order !== "single" && !canSetNativeBondOrder({ ...molecule, atoms, bonds }, addedBond, order)) {
+    return undefined;
+  }
+  return refreshNativeSingleBondGraph(molecule, atoms, bonds.map(bond =>
+    bond.id === addedBond.id ? { ...bond, order } : bond));
 }
 
 /**
@@ -19347,7 +19364,13 @@ function connectNativeCarbonAtoms(
     }
   ];
 
-  return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const addedBond = bonds[bonds.length - 1];
+  const order = options.bondOrder ?? "single";
+  if (order !== "single" && !canSetNativeBondOrder({ ...molecule, bonds }, addedBond, order)) {
+    return undefined;
+  }
+  return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds.map(bond =>
+    bond.id === addedBond.id ? { ...bond, order } : bond));
 }
 
 function nativeAtomWithElement(
