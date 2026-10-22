@@ -8,8 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+## Inspector scrollbar dragging (`fix/settings-scrollbar-drag`)
+
+Prevent presses on palette scrollbars and ordinary content from starting a native window drag.
+Keep title-bar and explicit content-grip dragging, including the mouse-only fallback and Windows
+grab-point compensation. Scope: `PaletteWindow.tsx`, `window-manager/window-drag.dom.test.ts`, the
+build stamp in `MainWindow.tsx`, and the standing manual checklist. Add regression coverage before
+changing the handlers. Verify types, tests and builds where the available toolchains permit;
+real scrollbar thumb behavior and title/grip dragging require packaged Windows and macOS checks.
+Keep the slice in flight until native verification is complete.
 
 ---
 

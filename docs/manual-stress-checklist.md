@@ -20,6 +20,14 @@ and Dock reopen. Cold-open a file from Finder/Explorer, relaunch after an update
 file/launch again while running: the main window must appear, preserving its live frame and maximized
 state when already visible. Repeat with session recovery and crash-report consent pending.
 
+Palette scrolling (packaged Windows and macOS): open Object Settings / Drawn Structure Settings
+and choose a tab with enough content to show a vertical scrollbar. Drag the thumb in both directions
+and click the track: contents must scroll while the window stays in place. Repeat wheel scrolling,
+edit a field, change a select and switch tabs. Press/drag ordinary content and blank panel space:
+neither may move the window. Drag the title and a toolbar's explicit content grip: each must still
+move its window without a jump. On Windows repeat at 100%, 150% and 200% display scale and across
+mixed-DPI monitors; verify the window still reopens at the position saved after a deliberate title drag.
+
 Nested plugin workers (packaged macOS and Windows builds): install the NMR Shift Predictor package,
 select a molecule, and invoke prediction from real menu input. On Windows/WebView2, confirm the
 entry bootstrap loads with the unchanged installed-plugin CSP, the nested module imports from its

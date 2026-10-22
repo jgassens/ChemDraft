@@ -844,7 +844,11 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    // Only the explicit content grip may start a drag here; the title has its own handler.
+    // Scrollbar presses can target the scrolling div, so excluding form controls is not enough.
+    if (!(event.target instanceof Element) ||
+      !event.target.closest("[data-palette-content-drag-grip]") ||
+      event.target.closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
 
@@ -858,7 +862,9 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    if (!(event.target instanceof Element) ||
+      !event.target.closest("[data-palette-content-drag-grip]") ||
+      event.target.closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
 
