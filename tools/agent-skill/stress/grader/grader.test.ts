@@ -8,10 +8,11 @@ import { fileURLToPath } from 'node:url';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const checkout = resolve(directory, '../../../..');
 type Check = { applies: boolean; pass: boolean | null; detail: unknown };
-type Auto = { id: string; status: string; auto: string | null; checks: Record<string, Check>; drawn: { smiles: string; canonical: string; source: string }[] };
+type Auto = { id: string; status: string; auto: string | null; agent?: string | null; checks: Record<string, Check>; drawn: { smiles: string; canonical: string; source: string }[] };
 type TestCase = { id: string; category: string; split: string; prompt: string; expect: Record<string, unknown>; rubric: string[] };
 type Call = { name: string; input: Record<string, unknown>; result?: unknown };
 const structure = 'C[C@@H](N)C(=O)O';
+const quinine = 'COC1=CC2=C(C=CN=C2C=C1)[C@H]([C@@H]3C[C@@H]4CCN3C[C@@H]4C=C)O';
 const render = (smiles: string): Call => ({ name: 'mcp__chemdraft__render_structure', input: { smiles } });
 const svg = (length: number, width = 2) => `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g data-object-id="m1"><line data-bond-id="b1" x1="10" y1="10" x2="${10+length}" y2="10" stroke="black" stroke-width="${width}"/></g></svg>`;
 let root: string;
@@ -50,12 +51,17 @@ beforeAll(async () => {
   await mkdir(runs, { recursive: true });
   await cp(join(directory, 'fixtures/exact'), join(runs, 'exact'), { recursive: true });
   cases.push({ id: 'exact', category: 'test', split: 'dev', prompt: 'Draw L-alanine', expect: full, rubric: ['Correct requested output'] });
+  await cp(join(directory, 'fixtures/codex'), join(runs, 'codex'), { recursive: true });
+  cases.push({ id: 'codex', category: 'test', split: 'dev', prompt: 'Draw ethanol', expect: { structures: [{ smiles: 'CCO' }] }, rubric: ['Correct requested output'] });
   await fixture('absolute-wrong', full, [render('C[C@H](N)C(=O)O')]);
   await fixture('relative', { structures: [{ smiles: structure, relative: true }], full_stereo: true }, [render('C[C@H](N)C(=O)O')]);
   await fixture('relative-ez', { structures: [{ smiles: 'C[C@H](O)/C=C/C', relative: true }] }, [render('C[C@@H](O)/C=C/C')]);
   await fixture('relative-wrong-ez', { structures: [{ smiles: 'C[C@H](O)/C=C/C', relative: true }] }, [render('C[C@@H](O)/C=C\\C')]);
   await fixture('unspecified', full, [render('CC(N)C(=O)O')]);
   await fixture('unspecified-double', { structures: [{ smiles: 'C/C=C/C' }], full_stereo: true }, [render('CC=CC')]);
+  await fixture('quinine-reference', { structures: [{ smiles: quinine }], full_stereo: true }, [render(quinine)]);
+  await fixture('quinine-extra-unspecified', { structures: [{ smiles: quinine }], full_stereo: true },
+    [render(quinine.replace('[C@H]([C@@H]3', '[CH]([C@@H]3'))]);
   await fixture('duplicate', { structures: [{ smiles: 'CCO' }, { smiles: 'CC' }], set_match: true },
     [{ name: 'mcp__chemdraft__render_grid', input: { items: [{ name: 'a', smiles: 'CCO' }, { name: 'b', smiles: 'CC' }, { name: 'dup', smiles: 'CCO' }] } }]);
   await fixture('contains', { structures: [{ smiles: 'CCO' }], set_contains: true }, [render('CCO'), render('CCC')]);
@@ -144,9 +150,16 @@ describe('automatic scoring on fixture run folders', () => {
     expect(autos.get('relative-ez')?.checks.A1.pass).toBe(true);
     expect(autos.get('relative-wrong-ez')?.checks.A1.pass).toBe(false);
   });
-  it('fails A3 for unspecified tetrahedral and double bond stereo', () => {
+  it('compares A3 against reference counts, including the quinine bridgehead N exception', () => {
     expect(autos.get('unspecified')?.checks.A3.pass).toBe(false);
     expect(autos.get('unspecified-double')?.checks.A3.pass).toBe(false);
+    expect(autos.get('quinine-reference')?.checks.A3.pass).toBe(true);
+    expect(autos.get('quinine-extra-unspecified')?.checks.A3.pass).toBe(false);
+  });
+  it('uses Codex tool-calls.json rather than its non-Claude event transcript', () => {
+    expect(autos.get('codex')?.checks.A1.pass).toBe(true);
+    expect(autos.get('codex')?.checks.A8.pass).toBe(true);
+    expect(autos.get('codex')?.agent).toBe('codex');
   });
   it('counts duplicates for set_match and allows decoys for set_contains', () => {
     expect(autos.get('duplicate')?.checks.A2.pass).toBe(false);
@@ -202,6 +215,11 @@ describe('automatic scoring on fixture run folders', () => {
 });
 
 describe('report', () => {
+  it('rejects cases from different agents', async () => {
+    expect(() => node('report.mjs')).toThrow(/Cannot mix runs from different agents/);
+    // The remaining report checks exercise a single-agent selection, after proving the guard.
+    await writeFile(join(runs, 'codex/meta.json'), JSON.stringify({ id: 'codex', status: 'complete' }));
+  });
   it('keeps splits and categories separate, excludes harness, labels pending V, and computes Wilson 95%', async () => {
     node('report.mjs');
     const report = JSON.parse(await readFile(join(runs, 'grade/report.json'), 'utf8'));

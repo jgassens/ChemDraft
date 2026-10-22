@@ -61,7 +61,7 @@ export async function writeVisualPack(root, testCase, run, chemistry) {
       } catch (error) { conversionErrors.push(`${relative(folder, destination)}: PNG preview unavailable: ${error.message}`); }
     }
   }
-  const header = `# ${testCase.id}\n\n## Prompt\n\n${testCase.prompt}\n\n## Reference structures\n\n${references.join('\n') || 'No reference structures specified.'}\n\n## Drawing kind\n\n${expect.drawing_kind ?? 'Not specified'}\n\n## Rubric\n\n${(testCase.rubric ?? []).map((line, i) => `${i + 1}. ${line}`).join('\n')}\n\n## Images\n\n${copied.map((file) => `- ${file}`).join('\n') || 'No images delivered.'}${conversionErrors.length ? '\n\n' + conversionErrors.join('\n') : ''}\n\n## Agent final message (verbatim to end of file)\n\n`;
+  const header = `# ${testCase.id}\n\n## Agent\n\n${run.meta.agent ?? 'unspecified'}\n\n## Prompt\n\n${testCase.prompt}\n\n## Reference structures\n\n${references.join('\n') || 'No reference structures specified.'}\n\n## Drawing kind\n\n${expect.drawing_kind ?? 'Not specified'}\n\n## Rubric\n\n${(testCase.rubric ?? []).map((line, i) => `${i + 1}. ${line}`).join('\n')}\n\n## Images\n\n${copied.map((file) => `- ${file}`).join('\n') || 'No images delivered.'}${conversionErrors.length ? '\n\n' + conversionErrors.join('\n') : ''}\n\n## Agent final message (verbatim to end of file)\n\n`;
   await writeFile(join(folder, 'case.md'), header + run.final);
-  return { copied, conversionErrors };
+  return { agent: run.meta.agent ?? null, copied, conversionErrors };
 }

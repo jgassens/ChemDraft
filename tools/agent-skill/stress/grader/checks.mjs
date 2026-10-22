@@ -54,7 +54,34 @@ export function answerValues(text, method) {
   return found;
 }
 
-export async function gradeCase(testCase, run, extracted, chemistry) {
+function countPair(value) {
+  const counts = value?.stereo ?? value?.stereoCounts ?? value?.counts ?? value;
+  if (!Number.isInteger(counts?.unspecifiedStereoCenters) || counts.unspecifiedStereoCenters < 0 ||
+    !Number.isInteger(counts?.unspecifiedDoubleBonds) || counts.unspecifiedDoubleBonds < 0) return null;
+  return { unspecifiedStereoCenters: counts.unspecifiedStereoCenters, unspecifiedDoubleBonds: counts.unspecifiedDoubleBonds };
+}
+
+/** The lock is deliberately permissive about its outer case/reference indexing so an older lock
+ * remains useful. Only an explicit pair of ChemDraft stereo counts is trusted. */
+function lockedStereoCounts(lock, testCase, ref, index) {
+  if (!lock || typeof lock !== 'object') return null;
+  const cases = lock.cases;
+  const caseEntry = Array.isArray(cases) ? cases.find((entry) => entry?.id === testCase.id) :
+    cases?.[testCase.id] ?? lock[testCase.id] ?? lock.references?.[testCase.id];
+  const candidates = [
+    caseEntry, caseEntry?.structures?.[index], caseEntry?.references?.[index], caseEntry?.[index],
+    caseEntry?.structures?.[ref.smiles], caseEntry?.references?.[ref.smiles],
+    caseEntry?.bySmiles?.[ref.smiles], caseEntry?.by_smiles?.[ref.smiles],
+    lock.bySmiles?.[ref.smiles], lock.by_smiles?.[ref.smiles], lock.references?.[ref.smiles]
+  ];
+  for (const candidate of candidates) {
+    const counts = countPair(candidate);
+    if (counts) return counts;
+  }
+  return null;
+}
+
+export async function gradeCase(testCase, run, extracted, chemistry, referenceLock) {
   if (run.meta.status !== 'complete') return harnessResult(testCase, `Runner status: ${run.meta.status ?? 'missing'}`);
   const expect = testCase.expect ?? {};
   const checks = Object.fromEntries(CHECKS.map((id) => [id, check()]));
@@ -79,8 +106,8 @@ export async function gradeCase(testCase, run, extracted, chemistry) {
     { mode: expect.set_match ? 'set_match' : 'set_contains', ...result, references: refs, errors: extracted.errors });
   }
   if (expect.full_stereo) {
-    const candidates = [], missing = [];
-    for (const ref of refs) {
+    const comparisons = [], missing = [];
+    for (const [index, ref] of refs.entries()) {
       const constitution = await chemistry.canonical(ref.smiles, true);
       let relevant = drawn.filter((item) => matches(item, ref));
       if (!relevant.length && !ref.optional) {
@@ -89,16 +116,29 @@ export async function gradeCase(testCase, run, extracted, chemistry) {
         // Constitutional decoys do not affect A3 when an exact match is present.
         relevant = drawn.filter((item) => !item.error && item.constitution === constitution);
       }
-      for (const item of relevant) if (!candidates.includes(item)) candidates.push(item);
+      const locked = lockedStereoCounts(referenceLock, testCase, ref, index);
+      const referenceCounts = locked ?? await chemistry.stereo(ref.smiles);
+      for (const item of relevant) {
+        try {
+          const drawnCounts = await chemistry.stereo(item.smiles);
+          comparisons.push({ smiles: item.smiles, source: item.source, reference: ref.smiles,
+            referenceCounts: { unspecifiedStereoCenters: referenceCounts.unspecifiedStereoCenters,
+              unspecifiedDoubleBonds: referenceCounts.unspecifiedDoubleBonds },
+            referenceCountSource: locked ? 'references.lock.json' : 'computed', ...drawnCounts });
+        } catch (error) { comparisons.push({ smiles: item.smiles, source: item.source, reference: ref.smiles, error: error.message }); }
+      }
     }
-    if (!refs.length) candidates.push(...drawn);
-    const counts = [];
-    for (const item of candidates) {
-      try { counts.push({ smiles: item.smiles, source: item.source, ...await chemistry.stereo(item.smiles) }); }
-      catch (error) { counts.push({ smiles: item.smiles, source: item.source, error: error.message }); }
+    if (!refs.length) for (const item of drawn) {
+      try {
+        const drawnCounts = await chemistry.stereo(item.smiles);
+        comparisons.push({ smiles: item.smiles, source: item.source, reference: null,
+          referenceCounts: { unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }, referenceCountSource: 'default', ...drawnCounts });
+      } catch (error) { comparisons.push({ smiles: item.smiles, source: item.source, error: error.message }); }
     }
-    checks.A3 = check(true, extracted.reached && !extracted.errors.length && !missing.length && counts.length > 0 &&
-      counts.every((item) => !item.error && item.unspecifiedCount === 0), { counts, missing, errors: extracted.errors });
+    const passes = (item) => !item.error && item.unspecifiedStereoCenters <= item.referenceCounts.unspecifiedStereoCenters &&
+      item.unspecifiedDoubleBonds <= item.referenceCounts.unspecifiedDoubleBonds;
+    checks.A3 = check(true, extracted.reached && !extracted.errors.length && !missing.length && comparisons.length > 0 &&
+      comparisons.every(passes), { counts: comparisons, missing, errors: extracted.errors });
   }
   if (expect.answer_regex?.length || expect.answer_forbid_regex?.length) {
     const required = (expect.answer_regex ?? []).map((pattern) => ({ pattern, matched: regex(pattern).test(run.final) }));

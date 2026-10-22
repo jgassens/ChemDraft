@@ -15,7 +15,11 @@ export async function grade(options) {
   await mkdir(output, { recursive: true });
   await mkdir(visual, { recursive: true });
   await writeFile(join(visual, 'INSTRUCTIONS.md'), VISUAL_INSTRUCTIONS);
-  const chemistry = await createChemistry(options.checkout ?? defaultCheckout);
+  const checkout = options.checkout ?? defaultCheckout;
+  const chemistry = await createChemistry(checkout);
+  let referenceLock;
+  try { referenceLock = await json(join(checkout, 'tools', 'agent-skill', 'stress', 'references.lock.json')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   const results = [];
   for (const testCase of cases) {
     const scratch = join(output, '.scratch', testCase.id);
@@ -28,20 +32,23 @@ export async function grade(options) {
         // Missing artifacts are a harness problem, not evidence of wrong chemistry.
         if (extracted.errors.some((message) => /Retained run file is missing or ambiguous/.test(message))) {
           result = harnessResult(testCase, extracted.errors.join('; '));
-        } else result = await gradeCase(testCase, run, extracted, chemistry);
+        } else result = await gradeCase(testCase, run, extracted, chemistry, referenceLock);
       }
     } catch (error) { result = harnessResult(testCase, error.stack ?? error.message); }
     try {
       if (run) result.visual_pack = await writeVisualPack(visual, testCase, run, chemistry);
     } catch (error) { result = harnessResult(testCase, `Visual pack failed: ${error.message}`); }
     await rm(scratch, { recursive: true, force: true });
+    result.agent = run?.meta.agent ?? null;
     results.push(result);
     await saveJson(join(output, `${testCase.id}.auto.json`), result);
     process.stderr.write(`${testCase.id}: ${result.status === 'harness' ? 'harness' : result.auto}\n`);
   }
+  const agents = [...new Set(results.map((result) => result.agent))];
   const aggregate = { scoring_version: SCORING_VERSION, cases_version: (await json(options.cases)).version ?? null,
-    engine_loads: chemistry.engineLoads, cases: results };
+    agent: agents.length === 1 ? agents[0] : null, agents, engine_loads: chemistry.engineLoads, cases: results };
   await saveJson(join(output, 'auto.json'), aggregate);
+  await saveJson(join(visual, 'manifest.json'), { agent: aggregate.agent, agents, cases: results.map((result) => ({ id: result.id, agent: result.agent })) });
   await rm(join(output, '.scratch'), { recursive: true, force: true });
   return aggregate;
 }

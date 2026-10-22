@@ -82,7 +82,7 @@ function referenceSmiles(expect) {
   return [...(expect.structures ?? []).map((item) => typeof item === 'string' ? item : item.smiles),
     ...['reactants', 'products', 'products_any_of', 'intermediates'].flatMap((role) => (expect.reaction?.[role] ?? []).map((item) => typeof item === 'string' ? item : item.smiles))];
 }
-export function buildReport(cases, automatic, visualEntries, finals = {}) {
+export function buildReport(cases, automatic, visualEntries, finals = {}, agent = null) {
   const byId = new Map(automatic.cases.map((item) => [item.id, item]));
   if (byId.size !== automatic.cases.length) throw new Error('Duplicate automatic case ids');
   const visualPending = visualEntries === undefined;
@@ -99,7 +99,7 @@ export function buildReport(cases, automatic, visualEntries, finals = {}) {
         ...(item.visual?.verdict === 'reject' ? [`V: ${item.visual.reason}`] : []),
         ...(item.result === 'harness' ? [item.reason] : [])], cause: item.cause };
   }).sort((a, b) => Number(b.wrong_and_confident)-Number(a.wrong_and_confident) || b.failed_check_count-a.failed_check_count || a.id.localeCompare(b.id));
-  return { scoring_version: SCORING_VERSION, automatic_scoring_version: automatic.scoring_version,
+  return { scoring_version: SCORING_VERSION, automatic_scoring_version: automatic.scoring_version, agent,
     visual_pending: visualPending, mode: visualPending ? 'provisional automatic only; visual pending' : 'automatic + independent visual',
     sampling: 'One run per case (n = 1). Rates and Wilson 95% intervals are reported separately for each category and split; harness cases are excluded from scored n.',
     groups: groupResults(merged), cases: merged, worst_failures: worst };
@@ -113,6 +113,7 @@ function rate(value) {
 }
 export function markdown(report) {
   const lines = ['# ChemDraft stress report', '', `SCORING_VERSION = ${report.scoring_version}; automatic SCORING_VERSION = ${report.automatic_scoring_version}.`, '',
+    `Agent: ${report.agent ?? 'unspecified'}.`, '',
     `Mode: **${report.mode}**.`, '', report.sampling, '',
     '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Pass rate (Wilson 95%) |',
     '|---|---|---:|---:|---:|---:|---:|---:|---|'];
@@ -140,11 +141,15 @@ export async function report(options) {
   const cases = await readCases(options.cases), automatic = await json(join(options.runs, 'grade', 'auto.json'));
   if (automatic.scoring_version !== SCORING_VERSION) throw new Error(`Automatic scoring version ${automatic.scoring_version} does not match ${SCORING_VERSION}`);
   const visual = options.visual ? await json(options.visual) : undefined, finals = {};
+  const agents = new Set();
   for (const item of cases) {
+    const meta = await json(join(options.runs, item.id, 'meta.json'));
+    agents.add(meta.agent ?? null);
     try { finals[item.id] = await readFile(join(options.runs, item.id, 'final.md'), 'utf8'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  const result = buildReport(cases, automatic, visual, finals);
+  if (agents.size !== 1) throw new Error(`Cannot mix runs from different agents in one report: ${[...agents].map((agent) => agent ?? 'unspecified').join(', ')}`);
+  const result = buildReport(cases, automatic, visual, finals, [...agents][0]);
   await mkdir(join(options.runs, 'grade'), { recursive: true });
   await saveJson(join(options.runs, 'grade', 'report.json'), result);
   await writeFile(join(options.runs, 'grade', 'report.md'), markdown(result));

@@ -36,10 +36,12 @@ export async function readRun(folder) {
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!Array.isArray(saved)) throw new Error('tool-calls.json must be an array');
   const calls = [], results = new Map();
+  let hasClaudeInit = false;
   try {
     const transcript = await readFile(join(folder, 'transcript.jsonl'), 'utf8');
     for (const line of transcript.split(/\r?\n/).filter((line) => line.trim())) {
       const event = JSON.parse(line);
+      if (event.type === 'system' && event.subtype === 'init') hasClaudeInit = true;
       const blocks = event.message?.content ?? event.content;
       if (!Array.isArray(blocks)) continue;
       for (const block of blocks) {
@@ -48,7 +50,12 @@ export async function readRun(folder) {
       }
     }
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (calls.length) {
+  // Codex records JSON events rather than Claude stream-json blocks. Its complete,
+  // runner-normalised call record is therefore the only transcript source we use.
+  if (meta.agent === 'codex' || !hasClaudeInit) {
+    calls.length = 0;
+    calls.push(...saved);
+  } else if (calls.length) {
     const used = new Set();
     for (const call of calls) {
       const index = saved.findIndex((item, i) => !used.has(i) && item.name === call.name &&
