@@ -239,7 +239,7 @@ struct ToolInstallSnapshot {
     plugin_id: String,
     disclosure: String,
     required_disk_bytes: u64,
-    free_disk_bytes: u64,
+    free_disk_bytes: Option<u64>,
     state: ToolInstallState,
     buttons: Vec<String>,
 }
@@ -280,7 +280,7 @@ impl ToolInstallSnapshot {
             .any(|(s, max)| s.is_empty() || !bounded_text(s, *max))
             || self.download_bytes > MAX_SAFE_INTEGER
             || self.required_disk_bytes > MAX_SAFE_INTEGER
-            || self.free_disk_bytes > MAX_SAFE_INTEGER
+            || self.free_disk_bytes.is_some_and(|n| n > MAX_SAFE_INTEGER)
         {
             return false;
         }
@@ -1965,6 +1965,9 @@ mod tests {
             valid.data["buttons"] = buttons;
             assert!(valid.validate().is_ok());
         }
+        let mut unknown_disk_space = message.clone();
+        unknown_disk_space.data["freeDiskBytes"] = Value::Null;
+        assert!(unknown_disk_space.validate().is_ok());
         for action in ["install", "allow", "cancelInstall", "close"] {
             let mut valid = message.clone();
             valid.message_type = "action".into();
@@ -1975,6 +1978,8 @@ mod tests {
             ("publisher", json!("")),
             ("version", json!("x".repeat(41))),
             ("downloadBytes", json!(-1)),
+            ("freeDiskBytes", json!(-1)),
+            ("freeDiskBytes", json!("unknown")),
         ] {
             let mut invalid = message.clone();
             invalid.data[field] = value;

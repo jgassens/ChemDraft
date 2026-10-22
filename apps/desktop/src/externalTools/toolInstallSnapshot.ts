@@ -17,7 +17,7 @@ export function toolInstallSnapshot(status: ExternalToolStatus, plugin: External
     toolName: toolNameFor(status.tool), publisher, version: status.pinnedVersion,
     downloadHost: TOOL_DOWNLOAD_HOSTS[status.tool], downloadBytes: status.pinnedDownloadBytes, pluginName: plugin.name, pluginId: plugin.id,
     disclosure: `${publisher} receives your prompt and the open page when this tool is used; the open page leaves this computer and may contain unpublished research. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
-    requiredDiskBytes: status.pinnedDownloadBytes * 2 + 64 * 1024 * 1024, freeDiskBytes: status.freeDiskBytes ?? 0, state: selected,
+    requiredDiskBytes: status.pinnedDownloadBytes * 2 + 64 * 1024 * 1024, freeDiskBytes: status.freeDiskBytes, state: selected,
     buttons: selected.status === "consent" ? ["allow", "close"] : selected.status === "installing" ? ["cancelInstall", "close"] : selected.status === "installed" ? ["close"] : ["install", "close"]
   };
 }

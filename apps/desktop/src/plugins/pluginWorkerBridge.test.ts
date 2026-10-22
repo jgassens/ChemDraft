@@ -17,6 +17,7 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginExternalToolStatus,
   type PluginCommandHandler,
   type PluginManifest,
   type PluginPanelReport,
@@ -913,7 +914,8 @@ describe("tools survive the worker boundary", () => {
       id: "org.test.tools-worker", name: "Worker Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
       permissions: ["assistant.run"], contributes: { commands: [{ id: "plugin.toolsWorker.run", title: "Run" }] }
     });
-    const status = { tool: "codex" as const, state: "installed" as const, pinnedVersion: "1", canInstall: true, consented: true, probedAt: "2026-10-22T00:00:00.000Z" };
+    const statuses = import.meta.glob("../externalTools/__fixtures__/wire/status-installed-managed.json", { eager: true, import: "default" });
+    const status = Object.values(statuses)[0]! as PluginExternalToolStatus;
     const externalTools = {
       status: vi.fn(async () => status), install: vi.fn(async () => status),
       signIn: vi.fn(async () => ({ launched: true, method: "terminal.command" as const })),

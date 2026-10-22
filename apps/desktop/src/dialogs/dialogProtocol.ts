@@ -30,7 +30,7 @@ export type ToolInstallState =
   | { status: "broken"; detail: string };
 export interface ToolInstallSnapshot {
   title: string; toolName: string; publisher: string; version: string; downloadHost: string; downloadBytes: number;
-  pluginName: string; pluginId: string; disclosure: string; requiredDiskBytes: number; freeDiskBytes: number;
+  pluginName: string; pluginId: string; disclosure: string; requiredDiskBytes: number; freeDiskBytes: number | null;
   state: ToolInstallState; buttons: ToolInstallAction[];
 }
 export type DialogPlatform = "macos" | "windows" | "linux";
@@ -177,7 +177,7 @@ export function validToolInstallSnapshot(v: unknown): v is ToolInstallSnapshot {
   const bytes = (n: unknown) => Number.isSafeInteger(n) && Number(n) >= 0;
   if (!record(v) || !keys(v, ["title", "toolName", "publisher", "version", "downloadHost", "downloadBytes", "pluginName", "pluginId", "disclosure", "requiredDiskBytes", "freeDiskBytes", "state", "buttons"]) ||
       !text(v.title, 256) || !text(v.toolName, 80) || !text(v.publisher, 80) || !text(v.version, 40) || !text(v.downloadHost, 128) || !text(v.pluginName, 128) || !text(v.pluginId, 256) || !text(v.disclosure, 1024) ||
-      !bytes(v.downloadBytes) || !bytes(v.requiredDiskBytes) || !bytes(v.freeDiskBytes) || !record(v.state)) return false;
+      !bytes(v.downloadBytes) || !bytes(v.requiredDiskBytes) || !(v.freeDiskBytes === null || bytes(v.freeDiskBytes)) || !record(v.state)) return false;
   const state = v.state;
   let valid = false;
   switch (state.status) {

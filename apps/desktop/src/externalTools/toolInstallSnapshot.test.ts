@@ -12,4 +12,8 @@ describe("toolInstallSnapshot", () => {
     expect(snapshot.requiredDiskBytes).toBe(616_460_224);
     expect(snapshot.freeDiskBytes).toBe(4_000_000_000);
   });
+  it("preserves unknown free disk space reported by the host", () => {
+    const snapshot = toolInstallSnapshot({ ...base, tool: "claude", publisher: "Anthropic", freeDiskBytes: null }, { id: "plugin", name: "Plugin" });
+    expect(snapshot.freeDiskBytes).toBeNull();
+  });
 });

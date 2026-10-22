@@ -18,6 +18,15 @@ it.each(["Anthropic", "OpenAI"])('names %s in both download and consent copy', a
   } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
 });
 
+it("shows unknown when free disk space cannot be determined", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(), freeDiskBytes: null }, onAction: vi.fn() })));
+    expect(container.textContent).toContain("Free space on this disk: unknown.");
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});
+
 it.each([
   [{ status: "notInstalled" } as const, ["install", "close"]],
   [{ status: "consent" } as const, ["allow", "close"]],

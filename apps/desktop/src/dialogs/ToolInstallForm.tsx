@@ -27,7 +27,7 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
     {state.status === "notInstalled" ? <p>Download from {snapshot.publisher}: version {snapshot.version}, from {snapshot.downloadHost}, {formatBytes(snapshot.downloadBytes)}.</p> : null}
     {sendsDrawing ? <p>When you send a request, your prompt and the open page — including any unpublished structures — leave this computer and go to {snapshot.publisher} under your own {snapshot.toolName} account.</p> : null}
     <p>{snapshot.disclosure}</p>
-    <p>Needs about {formatBytes(snapshot.requiredDiskBytes)} free while installing. Free now: {formatBytes(snapshot.freeDiskBytes)}.</p>
+    <p>Needs about {formatBytes(snapshot.requiredDiskBytes)} free while installing. {snapshot.freeDiskBytes === null ? "Free space on this disk: unknown." : `Free now: ${formatBytes(snapshot.freeDiskBytes)}.`}</p>
     {state.status === "consent" ? <p role="status">Allow {snapshot.pluginName} to download and use {snapshot.toolName}?</p> : null}
     {state.status === "installing" ? <div role="status"><p>{state.phase}</p>
       {state.bytesTotal !== undefined ? <progress aria-label="Tool installation" max={state.bytesTotal} value={Math.min(state.bytesDone ?? 0, state.bytesTotal)} /> : null}
