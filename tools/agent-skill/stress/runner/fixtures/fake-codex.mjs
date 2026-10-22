@@ -13,6 +13,12 @@ if (process.env.FAKE_CODEX_PLUGIN_LEAK) await mkdir(path.join(process.env.CODEX_
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const model = process.env.FAKE_CODEX_MODEL ?? 'fake-default-model';
 const call = { id: 'item_1', type: 'mcp_tool_call', server: 'chemdraft', tool: 'render_structure', arguments: { smiles: 'C' } };
+const outputFile = process.env.FAKE_CODEX_OUTPUT_FILE;
+const shellCommand = process.env.FAKE_CODEX_SOURCE_READ
+  ? `/bin/zsh -lc 'rg ChemDraft ${process.env.FAKE_CODEX_CHECKOUT}/README.md'`
+  : outputFile
+  ? `/bin/zsh -lc 'pnpm -s --dir ${process.env.FAKE_CODEX_CHECKOUT} chemdraft render --out ${outputFile}'`
+  : 'echo drawn';
 const events = [
   { type: 'thread.started', thread_id: 'fake-thread', ...(process.env.FAKE_CODEX_SESSION_MODEL ? {} : { model }) },
   { type: 'turn.started' },
@@ -21,9 +27,9 @@ const events = [
     { type: 'image', mimeType: 'image/png', data: png },
     { type: 'text', text: '<svg xmlns="http://www.w3.org/2000/svg"></svg>' },
   ] }, error: null } },
-  { type: 'item.started', item: { id: 'item_2', type: 'command_execution', command: 'echo drawn', status: 'in_progress' } },
-  { type: 'item.completed', item: { id: 'item_2', type: 'command_execution', command: 'echo drawn', aggregated_output: 'drawn\n', exit_code: 0, status: 'completed' } },
-  { type: 'item.completed', item: { id: 'item_3', type: 'agent_message', text: 'Finished drawing.' } },
+  { type: 'item.started', item: { id: 'item_2', type: 'command_execution', command: shellCommand, status: 'in_progress' } },
+  { type: 'item.completed', item: { id: 'item_2', type: 'command_execution', command: shellCommand, aggregated_output: 'drawn\n', exit_code: 0, status: 'completed' } },
+  { type: 'item.completed', item: { id: 'item_3', type: 'agent_message', text: outputFile ? `![Artifact](${outputFile})` : 'Finished drawing.' } },
   { type: 'turn.completed', usage: { input_tokens: 20, cached_input_tokens: 10, output_tokens: 5 } },
 ];
 if (process.env.FAKE_CODEX_EXTRA_MCP) events.splice(2, 0, { type: 'item.completed', item: {

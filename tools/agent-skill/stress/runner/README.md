@@ -1,6 +1,7 @@
 # Stress runner
 
-Run from the checkout, with output outside it:
+Run from the checkout, with output outside the checkout and its parent
+directory (for example, `~/chemdraft-stress-runs`):
 
 ```sh
 node tools/agent-skill/stress/runner/run.mjs --cases /path/to/cases.json --out /path/to/results --agent codex
@@ -71,9 +72,16 @@ use fixture executables.
 ## Events and outputs
 
 Both agents produce `transcript.jsonl`, `final.md`, `tool-calls.json`, `images/`,
-`files.json`, and `meta.json`. `run.json` and each case's metadata identify the
-agent. Codex metadata also records `codexVersion`, reported model, and event
-token usage; no dollar cost is inferred.
+`files.json`, `outputs/`, `outputs.json`, and `meta.json`. After each case, the
+runner copies supported output files named in the final report or passed through
+`--out`, `--out-dir`, or shell redirection into `outputs/`; `outputs.json`
+records each original path, copied name, byte size, and SHA-256. Paths under the
+isolated Codex home are excluded, and output directories with more than 50 files
+are not traversed. Metadata's `repoAccess` records every agent shell command
+that names the checkout, classified as the ChemDraft CLI or a source read, plus
+Claude Read, Grep, and Glob calls that name it. `run.json` and each case's
+metadata identify the agent. Codex metadata also records `codexVersion`,
+reported model, and event token usage; no dollar cost is inferred.
 
 Codex event handling follows the official
 [non-interactive JSONL documentation](https://developers.openai.com/codex/noninteractive/)
