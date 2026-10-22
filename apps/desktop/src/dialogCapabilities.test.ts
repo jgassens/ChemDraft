@@ -22,7 +22,7 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
 describe("dialog capabilities", () => {
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
-    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-export-*", "dialog-main-engineInstall-*"]);
+    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*"]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);

@@ -64,9 +64,27 @@ export function pinDiff(existing, rendered) {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url, { headers: { accept: "application/json", "user-agent": "ChemDraft pin refresh" } });
+  const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "ChemDraft pin refresh" } });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return response.json();
+}
+
+async function fetchGitHubJson(url) {
+  const response = await fetch(url, { headers: { Accept: "application/vnd.github+json", "User-Agent": "ChemDraft pin refresh" } });
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  return response.json();
+}
+
+export function parseClaudeLatestVersion(text) {
+  const version = text.trim();
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Invalid Claude latest version.");
+  return version;
+}
+
+async function fetchClaudeLatestVersion(url) {
+  const response = await fetch(url, { headers: { Accept: "text/plain", "User-Agent": "ChemDraft pin refresh" } });
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  return parseClaudeLatestVersion(await response.text());
 }
 
 async function download(url, destination) {
@@ -86,9 +104,7 @@ function claudeManifestEntry(manifest, platform) {
 }
 
 async function buildPins() {
-  const latest = await fetchJson(`${claudeBase}/latest`);
-  const claudeVersion = typeof latest === "string" ? latest.trim() : latest.version;
-  if (typeof claudeVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(claudeVersion)) throw new Error("Invalid Claude latest version.");
+  const claudeVersion = await fetchClaudeLatestVersion(`${claudeBase}/latest`);
   const manifest = await fetchJson(`${claudeBase}/${claudeVersion}/manifest.json`);
   const claude = [
     ["darwin-arm64", "DarwinArm64", "claude", "claude"],
@@ -99,7 +115,7 @@ async function buildPins() {
     return { tool: "Claude", platform: rustPlatform, version: "CLAUDE_VERSION", url: `${claudeBase}/${claudeVersion}/${platform}/${entry}`, size: published.size, sha256: published.checksum, archive: "Raw", entry, binary };
   });
 
-  const release = await fetchJson("https://api.github.com/repos/openai/codex/releases/latest");
+  const release = await fetchGitHubJson("https://api.github.com/repos/openai/codex/releases/latest");
   const codexTag = release.tag_name;
   const codexVersion = codexTag?.replace(/^rust-v/, "");
   if (typeof codexTag !== "string" || !/^rust-v\d+\.\d+\.\d+$/.test(codexTag) || !codexVersion) throw new Error("Invalid Codex release tag.");
