@@ -166,6 +166,7 @@ import {
   VALIDATION_RESULT_WINDOW_ID,
   broadcastAnalysisWindowSnapshot,
   broadcastPluginPanelReport,
+  broadcastPluginPanelReportCleared,
   broadcastPluginPanelStaleness,
   hidePluginPanelWindow,
   listenForAnalysisWindowActions,
@@ -10421,6 +10422,32 @@ export function MainWindow({
     };
   }, [pluginRuntime.runtime, toolbarCatalog]);
 
+  // Purge replay state synchronously with the controller, including when unregister + reinstall
+  // are batched into one React render. Reports belong to a live panel, never just a plugin id.
+  useEffect(() => {
+    const runtime = pluginRuntime.runtime;
+    const pruneReports = () => {
+      const live = new Set(runtime.panels.getDetachedPanels().map((panel) =>
+        pluginPanelIdentityKey(panel.pluginId, panel.panelId)
+      ));
+      for (const [key, payload] of pluginPanelReportsRef.current) {
+        if (live.has(key)) continue;
+        pluginPanelReportsRef.current.delete(key);
+        pluginPanelStalenessSentRef.current.delete(key);
+        openedPluginPanelWindowsRef.current.delete(key);
+        void broadcastPluginPanelReportCleared({
+          pluginId: payload.pluginId,
+          panelId: payload.panelId,
+          revision: ++pluginPanelRevisionRef.current
+        }).catch(() => undefined);
+        void hidePluginPanelWindow(payload.pluginId, payload.panelId).catch(() => undefined);
+      }
+    };
+    const unsubscribe = runtime.panels.subscribe(pruneReports);
+    pruneReports();
+    return unsubscribe;
+  }, [pluginRuntime.runtime]);
+
   // Panel windows request their content on mount; the main window re-serves the latest
   // report so a reopened or slow-loading panel is never blank.
   useEffect(() => {
@@ -10504,7 +10531,7 @@ export function MainWindow({
   }, [document, pluginRuntime.detachedPanels, pluginRuntime.runtime]);
 
   // A dismissed window is a real panel close (ADR-0012): the plugin gets its cancellation signal.
-  // The stored report stays cached so a reopened window is re-served instantly.
+  // Closing also drops the replay payload; a later showReport supplies fresh content.
   useEffect(() => {
     const runtime = pluginRuntime.runtime;
     return listenForPluginPanelCloses(({ pluginId, panelId }) => {
