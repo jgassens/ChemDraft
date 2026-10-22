@@ -21,8 +21,8 @@ are intended for workspace tools that need the same document and rendering path.
 | Atom labels, grid captions, reaction conditions | Arial 10 pt |
 | Outer figure margin | 4 pt |
 
-Formula labels retain subscripted counts. All geometry uses the shared layout-engine preset
-(22 native units per bond, 14.4/22 pt per unit), including native documents drawn on the canvas.
+Formula labels retain subscripted counts. Native preset data lives in chem-core, while layout-engine
+converts its 22 native units per bond at 14.4/22 pt per unit, including native documents drawn on the canvas.
 Grid cells grow to the largest molecule; molecules are never shrunk to fit a cell.
 
 ```bash

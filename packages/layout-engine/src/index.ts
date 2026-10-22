@@ -1,8 +1,9 @@
-export { DocumentStylePreset, DocumentMoleculeSizeStyle, DocumentStyleScale, DocumentTextStyle, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
+export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 
 import {
   DefaultNativeDrawingStyle,
+  DocumentStylePreset,
   drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
@@ -71,7 +72,6 @@ import { formatNumber } from "./formatNumber";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
-import { DocumentStylePreset } from "./documentStyle";
 
 export {
   ArrangementLayouts, ArrangementGridAlignments, planObjectArrangement,

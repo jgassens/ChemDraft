@@ -1,9 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 
-import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, DocumentTextStyle, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
-import { DocumentTextStyle } from "@chemdraft/layout-engine";
 import {
   insertNativeTextObject,
   nativeTextObjectSizeForText

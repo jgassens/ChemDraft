@@ -3,13 +3,14 @@ import { basename, dirname, extname, join } from "node:path";
 
 import {
   createEmptyDocument,
+  DocumentTextStyle,
   type ArrowObject,
   type ChemDraftDocument,
   type MoleculeObject,
   type NativeTextStyle
 } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
-import { DocumentTextStyle, type FigureStyle } from "@chemdraft/layout-engine";
+import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
 import {
   insertNativeReactionArrow,

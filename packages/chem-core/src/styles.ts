@@ -109,6 +109,48 @@ export const ChemDraftSyntheticStylePreset = {
   }
 } as const satisfies ChemDraftStylePreset;
 
+/** Native drawing units per point for the fixed document preset. `DocumentStyleScale`
+ * in layout-engine is its inverse, converting native coordinates to physical points. */
+export const DOCUMENT_STYLE_UNITS_PER_PT = 22 / 14.4;
+
+// Preserve the native values established before this preset moved from layout-engine.
+const documentStyleUnits = (points: number) => points / (1 / DOCUMENT_STYLE_UNITS_PER_PT);
+
+/** Fixed physical-document drawing data, expressed in native drawing units. */
+export const DocumentStylePreset = {
+  id: "chemdraft.document",
+  name: "Document style",
+  source: "core",
+  drawing: {
+    ...ChemDraftSyntheticStylePreset.drawing,
+    stylePresetId: "chemdraft.document",
+    chainAngleDegrees: 120,
+    bondLengthPx: 22,
+    bondStrokeWidthPx: documentStyleUnits(1.134),
+    bondBoldWidthPx: documentStyleUnits(2.268),
+    bondSpacingMode: "percent",
+    bondSpacingPercent: 18,
+    multipleBondGapPx: 22 * 0.18,
+    bondHashSpacingPx: documentStyleUnits(2.5),
+    bondMarginWidthPx: documentStyleUnits(1.6),
+    atomLabelFontFamily: "Arial, Helvetica, sans-serif",
+    atomLabelFontSizePx: documentStyleUnits(10)
+  }
+} as const satisfies ChemDraftStylePreset;
+
+/** Whole-molecule dimensions selected by the document preset. */
+export const DocumentMoleculeSizeStyle = Object.fromEntries(([
+  "stylePresetId",
+  "bondLengthPx", "bondStrokeWidthPx", "bondBoldWidthPx", "bondSpacingMode", "bondSpacingPercent",
+  "multipleBondGapPx", "doubleBondInsetPx", "bondHashSpacingPx", "bondMarginWidthPx",
+  "chainAngleDegrees", "atomLabelFontFamily", "atomLabelFontSizePx"
+] as const).map((key) => [key, DocumentStylePreset.drawing[key]]));
+
+export const DocumentTextStyle = {
+  fontFamily: DocumentStylePreset.drawing.atomLabelFontFamily,
+  fontSizePx: DocumentStylePreset.drawing.atomLabelFontSizePx
+} as const satisfies Partial<NativeTextStyle>;
+
 export const DefaultNativeDrawingStyle: NativeDrawingStyle = ChemDraftSyntheticStylePreset.drawing;
 
 export const DefaultNativeTextStyle = {

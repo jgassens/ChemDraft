@@ -2,6 +2,7 @@ import { Resvg } from "@resvg/resvg-js";
 
 import {
   createEmptyDocument,
+  DocumentStylePreset,
   isDativeBond,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
@@ -14,7 +15,6 @@ import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chem
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import {
   atomLabelHaloWidthPx,
-  DocumentStylePreset,
   DocumentStyleScale,
   documentStylePointBounds,
   type FigureStyle,

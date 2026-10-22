@@ -1,6 +1,6 @@
-import type { ChemDraftDocument, CompatibilityWarning } from "@chemdraft/chem-core";
 import { DocumentMoleculeSizeStyle, DocumentStylePreset, DocumentTextStyle,
-  medianLength, representativeMoleculeBondLength, scalePageGeometry } from "@chemdraft/layout-engine";
+  type ChemDraftDocument, type CompatibilityWarning } from "@chemdraft/chem-core";
+import { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "@chemdraft/layout-engine";
 
 /** Scale the first page as one figure, then set only the fixed document dimensions.
  * Exporters alone convert native canvas units to points. Later pages remain unchanged.

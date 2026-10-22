@@ -1,23 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, stylePresetToObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { DocumentStylePreset, DocumentStyleScale, DocumentTextStyle, nativeMultipleBondGapPx, planPageSvgRender } from "./index";
+import { createEmptyDocument, DOCUMENT_STYLE_UNITS_PER_PT, DocumentStylePreset, DocumentTextStyle,
+  stylePresetToObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
+import { DocumentStyleScale, nativeMultipleBondGapPx, planPageSvgRender } from "./index";
 import { elementFragments } from "./testing";
 
 describe("document physical style", () => {
   it("uses one point scale for every dimension and the native renderer's percent gap", () => {
-    const drawing = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(DocumentStylePreset));
+    const drawing = DocumentStylePreset.drawing;
     const pt = DocumentStyleScale.pointsPerUnit;
     expect(drawing.bondLengthPx).toBe(22);
-    expect(drawing.bondLengthPx * pt).toBeCloseTo(14.4, 10);
-    expect(drawing.bondStrokeWidthPx * pt).toBeCloseTo(1.134, 10);
-    expect(drawing.bondBoldWidthPx * pt).toBeCloseTo(2.268, 10);
+    expect(drawing.bondLengthPx * pt).toBe(14.4);
+    expect(drawing.bondStrokeWidthPx * pt).toBe(1.134);
+    expect(drawing.bondBoldWidthPx * pt).toBe(2.268);
     expect(nativeMultipleBondGapPx(drawing) * pt).toBeCloseTo(14.4 * 0.18, 10);
-    expect(drawing.bondHashSpacingPx * pt).toBeCloseTo(2.5, 10);
-    expect(drawing.bondMarginWidthPx * pt).toBeCloseTo(1.6, 10);
+    expect(drawing.bondHashSpacingPx * pt).toBe(2.5);
+    expect(drawing.bondMarginWidthPx * pt).toBe(1.6);
     expect(drawing.chainAngleDegrees).toBe(120);
     expect(drawing.atomLabelFontFamily.split(",")[0]).toBe("Arial");
-    expect(drawing.atomLabelFontSizePx * pt).toBeCloseTo(10, 10);
+    expect(drawing.atomLabelFontSizePx * pt).toBe(10);
     expect(DocumentTextStyle.fontSizePx).toBe(drawing.atomLabelFontSizePx);
+    expect(DocumentStyleScale.pointsPerUnit * DOCUMENT_STYLE_UNITS_PER_PT).toBeCloseTo(1, 12);
     expect(DocumentStyleScale.marginPt).toBe(4);
   });
 

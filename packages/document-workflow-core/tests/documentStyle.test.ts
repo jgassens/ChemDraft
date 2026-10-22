@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ChemDraftDocumentSchema, createEmptyDocument, type CompatibilityWarning, type MoleculeObject } from "@chemdraft/chem-core";
-import { DocumentMoleculeSizeStyle, DocumentStyleScale, planPageSvgRender } from "@chemdraft/layout-engine";
+import { ChemDraftDocumentSchema, createEmptyDocument, DocumentMoleculeSizeStyle,
+  type CompatibilityWarning, type MoleculeObject } from "@chemdraft/chem-core";
+import { DocumentStyleScale, planPageSvgRender } from "@chemdraft/layout-engine";
 import { elementFragments } from "@chemdraft/layout-engine/testing";
 import { applyDocumentStyle } from "../src/documentStyle";
 import { createNativeReactionArrow } from "../src/reactionArrows";
