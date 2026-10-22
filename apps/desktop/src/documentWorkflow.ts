@@ -13426,9 +13426,11 @@ export function moveDocumentObjects(
   document: ChemDraftDocument,
   ids: readonly string[],
   dx: number,
-  dy: number
+  dy: number,
+  pageId = document.pages[0]?.id
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  const page = document.pages.find((candidate) => candidate.id === pageId);
+  if (!page) return document;
   const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
   const set = expandWithAnchoredMarkIds(page.objects, objectIds);
   const bounds = selectionBounds(page.objects, [...set]);

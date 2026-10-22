@@ -12,6 +12,14 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+## Move selections with the keyboard
+
+Select a structure or drawing object, then press an arrow key to move it by one page pixel.
+Hold Shift for ten-pixel steps. Multiple selected objects move together, stay inside the page,
+and keep their selection; Undo/Redo records each step. A selected molecule part moves its whole
+molecule rigidly. Movement is independent of zoom. Text editors, controls, menus, and active drawing
+gestures keep their own arrow-key behavior. These bindings apply to both keyboard shortcut schemes.
+
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,
 numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses

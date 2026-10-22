@@ -120,6 +120,7 @@ import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
+import { nudgeDocumentSelection, selectionNudgeOwnsTarget } from "./selectionNudge";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
@@ -1602,7 +1603,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.21.18.22-codex";
+const CURRENT_BUILD_STAMP = "10.22.10.20-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2809,7 +2810,10 @@ export function MainWindow({
   const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
   const openArrangementSpacingRef = useRef<() => void>(() => {});
-  const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
+  const layerActions = useMemo(
+    () => createLayerActions(document, compoundLayoutsEnabled, selectedNativeMoleculeParts.length > 0),
+    [document, compoundLayoutsEnabled, selectedNativeMoleculeParts]
+  );
   const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
   useEffect(() => {
     if (!compoundLayoutsEnabled) {
@@ -2883,13 +2887,13 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
-        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
+        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined, hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0 },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -9803,6 +9807,18 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id.startsWith("layout.nudge.")) {
+          if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || isSnapshotSessionActive()) return;
+          const changed = commitDocumentChange((current) => nudgeDocumentSelection(
+            current, action.id, selectedNativeMoleculePartsRef.current.map((part) => part.objectId)
+          ), action.title);
+          if (changed) {
+            setHoveredNativeAtom(undefined);
+            assignHoveredNativeDeleteTarget(undefined);
+            setStatus(action.title);
+          }
+          return;
+        }
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
           if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
@@ -12072,6 +12088,13 @@ export function MainWindow({
       if (!commandId) {
         return;
       }
+      if (commandId.startsWith("layout.nudge.") && (
+        !selectionNudgeOwnsTarget(event.target) || isSnapshotSessionActive() ||
+        [...window.document.querySelectorAll('[role="menu"], [role="menubar"] [aria-expanded="true"]')]
+          .some((menu) => !menu.closest('[hidden], [aria-hidden="true"]'))
+      )) {
+        return;
+      }
       // Copy/cut/paste fall through to the native clipboard events (handleCopy/handleCut/handlePaste),
       // which read and write event.clipboardData synchronously. On desktop, handlePaste additionally
       // falls back to the native Tauri clipboard read when the WebView paste event has no data.
@@ -12099,6 +12122,7 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     clearTapeMeasureDrag,
     finishNativePathArtDraw,
+    isSnapshotSessionActive,
     replacePresentDocument,
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,

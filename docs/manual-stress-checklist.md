@@ -1,5 +1,12 @@
 # Manual stress checklist
 
+Arrow-key selection movement (macOS and Windows): select one molecule, several molecules, a group,
+and mixed drawing objects. Check each arrow, Shift+arrow, held-key repeat, selection retention,
+page-edge clamping, Undo/Redo, save/reopen, and the same page-space step at different zooms and on a
+second page. A part selection moves its parent molecule rigidly, without changing atom/bond identity.
+Arrow keys in text/atom editors, menus, sliders, and other controls must never move the drawing;
+neither should keys during a pointer drag, IME composition, or a modal dialog.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

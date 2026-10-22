@@ -21,6 +21,7 @@ import {
 } from "@chemdraft/art-engine";
 import { ArrangementLayouts, ArrangementGridAlignments, type ArrangementLayout, type ArrangementGridAlignment } from "@chemdraft/layout-engine";
 import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { createSelectionNudgeActions } from "./selectionNudge";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
@@ -1948,7 +1949,7 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
   };
 }
 
-export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
+export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled, hasMoleculeFragmentSelection = false): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
@@ -1956,6 +1957,7 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    ...createSelectionNudgeActions(hasSelection || hasMoleculeFragmentSelection),
     { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
       enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({
@@ -2280,7 +2282,7 @@ export function allShellCommands(
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
     ...createQuickActions(document, selectedMolecule, options.availability),
-    ...createLayerActions(document, options.compoundLayoutsEnabled),
+    ...createLayerActions(document, options.compoundLayoutsEnabled, options.availability?.hasMoleculeFragmentSelection),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),

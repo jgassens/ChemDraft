@@ -8,8 +8,20 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Branch `feature/arrow-key-movement`: add command-backed movement of selected structures and drawing
+objects with arrow keys (one page pixel) or Shift+arrows (ten). Preserve grouping, page bounds,
+selection, chemical identity, and Undo/Redo. A molecule-part selection moves its whole molecule
+rigidly. Text editors, widgets, menus, dialogs, IME, and active pointer gestures retain their keys.
+
+Scope: desktop commands and keyboard routing, `selectionNudge.ts`, optional page selection in
+`moveDocumentObjects`, regression tests, desktop usage docs, manual checklist, and build stamp.
+
+Browser acceptance: the contributor reports the behavior works in the local test version.
+Local checks: 816 focused tests, root TypeScript checking, the browser production build, and
+`git diff --check` passed. Shortcut tests cover both Windows and macOS mappings.
+This slice remains in draft review until required CI and native Windows/macOS checks pass.
+Native verification is pending because Rust/Cargo and the C++ workload are unavailable here.
+An earlier full-suite attempt reported failures and did not complete; it is not a passing result.
 
 ---
 
