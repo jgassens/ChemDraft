@@ -1950,6 +1950,10 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
 
 export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
   const hasSelection = document.selection.objectIds.length > 0;
+  const singleSelectedObject = document.selection.objectIds.length === 1
+    ? document.pages.flatMap(page => page.objects).find(object => object.id === document.selection.objectIds[0])
+    : undefined;
+  const hasRotatableMolecule = singleSelectedObject?.type === "molecule" && singleSelectedObject.atoms.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
   const hasSelectedGroup = selectedGroupObjectIds(document).length > 0;
@@ -2181,6 +2185,17 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
       category: "layout",
       enabled: hasSelection,
       description: "Mirror the selected document objects top to bottom"
+    },
+    {
+      id: "layout.rotateMolecule",
+      title: "Rotate Molecule…",
+      icon: "align",
+      assetName: "Custom_Rotation",
+      source: "core",
+      category: "layout",
+      enabled: hasRotatableMolecule,
+      disabledReason: "Select one whole molecule with editable atoms",
+      description: "Set any in-plane rotation angle while preserving the molecule's bond lengths and angles"
     },
     {
       id: "layout.rotate90",

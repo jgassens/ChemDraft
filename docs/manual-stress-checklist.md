@@ -617,3 +617,17 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Whole-molecule flat rotation
+
+On Windows (WebView2, including 100%/200% display scaling) and macOS, select one whole molecule
+containing double bonds, wedges/dashes, an isotope and a charge. Confirm the curved-arrow handle
+is visible without Shift and the 3D tilt handle is hidden. Drag clockwise/counterclockwise through
+all quadrants and back to the start; hold/release Shift mid-drag to check 15-degree snapping.
+Double-click the flat handle, and separately right-click the selected molecule and choose
+Rotate molecule…. Enter 37.5, -112, 270 and 360 degrees. Check the preview, Enter, Escape,
+Undo/Redo and selection retention. Bond lengths/angles, atom labels, charge, isotope, bond orders
+and wedge/dash meaning must stay intact. Repeat with a long narrow molecule, near page edges,
+at different zooms, and after a prior rotation. Confirm partial selections retain their existing
+Shift gestures, multi-selection uses the existing group rotation, and no new whole-molecule
+command appears for an art object or a fragment.

@@ -4398,8 +4398,8 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-bond-selection-connectors="true"');
     expect(markup).toContain("native-whole-selection-atom");
     expect(markup).toContain('data-whole-molecule-selection="true"');
-    expect(markup).not.toContain('data-selection-rotate-handle="true"');
-    expect(markup).not.toContain('data-rotate-icon="double-headed"');
+    expect(markup).toContain('data-selection-rotate-handle="true"');
+    expect(markup).toContain('data-rotate-icon="double-headed"');
     expect(markup).not.toContain('data-rotate-readout="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup).not.toContain('data-tilt3d-icon="circular-arrow"');
@@ -4411,7 +4411,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-object-resize-corner="bottom-right"');
     expect(markup).not.toContain('data-object-resize-readout="true"');
     expect(markup).not.toContain("data-text-resize-edge");
-    expect(markup).not.toContain("Rotate selected molecule");
+    expect(markup).toContain("Rotate selected molecule");
     expect(markup).not.toContain("3D rotate selected molecule");
     expect(markup).toContain("native-bond-hit-target");
     expect(markup).toContain("native-atom-hit-target");
@@ -5027,7 +5027,7 @@ describe("ChemDraft desktop shell", () => {
     expect(markup).toContain('data-active-tool-kind="selection"');
     expect(markup).toContain("native-molecule-selection-blob");
     expect(markup).toContain('data-whole-molecule-selection="true"');
-    expect(markup).not.toContain('data-selection-rotate-handle="true"');
+    expect(markup).toContain('data-selection-rotate-handle="true"');
     expect(markup).not.toContain('data-selection-tilt3d-handle="true"');
     expect(markup.match(/data-object-resize-corner=/g) ?? []).toHaveLength(4);
   });
