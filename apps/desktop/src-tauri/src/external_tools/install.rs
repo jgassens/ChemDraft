@@ -28,6 +28,22 @@ use std::{
 
 const RECEIPT: &str = "install.json";
 
+// The currently checked-in Windows Codex pin predates the ZipTree catalog kind.
+// Keep its packaged executable name and resources together when installing that pin.
+fn is_zip_tree(pin: &ToolPin) -> bool {
+    pin.tool == ToolId::Codex
+        && pin.platform == ToolPlatform::WindowsX64
+        && pin.archive == ArchiveKind::Zip
+}
+
+fn binary_name(pin: &ToolPin) -> &str {
+    if is_zip_tree(pin) {
+        pin.entry
+    } else {
+        pin.binary
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallReceipt {
@@ -305,16 +321,19 @@ pub(super) fn install_with_download(
         None,
         None,
     );
-    let binary = partial.join(pin.binary);
+    let binary = partial.join(binary_name(pin));
     match pin.archive {
         ArchiveKind::Raw => ops.rename(&archive, &binary).map_err(|e| ops.failed(e))?,
         ArchiveKind::TarGz | ArchiveKind::Zip => {
-            let kind = if pin.archive == ArchiveKind::TarGz {
+            let kind = if is_zip_tree(pin) {
+                ExtractKind::ZipTree
+            } else if pin.archive == ArchiveKind::TarGz {
                 ExtractKind::TarGz
             } else {
                 ExtractKind::Zip
             };
-            extract_single_entry_with_ops(&archive, kind, pin.entry, &binary, ops)?;
+            let destination = if is_zip_tree(pin) { &partial } else { &binary };
+            extract_single_entry_with_ops(&archive, kind, pin.entry, destination, ops)?;
             ops.remove_file(&archive).map_err(|e| ops.failed(e))?;
         }
     }
@@ -400,7 +419,7 @@ pub(super) fn install_with_download(
     report(ToolInstallPhase::Done, "Tool installed.", None, None);
     Ok(ManagedTool {
         version: pin.version.into(),
-        path: final_dir.join(pin.binary),
+        path: final_dir.join(binary_name(pin)),
     })
 }
 
@@ -553,7 +572,7 @@ impl Drop for Staged {
 /// Status checks the receipt and executable metadata; it deliberately does not rehash binaries.
 pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
     let root = base.join(pin.tool.as_str()).join(pin.version);
-    let path = root.join(pin.binary);
+    let path = root.join(binary_name(pin));
     let mut status = ExternalToolStatus {
         tool: pin.tool,
         publisher: pin.tool.spec().publisher.into(),

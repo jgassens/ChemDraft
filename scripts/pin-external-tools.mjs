@@ -17,7 +17,9 @@ export function singleArchiveEntryName(kind, bytes) {
       const header = tar.subarray(offset, offset + 512);
       if (header.every((byte) => byte === 0)) break;
       const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
-      const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/, "");
+      // GNU's old header stores timestamps here; only POSIX ustar has a prefix field.
+      const prefix = header.subarray(257, 263).equals(Buffer.from("ustar\0"))
+        ? header.subarray(345, 500).toString("utf8").replace(/\0.*$/, "") : "";
       const size = Number.parseInt(header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim(), 8);
       if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid tar entry size.");
       if (header[156] !== 53) names.push(prefix ? `${prefix}/${name}` : name);
@@ -27,20 +29,53 @@ export function singleArchiveEntryName(kind, bytes) {
     return names[0];
   }
   if (kind === "zip") {
-    const names = [];
-    for (let offset = 0; offset + 46 <= bytes.length;) {
-      const signature = bytes.readUInt32LE(offset);
-      if (signature !== 0x02014b50) break;
-      const nameLength = bytes.readUInt16LE(offset + 28);
-      const extraLength = bytes.readUInt16LE(offset + 30);
-      const commentLength = bytes.readUInt16LE(offset + 32);
-      names.push(bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8"));
-      offset += 46 + nameLength + extraLength + commentLength;
-    }
+    const names = zipArchiveEntryNames(bytes);
     if (names.length !== 1) throw new Error(`Expected one archive entry; found ${names.length}.`);
     return names[0];
   }
   throw new Error(`Unsupported archive type: ${kind}`);
+}
+
+export function zipArchiveEntryNames(bytes) {
+  let eocd = -1;
+  for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 22 - 65535); offset--) {
+    if (bytes.readUInt32LE(offset) === 0x06054b50 && offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP has no end of central directory.");
+  const safeNumber = (value) => {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("ZIP64 value is too large.");
+    return Number(value);
+  };
+  let count = bytes.readUInt16LE(eocd + 10);
+  let offset = bytes.readUInt32LE(eocd + 16);
+  if (count === 0xffff || offset === 0xffffffff || bytes.readUInt32LE(eocd + 12) === 0xffffffff) {
+    if (eocd < 20 || bytes.readUInt32LE(eocd - 20) !== 0x07064b50) throw new Error("ZIP64 locator is missing.");
+    const zip64 = safeNumber(bytes.readBigUInt64LE(eocd - 12));
+    if (zip64 + 56 > bytes.length || bytes.readUInt32LE(zip64) !== 0x06064b50) throw new Error("ZIP64 directory is invalid.");
+    count = safeNumber(bytes.readBigUInt64LE(zip64 + 32));
+    offset = safeNumber(bytes.readBigUInt64LE(zip64 + 48));
+  }
+  const names = [];
+  for (let index = 0; index < count; index++) {
+    if (offset + 46 > eocd || bytes.readUInt32LE(offset) !== 0x02014b50) throw new Error("ZIP central directory is invalid.");
+    const end = offset + 46 + bytes.readUInt16LE(offset + 28);
+    const next = end + bytes.readUInt16LE(offset + 30) + bytes.readUInt16LE(offset + 32);
+    if (next > eocd) throw new Error("ZIP central directory is truncated.");
+    names.push(bytes.subarray(offset + 46, end).toString("utf8"));
+    offset = next;
+  }
+  return names;
+}
+
+export function validateArchiveEntry(archive, bytes, entry) {
+  if (archive === "ZipTree") {
+    if (!zipArchiveEntryNames(bytes).includes(entry)) throw new Error(`ZIP tree is missing ${entry}.`);
+  } else if (singleArchiveEntryName(archive === "TarGz" ? "tar.gz" : "zip", bytes) !== entry) {
+    throw new Error("Unexpected archive entry.");
+  }
 }
 
 export function formatToolPin(pin) {
@@ -124,14 +159,14 @@ async function buildPins() {
     const assets = [
       ["codex-aarch64-apple-darwin.tar.gz", "DarwinArm64", "TarGz", "codex-aarch64-apple-darwin", "codex"],
       ["codex-x86_64-apple-darwin.tar.gz", "DarwinX64", "TarGz", "codex-x86_64-apple-darwin", "codex"],
-      ["codex-x86_64-pc-windows-msvc.exe.zip", "WindowsX64", "Zip", "codex-x86_64-pc-windows-msvc.exe", "codex.exe"]
+      ["codex-x86_64-pc-windows-msvc.exe.zip", "WindowsX64", "ZipTree", "codex-x86_64-pc-windows-msvc.exe", "codex-x86_64-pc-windows-msvc.exe"]
     ];
     const codex = [];
     for (const [name, platform, archive, entry, binary] of assets) {
       const asset = release.assets?.find((candidate) => candidate.name === name);
       if (!asset?.browser_download_url) throw new Error(`Codex release is missing ${name}.`);
       const downloaded = await download(asset.browser_download_url, join(temp, name));
-      if (singleArchiveEntryName(archive === "TarGz" ? "tar.gz" : "zip", downloaded.bytes) !== entry) throw new Error(`${name} has an unexpected archive entry.`);
+      validateArchiveEntry(archive, downloaded.bytes, entry);
       codex.push({ tool: "Codex", platform, version: "CODEX_VERSION", url: asset.browser_download_url, size: downloaded.size, sha256: downloaded.sha256, archive, entry, binary });
     }
     return { claudeVersion, codexTag, codexVersion, pins: [...claude, ...codex] };

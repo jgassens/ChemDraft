@@ -1632,6 +1632,7 @@ pub(crate) fn message(phase: InstallPhase, message: &str) -> InstallProgress {
 pub(crate) enum ArchiveKind {
     TarGz,
     Zip,
+    ZipTree,
 }
 
 pub(crate) fn extract_single_entry_with_ops(
@@ -1643,7 +1644,8 @@ pub(crate) fn extract_single_entry_with_ops(
 ) -> Result<(), InstallError> {
     match kind {
         ArchiveKind::TarGz => extract_tar_gz_with_ops(archive, entry_name, destination, ops),
-        ArchiveKind::Zip => extract_zip_with_ops(archive, entry_name, destination, ops),
+        ArchiveKind::Zip => extract_zip_with_ops(archive, entry_name, destination, ops, false),
+        ArchiveKind::ZipTree => extract_zip_with_ops(archive, entry_name, destination, ops, true),
     }
 }
 
@@ -1757,20 +1759,24 @@ fn extract_zip_with_ops(
     entry_name: &str,
     destination: &Path,
     ops: FileOps<'_>,
+    tree: bool,
 ) -> Result<(), InstallError> {
     let bytes = ops
         .run(format!("read archive {}", archive.display()), || {
             fs::read(archive)
         })
         .map_err(|error| ops.failed(error))?;
-    let eocd = bytes
-        .windows(4)
-        .rposition(|window| window == b"PK\x05\x06")
-        .ok_or_else(|| InstallError::failed("The uv zip has no central directory."))?;
-    let entries = zip_u16(&bytes, eocd + 10)? as usize;
-    let mut cursor = zip_u32(&bytes, eocd + 16)? as usize;
+    let (entries, mut cursor) = zip_directory(&bytes)?;
+    if entries > 500 {
+        return Err(InstallError::failed("ZIP contains more than 500 entries."));
+    }
+    let mut total = 0_u64;
+    let mut found = false;
+    let mut paths = std::collections::HashSet::new();
     for _ in 0..entries {
-        if bytes.get(cursor..cursor + 4) != Some(b"PK\x01\x02") {
+        if cursor > bytes.len().saturating_sub(46)
+            || bytes.get(cursor..cursor + 4) != Some(b"PK\x01\x02")
+        {
             return Err(InstallError::failed(
                 "The uv zip central directory is malformed.".to_string(),
             ));
@@ -1789,16 +1795,72 @@ fn extract_zip_with_ops(
         let name = bytes
             .get(name_start..name_end)
             .ok_or_else(|| InstallError::failed("The uv zip filename is truncated."))?;
-        if Path::new(String::from_utf8_lossy(name).as_ref()).file_name()
-            == Some(OsStr::new(entry_name))
+        let name = std::str::from_utf8(name)
+            .map_err(|_| InstallError::failed("ZIP filename is not UTF-8."))?;
+        let mode = zip_u32(&bytes, cursor + 38)? >> 16;
+        if mode & 0o170000 == 0o120000 {
+            return Err(InstallError::failed("ZIP symlink entries are forbidden."));
+        }
+        if zip_u16(&bytes, cursor + 8)? & 1 != 0 {
+            return Err(InstallError::failed("Encrypted ZIP entries are forbidden."));
+        }
+        total += uncompressed_size as u64;
+        if total > 2 * 1024 * 1024 * 1024 {
+            return Err(InstallError::failed(
+                "ZIP exceeds the 2 GiB extraction limit.",
+            ));
+        }
+        let tree_path = if tree {
+            let relative = guarded_zip_path(name)?;
+            if !paths.insert(name.trim_end_matches('/').to_ascii_lowercase()) {
+                return Err(InstallError::failed("ZIP contains duplicate paths."));
+            }
+            let path = destination.join(relative);
+            ensure_zip_parents(destination, &path, ops)?;
+            if name.ends_with('/') {
+                if fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| !metadata.is_dir() || metadata.file_type().is_symlink())
+                {
+                    return Err(InstallError::failed(
+                        "ZIP directory is not a regular directory.",
+                    ));
+                }
+                if uncompressed_size != 0 {
+                    return Err(InstallError::failed("ZIP directory contains file data."));
+                }
+                ops.create_dir_all(&path)
+                    .map_err(|error| ops.failed(error))?;
+            }
+            Some(path)
+        } else {
+            None
+        };
+        if !name.ends_with('/')
+            && (tree || Path::new(name).file_name() == Some(OsStr::new(entry_name)))
         {
-            if bytes.get(local_offset..local_offset + 4) != Some(b"PK\x03\x04") {
+            let destination = tree_path.as_deref().unwrap_or(destination);
+            if tree && fs::symlink_metadata(destination).is_ok() {
+                return Err(InstallError::failed(
+                    "ZIP entry would overwrite an existing path.",
+                ));
+            }
+            if local_offset > bytes.len().saturating_sub(30)
+                || bytes.get(local_offset..local_offset + 4) != Some(b"PK\x03\x04")
+            {
                 return Err(InstallError::failed(
                     "The uv zip local entry is malformed.".to_string(),
                 ));
             }
             let local_name = zip_u16(&bytes, local_offset + 26)? as usize;
             let local_extra = zip_u16(&bytes, local_offset + 28)? as usize;
+            if bytes.get(local_offset + 30..local_offset + 30 + local_name) != Some(name.as_bytes())
+                || zip_u16(&bytes, local_offset + 8)? != method
+                || zip_u16(&bytes, local_offset + 6)? & 1 != 0
+            {
+                return Err(InstallError::failed(
+                    "ZIP local header disagrees with the directory.",
+                ));
+            }
             let data_start = local_offset
                 .checked_add(30 + local_name + local_extra)
                 .ok_or_else(|| InstallError::failed("The uv zip entry offset overflowed."))?;
@@ -1809,26 +1871,25 @@ fn extract_zip_with_ops(
                 .get(data_start..data_end)
                 .ok_or_else(|| InstallError::failed("The uv zip entry is truncated."))?;
             let mut output = ops.create(destination).map_err(|error| ops.failed(error))?;
-            let written = match method {
-                0 => ops.copy(
-                    &mut io::Cursor::new(compressed),
-                    archive,
-                    &mut output,
-                    destination,
-                ),
-                8 => ops.copy(
-                    &mut flate2::read::DeflateDecoder::new(io::Cursor::new(compressed)),
-                    archive,
-                    &mut output,
-                    destination,
-                ),
+            let reader: Box<dyn Read> = match method {
+                0 => Box::new(io::Cursor::new(compressed)),
+                8 => Box::new(flate2::read::DeflateDecoder::new(io::Cursor::new(
+                    compressed,
+                ))),
                 other => {
                     return Err(InstallError::failed(format!(
                         "The uv zip uses unsupported compression method {other}."
                     )))
                 }
-            }
-            .map_err(|error| ops.failed(error))?;
+            };
+            let written = ops
+                .copy(
+                    &mut reader.take(uncompressed_size as u64 + 1),
+                    archive,
+                    &mut output,
+                    destination,
+                )
+                .map_err(|error| ops.failed(error))?;
             if written != uncompressed_size as u64 {
                 return Err(InstallError::failed(format!(
                     "The uv zip produced {written} bytes; expected {uncompressed_size}."
@@ -1836,15 +1897,104 @@ fn extract_zip_with_ops(
             }
             ops.sync(&output, destination)
                 .map_err(|error| ops.failed(error))?;
-            return Ok(());
+            found |= name == entry_name || !tree;
+            if !tree {
+                return Ok(());
+            }
         }
         cursor = name_end
             .checked_add(extra_len + comment_len)
             .ok_or_else(|| InstallError::failed("The uv zip directory offset overflowed."))?;
     }
-    Err(InstallError::failed(
-        "The verified uv archive did not contain uv.exe.".to_string(),
-    ))
+    if found {
+        Ok(())
+    } else {
+        Err(InstallError::failed(format!(
+            "ZIP did not contain {entry_name}."
+        )))
+    }
+}
+
+fn guarded_zip_path(name: &str) -> Result<&Path, InstallError> {
+    let path = name.trim_end_matches('/');
+    if path.is_empty()
+        || name.contains(['\\', ':', '\0'])
+        || path.split('/').any(|part| {
+            let stem = part
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            part.is_empty()
+                || part.ends_with(['.', ' '])
+                || part.chars().any(char::is_control)
+                || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || (stem.len() == 4
+                    && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                    && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        })
+    {
+        return Err(InstallError::failed("Unsafe ZIP entry path."));
+    }
+    Ok(Path::new(path))
+}
+
+fn ensure_zip_parents(root: &Path, path: &Path, ops: FileOps<'_>) -> Result<(), InstallError> {
+    let mut parent = path.parent();
+    while let Some(directory) = parent {
+        if let Ok(metadata) = fs::symlink_metadata(directory) {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(InstallError::failed(
+                    "ZIP parent is not a regular directory.",
+                ));
+            }
+        }
+        if directory == root {
+            break;
+        }
+        parent = directory.parent();
+    }
+    if let Some(parent) = path.parent() {
+        ops.create_dir_all(parent)
+            .map_err(|error| ops.failed(error))?;
+    }
+    Ok(())
+}
+
+fn zip_directory(bytes: &[u8]) -> Result<(usize, usize), InstallError> {
+    let eocd = (bytes.len().saturating_sub(22 + 65535)..bytes.len().saturating_sub(21))
+        .rev()
+        .find(|&offset| {
+            bytes.get(offset..offset + 4) == Some(b"PK\x05\x06")
+                && zip_u16(bytes, offset + 20)
+                    .is_ok_and(|len| offset + 22 + len as usize == bytes.len())
+        })
+        .ok_or_else(|| InstallError::failed("ZIP has no central directory."))?;
+    let count = zip_u16(bytes, eocd + 10)?;
+    let offset = zip_u32(bytes, eocd + 16)?;
+    if count == u16::MAX || offset == u32::MAX || zip_u32(bytes, eocd + 12)? == u32::MAX {
+        if eocd < 20 || zip_u32(bytes, eocd - 20)? != 0x07064b50 {
+            return Err(InstallError::failed("ZIP64 locator is missing."));
+        }
+        let record = zip_usize64(bytes, eocd - 12)?;
+        if record > bytes.len().saturating_sub(56) || zip_u32(bytes, record)? != 0x06064b50 {
+            return Err(InstallError::failed("ZIP64 directory is malformed."));
+        }
+        return Ok((
+            zip_usize64(bytes, record + 32)?,
+            zip_usize64(bytes, record + 48)?,
+        ));
+    }
+    Ok((count as usize, offset as usize))
+}
+
+fn zip_usize64(bytes: &[u8], offset: usize) -> Result<usize, InstallError> {
+    let raw = bytes
+        .get(offset..offset.saturating_add(8))
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| InstallError::failed("ZIP64 record is truncated."))?;
+    usize::try_from(u64::from_le_bytes(raw))
+        .map_err(|_| InstallError::failed("ZIP64 value is too large."))
 }
 
 fn parse_tar_octal(bytes: &[u8]) -> Result<u64, InstallError> {

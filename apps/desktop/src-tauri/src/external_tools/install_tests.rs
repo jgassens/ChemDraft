@@ -708,3 +708,116 @@ fn insufficient_disk_refuses_before_sweep_or_download() {
     assert_eq!(error.code, InstallErrorCode::InsufficientDisk);
     assert!(stale.exists(), "disk check must precede stale sweep");
 }
+
+/// Set CHEMDRAFT_REAL_ARCHIVE_DIR to downloaded, checksum-verified vendor assets.
+#[test]
+#[ignore]
+fn real_vendor_archives_extract() {
+    use crate::local_engine::{
+        file_ops::FileOps,
+        install::{extract_single_entry_with_ops, ArchiveKind as ExtractKind},
+    };
+    let Some(directory) = std::env::var_os("CHEMDRAFT_REAL_ARCHIVE_DIR") else {
+        return;
+    };
+    let temp = Temp::new();
+    let mut tested = 0;
+    for entry in fs::read_dir(directory).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let (binary, kind) = if let Some(binary) = name.strip_suffix(".tar.gz") {
+            (binary, ExtractKind::TarGz)
+        } else if let Some(binary) = name.strip_suffix(".zip") {
+            (binary, ExtractKind::ZipTree)
+        } else {
+            continue;
+        };
+        let output = temp.0.join(format!("archive-{tested}"));
+        fs::create_dir(&output).unwrap();
+        let destination = match kind {
+            ExtractKind::TarGz => output.join(binary),
+            _ => output.clone(),
+        };
+        extract_single_entry_with_ops(
+            &entry.path(),
+            kind,
+            binary,
+            &destination,
+            FileOps::with_prefix("[real vendor archive test]", None),
+        )
+        .unwrap_or_else(|error| panic!("{name}: {}", error.message));
+        let main = output.join(binary);
+        let metadata = fs::symlink_metadata(&main).unwrap();
+        assert!(
+            metadata.file_type().is_file() && metadata.len() > 0,
+            "{name}"
+        );
+        if name.ends_with(".tar.gz") {
+            assert_eq!(fs::read_dir(&output).unwrap().count(), 1, "{name}");
+        } else {
+            assert!(
+                output
+                    .join("codex-resources/codex-command-runner.exe")
+                    .is_file(),
+                "{name}"
+            );
+        }
+        tested += 1;
+    }
+    assert!(
+        tested > 0,
+        "CHEMDRAFT_REAL_ARCHIVE_DIR contained no vendor archives"
+    );
+}
+
+#[test]
+fn windows_codex_tree_install_preserves_packaged_binary_resources_and_status() {
+    let base = Temp::new();
+    let main = "codex-x86_64-pc-windows-msvc.exe";
+    let body = crate::local_engine::archive_tests::descriptor_zip(&[
+        (main, stub(), 0o100755),
+        (
+            "codex-package.json",
+            b"{\"binary\":\"codex-x86_64-pc-windows-msvc.exe\"}",
+            0o100644,
+        ),
+        (
+            "codex-resources/codex-command-runner.exe",
+            b"helper",
+            0o100755,
+        ),
+    ]);
+    let mut pinned = pin(
+        &body,
+        ArchiveKind::Zip,
+        "https://github.com/openai/codex/fixture",
+    );
+    pinned.tool = ToolId::Codex;
+    pinned.platform = ToolPlatform::WindowsX64;
+    pinned.entry = main;
+    pinned.binary = "codex.exe"; // The legacy pin must also preserve the packaged name.
+    let result = install_with_download(
+        &base.0,
+        &pinned,
+        &std::env::vars().collect(),
+        &AtomicBool::new(false),
+        &Signature(true),
+        |_| {},
+        |path, _| {
+            fs::write(path, &body).unwrap();
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(result.path.file_name().unwrap(), main);
+    let root = result.path.parent().unwrap();
+    assert!(!root.join("codex.exe").exists());
+    assert_eq!(
+        fs::read(root.join("codex-resources/codex-command-runner.exe")).unwrap(),
+        b"helper"
+    );
+    assert!(root.join("codex-package.json").is_file());
+    let status = managed_status(&base.0, &pinned);
+    assert!(matches!(status.state, ToolState::Installed));
+    assert_eq!(status.path, Some(result.path));
+}
