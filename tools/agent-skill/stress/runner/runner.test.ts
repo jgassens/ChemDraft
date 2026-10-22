@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
+// @ts-expect-error runner.mjs is intentionally plain JavaScript.
+import { quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 
 const root = path.resolve(import.meta.dirname, '../../../..');
 const runner = path.join(root, 'tools/agent-skill/stress/runner/run.mjs');
@@ -52,6 +54,23 @@ async function invoke(args: string[], env: Record<string, string | undefined> = 
 afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
 describe('stress runner', () => {
+  it('resolves Windows npm shims and preserves a quoted prompt without starting cmd.exe', () => {
+    const prompt = `Draw (S)-ibuprofen & say "R" or 'S' 100% $HOME`;
+    const shim = 'C:\\Users\\chemist\\AppData\\Roaming\\npm\\codex.CMD';
+    const environment = {
+      PATH: 'C:\\Tools;C:\\Users\\chemist\\AppData\\Roaming\\npm',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+    };
+    const exists = (candidate: string) => candidate.toLowerCase() === shim.toLowerCase();
+
+    expect(resolveWindowsCommand('codex', { platform: 'win32', environment, exists })).toBe(shim);
+    expect(quoteWindowsCmdArgument(prompt)).toBe(`"Draw ^(S^)-ibuprofen ^& say \\"R\\" or 'S' 100%% $HOME"`);
+    expect(spawnCommandSpec('codex', ['exec', '--', prompt], { platform: 'win32', environment, exists })).toEqual({
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${shim}" "exec" "--" "Draw ^(S^)-ibuprofen ^& say \\"R\\" or 'S' 100%% $HOME"`],
+    });
+  });
+
   it('runs an isolated case and saves transcript-derived artifacts', async () => {
     const cases = await fixtureCases(); const out = await outDirectory(); const trace = path.join(out, 'trace.json');
     const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_TRACE: trace });
