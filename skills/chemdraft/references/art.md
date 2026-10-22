@@ -77,7 +77,7 @@ coordinates from 0 to 1 across the filled shape and stops
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --smiles 'C1CCC2C(C1)CCC3C2CCC4CCCC34' --out "$scratch/gonane.json" --style document > "$scratch/gonane-build.json"
 node "$scratch/style.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.png" --style document --dpi 300
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft" --style document
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
 
 Windows PowerShell (write UTF-8 instead of Windows PowerShell 5.1's default UTF-16):
@@ -87,13 +87,14 @@ Windows PowerShell (write UTF-8 instead of Windows PowerShell 5.1's default UTF-
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft document --smiles 'C1CCC2C(C1)CCC3C2CCC4CCCC34' --out "$scratch/gonane.json" --style document | Set-Content -Encoding utf8 "$scratch/gonane-build.json"
 node "$scratch/style.mjs" "$scratch"
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.png" --style document --dpi 300
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft" --style document
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document --document "$scratch/gonane-styled.json" --out "$scratch/gonane-styled.chemdraft"
 ```
 
 `--format svg|png|pdf|chemdraft|both` follows the extension by default
 (PDF currently misplaces labels; see Known limits);
-outside document style, `--background transparent`, `--padding` and `--width`
-work as in `render`. Document-style PNG uses `--dpi` instead.
+outside document style, `--padding` and `--width` work as in `render`.
+Document-style PNG uses `--dpi` instead; `--background transparent` is
+available in either style.
 Use absolute paths: the launcher runs the command inside the checkout,
 so a relative path resolves there, not in your working directory.
 For a document figure, `--style document` changes only the fixed physical

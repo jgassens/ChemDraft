@@ -184,6 +184,27 @@ function shellTokens(line: string): string[] {
   return line.match(/"[^"\n]*"|'(?:''|[^'])*'|<[^>\n]+>|&&|\|\||[|;<>]|[^\s|;<>]+/g) ?? [];
 }
 
+function optionValue(tokens: readonly string[], option: string): string | undefined {
+  for (const [index, token] of tokens.entries()) {
+    if (token === option) return tokens[index + 1];
+    if (token.startsWith(`${option}=`)) return token.slice(option.length + 1);
+  }
+  return undefined;
+}
+
+function documentStyleOutputErrors(block: string): string[] {
+  const errors: string[] = [];
+  for (const line of block.replace(/(?:\\|`|\^)\s*\n/g, " ").split("\n")) {
+    const tokens = shellTokens(line).map((token) => /^(['"])[\s\S]*\1$/.test(token) ? token.slice(1, -1) : token);
+    if (optionValue(tokens, "--style") !== "document") continue;
+    const out = optionValue(tokens, "--out");
+    if (out && /\.(?:chemdraft|pdf)$/i.test(out)) {
+      errors.push(`--style document cannot write ${out}: ${line}`);
+    }
+  }
+  return errors;
+}
+
 function shellSafetyErrors(block: string): string[] {
   const errors: string[] = [];
   for (const line of block.replace(/\r\n?/g, "\n").replace(/(?:\\|`|\^)\s*\n/g, " ").split("\n")) {
@@ -345,6 +366,13 @@ describe("ChemDraft agent skill drift guard", () => {
   it("uses only source-accepted subcommands and flags in all fenced examples", () => {
     const errors = markdownFiles(skillRoot).flatMap((path) =>
       codeBlocks(read(path)).flatMap((block) => invocationErrors(block, flags).map((error) => `${path}: ${error}`))
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("does not combine document style with PDF or ChemDraft output in fenced examples", () => {
+    const errors = markdownFiles(skillRoot).flatMap((path) =>
+      codeBlocks(read(path)).flatMap((block) => documentStyleOutputErrors(block).map((error) => `${path}: ${error}`))
     );
     expect(errors).toEqual([]);
   });
