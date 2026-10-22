@@ -168,13 +168,12 @@ fn run_templates_first_turn_and_resume() {
     }
 }
 #[test]
-fn pins_are_placeholders_or_valid() {
+fn pins_are_complete_and_valid() {
     assert_eq!(pins::PINS.len(), 6);
     for pin in &pins::PINS {
-        assert!(
-            pin.sha256 == "PIN_PENDING"
-                || pin.sha256.len() == 64 && pin.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-        );
+        assert_eq!(pin.sha256.len(), 64);
+        assert!(pin.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(pin.size, 0);
         assert!(pin.url.starts_with("https://"));
         assert!(!pin.entry.is_empty());
         assert!(!pin.binary.is_empty());
