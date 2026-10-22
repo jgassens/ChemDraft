@@ -110,12 +110,22 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.6", "0.1.5")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.7", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.7", "0.1.6")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.8", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.8", "0.1.7")).toBe(false);
   });
 });
 
 describe("chemistry worker capability allowlist", () => {
   it("includes structureToName", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toContain("structureToName");
+  });
+});
+
+describe("tools worker capability allowlist", () => {
+  it("includes every external-tools method", () => {
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.tools).toEqual([
+      "status", "install", "signIn", "run", "poll", "cancel", "clearConversation"
+    ]);
   });
 });
 

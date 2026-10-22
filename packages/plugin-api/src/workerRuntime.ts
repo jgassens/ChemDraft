@@ -25,6 +25,7 @@ import type {
   PluginDocumentAPI,
   PluginImagesAPI,
   PluginRecognitionAPI,
+  PluginToolsAPI,
   PluginManifest,
   PluginPanelAPI,
   PluginPermission,
@@ -214,6 +215,19 @@ export function runPluginWorker(
           }
         : undefined;
 
+    const tools: PluginToolsAPI | undefined = has("assistant.run")
+      ? {
+          status: (request) => call("tools", "status", [request]) as ReturnType<PluginToolsAPI["status"]>,
+          install: (request) => call("tools", "install", [request]) as ReturnType<PluginToolsAPI["install"]>,
+          signIn: (request) => call("tools", "signIn", [request]) as ReturnType<PluginToolsAPI["signIn"]>,
+          run: (request) => call("tools", "run", [request]) as ReturnType<PluginToolsAPI["run"]>,
+          poll: (request) => call("tools", "poll", [request]) as ReturnType<PluginToolsAPI["poll"]>,
+          cancel: (request) => call("tools", "cancel", [request]) as ReturnType<PluginToolsAPI["cancel"]>,
+          clearConversation: (request) =>
+            call("tools", "clearConversation", [request]) as ReturnType<PluginToolsAPI["clearConversation"]>
+        }
+      : undefined;
+
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
     // `available: false` rather than the plugin having to guess from the capability's presence.
@@ -277,6 +291,7 @@ export function runPluginWorker(
         permissions: registration.manifest.permissions
       },
       documents,
+      tools,
       storage,
       selection,
       panels,

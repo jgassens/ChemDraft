@@ -14,16 +14,17 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * adds command-scoped, host-owned `PluginImagesAPI.requestImage`; 0.1.6 adds host-owned local
  * `PluginRecognitionAPI.recognizeStructure`; 0.1.7 adds host-owned local
  * `PluginChemistryAPI.structureToName` and the `chemicalName` report section.
+ * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permission `assistant.run`).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
  * declares the patch it needs (`^0.1.1` for name→structure, `^0.1.2` for 2D layout, `^0.1.3` for
  * text prompts, `^0.1.4` for direct document writes, `^0.1.5` for image acquisition, `^0.1.6` for
- * local structure recognition, `^0.1.7` for structure naming), which this host satisfies and an
+ * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.7" as const;
+export const PluginApiVersion = "0.1.8" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -46,6 +47,7 @@ export const pluginPermissions = [
   "filesystem.write",
   "network.fetch",
   "native.execute",
+  "assistant.run",
   "plugin.storage"
 ] as const;
 
@@ -57,7 +59,8 @@ export const dangerousPluginPermissions = [
   "model.download",
   "clipboard.read",
   "document.write",
-  "image.read"
+  "image.read",
+  "assistant.run"
 ] as const satisfies readonly PluginPermission[];
 
 export const PluginPermissionSchema = z.enum(pluginPermissions);
@@ -1249,6 +1252,87 @@ export interface PluginRecognitionAPI {
   recognizeStructure(image: PluginProvidedImage): Promise<PluginRecognitionResult>;
 }
 
+export const PluginExternalToolIdSchema = z.enum(["claude", "codex"]);
+export const PluginExternalToolStatusSchema = z
+  .object({
+    tool: PluginExternalToolIdSchema,
+    state: z.enum(["installed", "missing", "broken", "installing", "unsupported"]),
+    source: z.enum(["user", "managed"]).optional(),
+    path: z.string().optional(),
+    version: z.string().optional(),
+    pinnedVersion: z.string(),
+    managed: z.object({ version: z.string(), path: z.string() }).strict().optional(),
+    signedIn: z.boolean().optional(),
+    authMethod: z.string().optional(),
+    detail: z.string().optional(),
+    canInstall: z.boolean(),
+    consented: z.boolean(),
+    probedAt: z.string()
+  })
+  .strict();
+export const PluginExternalToolRunRequestSchema = z
+  .object({
+    tool: PluginExternalToolIdSchema,
+    conversationId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+    prompt: z.string().max(32_768),
+    systemPrompt: z.string().max(65_536),
+    resumeId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+    model: z.string().regex(/^[a-z0-9.-]{1,64}$/).optional(),
+    effort: z.enum(["low", "medium", "high"]).optional(),
+    mcpSessionId: z.string().min(1),
+    timeoutMs: z.number().int().min(1_000).max(1_800_000).optional()
+  })
+  .strict();
+export const PluginExternalToolRunHandleSchema = z
+  .object({ runId: z.string().min(1), pid: z.number().int(), cwd: z.string().min(1), startedAt: z.string() })
+  .strict();
+export const PluginExternalToolRunStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("running") }).strict(),
+  z.object({ state: z.literal("exited"), code: z.number().int().nullable(), signal: z.string().optional(), durationMs: z.number().nonnegative() }).strict(),
+  z.object({ state: z.literal("killed"), reason: z.enum(["cancelled", "timeout", "appExit", "pluginUnregistered"]) }).strict(),
+  z.object({ state: z.literal("failed"), message: z.string().min(1) }).strict()
+]);
+export const PluginExternalToolRunPollSchema = z
+  .object({
+    lines: z.array(z.object({ stream: z.enum(["stdout", "stderr"]), seq: z.number().int().nonnegative(), text: z.string(), truncated: z.boolean().optional() }).strict()),
+    nextCursor: z.number().int().nonnegative(),
+    droppedLines: z.number().int().nonnegative(),
+    status: PluginExternalToolRunStatusSchema
+  })
+  .strict();
+export const PluginExternalToolStatusRequestSchema = z.object({ tool: PluginExternalToolIdSchema, refresh: z.boolean().optional() }).strict();
+export const PluginExternalToolInstallRequestSchema = z.object({ tool: PluginExternalToolIdSchema }).strict();
+export const PluginExternalToolSignInResultSchema = z.object({ launched: z.boolean(), method: z.enum(["terminal.command", "newConsole"]), detail: z.string().optional() }).strict();
+export const PluginExternalToolPollRequestSchema = z
+  .object({ runId: z.string().min(1), cursor: z.number().int().nonnegative(), maxLines: z.number().int().positive().max(5_000).optional(), waitMs: z.number().int().nonnegative().max(1_000).optional() })
+  .strict();
+export const PluginExternalToolCancelRequestSchema = z.object({ runId: z.string().min(1) }).strict();
+export const PluginExternalToolClearConversationRequestSchema = z
+  .object({ tool: PluginExternalToolIdSchema, conversationId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) })
+  .strict();
+
+export type PluginExternalToolId = z.infer<typeof PluginExternalToolIdSchema>;
+export type PluginExternalToolStatus = z.infer<typeof PluginExternalToolStatusSchema>;
+export type PluginExternalToolRunRequest = z.infer<typeof PluginExternalToolRunRequestSchema>;
+export type PluginExternalToolRunHandle = z.infer<typeof PluginExternalToolRunHandleSchema>;
+export type PluginExternalToolRunStatus = z.infer<typeof PluginExternalToolRunStatusSchema>;
+export type PluginExternalToolRunPoll = z.infer<typeof PluginExternalToolRunPollSchema>;
+export type PluginExternalToolStatusRequest = z.input<typeof PluginExternalToolStatusRequestSchema>;
+export type PluginExternalToolInstallRequest = z.input<typeof PluginExternalToolInstallRequestSchema>;
+export type PluginExternalToolPollRequest = z.input<typeof PluginExternalToolPollRequestSchema>;
+export type PluginExternalToolCancelRequest = z.input<typeof PluginExternalToolCancelRequestSchema>;
+export type PluginExternalToolClearConversationRequest = z.input<typeof PluginExternalToolClearConversationRequestSchema>;
+
+export interface PluginToolsAPI {
+  status(request: PluginExternalToolStatusRequest): Promise<PluginExternalToolStatus>;
+  install(request: PluginExternalToolInstallRequest): Promise<PluginExternalToolStatus>;
+  signIn(request: PluginExternalToolInstallRequest): Promise<z.infer<typeof PluginExternalToolSignInResultSchema>>;
+  run(request: PluginExternalToolRunRequest): Promise<PluginExternalToolRunHandle>;
+  poll(request: PluginExternalToolPollRequest): Promise<PluginExternalToolRunPoll>;
+  cancel(request: PluginExternalToolCancelRequest): Promise<void>;
+  clearConversation(request: PluginExternalToolClearConversationRequest): Promise<void>;
+}
+
 export interface PluginRuntimeIdentity {
   id: string;
   name: string;
@@ -1275,6 +1359,8 @@ export interface PluginCommandContext {
   /** Present only with image.read + ml.inference + model.load + native.execute. The host owns any
    * local-engine install and never delegates model download authority to plugin code. */
   recognition?: PluginRecognitionAPI;
+  /** Present only when the plugin declares "assistant.run". */
+  tools?: PluginToolsAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

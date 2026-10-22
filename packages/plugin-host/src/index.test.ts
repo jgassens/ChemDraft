@@ -81,6 +81,51 @@ describe("CommandRegistry", () => {
   });
 });
 
+describe("external tools", () => {
+  it("gates tools, re-checks its permission, reports an absent host, and cancels runs on unregister", async () => {
+    const status = { tool: "codex" as const, state: "installed" as const, pinnedVersion: "1", canInstall: true, consented: true, probedAt: timestamp };
+    const externalTools = {
+      status: vi.fn(async () => status),
+      install: vi.fn(async () => status),
+      signIn: vi.fn(async () => ({ launched: true, method: "terminal.command" as const })),
+      run: vi.fn(async () => ({ runId: "run", pid: 1, cwd: "/tmp", startedAt: timestamp })),
+      poll: vi.fn(async () => ({ lines: [], nextCursor: 0, droppedLines: 0, status: { state: "running" as const } })),
+      cancel: vi.fn(async () => undefined),
+      clearConversation: vi.fn(async () => undefined),
+      cancelAllForPlugin: vi.fn()
+    };
+    const host = new PluginHost({ externalTools });
+    let retainedTools: PluginCommandContext["tools"];
+    const manifest = {
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x", permissions: ["assistant.run"],
+      contributes: { commands: [{ id: "plugin.tools.run", title: "Run" }] }
+    };
+    host.registerPlugin(manifest, { commandHandlers: { "plugin.tools.run": async (context) => {
+      expect(context.tools).toBeDefined();
+      retainedTools = context.tools;
+      await context.tools!.status({ tool: "codex" });
+      await context.tools!.install({ tool: "codex" });
+      await context.tools!.signIn({ tool: "codex" });
+      await context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s", mcpSessionId: "mcp" });
+      await context.tools!.poll({ runId: "run", cursor: 0 });
+      await context.tools!.cancel({ runId: "run" });
+      await context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" });
+    } } });
+    await host.invokeCommand("plugin.tools.run");
+    expect(externalTools.status).toHaveBeenCalledOnce();
+    expect(externalTools.clearConversation).toHaveBeenCalledOnce();
+    host.unregisterPlugin(manifest.id);
+    expect(externalTools.cancelAllForPlugin).toHaveBeenCalledWith(manifest.id);
+    await expect(retainedTools!.status({ tool: "codex" })).rejects.toThrow(/not registered/);
+
+    const noHost = new PluginHost();
+    noHost.registerPlugin({ ...manifest, id: "org.test.no-tools", contributes: { commands: [{ id: "plugin.noTools.run", title: "Run" }] } }, {
+      commandHandlers: { "plugin.noTools.run": (context) => context.tools!.status({ tool: "codex" }) }
+    });
+    await expect(noHost.invokeCommand("plugin.noTools.run")).rejects.toThrow("This host provides no external tools.");
+  });
+});
+
 describe("PluginHost", () => {
   it("keeps the published package version aligned with the plugin API contract", () => {
     expect(pluginHostPackage.version).toBe(PluginApiVersion);
