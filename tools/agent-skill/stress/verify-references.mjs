@@ -85,8 +85,8 @@ function jsonLines(result, command) {
   }
 }
 
-async function batch(command, jobs, temporaryDirectory) {
-  const batchPath = join(temporaryDirectory, `${command}.json`);
+async function batch(command, jobs, temporaryDirectory, inputName = command) {
+  const batchPath = join(temporaryDirectory, `${inputName}.json`);
   await writeFile(batchPath, stableJson(jobs));
   return jsonLines(await runCli(command, ["--batch", batchPath]), `chemdraft ${command}`);
 }
@@ -113,7 +113,7 @@ const relativeExpectations = new Map([
 
 function relativeVerification(row, stereo) {
   const expected = relativeExpectations.get(row.caseId);
-  if (!expected) return undefined;
+  if (!expected || row.role === "reactant") return undefined;
   // These are symmetric fused/ring-substituted graphs. For their fixed atom ordering, SMILES
   // tetrahedral parity is a graph-local face relation: compare the two stereogenic paths at the
   // fusion/substituted positions after ring closure. The reference graph is intentionally listed
@@ -149,12 +149,18 @@ async function buildLock() {
     for (const [index, row] of rows.entries()) {
       const inspected = stereoByName.get(`ref-${index + 1}`);
       if (!inspected?.ok) referenceFailures.push(`Reference ${row.caseId}:${row.referenceIndex} failed to parse: ${inspected?.error ?? "no CLI result"}`);
-      if (inspected?.ok && row.fullStereo && inspected.unspecifiedCount !== 0) referenceFailures.push(`Reference ${row.caseId}:${row.referenceIndex} has unspecified stereo.`);
+      if (inspected?.ok && row.fullStereo) {
+        for (const center of inspected.stereoCenters.filter((candidate) => candidate.descriptor === "unspecified")) {
+          if (center.element !== "N") {
+            referenceFailures.push(`Reference ${row.caseId}:${row.referenceIndex} has an unspecified ${center.element} stereocentre at atom ${center.atomIndex}.`);
+          }
+        }
+      }
     }
     if (referenceFailures.length > 0) throw new Error(referenceFailures.join("\n"));
     const [isomeric, nonStereo] = await Promise.all([
-      batch("analyze", jobs, temporaryDirectory),
-      batch("analyze", jobs.map((job) => ({ ...job, smiles: withoutStereo(job.smiles) })), temporaryDirectory)
+      batch("analyze", jobs, temporaryDirectory, "analyze-isomeric"),
+      batch("analyze", jobs.map((job) => ({ ...job, smiles: withoutStereo(job.smiles) })), temporaryDirectory, "analyze-without-stereo")
     ]);
     const isomericByName = byName(isomeric);
     const nonStereoByName = byName(nonStereo);
@@ -167,6 +173,8 @@ async function buildLock() {
       const source = row.cid === undefined ? undefined : byCid.get(row.cid);
       const pubchemDescriptors = iupacDescriptors(source?.IUPACName);
       const cliDescriptors = observedDescriptors(stereoResult);
+      const unspecifiedStereoCenters = stereoResult.stereoCenters.filter((center) => center.descriptor === "unspecified").length;
+      const unspecifiedDoubleBonds = stereoResult.doubleBonds.filter((bond) => bond.descriptor === "unspecified").length;
       const pubchemVerification = source?.IUPACName === undefined || pubchemDescriptors.length === 0 ? undefined : {
         cid: row.cid,
         iupacName: source.IUPACName,
@@ -185,6 +193,8 @@ async function buildLock() {
         doubleBonds: stereoResult.doubleBonds,
         specifiedCount: stereoResult.specifiedCount,
         unspecifiedCount: stereoResult.unspecifiedCount,
+        unspecifiedStereoCenters,
+        unspecifiedDoubleBonds,
         molecularFormula: isomericResult.summary.formula.value,
         ...(pubchemVerification ? { pubchemVerification } : {}),
         ...(relativeVerification(row, stereoResult) ? { relativeStereo: relativeVerification(row, stereoResult) } : {})

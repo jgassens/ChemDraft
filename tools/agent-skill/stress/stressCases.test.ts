@@ -19,6 +19,12 @@ function referenceKeys(document: typeof cases): string[] {
   }).sort();
 }
 
+function compileAnswerRegex(pattern: string): RegExp {
+  return pattern.startsWith("(?i)")
+    ? new RegExp(pattern.slice("(?i)".length), "i")
+    : new RegExp(pattern);
+}
+
 describe("agent-skill stress cases", () => {
   it("is a well-formed, balanced fixed test set", () => {
     expect(cases.cases.length).toBeGreaterThanOrEqual(60);
@@ -40,7 +46,7 @@ describe("agent-skill stress cases", () => {
       expect(testCase.prompt.trim()).not.toBe("");
       expect(testCase.rubric.length).toBeGreaterThan(0);
       for (const pattern of [...(testCase.expect.answer_regex ?? []), ...(testCase.expect.answer_forbid_regex ?? [])]) {
-        expect(() => new RegExp(pattern)).not.toThrow();
+        expect(() => compileAnswerRegex(pattern)).not.toThrow();
       }
     }
   });

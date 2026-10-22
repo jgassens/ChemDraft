@@ -32,8 +32,12 @@ Each applicable check is pass/fail. Only checks a case's `expect` block asks for
   stereo. `optional: true` structures are not required to be drawn.
 - **A2 set** — `set_match`: the drawn set equals the reference set (no missing, no extra
   duplicates; decoys allowed only where `set_contains`). `set_contains`: every reference present.
-- **A3 stereo complete** — `full_stereo`: on every structure that passes A1/A2, zero unspecified
-  stereocentres and zero unspecified stereo double bonds (ChemDraft `stereo` counts).
+- **A3 stereo complete** — `full_stereo`: on every structure that passes A1/A2, no more
+  unspecified stereocentres and unspecified stereo double bonds (ChemDraft `stereo` counts) than the
+  reference itself has in `references.lock.json`. Normally that is zero. The exception is a centre the
+  ring system fixes but the stereo engine still counts as unspecified: the bridgehead N in quinine
+  (N07) and in penicillin G (N08). (Added before the baseline, 2026-10-22, after reference
+  verification found it.)
 - **A4 answer text** — every `answer_regex` matches the final message; no `answer_forbid_regex`
   matches.
 - **A5 reaction** — for `reaction` expectations: a reaction scheme was rendered whose reactants and
