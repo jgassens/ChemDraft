@@ -141,7 +141,7 @@ export function measureSvg(svg) {
   });
 }
 
-export async function checkStyle(images) {
+export async function checkStyle(images, assets = []) {
   const measurements = [], unmeasurable = [];
   const svgs = images.filter((file) => /\.svg$/i.test(file));
   for (const file of svgs) {
@@ -152,10 +152,16 @@ export async function checkStyle(images) {
       else measurements.push({ file, ...group });
     }
   }
-  // Retained SVG/PNG pairs share their basename in runner outputs. Do not guess which
-  // options produced an unmatched PNG, including spectra or unrelated raster images.
+  const portableBasename = (value) => value?.replace(/\\/g, '/').split('/').at(-1)?.replace(/\.(png|svg)$/i, '');
+  const assetFor = (file) => assets.find((asset) => asset.path === file);
   for (const file of images.filter((file) => /\.png$/i.test(file))) {
-    if (!svgs.some((svg) => basename(svg, '.svg') === basename(file, '.png'))) {
+    const pngAsset = assetFor(file);
+    if (!svgs.some((svg) => {
+      const svgAsset = assetFor(svg);
+      return basename(svg, '.svg') === basename(file, '.png') ||
+        pngAsset && svgAsset && (pngAsset.toolCallIndex != null && pngAsset.toolCallIndex === svgAsset.toolCallIndex ||
+          pngAsset.originalPath && svgAsset.originalPath && portableBasename(pngAsset.originalPath) === portableBasename(svgAsset.originalPath));
+    })) {
       unmeasurable.push({ file, reason: 'PNG has no matching retained SVG; unmeasurable' });
     }
   }

@@ -14,11 +14,11 @@ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQU
 const model = process.env.FAKE_CODEX_MODEL ?? 'fake-default-model';
 const call = { id: 'item_1', type: 'mcp_tool_call', server: 'chemdraft', tool: 'render_structure', arguments: { smiles: 'C' } };
 const outputFile = process.env.FAKE_CODEX_OUTPUT_FILE;
-const shellCommand = process.env.FAKE_CODEX_SOURCE_READ
-  ? `/bin/zsh -lc 'rg ChemDraft ${process.env.FAKE_CODEX_CHECKOUT}/README.md'`
-  : outputFile
-  ? `/bin/zsh -lc 'pnpm -s --dir ${process.env.FAKE_CODEX_CHECKOUT} chemdraft render --out ${outputFile}'`
-  : 'echo drawn';
+const payload = process.env.FAKE_CODEX_SOURCE_READ
+  ? `rg ChemDraft "${process.env.FAKE_CODEX_CHECKOUT}/README.md"`
+  : outputFile ? `pnpm -s --dir "${process.env.FAKE_CODEX_CHECKOUT}" chemdraft render --out "${outputFile}"` : null;
+const shellCommand = !payload ? 'echo drawn' : process.platform === 'win32' ?
+  `cmd.exe /d /s /c "${payload}"` : `/bin/zsh -lc '${payload}'`;
 const events = [
   { type: 'thread.started', thread_id: 'fake-thread', ...(process.env.FAKE_CODEX_SESSION_MODEL ? {} : { model }) },
   { type: 'turn.started' },
@@ -57,6 +57,9 @@ if (process.env.FAKE_CODEX_VARIANTS) {
   }
 }
 if (process.env.FAKE_CODEX_TURN_FAILURE) events.push({ type: 'turn.failed', error: { message: 'Failed turn' } });
+if (process.env.FAKE_CODEX_WRITE_EVENT) events.push({ type: 'item.completed', item: {
+  id: 'source_write', type: 'file_change', status: 'completed', changes: [{ path: process.env.FAKE_CODEX_WRITE_EVENT, kind: 'update' }]
+} });
 if (process.env.FAKE_CODEX_SESSION_MODEL) {
   const sessions = path.join(process.env.CODEX_HOME, 'sessions', '2026', '10', '22');
   await mkdir(sessions, { recursive: true });

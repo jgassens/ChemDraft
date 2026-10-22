@@ -1,11 +1,13 @@
-import { cp, mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, checkoutChanges, commandOutputTargets, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+// @ts-expect-error stream.mjs is intentionally plain JavaScript.
+import { inspectStream } from './stream.mjs';
 
 const root = path.resolve(import.meta.dirname, '../../../..');
 const runner = path.join(root, 'tools/agent-skill/stress/runner/run.mjs');
@@ -53,7 +55,7 @@ async function invoke(args: string[], env: Record<string, string | undefined> = 
 
 afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
-describe('stress runner', () => {
+describe('stress runner', { timeout: 30_000 }, () => {
   it('resolves Windows npm shims and preserves a quoted prompt without starting cmd.exe', () => {
     const prompt = `Draw (S)-ibuprofen & say "R" or 'S' 100% $HOME`;
     const shim = 'C:\\Users\\chemist\\AppData\\Roaming\\npm\\codex.CMD';
@@ -260,10 +262,120 @@ describe('stress runner', () => {
     expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).status).toBe('complete');
   });
 
-  it('halts Codex when the OpenAI usage pool is unavailable', async () => {
+  it('warns and continues Codex when the OpenAI usage pool is unavailable', async () => {
     const { args, env } = await codexFixture();
-    expect((await invoke(args, { ...env, FAKE_USAGE_NO_OPENAI: '1' })).code).toBe(3);
-    expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(false);
+    const result = await invoke(args, { ...env, FAKE_USAGE_NO_OPENAI: '1' });
+    expect(result.code).toBe(0); expect(result.stderr).toContain('warning:');
+    expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(true);
+  });
+
+  it('warns and proceeds for unreadable and malformed usage for both agents', async () => {
+    for (const agent of ['claude', 'codex']) for (const flag of ['FAKE_USAGE_ERROR', 'FAKE_USAGE_INVALID']) {
+      const { out, args, env } = await codexFixture();
+      args[args.indexOf('codex')] = agent;
+      const result = await invoke(args, { ...env, [flag]: '1' });
+      expect(result.code).toBe(0); expect(result.stderr).toContain('warning:');
+      expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).status).toBe('complete');
+    }
+  });
+
+  it('records tool provenance for runner PNG/SVG assets and copied outputs', async () => {
+    const { out, args, env } = await codexFixture();
+    const artifact = path.join(out, 'figure.svg'); await writeFile(artifact, '<svg/>');
+    await invoke(args, { ...env, FAKE_CODEX_OUTPUT_FILE: artifact, FAKE_CODEX_CHECKOUT: root });
+    const assets = JSON.parse(await readFile(path.join(out, 'S01/assets.json'), 'utf8'));
+    expect(assets).toEqual([
+      expect.objectContaining({ path: 'images/001-mcp__chemdraft__render_structure.png', toolCallIndex: 0 }),
+      expect.objectContaining({ path: 'images/002-mcp__chemdraft__render_structure.svg', toolCallIndex: 0 }),
+      expect.objectContaining({ path: 'outputs/001-figure.svg', toolCallIndex: 1, originalPath: artifact }),
+    ]);
+  });
+
+  it('fails Claude result errors and turn-limit subtypes even with exit zero', async () => {
+    for (const failure of ['is_error', 'error_max_turns', 'error_during_execution']) {
+      const cases = await fixtureCases(), out = await outDirectory();
+      await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_RESULT_ERROR: failure });
+      expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: expect.stringContaining(failure) });
+    }
+  });
+
+  it('rejects init skills present in the parameterised user skills folder, except chemdraft', async () => {
+    const skills = await outDirectory();
+    await mkdir(path.join(skills, 'private-user-skill')); await mkdir(path.join(skills, 'chemdraft'));
+    const init = { type: 'system', subtype: 'init', mcp_servers: [{ name: 'chemdraft', status: 'connected' }], skills: ['chemdraft', 'private-user-skill'] };
+    expect(inspectStream([init], { userSkillsPath: skills })).toMatchObject({ isolated: false, isolationLeak: true });
+    expect(inspectStream([{ ...init, skills: ['chemdraft', 'builtin'] }], { userSkillsPath: skills }).isolated).toBe(true);
+    const cases = await fixtureCases(), out = await outDirectory();
+    const previous = { ...process.env };
+    try {
+      process.env.CHEMDRAFT_STRESS_CLAUDE_BIN = fakeClaude; process.env.CHEMDRAFT_STRESS_AGENTCTL_BIN = fakeAgentctl;
+      process.env.FAKE_CLAUDE_SKILL = 'private-user-skill';
+      await run({ cases, out, checkout: root, agent: 'claude', split: 'all', ids: ['S01'], skipPreflight: true,
+        timeoutMin: 1, maxTurns: 3, concurrency: 1, userSkillsPath: skills }, { stderr: () => {} });
+    } finally { process.env = previous; }
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak' });
+  });
+
+  it('rejects instruction files/folders on every output ancestor, including home and symlinks', async () => {
+    const home = await outDirectory();
+    const parent = path.join(home, 'runs'); await mkdir(parent);
+    for (const entry of ['CLAUDE.md', 'AGENTS.md', '.claude', '.codex']) {
+      const location = path.join(parent, entry);
+      if (entry.startsWith('.')) await mkdir(location); else await writeFile(location, 'instructions');
+      await expect(assertOutputIsolation(path.join(parent, 'new', 'out'), { home })).rejects.toThrow('inherits agent instructions');
+      await rm(location, { recursive: true });
+    }
+    await mkdir(path.join(home, '.claude')); await mkdir(path.join(home, '.codex'));
+    await expect(assertOutputIsolation(path.join(parent, 'new'), { home })).resolves.toBeUndefined();
+    await writeFile(path.join(home, 'CLAUDE.md'), 'instructions');
+    await expect(assertOutputIsolation(path.join(parent, 'new'), { home })).rejects.toThrow('CLAUDE.md');
+    // Actual --out validation is exercised before any agent launch.
+    const cases = await fixtureCases();
+    const result = await invoke(['--cases', cases, '--out', path.join(parent, 'new'), '--checkout', root]);
+    expect(result.code).toBe(2); expect(result.stderr).toContain('inherits agent instructions');
+    await rm(path.join(home, 'CLAUDE.md'));
+    const elsewhere = path.join(home, 'elsewhere'), target = path.join(home, 'secret', 'inner');
+    await mkdir(elsewhere); await mkdir(target, { recursive: true });
+    await writeFile(path.join(home, 'secret', 'AGENTS.md'), 'inherited through symlink');
+    await symlink(target, path.join(elsewhere, 'linked'), 'junction');
+    await expect(assertOutputIsolation(path.join(elsewhere, 'linked', 'new'), { home })).rejects.toThrow('AGENTS.md');
+  });
+
+  it('records new git status changes and fails isolation after a checkout write', async () => {
+    expect(checkoutChanges(' M prior\n', ' M prior\n?? new\n')).toEqual(['?? new']);
+    const checkout = await fakeCheckout(false), cases = await fixtureCases(), out = await outDirectory();
+    execFileSync('git', ['init', checkout], { stdio: 'pipe' });
+    await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout], { FAKE_CLAUDE_WRITE: path.join(checkout, 'unexpected.txt') });
+    const meta = JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'));
+    expect(meta).toMatchObject({ status: 'error', reason: 'isolation-leak', checkoutModified: true });
+    expect(meta.checkoutStatusAfter).toContain('unexpected.txt');
+    expect(meta.checkoutStatusBefore).not.toContain('unexpected.txt');
+  });
+
+  it('audits Claude writes and Codex file changes inside the checkout on both platforms', async () => {
+    for (const platform of ['darwin', 'win32']) {
+      const checkout = platform === 'win32' ? 'C:\\repo' : '/repo';
+      const source = platform === 'win32' ? 'C:\\repo\\source.ts' : '/repo/source.ts';
+      for (const name of ['Write', 'Edit', 'NotebookEdit']) {
+        expect(repoAccess([{ name, input: { file_path: source } }], checkout, { platform })).toEqual([
+          expect.objectContaining({ tool: name, classification: 'source-write' })]);
+      }
+      expect(repoAccess([], checkout, { platform, fileChanges: [{ path: source }] })).toEqual([
+        expect.objectContaining({ tool: 'file_change', classification: 'source-write' })]);
+      expect(repoAccess([{ name: 'Write', input: { file_path: `${checkout}-other/file` } }], checkout, { platform })).toEqual([]);
+    }
+    const windowsCommand = String.raw`cmd.exe /d /s /c "pnpm.cmd -s --dir C:\repo chemdraft render --smiles CCO --out C:\Users\x\figure.svg"`;
+    expect(commandOutputTargets(windowsCommand, { platform: 'win32' })).toEqual(['C:\\Users\\x\\figure.svg']);
+    expect(repoAccess([{ name: 'Bash', input: { command: windowsCommand } }], 'C:\\repo', { platform: 'win32' }))
+      .toEqual([expect.objectContaining({ classification: 'cli' })]);
+    const { out, args, env } = await codexFixture();
+    await invoke(args, { ...env, FAKE_CODEX_WRITE_EVENT: path.join(root, 'source.ts') });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak',
+      repoAccess: [expect.objectContaining({ classification: 'source-write', tool: 'file_change' })] });
+    const cases = await fixtureCases(), claudeOut = await outDirectory();
+    await invoke(['--cases', cases, '--out', claudeOut, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_WRITE_EVENT: path.join(root, 'source.ts') });
+    expect(JSON.parse(await readFile(path.join(claudeOut, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak',
+      repoAccess: [expect.objectContaining({ classification: 'source-write', tool: 'Edit' })] });
   });
 
   it('clearly rejects missing Codex auth without running an agent', async () => {

@@ -39,7 +39,9 @@ A builder's saved native output is not counted a second time merely because it i
 
 Only retained run artifacts are read for document/batch paths. The grader never executes agent
 shell text. Missing or ambiguous retained inputs, malformed run files, and grader errors are
-harness failures. Agent SMILES that RDKit cannot parse fail applicable structure checks.
+harness failures. Failed tool calls and malformed agent inputs are ignored for
+structure extraction and recorded in `extractionDetails` and check details, so
+a corrected later call can pass. Engine crashes remain harness failures.
 
 SVG measurements use ChemDraft's `data-bond-id` primary lines and straight paths, inherited stroke width,
 and uniform transforms; they exclude arrows, text, effect copies, and hit targets. When the exporter
@@ -47,7 +49,9 @@ marks atom centers (including labeled-atom transforms), bond length is the media
 distance between those centers: visible ink is deliberately shortened at labels and for secondary
 double-bond lines. Each molecule has its own median measurement, including inside grids. The largest-to-smallest ratio must be
 at most 1.05 for both median bond length and stroke width. A PNG without a retained SVG sharing
-its basename is marked unmeasurable (A6 fails, with a separate diagnostic). Curved bond paths,
+its tool call index (from `assets.json`) or original basename is marked
+unmeasurable (A6 fails, with a separate diagnostic). Matching retained basenames
+remain supported for older runs. Curved bond paths,
 non-uniform transforms, and drawings without measurable bond segments also fail as unmeasurable.
 
 `visual-pack` contains prompts, named references (or source CID/notes when names were not supplied),
@@ -60,6 +64,9 @@ has its own denominators and Wilson 95% intervals; harness cases are excluded, a
 pooled. Non-passes retain one primary reviewer cause. Without `--visual`, counts are explicitly
 provisional automatic-only, V is pending (n=0), and causes are provisional `agent-error` labels.
 Wrong-and-confident and honest-decline classifications require independent visual judgment.
+`report.md` includes only aggregate scores for held-out cases; their failure
+details go to `report-heldout.md`, for the final adjudicator only. The complete
+`report.json` has the same access restriction as the held-out detail report.
 
 The tests generate synthetic runner-shaped folders with Claude and Codex runner shapes. Codex calls
 come exclusively from `tool-calls.json`; its JSON event transcript is not Claude stream-json.

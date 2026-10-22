@@ -22,5 +22,16 @@ if (process.env.FAKE_CLAUDE_SLEEP === '1') {
     ] }] } },
     { type: 'result', result: 'Finished drawing.', num_turns: 1, usage: { input_tokens: 2 }, total_cost_usd: 0.01 }
   ];
+  if (process.env.FAKE_CLAUDE_SKILL) events[0].skills.push({ name: process.env.FAKE_CLAUDE_SKILL });
+  if (process.env.FAKE_CLAUDE_RESULT_ERROR) {
+    events.at(-1).is_error = process.env.FAKE_CLAUDE_RESULT_ERROR === 'is_error';
+    events.at(-1).subtype = process.env.FAKE_CLAUDE_RESULT_ERROR;
+  }
+  if (process.env.FAKE_CLAUDE_WRITE) {
+    await writeFile(process.env.FAKE_CLAUDE_WRITE, 'checkout changed');
+  }
+  if (process.env.FAKE_CLAUDE_WRITE_EVENT) events.splice(1, 0, { type: 'assistant', message: { content: [
+    { type: 'tool_use', id: 'source_write', name: 'Edit', input: { file_path: process.env.FAKE_CLAUDE_WRITE_EVENT } }
+  ] } });
   process.stdout.write(`${events.map(JSON.stringify).join('\n')}\n`);
 }

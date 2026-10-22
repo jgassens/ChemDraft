@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 const METHOD_IDS = { logp: 'rdkit.crippen-logp', tpsa: 'rdkit.tpsa', hbd: 'rdkit.hbd', hba: 'rdkit.hba',
   'monoisotopic-mass': 'rdkit.monoisotopic-mass', 'average-mass': 'rdkit.average-mass', 'rotatable-bonds': 'rdkit.rotatable-bonds' };
@@ -75,7 +76,12 @@ export async function createChemistry(checkout) {
   }
   async function native(file) {
     await warm();
-    const { document: nativeDocument } = await loadAgentDocument(file);
+    // Separate unreadable retained artifacts (grader failure) from a readable
+    // document whose content the agent got wrong. Engine errors stay untagged.
+    await readFile(file);
+    let nativeDocument;
+    try { ({ document: nativeDocument } = await loadAgentDocument(file)); }
+    catch (error) { error.agentInput = !/\b(?:ENOENT|EACCES|EPERM|EIO)\b/.test(error.message); throw error; }
     const molecules = [];
     for (const page of nativeDocument.pages) for (const object of page.objects) {
       if (object.type !== 'molecule') continue;

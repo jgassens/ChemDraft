@@ -112,14 +112,17 @@ function rate(value) {
   const percentage = (n) => (100*n).toFixed(1) + '%';
   return `${value.pass}/${value.n} = ${percentage(value.rate)} [${percentage(value.lower)}, ${percentage(value.upper)}], n=${value.n}`;
 }
-export function markdown(report) {
+export function markdown(report, { heldoutDetails = false } = {}) {
+  const unrun = report.unrun_cases ?? report.unrun_case_ids.map((id) => ({ id, split: 'unknown' }));
+  const visibleUnrun = unrun.filter((item) => heldoutDetails ? item.split === 'heldout' : item.split === 'dev');
+  const hiddenUnrunCount = unrun.length - visibleUnrun.length;
   const lines = ['# ChemDraft stress report', '', `SCORING_VERSION = ${report.scoring_version}; automatic SCORING_VERSION = ${report.automatic_scoring_version}.`, '',
     `Agent: ${report.agent ?? 'unspecified'}.`, '',
     `Mode: **${report.mode}**.`, '', report.sampling, '',
-    `Cases not run: ${report.unrun_case_ids.length ? report.unrun_case_ids.map((id) => `\`${id}\``).join(', ') : 'none'}.`, '',
+    `Cases not run: ${[...visibleUnrun.map((item) => `\`${item.id}\``), ...(hiddenUnrunCount ? [`${hiddenUnrunCount} ${heldoutDetails ? 'dev' : 'heldout'} cases`] : [])].join(', ') || 'none'}.`, '',
     '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Repo source-read cases | Pass rate (Wilson 95%) |',
     '|---|---|---:|---:|---:|---:|---:|---:|---|---|'];
-  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${group.repo_source_read_cases.map((id) => `\`${id}\``).join(', ') || '—'} | ${rate(group.pass_rate)} |`);
+  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${group.split === 'heldout' && !heldoutDetails ? group.repo_source_read_cases.length : group.repo_source_read_cases.map((id) => `\`${id}\``).join(', ') || '—'} | ${rate(group.pass_rate)} |`);
   lines.push('', '## Check pass rates', '', 'Each denominator includes only scored cases for which that check applies. V includes completed visual reviews only.', '',
     '| Category | Split | Check | Pass rate (Wilson 95%) |', '|---|---|---|---|');
   for (const group of report.groups) for (const [id, value] of Object.entries(group.checks)) lines.push(`| ${cell(group.category)} | ${group.split} | ${id} | ${id === 'V' && report.visual_pending ? 'Visual pending (n=0)' : rate(value)} |`);
@@ -128,7 +131,7 @@ export function markdown(report) {
     `| Category | Split | ${Object.keys(CAUSES).join(' | ')} |`, `|---|---|${Object.keys(CAUSES).map(() => '---:').join('|')}|`);
   for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${Object.values(group.causes).join(' | ')} |`);
   lines.push('', '## Worst failures', '', 'Non-passes ranked by wrong-and-confident first, then failed A/V check count. Harness entries are not scored.', '');
-  for (const item of report.worst_failures) {
+  for (const item of report.worst_failures.filter((item) => heldoutDetails ? item.split === 'heldout' : item.split !== 'heldout')) {
     lines.push(`### ${item.id} (${item.category}, ${item.split}): ${item.result}${item.wrong_and_confident ? ' — wrong-and-confident' : ''}`, '',
       `Prompt: ${item.prompt}`, '', `Drawn SMILES: ${item.drawn_smiles.map((smiles) => `\`${smiles}\``).join(', ') || '(none)'}`, '',
       `Reference SMILES: ${item.reference_smiles.map((smiles) => `\`${smiles}\``).join(', ') || '(none)'}`, '',
@@ -136,6 +139,7 @@ export function markdown(report) {
       `Cause: ${item.cause ?? 'pending'}; failed checks: ${item.failed_checks.join(', ') || '(none)'}.`, '',
       ...item.what_was_wrong.map((detail) => `- ${detail.replace(/[\r\n]+/g, ' ')}`), '');
   }
+  if (heldoutDetails) lines.unshift('For the final adjudicator only, not for anyone fixing the skill.', '');
   return lines.join('\n') + '\n';
 }
 
@@ -161,9 +165,11 @@ export async function report(options) {
   }
   if (agents.size !== 1) throw new Error(`Cannot mix runs from different agents in one report: ${[...agents].map((agent) => agent ?? 'unspecified').join(', ')}`);
   const result = buildReport(selected, automatic, visual, finals, [...agents][0], repoSourceReads, unrunCaseIds);
+  result.unrun_cases = allCases.filter((item) => unrunCaseIds.includes(item.id)).map(({ id, split }) => ({ id, split }));
   await mkdir(join(options.runs, 'grade'), { recursive: true });
   await saveJson(join(options.runs, 'grade', 'report.json'), result);
   await writeFile(join(options.runs, 'grade', 'report.md'), markdown(result));
+  await writeFile(join(options.runs, 'grade', 'report-heldout.md'), markdown(result, { heldoutDetails: true }));
   return result;
 }
 if (isMain(import.meta.url)) {

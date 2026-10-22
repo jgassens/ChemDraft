@@ -53,6 +53,8 @@ Each applicable check is pass/fail. Only checks a case's `expect` block asks for
 - **A8 tool use** — the agent reached ChemDraft (at least one ChemDraft MCP tool or CLI call). A
   case with no ChemDraft call fails A8 and every structure check.
 
+Cases whose `expect` has `mechanism: true` (R04, R05, R07, R12) or `answer_key: true` (D02, the key part) are judged by the visual check only; their automatic result is A8 plus any other listed check.
+
 A case's automatic result is PASS when every applicable A check passes.
 
 ## Visual check (V)
