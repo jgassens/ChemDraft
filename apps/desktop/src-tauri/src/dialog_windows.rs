@@ -301,12 +301,12 @@ impl ToolInstallSnapshot {
             }
         };
         let buttons: &[&str] = match self.state {
-            ToolInstallState::NotInstalled {} => &["install", "close"],
+            ToolInstallState::NotInstalled {}
+            | ToolInstallState::Failed { .. }
+            | ToolInstallState::Broken { .. } => &["install", "close"],
             ToolInstallState::Consent {} => &["allow", "close"],
             ToolInstallState::Installing { .. } => &["cancelInstall", "close"],
-            ToolInstallState::Installed {}
-            | ToolInstallState::Failed { .. }
-            | ToolInstallState::Broken { .. } => &["close"],
+            ToolInstallState::Installed {} => &["close"],
         };
         valid_state && self.buttons == buttons
     }
@@ -962,6 +962,21 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
         .insert(message.request_id.clone(), message.clone());
     Ok(true)
 }
+
+fn update_snapshot(session: &mut Session, message: &Message) {
+    // A failed tool install offers Retry in the same window. Its previous Install
+    // reservation must end before a new request ID can be accepted.
+    if message.dialog_kind == "toolInstall"
+        && matches!(
+            message.data["state"]["status"].as_str(),
+            Some("failed" | "broken")
+        )
+    {
+        session.terminal_request = None;
+    }
+    session.snapshot = message.clone();
+}
+
 fn register(
     registry: &mut Registry,
     message: Message,
@@ -1262,7 +1277,7 @@ pub(crate) fn dialog_publish(
             .receipts
             .insert(message.request_id.clone(), message.clone());
     } else if message.message_type == "snapshot" {
-        session.snapshot = message.clone();
+        update_snapshot(session, &message);
     }
     send_host(session, &message)
 }
@@ -1944,27 +1959,6 @@ mod tests {
             native_window_title("toolInstall", spec.title, "Install Claude Code"),
             "Install Claude Code"
         );
-        for (state, buttons) in [
-            (json!({"status":"consent"}), json!(["allow", "close"])),
-            (
-                json!({"status":"installing","phase":"Downloading","bytesDone":1,"bytesTotal":2}),
-                json!(["cancelInstall", "close"]),
-            ),
-            (json!({"status":"installed"}), json!(["close"])),
-            (
-                json!({"status":"failed","message":"Checksum mismatch"}),
-                json!(["close"]),
-            ),
-            (
-                json!({"status":"broken","detail":"Missing receipt"}),
-                json!(["close"]),
-            ),
-        ] {
-            let mut valid = message.clone();
-            valid.data["state"] = state;
-            valid.data["buttons"] = buttons;
-            assert!(valid.validate().is_ok());
-        }
         let mut unknown_disk_space = message.clone();
         unknown_disk_space.data["freeDiskBytes"] = Value::Null;
         assert!(unknown_disk_space.validate().is_ok());
@@ -2001,6 +1995,57 @@ mod tests {
         }
         let capability = include_str!("../capabilities/dialog-host.json");
         assert!(capability.contains("dialog-main-toolInstall-*"));
+    }
+    #[test]
+    fn tool_install_shared_button_contract() {
+        let rows: Vec<Value> = serde_json::from_str(include_str!(
+            "../../src/dialogs/toolInstallButtonStates.json"
+        ))
+        .unwrap();
+        for row in &rows {
+            let expected = row["buttons"].as_array().unwrap();
+            let mut reversed = expected.clone();
+            reversed.reverse();
+            let mut duplicate = expected.clone();
+            duplicate.push(json!("close"));
+            let candidates = rows.iter().map(|r| r["buttons"].clone()).chain([
+                json!([]),
+                json!(reversed),
+                json!(duplicate),
+                json!(["unknown"]),
+            ]);
+            for buttons in candidates {
+                let mut message = tool_install_snapshot();
+                message.data["state"] = row["state"].clone();
+                message.data["buttons"] = buttons.clone();
+                assert_eq!(
+                    message.validate().is_ok(),
+                    buttons == row["buttons"],
+                    "state: {}, buttons: {buttons}",
+                    row["state"]
+                );
+            }
+        }
+    }
+    #[test]
+    fn tool_install_failure_releases_reservation_for_retry() {
+        let mut registry = Registry::default();
+        let mut snapshot = tool_install_snapshot();
+        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let mut action = snapshot.clone();
+        action.message_type = "action".into();
+        action.data = json!({"action":"install"});
+        assert!(reserve_action(session, &action).unwrap());
+        let original_action = action.clone();
+        action.request_id = "retry".into();
+        assert!(reserve_action(session, &action).is_err());
+        snapshot.data["state"] = json!({"status":"failed","message":"Download failed"});
+        assert!(snapshot.validate().is_ok());
+        update_snapshot(session, &snapshot);
+        assert!(reserve_action(session, &action).unwrap());
+        assert!(!reserve_action(session, &original_action).unwrap());
+        assert!(!reserve_action(session, &action).unwrap());
     }
     #[test]
     fn engine_install_registration_validation_ownership_and_limits() {

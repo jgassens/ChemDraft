@@ -9,7 +9,8 @@ export interface EngineInstallPresenter {
 }
 export interface ToolInstallPresenter {
   action(action: ToolInstallAction): void | Promise<void>;
-  closed(): void;
+  closed(afterClose?: Promise<void>): void;
+  failed?(error: unknown): void;
 }
 
 interface Session {
@@ -118,6 +119,7 @@ export class DialogCoordinator {
     const snapshot = { ...session.snapshot, data };
     if (!parseDialogMessage(snapshot)) throw new Error("Invalid tool installation snapshot");
     session.snapshot = snapshot;
+    if (data.state.status === "failed" || data.state.status === "broken") session.terminalRequestId = undefined;
     if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
   }
   async closeToolInstall(tabId: string): Promise<void> {
@@ -154,6 +156,7 @@ export class DialogCoordinator {
         await this.preview(session, session.previewRequest.requestId, session.previewRequest.percent);
       }
     } catch (error) {
+      session.toolInstall?.failed?.(error);
       await this.settle(session, "error");
       throw error;
     }
@@ -318,14 +321,17 @@ export class DialogCoordinator {
     if (this.sessions.get(key) === session) this.sessions.delete(key);
     if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId);
     // Preserve the existing Page Size callback contract.
+    let finishToolClose: (() => void) | undefined;
+    const toolClosed = session.toolInstall ? new Promise<void>(resolve => { finishToolClose = resolve; }) : undefined;
     if (session.snapshot.dialogKind === "engineInstall") session.engineInstall?.closed();
-    else if (session.snapshot.dialogKind === "toolInstall") session.toolInstall?.closed();
+    else if (session.snapshot.dialogKind === "toolInstall") session.toolInstall?.closed(toolClosed);
     else if (session.snapshot.dialogKind === "export") this.owner.onSettled?.(session.snapshot.documentTabId, reason, "export");
     else this.owner.onSettled?.(session.snapshot.documentTabId, reason);
     if (close && session.registration) {
       try { await this.transport.close(session.registration.hostId, reason); }
       catch (error) { this.owner.onError(`Could not close ${session.snapshot.dialogKind}: ${String(error)}`); }
     }
+    finishToolClose?.();
   }
   async closeTab(tabId: string): Promise<void> {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.documentTabId === tabId).map(s => this.settle(s, "ownerTabClose")));

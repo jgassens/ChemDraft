@@ -102,7 +102,7 @@ it("validates tool install snapshots, states and actions fail closed", () => {
     { state: { status: "consent" }, buttons: ["allow", "close"] },
     { state: { status: "installing", phase: "Downloading", bytesDone: 1, bytesTotal: 2 }, buttons: ["cancelInstall", "close"] },
     { state: { status: "installed" }, buttons: ["close"] },
-    { state: { status: "broken", detail: "Receipt missing" }, buttons: ["close"] }
+    { state: { status: "broken", detail: "Receipt missing" }, buttons: ["install", "close"] }
   ]) expect(parseDialogMessage({ ...message, data: { ...data, ...state } })).toBeDefined();
   expect(parseDialogMessage({ ...message, data: { ...data, freeDiskBytes: null } })).toBeDefined();
   for (const action of ["install", "allow", "cancelInstall", "close"]) expect(parseDialogMessage({ ...message, type: "action", data: { action } })).toBeDefined();

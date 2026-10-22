@@ -68,6 +68,12 @@ export function DialogWindow({ hostId }: { hostId: string }) {
         // Replay must not replace the user's draft at the same revision.
         if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall") {
           setSnapshot(message);
+          if (message.dialogKind === "toolInstall" && (message.data.state.status === "failed" || message.data.state.status === "broken")) {
+            clearTimeout(actionTimer.current);
+            actionPending.current = false;
+            pendingRequestId.current = undefined;
+            setBusy(false);
+          }
           if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit });
           else if (message.dialogKind === "arrangementSpacing") { setPercent(100); setPreview(undefined); }
           else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }

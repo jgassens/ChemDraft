@@ -187,7 +187,7 @@ export function validToolInstallSnapshot(v: unknown): v is ToolInstallSnapshot {
     case "installing": valid = keys(state, ["status", "phase"], ["bytesDone", "bytesTotal"]) && text(state.phase, 128) &&
       (state.bytesDone === undefined || bytes(state.bytesDone)) && (state.bytesTotal === undefined || bytes(state.bytesTotal)); break;
   }
-  const buttons = state.status === "notInstalled" ? ["install", "close"] : state.status === "consent" ? ["allow", "close"] :
+  const buttons = state.status === "notInstalled" || state.status === "broken" || state.status === "failed" ? ["install", "close"] : state.status === "consent" ? ["allow", "close"] :
     state.status === "installing" ? ["cancelInstall", "close"] : ["close"];
   return valid && JSON.stringify(v.buttons) === JSON.stringify(buttons);
 }
