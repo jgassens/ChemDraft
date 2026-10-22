@@ -4,14 +4,37 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const directory = resolve(fileURLToPath(new URL(".", import.meta.url)));
-const cases = JSON.parse(readFileSync(resolve(directory, "cases.json"), "utf8"));
-const lock = JSON.parse(readFileSync(resolve(directory, "references.lock.json"), "utf8"));
+type StressExpect = {
+  structures?: unknown;
+  reaction?: {
+    reactants?: unknown;
+    products?: unknown;
+    products_any_of?: unknown;
+    intermediates?: unknown;
+  };
+  answer_regex?: string[];
+  answer_forbid_regex?: string[];
+};
 
-function referenceKeys(document: typeof cases): string[] {
-  return document.cases.flatMap((testCase: { id: string; expect: Record<string, unknown> }) => {
+type StressCase = {
+  id: string;
+  category: string;
+  split: string;
+  prompt: string;
+  rubric: unknown[];
+  expect: StressExpect;
+};
+
+type StressCaseDocument = { cases: StressCase[] };
+
+const cases: StressCaseDocument = JSON.parse(readFileSync(resolve(directory, "cases.json"), "utf8"));
+const lock: { references: { caseId: string; referenceIndex: number }[] } = JSON.parse(readFileSync(resolve(directory, "references.lock.json"), "utf8"));
+
+function referenceKeys(document: StressCaseDocument): string[] {
+  return document.cases.flatMap((testCase) => {
     let index = 0;
     const count = (entries: unknown) => Array.isArray(entries) ? entries.map(() => `${testCase.id}:${index++}`) : [];
-    const reaction = testCase.expect.reaction as Record<string, unknown> | undefined;
+    const reaction = testCase.expect.reaction;
     return [
       ...count(testCase.expect.structures),
       ...count(reaction?.reactants), ...count(reaction?.products), ...count(reaction?.products_any_of), ...count(reaction?.intermediates)
@@ -29,7 +52,7 @@ describe("agent-skill stress cases", () => {
   it("is a well-formed, balanced fixed test set", () => {
     expect(cases.cases.length).toBeGreaterThanOrEqual(60);
     expect(cases.cases.length).toBeLessThanOrEqual(80);
-    expect(new Set(cases.cases.map((testCase: { id: string }) => testCase.id)).size).toBe(cases.cases.length);
+    expect(new Set(cases.cases.map((testCase) => testCase.id)).size).toBe(cases.cases.length);
     const categories = new Map<string, typeof cases.cases>();
     for (const testCase of cases.cases) categories.set(testCase.category, [...(categories.get(testCase.category) ?? []), testCase]);
     for (const category of categories.values()) {
