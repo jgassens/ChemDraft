@@ -6,6 +6,8 @@ use std::{
 };
 
 pub(crate) fn reply(mut stream: TcpStream, response: &[u8]) {
+    // Accepted sockets inherit the listener's nonblocking mode on Windows; read timeouts only apply to blocking sockets.
+    stream.set_nonblocking(false).expect("blocking test stream");
     const HEADER_LIMIT: usize = 64 * 1024;
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut request = Vec::new();
