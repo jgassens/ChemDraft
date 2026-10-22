@@ -2,6 +2,7 @@ mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
 mod export;
+mod external_tools;
 mod fonts;
 mod installed_plugins;
 mod local_engine;
