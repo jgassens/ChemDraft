@@ -13,6 +13,7 @@ fn main() {
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "diagnose_download_host",
             "read_plugin_package",
             "dialog_open",
             "dialog_request",

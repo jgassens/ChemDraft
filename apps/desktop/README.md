@@ -12,6 +12,16 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+Plugin catalog and local engine downloads use reqwest 0.12 with both Mozilla and OS certificate
+roots, so macOS and Windows enterprise trust stores can participate without disabling certificate
+verification. Transport failures name the host and cause; diagnostics and logs remove URL credentials,
+queries and fragments. The catalog retains its existing HTTP allowlist, redirect validation and
+checksum/size gates. Its main-window-only `diagnose_download_host` command can only HEAD the fixed
+catalog/asset hosts, with no redirects and bounded connect/total timeouts. A successful probe means
+only that the host was reachable on retry, not that the original transfer succeeded.
+System proxies remain enabled (environment and static OS settings); reqwest does not evaluate
+PAC/WPAD scripts. Windows app updates retain their separate reqwest 0.13 OS verifier and proxy path.
+
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,
 numeric JPEG quality, renderer warnings, and slide/poster/publication presets. Cropping uses

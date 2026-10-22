@@ -1346,6 +1346,66 @@ mod tests {
     }
 
     #[test]
+    fn system_download_reports_plain_refused_and_interrupted_messages() {
+        let root = temp_root("network-errors");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        let url = format!("http://{address}/artifact?sig=secret-signature&jwt=secret-token");
+        let io = loopback_io();
+        let download = |url: &str| {
+            io.download(
+                Download {
+                    url,
+                    sha256: pins::MODEL_SHA256,
+                    size: None,
+                    phase: InstallPhase::DownloadingModel,
+                },
+                &root.join("artifact"),
+                &AtomicBool::new(false),
+                &|_| {},
+            )
+            .expect_err("network failure")
+        };
+        let refused = download(&url);
+        assert_eq!(refused.code, InstallErrorCode::Network);
+        assert_eq!(
+            refused.message,
+            "Couldn't reach 127.0.0.1: the network refused the connection."
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let _ = stream.read(&mut [0; 4096]);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+                )
+                .expect("partial body");
+        });
+        let interrupted = download(&format!(
+            "http://{address}/artifact?sig=secret-signature&jwt=secret-token"
+        ));
+        assert_eq!(interrupted.code, InstallErrorCode::Network);
+        assert!(
+            interrupted
+                .message
+                .contains("127.0.0.1: the connection was closed or interrupted"),
+            "{}",
+            interrupted.message
+        );
+        for error in [refused, interrupted] {
+            for secret in ["?", "sig=", "jwt=", "secret-signature", "secret-token"] {
+                assert!(!error.message.contains(secret));
+            }
+        }
+        server.join().expect("server");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn system_download_verifies_pinned_bytes_and_rejects_tampering() {
         let root = temp_root("download");
         let body = b"pinned artifact".to_vec();

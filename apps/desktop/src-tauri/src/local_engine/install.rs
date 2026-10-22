@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::network_error::{self, download_tls_policy, DownloadPlatform};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 
@@ -170,13 +171,16 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         // not to the whole transfer, so this is a stall timeout: a 1.1 GB model on a slow link
         // still completes, while a dead connection fails — and a cancel is noticed — within a
         // minute.
+        let policy = download_tls_policy(DownloadPlatform::current());
         let client = builder
+            .tls_built_in_webpki_certs(policy.webpki_roots)
+            .tls_built_in_native_certs(policy.native_roots)
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(60))
             .user_agent(S::USER_AGENT)
             .build()
             .map_err(|error| {
-                InstallError::network(format!("Could not prepare downloads: {error}"))
+                InstallError::network(network_error::download_error_message(&error))
             })?;
         Ok(Self {
             spec: std::marker::PhantomData,
@@ -311,17 +315,22 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|error| {
-                InstallError::network(format!("Could not download {}: {error}", spec.url))
+                InstallError::network(network_error::download_error_message(&error))
             })?;
         if let (Some(expected), Some(reported)) = (spec.size, response.content_length()) {
             if expected != reported {
                 return Err(InstallError::checksum(format!(
                     "{} reported {reported} bytes; expected {expected}.",
-                    spec.url
+                    network_error::redact_url(spec.url)
                 )));
             }
         }
         let total = spec.size.or_else(|| response.content_length());
+        let download_host = response
+            .url()
+            .host_str()
+            .unwrap_or("download server")
+            .to_owned();
         let ops = FileOps::new::<S>(Some(cancel)).with_running(self.running_child());
         let mut file = ops.create(destination).map_err(file_ops::failed::<S>)?;
         let mut digest = Sha256::new();
@@ -331,7 +340,10 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         loop {
             check_cancel::<S>(cancel)?;
             let read = response.read(&mut buffer).map_err(|error| {
-                InstallError::network(format!("Download interrupted for {}: {error}", spec.url))
+                InstallError::network(network_error::log_failure(network_error::classify_error(
+                    &error,
+                    &download_host,
+                )))
             })?;
             if read == 0 {
                 break;
@@ -343,7 +355,7 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
             if spec.size.is_some_and(|expected| done > expected) {
                 return Err(InstallError::checksum(format!(
                     "{} sent more than the pinned {} bytes.",
-                    spec.url,
+                    network_error::redact_url(spec.url),
                     spec.size.unwrap_or_default()
                 )));
             }
@@ -357,7 +369,10 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
             .map_err(file_ops::failed::<S>)?;
         let actual = format!("{:x}", digest.finalize());
         pins::verify_digest(done, &actual, spec.size, spec.sha256).map_err(|detail| {
-            InstallError::checksum(format!("Verification failed for {}: {detail}.", spec.url))
+            InstallError::checksum(format!(
+                "Verification failed for {}: {detail}.",
+                network_error::redact_url(spec.url)
+            ))
         })?;
         Ok(())
     }

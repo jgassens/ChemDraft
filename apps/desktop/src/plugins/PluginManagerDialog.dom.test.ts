@@ -1226,6 +1226,8 @@ describe("PluginManagerDialog", () => {
 
   it.each([
     [officialOpsinPluginId, "No release published yet"],
+    [officialNmrPluginId, "Couldn't reach release-assets.githubusercontent.com: the network refused the connection."],
+    [officialNmrPluginId, "Couldn't reach github.com: the connection was interrupted during the download; try again."],
     [officialNmrPluginId, "The plugin package does not match its .sha256 checksum."]
   ])("shows an official install failure on its own row for %s", async (pluginId, message) => {
     const runtime = createRuntime();
@@ -1248,6 +1250,10 @@ describe("PluginManagerDialog", () => {
     });
 
     expect(document.querySelector(`[data-official-install-error="${pluginId}"]`)?.textContent).toContain(message);
+    const help = "You can also download the package and use Add plugin from package…";
+    const row = document.querySelector(`[data-official-install-error="${pluginId}"]`)?.textContent;
+    if (message.startsWith("Couldn't reach ")) expect(row).toContain(help);
+    else expect(row).not.toContain(help);
     expect(document.querySelector(".plugin-manager-error")).toBeNull();
   });
 

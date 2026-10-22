@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnose-download-host"
+description = "Enables the diagnose_download_host command without any pre-configured scope."
+commands.allow = ["diagnose_download_host"]
+
+[[permission]]
+identifier = "deny-diagnose-download-host"
+description = "Denies the diagnose_download_host command without any pre-configured scope."
+commands.deny = ["diagnose_download_host"]

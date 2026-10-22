@@ -22,7 +22,7 @@ import type {
   PluginUpdateOffer,
   PreparedPluginUpdate
 } from "./pluginUpdates";
-import { EXPERIMENTAL_PLUGIN_NOTICE, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { EXPERIMENTAL_PLUGIN_NOTICE, isNetworkDownloadFailure, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
 import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
@@ -479,6 +479,7 @@ export function PluginManagerDialog({
         {error ? (
           <div className="plugin-manager-error" role="alert">
             Plugin operation failed: {error}
+            <NetworkPackageHelp message={error} />
           </div>
         ) : null}
 
@@ -675,6 +676,7 @@ export function PluginManagerDialog({
                             role="alert"
                           >
                             {rowError}
+                            <NetworkPackageHelp message={rowError} />
                           </p>
                         ) : null}
                       </div>
@@ -1164,6 +1166,7 @@ function PluginUpdateStatus({ result }: { result: PluginUpdateCheckResult }) {
     return (
       <p className="plugin-manager-update-status is-error" data-update-status="failed" role="alert">
         Update check failed: {result.message}
+        <NetworkPackageHelp message={result.message} />
       </p>
     );
   }
@@ -1172,6 +1175,12 @@ function PluginUpdateStatus({ result }: { result: PluginUpdateCheckResult }) {
       No trusted ChemDraft update source is configured for this plugin.
     </p>
   );
+}
+
+function NetworkPackageHelp({ message }: { message: string }) {
+  return isNetworkDownloadFailure(message)
+    ? <span style={{ display: "block" }}>You can also download the package and use Add plugin from package…</span>
+    : null;
 }
 
 function installedPluginCatalogKey(installedPlugins: readonly InstalledPluginCatalogEntry[]): string {

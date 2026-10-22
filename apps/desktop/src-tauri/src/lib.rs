@@ -1,5 +1,6 @@
 mod dialog_windows;
 mod document_session;
+mod download_diagnosis;
 mod export;
 mod fonts;
 mod installed_plugins;
@@ -8,6 +9,7 @@ mod local_engine;
 mod macos_quit;
 mod main_window_placement;
 mod naming_engine;
+mod network_error;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;
@@ -33,6 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use download_diagnosis::diagnose_download_host;
 use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
@@ -1221,6 +1224,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            diagnose_download_host,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
             dialog_windows::dialog_request,
@@ -8453,12 +8457,13 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}",
+            "{}{}{}{}{}{}",
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
-            include_str!("../capabilities/quit-prompt.json")
+            include_str!("../capabilities/quit-prompt.json"),
+            include_str!("../capabilities/download-diagnosis.json")
         );
 
         let handler_start = lib_source

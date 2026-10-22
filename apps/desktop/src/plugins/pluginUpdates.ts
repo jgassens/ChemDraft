@@ -7,6 +7,7 @@
  */
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import {
   inspectPluginPackage,
@@ -104,6 +105,63 @@ interface HostFetchInit extends RequestInit {
 
 type HostFetch = (url: string, init?: HostFetchInit) => Promise<Response>;
 
+interface NetworkDiagnosis {
+  category: string;
+  message: string | null;
+  logDetail: string;
+}
+
+type DiagnosisInvoke = (command: "diagnose_download_host", args: { host: string }) => Promise<NetworkDiagnosis>;
+interface DownloadOptions {
+  fetch?: HostFetch;
+  invoke?: DiagnosisInvoke;
+}
+
+/** Keep only the public address, never credentials or a signed URL's temporary tokens. */
+export function redactUrl(value: string): string {
+  try {
+    const url = new URL(value.split(/[?#]/, 1)[0]);
+    return `${url.protocol}//${url.hostname}${url.pathname}`;
+  } catch {
+    return "[redacted URL]";
+  }
+}
+
+export function redactUrls(text: string): string {
+  // Consume the whole non-whitespace token. Punctuation in a malformed URL or its query must not
+  // separate a sensitive suffix from the URL we redact.
+  return text.replace(/https?:\/\/\S+/gi, redactUrl);
+}
+
+export function isNetworkDownloadFailure(message: string): boolean {
+  return message.startsWith("Couldn't reach ");
+}
+
+function diagnosedFetch(options: DownloadOptions): HostFetch {
+  const fetch = options.fetch ?? (tauriFetch as HostFetch);
+  const invoke = options.invoke ?? tauriInvoke<NetworkDiagnosis>;
+  return async (url, init) => {
+    try {
+      return await fetch(url, init);
+    } catch (cause: unknown) {
+      // withUpdateTimeout owns cancellation and its existing, specific timeout wording.
+      if (init?.signal?.aborted) throw new Error("Download cancelled.");
+      const host = new URL(url).hostname;
+      console.warn(`Download transport failure for ${host}: ${messageOf(cause)}`);
+      let diagnosis: NetworkDiagnosis;
+      try {
+        diagnosis = await invoke("diagnose_download_host", { host });
+      } catch {
+        throw new Error(`Couldn't reach ${host}: the connection failed.`);
+      }
+      if (diagnosis.logDetail) console.warn(redactUrls(diagnosis.logDetail));
+      throw new Error(diagnosis.category === "reachable"
+        ? `Couldn't reach ${host}: the connection was dropped or interrupted; try again.`
+        : redactUrls(diagnosis.message ?? `Couldn't reach ${host}: the connection failed.`));
+    }
+  };
+}
+
 const RELEASE_METADATA_LIMIT_BYTES = 1024 * 1024;
 const UPDATE_CHECK_TIMEOUT_MS = 20_000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 120_000;
@@ -184,9 +242,9 @@ export interface PreparedOfficialPluginInstall {
 /** Check every installed plugin without allowing one failed source to hide the others. */
 export async function checkForPluginUpdates(
   installedPlugins: readonly InstalledPluginCatalogEntry[],
-  options: { fetch?: HostFetch } = {}
+  options: DownloadOptions = {}
 ): Promise<readonly PluginUpdateCheckResult[]> {
-  const fetch = options.fetch ?? (tauriFetch as HostFetch);
+  const fetch = diagnosedFetch(options);
   return Promise.all(
     installedPlugins.map(async (entry): Promise<PluginUpdateCheckResult> => {
       const source = OFFICIAL_PLUGIN_SOURCES.get(entry.record.id);
@@ -235,9 +293,9 @@ export async function checkForPluginUpdates(
 /** Download and fully inspect an offered update, but do not install it. */
 export async function preparePluginUpdate(
   offer: PluginUpdateOffer,
-  options: { fetch?: HostFetch } = {}
+  options: DownloadOptions = {}
 ): Promise<PreparedPluginUpdate> {
-  const fetch = options.fetch ?? (tauriFetch as HostFetch);
+  const fetch = diagnosedFetch(options);
   const inspection = await prepareTrustedReleasePackage(offer, fetch);
   if (comparePluginVersions(inspection.manifest.version, offer.installedVersion) <= 0) {
     throw new Error(
@@ -257,13 +315,13 @@ export async function preparePluginUpdate(
 /** Fetch, verify, and inspect the latest package for one compiled-in official plugin. */
 export async function prepareOfficialPluginInstall(
   pluginId: string,
-  options: { fetch?: HostFetch } = {}
+  options: DownloadOptions = {}
 ): Promise<PreparedOfficialPluginInstall> {
   const source = OFFICIAL_PLUGIN_SOURCES.get(pluginId);
   if (!source) {
     throw new Error(`Plugin "${pluginId}" is not in ChemDraft's official plugin catalog.`);
   }
-  const fetch = options.fetch ?? (tauriFetch as HostFetch);
+  const fetch = diagnosedFetch(options);
   const offer = await fetchLatestReleaseOffer(source, fetch);
   const inspection = await prepareTrustedReleasePackage(offer, fetch);
   return {
@@ -307,7 +365,9 @@ async function fetchLatestReleaseOffer(
       const bytes = await readBoundedResponseBytes(
         response,
         RELEASE_METADATA_LIMIT_BYTES,
-        `${source.displayName} release metadata`
+        `${source.displayName} release metadata`,
+        apiUrl,
+        signal
       );
       try {
         return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
@@ -445,7 +505,7 @@ async function withUpdateTimeout<T>(
     if (controller.signal.aborted) {
       throw new Error(`${label} timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`);
     }
-    throw cause;
+    throw new Error(messageOf(cause));
   } finally {
     clearTimeout(timeout);
   }
@@ -481,6 +541,7 @@ async function downloadTrustedReleaseAsset(
     await assertResponseStayedAt(initialResponse, options.url, options.assetLabel);
 
     let response = initialResponse;
+    let responseUrl = options.url;
     if (REDIRECT_STATUSES.has(initialResponse.status)) {
       let redirectUrl: string;
       try {
@@ -498,6 +559,7 @@ async function downloadTrustedReleaseAsset(
         connectTimeout: UPDATE_CONNECT_TIMEOUT_MS,
         signal
       });
+      responseUrl = redirectUrl;
       await assertResponseStayedAt(response, redirectUrl, "release asset");
     }
     if (REDIRECT_STATUSES.has(response.status)) {
@@ -511,7 +573,7 @@ async function downloadTrustedReleaseAsset(
       );
     }
 
-    return readBoundedResponseBytes(response, options.limit, options.boundedLabel);
+    return readBoundedResponseBytes(response, options.limit, options.boundedLabel, responseUrl, signal);
   });
 }
 
@@ -548,7 +610,9 @@ async function fetchReleaseSidecar(offer: OfficialPluginReleaseOffer, fetch: Hos
 async function readBoundedResponseBytes(
   response: Response,
   limit: number,
-  label: string
+  label: string,
+  responseUrl: string,
+  signal: AbortSignal
 ): Promise<Uint8Array> {
   const declaredBytes = parseContentLength(response.headers.get("content-length"));
   if (declaredBytes !== undefined && declaredBytes > limit) {
@@ -564,7 +628,14 @@ async function readBoundedResponseBytes(
   let total = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch((cause: unknown) => {
+        // Classify by the failed operation, never the engine's error wording. The caller owns
+        // abort/timeout messages; our own size-limit errors below must also remain authoritative.
+        if (signal.aborted) throw cause;
+        const host = new URL(responseUrl).hostname;
+        console.warn(`Download body failure for ${host}: ${messageOf(cause)}`);
+        throw new Error(`Couldn't reach ${host}: the connection was interrupted during the download; try again.`);
+      });
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
@@ -685,5 +756,5 @@ function parseContentLength(value: string | null): number | undefined {
 }
 
 function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  return redactUrls(cause instanceof Error ? cause.message : String(cause));
 }

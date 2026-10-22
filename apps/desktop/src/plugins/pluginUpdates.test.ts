@@ -9,10 +9,13 @@ import {
   checkForPluginUpdates,
   GITHUB_RELEASE_ASSET_HOST,
   GITHUB_RELEASE_ASSET_PATH_PREFIX,
+  isNetworkDownloadFailure,
   isOfficialPluginExperimental,
   OFFICIAL_PLUGIN_CATALOG,
   prepareOfficialPluginInstall,
   preparePluginUpdate,
+  redactUrl,
+  redactUrls,
   type PluginUpdateOffer
 } from "./pluginUpdates";
 
@@ -120,6 +123,182 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("host-managed plugin update catalog", () => {
+  const signedUrl = "https://release-assets.githubusercontent.com/github-production-release-asset/1/package?sig=secret-signature&jwt=secret-token#fragment";
+  const rawFailure = `error sending request for url (${signedUrl})`;
+
+  it.each(["zip", "sidecar", "zip redirect", "sidecar redirect"])("diagnoses a rejected %s fetch using the requested host", async (stage) => {
+    const zip = await pluginPackage("0.1.0");
+    const release = await releaseDocument("0.1.0", zip);
+    const diagnosedMessage = `Couldn't reach ${stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com"}: the server's security certificate isn't trusted.`;
+    const invoke = vi.fn(async () => ({
+      category: "certificate_untrusted",
+      message: diagnosedMessage,
+      logDetail: `nested cause: ${signedUrl}`
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fetch = vi.fn(async (url: string) => {
+        if (url === API_URL) return jsonResponse(release);
+        const targeted = stage.startsWith("sidecar") ? url.endsWith(".sha256") : url.endsWith(".zip");
+        if (url === signedUrl || (targeted && !stage.includes("redirect"))) throw new Error(rawFailure);
+        if (targeted) return new Response(null, { status: 302, headers: { location: signedUrl } });
+        return new Response(zip.slice().buffer);
+      });
+      await expect(prepareOfficialPluginInstall(PLUGIN_ID, { fetch, invoke })).rejects.toThrow(diagnosedMessage);
+      expect(invoke).toHaveBeenCalledWith("diagnose_download_host", { host: stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com" });
+      const logs = warn.mock.calls.flat().join(" ");
+      for (const secret of ["?", "sig=", "jwt=", "secret-token", "secret-signature"]) expect(logs).not.toContain(secret);
+    } finally { warn.mockRestore(); }
+  });
+
+  it("diagnoses update-check transport failures without exposing the rejected error", async () => {
+    const message = "Couldn't reach api.github.com: the name could not be found.";
+    const invoke = vi.fn(async () => ({ category: "dns", message, logDetail: rawFailure }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await checkForPluginUpdates([installedEntry("0.0.9")], {
+        fetch: async () => { throw new Error(rawFailure); }, invoke
+      });
+      expect(result[0]).toMatchObject({ status: "failed", message });
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("diagnose_download_host", { host: "api.github.com" });
+      expect(warn.mock.calls.flat().join(" ")).not.toMatch(/\?|sig=|jwt=|secret-token|secret-signature/);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(["zip", "sidecar", "zip redirect", "sidecar redirect"])("explains an interrupted %s body and redacts its logged cause", async (stage) => {
+    const zip = await pluginPackage("0.1.0");
+    const release = await releaseDocument("0.1.0", zip);
+    const host = stage.includes("redirect") ? GITHUB_RELEASE_ASSET_HOST : "github.com";
+    const message = `Couldn't reach ${host}: the connection was interrupted during the download; try again.`;
+    const invoke = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fetch = async (url: string) => {
+        if (url === API_URL) return jsonResponse(release);
+        const targeted = stage.startsWith("sidecar") ? url.endsWith(".sha256") : url.endsWith(".zip");
+        if (targeted && stage.includes("redirect")) {
+          return new Response(null, { status: 302, headers: { location: signedUrl } });
+        }
+        if (targeted || url === signedUrl) {
+          let reads = 0;
+          return new Response(new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (reads++ === 0) controller.enqueue(new Uint8Array([1, 2]));
+              // Even timeout/abort-looking text is a read failure unless our signal was aborted.
+              else controller.error(new Error(`AbortError: timed out reading ${signedUrl})jwt=secret-token`));
+            }
+          }));
+        }
+        return new Response(zip.slice().buffer);
+      };
+      await expect(prepareOfficialPluginInstall(PLUGIN_ID, { fetch, invoke })).rejects.toThrow(message);
+      expect(isNetworkDownloadFailure(message)).toBe(true);
+      expect(invoke).not.toHaveBeenCalled();
+      const logs = warn.mock.calls.flat().join(" ");
+      expect(logs).toContain(`Download body failure for ${host}: AbortError: timed out reading https://`);
+      expect(logs).not.toMatch(/\?|sig=|jwt=|secret-token|secret-signature|fragment/);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(["zip", "sidecar"])("preserves our timeout message while reading the %s body", async (stage) => {
+    const zip = await pluginPackage("0.1.0");
+    const release = await releaseDocument("0.1.0", zip);
+    const invoke = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const pending = prepareOfficialPluginInstall(PLUGIN_ID, {
+        invoke,
+        fetch: async (url, init) => {
+          if (url === API_URL) return jsonResponse(release);
+          const targeted = stage === "sidecar" ? url.endsWith(".sha256") : url.endsWith(".zip");
+          if (!targeted) return new Response(zip.slice().buffer);
+          return new Response(new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1, 2]));
+              init?.signal?.addEventListener("abort", () => controller.error(new Error(rawFailure)));
+            }
+          }));
+        }
+      });
+      const expected = stage === "zip"
+        ? "Downloading NMR Shift Predictor 0.1.0 timed out after 120 seconds."
+        : "Downloading the NMR Shift Predictor 0.1.0 checksum timed out after 20 seconds.";
+      const assertion = expect(pending).rejects.toThrow(expected);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await assertion;
+      expect(invoke).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); warn.mockRestore(); }
+  });
+
+  it.each([true, false])("uses a safe fallback if diagnosis fails (reachable=%s)", async (reachable) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await checkForPluginUpdates([installedEntry("0.0.9")], {
+        fetch: async () => { throw new Error(rawFailure); },
+        invoke: async () => {
+          if (!reachable) throw new Error(rawFailure);
+          return { category: "reachable", message: null, logDetail: "" };
+        }
+      });
+      expect(result[0]).toMatchObject({ status: "failed", message: reachable
+        ? "Couldn't reach api.github.com: the connection was dropped or interrupted; try again."
+        : "Couldn't reach api.github.com: the connection failed." });
+      expect(JSON.stringify(result)).not.toMatch(/\?|sig=|jwt=|secret-token/);
+      expect(warn.mock.calls.flat().join(" ")).not.toMatch(/\?|sig=|jwt=|secret-token/);
+    } finally { warn.mockRestore(); }
+  });
+
+  it("preserves HTTP status errors without diagnosing a transport failure", async () => {
+    const invoke = vi.fn();
+    const result = await checkForPluginUpdates([installedEntry("0.0.9")], {
+      fetch: async () => new Response(null, { status: 503, statusText: "Service Unavailable" }), invoke
+    });
+    expect(result[0]).toMatchObject({ status: "failed", message: "Checking NMR Shift Predictor releases failed with HTTP 503 Service Unavailable." });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("preserves our abort timeout message without running diagnosis", async () => {
+    vi.useFakeTimers();
+    const invoke = vi.fn();
+    try {
+      const pending = checkForPluginUpdates([installedEntry("0.0.9")], {
+        fetch: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error(rawFailure)));
+        }), invoke
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect((await pending)[0]).toMatchObject({ status: "failed", message: "Checking NMR Shift Predictor releases timed out after 20 seconds." });
+      expect(invoke).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("redacts credentials, queries and fragments from every URL in text", () => {
+    expect(redactUrl("https://user:password@github.com/path?sig=secret#fragment")).toBe("https://github.com/path");
+    expect(redactUrl("not a URL?sig=secret")).toBe("[redacted URL]");
+    const clean = redactUrls(`outer (${signedUrl}); inner HTTP://user:password@github.com/path?jwt=secret-token`);
+    expect(clean).toContain("https://release-assets.githubusercontent.com/github-production-release-asset/1/package");
+    expect(clean).not.toMatch(/\?|sig=|jwt=|secret-token|password|fragment/);
+  });
+
+  it.each([
+    "https://user:password@github.com/path?sig=secret'jwt=secret",
+    'https://github.com/path?sig=secret"jwt=secret',
+    "https://github.com/path?sig=secret`jwt=secret",
+    "https://github.com/path?sig=secret,jwt=secret",
+    "https://github.com/path?sig=secret)jwt=secret",
+    "https://github.com/path?sig=%29%22%60secret%23jwt%3Dsecret",
+    "HTTPS://github.com/path#secret)jwt=secret?sig=secret",
+    "https://[invalid/path?sig=secret)jwt=secret",
+    "https://[invalid/path#secret`jwt=secret",
+    "https://[invalid]/path?sig=secret)jwt=secret"
+  ])("redacts the entire sensitive suffix even with unusual delimiters: %s", (url) => {
+    const expected = url.includes("[invalid") ? "[redacted URL]" : "https://github.com/path";
+    expect(redactUrl(url)).toBe(expected);
+    expect(redactUrls(`outer ${url} next`)).toBe(`outer ${expected} next`);
+  });
+
   it("compiles the complete official plugin catalog into the host", () => {
     expect(OFFICIAL_PLUGIN_CATALOG).toEqual([
       {

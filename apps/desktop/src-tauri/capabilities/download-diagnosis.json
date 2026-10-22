@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "download-diagnosis",
+  "description": "Allow only the document window to diagnose connections to the fixed plugin download hosts.",
+  "windows": ["main"],
+  "permissions": ["allow-diagnose-download-host"]
+}
