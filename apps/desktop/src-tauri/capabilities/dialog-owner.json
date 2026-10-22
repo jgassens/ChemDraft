@@ -2,6 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dialog-owner",
   "description": "Only the authoritative document window can create, publish to, and dismiss registered native dialog sessions.",
-  "windows": ["main"],
-  "permissions": ["allow-dialog-open", "allow-dialog-publish", "allow-dialog-close"]
+  "windows": [
+    "main",
+    "document-*"
+  ],
+  "permissions": [
+    "allow-dialog-open",
+    "allow-dialog-publish",
+    "allow-dialog-close"
+  ]
 }

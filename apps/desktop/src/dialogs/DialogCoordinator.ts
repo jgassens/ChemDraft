@@ -114,7 +114,7 @@ export class DialogCoordinator {
       if (existing.registration && (kind === "engineInstall" || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) await this.transport.open(existing.snapshot);
       return;
     }
-    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
+    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.transport.ownerWindowId?.() ?? "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     const title = kind === "engineInstall" ? "Engine installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);

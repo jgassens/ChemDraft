@@ -24,7 +24,13 @@ const tauriEventBus = vi.hoisted(() => {
 
 vi.mock("@tauri-apps/api/event", () => ({
   emit: tauriEventBus.emit,
+  emitTo: vi.fn(async (_target: string, eventName: string, payload: unknown) => tauriEventBus.emit(eventName, payload)),
   listen: tauriEventBus.listen
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "main") }));
+vi.mock("@tauri-apps/api/window", () => ({ getAllWindows: vi.fn(async () => [{ label: "toolset-core-main" }]) }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ listen: tauriEventBus.listen })
 }));
 import {
   broadcastToolsetCommandSpecs,

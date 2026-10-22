@@ -63,6 +63,15 @@ it("validates owner frame updates and presentation fields strictly", () => {
   }
 });
 
+it("keeps dialogs bound to their originating document window", () => {
+  const first = { ...snapshot(), ownerWindowId: "document-2" };
+  expect(parseDialogMessage(first)).toEqual(first);
+  expect(validateDialogDelivery(first, "document-2", first, "dialog-main-pageSize-1")).toEqual(first);
+  expect(validateDialogDelivery(first, "main", first, "dialog-main-pageSize-1")).toBeUndefined();
+  for (const ownerWindowId of ["preferences", "toolset-main", "document-", "document-../2"])
+    expect(parseDialogMessage({ ...first, ownerWindowId })).toBeUndefined();
+});
+
 it("validates engine install snapshots, states and actions strictly within the delivery budget", () => {
   const data = engineInstallFixture();
   const message = { ...snapshot(), dialogKind: "engineInstall", data };

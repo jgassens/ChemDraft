@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-claim-document-file"
+description = "Enables the claim_document_file command without any pre-configured scope."
+commands.allow = ["claim_document_file"]
+
+[[permission]]
+identifier = "deny-claim-document-file"
+description = "Denies the claim_document_file command without any pre-configured scope."
+commands.deny = ["claim_document_file"]

@@ -230,9 +230,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
         WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
-    let document = window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
+    let document = super::owner_document_window(window.app_handle(), window.label())
         .ok_or_else(|| "Main document window is not available.".to_string())?;
     let parent = hwnd as usize;
     let panel = window.clone();

@@ -10,7 +10,7 @@ import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
-import { listenCurrentWindowEvent, listenTauriEvent } from "./tauriEvents";
+import { listenCurrentWindowEvent } from "./tauriEvents";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -137,6 +137,52 @@ export function isDesktopRuntime(): boolean {
   };
 
   return Boolean(candidate.__TAURI_INTERNALS__ || candidate.__TAURI__);
+}
+
+/** Resolve immutable native ownership rather than trusting a route/query parameter. */
+export async function currentDocumentWindowOwner(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("document_window_owner");
+}
+
+export function ownedUtilityWindowLabel(owner: string, base: string): string {
+  return owner === "main" ? base : base + "--" + owner;
+}
+
+/** Existing native windows are explicit delivery targets; global listeners are never used. */
+async function emitToWindowLabels(eventName: string, payload: unknown, labels: string[]): Promise<void> {
+  const { emitTo } = await import("@tauri-apps/api/event");
+  await Promise.all(labels.map(label => emitTo(label, eventName, payload)));
+}
+
+async function emitToDocumentOwner(eventName: string, payload?: unknown): Promise<void> {
+  await emitToWindowLabels(eventName, payload, [await currentDocumentWindowOwner()]);
+}
+
+async function emitToOwnedUtility(eventName: string, payload: unknown, base: string): Promise<void> {
+  const owner = await currentDocumentWindowOwner();
+  await emitToWindowLabels(eventName, payload, [ownedUtilityWindowLabel(owner, base)]);
+}
+
+async function emitToOwnedToolsets(eventName: string, payload?: unknown): Promise<void> {
+  const owner = await currentDocumentWindowOwner();
+  const { getAllWindows } = await import("@tauri-apps/api/window");
+  const labels = (await getAllWindows()).map(window => window.label).filter(label =>
+    label.startsWith("toolset-") && (owner === "main" ? !label.includes("--document-") : label.endsWith("--" + owner))
+  );
+  await emitToWindowLabels(eventName, payload, labels);
+}
+
+/** Preferences are shared across documents; explicitly target each existing native window. */
+async function emitSharedSetting(eventName: string, payload: unknown): Promise<void> {
+  try {
+    const { getAllWindows } = await import("@tauri-apps/api/window");
+    await emitToWindowLabels(eventName, payload, (await getAllWindows()).map(window => window.label));
+  } catch (error) {
+    // Preferences have already persisted locally and call this without awaiting. Keep a native
+    // delivery failure observable without producing an unhandled rejection from the UI callback.
+    console.error("Could not synchronize shared preference " + eventName, error);
+  }
 }
 
 export function createPaletteCommandPayload(commandId: string): PaletteCommandPayload {
@@ -296,15 +342,14 @@ export async function dismissToolsetPopovers(): Promise<void> {
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_DISMISS_EVENT).catch(() => undefined);
+  await emitToOwnedToolsets(TOOLSET_POPOVER_DISMISS_EVENT).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverDismiss(handler: () => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(TOOLSET_POPOVER_DISMISS_EVENT, () => handler());
+  return listenCurrentWindowEvent(TOOLSET_POPOVER_DISMISS_EVENT, () => handler());
 }
 
 /** One command in a flyout dropdown, snapshotted at open time so the popover window can render it. */
@@ -370,10 +415,7 @@ export async function setToolsetPopoverContent(
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
-    () => undefined
-  );
+  await emitToOwnedUtility(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }, `toolset-popover-${toolsetId.replaceAll(".", "-")}`).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverContent(
@@ -382,7 +424,7 @@ export async function listenForToolsetPopoverContent(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, (event) => handler(event.payload));
+  return listenCurrentWindowEvent<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, (event) => handler(event.payload));
 }
 
 /** Popover → palette: "I just mounted, resend my content" — closes the create-vs-emit startup race. */
@@ -391,8 +433,7 @@ export async function requestToolsetPopoverContent(toolsetId: string): Promise<v
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, { toolsetId }).catch(() => undefined);
+  await emitToOwnedUtility(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, { toolsetId }, `toolset-${toolsetId.replace(/[^a-zA-Z0-9]/g, "-")}`).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverContentRequests(
@@ -401,7 +442,7 @@ export async function listenForToolsetPopoverContentRequests(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<{ toolsetId: string }>(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, (event) =>
+  return listenCurrentWindowEvent<{ toolsetId: string }>(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, (event) =>
     handler(event.payload.toolsetId)
   );
 }
@@ -438,8 +479,7 @@ export async function broadcastSpin3dSettings(settings: Spin3dSettings): Promise
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, settings);
+  await emitSharedSetting(SPIN3D_SETTINGS_EVENT, settings);
 }
 
 export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings) => void): Promise<Unlisten> {
@@ -449,7 +489,7 @@ export async function listenForSpin3dSettings(handler: (settings: Spin3dSettings
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<Spin3dSettings>(SPIN3D_SETTINGS_EVENT, (event) => {
     if (isSpin3dSettingsPayload(event.payload)) handler(event.payload);
   });
   return () => {
@@ -473,8 +513,7 @@ export async function broadcastKeybindingSettings(settings: KeybindingSettings):
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, settings);
+  await emitSharedSetting(KEYBINDING_SETTINGS_EVENT, settings);
 }
 
 export async function listenForKeybindingSettings(
@@ -486,7 +525,7 @@ export async function listenForKeybindingSettings(
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<KeybindingSettings>(KEYBINDING_SETTINGS_EVENT, (event) => {
     if (isKeybindingSettings(event.payload)) handler(event.payload);
   });
   return () => {
@@ -572,21 +611,23 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
  *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 
-export async function listenForQuitFlushRequest(handler: () => Promise<void>): Promise<Unlisten> {
+export async function listenForQuitFlushRequest(handler: (requestId: number) => Promise<void>): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenCurrentWindowEvent(QUIT_FLUSH_REQUEST_EVENT, () => {
-    void handler().catch(() => undefined);
+  return listenCurrentWindowEvent<{ requestId: number }>(QUIT_FLUSH_REQUEST_EVENT, (event) => {
+    if (Number.isSafeInteger(event.payload?.requestId) && event.payload.requestId > 0) {
+      void handler(event.payload.requestId).catch(() => undefined);
+    }
   });
 }
 
-export async function confirmQuitAfterFlush(): Promise<void> {
+export async function confirmQuitAfterFlush(requestId: number): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("quit_after_flush").catch(() => undefined);
+  await invoke("quit_after_flush", { requestId });
 }
 
 export const QUIT_PROMPT_REQUEST_EVENT = "chemdraft://prompt-before-quit";
@@ -601,8 +642,7 @@ export async function listenForQuitPromptRequest(handler: (requestId: number) =>
 export async function broadcastQuitSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(QUIT_SETTINGS_EVENT, enabled);
   if (isDesktopRuntime()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(QUIT_SETTINGS_EVENT, enabled);
+    await emitSharedSetting(QUIT_SETTINGS_EVENT, enabled);
   }
 }
 export async function listenForQuitSettings(handler: (enabled: boolean) => void): Promise<Unlisten> {
@@ -610,7 +650,7 @@ export async function listenForQuitSettings(handler: (enabled: boolean) => void)
     if (typeof event.detail === "boolean") handler(event.detail);
   });
   if (!isDesktopRuntime()) return dom;
-  const native = await listenTauriEvent<boolean>(QUIT_SETTINGS_EVENT, (event) => {
+  const native = await listenCurrentWindowEvent<boolean>(QUIT_SETTINGS_EVENT, (event) => {
     if (typeof event.payload === "boolean") handler(event.payload);
   });
   return () => { dom(); native(); };
@@ -618,8 +658,7 @@ export async function listenForQuitSettings(handler: (enabled: boolean) => void)
 export async function broadcastExportPreviewSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
   if (isDesktopRuntime()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
+    await emitSharedSetting(EXPORT_PREVIEW_SETTINGS_EVENT, enabled);
   }
 }
 export async function listenForExportPreviewSettings(handler: (enabled: boolean) => void, nativeEvents = false): Promise<Unlisten> {
@@ -635,7 +674,7 @@ export async function listenForExportPreviewSettings(handler: (enabled: boolean)
   const stop = () => { dom(); window.removeEventListener("storage", storage); };
   if (!nativeEvents || !isDesktopRuntime()) return stop;
   try {
-    const native = await listenTauriEvent<boolean>(EXPORT_PREVIEW_SETTINGS_EVENT, (event) => {
+    const native = await listenCurrentWindowEvent<boolean>(EXPORT_PREVIEW_SETTINGS_EVENT, (event) => {
       if (typeof event.payload === "boolean") handler(event.payload);
     });
     return () => { stop(); native(); };
@@ -735,8 +774,7 @@ async function emitToolsetCommandEvent(eventName: string, commandId: string): Pr
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandPayload>(eventName, payload);
+  await emitToDocumentOwner(eventName, payload);
 }
 
 /** What a detached palette asks the main window to do on its behalf. */
@@ -749,8 +787,7 @@ export async function sendPaletteInspectorAction(action: PaletteInspectorAction)
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
+  await emitToDocumentOwner(PALETTE_INSPECTOR_ACTION_EVENT, action);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
@@ -760,8 +797,7 @@ export async function broadcastToolsetActiveTool(commandId: string): Promise<voi
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetActiveToolPayload>(TOOLSET_ACTIVE_TOOL_EVENT, payload);
+  await emitToOwnedToolsets(TOOLSET_ACTIVE_TOOL_EVENT, payload);
 }
 
 export async function requestToolsetActiveTool(): Promise<void> {
@@ -770,8 +806,7 @@ export async function requestToolsetActiveTool(): Promise<void> {
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
 }
 
 export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload): Promise<void> {
@@ -780,8 +815,7 @@ export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, payload);
+  await emitToOwnedToolsets(TOOLSET_TEXT_STYLE_EVENT, payload);
 }
 
 export async function requestToolsetTextStyle(): Promise<void> {
@@ -790,8 +824,7 @@ export async function requestToolsetTextStyle(): Promise<void> {
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
 }
 
 export async function startPaletteWindowDrag(grabX: number, grabY: number): Promise<void> {
@@ -896,10 +929,12 @@ export async function listenForPaletteCommands(handler: (commandId: string) => v
 }
 
 export async function listenForToolsetCommands(handler: (commandId: string) => void): Promise<Unlisten> {
-  // Native palette clicks arrive as the `native-command` DOM event that Rust `route_toolset_command`
-  // dispatches into the main window (see `routeToolsetCommand`). That is now the single delivery path,
-  // so a plain DOM listener receives each command exactly once — no tauri-bus fan-out, no dedupe.
-  return listenForDomToolsetCommands(handler);
+  const dom = listenForDomToolsetCommands(handler);
+  if (!isDesktopRuntime()) return dom;
+  const native = await listenCurrentWindowEvent<ToolsetCommandPayload>("chemdraft://native-command", (event) => {
+    if (typeof event.payload?.commandId === "string") handler(event.payload.commandId);
+  });
+  return () => { dom(); native(); };
 }
 
 export async function listenForPaletteCommandPreviews(handler: (commandId: string) => void): Promise<Unlisten> {
@@ -928,7 +963,7 @@ export async function listenForPaletteInspectorActions(
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<unknown>(PALETTE_INSPECTOR_ACTION_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<unknown>(PALETTE_INSPECTOR_ACTION_EVENT, (event) => {
     // Validated rather than cast: this arrives over the event bus from another webview, and
     // dereferencing a field on a malformed payload throws inside the listener.
     if (isPaletteInspectorAction(event.payload)) handler(event.payload);
@@ -956,8 +991,7 @@ export async function listenForToolsetActiveTool(handler: (commandId: string) =>
 /** Window-local pointer position pushed by Rust's palette pointer feed (desktop only). The palette
  *  panels never become the key window, so the OS never delivers hover to their webviews; Rust polls
  *  the cursor and feeds it here, and PaletteWindow synthesizes pointerover/out (tooltips, hover).
- *  Every webview's `listen()` sees every event regardless of the emit target, so payloads carry the
- *  toolset id and each palette filters to its own. */
+ *  Window-targeted listeners isolate feeds to their palette; the toolset id also validates payloads. */
 export async function listenForPalettePointer(
   toolsetId: string,
   handler: (payload: { x: number; y: number }) => void
@@ -965,7 +999,7 @@ export async function listenForPalettePointer(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<{ toolsetId?: string; x?: number; y?: number }>(PALETTE_POINTER_EVENT, (event) => {
+  return listenCurrentWindowEvent<{ toolsetId?: string; x?: number; y?: number }>(PALETTE_POINTER_EVENT, (event) => {
     if (event.payload?.toolsetId !== toolsetId) {
       return;
     }
@@ -983,7 +1017,7 @@ export async function listenForPalettePointerLeave(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<{ toolsetId?: string }>(PALETTE_POINTER_LEAVE_EVENT, (event) => {
+  return listenCurrentWindowEvent<{ toolsetId?: string }>(PALETTE_POINTER_LEAVE_EVENT, (event) => {
     if (event.payload?.toolsetId === toolsetId) {
       handler();
     }
@@ -998,8 +1032,22 @@ export async function broadcastToolsetLayoutState(layoutState: unknown): Promise
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
+  await emitToOwnedToolsets(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
+}
+
+/** Persisted toolbar customization is shared; document-dependent snapshots remain owner-local. */
+export async function broadcastSharedToolsetLayoutState(layoutState: unknown): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const owner = await currentDocumentWindowOwner();
+  const { getAllWindows } = await import("@tauri-apps/api/window");
+  const labels = (await getAllWindows()).map(window => window.label)
+    .filter(label => label !== owner && (label === "main" || /^document-[0-9]+$/.test(label)));
+  await emitToWindowLabels("chemdraft://shared-toolset-layout-state", layoutState, labels);
+}
+
+export async function listenForSharedToolsetLayoutState(handler: (layoutState: unknown) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenCurrentWindowEvent("chemdraft://shared-toolset-layout-state", event => handler(event.payload));
 }
 
 export async function listenForToolsetLayoutState(
@@ -1008,7 +1056,7 @@ export async function listenForToolsetLayoutState(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.payload));
+  return listenCurrentWindowEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.payload));
 }
 
 /** A freshly created palette window asks the main window for the current layout state — the disk
@@ -1018,15 +1066,14 @@ export async function requestToolsetLayoutState(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetLayoutStateRequests(handler: () => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
+  return listenCurrentWindowEvent(TOOLSET_LAYOUT_STATE_REQUEST_EVENT, () => handler());
 }
 
 // The effective command catalog is runtime state: undo/redo availability changes with history, and
@@ -1056,8 +1103,7 @@ export async function broadcastToolsetCommandSpecs(commands: readonly CommandSpe
     dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, payload);
+  await emitToOwnedToolsets(TOOLSET_COMMAND_SPECS_EVENT, payload);
 }
 
 export async function listenForToolsetCommandSpecs(
@@ -1070,7 +1116,7 @@ export async function listenForToolsetCommandSpecs(
       }
     });
   }
-  return listenTauriEvent<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, (event) => {
+  return listenCurrentWindowEvent<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, (event) => {
     if (isToolsetCommandSpecsPayload(event.payload)) {
       handler(event.payload.commands);
     }
@@ -1083,15 +1129,14 @@ export async function requestToolsetCommandSpecs(): Promise<void> {
     dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, {});
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCommandSpecsRequests(handler: () => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return listenForDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
   }
-  return listenTauriEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
+  return listenCurrentWindowEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, () => handler());
 }
 
 // A native palette webview only ships with the CORE toolset manifest. Plugin toolsets are contributed
@@ -1121,8 +1166,7 @@ export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefi
     dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
+  await emitToOwnedToolsets(TOOLSET_DEFINITIONS_EVENT, payload);
 }
 
 export async function listenForToolsetDefinitions(
@@ -1135,7 +1179,7 @@ export async function listenForToolsetDefinitions(
       }
     });
   }
-  return listenTauriEvent<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, (event) => {
+  return listenCurrentWindowEvent<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, (event) => {
     if (isToolsetDefinitionsPayload(event.payload)) {
       handler(event.payload.toolsets);
     }
@@ -1148,15 +1192,14 @@ export async function requestToolsetDefinitions(): Promise<void> {
     dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, {});
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_DEFINITIONS_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_DEFINITIONS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetDefinitionsRequests(handler: () => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return listenForDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
   }
-  return listenTauriEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
+  return listenCurrentWindowEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, () => handler());
 }
 
 // ————————————————————————————————————————————————————————————————————————————————————————————————
@@ -1215,8 +1258,7 @@ export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): 
     dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, payload);
+  await emitToDocumentOwner(TOOLSET_LAYOUT_EDIT_EVENT, payload);
 }
 
 export async function listenForToolsetLayoutEdits(
@@ -1229,7 +1271,7 @@ export async function listenForToolsetLayoutEdits(
       }
     });
   }
-  return listenTauriEvent<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
+  return listenCurrentWindowEvent<ToolsetLayoutEditPayload>(TOOLSET_LAYOUT_EDIT_EVENT, (event) => {
     if (isToolsetLayoutEditPayload(event.payload)) {
       handler(event.payload);
     }
@@ -1242,8 +1284,7 @@ export async function broadcastToolsetCustomizeMode(payload: ToolsetCustomizeMod
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
+  await emitToOwnedToolsets(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
 }
 
 export async function listenForToolsetCustomizeMode(
@@ -1257,7 +1298,7 @@ export async function listenForToolsetCustomizeMode(
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, (event) => {
     if (isToolsetCustomizeModePayload(event.payload)) {
       handler(event.payload);
     }
@@ -1274,8 +1315,7 @@ export async function requestToolsetCustomizeMode(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
+  await emitToDocumentOwner(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCustomizeModeRequests(handler: () => void): Promise<Unlisten> {
@@ -1283,7 +1323,7 @@ export async function listenForToolsetCustomizeModeRequests(handler: () => void)
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listenCurrentWindowEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, () => handler());
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1308,8 +1348,7 @@ export async function showPaletteFloatingTooltip(payload: PaletteTooltipPayload)
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(PALETTE_TOOLTIP_SHOW_EVENT, payload);
+  await emitToOwnedUtility(PALETTE_TOOLTIP_SHOW_EVENT, payload, "toolset-tooltip");
 }
 
 /** Global-logical bounds of one attached monitor. Mirrors the Rust side's
@@ -1353,8 +1392,7 @@ export async function hidePaletteFloatingTooltip(): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(PALETTE_TOOLTIP_HIDE_EVENT);
+  await emitToOwnedUtility(PALETTE_TOOLTIP_HIDE_EVENT, undefined, "toolset-tooltip");
 }
 
 export async function listenForPaletteTooltipShow(
@@ -1363,7 +1401,7 @@ export async function listenForPaletteTooltipShow(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<PaletteTooltipPayload>(PALETTE_TOOLTIP_SHOW_EVENT, (event) => {
+  return listenCurrentWindowEvent<PaletteTooltipPayload>(PALETTE_TOOLTIP_SHOW_EVENT, (event) => {
     if (typeof event.payload?.title === "string" && typeof event.payload.anchorCenterX === "number") {
       handler(event.payload);
     }
@@ -1374,7 +1412,7 @@ export async function listenForPaletteTooltipHide(handler: () => void): Promise<
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(PALETTE_TOOLTIP_HIDE_EVENT, () => handler());
+  return listenCurrentWindowEvent(PALETTE_TOOLTIP_HIDE_EVENT, () => handler());
 }
 
 export async function listenForToolsetActiveToolRequests(handler: () => void): Promise<Unlisten> {
@@ -1382,7 +1420,7 @@ export async function listenForToolsetActiveToolRequests(handler: () => void): P
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listenCurrentWindowEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, () => handler());
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1399,7 +1437,7 @@ export async function listenForToolsetTextStyle(handler: (payload: ToolsetTextSt
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, (event) => {
     if (isToolsetTextStylePayload(event.payload)) {
       handler(event.payload);
     }
@@ -1415,7 +1453,7 @@ export async function listenForToolsetTextStyleRequests(handler: () => void): Pr
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => handler());
+  const unlistenTauri = await listenCurrentWindowEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT, () => handler());
   return () => {
     unlistenDom();
     unlistenTauri();
@@ -1452,7 +1490,7 @@ async function listenForToolsetCommandPayload(eventName: string, handler: (comma
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
-  const unlistenTauri = await listenTauriEvent<ToolsetCommandPayload>(eventName, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<ToolsetCommandPayload>(eventName, (event) => {
     if (typeof event.payload?.commandId === "string") {
       handler(event.payload.commandId);
     }
@@ -1484,7 +1522,7 @@ export async function listenForToolsetWindowStates(handler: (state: ToolsetWindo
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent<ToolsetWindowState>(TOOLSET_WINDOW_STATE_EVENT, (event) => {
+  return listenCurrentWindowEvent<ToolsetWindowState>(TOOLSET_WINDOW_STATE_EVENT, (event) => {
     if (typeof event.payload?.toolsetId === "string" && typeof event.payload?.open === "boolean") {
       handler(event.payload);
     }
@@ -1504,8 +1542,7 @@ export async function broadcastCompoundLayoutSettings(settings: CompoundLayoutSe
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
+  await emitSharedSetting(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
 }
 
 export async function listenForCompoundLayoutSettings(
@@ -1520,7 +1557,7 @@ export async function listenForCompoundLayoutSettings(
   if (!isDesktopRuntime()) {
     return () => { unlistenDom(); removeStorage(); };
   }
-  const unlistenTauri = await listenTauriEvent<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, (event) => {
+  const unlistenTauri = await listenCurrentWindowEvent<CompoundLayoutSettings>(COMPOUND_LAYOUT_SETTINGS_EVENT, (event) => {
     if (isCompoundLayoutSettings(event.payload)) handler(event.payload);
   });
   return () => {
@@ -1529,3 +1566,52 @@ export async function listenForCompoundLayoutSettings(
     unlistenTauri();
   };
 }
+
+export interface DocumentWindowSummary { label: string; title: string }
+export interface NativeTabTransfer { transferId: string; tabId: string; snapshot: unknown }
+export async function documentWindowCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
+}
+export const newDocumentWindow = () => documentWindowCommand<string>("new_document_window");
+export const listDocumentWindows = () => documentWindowCommand<DocumentWindowSummary[]>("list_document_windows");
+export const stageDocumentTabTransfer = (targetLabel: string, tabId: string, snapshot: unknown) =>
+  documentWindowCommand<{ transferId: string; targetLabel: string }>("stage_document_tab_transfer", { targetLabel, tabId, snapshot });
+/** Read bounded native responses sequentially: large IPC replies can overflow the webview queue. */
+export async function takeDocumentTabTransfer(): Promise<NativeTabTransfer | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const metadata = await invoke<unknown>("take_document_tab_transfer");
+  if (metadata === null) return null;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error("Invalid document transfer metadata");
+  const { transferId, tabId, chunkCount } = metadata as Record<string, unknown>;
+  if (typeof transferId !== "string" || !transferId || transferId.length > 128 ||
+      typeof tabId !== "string" || !tabId || tabId.length > 128 ||
+      typeof chunkCount !== "number" || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 65536) {
+    throw new Error("Invalid document transfer metadata");
+  }
+  const encoder = new TextEncoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+  for (let index = 0; index < chunkCount; index++) {
+    const chunk = await invoke<unknown>("document_tab_transfer_chunk", { transferId, index });
+    if (typeof chunk !== "string" || !chunk || chunk.length > 2048 ||
+        [...chunk].length > 1024 || encoder.encode(JSON.stringify(chunk)).byteLength >= 8192) {
+      throw new Error("Invalid document transfer chunk");
+    }
+    bytes += encoder.encode(chunk).byteLength;
+    if (bytes > 64 * 1024 * 1024) throw new Error("The moved document exceeds the transfer size limit");
+    chunks.push(chunk);
+  }
+  let snapshot: unknown;
+  try { snapshot = JSON.parse(chunks.join("")); }
+  catch { throw new Error("The moved document contains invalid JSON"); }
+  return { transferId, tabId, snapshot };
+}
+export const acceptDocumentTabTransfer = (transferId: string) => documentWindowCommand<void>("accept_document_tab_transfer", { transferId });
+export const documentTabTransferStatus = (transferId: string) =>
+  documentWindowCommand<"pending" | "accepted" | "cancelled">("document_tab_transfer_status", { transferId });
+export const cancelDocumentTabTransfer = (transferId: string) => documentWindowCommand<void>("cancel_document_tab_transfer", { transferId });
+export const claimDocumentFile = (path: string, tabId: string) =>
+  documentWindowCommand<{ owned: boolean; windowLabel: string; tabId: string }>("claim_document_file", { path, tabId });
+export const releaseDocumentFile = (path: string, tabId: string) =>
+  documentWindowCommand<void>("release_document_file", { path, tabId });

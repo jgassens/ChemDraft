@@ -66,3 +66,12 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Multiple document windows
+
+File > New Window creates another document window with its own tabs and history. Move Tab to
+New Window and Move Tab to Window transfer the complete working tab after confirmed receipt.
+Opening an already-open file activates its owner. Closing one window keeps its peers open;
+application Quit coordinates save decisions and session persistence across every document window.
+See [the architecture note](../../docs/architecture/multiple-document-windows.md) for routing,
+ownership and recovery behavior.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-document-tab-transfer-chunk"
+description = "Enables the document_tab_transfer_chunk command without any pre-configured scope."
+commands.allow = ["document_tab_transfer_chunk"]
+
+[[permission]]
+identifier = "deny-document-tab-transfer-chunk"
+description = "Denies the document_tab_transfer_chunk command without any pre-configured scope."
+commands.deny = ["document_tab_transfer_chunk"]

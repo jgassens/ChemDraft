@@ -29,9 +29,16 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ setFocus: nativeFocus.webviewSetFocus })
 }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main", listen: vi.fn().mockResolvedValue(() => {}) })
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn().mockResolvedValue(() => {})
+}));
+vi.mock("./window-manager/tauriEvents", async (original) => ({
+  ...await original<typeof import("./window-manager/tauriEvents")>(),
+  listenCurrentWindowEvent: vi.fn(async () => () => {})
 }));
 // The flush test writes the editor's keystrokes plainly, without the rule that writes a label typed
 // back to its starting text as it started, so that only the flush's own rule can save it correctly.
@@ -362,22 +369,29 @@ describe("atom label editor focus", () => {
       expect(browserFocus).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])("unfocused document follows the native activation decision (%s)", async (raised) => {
+    it.each([false, true])("unfocused document's scheduled retries follow the native activation decision (%s)", async (raised) => {
       setShortcutPlatform(platform);
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       await renderMainWindow(ringDocument());
       vi.spyOn(document, "hasFocus").mockReturnValue(false);
       enableMockDesktop(raised);
+      // Load the mocked native modules before fake timers measure the four focus attempts.
+      await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/window"), import("@tauri-apps/api/webview")]);
       const browserFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
       const editor = await startInlineEdit("atom");
+      await settle();
+      // Measure the three scheduled retries independently of the mount-time focus attempt.
+      nativeFocus.invoke.mockClear();
+      nativeFocus.windowSetFocus.mockClear();
+      nativeFocus.webviewSetFocus.mockClear();
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
       const focusCommands = nativeFocus.invoke.mock.calls.filter(([command]) =>
         command.startsWith("focus_main_document_window")
       );
-      expect(focusCommands).toHaveLength(4);
+      expect(focusCommands).toHaveLength(3);
       expect(focusCommands.every(([command]) => command === "focus_main_document_window_if_app_active")).toBe(true);
-      expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
-      expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(raised ? 4 : 0);
+      expect(nativeFocus.windowSetFocus).toHaveBeenCalledTimes(raised ? 3 : 0);
+      expect(nativeFocus.webviewSetFocus).toHaveBeenCalledTimes(raised ? 3 : 0);
       expect(document.activeElement).toBe(editor);
       expect(browserFocus).not.toHaveBeenCalled();
     });

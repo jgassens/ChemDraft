@@ -101,6 +101,9 @@ export function createQuickActions(
   const textLabelDisabledReason = selectedTextToAtomLabelDisabledReason(document);
   return [
     ...createDocumentTabActions(availability.hasMultipleTabs === true),
+    { id: "document.newWindow", title: "New Window", icon: "new", shortcut: "Shift+Cmd+N", source: "core" },
+    { id: "document.moveTabToNewWindow", title: "Move Tab to New Window", icon: "open", source: "core" },
+    { id: "document.moveTabToWindow", title: "Move Tab to Window...", icon: "open", source: "core" },
     { id: "document.new", title: "New Document", icon: "new", shortcut: "Cmd+N", source: "core" },
     { id: "document.open", title: "Open Native Document", icon: "open", shortcut: "Cmd+O", source: "core" },
     { id: "document.save", title: "Save Native Document", icon: "save", shortcut: "Cmd+S", source: "core" },

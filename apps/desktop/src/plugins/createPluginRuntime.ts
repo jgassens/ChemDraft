@@ -167,6 +167,7 @@ export interface DesktopPluginRuntime {
   recognition: StructureRecognitionController;
   naming: StructureNamingController;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
+  documentTabTransferBlockReason(tabId: string): string | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string): void;
   /**
@@ -261,7 +262,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let proposingTabId: string | undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
-      const tabId = options.getActiveDocumentTab?.().id;
+      const tabId = this.commands.get(commandId)?.pluginId ? options.getActiveDocumentTab?.().id : undefined;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
       const previousFrame = namingFrame;
@@ -389,6 +390,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     prompts,
     images,
     recognition,
+    documentTabTransferBlockReason(tabId) {
+      if (runningTabCommands.has(tabId)) return "Wait for the document?s plugin command to finish before moving it";
+      if ([...proposalTabs.values()].includes(tabId)) return "Review or dismiss this document?s pending proposals before moving it";
+      return undefined;
+    },
     naming,
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);

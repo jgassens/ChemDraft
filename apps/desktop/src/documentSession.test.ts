@@ -186,6 +186,13 @@ describe("multi-document session extension", () => {
     expect(shouldRestoreDocumentSession(buildDocumentTabsSession([{ ...blank, pristine: false }], 0))).toBe(true);
   });
 
+  it("keeps recovery data after the last readable tab moves to another window", () => {
+    const recovery = [{ version: 99, contents: "kept drawing" }];
+    const raw = { version: 1, tabs: [], activeTabIndex: 0, unrestoredTabs: recovery };
+    expect(parseDocumentSessionEnvelope(raw)).toEqual(raw);
+    expect(shouldRestoreDocumentSession(parseDocumentSessionEnvelope(raw)!)).toBe(true);
+  });
+
   it("rejects invalid session structure, but retains invalid tabs while restoring readable siblings", () => {
     expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: 3 })).toBeUndefined();
     expect(parseDocumentSessionEnvelope({ ...session, activeTabIndex: -1 })).toBeUndefined();

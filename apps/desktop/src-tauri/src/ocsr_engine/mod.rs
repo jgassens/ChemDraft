@@ -1754,11 +1754,14 @@ mod tests {
     }
 
     #[test]
-    fn ocsr_capability_is_main_window_only_and_grants_every_command() {
+    fn ocsr_capability_is_document_window_only_and_grants_every_command() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../../capabilities/ocsr-engine.json"))
                 .expect("OCSR capability JSON");
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         let permissions = capability["permissions"]
             .as_array()
             .expect("permission array");

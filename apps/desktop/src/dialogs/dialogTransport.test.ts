@@ -5,6 +5,7 @@ const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   channels: [] as { onmessage: (delivery: DialogDelivery) => void }[]
 }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({label:"main"}) }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: native.invoke,
   Channel: class {

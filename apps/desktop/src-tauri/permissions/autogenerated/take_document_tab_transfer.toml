@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-document-tab-transfer"
+description = "Enables the take_document_tab_transfer command without any pre-configured scope."
+commands.allow = ["take_document_tab_transfer"]
+
+[[permission]]
+identifier = "deny-take-document-tab-transfer"
+description = "Denies the take_document_tab_transfer command without any pre-configured scope."
+commands.deny = ["take_document_tab_transfer"]

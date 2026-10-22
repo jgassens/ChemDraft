@@ -3,7 +3,8 @@
   "identifier": "plugin-updates",
   "description": "Allow only the main ChemDraft window to check and download allowlisted plugin releases.",
   "windows": [
-    "main"
+    "main",
+    "document-*"
   ],
   "permissions": [
     {

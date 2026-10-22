@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-document-window"
+description = "Enables the close_document_window command without any pre-configured scope."
+commands.allow = ["close_document_window"]
+
+[[permission]]
+identifier = "deny-close-document-window"
+description = "Denies the close_document_window command without any pre-configured scope."
+commands.deny = ["close_document_window"]

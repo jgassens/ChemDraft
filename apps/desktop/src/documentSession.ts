@@ -23,6 +23,8 @@ export const DOCUMENT_SESSION_SAVE_DEBOUNCE_MS = 800;
 
 export interface DocumentSessionEnvelope {
   version: typeof DOCUMENT_SESSION_VERSION;
+  /** Stable ownership identity across windows and restarts. */
+  tabId?: string;
   /** Full serialized document (the same payload File > Save writes). */
   contents: string;
   /**
@@ -188,9 +190,9 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   const candidate = raw as Record<string, unknown>;
   if (candidate.tabs !== undefined) {
     if (nested || candidate.version !== DOCUMENT_SESSION_VERSION || !Array.isArray(candidate.tabs) ||
-        candidate.tabs.length === 0 || !Number.isInteger(candidate.activeTabIndex) ||
+        !Number.isInteger(candidate.activeTabIndex) ||
         typeof candidate.activeTabIndex !== "number" || candidate.activeTabIndex < 0 ||
-        candidate.activeTabIndex >= candidate.tabs.length ||
+        (candidate.tabs.length ? candidate.activeTabIndex >= candidate.tabs.length : candidate.activeTabIndex !== 0) ||
         (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs))) return undefined;
     const tabs: DocumentSessionEnvelope[] = [];
     const unrestoredTabs: unknown[] = [...(candidate.unrestoredTabs as unknown[] ?? [])];
@@ -227,6 +229,7 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   if (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs)) return undefined;
   const parsed: DocumentSessionEnvelope = {
     version: DOCUMENT_SESSION_VERSION,
+    ...(typeof candidate.tabId === "string" ? { tabId: candidate.tabId } : {}),
     contents: candidate.contents,
     payloadHash: candidate.payloadHash,
     blank: candidate.blank,

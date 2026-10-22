@@ -10,6 +10,22 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Multiple document windows (macOS and Windows): open two windows with multiple tabs, distinct
+drawings and undo histories. Open a file through File and through the OS; it must appear only in
+the chosen active document window. Opening the same file from the peer must activate its existing
+owner without replacing unsaved edits. Move a tab to a new window and to an existing window;
+verify undo/redo labels, selection, zoom, scroll, file association and dirty state. A failed move
+must keep the original editable. Move the last tab and verify the emptied source closes.
+Open Custom Page Size, Export and plugin panels in each window; edits and replies must stay with
+their originating tabs. Every document menu must include Toolbars and reflect visibility changes.
+Palettes must remain owned, off the Windows taskbar, and usable after minimize/restore and mixed-DPI
+movement. Close one window: peers and their dialogs remain open. Exercise app Quit with dirty
+tabs across windows, Save/Discard/Cancel, a cancelled Save As, a write failure and an unresponsive
+window. Relaunch and check all retained tabs/windows and active owner. Test the default-off save
+preference, final Windows close, final macOS close/Dock reopen, macOS Dock Quit, and updater flush.
+Start Interactive 3D in each document window. Replacing or closing one session must leave the
+other document's sidecar and interaction running.
+
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
 centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back

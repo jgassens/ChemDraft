@@ -14,9 +14,12 @@ const native = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ startDragging: native.drag, setPosition: native.move })
+  getCurrentWindow: () => ({ label:"toolset-core-main", startDragging: native.drag, setPosition: native.move }),
+  getAllWindows: async () => [{label:"main"},{label:"toolset-core-main"}]
 }));
 
+vi.mock("@tauri-apps/api/webviewWindow", () => ({getCurrentWebviewWindow: () => ({listen: async () => () => {}})}));
+vi.mock("@tauri-apps/api/event", () => ({emitTo: async () => {}}));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("native title dragging", () => {
@@ -36,6 +39,7 @@ describe("native title dragging", () => {
     act(() => root.unmount());
     container.remove();
     delete (window as typeof window & { __TAURI__?: unknown }).__TAURI__;
+    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     vi.restoreAllMocks();
   });
 
@@ -54,6 +58,7 @@ describe("native title dragging", () => {
       owner.releasePointerCapture = vi.fn();
     }
     (window as typeof window & { __TAURI__?: unknown }).__TAURI__ = {};
+    (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke:native.invoke };
   }
 
   function pointerEvent(type: string, pointerId: number, isPrimary = true): MouseEvent {
@@ -98,7 +103,7 @@ describe("native title dragging", () => {
   }
 
   function expectOneCompensatedDrag(): void {
-    expect(native.invoke.mock.calls.filter(([command]) => command === "start_window_drag"))
+    expect(native.invoke.mock.calls.filter(([command]) => command === "start_window_drag").map(([command,args]) => [command,args]))
       .toEqual([["start_window_drag", { grabX: 37, grabY: 11 }]]);
     expect(native.drag).not.toHaveBeenCalled();
     // Tauri's injected mousedown handler has nothing to match, including the content grip.

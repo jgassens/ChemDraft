@@ -1,9 +1,11 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DIALOG_PREVIEW_MAX_BYTES, parseDialogMessage, type DialogMessage, type DialogRegistration, type DialogCloseReason } from "./dialogProtocol";
 
 /** Only the per-invoke IPC channel supplies these deliveries; never subscribe to the event bus. */
 export interface DialogDelivery { senderWindowId: string; windowLabel: string; message: unknown }
 export interface DialogTransport {
+  ownerWindowId?: () => string;
   subscribe(handler: (delivery: DialogDelivery) => void): Promise<() => void>;
   open(snapshot: DialogMessage): Promise<DialogRegistration>;
   publish(hostId: string, message: DialogMessage): Promise<void>;
@@ -14,6 +16,7 @@ const PREVIEW_CHUNK_TEXT_BYTES = 7168;
 const PREVIEW_CHANNEL_BYTES = 8191;
 let ownerHandler: ((delivery: DialogDelivery) => void) | undefined;
 export const nativeDialogTransport: DialogTransport = {
+  ownerWindowId: () => getCurrentWindow().label,
   subscribe: async handler => {
     ownerHandler = handler;
     return () => { if (ownerHandler === handler) ownerHandler = undefined; };

@@ -749,10 +749,13 @@ mod tests {
     }
 
     #[test]
-    fn command_has_main_window_only_permission_without_fs_scope_grant() {
+    fn command_has_document_window_only_permission_without_fs_scope_grant() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/document-dialogs.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "document-*"])
+        );
         assert!(capability["permissions"]
             .as_array()
             .unwrap()
