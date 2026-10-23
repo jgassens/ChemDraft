@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { toEngineDocument } from "@chemdraft/chem-core";
+import { DocumentObjectSchema, toEngineDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
@@ -65,13 +65,85 @@ function setup() {
 
 afterEach(() => vi.useRealTimers());
 describe("assistant requests and MCP bridge", () => {
-  it.each([true, false])("rechecks a queued move after a gesture (target changed: %s)", async targetChanged => {
+  it.each(["edited", "moved", "unchanged"])("rechecks the source %s during asynchronous structure building", async change => {
+    const s = setup();
+    let releaseBuild!: () => void;
+    try {
+      const build = s.context.chemistry.structureFromSmiles;
+      const building = vi.fn();
+      s.context.chemistry.structureFromSmiles = async input => {
+        building();
+        await new Promise<void>(resolve => { releaseBuild = resolve; });
+        return build(input);
+      };
+      const apply = vi.spyOn(s.host, "applyPatchForPlugin");
+      await s.controller.beginRequest(s.plugin, { prompt: "replace selection" });
+      const pending = s.controller.callTool(s.plugin, { name: "edit_structure", input: { objectId: s.molecule.id, smiles: "CC" } });
+      await vi.waitFor(() => expect(building).toHaveBeenCalledOnce());
+      if (change !== "unchanged") {
+        const before = s.context.getDocument()!;
+        const next = { ...before, pages: before.pages.map(page => ({ ...page, objects: page.objects.map(object => {
+          if (object.id !== s.molecule.id || object.type !== "molecule") return object;
+          return change === "edited" ? { ...object, atoms: object.atoms.map((atom, i) => i === 0 ? { ...atom, element: "N" } : atom) } :
+            { ...object, x: object.x + 50, atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + 50 })) };
+        }) })) };
+        s.port.push(s.context.tabId, before, next, "User edit");
+        s.userEdits.forEach(listener => listener(s.context.tabId));
+      }
+      const preparedAgainst = s.context.getDocument();
+      releaseBuild();
+      const result = await pending;
+      if (change === "unchanged") {
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(apply).toHaveBeenCalledOnce();
+        expect(s.history).toHaveLength(1);
+        const replacement = s.context.getDocument()!.pages[0]!.objects.find(object => object.type === "molecule")!;
+        expect(replacement.id).not.toBe(s.molecule.id);
+        expect(replacement.x + replacement.width / 2).toBeCloseTo(s.molecule.x + s.molecule.width / 2);
+        expect(replacement.y + replacement.height / 2).toBeCloseTo(s.molecule.y + s.molecule.height / 2);
+      } else {
+        expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("read it again and retry") }] });
+        expect(apply).not.toHaveBeenCalled();
+        expect(s.history).toHaveLength(1);
+        expect(s.context.getDocument()).toEqual(preparedAgainst);
+      }
+    } finally { releaseBuild?.(); await s.finish(); }
+  });
+  it.each(["edit_structure", "delete_objects", "move_objects"])("rechecks new anchors after %s waits for a gesture", async name => {
+    const s = setup();
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "change selection" });
+      s.gesture.active = true;
+      const input = name === "edit_structure" ? { objectId: s.molecule.id, smiles: "CC" } :
+        name === "move_objects" ? { objectIds: [s.molecule.id], to: { arrange: "row" } } : { objectIds: [s.molecule.id] };
+      const pending = s.controller.callTool(s.plugin, { name, input });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      const before = s.context.getDocument()!;
+      const arrow = DocumentObjectSchema.parse({ id: "new_arrow", type: "mechanism-arrow", arrowKind: "full-headed",
+        x: 100, y: 100, width: 20, height: 20,
+        source: { kind: "atom", objectId: s.molecule.id, atomId: s.molecule.atoms[0]!.id },
+        target: { kind: "point", point: { x: 100, y: 100 } } });
+      const next = { ...before, pages: before.pages.map(page => ({ ...page, objects: [...page.objects, arrow] })) };
+      s.port.push(s.context.tabId, before, next, "Draw arrow");
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(await pending).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("mechanism-arrow new_arrow") }] });
+      expect(s.context.getDocument()).toEqual(next);
+      expect(s.history).toHaveLength(1);
+    } finally { await s.finish(); }
+  });
+  const queuedWrites = ["edit_structure", "style_objects", "delete_objects", "move_objects"].flatMap(name =>
+    [true, false].map(targetChanged => ({ name, targetChanged })));
+  it.each(queuedWrites)("rechecks queued $name after a gesture (target changed: $targetChanged)", async ({ name, targetChanged }) => {
     const s = setup();
     try {
       const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "move selection" });
       s.gesture.active = true;
-      const pending = s.controller.callTool(s.plugin, { name: "move_objects",
-        input: { objectIds: [s.molecule.id], to: { arrange: "row" } } });
+      const input = name === "edit_structure" ? { objectId: s.molecule.id, smiles: "CC" } :
+        name === "style_objects" ? { objectIds: [s.molecule.id], style: { color: "#112233" } } :
+        name === "move_objects" ? { objectIds: [s.molecule.id], to: { arrange: "row" } } : { objectIds: [s.molecule.id] };
+      const pending = s.controller.callTool(s.plugin, { name, input });
       await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
       const before = s.context.getDocument()!;
       const draggedId = targetChanged ? s.molecule.id : s.text.id;

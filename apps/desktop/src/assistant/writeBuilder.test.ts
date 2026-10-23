@@ -1,10 +1,46 @@
 import { describe, expect, it } from "vitest";
+import { DocumentObjectSchema, type Anchor } from "@chemdraft/chem-core";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
 import { objectRect, overlaps } from "./placement";
 
 describe("assistant writes", () => {
+  const anchorFields = ["mechanism-source", "mechanism-target", "reaction-start", "reaction-end",
+    "superatom", "r-group-label", "molecule-superatoms", "molecule-rGroups"] as const;
+  const anchorCases = anchorFields.flatMap(field => (["atom", "object", "bond"] as const).map(kind => ({ field, kind })));
+  describe.each(["edit_structure", "delete_objects", "move_objects"])("%s anchors", name => {
+    it.each(anchorCases)("refuses $field with a $kind anchor, naming the linked object", async ({ field, kind }) => {
+      const { context, molecule, replace } = testContext();
+      const anchor: Anchor = { kind, objectId: molecule.id, atomId: molecule.atoms[0]!.id, bondId: molecule.bonds[0]!.id };
+      const point: Anchor = { kind: "point", point: { x: 100, y: 100 } };
+      const base = { id: "linked_object", x: 100, y: 100, width: 20, height: 20 };
+      const attachment = { label: "R", attachmentPoints: [anchor] };
+      let linked: unknown;
+      switch (field) {
+        case "mechanism-source": case "mechanism-target":
+          linked = { ...base, type: "mechanism-arrow", arrowKind: "full-headed",
+            source: field === "mechanism-source" ? anchor : point, target: field === "mechanism-target" ? anchor : point }; break;
+        case "reaction-start": case "reaction-end":
+          linked = { ...base, type: "reaction-arrow", arrowKind: "forward",
+            start: field === "reaction-start" ? anchor : point, end: field === "reaction-end" ? anchor : point }; break;
+        case "superatom": linked = { ...base, type: "superatom", label: "R", metadata: attachment }; break;
+        case "r-group-label": linked = { ...base, type: "r-group-label", label: "R", display: attachment }; break;
+        case "molecule-superatoms": linked = { ...molecule, id: base.id, superatoms: [attachment] }; break;
+        case "molecule-rGroups": linked = { ...molecule, id: base.id, rGroups: [attachment] }; break;
+      }
+      const document = structuredClone(context.getDocument()!);
+      document.pages[0]!.objects.push(DocumentObjectSchema.parse(linked));
+      replace(document);
+      const input = name === "edit_structure" ? { objectId: molecule.id, smiles: "CC" } :
+        name === "move_objects" ? { objectIds: [molecule.id], to: { arrange: "row" } } : { objectIds: [molecule.id] };
+      const result = await callAssistantTool(context, name, input);
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("linked_object") }] });
+      expect(context.getDocument()).toEqual(document);
+      expect(context.write).not.toHaveBeenCalled();
+      expect(context.chemistry.structureFromSmiles).not.toHaveBeenCalled();
+    });
+  });
   it.each(["edit_structure", "delete_objects", "move_objects"])("refuses %s on molecules with anchored electron marks", async name => {
     const { context, molecule, replace } = testContext();
     const document = structuredClone(context.getDocument()!);

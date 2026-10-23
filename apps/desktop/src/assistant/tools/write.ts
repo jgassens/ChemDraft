@@ -1,7 +1,7 @@
 import { requireDocument, type AssistantToolContext } from "../AssistantToolContext";
 import {
   applyAssistantWrite, buildEditStructure, buildInsertReaction, buildInsertStructures,
-  buildInsertText, buildMoveObjects, buildStyleObjects, scopeRefusal, refuseAnchoredElectronMarks, type AssistantWrite
+  buildInsertText, buildMoveObjects, buildStyleObjects, scopeRefusal, captureWritePreconditions, type AssistantWrite
 } from "../writeBuilder";
 import type { ToolInput } from "./schemas";
 
@@ -24,10 +24,10 @@ export async function editStructure(context: AssistantToolContext, input: ToolIn
 }
 export async function deleteObjects(context: AssistantToolContext, input: ToolInput<"delete_objects">) {
   return scopedWrite(context, input.objectIds, () => {
-    for (const id of input.objectIds) refuseAnchoredElectronMarks(requireDocument(context), id, "delete");
+    const checkPreconditions = captureWritePreconditions(requireDocument(context), input.objectIds, "delete");
     return {
       patch: { op: "batch", patches: [...new Set(input.objectIds)].map(objectId => ({ op: "removeObject", objectId })) },
-      summary: `Deleted ${new Set(input.objectIds).size} objects`, warnings: []
+      summary: `Deleted ${new Set(input.objectIds).size} objects`, warnings: [], checkPreconditions
     };
   });
 }

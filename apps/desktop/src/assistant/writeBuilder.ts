@@ -23,6 +23,25 @@ export interface AssistantWrite {
   patch: DocumentPatch; summary: string; warnings: string[];
   /** Input SMILES keyed by the actual new molecule id, checked again after patch normalization. */
   expectedSmiles?: ReadonlyMap<string, string>;
+  /** Captured before preparation; also checked inside the desktop write gate. */
+  checkPreconditions?: (document: ChemDraftDocument) => void;
+}
+
+/** Snapshot content, including page membership, before any asynchronous preparation. */
+export function captureWritePreconditions(document: ChemDraftDocument, objectIds: readonly string[],
+  anchoredAction?: string, additionalIds: readonly string[] = []): (latest: ChemDraftDocument) => void {
+  const dependencies = new Set([...objectIds, ...additionalIds]);
+  const content = (current: ChemDraftDocument) => JSON.stringify(current.pages.flatMap(page =>
+    page.objects.filter(object => dependencies.has(object.id)).map(object => ({ pageId: page.id, object }))));
+  const baseline = content(document);
+  const check = (latest: ChemDraftDocument) => {
+    if (content(latest) !== baseline) {
+      throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
+    }
+    if (anchoredAction) for (const id of objectIds) refuseAnchoredObjects(latest, id, anchoredAction);
+  };
+  check(document);
+  return check;
 }
 export function scopeRefusal(context: AssistantToolContext, ids: readonly string[]) {
   const scope = assistantScope(context);
@@ -75,6 +94,7 @@ async function buildMolecule(context: AssistantToolContext, smiles: string): Pro
 /** Validate the entire batch on an isolated document before invoking the transaction. */
 export async function applyAssistantWrite(context: AssistantToolContext, built: AssistantWrite) {
   const document = requireDocument(context);
+  built.checkPreconditions?.(document);
   if (built.patch.op !== "batch" || built.patch.patches.length === 0 || built.patch.patches.length > 256) {
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
@@ -86,10 +106,11 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
   const latest = requireDocument(context);
+  built.checkPreconditions?.(latest);
   if (latest !== document && !assistantDocumentContentUnchanged(document, latest)) {
     throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
   }
-  const result = await context.write(built.patch);
+  const result = await context.write(built.patch, undefined, built.checkPreconditions);
   const inserted = built.patch.patches.filter(patch => patch.op === "addObject" || patch.op === "addAnnotation");
   if (inserted.length) {
     const insertedIds = new Set(inserted.map(patch => patch.op === "addObject" ? patch.object.id : patch.annotation.id));
@@ -252,7 +273,7 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
   const document = requireDocument(context);
   const { object: old, page } = findObject(document, input.objectId);
   if (old.type !== "molecule") throw new Error(`${old.id} is not a molecule.`);
-  refuseAnchoredElectronMarks(document, old.id, "edit");
+  const checkPreconditions = captureWritePreconditions(document, [old.id], "edit");
   let object = (freshObjects(document, [await buildMolecule(context, input.smiles)])[0]!) as MoleculeObject;
   let warnings: string[] = [];
   if (input.keepPosition) {
@@ -263,11 +284,12 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
     object = placed.objects[0] as MoleculeObject; warnings = placed.warnings;
   }
   return { patch: { op: "batch", patches: [{ op: "removeObject", objectId: old.id }, { op: "addObject", pageId: page.id, object }] },
-    summary: `Replaced structure ${old.id}`, warnings, expectedSmiles: new Map([[object.id, input.smiles]]) };
+    summary: `Replaced structure ${old.id}`, warnings, expectedSmiles: new Map([[object.id, input.smiles]]), checkPreconditions };
 }
 
 export function buildStyleObjects(context: AssistantToolContext, input: ToolInput<"style_objects">): AssistantWrite {
   const document = requireDocument(context);
+  const checkPreconditions = captureWritePreconditions(document, input.objectIds);
   if (input.style.bondDisplay !== undefined) {
     throw new Error("Bond display is stored on bonds and can encode stereochemistry; style_objects can change only object style. Use edit_structure for a chemical edit.");
   }
@@ -292,10 +314,12 @@ export function buildStyleObjects(context: AssistantToolContext, input: ToolInpu
     DocumentObjectSchema.parse({ ...object, style });
     return { op: "updateObject", objectId, changes: { style } };
   });
-  return { patch: { op: "batch", patches }, summary: `Restyled ${patches.length} objects`, warnings: [] };
+  return { patch: { op: "batch", patches }, summary: `Restyled ${patches.length} objects`, warnings: [], checkPreconditions };
 }
 export function buildMoveObjects(context: AssistantToolContext, input: ToolInput<"move_objects">): AssistantWrite {
   const document = requireDocument(context);
+  const checkPreconditions = captureWritePreconditions(document, input.objectIds, "move",
+    "relativeTo" in input.to ? [input.to.relativeTo] : []);
   const entries = [...new Set(input.objectIds)].map(id => findObject(document, id));
   if (entries.some(entry => entry.page.id !== entries[0]!.page.id)) throw new Error("Move objects must be on one page.");
   for (const { object } of entries) {
@@ -306,7 +330,6 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     if (object.type === "mechanism-arrow" && (object.source.kind !== "point" || object.target.kind !== "point")) {
       throw new Error(`Cannot move atom-anchored mechanism arrow ${object.id} independently.`);
     }
-    refuseAnchoredElectronMarks(document, object.id, "move");
     if (object.type === "graphic" && object.data.pathD && !object.data.pathNodes && !object.data.lineStart && !object.data.arcCenter && !object.data.freehandPoints) {
       throw new Error(`Cannot safely move legacy path ${object.id} without editable path geometry.`);
     }
@@ -325,13 +348,28 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
     return { op: "updateObject", objectId: object.id, changes };
   });
-  return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: placed.warnings };
+  return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: placed.warnings, checkPreconditions };
 }
 
-/** Refuse rather than leave chemistry-bearing mechanism marks pointing at stale atoms. */
-export function refuseAnchoredElectronMarks(document: ChemDraftDocument, objectId: string, action: string): void {
-  if (document.pages.some(page => page.objects.some(candidate =>
-    candidate.type === "electron-mark" && candidate.anchor.objectId === objectId))) {
-    throw new Error(`Cannot safely ${action} ${objectId} without its anchored electron marks; use the canvas tools to edit the linked mechanism.`);
+/** All AnchorSchema fields in chem-core, including molecule attachment metadata. */
+function objectAnchors(object: DocumentObject): readonly Anchor[] {
+  switch (object.type) {
+    case "electron-mark": return [object.anchor];
+    case "mechanism-arrow": return [object.source, object.target];
+    case "reaction-arrow": return [object.start, object.end];
+    case "superatom": return object.metadata.attachmentPoints;
+    case "r-group-label": return object.display.attachmentPoints;
+    case "molecule": return [...object.superatoms, ...object.rGroups].flatMap(item => item.attachmentPoints);
+    default: return [];
+  }
+}
+
+/** Refuse rather than leave mechanism annotations or attachment points referencing removed geometry. */
+export function refuseAnchoredObjects(document: ChemDraftDocument, objectId: string, action: string): void {
+  for (const page of document.pages) for (const candidate of page.objects) {
+    if (objectAnchors(candidate).some(anchor => anchor.kind !== "point" && anchor.objectId === objectId)) {
+      const linked = candidate.type === "electron-mark" ? `electron marks (${candidate.id})` : `${candidate.type} ${candidate.id}`;
+      throw new Error(`Cannot safely ${action} ${objectId} without its anchored ${linked}; use the canvas tools to edit the linked mechanism.`);
+    }
   }
 }

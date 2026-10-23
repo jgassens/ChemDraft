@@ -100,7 +100,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       work = callAssistantTool({ ...request.context,
         plugin: this.plugin(plugin),
         getDocument: () => request.ended || abort.signal.aborted ? undefined : request.context.getDocument(),
-        write: async (patch, signal) => {
+        write: async (patch, signal, checkPreconditions) => {
           this.running(plugin, requestId);
           if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
           const plannedDocument = request.context.getDocument()!;
@@ -115,6 +115,7 @@ export class AssistantToolsController implements PluginHostAssistant {
           const apply = () => {
             this.running(plugin, requestId);
             if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+            checkPreconditions?.(request.context.getDocument()!);
             // The gate may have waited for a gesture to commit. Never overwrite its new geometry.
             if (JSON.stringify(dependencyContent(request.context.getDocument()!)) !== plannedContent) {
               throw new Error("The document changed while the assistant prepared this write; read it again and retry.");

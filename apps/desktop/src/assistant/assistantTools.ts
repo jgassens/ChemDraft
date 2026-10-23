@@ -71,12 +71,12 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
     }
     // Share run scope with the original context, but prevent work finishing after the deadline from writing.
     const guarded: AssistantToolContext = { ...context, getInsertedObjectIds: () => [...assistantScope(context)],
-      write: async patch => {
+      write: async (patch, _signal, checkPreconditions) => {
         if (!active) throw new Error(`Assistant tool ${name} timed out.`);
         requireDocument(context);
         const beforeIds = new Set(context.getDocument()!.pages.flatMap(page => page.objects.map(object => object.id)));
         waitForWrite?.();
-        const written = await context.write(patch, abort.signal);
+        const written = await context.write(patch, abort.signal, checkPreconditions);
         recordAssistantInsertions(context, written.objectIds.filter(id => !beforeIds.has(id)));
         return written;
       }

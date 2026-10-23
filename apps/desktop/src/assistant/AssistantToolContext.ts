@@ -21,8 +21,8 @@ export interface AssistantToolContext {
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.
-   * Recheck the signal after waiting for an active canvas gesture. */
-  write(patch: DocumentPatch, signal?: AbortSignal): Promise<{ objectIds: string[] }>;
+   * Recheck the signal and preparation preconditions after waiting for an active canvas gesture. */
+  write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void): Promise<{ objectIds: string[] }>;
   chemistry: {
     nameToStructure(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
     /** Host's RDKit -> OCL -> createSmilesMolecule path, bound to the pinned document. */
