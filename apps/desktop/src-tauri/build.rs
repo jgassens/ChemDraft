@@ -13,6 +13,10 @@ fn main() {
     ensure_opsin_runtime_dir();
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "assistant_mcp_session_open",
+            "assistant_mcp_session_close",
+            "assistant_mcp_respond",
+            "assistant_mcp_status",
             "diagnose_download_host",
             "external_tool_status",
             "external_tool_install",

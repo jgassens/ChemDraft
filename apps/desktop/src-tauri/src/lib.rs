@@ -1,3 +1,4 @@
+mod assistant_mcp;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -1005,6 +1006,7 @@ pub fn run() {
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
+                        assistant_mcp::shutdown();
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
@@ -1240,6 +1242,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            assistant_mcp::assistant_mcp_session_open,
+            assistant_mcp::assistant_mcp_session_close,
+            assistant_mcp::assistant_mcp_respond,
+            assistant_mcp::assistant_mcp_status,
             external_tools::external_tool_status,
             external_tools::external_tool_install,
             external_tools::external_tool_cancel_install,
@@ -1355,6 +1361,7 @@ pub fn run() {
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
+                    assistant_mcp::shutdown();
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
             }
@@ -1365,6 +1372,7 @@ pub fn run() {
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
+                assistant_mcp::shutdown();
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
             // Dock-icon click with no visible windows; a macOS-only event.
