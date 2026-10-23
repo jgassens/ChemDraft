@@ -3,6 +3,7 @@ import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginCanvasOverlayContributionSchema } from "@chemdraft/plugin-api";
+import type { PluginOverlayTranscriptEntry } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { PluginCanvasOverlay } from "./PluginCanvasOverlay";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
@@ -55,6 +56,21 @@ class CanvasOverlayStatusSource {
   private emit(): void { this.listeners.forEach(listener => listener()); }
 }
 let statusSource: CanvasOverlayStatusSource;
+class CanvasOverlayTranscriptSource {
+  private readonly transcripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
+  private readonly listeners = new Set<() => void>();
+  getCanvasOverlayTranscripts = () => this.transcripts;
+  subscribeCanvasOverlayTranscript = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+  set(entries: PluginOverlayTranscriptEntry[]) {
+    this.transcripts.set(overlay.id, entries);
+    this.listeners.forEach(listener => listener());
+  }
+  get subscriberCount() { return this.listeners.size; }
+}
+let transcriptSource: CanvasOverlayTranscriptSource;
 const viewportRef = createRef<HTMLElement>();
 const overlayLayerRef = createRef<HTMLElement>();
 const statusRowRef = createRef<HTMLElement>();
@@ -76,6 +92,7 @@ async function render(windowId = "main"): Promise<void> {
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId={windowId} shortcutPlatform={platform}
     statusSource={statusSource}
+    transcriptSource={transcriptSource}
     onOpenPanel={withPanel ? openPanel : undefined} panelTitle={panelTitle} onFocusDrawing={() => drawing.focus()} />));
 }
 async function expand(): Promise<void> {
@@ -87,6 +104,7 @@ describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; panelTitle = undefined; platform = "macos";
     statusSource = new CanvasOverlayStatusSource();
+    transcriptSource = new CanvasOverlayTranscriptSource();
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
     viewportWidth = 600; viewportHeight = 400;
     viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
@@ -109,12 +127,75 @@ describe("PluginCanvasOverlay", () => {
       if (this === rulerTop) return { x: 0, y: 0, left: 0, top: 0, right: viewportWidth - 16, bottom: 32,
         width: viewportWidth - 16, height: 32, toJSON() {} };
       const width = this.dataset.expanded === "true" ? 300 : 36;
-      const height = this.dataset.expanded === "true" ? 220 : 36;
+      const height = this.dataset.expanded === "true" ? Math.min(Number.parseFloat(this.style.height) || 220,
+        Number.parseFloat(this.style.maxHeight) || Infinity) : 36;
       return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON() {} };
     });
     await render();
   });
   afterEach(async () => { await act(async () => root.unmount()); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it.each(["macos", "windows"] as const)("keeps a compact default, grows upward, clamps and remembers height on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    expect(widget().style.height).toBe("220px");
+    expect(container.querySelector("textarea")!.rows).toBe(1);
+    const handle = container.querySelector(".plugin-canvas-overlay-resize")!;
+    const bottom = Number.parseFloat(widget().style.top) + 220;
+    await act(async () => { pointer(handle, "pointerdown", 300, 156); pointer(handle, "pointermove", 300, 96); });
+    expect(widget().style.height).toBe("280px");
+    expect(Number.parseFloat(widget().style.top) + 280).toBe(bottom);
+    await act(async () => pointer(handle, "pointermove", 300, -1000));
+    expect(widget().style.top).toBe("32px"); expect(widget().style.height).toBe("344px");
+    await act(async () => pointer(handle, "pointerup", 300, -1000));
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("344");
+    await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await expand(); expect(widget().style.height).toBe("344px");
+    await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
+    expect(widget().style.height).toBe("344px");
+    await act(async () => root.unmount()); root = createRoot(container); await render("second-window"); await expand();
+    expect(widget().style.height).toBe("220px");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("344");
+    await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
+    viewportHeight = 300;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.maxHeight).toBe("244px"); expect(widget().style.top).toBe("32px");
+    expect(widget().getBoundingClientRect().height).toBe(244);
+    viewportHeight = 400;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().getBoundingClientRect().height).toBe(344);
+    const restoredHandle = container.querySelector(".plugin-canvas-overlay-resize")!;
+    await act(async () => { pointer(restoredHandle, "pointerdown", 300, 32); pointer(restoredHandle, "pointermove", 300, 1000); pointer(restoredHandle, "pointerup", 300, 1000); });
+    expect(widget().style.height).toBe("220px"); expect(widget().style.top).toBe("156px");
+  });
+
+  it("renders roles and errors, follows only a reader at the bottom, and keeps focus and drafts", async () => {
+    await expand(); await act(async () => enterText("Reply"));
+    const textarea = container.querySelector("textarea")!;
+    const log = container.querySelector<HTMLElement>('[role="log"]')!;
+    let scrollHeight = 200;
+    Object.defineProperties(log, { scrollHeight: { get: () => scrollHeight }, clientHeight: { value: 48 } });
+    await act(async () => transcriptSource.set([
+      { role: "user", text: "Question" }, { role: "tool", text: "Working" },
+      { role: "notice", text: "Notice" }, { role: "assistant", text: "Latest reply" }, { role: "error", text: "Failed" }
+    ]));
+    expect(log.scrollTop).toBe(200);
+    expect(log.textContent).toContain("Latest reply");
+    expect(log.querySelector('[data-role="error"]')?.classList.contains("plugin-report-composer-error")).toBe(true);
+    expect(document.activeElement).toBe(textarea); expect(textarea.value).toBe("Reply");
+    await act(async () => { log.scrollTop = 20; log.dispatchEvent(new Event("scroll")); });
+    scrollHeight = 300;
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "More" }]));
+    expect(log.scrollTop).toBe(20);
+    await act(async () => { log.scrollTop = 252; log.dispatchEvent(new Event("scroll")); });
+    scrollHeight = 400;
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Newest" }]));
+    expect(log.scrollTop).toBe(400);
+    await act(async () => transcriptSource.set([])); expect(log.textContent).toBe("");
+    expect(transcriptSource.subscriberCount).toBe(1);
+    await act(async () => root.unmount()); expect(transcriptSource.subscriberCount).toBe(0);
+    root = createRoot(container); await render("second-window"); await expand();
+    expect(widget().style.height).toBe("220px");
+  });
 
   it("starts collapsed at the declared corner, expands on click, and Esc restores drawing focus and preserves the draft", async () => {
     expect(document.activeElement).toBe(drawing);
@@ -296,7 +377,9 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => root.unmount());
     window.localStorage.setItem(collapsedKey, '{"x":"bad","y":null}');
     window.localStorage.setItem(expandedKey, "not JSON");
+    window.localStorage.setItem(`${storageKey}:height`, '"invalid"');
     root = createRoot(container); await render(); expect(widget().style.left).toBe("536px");
+    await expand(); expect(widget().style.height).toBe("220px");
     await act(async () => root.unmount());
     vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("Storage blocked"); });
     vi.spyOn(window.localStorage, "setItem").mockImplementation(() => { throw new Error("Storage blocked"); });

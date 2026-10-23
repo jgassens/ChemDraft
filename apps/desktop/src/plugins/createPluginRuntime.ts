@@ -17,6 +17,7 @@ import type {
   PluginNameToStructureRequest,
   PluginCommandContext,
   PluginCommandInput,
+  PluginOverlayTranscriptEntry,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -211,6 +212,8 @@ export interface DesktopPluginRuntime {
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
   subscribeCanvasOverlayStatus(listener: () => void): () => void;
+  getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
+  subscribeCanvasOverlayTranscript(listener: () => void): () => void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when plugin contributions change. Returns unsubscribe. */
@@ -416,6 +419,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   }
   const canvasOverlayStatuses = new Map<string, string>();
+  const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
+  const canvasOverlayTranscriptListeners = new Set<() => void>();
+  const notifyCanvasOverlayTranscript = () => canvasOverlayTranscriptListeners.forEach(listener => listener());
   const listeners = new Set<() => void>();
   const canvasOverlayStatusListeners = new Set<() => void>();
   const notify = () => listeners.forEach((listener) => listener());
@@ -424,6 +430,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
     overlays: {
+      setTranscript: (_pluginId, overlayId, entries) => {
+        if (entries.length === 0) {
+          if (!canvasOverlayTranscripts.delete(overlayId)) return;
+        } else {
+          canvasOverlayTranscripts.set(overlayId, Object.freeze(entries.map(entry => Object.freeze({ ...entry }))));
+        }
+        notifyCanvasOverlayTranscript();
+      },
       setStatus: (_pluginId, overlayId, text) => {
         if (text === "") {
           if (!canvasOverlayStatuses.delete(overlayId)) return;
@@ -553,6 +567,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         }
       }
       if (overlayStatusesChanged) notifyCanvasOverlayStatus();
+      let transcriptsChanged = false;
+      for (const overlayId of canvasOverlayTranscripts.keys()) {
+        if (!host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId)) {
+          canvasOverlayTranscripts.delete(overlayId);
+          transcriptsChanged = true;
+        }
+      }
+      if (transcriptsChanged) notifyCanvasOverlayTranscript();
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
@@ -568,6 +590,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     },
     listCanvasOverlays: () => host.listCanvasOverlays(),
     getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
+    getCanvasOverlayTranscripts: () => new Map(canvasOverlayTranscripts),
+    subscribeCanvasOverlayTranscript(listener) {
+      canvasOverlayTranscriptListeners.add(listener);
+      return () => { canvasOverlayTranscriptListeners.delete(listener); };
+    },
     subscribeCanvasOverlayStatus(listener) {
       canvasOverlayStatusListeners.add(listener);
       return () => {

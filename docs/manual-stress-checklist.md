@@ -240,6 +240,14 @@ consent text must say that it does and that page content can leave the computer.
 
 ## Plugin panel input and canvas overlay (macOS and Windows)
 
+With an API 0.1.11 chat plugin, verify the compact overlay shows the latest reply and distinguishes
+user, assistant, tool, notice, and error entries. Scroll back while replies arrive: the reader stays
+put; returning to the bottom resumes following replies. Drag the top edge up and down: the bottom
+edge stays fixed and the box cannot cross rulers, scrollbars, or the status row. Shrink the document
+window and check the box fits again. Resize, Escape, expand, then reopen the document window:
+height is remembered separately from icon/box positions. A second document window has its own size.
+Enter still sends, Shift+Enter adds a newline, and transcript updates never steal input focus.
+
 In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
 and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
 the composition must not submit early. Force a host refusal (for example by making the panel stale

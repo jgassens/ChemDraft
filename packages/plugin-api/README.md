@@ -4,6 +4,11 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.11 adds `overlays.setTranscript({ overlayId, entries })`: up to 50 role/text entries,
+4,000 characters per text, and 64 KiB of UTF-8 JSON for the entries array. Roles are `user`,
+`assistant`, `tool`, `notice`, and `error`. This replaces the owned overlay's transcript; an empty
+list clears it. The capability requires `ui.canvas`.
+
 API 0.1.10 adds declarative `prompt`, `actions`, and `image` panel sections, optional panel
 `preferredWindowSize`, and `PluginCommandContext.input`. Prompt, select, section, and button ids must
 be unique within a report. Input payloads must be JSON data of at most 4000 serialized characters,

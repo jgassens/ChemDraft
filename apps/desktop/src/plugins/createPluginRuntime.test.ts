@@ -81,6 +81,36 @@ describe("createPluginRuntime canvas overlays", () => {
     runtime.unregisterPlugin(manifest.id);
   });
 
+  it("publishes immutable transcripts without triggering contribution/toolset or status synchronization", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
+    runtime.registerPlugin(manifest);
+    const contributions = vi.fn(); const statuses = vi.fn(); const transcripts = vi.fn();
+    runtime.onDidChange(contributions);
+    runtime.subscribeCanvasOverlayStatus(statuses);
+    const unsubscribe = runtime.subscribeCanvasOverlayTranscript(transcripts);
+    const api = runtime.host.createCommandContext(manifest.id).overlays!;
+    await api.setTranscript({ overlayId, entries: [{ role: "assistant", text: "First" }] });
+    const snapshot = runtime.getCanvasOverlayTranscripts().get(overlayId)!;
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot[0])).toBe(true);
+    expect(runtime.getCanvasOverlayTranscripts().get(overlayId)).toBe(snapshot);
+    await api.setTranscript({ overlayId, entries: [{ role: "error", text: "Second" }] });
+    expect(snapshot[0]!.text).toBe("First");
+    await api.setTranscript({ overlayId, entries: [] });
+    expect(runtime.getCanvasOverlayTranscripts().size).toBe(0);
+    expect(contributions).not.toHaveBeenCalled();
+    expect(statuses).not.toHaveBeenCalled();
+    expect(transcripts).toHaveBeenCalledTimes(3);
+    await api.setTranscript({ overlayId, entries: [{ role: "notice", text: "Last" }] });
+    runtime.unregisterPlugin(manifest.id);
+    expect(runtime.getCanvasOverlayTranscripts().size).toBe(0);
+    expect(transcripts).toHaveBeenCalledTimes(5);
+    unsubscribe(); runtime.registerPlugin(manifest);
+    await runtime.host.createCommandContext(manifest.id).overlays!.setTranscript({ overlayId, entries: [{ role: "user", text: "New" }] });
+    expect(transcripts).toHaveBeenCalledTimes(5);
+    runtime.unregisterPlugin(manifest.id);
+  });
+
   it("rolls back a duplicate overlay registration and clears status on replacement", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
     runtime.registerPlugin(manifest);

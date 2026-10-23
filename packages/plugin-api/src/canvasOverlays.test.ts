@@ -71,9 +71,9 @@ describe("canvas overlay schemas", () => {
     expect(PluginOverlayStatusRequestSchema.safeParse({ overlayId: overlay.id, text: "x".repeat(121) }).success).toBe(false);
   });
 
-  it("exposes ui.canvas as non-dangerous and whitelists only setStatus", () => {
+  it("exposes ui.canvas as non-dangerous and whitelists status and transcript updates", () => {
     expect(pluginPermissions).toContain("ui.canvas");
     expect(dangerousPluginPermissions as readonly string[]).not.toContain("ui.canvas");
-    expect(PLUGIN_WORKER_CAPABILITY_METHODS.overlays).toEqual(["setStatus"]);
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.overlays).toEqual(["setStatus", "setTranscript"]);
   });
 });

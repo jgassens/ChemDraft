@@ -17,6 +17,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permissions `assistant.run` and `native.execute`).
  * 0.1.9 adds `PluginAssistantAPI` (ChemDraft's tool set for an AI run, MCP tool sessions)
  * 0.1.10 adds panel input sections (prompt, actions, image), context.input and canvas overlays
+ * 0.1.11 adds bounded canvas chat transcripts via `PluginOverlaysAPI.setTranscript`.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -26,7 +27,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.10" as const;
+export const PluginApiVersion = "0.1.11" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -274,9 +275,24 @@ export const PluginOverlayStatusRequestSchema = z.object({
   text: z.string().max(120)
 }).strict();
 
+export const PluginOverlayTranscriptEntrySchema = z.object({
+  role: z.enum(["user", "assistant", "tool", "notice", "error"]),
+  text: z.string().max(4000)
+}).strict();
+export type PluginOverlayTranscriptEntry = z.infer<typeof PluginOverlayTranscriptEntrySchema>;
+export const PluginOverlayTranscriptRequestSchema = z.object({
+  overlayId: PluginOverlayStatusRequestSchema.shape.overlayId,
+  entries: z.array(PluginOverlayTranscriptEntrySchema).max(50).refine(
+    entries => new TextEncoder().encode(JSON.stringify(entries)).byteLength <= 64 * 1024,
+    "Overlay transcript must be at most 64 KiB of UTF-8 JSON."
+  )
+}).strict();
+
 export interface PluginOverlaysAPI {
   /** Set the status of an owned overlay; an empty string clears it. Requires ui.canvas. */
   setStatus(request: z.infer<typeof PluginOverlayStatusRequestSchema>): Promise<void>;
+  /** Replace an owned overlay's transcript; an empty list clears it. Requires ui.canvas. */
+  setTranscript(request: z.infer<typeof PluginOverlayTranscriptRequestSchema>): Promise<void>;
 }
 
 export const PluginContributionsSchema = z

@@ -61,14 +61,14 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.10`). API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
+`0.1.11`). API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
 `^0.1.10`. API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
 API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
 `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.10` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.11` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -298,7 +298,7 @@ command ends is refused. A plugin that holds `document.read` receives the insert
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
 
-## Panel input and canvas overlays (0.1.10)
+## Panel input and canvas overlays (0.1.10–0.1.11)
 
 API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
 `apiVersion: "^0.1.10"`; add `ui.panel` for a panel and `ui.canvas` for a canvas overlay. Panels
@@ -350,6 +350,33 @@ overlayId, text })` updates its status line; text is at most 120 characters (an 
 it). Per AGENTS.md §12, this icon-plus-prompt widget is the only allowed in-viewport plugin surface:
 one declared overlay per plugin. Panels, palettes, and dialogs remain separate floating native
 windows.
+
+API **0.1.11** adds `context.overlays.setTranscript({ overlayId, entries })`; declare `^0.1.11`
+when using it. This replaces the owned overlay's conversation with at most 50 entries of
+`{ role: "user" | "assistant" | "tool" | "notice" | "error", text: string }`. Text is at most
+4,000 characters per entry; the UTF-8 JSON serialization of the entries array, including JSON
+overhead, must fit in 64 KiB. An empty array clears it. The host validates these limits and
+rechecks `ui.canvas` and ownership on every call, including calls through a worker. Plugins trim
+their transcript before sending; the host refuses an oversized transcript rather than truncating it.
+
+The small chat shows the prompt above a scrollable conversation, following new replies only when
+the reader is already at the bottom. Errors use the error style. Drag its top-edge handle upward
+to grow it while keeping its bottom edge fixed, or downward to shrink it. The default/minimum
+height is 220 px (clipped further for a smaller drawing area); height is remembered separately
+from position for each document window. Escape collapses without forgetting the height; Enter
+sends and Shift+Enter adds a newline. Overlay prompts display one row to preserve room for replies.
+Transcript updates use their own runtime subscription and never synchronize toolsets. The floating
+panel remains the long-form view.
+
+```ts
+await context.overlays?.setTranscript({
+  overlayId: "overlay.prompt.main",
+  entries: [
+    { role: "user", text: "Draw water" },
+    { role: "assistant", text: "Water is on the page." }
+  ]
+});
+```
 
 ```ts
 export const manifest = parsePluginManifest({

@@ -30,3 +30,7 @@ An embedding host can supply `overlays.setStatus(pluginId, overlayId, text)`; th
 re-checks permission, ownership, and the 120-character limit before forwarding each call. Without
 a sink the capability rejects with a specific error. Overlay input is accepted only for an overlay
 contributed by the invoked command's plugin, including invocation through the shared registry.
+
+API 0.1.11 adds the optional embedding sink `overlays.setTranscript(pluginId, overlayId, entries)`.
+The host snapshots and validates entries (50 maximum, 4,000 characters each, 64 KiB UTF-8 JSON total),
+checks ownership and `ui.canvas` on each call, and rejects specifically if no transcript sink exists.

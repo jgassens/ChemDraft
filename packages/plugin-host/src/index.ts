@@ -11,6 +11,7 @@ import type {
   PluginAnalysisAPI,
   PluginCanvasOverlayContribution,
   PluginOverlaysAPI,
+  PluginOverlayTranscriptEntry,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
@@ -82,6 +83,7 @@ import {
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
   PluginOverlayStatusRequestSchema,
+  PluginOverlayTranscriptRequestSchema,
   PluginCommandInputSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
@@ -337,6 +339,7 @@ export type PluginHostAssistant = {
 export interface PluginHostOptions {
   overlays?: {
     setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
+    setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
   };
   assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
@@ -681,6 +684,16 @@ export class PluginHost {
             }
             if (!this.overlays) throw new PluginHostError("This host provides no canvas overlays.");
             await this.overlays.setStatus(pluginId, parsed.overlayId, parsed.text);
+          },
+          setTranscript: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayTranscriptRequestSchema.parse(request);
+            const currentPlugin = this.requireRegisteredPlugin(pluginId);
+            if (!currentPlugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === parsed.overlayId)) {
+              throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
+            }
+            if (!this.overlays?.setTranscript) throw new PluginHostError("This host provides no canvas transcripts.");
+            await this.overlays.setTranscript(pluginId, parsed.overlayId, parsed.entries);
           }
         }
       : undefined;

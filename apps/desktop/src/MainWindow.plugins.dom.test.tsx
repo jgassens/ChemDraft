@@ -192,9 +192,21 @@ describe("MainWindow canvas overlays", () => {
   });
 
   it("shows runtime status, hides through canvas pointer events, and restores drawing focus on Esc", async () => {
-    submit.mockImplementation(async context => { await context.overlays!.setStatus({ overlayId, text: "Working…" }); });
+    submit.mockImplementation(async context => {
+      await context.overlays!.setStatus({ overlayId, text: "Working…" });
+      await context.overlays!.setTranscript({ overlayId, entries: [
+        { role: "user", text: context.input?.text ?? "" }, { role: "assistant", text: "Drawing your request." }
+      ] });
+    });
     await act(async () => input("Draw")); await send();
     expect(container.querySelector(".plugin-canvas-overlay [role=status]")?.textContent).toBe("Working…");
+    expect(container.querySelector('.plugin-canvas-overlay [data-role="assistant"]')?.textContent).toContain("Drawing your request.");
+    const contributions = vi.fn();
+    const unsubscribe = captured.runtime!.onDidChange(contributions);
+    await act(async () => captured.runtime!.host.createCommandContext(pluginId).overlays!.setTranscript({ overlayId,
+      entries: [{ role: "error", text: "Try a shorter request." }] }));
+    expect(container.querySelector('.plugin-canvas-overlay [data-role="error"]')?.textContent).toContain("Try a shorter request.");
+    expect(contributions).not.toHaveBeenCalled(); unsubscribe();
     const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
     const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
     await act(async () => canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }))); expect(widget.hidden).toBe(true);

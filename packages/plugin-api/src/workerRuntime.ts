@@ -199,6 +199,9 @@ export function runPluginWorker(
       ? { setStatus: request => {
           requirePermission("ui.canvas");
           return call("overlays", "setStatus", [request]) as Promise<void>;
+        }, setTranscript: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "setTranscript", [request]) as Promise<void>;
         } }
       : undefined;
     const panels: PluginPanelAPI | undefined = has("ui.panel")

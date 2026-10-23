@@ -151,6 +151,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     const commandId = "plugin.chat.submit";
     const overlayId = "overlay.chat.main";
     const setStatus = vi.fn();
+    const setTranscript = vi.fn();
     const manifest = parsePluginManifest({
       id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
       permissions: ["ui.canvas"], contributes: {
@@ -162,6 +163,11 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
       [commandId]: async context => {
         await context.overlays!.setStatus({ overlayId, text: "Working" });
+        await context.overlays!.setTranscript({ overlayId, entries: [{ role: "assistant", text: "Done" }] });
+        await expect(context.overlays!.setTranscript({ overlayId: "overlay.other.main", entries: [] }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setTranscript({ overlayId, entries: [{ role: "error", text: "x".repeat(4001) }] }))
+          .rejects.toThrow();
         await expect(context.overlays!.setStatus({ overlayId: "overlay.other.main", text: "Foreign" }))
           .rejects.toThrow(/does not own/);
         await expect(context.overlays!.setStatus({ overlayId, text: "x".repeat(121) })).rejects.toThrow();
@@ -169,12 +175,13 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
         return context.input;
       }
     } });
-    const host = new PluginHost({ overlays: { setStatus } });
+    const host = new PluginHost({ overlays: { setStatus, setTranscript } });
     host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
     const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
     try {
       expect(await host.invokeCommand(commandId, { input })).toEqual(input);
       expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
+      expect(setTranscript.mock.calls).toEqual([[manifest.id, overlayId, [{ role: "assistant", text: "Done" }]]]);
     } finally { bridge.terminate(); }
   });
 
