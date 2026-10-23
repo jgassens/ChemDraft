@@ -1,18 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import {
-  createEmptyDocument,
-  type ArrowObject,
-  type ChemDraftDocument,
-  type MoleculeObject,
-  type NativeTextStyle
-} from "@chemdraft/chem-core";
+import { type ArrowObject, type ChemDraftDocument, type NativeTextStyle } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
 import {
-  insertNativeReactionArrow,
-  insertNativeTextObject,
+  layoutReactionScheme,
   nativeTextObjectSizeForText
 } from "@chemdraft/document-workflow-core";
 
@@ -105,7 +98,6 @@ export interface ReactionAgentText {
 }
 
 const REACTION_GUTTER = renderDefaults.padding;
-const PLUS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 20, textAlign: "center" };
 const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 const ARROW_KINDS = new Set<ReactionArrowKind>([
   "forward",
@@ -400,21 +392,6 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   });
 }
 
-function translateMolecule(
-  molecule: MoleculeObject,
-  id: string,
-  dx: number,
-  dy: number
-): MoleculeObject {
-  return {
-    ...molecule,
-    id,
-    x: molecule.x + dx,
-    y: molecule.y + dy,
-    atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
-  };
-}
-
 async function depictComponent(smiles: string, index: number): Promise<BuiltSmilesDocument> {
   try {
     return await buildSmilesDocument(smiles, {
@@ -643,7 +620,6 @@ export async function renderReactionScheme(
   const conditionSize = conditionText
     ? nativeTextObjectSizeForText(conditionText, CONDITIONS_STYLE)
     : { width: 0, height: 0 };
-  const plusSize = nativeTextObjectSizeForText("+", PLUS_STYLE);
   const boundsByComponent = new Map(visible.map((component) => {
     const bounds = documentVisualBounds(component.document);
     return [component, {
@@ -661,84 +637,20 @@ export async function renderReactionScheme(
     conditionText ? conditionSize.height + REACTION_GUTTER / 2 : 0
   );
   const centerY = renderDefaults.padding + aboveCenter;
-  const pageHeight = centerY + maximumMoleculeHeight / 2 + renderDefaults.padding;
-  const arrowLength = Math.max(
-    renderDefaults.bondLength * 2.5,
-    conditionSize.width + REACTION_GUTTER * 2
-  );
-
-  let cursor = renderDefaults.padding;
-  let moleculeNumber = 0;
-  const molecules: MoleculeObject[] = [];
-  const plusPoints: Array<{ x: number; y: number }> = [];
-  const placeGroup = (components: readonly BuiltSmilesDocument[]): void => {
-    components.forEach((component, index) => {
-      const bounds = boundsByComponent.get(component)!;
-      molecules.push(translateMolecule(
-        component.molecule,
-        `mol_reaction_${String(moleculeNumber + 1).padStart(3, "0")}`,
-        cursor - bounds.minX,
-        centerY - bounds.height / 2 - bounds.minY
-      ));
-      moleculeNumber += 1;
-      cursor += bounds.width;
-      if (index < components.length - 1) {
-        cursor += REACTION_GUTTER;
-        plusPoints.push({ x: cursor, y: centerY - plusSize.height / 2 });
-        cursor += plusSize.width + REACTION_GUTTER;
-      }
-    });
-  };
-
-  const leftSide = arrow === "retrosynthesis" ? products : reactants;
-  const rightSide = arrow === "retrosynthesis" ? reactants : products;
-  placeGroup(leftSide);
-  cursor += REACTION_GUTTER;
-  const arrowStart = cursor;
-  const arrowEnd = arrowStart + arrowLength;
-  cursor = arrowEnd + REACTION_GUTTER;
-  placeGroup(rightSide);
-  const pageWidth = cursor + renderDefaults.padding;
-
-  const empty = createEmptyDocument({ title: "Reaction scheme" });
-  const page = empty.pages[0]!;
-  let document: ChemDraftDocument = {
-    ...empty,
-    pages: [{
-      ...page,
-      width: pageWidth,
-      height: pageHeight,
-      layout: {
-        ...page.layout,
-        presetId: "custom",
-        orientation: pageWidth >= pageHeight ? "landscape" : "portrait",
-        widthPx: pageWidth,
-        heightPx: pageHeight
-      },
-      objects: molecules
-    }],
-    selection: { objectIds: [] }
-  };
-  document = insertNativeReactionArrow(
-    document,
-    { x: arrowStart, y: centerY },
-    { x: arrowEnd, y: centerY },
-    arrow
-  );
-  for (const point of plusPoints) {
-    document = insertNativeTextObject(document, point, "+", PLUS_STYLE);
-  }
-  if (conditionText) {
-    document = insertNativeTextObject(
-      document,
-      {
-        x: (arrowStart + arrowEnd - conditionSize.width) / 2,
-        y: centerY - conditionSize.height - REACTION_GUTTER / 2
-      },
-      conditionText,
-      CONDITIONS_STYLE
-    );
-  }
+  const componentFor = (component: BuiltSmilesDocument) => ({
+    molecule: component.molecule,
+    bounds: boundsByComponent.get(component)!
+  });
+  const { document } = layoutReactionScheme({
+    reactants: reactants.map(componentFor),
+    products: products.map(componentFor),
+    arrowKind: arrow,
+    conditionText,
+    anchor: { x: renderDefaults.padding, y: centerY },
+    gutter: REACTION_GUTTER,
+    bondLength: renderDefaults.bondLength,
+    pagePadding: renderDefaults.padding
+  });
 
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"

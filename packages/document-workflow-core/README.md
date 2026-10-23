@@ -18,6 +18,8 @@ desktop importers did not change.
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
+| `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and conditions |
+| `gridLayout.ts` | Pure placement of pre-depicted molecules and optional labels in a grid |
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata, and what is built on a label's reading: each group's verdict and free valence, and the recorded bond side. Re-exports layout-engine's element table, bond-order counting and atom-label grammar (`nativeAtomLabelReading`), under the same names |
 | `labelGroups.ts` | A group's expansion into real atoms appended after the drawn ones, so drawn indices never move. The formula, SMILES, molfile and analysis read that expansion; the document keeps the label. The group's shape and attachment atom (`NativeLabelGroup`, `nativeLabelGroupAttachment`) are layout-engine's, re-exported |
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
