@@ -10,6 +10,7 @@ export interface OpenPluginPanel {
   pluginId: string;
   panelId: string;
   title: string;
+  preferredWindowSize?: { width: number; height: number };
   report: PluginPanelReport;
   /** From the panel contribution; enables a host-rendered "Run again" action when present. */
   commandId?: string;

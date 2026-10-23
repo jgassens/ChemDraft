@@ -17,6 +17,7 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginCommandInput,
   type PluginExternalToolStatus,
   type PluginCommandHandler,
   type PluginManifest,
@@ -146,6 +147,28 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("round-trips panel input through the host and worker, scoped to each concurrent invocation", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js", permissions: ["ui.panel"],
+      contributes: { commands: [{ id: commandId, title: "Send" }], panels: [{ id: "panel.chat.main", title: "Chat", commandId }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => { await flush(); return context.input; }
+    } });
+    const { host } = makeHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const inputs: PluginCommandInput[] = [
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "Draw water", selected: "a" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "select", controlId: "provider", selected: "b" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "actions", control: "button", controlId: "stop", payload: { run: 1 } }
+    ];
+    try {
+      expect(await Promise.all(inputs.map(input => host.invokeCommand(commandId, { input })))).toEqual(inputs);
+      expect(await host.invokeCommand(commandId)).toBeUndefined();
+    } finally { bridge.terminate(); }
+  });
+
   it("mass analyzer: the worker path writes the same analysis record and renders the same report as in-process", async () => {
     const inProcess = makeHost();
     inProcess.host.registerPlugin(massFragmentManifest, { commandHandlers: createMassRegistration().commandHandlers });

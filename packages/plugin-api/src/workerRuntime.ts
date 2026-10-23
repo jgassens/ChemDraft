@@ -21,6 +21,7 @@ import type {
   PluginAnalysisAPI,
   PluginChemistryAPI,
   PluginCommandContext,
+  PluginCommandInput,
   PluginCommandHandler,
   PluginDialogsAPI,
   PluginDocumentAPI,
@@ -153,7 +154,7 @@ export function runPluginWorker(
       post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
     });
 
-  const buildContext = (commandRequestId: number): PluginCommandContext => {
+  const buildContext = (commandRequestId: number, input?: PluginCommandInput): PluginCommandContext => {
     // `method` is typed against PLUGIN_WORKER_CAPABILITY_METHODS rather than being a bare `string`, so
     // the stub and the host bridge's allow-list are one list instead of two. This is the fix for the
     // real defect: `nameToStructure` and `structureFromSmiles` were added here, and to the in-process
@@ -311,6 +312,7 @@ export function runPluginWorker(
       : undefined;
 
     return {
+      ...(input === undefined ? {} : { input }),
       plugin: {
         id: registration.manifest.id,
         name: registration.manifest.name,
@@ -333,7 +335,7 @@ export function runPluginWorker(
     };
   };
 
-  const invoke = (commandRequestId: number, commandId: string): void => {
+  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput): void => {
     const handler = registration.commandHandlers[commandId];
     if (!handler) {
       post({
@@ -346,7 +348,7 @@ export function runPluginWorker(
     }
     // Defer to a microtask so a synchronous throw is captured as a rejection, mirroring the host.
     Promise.resolve()
-      .then(() => handler(buildContext(commandRequestId)))
+      .then(() => handler(buildContext(commandRequestId, input)))
       .then(
         (value) => {
           if (abortedCommands.has(commandRequestId)) {
@@ -386,7 +388,7 @@ export function runPluginWorker(
   const handle = (message: HostToWorkerMessage): void => {
     switch (message.kind) {
       case "invokeCommand":
-        invoke(message.commandRequestId, message.commandId);
+        invoke(message.commandRequestId, message.commandId, message.input);
         return;
       case "capabilityResult": {
         const pending = pendingCapabilities.get(message.requestId);

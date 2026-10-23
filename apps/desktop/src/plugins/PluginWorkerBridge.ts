@@ -142,7 +142,7 @@ export class PluginWorkerBridge {
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(commandRequestId, { context, resolve, reject });
       try {
-        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId });
+        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));

@@ -4,6 +4,12 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.10 adds declarative `prompt`, `actions`, and `image` panel sections, optional panel
+`preferredWindowSize`, and `PluginCommandContext.input`. Prompt, select, section, and button ids must
+be unique within a report. Input payloads must be JSON data of at most 4000 serialized characters,
+without prototype-polluting keys. Panel controls invoke the contributing plugin's own commands;
+the optional input travels through the existing worker protocol without a protocol-version bump.
+
 Document patches support atomic `batch` operations with 1–256 non-batch entries. Direct writes may
 insert content and update, move, remove, or reorder only the objects selected when the command
 started plus objects inserted by that invocation. Recognition continues to require proposal review.

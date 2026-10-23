@@ -1,4 +1,4 @@
-import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
+import type { PluginCommandInput, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { toEngineDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 import { AssistantTransactions } from "../assistant/assistantTransaction";
@@ -20,6 +20,28 @@ import type {
 } from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+
+describe("createPluginRuntime panel input", () => {
+  it("forwards input alongside selection warnings through the desktop host override", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
+    const commandId = "plugin.chat.submit";
+    const input: PluginCommandInput = { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "Draw water" };
+    runtime.registerPlugin({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js", permissions: ["ui.panel", "selection.read"],
+      contributes: { commands: [{ id: commandId, title: "Send" }], panels: [{ id: "panel.chat.main", title: "Chat" }] }
+    }, { commandHandlers: { [commandId]: async ctx => {
+      await ctx.selection!.getSelection();
+      return ctx.input;
+    } } });
+    const warnings: string[] = [];
+    expect(await runtime.invokeCommand(commandId, { input, selectionWarnings: warnings })).toEqual(input);
+    expect(warnings).toEqual([]);
+    expect(await runtime.invokeCommand(commandId)).toBeUndefined();
+    await expect(runtime.invokeCommand(commandId, { input: { ...input, panelId: "panel.other.main" } }))
+      .rejects.toThrow(/does not declare panel/);
+    runtime.unregisterPlugin("org.test.chat");
+  });
+});
 
 describe("createPluginRuntime assistant integration", () => {
   it("lazily wires an injectable MCP engine and request transaction through the host", async () => {

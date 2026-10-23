@@ -13,7 +13,7 @@
  * runtime ({@link runPluginWorker}) and the desktop-side bridge both speak this protocol.
  */
 
-import { PluginApiVersion } from "./index";
+import { PluginApiVersion, PluginCommandInputSchema, type PluginCommandInput } from "./index";
 
 /**
  * Protocol wire version. Bumped only on a breaking change to the message shapes below. The worker
@@ -114,7 +114,7 @@ export type WorkerToHostMessage =
 
 /** host → worker messages. */
 export type HostToWorkerMessage =
-  | { kind: "invokeCommand"; commandRequestId: number; commandId: string }
+  | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput }
   | { kind: "capabilityResult"; requestId: number; ok: true; value: unknown }
   | { kind: "capabilityResult"; requestId: number; ok: false; error: PluginWorkerErrorPayload }
   /** Reverse signal: a contributed panel closed (ADR-0012) so the plugin can cancel in-flight work. */
@@ -178,6 +178,7 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   switch (message.kind) {
     case "invokeCommand":
       return isIndex(message.commandRequestId) && typeof message.commandId === "string"
+        && (message.input === undefined || PluginCommandInputSchema.safeParse(message.input).success)
         ? (message as unknown as HostToWorkerMessage)
         : undefined;
     case "capabilityResult": {

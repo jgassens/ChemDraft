@@ -13,6 +13,12 @@ on every method call. Manifests declaring `assistant.run` without `native.execut
 Registration is transactional across the shared command registry: all command ids are preflighted,
 partial registration is rolled back, and uninstall removes only commands still owned by that plugin.
 
+API 0.1.10 accepts `invokeCommand(commandId, { input })` for panel controls. The host validates and
+snapshots the input, requires the invoked plugin to declare its `panelId`, and delivers it as
+`context.input` only for that invocation. Overlay input is refused until canvas-overlay contributions
+are supported. Reports may bind prompt, select, and action controls only to commands declared and
+registered by the reporting plugin.
+
 Direct writes enforce an invocation's initial selection plus its accepted insertions. Flat `batch`
 patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise

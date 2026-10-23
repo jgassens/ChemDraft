@@ -16,6 +16,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * `PluginChemistryAPI.structureToName` and the `chemicalName` report section.
  * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permissions `assistant.run` and `native.execute`).
  * 0.1.9 adds `PluginAssistantAPI` (ChemDraft's tool set for an AI run, MCP tool sessions)
+ * 0.1.10 adds panel input sections (prompt, actions, image), context.input and canvas overlays
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -25,7 +26,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.9" as const;
+export const PluginApiVersion = "0.1.10" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -74,7 +75,7 @@ const NonEmptyStringSchema = z.string().min(1);
 const PermissionListSchema = z.array(PluginPermissionSchema);
 const OptionalPermissionListSchema = z.array(PluginPermissionSchema).default([]);
 
-function namespacedContributionIdSchema(namespace: "plugin" | "menu" | "panel" | "analyzer", label: string) {
+function namespacedContributionIdSchema(namespace: "plugin" | "menu" | "panel" | "analyzer" | "overlay", label: string) {
   return IdSchema.regex(
     new RegExp(`^${namespace}\\.[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9][A-Za-z0-9_-]*)+$`),
     `${label} ids must use the form "${namespace}.<pluginName>.<name>".`
@@ -172,6 +173,7 @@ export const PluginPanelContributionSchema = z
   .object({
     id: PluginPanelIdSchema,
     title: NonEmptyStringSchema,
+    preferredWindowSize: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }).strict().optional(),
     commandId: PluginCommandIdSchema.optional(),
     requiredPermissions: OptionalPermissionListSchema
   })
@@ -333,6 +335,87 @@ export const PluginManifestSchema = z
     });
   });
 
+/** Stable ids for sections and their nested controls, unique within a report. */
+export const PluginPanelControlIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/);
+
+export type PluginPanelPayload = null | boolean | number | string | PluginPanelPayload[] | { [key: string]: PluginPanelPayload };
+
+/** Check before serialization: JSON.stringify alone silently drops unsupported values and invokes
+ * getters/toJSON. Bound traversal as well as the serialized size, including for cyclic inputs. */
+function isPanelPayload(value: unknown): value is PluginPanelPayload {
+  const ancestors = new Set<object>();
+  const stack: { value: unknown; exit?: boolean }[] = [{ value }];
+  let visited = 0;
+  while (stack.length) {
+    const frame = stack.pop()!;
+    if (frame.exit) { ancestors.delete(frame.value as object); continue; }
+    if (++visited > 4000) return false;
+    const entry = frame.value;
+    if (entry === null || typeof entry === "string" || typeof entry === "boolean") continue;
+    if (typeof entry === "number") { if (!Number.isFinite(entry)) return false; continue; }
+    if (typeof entry !== "object" || ancestors.has(entry)) return false;
+    const array = Array.isArray(entry);
+    if (array && Object.getPrototypeOf(entry) !== Array.prototype) return false;
+    if (!array && Object.getPrototypeOf(entry) !== Object.prototype && Object.getPrototypeOf(entry) !== null) return false;
+    const keys = Reflect.ownKeys(entry);
+    if (array && keys.length !== entry.length + 1) return false; // sparse arrays or extra properties
+    ancestors.add(entry);
+    stack.push({ value: entry, exit: true });
+    for (const key of keys) {
+      if (array && key === "length") continue;
+      if (typeof key !== "string" || PROTOTYPE_POLLUTION_KEYS.has(key)) return false;
+      if (array && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= entry.length)) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(entry, key)!;
+      if (!("value" in descriptor) || !descriptor.enumerable) return false;
+      stack.push({ value: descriptor.value });
+    }
+    if (stack.length > 8000) return false;
+  }
+  try { return JSON.stringify(value).length <= 4000; } catch { return false; }
+}
+
+export const PluginPanelPayloadSchema = z.custom<PluginPanelPayload>(isPanelPayload,
+  "Panel payload must be JSON-serialisable, at most 4000 characters, and contain no prototype-polluting keys.");
+
+export const PluginPanelPromptSectionSchema = z.object({
+  kind: z.literal("prompt"),
+  id: PluginPanelControlIdSchema,
+  title: NonEmptyStringSchema.optional(),
+  commandId: PluginCommandIdSchema,
+  label: z.string().optional(),
+  placeholder: z.string().optional(),
+  submitLabel: NonEmptyStringSchema.default("Send"),
+  maxLength: z.number().int().min(1).max(20000).default(4000),
+  rows: z.number().int().min(1).max(12).default(3),
+  disabled: z.boolean().default(false),
+  hint: z.string().optional(),
+  select: z.object({
+    id: PluginPanelControlIdSchema,
+    label: NonEmptyStringSchema,
+    value: z.string().max(100),
+    options: z.array(z.object({ value: z.string().max(100), label: NonEmptyStringSchema }).strict()).min(1).max(20),
+    commandId: PluginCommandIdSchema.optional()
+  }).strict().optional()
+}).strict();
+
+export const PluginCommandInputSchema = z.object({
+  source: z.enum(["panel", "overlay"]),
+  panelId: PluginPanelIdSchema.optional(),
+  overlayId: namespacedContributionIdSchema("overlay", "Plugin overlay").optional(),
+  sectionId: PluginPanelControlIdSchema,
+  control: z.enum(["prompt", "select", "button"]),
+  controlId: PluginPanelControlIdSchema.optional(),
+  text: z.string().max(20000).optional(),
+  selected: z.string().max(100).optional(),
+  payload: PluginPanelPayloadSchema.optional()
+}).strict().superRefine((input, ctx) => {
+  const id = input.source === "panel" ? "panelId" : "overlayId";
+  const otherId = input.source === "panel" ? "overlayId" : "panelId";
+  if (!input[id]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [id], message: `${id} is required for ${input.source} input.` });
+  if (input[otherId] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [otherId], message: `${otherId} does not match input source.` });
+});
+export type PluginCommandInput = z.infer<typeof PluginCommandInputSchema>;
+
 /** Declarative panel content: plugins describe results as data (never framework
  *  components), and the host renders them with core UI. Static spectra travel as SVG
  *  strings rendered in an <img> context so scripts can never execute. The `linkedFigure`
@@ -340,6 +423,29 @@ export const PluginManifestSchema = z
  *  geometry) and the trusted core renders an interactive, zoomable figure with hover
  *  cross-highlighting — no plugin-supplied script or components (ADR-0015). */
 export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
+  PluginPanelPromptSectionSchema,
+  z.object({
+    kind: z.literal("actions"),
+    id: PluginPanelControlIdSchema,
+    title: NonEmptyStringSchema.optional(),
+    buttons: z.array(z.object({
+      id: PluginPanelControlIdSchema,
+      label: NonEmptyStringSchema,
+      commandId: PluginCommandIdSchema,
+      payload: PluginPanelPayloadSchema.optional(),
+      disabled: z.boolean().default(false),
+      tone: z.enum(["default", "primary", "danger"]).default("default")
+    }).strict()).min(1).max(8)
+  }).strict(),
+  z.object({
+    kind: z.literal("image"),
+    title: NonEmptyStringSchema.optional(),
+    dataUri: z.string().max(1024 * 1024).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$(?![\s\S])/)
+      .refine(uri => (uri.length - uri.indexOf(",") - 1) % 4 === 0, "Image data must contain complete base64 groups."),
+    alt: z.string(),
+    caption: z.string().optional(),
+    maxWidthPx: z.number().int().positive().optional()
+  }).strict(),
   z
     .object({
       kind: z.literal("text"),
@@ -501,7 +607,21 @@ export const PluginPanelReportSchema = z
      */
     rerunCommandId: NonEmptyStringSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((report, ctx) => {
+    const ids = new Set<string>();
+    const add = (id: string, path: (string | number)[]) => {
+      if (ids.has(id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `Duplicate panel control id "${id}".` });
+      ids.add(id);
+    };
+    report.sections.forEach((section, index) => {
+      if (section.kind === "prompt" || section.kind === "actions") {
+        add(section.id, ["sections", index, "id"]);
+        if (section.kind === "prompt" && section.select) add(section.select.id, ["sections", index, "select", "id"]);
+        if (section.kind === "actions") section.buttons.forEach((button, b) => add(button.id, ["sections", index, "buttons", b, "id"]));
+      }
+    });
+  });
 
 export type PluginPanelSection = z.infer<typeof PluginPanelSectionSchema>;
 export type PluginPanelReport = z.infer<typeof PluginPanelReportSchema>;
@@ -1406,6 +1526,8 @@ export interface PluginRuntimeIdentity {
 }
 
 export interface PluginCommandContext {
+  /** Validated input from a host-rendered panel or canvas control. */
+  input?: PluginCommandInput;
   plugin: PluginRuntimeIdentity;
   documents: PluginDocumentAPI;
   storage?: PluginStorage;

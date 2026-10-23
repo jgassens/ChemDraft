@@ -16,6 +16,7 @@ import type {
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
   PluginCommandContext,
+  PluginCommandInput,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -204,7 +205,7 @@ export interface DesktopPluginRuntime {
    * the selection meanwhile, or this one reading it after its own patch changed the document, can
    * neither add to it nor take from it.
    */
-  invokeCommand(commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown>;
+  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
@@ -329,14 +330,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   };
   let proposingTabId: string | undefined;
   class DesktopPluginHost extends PluginHost {
-    override async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
+    override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
       const previousFrame = namingFrame;
       namingFrame = tokens;
       try {
-        const call = super.invokeCommand<Result>(commandId);
+        const call = super.invokeCommand<Result>(commandId, invokeOptions);
         namingFrame = previousFrame;
         return await call;
       } finally {
@@ -357,8 +358,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       super.unregisterPlugin(pluginId);
     }
 
-    override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
-      const context = super.createCommandContext(pluginId, invocationToken);
+    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
+      const context = super.createCommandContext(pluginId, invocationToken, input);
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
         if (invocationToken && namingFrame) {
@@ -529,7 +530,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     invokeCommand(commandId, invokeOptions = {}) {
       armedSelectionWarnings = invokeOptions.selectionWarnings;
       try {
-        return host.invokeCommand(commandId);
+        return host.invokeCommand(commandId, { input: invokeOptions.input });
       } finally {
         // Unclaimed when the command is not a plugin's or failed before its context was built.
         armedSelectionWarnings = undefined;

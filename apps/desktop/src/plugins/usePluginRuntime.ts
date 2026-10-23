@@ -1,6 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   AppliedPatchReceipt,
+  PluginCommandInput,
   PluginImageSource,
   PluginManifest,
   PluginSelectionSnapshot,
@@ -118,7 +119,7 @@ export interface PluginRuntimeView {
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   /** `selectionWarnings` collects the selection warnings of this invocation alone. */
-  invokePluginCommand: (commandId: string, options?: { selectionWarnings?: string[] }) => Promise<unknown>;
+  invokePluginCommand: (commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }) => Promise<unknown>;
   closePanel: () => void;
   submitTextPrompt: (id: number, value: string) => void;
   cancelTextPrompt: (id: number) => void;
@@ -448,7 +449,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const invokePluginCommand = useCallback(
-    (commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown> =>
+    (commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown> =>
       runtime.invokeCommand(commandId, options),
     [runtime]
   );

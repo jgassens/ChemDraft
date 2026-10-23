@@ -14,6 +14,7 @@ import type {
   PluginAnalyzerContribution,
   PluginChemistryAPI,
   PluginCommandContext,
+  PluginCommandInput,
   PluginCommandContribution,
   PluginCommandHandler,
   PluginDialogsAPI,
@@ -78,6 +79,7 @@ import {
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginCommandInputSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
   PluginStructureFromSmilesRequestSchema,
@@ -108,6 +110,7 @@ export interface CommandDefinition {
 }
 
 export interface CommandInvocationContext {
+  input?: PluginCommandInput;
   pluginId?: string;
   permissions?: ReadonlySet<PluginPermission>;
   /** Host-supplied selection captured at Send, instead of reading the live selection. */
@@ -517,13 +520,14 @@ export class PluginHost {
 
   async invokeCommand<Result = unknown>(
     commandId: string,
-    options: { writeSelection?: PluginSelectionSnapshot } = {}
+    options: { writeSelection?: PluginSelectionSnapshot; input?: PluginCommandInput } = {}
   ): Promise<Result> {
     const definition = this.commands.get(commandId);
     if (!definition) {
       throw new CommandRegistryError(`Command "${commandId}" is not registered.`);
     }
 
+    const input = this.parseCommandInput(definition.pluginId, options.input);
     if (!definition.pluginId) {
       return await this.commands.invoke<Result>(commandId);
     }
@@ -532,6 +536,7 @@ export class PluginHost {
     return await this.commands.invoke<Result>(commandId, {
       pluginId: definition.pluginId,
       permissions: plugin.permissions,
+      input,
       writeSelection: options.writeSelection
     });
   }
@@ -602,7 +607,20 @@ export class PluginHost {
     }
   }
 
-  createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
+  private parseCommandInput(pluginId: string | undefined, raw: PluginCommandInput | undefined): PluginCommandInput | undefined {
+    if (raw === undefined) return undefined;
+    const input = PluginCommandInputSchema.parse(raw);
+    if (!pluginId) throw new PluginHostError("Panel input can invoke only a plugin's own command.");
+    if (input.source === "overlay") throw new PluginHostError("Canvas overlay input is not supported by this host.");
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    if (!plugin.manifest.contributes.panels.some(panel => panel.id === input.panelId)) {
+      throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${input.panelId}".`);
+    }
+    // Preserve the submitted values across asynchronous selection capture and in-process handlers.
+    return deepFreeze(structuredClone(input));
+  }
+
+  createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const assistantCall = <K extends keyof PluginAssistantAPI>(method: K, args: Parameters<PluginAssistantAPI[K]>): ReturnType<PluginAssistantAPI[K]> => {
       for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
@@ -640,6 +658,20 @@ export class PluginHost {
                 throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
               }
               const parsedReport = PluginPanelReportSchema.parse(report);
+              const requireOwnCommand = (commandId: string) => {
+                if (!plugin.manifest.contributes.commands.some(command => command.id === commandId)
+                    || this.commands.get(commandId)?.pluginId !== pluginId) {
+                  throw new PluginHostError(`Panel controls must use this plugin's own commands: "${commandId}" is not owned by "${pluginId}".`);
+                }
+              };
+              for (const section of parsedReport.sections) {
+                if (section.kind === "prompt") {
+                  requireOwnCommand(section.commandId);
+                  if (section.select?.commandId) requireOwnCommand(section.select.commandId);
+                } else if (section.kind === "actions") {
+                  section.buttons.forEach(button => requireOwnCommand(button.commandId));
+                }
+              }
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
             }
           }
@@ -764,6 +796,7 @@ export class PluginHost {
       : undefined;
 
     return {
+      ...(input === undefined ? {} : { input }),
       plugin: {
         id: plugin.manifest.id,
         name: plugin.manifest.name,
@@ -1060,6 +1093,7 @@ export class PluginHost {
               this.requirePermission(manifest.id, permission);
             }
 
+            const input = this.parseCommandInput(manifest.id, invocationContext.input);
             const invocationToken = Symbol(command.id);
             const documentKey = this.getActiveDocumentKey?.();
             // Snapshot ids only: the plugin-visible selection provider may build molfiles and
@@ -1080,7 +1114,7 @@ export class PluginHost {
               recognizedImages: []
             });
             try {
-              return await handler(this.createCommandContext(manifest.id, invocationToken));
+              return await handler(this.createCommandContext(manifest.id, invocationToken, input));
             } finally {
               this.finishCommandInvocation(invocationToken);
             }
