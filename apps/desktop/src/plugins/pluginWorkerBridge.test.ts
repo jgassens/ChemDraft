@@ -17,6 +17,7 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginExternalToolStatus,
   type PluginCommandHandler,
   type PluginManifest,
   type PluginPanelReport,
@@ -904,5 +905,42 @@ describe("recognition.recognizeStructure survives the worker boundary", () => {
       expect.any(AbortSignal)
     );
     bridge.terminate();
+  });
+});
+
+describe("tools survive the worker boundary", () => {
+  it("round-trips every external-tools method and omits it without assistant.run", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.tools-worker", name: "Worker Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run", "native.execute"], contributes: { commands: [{ id: "plugin.toolsWorker.run", title: "Run" }] }
+    });
+    const statuses = import.meta.glob("../externalTools/__fixtures__/wire/status-installed-managed.json", { eager: true, import: "default" });
+    const status = Object.values(statuses)[0]! as PluginExternalToolStatus;
+    const externalTools = {
+      status: vi.fn(async () => status), install: vi.fn(async () => status),
+      signIn: vi.fn(async () => ({ launched: true, method: "terminal.command" as const })),
+      run: vi.fn(async () => ({ runId: "run", pid: 1, cwd: "/tmp", startedAt: status.probedAt })),
+      poll: vi.fn(async () => ({ lines: [], nextCursor: 0, droppedLines: 0, status: { state: "running" as const } })),
+      cancel: vi.fn(async () => undefined), clearConversation: vi.fn(async () => undefined), cancelAllForPlugin: vi.fn()
+    };
+    const registration: PluginWorkerRegistration = { manifest, commandHandlers: { "plugin.toolsWorker.run": async (context) => {
+      await context.tools!.status({ tool: "codex" }); await context.tools!.install({ tool: "codex" });
+      await context.tools!.signIn({ tool: "codex" });
+      await context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s", mcpSessionId: "mcp" });
+      await context.tools!.poll({ runId: "run", cursor: 0 }); await context.tools!.cancel({ runId: "run" });
+      await context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" });
+    } } };
+    const host = new PluginHost({ externalTools });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    await host.invokeCommand("plugin.toolsWorker.run");
+    for (const method of [externalTools.status, externalTools.install, externalTools.signIn, externalTools.run, externalTools.poll, externalTools.cancel, externalTools.clearConversation]) expect(method).toHaveBeenCalledOnce();
+    bridge.terminate();
+
+    const denied = parsePluginManifest({ ...manifest, id: "org.test.no-tools-worker", permissions: [], contributes: { commands: [{ id: "plugin.noToolsWorker.run", title: "Run" }] } });
+    const deniedBridge = startWorkerRoutedPlugin({ manifest: denied, commandHandlers: { "plugin.noToolsWorker.run": (context) => typeof context.tools } });
+    host.registerPlugin(denied, delegatingOptions(denied, deniedBridge));
+    await expect(host.invokeCommand("plugin.noToolsWorker.run")).resolves.toBe("undefined");
+    deniedBridge.terminate();
   });
 });

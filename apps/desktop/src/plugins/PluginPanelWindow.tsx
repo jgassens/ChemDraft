@@ -7,6 +7,7 @@ import {
   hideCurrentPanelWindow,
   listenForAnalysisWindowSnapshots,
   listenForPluginPanelReports,
+  listenForPluginPanelReportCleared,
   listenForPluginPanelStaleness,
   notifyPluginPanelClosed,
   parsePluginPanelWindowId,
@@ -55,6 +56,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   const [payload, setPayload] = useState<PluginPanelReportPayload | undefined>();
   const [analysisPayload, setAnalysisPayload] = useState<AnalysisWindowSnapshotPayload | undefined>();
   const [staleness, setStaleness] = useState<{ revision: number; stale: boolean } | undefined>();
+  const clearedRevisionRef = useRef(0);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -70,10 +72,17 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       return;
     }
     let disposed = false;
+    const unlistenCleared = listenForPluginPanelReportCleared((next) => {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) return;
+      clearedRevisionRef.current = Math.max(clearedRevisionRef.current, next.revision);
+      setPayload((current) => current && current.revision > next.revision ? current : undefined);
+      setStaleness((current) => current && current.revision > next.revision ? current : undefined);
+    });
     const unlistenReports = listenForPluginPanelReports((next) => {
       if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
         return;
       }
+      if (next.revision <= clearedRevisionRef.current) return;
       setPayload((current) => (current && current.revision >= next.revision ? current : next));
     });
     const unlistenAnalysis = listenForAnalysisWindowSnapshots((next) => {
@@ -94,7 +103,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     // MainWindow caches the latest content before opening the window. Its first broadcast can
     // precede this page, so announce readiness only after ALL native content subscriptions attach.
     // The helpers' synchronous return owns cleanup, not readiness. Focus registration is separate.
-    void Promise.all([unlistenReports.ready, unlistenAnalysis.ready, unlistenStaleness.ready])
+    void Promise.all([unlistenReports.ready, unlistenAnalysis.ready, unlistenStaleness.ready, unlistenCleared.ready])
       .then(() => {
         if (!disposed) return requestPluginPanelReport(identity);
       })
@@ -103,6 +112,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     return () => {
       disposed = true;
       unlistenReports();
+      unlistenCleared();
       unlistenAnalysis();
       unlistenStaleness();
     };

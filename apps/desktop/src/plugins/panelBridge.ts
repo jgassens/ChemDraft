@@ -6,6 +6,7 @@ import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
+export const PLUGIN_PANEL_REPORT_CLEARED_EVENT = "chemdraft://plugin-panel-report-cleared";
 export const PLUGIN_PANEL_REQUEST_EVENT = "chemdraft://plugin-panel-request";
 export const PLUGIN_PANEL_STALENESS_EVENT = "chemdraft://plugin-panel-staleness";
 export const PLUGIN_PANEL_RERUN_EVENT = "chemdraft://plugin-panel-rerun";
@@ -42,6 +43,32 @@ export interface PluginPanelReportPayload extends PluginPanelIdentity {
   /** The command "Run again" re-invokes (report.rerunCommandId ?? the panel's default command).
    *  Display-only in the window: the main window re-resolves it before dispatching. */
   commandId?: string;
+}
+
+/** A revision tombstone also invalidates late reports already in transit to a hidden webview. */
+export interface PluginPanelReportClearedPayload extends PluginPanelIdentity {
+  revision: number;
+}
+
+export async function broadcastPluginPanelReportCleared(payload: PluginPanelReportClearedPayload): Promise<void> {
+  window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_REPORT_CLEARED_EVENT, { detail: payload }));
+  if (isDesktopRuntime()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(PLUGIN_PANEL_REPORT_CLEARED_EVENT, payload);
+  }
+}
+
+export function listenForPluginPanelReportCleared(
+  handler: (payload: PluginPanelReportClearedPayload) => void
+): PanelBridgeListener {
+  const validate = (payload: unknown): payload is PluginPanelReportClearedPayload =>
+    isPanelIdentity(payload) && typeof (payload as Partial<PluginPanelReportClearedPayload>).revision === "number";
+  const domListener = (event: Event) => {
+    const payload = (event as CustomEvent<unknown>).detail;
+    if (validate(payload)) handler(payload);
+  };
+  window.addEventListener(PLUGIN_PANEL_REPORT_CLEARED_EVENT, domListener);
+  return attachTauriListener(PLUGIN_PANEL_REPORT_CLEARED_EVENT, domListener, validate, handler);
 }
 
 /** D-09 pushed to a detached window: whether `revision`'s report still matches the live document. */

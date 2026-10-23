@@ -20,6 +20,7 @@ import {
   PLUGIN_DIAGNOSTICS_WINDOW_ID,
   VALIDATION_RESULT_WINDOW_ID,
   broadcastPluginPanelReport,
+  broadcastPluginPanelReportCleared,
   broadcastPluginPanelStaleness,
   broadcastAnalysisWindowSnapshot,
   listenForPluginPanelReruns,
@@ -174,6 +175,25 @@ const INSPECTOR_REPORT: AnalysisReport = {
 };
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  it("forgets a hidden webview's report and rejects late replay after its owner is unregistered", async () => {
+    await mountWindow();
+    await broadcast(reportPayload());
+    expect(container!.textContent).toContain("Analysis Result");
+    await act(async () => {
+      await broadcastPluginPanelReportCleared({ pluginId: PLUGIN_ID, panelId: PANEL_ID, revision: 2 });
+    });
+    expect(container!.textContent).not.toContain("Analysis Result");
+    await broadcast(reportPayload());
+    expect(container!.textContent).toContain("Waiting for plugin content");
+    await broadcast(reportPayload({ revision: 3 }));
+    expect(container!.textContent).toContain("Analysis Result");
+    // An out-of-order clear cannot erase a newer report.
+    await act(async () => {
+      await broadcastPluginPanelReportCleared({ pluginId: PLUGIN_ID, panelId: PANEL_ID, revision: 2 });
+    });
+    expect(container!.textContent).toContain("Analysis Result");
+  });
+
   const contentEvents = [
     PLUGIN_PANEL_REPORT_EVENT,
     ANALYSIS_WINDOW_SNAPSHOT_EVENT,

@@ -4,12 +4,10 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::network_error::{self, download_tls_policy, DownloadPlatform};
 use flate2::read::GzDecoder;
-use sha2::{Digest, Sha256};
 
 use super::file_ops::{self, FileOps};
 use super::pins;
@@ -144,11 +142,7 @@ pub trait InstallIo: Send + Sync {
 
 pub struct SystemInstallIo<S: EngineSpec> {
     spec: std::marker::PhantomData<S>,
-    client: Option<reqwest::blocking::Client>,
-    // The blocking client executes redirects on its runtime thread. Serialize sends so its
-    // diagnostic observer cannot mix destinations from concurrent downloads on this client.
-    request_gate: Mutex<()>,
-    redirect_url: Arc<Mutex<Option<reqwest::Url>>>,
+    client: Option<super::download::DownloadClient>,
     pub(crate) running: Arc<RunningChild>,
 }
 
@@ -158,14 +152,15 @@ impl<S: EngineSpec> SystemInstallIo<S> {
         Self {
             spec: std::marker::PhantomData,
             client: None,
-            request_gate: Mutex::new(()),
-            redirect_url: Arc::default(),
             running,
         }
     }
 
     pub fn new(running: Arc<RunningChild>) -> Result<Self, InstallError> {
         let mut io = Self::from_builder(reqwest::blocking::Client::builder())?;
+        if let Some(client) = &mut io.client {
+            client.running = Some(Arc::clone(&running));
+        }
         io.running = running;
         Ok(io)
     }
@@ -173,38 +168,14 @@ impl<S: EngineSpec> SystemInstallIo<S> {
     pub(crate) fn from_builder(
         builder: reqwest::blocking::ClientBuilder,
     ) -> Result<Self, InstallError> {
-        // The blocking client applies `timeout` to each wait (the request, then every body read),
-        // not to the whole transfer, so this is a stall timeout: a 1.1 GB model on a slow link
-        // still completes, while a dead connection fails — and a cancel is noticed — within a
-        // minute.
-        let policy = download_tls_policy(DownloadPlatform::current());
-        let redirect_url = Arc::new(Mutex::new(None));
-        let observed_url = Arc::clone(&redirect_url);
-        let client = builder
-            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-                // Observe the proposed HTTP destination, delegating ALL redirect decisions to
-                // the default policy. Policy errors keep their own URL below. reqwest 0.12.28
-                // otherwise attaches the INITIAL URL to redirected transport errors.
-                if matches!(attempt.url().scheme(), "http" | "https") {
-                    *observed_url.lock().unwrap() = Some(attempt.url().clone());
-                }
-                reqwest::redirect::Policy::default().redirect(attempt)
-            }))
-            .tls_built_in_webpki_certs(policy.webpki_roots)
-            .tls_built_in_native_certs(policy.native_roots)
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(60))
-            .user_agent(S::USER_AGENT)
-            .build()
-            .map_err(|error| {
-                InstallError::network(network_error::download_error_message(&error))
-            })?;
+        let running = Arc::default();
         Ok(Self {
             spec: std::marker::PhantomData,
-            client: Some(client),
-            request_gate: Mutex::new(()),
-            redirect_url,
-            running: Arc::default(),
+            client: Some(
+                super::download::DownloadClient::from_builder(builder, S::USER_AGENT, None)?
+                    .for_engine::<S>(Arc::clone(&running)),
+            ),
+            running,
         })
     }
 }
@@ -310,9 +281,6 @@ fn stderr_error_summary(tail: &str) -> Option<String> {
     (!lines.is_empty()).then(|| lines.into_iter().rev().collect::<Vec<_>>().join(" "))
 }
 
-/// Bytes between progress events, so a 1.1 GB download sends ~1,000 events rather than ~9,000.
-const PROGRESS_STRIDE_BYTES: u64 = 1024 * 1024;
-
 impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
     fn running_child(&self) -> Option<&RunningChild> {
         Some(&self.running)
@@ -326,95 +294,22 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
         progress: &dyn ProgressReporter,
     ) -> Result<(), InstallError> {
         check_cancel::<S>(cancel)?;
-        let request_guard = self.request_gate.lock().unwrap();
-        *self.redirect_url.lock().unwrap() = None;
-        let mut response = self
-            .client
-            .as_ref()
-            .ok_or_else(|| InstallError::network("Downloads are disabled during engine recovery"))?
-            .get(spec.url)
-            .send()
-            .map_err(|mut error| {
-                // Prefer reqwest's URL, except its known initial-URL fallback after a followed
-                // redirect. Keep redirect-policy errors' own URLs and status errors unchanged.
-                if !error.is_redirect() && error.url().is_none_or(|url| url.as_str() == spec.url) {
-                    if let Some(url) = self.redirect_url.lock().unwrap().take() {
-                        error = error.with_url(url);
-                    }
-                }
-                let fallback_host = reqwest::Url::parse(spec.url).ok();
-                InstallError::network(network_error::log_failure(network_error::classify_error(
-                    &error,
-                    error
-                        .url()
-                        .and_then(|url| url.host_str())
-                        .or_else(|| fallback_host.as_ref().and_then(|url| url.host_str()))
-                        .unwrap_or("download server"),
-                )))
-            })?;
-        *self.redirect_url.lock().unwrap() = None;
-        drop(request_guard);
-        response = response.error_for_status().map_err(|error| {
-            InstallError::network(network_error::download_error_message(&error))
+        let client = self.client.as_ref().ok_or_else(|| {
+            InstallError::network("Downloads are disabled during engine recovery")
         })?;
-        if let (Some(expected), Some(reported)) = (spec.size, response.content_length()) {
-            if expected != reported {
-                return Err(InstallError::checksum(format!(
-                    "{} reported {reported} bytes; expected {expected}.",
-                    network_error::redact_url(spec.url)
-                )));
-            }
-        }
-        let total = spec.size.or_else(|| response.content_length());
-        let download_host = response
-            .url()
-            .host_str()
-            .unwrap_or("download server")
-            .to_owned();
-        let ops = FileOps::new::<S>(Some(cancel)).with_running(self.running_child());
-        let mut file = ops.create(destination).map_err(file_ops::failed::<S>)?;
-        let mut digest = Sha256::new();
-        let mut done = 0_u64;
-        let mut reported = 0_u64;
-        let mut buffer = vec![0_u8; 128 * 1024];
-        loop {
-            check_cancel::<S>(cancel)?;
-            let read = response.read(&mut buffer).map_err(|error| {
-                InstallError::network(network_error::log_failure(network_error::classify_error(
-                    &error,
-                    &download_host,
-                )))
-            })?;
-            if read == 0 {
-                break;
-            }
-            ops.write_all(&mut file, destination, &buffer[..read])
-                .map_err(file_ops::failed::<S>)?;
-            digest.update(&buffer[..read]);
-            done += read as u64;
-            if spec.size.is_some_and(|expected| done > expected) {
-                return Err(InstallError::checksum(format!(
-                    "{} sent more than the pinned {} bytes.",
-                    network_error::redact_url(spec.url),
-                    spec.size.unwrap_or_default()
-                )));
-            }
-            if done - reported >= PROGRESS_STRIDE_BYTES {
-                reported = done;
-                progress.report(download_progress(spec.phase, done, total));
-            }
-        }
-        progress.report(download_progress(spec.phase, done, total));
-        ops.sync(&file, destination)
-            .map_err(file_ops::failed::<S>)?;
-        let actual = format!("{:x}", digest.finalize());
-        pins::verify_digest(done, &actual, spec.size, spec.sha256).map_err(|detail| {
-            InstallError::checksum(format!(
-                "Verification failed for {}: {detail}.",
-                network_error::redact_url(spec.url)
-            ))
-        })?;
-        Ok(())
+        super::download::download_verified(
+            client,
+            spec.url,
+            spec.size,
+            spec.sha256,
+            destination,
+            cancel,
+            |done, total| progress.report(download_progress(spec.phase, done, total)),
+        )
+        .map_err(|error| match error.code {
+            super::InstallErrorCode::Cancelled => S::cancelled(),
+            _ => error,
+        })
     }
 
     fn extract_uv(
@@ -435,9 +330,9 @@ impl<S: EngineSpec> InstallIo for SystemInstallIo<S> {
     ) -> Result<(), InstallError> {
         let ops = FileOps::new::<S>(Some(cancel)).with_running(self.running_child());
         if platform.uv_asset().ends_with(".zip") {
-            extract_uv_zip_with_ops::<S>(archive, destination, ops)
+            extract_single_entry_with_ops(archive, ArchiveKind::Zip, "uv.exe", destination, ops)
         } else {
-            extract_uv_tar_gz_with_ops::<S>(archive, destination, ops)
+            extract_single_entry_with_ops(archive, ArchiveKind::TarGz, "uv", destination, ops)
         }
     }
 
@@ -1733,16 +1628,44 @@ pub(crate) fn message(phase: InstallPhase, message: &str) -> InstallProgress {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ArchiveKind {
+    TarGz,
+    Zip,
+    ZipTree,
+}
+
+pub(crate) fn extract_single_entry_with_ops(
+    archive: &Path,
+    kind: ArchiveKind,
+    entry_name: &str,
+    destination: &Path,
+    ops: FileOps<'_>,
+) -> Result<(), InstallError> {
+    match kind {
+        ArchiveKind::TarGz => extract_tar_gz_with_ops(archive, entry_name, destination, ops),
+        ArchiveKind::Zip => extract_zip_with_ops(archive, entry_name, destination, ops, false),
+        ArchiveKind::ZipTree => extract_zip_with_ops(archive, entry_name, destination, ops, true),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn extract_uv_tar_gz<S: EngineSpec>(
     archive: &Path,
     destination: &Path,
 ) -> Result<(), InstallError> {
-    extract_uv_tar_gz_with_ops::<S>(archive, destination, FileOps::new::<S>(None))
+    extract_single_entry_with_ops(
+        archive,
+        ArchiveKind::TarGz,
+        "uv",
+        destination,
+        FileOps::new::<S>(None),
+    )
 }
 
-fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
+fn extract_tar_gz_with_ops(
     archive: &Path,
+    entry_name: &str,
     destination: &Path,
     ops: FileOps<'_>,
 ) -> Result<(), InstallError> {
@@ -1751,7 +1674,7 @@ fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
         .run(format!("open archive {}", archive.display()), || {
             File::open(archive)
         })
-        .map_err(file_ops::failed::<S>)?;
+        .map_err(|error| ops.failed(error))?;
     let mut archive = GzDecoder::new(file);
     loop {
         let mut header = [0_u8; 512];
@@ -1759,7 +1682,7 @@ fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(error) => {
-                return Err(file_ops::failed::<S>(io::Error::new(
+                return Err(ops.failed(io::Error::new(
                     error.kind(),
                     format!("could not read archive {}: {error}", archive_path.display()),
                 )))
@@ -1775,8 +1698,8 @@ fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
             .unwrap_or(100);
         let name = String::from_utf8_lossy(&header[..name_end]);
         let is_regular = matches!(header[156], 0 | b'0');
-        if Path::new(name.as_ref()).file_name() == Some(OsStr::new("uv")) && is_regular {
-            let mut output = ops.create(destination).map_err(file_ops::failed::<S>)?;
+        if Path::new(name.as_ref()).file_name() == Some(OsStr::new(entry_name)) && is_regular {
+            let mut output = ops.create(destination).map_err(|error| ops.failed(error))?;
             let copied = ops
                 .copy(
                     &mut Read::by_ref(&mut archive).take(size),
@@ -1784,15 +1707,15 @@ fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
                     &mut output,
                     destination,
                 )
-                .map_err(file_ops::failed::<S>)?;
+                .map_err(|error| ops.failed(error))?;
             if copied != size {
                 return Err(InstallError::failed(
                     "The uv tar archive ended inside the executable.".to_string(),
                 ));
             }
             ops.sync(&output, destination)
-                .map_err(file_ops::failed::<S>)?;
-            make_executable::<S>(destination, ops)?;
+                .map_err(|error| ops.failed(error))?;
+            make_executable_with_ops(destination, ops)?;
             return Ok(());
         }
         let padded = size.saturating_add(511) / 512 * 512;
@@ -1801,7 +1724,7 @@ fn extract_uv_tar_gz_with_ops<S: EngineSpec>(
             &mut io::sink(),
         )
         .map_err(|error| {
-            file_ops::failed::<S>(io::Error::new(
+            ops.failed(io::Error::new(
                 error.kind(),
                 format!("could not read archive {}: {error}", archive_path.display()),
             ))
@@ -1822,38 +1745,49 @@ pub(crate) fn extract_uv_zip<S: EngineSpec>(
     archive: &Path,
     destination: &Path,
 ) -> Result<(), InstallError> {
-    extract_uv_zip_with_ops::<S>(archive, destination, FileOps::new::<S>(None))
+    extract_single_entry_with_ops(
+        archive,
+        ArchiveKind::Zip,
+        "uv.exe",
+        destination,
+        FileOps::new::<S>(None),
+    )
 }
 
-fn extract_uv_zip_with_ops<S: EngineSpec>(
+fn extract_zip_with_ops(
     archive: &Path,
+    entry_name: &str,
     destination: &Path,
     ops: FileOps<'_>,
+    tree: bool,
 ) -> Result<(), InstallError> {
     let bytes = ops
         .run(format!("read archive {}", archive.display()), || {
             fs::read(archive)
         })
-        .map_err(file_ops::failed::<S>)?;
-    let eocd = bytes
-        .windows(4)
-        .rposition(|window| window == b"PK\x05\x06")
-        .ok_or_else(|| InstallError::failed("The uv zip has no central directory."))?;
-    let entries = zip_u16::<S>(&bytes, eocd + 10)? as usize;
-    let mut cursor = zip_u32::<S>(&bytes, eocd + 16)? as usize;
+        .map_err(|error| ops.failed(error))?;
+    let (entries, mut cursor) = zip_directory(&bytes)?;
+    if entries > 500 {
+        return Err(InstallError::failed("ZIP contains more than 500 entries."));
+    }
+    let mut total = 0_u64;
+    let mut found = false;
+    let mut paths = std::collections::HashSet::new();
     for _ in 0..entries {
-        if bytes.get(cursor..cursor + 4) != Some(b"PK\x01\x02") {
+        if cursor > bytes.len().saturating_sub(46)
+            || bytes.get(cursor..cursor + 4) != Some(b"PK\x01\x02")
+        {
             return Err(InstallError::failed(
                 "The uv zip central directory is malformed.".to_string(),
             ));
         }
-        let method = zip_u16::<S>(&bytes, cursor + 10)?;
-        let compressed_size = zip_u32::<S>(&bytes, cursor + 20)? as usize;
-        let uncompressed_size = zip_u32::<S>(&bytes, cursor + 24)? as usize;
-        let name_len = zip_u16::<S>(&bytes, cursor + 28)? as usize;
-        let extra_len = zip_u16::<S>(&bytes, cursor + 30)? as usize;
-        let comment_len = zip_u16::<S>(&bytes, cursor + 32)? as usize;
-        let local_offset = zip_u32::<S>(&bytes, cursor + 42)? as usize;
+        let method = zip_u16(&bytes, cursor + 10)?;
+        let compressed_size = zip_u32(&bytes, cursor + 20)? as usize;
+        let uncompressed_size = zip_u32(&bytes, cursor + 24)? as usize;
+        let name_len = zip_u16(&bytes, cursor + 28)? as usize;
+        let extra_len = zip_u16(&bytes, cursor + 30)? as usize;
+        let comment_len = zip_u16(&bytes, cursor + 32)? as usize;
+        let local_offset = zip_u32(&bytes, cursor + 42)? as usize;
         let name_start = cursor + 46;
         let name_end = name_start
             .checked_add(name_len)
@@ -1861,16 +1795,72 @@ fn extract_uv_zip_with_ops<S: EngineSpec>(
         let name = bytes
             .get(name_start..name_end)
             .ok_or_else(|| InstallError::failed("The uv zip filename is truncated."))?;
-        if Path::new(String::from_utf8_lossy(name).as_ref()).file_name()
-            == Some(OsStr::new("uv.exe"))
+        let name = std::str::from_utf8(name)
+            .map_err(|_| InstallError::failed("ZIP filename is not UTF-8."))?;
+        let mode = zip_u32(&bytes, cursor + 38)? >> 16;
+        if mode & 0o170000 == 0o120000 {
+            return Err(InstallError::failed("ZIP symlink entries are forbidden."));
+        }
+        if zip_u16(&bytes, cursor + 8)? & 1 != 0 {
+            return Err(InstallError::failed("Encrypted ZIP entries are forbidden."));
+        }
+        total += uncompressed_size as u64;
+        if total > 2 * 1024 * 1024 * 1024 {
+            return Err(InstallError::failed(
+                "ZIP exceeds the 2 GiB extraction limit.",
+            ));
+        }
+        let tree_path = if tree {
+            let relative = guarded_zip_path(name)?;
+            if !paths.insert(name.trim_end_matches('/').to_ascii_lowercase()) {
+                return Err(InstallError::failed("ZIP contains duplicate paths."));
+            }
+            let path = destination.join(relative);
+            ensure_zip_parents(destination, &path, ops)?;
+            if name.ends_with('/') {
+                if fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| !metadata.is_dir() || metadata.file_type().is_symlink())
+                {
+                    return Err(InstallError::failed(
+                        "ZIP directory is not a regular directory.",
+                    ));
+                }
+                if uncompressed_size != 0 {
+                    return Err(InstallError::failed("ZIP directory contains file data."));
+                }
+                ops.create_dir_all(&path)
+                    .map_err(|error| ops.failed(error))?;
+            }
+            Some(path)
+        } else {
+            None
+        };
+        if !name.ends_with('/')
+            && (tree || Path::new(name).file_name() == Some(OsStr::new(entry_name)))
         {
-            if bytes.get(local_offset..local_offset + 4) != Some(b"PK\x03\x04") {
+            let destination = tree_path.as_deref().unwrap_or(destination);
+            if tree && fs::symlink_metadata(destination).is_ok() {
+                return Err(InstallError::failed(
+                    "ZIP entry would overwrite an existing path.",
+                ));
+            }
+            if local_offset > bytes.len().saturating_sub(30)
+                || bytes.get(local_offset..local_offset + 4) != Some(b"PK\x03\x04")
+            {
                 return Err(InstallError::failed(
                     "The uv zip local entry is malformed.".to_string(),
                 ));
             }
-            let local_name = zip_u16::<S>(&bytes, local_offset + 26)? as usize;
-            let local_extra = zip_u16::<S>(&bytes, local_offset + 28)? as usize;
+            let local_name = zip_u16(&bytes, local_offset + 26)? as usize;
+            let local_extra = zip_u16(&bytes, local_offset + 28)? as usize;
+            if bytes.get(local_offset + 30..local_offset + 30 + local_name) != Some(name.as_bytes())
+                || zip_u16(&bytes, local_offset + 8)? != method
+                || zip_u16(&bytes, local_offset + 6)? & 1 != 0
+            {
+                return Err(InstallError::failed(
+                    "ZIP local header disagrees with the directory.",
+                ));
+            }
             let data_start = local_offset
                 .checked_add(30 + local_name + local_extra)
                 .ok_or_else(|| InstallError::failed("The uv zip entry offset overflowed."))?;
@@ -1880,43 +1870,131 @@ fn extract_uv_zip_with_ops<S: EngineSpec>(
             let compressed = bytes
                 .get(data_start..data_end)
                 .ok_or_else(|| InstallError::failed("The uv zip entry is truncated."))?;
-            let mut output = ops.create(destination).map_err(file_ops::failed::<S>)?;
-            let written = match method {
-                0 => ops.copy(
-                    &mut io::Cursor::new(compressed),
-                    archive,
-                    &mut output,
-                    destination,
-                ),
-                8 => ops.copy(
-                    &mut flate2::read::DeflateDecoder::new(io::Cursor::new(compressed)),
-                    archive,
-                    &mut output,
-                    destination,
-                ),
+            let mut output = ops.create(destination).map_err(|error| ops.failed(error))?;
+            let reader: Box<dyn Read> = match method {
+                0 => Box::new(io::Cursor::new(compressed)),
+                8 => Box::new(flate2::read::DeflateDecoder::new(io::Cursor::new(
+                    compressed,
+                ))),
                 other => {
                     return Err(InstallError::failed(format!(
                         "The uv zip uses unsupported compression method {other}."
                     )))
                 }
-            }
-            .map_err(file_ops::failed::<S>)?;
+            };
+            let written = ops
+                .copy(
+                    &mut reader.take(uncompressed_size as u64 + 1),
+                    archive,
+                    &mut output,
+                    destination,
+                )
+                .map_err(|error| ops.failed(error))?;
             if written != uncompressed_size as u64 {
                 return Err(InstallError::failed(format!(
                     "The uv zip produced {written} bytes; expected {uncompressed_size}."
                 )));
             }
             ops.sync(&output, destination)
-                .map_err(file_ops::failed::<S>)?;
-            return Ok(());
+                .map_err(|error| ops.failed(error))?;
+            found |= name == entry_name || !tree;
+            if !tree {
+                return Ok(());
+            }
         }
         cursor = name_end
             .checked_add(extra_len + comment_len)
             .ok_or_else(|| InstallError::failed("The uv zip directory offset overflowed."))?;
     }
-    Err(InstallError::failed(
-        "The verified uv archive did not contain uv.exe.".to_string(),
-    ))
+    if found {
+        Ok(())
+    } else {
+        Err(InstallError::failed(format!(
+            "ZIP did not contain {entry_name}."
+        )))
+    }
+}
+
+fn guarded_zip_path(name: &str) -> Result<&Path, InstallError> {
+    let path = name.trim_end_matches('/');
+    if path.is_empty()
+        || name.contains(['\\', ':', '\0'])
+        || path.split('/').any(|part| {
+            let stem = part
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            part.is_empty()
+                || part.ends_with(['.', ' '])
+                || part.chars().any(char::is_control)
+                || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || (stem.len() == 4
+                    && (stem.starts_with("COM") || stem.starts_with("LPT"))
+                    && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        })
+    {
+        return Err(InstallError::failed("Unsafe ZIP entry path."));
+    }
+    Ok(Path::new(path))
+}
+
+fn ensure_zip_parents(root: &Path, path: &Path, ops: FileOps<'_>) -> Result<(), InstallError> {
+    let mut parent = path.parent();
+    while let Some(directory) = parent {
+        if let Ok(metadata) = fs::symlink_metadata(directory) {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(InstallError::failed(
+                    "ZIP parent is not a regular directory.",
+                ));
+            }
+        }
+        if directory == root {
+            break;
+        }
+        parent = directory.parent();
+    }
+    if let Some(parent) = path.parent() {
+        ops.create_dir_all(parent)
+            .map_err(|error| ops.failed(error))?;
+    }
+    Ok(())
+}
+
+fn zip_directory(bytes: &[u8]) -> Result<(usize, usize), InstallError> {
+    let eocd = (bytes.len().saturating_sub(22 + 65535)..bytes.len().saturating_sub(21))
+        .rev()
+        .find(|&offset| {
+            bytes.get(offset..offset + 4) == Some(b"PK\x05\x06")
+                && zip_u16(bytes, offset + 20)
+                    .is_ok_and(|len| offset + 22 + len as usize == bytes.len())
+        })
+        .ok_or_else(|| InstallError::failed("ZIP has no central directory."))?;
+    let count = zip_u16(bytes, eocd + 10)?;
+    let offset = zip_u32(bytes, eocd + 16)?;
+    if count == u16::MAX || offset == u32::MAX || zip_u32(bytes, eocd + 12)? == u32::MAX {
+        if eocd < 20 || zip_u32(bytes, eocd - 20)? != 0x07064b50 {
+            return Err(InstallError::failed("ZIP64 locator is missing."));
+        }
+        let record = zip_usize64(bytes, eocd - 12)?;
+        if record > bytes.len().saturating_sub(56) || zip_u32(bytes, record)? != 0x06064b50 {
+            return Err(InstallError::failed("ZIP64 directory is malformed."));
+        }
+        return Ok((
+            zip_usize64(bytes, record + 32)?,
+            zip_usize64(bytes, record + 48)?,
+        ));
+    }
+    Ok((count as usize, offset as usize))
+}
+
+fn zip_usize64(bytes: &[u8], offset: usize) -> Result<usize, InstallError> {
+    let raw = bytes
+        .get(offset..offset.saturating_add(8))
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| InstallError::failed("ZIP64 record is truncated."))?;
+    usize::try_from(u64::from_le_bytes(raw))
+        .map_err(|_| InstallError::failed("ZIP64 value is too large."))
 }
 
 fn parse_tar_octal(bytes: &[u8]) -> Result<u64, InstallError> {
@@ -1926,7 +2004,7 @@ fn parse_tar_octal(bytes: &[u8]) -> Result<u64, InstallError> {
         .map_err(|error| InstallError::failed(format!("Invalid uv tar entry size: {error}")))
 }
 
-fn zip_u16<S: EngineSpec>(bytes: &[u8], offset: usize) -> Result<u16, InstallError> {
+fn zip_u16(bytes: &[u8], offset: usize) -> Result<u16, InstallError> {
     let raw: [u8; 2] = bytes
         .get(offset..offset + 2)
         .and_then(|slice| slice.try_into().ok())
@@ -1934,7 +2012,7 @@ fn zip_u16<S: EngineSpec>(bytes: &[u8], offset: usize) -> Result<u16, InstallErr
     Ok(u16::from_le_bytes(raw))
 }
 
-fn zip_u32<S: EngineSpec>(bytes: &[u8], offset: usize) -> Result<u32, InstallError> {
+fn zip_u32(bytes: &[u8], offset: usize) -> Result<u32, InstallError> {
     let raw: [u8; 4] = bytes
         .get(offset..offset + 4)
         .and_then(|slice| slice.try_into().ok())
@@ -1943,23 +2021,26 @@ fn zip_u32<S: EngineSpec>(bytes: &[u8], offset: usize) -> Result<u32, InstallErr
 }
 
 #[cfg(unix)]
-fn make_executable<S: EngineSpec>(path: &Path, ops: FileOps<'_>) -> Result<(), InstallError> {
+pub(crate) fn make_executable_with_ops(path: &Path, ops: FileOps<'_>) -> Result<(), InstallError> {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = ops
         .run(format!("inspect file {}", path.display()), || {
             fs::metadata(path)
         })
-        .map_err(file_ops::failed::<S>)?
+        .map_err(|error| ops.failed(error))?
         .permissions();
     permissions.set_mode(0o755);
     ops.run(format!("set permissions on {}", path.display()), || {
         fs::set_permissions(path, permissions.clone())
     })
-    .map_err(file_ops::failed::<S>)
+    .map_err(|error| ops.failed(error))
 }
 
 #[cfg(not(unix))]
-fn make_executable<S: EngineSpec>(_path: &Path, _ops: FileOps<'_>) -> Result<(), InstallError> {
+pub(crate) fn make_executable_with_ops(
+    _path: &Path,
+    _ops: FileOps<'_>,
+) -> Result<(), InstallError> {
     Ok(())
 }
 

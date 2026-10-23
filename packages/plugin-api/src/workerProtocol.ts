@@ -43,7 +43,8 @@ export type PluginWorkerCapabilityNamespace =
   | "chemistry"
   | "dialogs"
   | "images"
-  | "recognition";
+  | "recognition"
+  | "tools";
 
 /**
  * The methods each namespace exposes. The host bridge validates an incoming request against this map
@@ -73,7 +74,8 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
   dialogs: ["promptText"],
   images: ["requestImage"],
-  recognition: ["recognizeStructure"]
+  recognition: ["recognizeStructure"],
+  tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
 /**

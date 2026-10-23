@@ -7,5 +7,8 @@ This package validates trusted manifests, registers command-backed plugin contri
 API 0.1.6 also gates local structure recognition on `image.read`, `ml.inference`, `model.load`, and
 `native.execute`, and accepts only bytes the host handed to that same command invocation.
 
+API 0.1.8 gates `tools` on both `assistant.run` and `native.execute`, including a permission check
+on every method call. Manifests declaring `assistant.run` without `native.execute` are refused.
+
 Registration is transactional across the shared command registry: all command ids are preflighted,
 partial registration is rolled back, and uninstall removes only commands still owned by that plugin.

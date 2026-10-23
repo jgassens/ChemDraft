@@ -39,6 +39,8 @@ import {
 } from "./structureRecognitionEngine";
 import { preparePluginStructureRecognition, type RecognitionStructureValidator } from "./pluginStructureRecognition";
 import { isTauriHost } from "./pluginStagingFs";
+import { ExternalToolsController } from "../externalTools/ExternalToolsController";
+import { TauriExternalToolsEngine, UnsupportedExternalToolsEngine, type ExternalToolsEngine } from "../externalTools/externalToolsEngine";
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
@@ -113,6 +115,8 @@ export interface DesktopPluginRuntimeOptions {
   /** Local OCSR engine port; injectable for tests and future platform engines. */
   structureRecognitionEngine?: StructureRecognitionEngine;
   structureNamingEngine?: StructureNamingEngine;
+  /** Native external-tools boundary; injectable so runtime tests do not require Tauri IPC. */
+  externalToolsEngine?: ExternalToolsEngine;
   namingCanonicalizer?: NamingCanonicalizer;
   /** Chemistry validation seam used after recognition and before a proposal is built. */
   recognitionStructureValidator?: RecognitionStructureValidator;
@@ -166,6 +170,7 @@ export interface DesktopPluginRuntime {
   images: PluginImageRequestController;
   recognition: StructureRecognitionController;
   naming: StructureNamingController;
+  externalTools: ExternalToolsController;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string): void;
@@ -245,6 +250,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // around that call is claimed by exactly that invocation's context. Its selection API then hands the
   // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
   const naming = new StructureNamingController(options.structureNamingEngine ?? new TauriStructureNamingEngine(), options.namingCanonicalizer);
+  const externalTools = new ExternalToolsController(options.externalToolsEngine ?? (isTauriHost() ? new TauriExternalToolsEngine() : new UnsupportedExternalToolsEngine()));
   const namingInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
   let namingFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
@@ -370,6 +376,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
     requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
     recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
+    externalTools,
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -390,6 +397,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     images,
     recognition,
     naming,
+    externalTools,
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;

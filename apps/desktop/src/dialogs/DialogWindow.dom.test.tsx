@@ -14,6 +14,7 @@ import { DialogWindow } from "./DialogWindow";
 import { DialogCoordinator } from "./DialogCoordinator";
 import type { DialogTransport } from "./dialogTransport";
 import { exportFixture } from "./exportTestFixtures";
+import { toolInstallFixture } from "./toolInstallTestFixtures";
 const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", width: 8.5, height: 11, unit: "inch" } };
 let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
 beforeEach(async () => {
@@ -26,6 +27,24 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it("re-enables tool installation after a failed attempt and sends a fresh retry action", async () => {
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "tool-host" })));
+  const toolSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "toolInstall", data: toolInstallFixture() };
+  await act(async () => host.receive!(toolSnapshot));
+  const install = () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent === "Install")!;
+  await act(async () => install().click());
+  const first = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...toolSnapshot, type: "result", requestId: first.requestId, data: { status: "accepted" } }));
+  expect(install().disabled).toBe(true);
+  await act(async () => host.receive!({ ...toolSnapshot, data: { ...toolInstallFixture(), state: { status: "failed", message: "Download failed" } } }));
+  expect(install().disabled).toBe(false);
+  await act(async () => install().click());
+  const actions = host.send.mock.calls.map(([, message]) => message as DialogMessage).filter(message => message.type === "action");
+  expect(actions).toHaveLength(2);
+  expect(actions[1].requestId).not.toBe(first.requestId);
+  expect(actions[1].data).toEqual({ action: "install" });
+});
 it.each(["Export", "Choose..."])("keeps pending %s busy for 60 seconds after owner acceptance without progress", async control => {
   act(() => root.unmount()); root = createRoot(container);
   await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));

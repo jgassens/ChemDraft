@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-consent-revoke"
+description = "Enables the external_tool_consent_revoke command without any pre-configured scope."
+commands.allow = ["external_tool_consent_revoke"]
+
+[[permission]]
+identifier = "deny-external-tool-consent-revoke"
+description = "Denies the external_tool_consent_revoke command without any pre-configured scope."
+commands.deny = ["external_tool_consent_revoke"]

@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "external-tools",
+  "description": "External tool management and execution for the document window.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-external-tool-status",
+    "allow-external-tool-install",
+    "allow-external-tool-cancel-install",
+    "allow-external-tool-uninstall",
+    "allow-external-tool-sign-in",
+    "allow-external-tool-consent-set",
+    "allow-external-tool-consent-list",
+    "allow-external-tool-consent-revoke",
+    "allow-external-tool-consent-clear-plugin",
+    "allow-external-tool-run-start",
+    "allow-external-tool-run-poll",
+    "allow-external-tool-run-cancel",
+    "allow-external-tool-conversation-clear"
+  ]
+}

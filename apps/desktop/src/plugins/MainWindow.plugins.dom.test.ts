@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
 import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
+import * as panelBridge from "./panelBridge";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
   RECOGNITION_FIXTURE_PANEL_ID
@@ -214,6 +215,62 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it("drops a detached report across uninstall, reinstall and closing Plugin Manager", async () => {
+    const openWindow = vi.spyOn(panelBridge, "openPluginPanelWindow").mockResolvedValue();
+    vi.spyOn(panelBridge, "hidePluginPanelWindow").mockResolvedValue();
+    const broadcastReport = vi.spyOn(panelBridge, "broadcastPluginPanelReport").mockResolvedValue();
+    await renderMainWindow();
+    await click(container!.querySelector('button[data-menu-section="plugins"]')!);
+    await click(container!.querySelector('button[data-command-id="plugins.manage"]')!);
+    const dialog = document.querySelector('[data-testid="plugin-manager-dialog"]')!;
+    expect(dialog).not.toBeNull();
+
+    const runtime = bundled.runtime!;
+    const manifest = {
+      ...namingManifest,
+      permissions: [...namingManifest.permissions],
+      contributes: namingManifest.contributes
+    };
+    const identity = { pluginId: manifest.id, panelId: "panel.namingTest.result" };
+    nativeDialog.desktop = true;
+    await act(async () => {
+      runtime.registerPlugin(manifest);
+      runtime.panels.showReport(identity.pluginId, identity.panelId, {
+        title: "install claude failed: declined", sections: []
+      });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    expect(broadcastReport).toHaveBeenCalledTimes(1);
+    openWindow.mockClear();
+    broadcastReport.mockClear();
+
+    // One React batch: pruning must observe unregister synchronously, before the id exists again.
+    await act(async () => {
+      runtime.unregisterPlugin(identity.pluginId);
+      runtime.registerPlugin(manifest);
+      window.dispatchEvent(new CustomEvent(panelBridge.PLUGIN_PANEL_REQUEST_EVENT, { detail: identity }));
+    });
+    await click(dialog.querySelector(".plugin-manager-header .plugin-manager-button")!);
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(panelBridge.PLUGIN_PANEL_REQUEST_EVENT, { detail: identity }));
+    });
+    expect(runtime.panels.getDetachedPanels()).toEqual([]);
+    expect(openWindow).not.toHaveBeenCalled();
+    expect(broadcastReport).not.toHaveBeenCalled();
+
+    // Only a new showReport from the new registration may open the panel again.
+    await act(async () => {
+      runtime.panels.showReport(identity.pluginId, identity.panelId, { title: "Fresh report", sections: [] });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    expect(broadcastReport).toHaveBeenCalledWith(expect.objectContaining({
+      report: { title: "Fresh report", sections: [] }
+    }));
+  });
+
   it("runs Orthonym's existing insert command from Structure and hides it on removal", async () => {
     await renderMainWindow();
     const commandId = "plugin.orthonymNaming.insertName";

@@ -4,14 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { PluginPanelController } from "./PluginPanelController";
 
 function hostWithPanels() {
+  const pluginAPanels = [
+    { id: "panel.a", title: "Panel A", commandId: "cmd.a" },
+    { id: "panel.a.secondary", title: "Panel A Secondary", commandId: "cmd.a.secondary" }
+  ];
   const panels = new Map([
-    [
-      "plugin.a",
-      [
-        { id: "panel.a", title: "Panel A", commandId: "cmd.a" },
-        { id: "panel.a.secondary", title: "Panel A Secondary", commandId: "cmd.a.secondary" }
-      ]
-    ],
+    ["plugin.a", pluginAPanels],
     [
       "plugin.b",
       [
@@ -21,14 +19,31 @@ function hostWithPanels() {
     ]
   ]);
   const notifyPanelClosed = vi.fn();
+  const listeners = new Set<() => void>();
   const host = {
     getPlugin: (pluginId: string) => {
       const contributedPanels = panels.get(pluginId);
       return contributedPanels ? { manifest: { contributes: { panels: contributedPanels } } } : undefined;
     },
-    notifyPanelClosed
+    notifyPanelClosed,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    unregisterPlugin: (pluginId: string) => {
+      panels.delete(pluginId);
+      listeners.forEach((listener) => listener());
+    },
+    registerPlugin: (pluginId: string) => {
+      if (pluginId === "plugin.a") panels.set(pluginId, pluginAPanels);
+      listeners.forEach((listener) => listener());
+    }
   } as unknown as PluginHost;
-  return { host, notifyPanelClosed };
+  const lifecycle = host as unknown as {
+    unregisterPlugin: (id: string) => void;
+    registerPlugin: (id: string) => void;
+  };
+  return { host, notifyPanelClosed, unregisterPlugin: lifecycle.unregisterPlugin, registerPlugin: lifecycle.registerPlugin };
 }
 
 describe("PluginPanelController", () => {
@@ -141,6 +156,23 @@ describe("PluginPanelController", () => {
     controller.showReport("plugin.a", "panel.a", { title: "A updated", sections: [] });
     expect(controller.getDetachedPanels()).toHaveLength(2);
     expect(controller.getDetachedPanels()[0]?.report.title).toBe("A updated");
+  });
+
+  it("clears open and detached reports when their plugin is unregistered", () => {
+    const { host, unregisterPlugin, registerPlugin } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t");
+
+    controller.showReport("plugin.a", "panel.a", { title: "Install failed: declined", sections: [] });
+    controller.detachPanel("plugin.a", "panel.a");
+    expect(controller.getDetachedPanels()).toHaveLength(1);
+
+    unregisterPlugin("plugin.a");
+
+    expect(controller.getDetachedPanels()).toEqual([]);
+    // A reinstall with the same id starts with no prior report to display.
+    registerPlugin("plugin.a");
+    controller.showReport("plugin.a", "panel.a", { title: "Fresh report", sections: [] });
+    expect(controller.getOpenPanel()?.report.title).toBe("Fresh report");
   });
 
   it("re-attaches a detached panel when its window never opened, without a close notification", () => {
