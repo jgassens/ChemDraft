@@ -6303,6 +6303,85 @@ textarea:focus-visible,
   line-height: 1.4;
 }
 
+.plugin-report-composer {
+  position: sticky;
+  z-index: 1;
+  bottom: calc(-1 * var(--cd-space-5));
+  margin-bottom: calc(-1 * var(--cd-space-5));
+  padding: var(--cd-space-4) 0 var(--cd-space-5);
+  background: var(--cd-bg-panel);
+  border-top: 1px solid var(--cd-border-subtle);
+}
+
+.plugin-report-composer-label,
+.plugin-report-composer-select > span {
+  display: block;
+  margin-bottom: var(--cd-space-2);
+  color: var(--cd-text-secondary);
+  font-size: 11px;
+}
+
+.plugin-report-composer textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  color: var(--cd-text-primary);
+  background: var(--cd-bg-control);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  font: inherit;
+}
+
+.plugin-report-composer-controls,
+.plugin-report-actions-buttons {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--cd-space-3);
+  margin-top: var(--cd-space-3);
+}
+
+.plugin-report-composer-select select {
+  min-height: var(--cd-control-height);
+  color: var(--cd-text-primary);
+  background: var(--cd-bg-control);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+}
+
+.plugin-report-action {
+  min-height: var(--cd-control-height);
+  padding: 0 var(--cd-space-4);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  color: var(--cd-text-primary);
+  background: var(--cd-bg-control);
+  cursor: pointer;
+}
+
+.plugin-report-action:not(:disabled):hover { background: var(--cd-bg-hover); }
+.plugin-report-action-primary { border-color: var(--cd-accent-border); color: var(--cd-accent-text); background: var(--cd-accent-soft); }
+.plugin-report-action-danger { border-color: var(--cd-danger); color: var(--cd-danger-strong); background: var(--cd-bg-danger); }
+.plugin-report-action:disabled { color: var(--cd-text-disabled); cursor: default; }
+
+.plugin-report-composer-hint,
+.plugin-report-composer-error {
+  margin: var(--cd-space-2) 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.plugin-report-composer-hint { color: var(--cd-text-muted); }
+.plugin-report-composer-error { color: var(--cd-danger-strong); }
+
+.plugin-report-image-content {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--cd-border-subtle);
+  border-radius: var(--cd-radius-control);
+}
+
 .plugin-diagnostics-surface {
   position: relative;
   padding: var(--cd-space-5);
