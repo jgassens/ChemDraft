@@ -121,7 +121,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
-import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import type { PluginCommandInput, PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -173,6 +173,7 @@ import {
   broadcastPluginPanelStaleness,
   hidePluginPanelWindow,
   listenForAnalysisWindowActions,
+  listenForPluginPanelActions,
   listenForPluginPanelCloses,
   listenForNativePanelWindowCloses,
   listenForPluginPanelReruns,
@@ -180,6 +181,7 @@ import {
   openPluginPanelWindow,
   pluginPanelIdentityKey,
   respondToCopyMolecularInspector,
+  respondToPluginPanelAction,
   respondToProposalDecision,
   respondToSaveTextFile,
   type AnalysisWindowAction,
@@ -189,6 +191,7 @@ import {
   type PluginPanelReportPayload,
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
+import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
@@ -2385,7 +2388,7 @@ export function MainWindow({
   moleculeStyleOverridePromptRef.current = moleculeStyleOverridePrompt;
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
-  const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
+  const invokeCommandRef = useRef<(commandId: string, options?: { input?: PluginCommandInput }) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   // Identifies the working document for a plugin's `documents.applyPatch` (see
   // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
@@ -9047,7 +9050,7 @@ export function MainWindow({
       }
     };
     // Once per page load: StrictMode runs this effect twice in development.
-    if (desktop && !pendingCrashNoteChecked) {
+    if (desktop && "__TAURI_INTERNALS__" in window && !pendingCrashNoteChecked) {
       pendingCrashNoteChecked = true;
       void (async () => {
         try {
@@ -10635,6 +10638,7 @@ export function MainWindow({
           pluginId: panel.pluginId,
           panelId: panel.panelId,
           title: panel.report.title || panel.title,
+          ...panel.preferredWindowSize,
           focus: false
         }).catch((error: unknown) => {
           openedPluginPanelWindowsRef.current.delete(key);
@@ -10964,7 +10968,7 @@ export function MainWindow({
     []
   );
 
-  const invoke = useCallback(async (commandId: string) => {
+  const invoke = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
@@ -11084,7 +11088,7 @@ export function MainWindow({
         .then(async () => {
           // Collected per invocation: only this command's own selection reads can add to it.
           const selectionWarnings: string[] = [];
-          const result = await invokePluginCommand(commandId, { selectionWarnings });
+          const result = await invokePluginCommand(commandId, { selectionWarnings, input: options?.input });
           if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
@@ -11141,6 +11145,63 @@ export function MainWindow({
   ]);
 
   invokeCommandRef.current = invoke;
+
+  // Keep one subscription while resolving every action against the report last shown by this
+  // window and the current host registry. A panel message cannot supply command metadata.
+  const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
+  pluginPanelActionHandlerRef.current = (id, request) => {
+    const refuse = (reason: string) => {
+      void respondToPluginPanelAction(id, { ok: false, reason }).catch(() => undefined);
+    };
+    const runtime = pluginRuntime.runtime;
+    const openPanel = runtime.panels.getOpenPanel();
+    const panels = [
+      ...runtime.panels.getDetachedPanels(),
+      ...(openPanel ? [openPanel] : [])
+    ].filter((panel) => panel.panelId === request.panelId);
+    // Panel ids can be shared by plugins. The input envelope cannot disambiguate their owners.
+    if (panels.length !== 1) {
+      refuse(panels.length ? "The panel owner is ambiguous." : "This panel is no longer open.");
+      return;
+    }
+    const panel = panels[0]!;
+    const displayedOpenPanel = pluginRuntime.openPanel;
+    const report = panel === openPanel
+      ? displayedOpenPanel?.pluginId === panel.pluginId && displayedOpenPanel.panelId === panel.panelId
+        ? displayedOpenPanel.report : undefined
+      : pluginPanelReportsRef.current.get(pluginPanelIdentityKey(panel.pluginId, panel.panelId))?.report;
+    if (!report) {
+      refuse("This panel has no displayed report.");
+      return;
+    }
+    const ownsCommand = (commandId: string) => {
+      const command = registry.get(commandId);
+      return command?.source === "plugin" && command.pluginId === panel.pluginId
+        && runtime.host.getPlugin(panel.pluginId)?.manifest.contributes.commands.some((item) => item.id === commandId) === true;
+    };
+    const resolved = resolvePluginPanelAction(report, request, ownsCommand);
+    if (!resolved.ok) {
+      refuse(resolved.reason);
+      return;
+    }
+    if (!registry.get(resolved.commandId)?.enabled) {
+      refuse("This command is disabled.");
+      return;
+    }
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current) {
+      refuse("Finish the pending document confirmation before running this command.");
+      return;
+    }
+    // invoke enqueues plugin work and returns immediately. Acknowledge acceptance, never wait
+    // for completion: a long submit must leave the panel free to send its separate stop command.
+    void Promise.resolve(invokeCommandRef.current(resolved.commandId, { input: resolved.input }))
+      .then(() => respondToPluginPanelAction(id, { ok: true }), (error: unknown) =>
+        respondToPluginPanelAction(id, { ok: false, reason: error instanceof Error ? error.message : String(error) }))
+      .catch(() => undefined);
+  };
+  useEffect(() => listenForPluginPanelActions((id, request) => {
+    pluginPanelActionHandlerRef.current(id, request);
+  }), []);
 
   // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the
   // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
