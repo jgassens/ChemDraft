@@ -415,3 +415,19 @@ both kind-specific messages. The host assembles only the current request in orde
 bounded total and a timeout; stale/partial/error previews cannot enable Save. Native bootstrap,
 focus/ownership, monitor placement, position persistence and native-prompt suspension reuse
 the shared host unchanged. Browser builds use the same draft-only form in their fallback.
+
+## Journal Presets
+
+`edit.journalPresets` uses the same host with kind `journalPresets` and a lazy shared form.
+Snapshots contain only the drawing title and selection count. Typed preview/apply actions contain
+validated preset options; the owner resolves source data and operates on a retained document snapshot.
+Any later originating-document or selection edit invalidates that snapshot. Private SVG preview
+receipts reuse Export's bounded, authenticated chunk transport; no document is sent to the form.
+The owner alone commits one labelled history entry, including in inactive tabs. Cancellation,
+owner-tab replacement/close and native destruction clean up the retained source.
+
+Official-source links have a separate, journal-window-only capability. Rust requires a live
+registered journal host and an exact HTTPS URL from the five-profile allowlist before opening
+the system browser. It does not grant general shell, network or filesystem access.
+See `../journal-presets/README.md` for coverage, provenance and export advisories. Native macOS and
+Windows execution must be verified before merging this feature.

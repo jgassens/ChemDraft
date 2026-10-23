@@ -31,6 +31,7 @@ fn main() {
             "dialog_open",
             "dialog_request",
             "dialog_send",
+            "dialog_open_journal_source",
             "dialog_publish",
             "dialog_close",
             "open_toolset_window",

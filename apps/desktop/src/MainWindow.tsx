@@ -1,3 +1,5 @@
+import { JournalPresetsBrowser } from "./journal-presets/JournalPresetsBrowser";
+import type { JournalRequest } from "@chemdraft/chem-core";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
@@ -1603,7 +1605,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.22.19.40-codex";
+const CURRENT_BUILD_STAMP = "10.22.20.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2114,6 +2116,12 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const journalSourcesRef = useRef(new Map<string, ChemDraftDocument>());
+  const [browserJournal, setBrowserJournal] = useState<{ tabId: string; title: string; selectionCount: number }>();
+  const journalOwnerRef = useRef<{
+    preview(tabId: string, request: JournalRequest): Promise<ExportPreviewResult>;
+    apply(tabId: string, request: JournalRequest): Promise<void>;
+  }>({ preview: async () => { throw new Error("Journal preview unavailable"); }, apply: async () => {} });
   const activeDocumentTabIdRef = useRef("initial");
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
@@ -8325,6 +8333,62 @@ export function MainWindow({
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
 
+  const journalSource = (tabId: string): ChemDraftDocument => {
+    const source = journalSourcesRef.current.get(tabId);
+    const current = tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present
+      : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    if (!source || source !== current) throw new Error("Drawing or selection changed. Close and reopen Journal Presets to review the current drawing.");
+    return source;
+  };
+  journalOwnerRef.current.preview = async (tabId, request) => {
+    const module = await import("./journal-presets/owner");
+    await module.ensureJournalProfile(request);
+    return module.journalStylePreview(journalSource(tabId), request);
+  };
+  journalOwnerRef.current.apply = async (tabId, request) => {
+    const module = await import("./journal-presets/owner");
+    await module.ensureJournalProfile(request);
+    const source = journalSource(tabId);
+    if (tabId === activeDocumentTabIdRef.current && (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current)) throw new Error("Finish editing text or atom labels, then reopen Journal Presets.");
+    if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then apply the preset again.");
+    const next = module.prepareJournalStyle(source, request);
+    if (tabId === activeDocumentTabIdRef.current) {
+      commitDocumentChange(next, "Apply Journal Preset");
+      setStatus("Journal preset applied. Review its partial coverage and export requirements.");
+    } else {
+      const snapshot = documentTabSnapshotsRef.current.get(tabId);
+      if (!snapshot) throw new Error("The originating drawing was closed.");
+      const present = normalizeCommittedDocument(next);
+      documentUndoLabelsRef.current.set(present, "Apply Journal Preset");
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        file: { ...snapshot.file, dirty: true }, status: "Journal preset applied" });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+  };
+  const openJournalPresets = useCallback(() => {
+    if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current) {
+      setStatus("Finish editing text or atom labels before opening Journal Presets."); return;
+    }
+    const tabId = activeDocumentTabIdRef.current;
+    const coordinator = dialogCoordinatorRef.current;
+    if (coordinator?.hasJournalPresets(tabId)) {
+      void coordinator.openJournalPresets(tabId, { title: "Drawing", selectionCount: 0 }).catch(error => setStatus(String(error)));
+      return;
+    }
+    const source = documentHistoryRef.current.present;
+    const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+    const data = { title, selectionCount: source.selection.objectIds.length };
+    if (isDesktopRuntime()) {
+      if (!coordinator) { setStatus("Journal Presets could not open: the dialog host is unavailable."); return; }
+      journalSourcesRef.current.set(tabId, source);
+      void coordinator.openJournalPresets(tabId, data).catch(error => { journalSourcesRef.current.delete(tabId); setStatus(`Journal Presets could not open: ${String(error)}`); });
+    } else {
+      journalSourcesRef.current.set(tabId, source);
+      setBrowserJournal({ tabId, ...data });
+    }
+  }, []);
   const openCustomPageSizeDialog = useCallback(() => {
     const layout = documentRef.current.pages[0]?.layout;
     const unit: PageSizeUnit = layout ? pageLayoutSourceUnit(layout) : "inch";
@@ -8413,6 +8477,9 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      applyJournalPreset: (tabId, request) => journalOwnerRef.current.apply(tabId, request),
+      previewJournalPreset: (tabId, request) => journalOwnerRef.current.preview(tabId, request),
+      onJournalSettled: tabId => { journalSourcesRef.current.delete(tabId); },
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
@@ -9602,6 +9669,7 @@ export function MainWindow({
         if (action.id === "edit.redo") {
           restoreDocumentHistory("redo");
         }
+        if (action.id === "edit.journalPresets") { openJournalPresets(); }
         if (action.id === "edit.selectAll") {
           selectAllCanvasObjects();
         }
@@ -10209,6 +10277,7 @@ export function MainWindow({
     openInteractive3dWorkspace,
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
+    openJournalPresets,
     pasteClipboard,
     publishAnalysisWindow,
     quickActions,
@@ -19954,6 +20023,10 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {!isDesktopRuntime() && browserJournal ? <JournalPresetsBrowser {...browserJournal}
+        renderPreview={(request, signal) => signal.aborted ? Promise.reject(new Error("Preview cancelled")) : journalOwnerRef.current.preview(browserJournal.tabId, request)}
+        onApply={async request => { await journalOwnerRef.current.apply(browserJournal.tabId, request); journalSourcesRef.current.delete(browserJournal.tabId); setBrowserJournal(undefined); }}
+        onCancel={() => { journalSourcesRef.current.delete(browserJournal.tabId); setBrowserJournal(undefined); }} /> : null}
       {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
         onSave={factor => {
           if (documentRef.current !== spacingSource) {
@@ -30270,7 +30343,22 @@ export async function createDialogExportPreview(document: ChemDraftDocument, opt
     warnings: boundedWarnings };
 }
 
-export async function createDialogExportResult(
+export async function createDialogExportResult(document: ChemDraftDocument, state: ExportDialogState, preview = false): Promise<ExportResult> {
+  const result = await createJournalUncheckedExportResult(document, state, preview);
+  if (!document.pages[0]?.objects.some(object => "journalPreset" in object.style)) return result;
+  const { savedJournalFigures, journalPreflightMessages } = await import("./journal-presets/preflight");
+  if (!savedJournalFigures(document).length || !["svg", "pdf", "png", "jpeg", "tiff", "bmp", "gif"].includes(state.format)) return result;
+  const framed = exportPresentationDocument(document, state.presentation?.crop ?? "page").pages[0];
+  const dpi = state.presentation?.dpi ?? 96;
+  const widthMm = state.presentation ? state.presentation.width / dpi * 25.4 : framed.width / 96 * 25.4;
+  const heightMm = state.presentation ? exportDialogHeight(state.presentation, framed.height / framed.width) / dpi * 25.4 : framed.height / 96 * 25.4;
+  const warnings = journalPreflightMessages(document, state.format, { widthMm, heightMm,
+    scaleX: widthMm / (framed.width / 96 * 25.4), scaleY: heightMm / (framed.height / 96 * 25.4),
+    dpi: state.presentation?.dpi });
+  return { ...result, warnings: [...result.warnings, ...warnings.map(message => ({ code: "journal-preflight", severity: "warning" as const, message }))] };
+}
+
+async function createJournalUncheckedExportResult(
   document: ChemDraftDocument,
   state: ExportDialogState,
   preview = false

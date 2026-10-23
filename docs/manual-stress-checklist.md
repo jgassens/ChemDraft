@@ -626,3 +626,13 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Journal Presets (new surface; platform checks pending)
+
+On both macOS and Windows, repeat `journal-presets/MANUAL_TESTING.md`: Edit-menu availability,
+source-link opening, movable modeless ownership, retained placement across displays, active and
+inactive originating-tab Apply, stale drawing/selection rejection, close/replacement cleanup,
+Cancel without edits, one Undo/Redo, offline save/reopen and canvas/export appearance. Confirm
+Windows taskbar/focus behavior and run the menu-churn smoke check. Exercise large drawings,
+unknown fonts, custom invalid values, group selection, multi-page documents and overlapping
+per-object appearance overrides. Record actual outcomes; this addition is not a completed pass.

@@ -24,6 +24,13 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "journalPresets" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Journal Presets",
+            size: (760.0, 820.0),
+            min_size: (480.0, 400.0),
+        }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: false,
@@ -83,6 +90,55 @@ pub(crate) struct Message {
     #[serde(rename = "type")]
     message_type: String,
     data: Value,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JournalSnapshot {
+    title: String,
+    selection_count: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JournalCustom {
+    font_family: String,
+    font_size_pt: f64,
+    line_width_pt: f64,
+    bond_length_pt: f64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JournalOptions {
+    profile_id: String,
+    figure_type: String,
+    scope: String,
+    #[serde(rename = "resizeBonds")]
+    _resize_bonds: bool,
+    custom: Option<JournalCustom>,
+}
+impl JournalOptions {
+    fn valid(&self) -> bool {
+        let bounded = |s: &str| !s.is_empty() && s.encode_utf16().count() <= 256;
+        bounded(&self.profile_id)
+            && bounded(&self.figure_type)
+            && matches!(self.scope.as_str(), "selection" | "document")
+            && (self.profile_id == "custom") == self.custom.is_some()
+            && self.custom.as_ref().is_none_or(|c| {
+                bounded(&c.font_family)
+                    && c.font_size_pt > 0.0
+                    && c.font_size_pt <= 100.0
+                    && c.line_width_pt > 0.0
+                    && c.line_width_pt <= 20.0
+                    && c.bond_length_pt > 0.0
+                    && c.bond_length_pt <= 100.0
+            })
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum JournalAction {
+    Apply { journal: JournalOptions },
+    Preview { journal: JournalOptions },
+    Cancel,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -594,7 +650,7 @@ fn valid_reason(reason: &str) -> bool {
 }
 impl Message {
     fn is_preview(&self) -> bool {
-        self.dialog_kind == "export"
+        matches!(self.dialog_kind.as_str(), "export" | "journalPresets")
             && self.message_type == "result"
             && self.data["status"] == "preview"
     }
@@ -640,6 +696,18 @@ impl Message {
                     matches!(r.status.as_str(), "accepted" | "cancelled" | "error")
                         && optional_string_fields(&self.data, &["error"])
                         && r.error.is_none_or(|s| s.encode_utf16().count() <= 1024)
+                })
+            }
+            "snapshot" if self.dialog_kind == "journalPresets" => {
+                serde_json::from_value::<JournalSnapshot>(self.data.clone())
+                    .is_ok_and(|s| valid_title(&s.title) && s.selection_count <= 100000)
+            }
+            "action" if self.dialog_kind == "journalPresets" => {
+                serde_json::from_value::<JournalAction>(self.data.clone()).is_ok_and(|a| match a {
+                    JournalAction::Cancel => true,
+                    JournalAction::Apply { journal } | JournalAction::Preview { journal } => {
+                        journal.valid()
+                    }
                 })
             }
             "snapshot" if self.dialog_kind == "export" => {
@@ -1280,6 +1348,80 @@ pub(crate) fn dialog_publish(
         update_snapshot(session, &message);
     }
     send_host(session, &message)
+}
+
+fn journal_source_allowed(url: &str) -> bool {
+    matches!(url,
+        "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines"
+        | "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines"
+        | "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines"
+        | "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines"
+        | "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines"
+        | "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs"
+        | "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3"
+        | "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay"
+        | "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat"
+        | "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7"
+        | "https://www.cell.com/cell/information-for-authors/final-submission"
+        | "https://www.cell.com/information-for-authors/figure-guidelines"
+        | "https://www.mdpi.com/journal/molecules/instructions"
+        | "https://www.nature.com/documents/nr-chemical-structures-guide.pdf"
+        | "https://www.nature.com/nchem/submission-guidelines/aip-and-formatting"
+        | "https://www.nature.com/nenergy/submission-guidelines"
+        | "https://www.nature.com/nmat/submission-guidelines"
+        | "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods"
+        | "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev"
+        | "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science"
+        | "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a"
+        | "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances")
+}
+/// User-clicked source links only. No arbitrary URL or shell capability is granted to forms.
+#[tauri::command]
+pub(crate) fn dialog_open_journal_source(
+    window: tauri::WebviewWindow,
+    url: String,
+) -> Result<(), String> {
+    if !journal_source_allowed(&url) {
+        return Err("Unknown journal source".into());
+    }
+    {
+        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        if !registry.sessions.values().any(|session| {
+            session.snapshot.dialog_kind == "journalPresets"
+                && session.registration.window_label == window.label()
+        }) {
+            return Err("Journal source links require a registered Journal Presets window".into());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command.arg(&url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use crate::WithoutConsoleWindow;
+        let mut command = std::process::Command::new("rundll32.exe");
+        command
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&url)
+            .without_console_window();
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(&url);
+        command
+    };
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not open the official guidelines: {error}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -3015,5 +3157,41 @@ mod tests {
             .map(|c| c["previewChunk"]["text"].as_str().unwrap())
             .collect();
         assert_eq!(restored, text);
+    }
+    #[test]
+    fn journal_presets_validate_only_typed_bounded_drafts() {
+        let mut message = snapshot();
+        message.dialog_kind = "journalPresets".into();
+        message.data = json!({"title":"Journal drawing","selectionCount":2});
+        assert!(message.validate().is_ok());
+        assert!(kind_spec("journalPresets").unwrap().resizable);
+        assert!(is_dialog_label("dialog-main-journalPresets-12"));
+        message.message_type = "action".into();
+        message.data = json!({"action":"apply","journal":{"profileId":"jacs","figureType":"single-column","scope":"document","resizeBonds":false}});
+        assert!(message.validate().is_ok());
+        message.data["journal"]["scope"] = json!("all-files");
+        assert!(message.validate().is_err());
+        message.data["journal"]["scope"] = json!("selection");
+        message.data["journal"]["custom"] =
+            json!({"fontFamily":"Arial","fontSizePt":8,"lineWidthPt":0.6,"bondLengthPt":14.4});
+        assert!(message.validate().is_err());
+        message.data["journal"]["profileId"] = json!("custom");
+        assert!(message.validate().is_ok());
+        message.data["journal"]["custom"]["fontSizePt"] = json!(0);
+        assert!(message.validate().is_err());
+    }
+    #[test]
+    fn journal_sources_are_exact_https_links_not_generic_browser_access() {
+        assert!(journal_source_allowed(
+            "https://www.nature.com/documents/nr-chemical-structures-guide.pdf"
+        ));
+        for url in [
+            "file:///etc/passwd",
+            "https://www.nature.com/other",
+            "https://www.nature.com.evil.invalid/",
+            "javascript:alert(1)",
+        ] {
+            assert!(!journal_source_allowed(url));
+        }
     }
 }

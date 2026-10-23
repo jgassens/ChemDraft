@@ -1,3 +1,4 @@
+import type { JournalRequest } from "@chemdraft/chem-core";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
@@ -9,6 +10,7 @@ import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame
 import { exportOptions } from "./exportOptionsValidation";
 import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
+const JournalPresetForm = lazy(() => import("../journal-presets/JournalPresetForm").then(module => ({ default: module.JournalPresetForm })));
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
@@ -180,9 +182,9 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       previewRequestId.current = undefined; previewParts.current = undefined;
       setPreview(undefined); setError(undefined); setPercent(value);
     }} onCancel={() => sendAction({ action: "cancel" })} onSave={() => sendAction({ action: "apply", percent })} />;
-  const renderPreview = (options: ExportOptions, signal?: AbortSignal): Promise<ExportPreviewResult> => {
+  const renderPreview = (options: ExportOptions | JournalRequest, signal?: AbortSignal): Promise<ExportPreviewResult> => {
     clearPreview();
-    if (!previewEnabledRef.current || signal?.aborted || !snapshot || actionPending.current || cancellationRequested.current) return Promise.reject(new Error("Preview unavailable"));
+    if ((!previewEnabledRef.current && snapshot?.dialogKind !== "journalPresets") || signal?.aborted || !snapshot || actionPending.current || cancellationRequested.current) return Promise.reject(new Error("Preview unavailable"));
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { if (previewPending.current?.id === requestId) { const pending = previewPending.current; previewPending.current = undefined; pending.reject(new Error("Preview timed out")); } }, 30000);
@@ -190,11 +192,14 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       signal?.addEventListener("abort", abort, { once: true });
       const cleanup = () => { signal?.removeEventListener("abort", abort); clearTimeout(timer); };
       previewPending.current = { id: requestId, resolve: value => { cleanup(); resolve(value); }, reject: error => { cleanup(); reject(error); }, timer };
-      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data: { action: "preview", options } }).catch(error => {
+      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data: "profileId" in options ? { action: "preview", journal: options } : { action: "preview", options } }).catch(error => {
         if (previewPending.current?.id === requestId) { const pending = previewPending.current; previewPending.current = undefined; pending.reject(error); }
       });
     });
   };
+  if (snapshot.dialogKind === "journalPresets") return <Suspense fallback={<p role="status">Opening Journal Presets…</p>}><JournalPresetForm
+    {...snapshot.data} renderPreview={renderPreview} onReady={reportReady} busy={busy} error={error}
+    onCancel={() => sendAction({ action: "cancel" })} onApply={journal => sendAction({ action: "apply", journal })} /></Suspense>;
   if (snapshot?.dialogKind === "export" && exportDraft) return <Suspense fallback={<p role="status">Opening Export…</p>}><ExportForm frame={frame} renderPreview={renderPreview} title={snapshot.data.title} onReady={reportReady}
     state={{ ...exportDraft, busy: busy || exported }} onChange={setExportDraft} error={error} notice={notice} completed={exported}
     onCancel={() => sendAction({ action: "cancel" })}

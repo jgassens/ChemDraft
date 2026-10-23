@@ -22,13 +22,19 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
 describe("dialog capabilities", () => {
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
-    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*"]);
+    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-journalPresets-*"]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
     expect(owner.windows).toEqual(["main"]);
     expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
+  });
+  it("limits official source opening to journal windows without granting shell or network access", () => {
+    const source = capabilities.find(({ name }) => name === "journal-sources.json")!.capability;
+    expect(source.windows).toEqual(["dialog-main-journalPresets-*"]);
+    expect(source.permissions).toEqual(["allow-journal-source"]);
+    expect((source as { remote?: unknown }).remote).toBeUndefined();
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {
     const granted = capabilities.filter(({ capability }) => dialogPermissions(capability).length > 0);

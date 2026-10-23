@@ -1,0 +1,192 @@
+[
+  {
+    "id": "advanced-materials",
+    "title": "Advanced Materials",
+    "publisher": "Wiley",
+    "aliases": [],
+    "issns": [
+      "0935-9648",
+      "1521-4095"
+    ],
+    "guidelinesUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+    "identitySource": "https://api.crossref.org/journals/0935-9648",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "angewandte-chemie",
+    "title": "Angewandte Chemie International Edition",
+    "publisher": "Wiley",
+    "aliases": [],
+    "issns": [
+      "1433-7851",
+      "1521-3773"
+    ],
+    "guidelinesUrl": "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines",
+    "identitySource": "https://api.crossref.org/journals/1521-3773",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "chemical-reviews",
+    "title": "Chemical Reviews",
+    "publisher": "ACS",
+    "aliases": [],
+    "issns": [
+      "0009-2665",
+      "1520-6890"
+    ],
+    "guidelinesUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+    "identitySource": "https://api.crossref.org/journals/0009-2665",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "advanced-functional-materials",
+    "title": "Advanced Functional Materials",
+    "publisher": "Wiley",
+    "aliases": [],
+    "issns": [
+      "1616-301X",
+      "1616-3028"
+    ],
+    "guidelinesUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+    "identitySource": "https://api.crossref.org/journals/1616-301X",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "chemical-society-reviews",
+    "title": "Chemical Society Reviews",
+    "publisher": "RSC",
+    "aliases": [],
+    "issns": [
+      "0306-0012",
+      "1460-4744"
+    ],
+    "guidelinesUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+    "identitySource": "https://api.crossref.org/journals/0306-0012",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "advanced-energy-materials",
+    "title": "Advanced Energy Materials",
+    "publisher": "Wiley",
+    "aliases": [],
+    "issns": [
+      "1614-6832",
+      "1614-6840"
+    ],
+    "guidelinesUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+    "identitySource": "https://api.crossref.org/journals/1614-6840",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "acs-nano",
+    "title": "ACS Nano",
+    "publisher": "ACS",
+    "aliases": [],
+    "issns": [
+      "1936-0851",
+      "1936-086X"
+    ],
+    "guidelinesUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+    "identitySource": "https://api.crossref.org/journals/1936-0851",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "energy-environmental-science",
+    "title": "Energy & Environmental Science",
+    "publisher": "RSC",
+    "aliases": [],
+    "issns": [
+      "1754-5692",
+      "1754-5706"
+    ],
+    "guidelinesUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+    "identitySource": "https://api.crossref.org/journals/1754-5692",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "molecules",
+    "title": "Molecules",
+    "publisher": "MDPI",
+    "aliases": [],
+    "issns": [
+      "1420-3049"
+    ],
+    "guidelinesUrl": "https://www.mdpi.com/journal/molecules/instructions",
+    "identitySource": "https://api.crossref.org/journals/1420-3049",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "nature-materials",
+    "title": "Nature Materials",
+    "publisher": "Nature Portfolio",
+    "aliases": [],
+    "issns": [
+      "1476-1122",
+      "1476-4660"
+    ],
+    "guidelinesUrl": "https://www.nature.com/nmat/submission-guidelines",
+    "identitySource": "https://api.crossref.org/journals/1476-1122",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "advanced-science",
+    "title": "Advanced Science",
+    "publisher": "Wiley",
+    "aliases": [],
+    "issns": [
+      "2198-3844"
+    ],
+    "guidelinesUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+    "identitySource": "https://api.crossref.org/journals/2198-3844",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "nature-energy",
+    "title": "Nature Energy",
+    "publisher": "Nature Portfolio",
+    "aliases": [],
+    "issns": [
+      "2058-7546"
+    ],
+    "guidelinesUrl": "https://www.nature.com/nenergy/submission-guidelines",
+    "identitySource": "https://api.crossref.org/journals/2058-7546",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "acs-catalysis",
+    "title": "ACS Catalysis",
+    "publisher": "ACS",
+    "aliases": [],
+    "issns": [
+      "2155-5435"
+    ],
+    "guidelinesUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+    "identitySource": "https://api.crossref.org/journals/2155-5435",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "journal-materials-chemistry-a",
+    "title": "Journal of Materials Chemistry A",
+    "publisher": "RSC",
+    "aliases": [],
+    "issns": [
+      "2050-7488",
+      "2050-7496"
+    ],
+    "guidelinesUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+    "identitySource": "https://api.crossref.org/journals/2050-7488",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "cell",
+    "title": "Cell",
+    "publisher": "Cell Press",
+    "aliases": [],
+    "issns": [
+      "0092-8674"
+    ],
+    "guidelinesUrl": "https://www.cell.com/cell/information-for-authors/final-submission",
+    "identitySource": "https://api.crossref.org/journals/0092-8674",
+    "identityCheckedAt": "2026-10-21"
+  }
+]

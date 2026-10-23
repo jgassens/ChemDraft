@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "journal-sources",
+  "description": "User-clicked official source links only, authenticated and allowlisted in Rust.",
+  "windows": ["dialog-main-journalPresets-*"],
+  "permissions": ["allow-journal-source"]
+}

@@ -1,0 +1,437 @@
+[
+  {
+    "id": "jacs",
+    "journalId": "jacs",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+        "section": "Appendix 2: Size"
+      },
+      "fontSize": {
+        "value": 4.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+        "section": "Appendix 2: Size"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+        "section": "Appendix 2: Size"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84.66666666666667,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 177.79999999999998,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": 105.83333333333333,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+        "section": "Appendix 2: Resolution and Size"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Exact bond length, bold width, hash spacing and exact font size were not specified in the checked instructions; existing values are retained.",
+      "Height limits include the caption. Allow space for captions outside this drawing."
+    ]
+  },
+  {
+    "id": "organic-letters",
+    "journalId": "organic-letters",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Appendix 2: Size"
+      },
+      "fontSize": {
+        "value": 4.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Appendix 2: Size"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Appendix 2: Size"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84.66666666666667,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 177.79999999999998,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": 105.83333333333333,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / abstract graphic",
+        "maxWidthMm": 82.5,
+        "maxHeightMm": 44.5,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+        "section": "Table of Contents/Abstract Graphic"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Exact bond length, bold width, hash spacing and exact font size were not specified in the checked instructions; existing values are retained.",
+      "Height limits include the caption. Allow space for captions outside this drawing."
+    ]
+  },
+  {
+    "id": "analytical-methods",
+    "journalId": "analytical-methods",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "bondLength": {
+        "value": 12.2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "boldWidth": {
+        "value": 1.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "hashSpacing": {
+        "value": 1.8,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / scheme",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "eps",
+          "pdf"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Chemical structures"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / graphical abstract",
+        "maxWidthMm": 80,
+        "maxHeightMm": 40,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+        "section": "Table of contents specifications"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "General scheme dimensions are not specified by this profile. TOC graphics require TIFF; check export support before submission.",
+      "The source gives rounded cm and pt equivalents; this profile uses the published pt values."
+    ]
+  },
+  {
+    "id": "rsc-advances",
+    "journalId": "rsc-advances",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "bondLength": {
+        "value": 12.2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "boldWidth": {
+        "value": 1.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "hashSpacing": {
+        "value": 1.8,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / scheme",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "eps",
+          "pdf"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Chemical structures"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / graphical abstract",
+        "maxWidthMm": 80,
+        "maxHeightMm": 40,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+        "section": "Table of contents specifications"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "General scheme dimensions are not specified by this profile. TOC graphics require TIFF; check export support before submission.",
+      "The source gives rounded cm and pt equivalents; this profile uses the published pt values."
+    ]
+  },
+  {
+    "id": "nature-chemistry",
+    "journalId": "nature-chemistry",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondLength": {
+        "value": 0.381,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "lineWidth": {
+        "value": 0.021,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "boldWidth": {
+        "value": 0.055,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "marginWidth": {
+        "value": 0.042,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "hashSpacing": {
+        "value": 0.06,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondSpacing": {
+        "value": 18,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / figure",
+        "maxWidthMm": 180,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 300,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.nature.com/nchem/submission-guidelines/aip-and-formatting",
+        "section": "Figures"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "The shared Nature Portfolio chemical structures guide explicitly includes Nature Chemistry. Only this journal is represented here.",
+      "Native source-file submission requirements are not fulfilled by a visual preset. Confirm accepted files with the journal."
+    ]
+  }
+]

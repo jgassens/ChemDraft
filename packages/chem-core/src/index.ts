@@ -229,3 +229,8 @@ export { isDativeBond, moleculeToMolfileV2000, moleculeToMolfileV3000, UnknownBo
 export { bridgeBondIndices } from "./bondGraph";
 export { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
 export { drawnLabelBondSide } from "./labelBondSide";
+
+export { JournalRuleSchema, JournalRulesSchema, JournalFigureSchema, JournalProfileSchema, JournalRequestSchema,
+  type JournalRule, type JournalProfile, type JournalFigure, type JournalRequest } from "./journalStyles";
+
+export { JournalMetadataSchema, parseJournalCatalog } from "./journalStyles";
