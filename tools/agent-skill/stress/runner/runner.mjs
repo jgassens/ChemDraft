@@ -272,9 +272,10 @@ export function checkoutAt(value, { platform = process.platform, exists = exists
   return found;
 }
 
-function expandLeadingHome(value, { platform, environment }) {
+export function expandLeadingHome(value, { platform, environment }) {
   const paths = platform === 'win32' ? path.win32 : path.posix;
   const home = environment.HOME;
+  if (value !== '~' && !value.startsWith('~/') && !(platform === 'win32' && value.startsWith('~\\'))) return value;
   if (typeof home !== 'string' || !home || value === '~') return value === '~' && home ? home : value;
   const separator = value[1];
   if (separator !== '/' && !(platform === 'win32' && separator === '\\')) return value;

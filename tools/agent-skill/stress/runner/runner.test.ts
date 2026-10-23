@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, linkCodexSkill, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, expandLeadingHome, linkCodexSkill, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 // @ts-expect-error stream.mjs is intentionally plain JavaScript.
 import { hashTree, inspectStream } from './stream.mjs';
 
@@ -15,6 +15,22 @@ const fakeClaude = path.join(root, 'tools/agent-skill/stress/runner/fixtures/fak
 const fakeCodex = path.join(root, 'tools/agent-skill/stress/runner/fixtures/fake-codex.mjs');
 const fakeAgentctl = path.join(root, 'tools/agent-skill/stress/runner/fixtures/fake-agentctl.mjs');
 const temporary: string[] = [];
+
+async function canCreateFileSymlinks() {
+  const directory = await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-file-symlink-'));
+  try {
+    await writeFile(path.join(directory, 'target'), 'target');
+    await symlink('target', path.join(directory, 'link'), 'file');
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return false;
+    throw error;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const fileSymlinksSupported = await canCreateFileSymlinks();
 
 async function fixtureCases() {
   const directory = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-cases-')));
@@ -82,6 +98,16 @@ describe('stress runner', { timeout: 30_000 }, () => {
       ? String.raw`C:\Users\runneradmin\AppData\Local\Temp\artifact.svg`
       : value;
     expect(pathsEqual(short, long, { platform: 'win32', realpathNative })).toBe(true);
+  });
+
+  it('expands only a leading home-directory shorthand', () => {
+    const environment = { HOME: '/users/chemist' };
+    expect(expandLeadingHome('./x', { platform: 'darwin', environment })).toBe('./x');
+    expect(expandLeadingHome('a~/b', { platform: 'darwin', environment })).toBe('a~/b');
+    expect(expandLeadingHome('~user/x', { platform: 'darwin', environment })).toBe('~user/x');
+    expect(expandLeadingHome('~', { platform: 'darwin', environment })).toBe('/users/chemist');
+    expect(expandLeadingHome('~/x', { platform: 'darwin', environment })).toBe('/users/chemist/x');
+    expect(expandLeadingHome('~\\x', { platform: 'win32', environment: { HOME: 'C:\\Users\\chemist' } })).toBe('C:\\Users\\chemist\\x');
   });
 
   it('runs an isolated case and saves transcript-derived artifacts', async () => {
@@ -202,19 +228,27 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(false);
   });
 
-  it('hashes dereferenced nested links, their targets, and link cycles', async () => {
+  it('hashes dereferenced nested directory links and link cycles', async () => {
+    const skill = await outDirectory();
+    await writeFile(path.join(skill, 'SKILL.md'), 'skill');
+    await mkdir(path.join(skill, 'nested'));
+    await writeFile(path.join(skill, 'nested', 'content.md'), 'same content');
+    await symlink('nested', path.join(skill, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink('.', path.join(skill, 'cycle'), process.platform === 'win32' ? 'junction' : 'dir');
+    const firstHash = await hashTree(skill);
+    await writeFile(path.join(skill, 'nested', 'content.md'), 'changed content');
+    expect(await hashTree(skill)).not.toBe(firstHash);
+  });
+
+  it.skipIf(!fileSymlinksSupported)('hashes dereferenced file symlink targets when file symlinks are permitted', async () => {
     const skill = await outDirectory();
     await writeFile(path.join(skill, 'SKILL.md'), 'skill');
     await writeFile(path.join(skill, 'first.md'), 'same content');
     await writeFile(path.join(skill, 'second.md'), 'same content');
-    await symlink('first.md', path.join(skill, 'linked.md'));
-    await symlink('.', path.join(skill, 'cycle'));
+    await symlink('first.md', path.join(skill, 'linked.md'), 'file');
     const firstHash = await hashTree(skill);
-    await writeFile(path.join(skill, 'first.md'), 'changed content');
-    expect(await hashTree(skill)).not.toBe(firstHash);
-    await writeFile(path.join(skill, 'first.md'), 'same content');
     await unlink(path.join(skill, 'linked.md'));
-    await symlink('second.md', path.join(skill, 'linked.md'));
+    await symlink('second.md', path.join(skill, 'linked.md'), 'file');
     expect(await hashTree(skill)).not.toBe(firstHash);
   });
 
