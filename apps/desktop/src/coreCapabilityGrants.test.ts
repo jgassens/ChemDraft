@@ -91,8 +91,13 @@ describe("core capability grants", () => {
       expect(owners[0]!.capability.windows).toEqual(["plugin-panel-*"]);
     }
     const panel = grants.find(({ name }) => name === "plugin-panel.json")!.capability;
-    expect(panel.permissions).toContain("core:event:deny-emit");
-    expect(panel.permissions).toContain("core:event:deny-emit-to");
+    // core:default includes emission. Explicit denies also block main in Tauri 2.11.2,
+    // because denies ignore window patterns. Panels must only receive listener grants.
+    expect(panel.permissions).not.toContain("core:default");
+    expect(panel.permissions
+      .map(permission => typeof permission === "string" ? permission : permission.identifier)
+      .filter(permission => permission.startsWith("core:event:"))
+      .sort()).toEqual(["core:event:allow-listen", "core:event:allow-unlisten"]);
     const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const build = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
     for (const command of ["plugin_panel_action_forward", "plugin_panel_event_forward"]) {

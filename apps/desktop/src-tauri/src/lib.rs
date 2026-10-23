@@ -18,6 +18,8 @@ mod ocsr_engine;
 mod opsin;
 mod panel_window;
 mod plugin_package;
+#[cfg(test)]
+mod plugin_panel_acl_tests;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
