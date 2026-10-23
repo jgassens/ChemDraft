@@ -14,8 +14,13 @@ const defaultCheckout = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 const DEFAULTS = { agent: 'claude', split: 'all', model: null, timeoutMin: 15, maxTurns: 60, concurrency: 2 };
 const PERMITTED_TOOLS = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Skill,mcp__chemdraft__*';
 
+// Native fs interprets paths using the host OS, even when node:path does not.
+// A different path family needs injected fs operations; otherwise use lexical paths.
+const usesHostPaths = (platform) => (platform === 'win32') === (process.platform === 'win32');
+
 /** Resolve an existing path to the filesystem's canonical spelling. */
-export function canonicalPath(value, { platform = process.platform, realpathNative = realpathSync.native } = {}) {
+export function canonicalPath(value, { platform = process.platform,
+  realpathNative = usesHostPaths(platform) ? realpathSync.native : (value) => value } = {}) {
   const paths = platform === 'win32' ? path.win32 : path.posix;
   const resolved = paths.resolve(value);
   // A glob or a newly written file may not exist, but its parent can be a link.
@@ -236,11 +241,12 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
   return manifest;
 }
 
-function isCliCommand(commandText, checkout, { platform = process.platform } = {}) {
+function isCliCommand(commandText, checkout, options = {}) {
+  const platform = options.platform ?? process.platform;
   const words = commandWords(commandText, { platform });
   const pnpm = words.some((word) => /(?:^|[\\/])pnpm(?:\.cmd|\.exe)?$/i.test(word));
   const directory = words.findIndex((word) => word === '--dir');
-  return pnpm && directory >= 0 && pathsEqual(words[directory + 1] ?? '', checkout, { platform }) && words.slice(directory + 2).includes('chemdraft');
+  return pnpm && directory >= 0 && pathsEqual(words[directory + 1] ?? '', checkout, options) && words.slice(directory + 2).includes('chemdraft');
 }
 
 function inputStrings(value, strings = []) {
@@ -251,7 +257,8 @@ function inputStrings(value, strings = []) {
 }
 
 /** Find the nearest checkout, caching both positive and negative ancestor checks. */
-export function checkoutAt(value, { platform = process.platform, exists = existsSync, realpathNative = realpathSync.native, cache = new Map() } = {}) {
+export function checkoutAt(value, { platform = process.platform,
+  exists = usesHostPaths(platform) ? existsSync : () => false, realpathNative, cache = new Map() } = {}) {
   const paths = platform === 'win32' ? path.win32 : path.posix;
   let current = canonicalPath(value, { platform, realpathNative });
   const visited = [];
@@ -274,7 +281,7 @@ export function checkoutAt(value, { platform = process.platform, exists = exists
 
 export function expandLeadingHome(value, { platform, environment }) {
   const paths = platform === 'win32' ? path.win32 : path.posix;
-  const home = environment.HOME;
+  const home = environment.HOME || (platform === 'win32' ? environment.USERPROFILE : undefined);
   if (value !== '~' && !value.startsWith('~/') && !(platform === 'win32' && value.startsWith('~\\'))) return value;
   if (typeof home !== 'string' || !home || value === '~') return value === '~' && home ? home : value;
   const separator = value[1];
@@ -297,7 +304,7 @@ function referencedPaths(text, { platform, environment }) {
 }
 
 export function repoAccess(toolCalls, checkout, { platform = process.platform, work = checkout, fileChanges = [],
-  environment = process.env, exists = existsSync, realpathNative = realpathSync.native, cache = new Map() } = {}) {
+  environment = process.env, exists, realpathNative, cache = new Map() } = {}) {
   const accesses = [];
   const paths = platform === 'win32' ? path.win32 : path.posix;
   const pathOptions = { platform, realpathNative };
@@ -308,6 +315,9 @@ export function repoAccess(toolCalls, checkout, { platform = process.platform, w
   const auditForeign = (call, values) => {
     const seen = new Set();
     for (const value of values) for (const referenced of referencedPaths(value, { platform, environment })) {
+      // A nested checkout under the checkout being tested is still in scope.
+      // Resolve both sides identically, including links and Windows 8.3 names.
+      if (inCheckout(referenced)) continue;
       const foreign = checkoutAt(referenced, { ...pathOptions, exists, cache });
       if (!foreign || pathsEqual(foreign, checkout, pathOptions) || seen.has(foreign)) continue;
       seen.add(foreign);
@@ -320,8 +330,10 @@ export function repoAccess(toolCalls, checkout, { platform = process.platform, w
       let words;
       try { words = commandWords(call.input.command, { platform }); } catch { words = []; }
       auditForeign(call, [...words.map((word) => expandLeadingHome(word, { platform, environment })), call.input.command]);
-      if (call.input.command.includes(checkout)) accesses.push({ tool: 'Bash', command: call.input.command,
-        classification: isCliCommand(call.input.command, checkout, { platform }) ? 'cli' : 'source-read' });
+      if ([...words, call.input.command].some((word) => referencedPaths(expandLeadingHome(word, { platform, environment }), { platform, environment }).some(inCheckout))) {
+        accesses.push({ tool: 'Bash', command: call.input.command,
+          classification: isCliCommand(call.input.command, checkout, pathOptions) ? 'cli' : 'source-read' });
+      }
     } else if (['Write', 'Edit', 'NotebookEdit'].includes(call.name)) {
       auditForeign(call, inputStrings(call.input));
       for (const value of [call.input?.file_path, call.input?.path, call.input?.notebook_path].filter((value) => typeof value === 'string')) {
@@ -329,7 +341,7 @@ export function repoAccess(toolCalls, checkout, { platform = process.platform, w
       }
     } else if (['Read', 'Grep', 'Glob'].includes(call.name)) {
       auditForeign(call, inputStrings(call.input));
-      for (const value of inputStrings(call.input)) if (value.includes(checkout)) {
+      for (const value of inputStrings(call.input)) if (referencedPaths(value, { platform, environment }).some(inCheckout)) {
         accesses.push({ tool: call.name, path: value, classification: 'source-read' });
         break;
       }
