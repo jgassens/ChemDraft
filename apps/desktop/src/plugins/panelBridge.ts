@@ -2,7 +2,6 @@ import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } from "@chemdraft/plugin-api";
 import { isDesktopRuntime } from "../window-manager";
 import { listenTauriEvent } from "../window-manager/tauriEvents";
-import { isTauriHost } from "./pluginStagingFs";
 import type { PluginPanelActionRequest } from "./pluginPanelActionTypes";
 import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
@@ -21,6 +20,10 @@ const PLUGIN_PANEL_WINDOW_LABEL_PREFIX = "plugin-panel-";
 export const ANALYSIS_WINDOW_SNAPSHOT_EVENT = "chemdraft://analysis-window-snapshot";
 export const ANALYSIS_WINDOW_ACTION_EVENT = "chemdraft://analysis-window-action";
 export const ANALYSIS_WINDOW_ACTION_RESULT_EVENT = "chemdraft://analysis-window-action-result";
+
+function isTauriHost(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 /** Core-owned identities deliberately use the existing plugin-panel window transport. */
 export const ANALYSIS_WINDOW_OWNER_ID = "core.analysis";
