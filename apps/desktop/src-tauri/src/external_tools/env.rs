@@ -2,13 +2,11 @@
 use super::probe::ProbePlatform;
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
-    sync::Mutex,
 };
 pub type ParentEnv = BTreeMap<String, String>;
 
-/// Sessions remain in this stable home across runs. Credentials are linked, never read or copied.
+/// Sessions remain in this stable home; refreshed credentials reconcile to the user’s login.
 #[derive(Debug)]
 pub struct CodexHome {
     pub path: Option<PathBuf>,
@@ -49,100 +47,9 @@ pub fn real_codex_home(platform: ProbePlatform, parent: &ParentEnv) -> Option<Pa
     })
 }
 
-/// `base` is app_local_data/external-tools, never a plugin-controlled path.
-pub fn prepare_codex_home(platform: ProbePlatform, base: &Path, parent: &ParentEnv) -> CodexHome {
-    prepare_codex_home_with_link(platform, base, parent, link_codex_auth)
-}
-
-pub(super) fn prepare_codex_home_with_link(
-    platform: ProbePlatform,
-    base: &Path,
-    parent: &ParentEnv,
-    link: impl FnOnce(ProbePlatform, &Path, &Path) -> std::io::Result<()>,
-) -> CodexHome {
-    // Probes and starts can overlap; never let them remove each other's staged auth link.
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _lock = LOCK.lock().unwrap();
-    // Child cwd is the conversation directory, so resolve relative parent overrides before spawn.
-    let real_home =
-        real_codex_home(platform, parent).map(|home| std::path::absolute(&home).unwrap_or(home));
-    let isolated = base.join("codex-home");
-    let prepared = (|| -> Result<(), String> {
-        let real_home = real_home
-            .as_ref()
-            .ok_or("User's Codex home could not be resolved.")?;
-        for path in [base, &isolated] {
-            if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err("ChemDraft's Codex home must not be a symbolic link.".into());
-            }
-            super::private_dir(path)
-                .map_err(|e| format!("Could not create private Codex home: {e}"))?;
-        }
-        let auth = fs::canonicalize(real_home.join("auth.json")).map_err(|e| {
-            format!("User's Codex auth.json is unavailable (login may use the keychain): {e}")
-        })?;
-        if !auth.is_file() {
-            return Err("User's Codex auth.json is not a file.".into());
-        }
-        let isolated = fs::canonicalize(&isolated).map_err(|e| e.to_string())?;
-        let target = isolated.join("auth.json");
-        if auth == target {
-            return Err("User's CODEX_HOME is already ChemDraft's isolated home.".into());
-        }
-        // Keep a correct Unix symlink. A Windows hard link must be refreshed on each preparation:
-        // vendor sign-in can atomically replace the source file, leaving the old inode behind.
-        if platform == ProbePlatform::MacOS && fs::read_link(&target).ok().as_ref() == Some(&auth) {
-            return Ok(());
-        }
-        let staged = isolated.join(format!("auth-link-{}", super::nonce()));
-        link(platform, &auth, &staged)
-            .map_err(|e| format!("Could not link Codex auth.json: {e}"))?;
-        let replaced = (|| {
-            // Unix rename replaces atomically. Windows rename cannot overwrite the old link.
-            if platform == ProbePlatform::Windows {
-                match fs::remove_file(&target) {
-                    Ok(()) => (),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(e) => return Err(e),
-                }
-            }
-            fs::rename(&staged, &target)
-        })();
-        if let Err(e) = replaced {
-            let _ = fs::remove_file(staged);
-            return Err(format!("Could not replace Codex auth link: {e}"));
-        }
-        Ok(())
-    })();
-    match prepared {
-        Ok(()) => CodexHome {
-            path: Some(isolated),
-            fallback_reason: None,
-        },
-        Err(reason) => CodexHome {
-            path: real_home,
-            fallback_reason: Some(format!(
-                "Codex home isolation unavailable; using the user's real Codex home. {reason}"
-            )),
-        },
-    }
-}
-
-fn link_codex_auth(platform: ProbePlatform, source: &Path, target: &Path) -> std::io::Result<()> {
-    match platform {
-        ProbePlatform::Windows => fs::hard_link(source, target),
-        ProbePlatform::MacOS => {
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::symlink(source, target)
-            }
-            #[cfg(not(unix))]
-            {
-                Err(std::io::ErrorKind::Unsupported.into())
-            }
-        }
-    }
-}
+#[cfg(test)]
+pub(super) use super::codex_auth::prepare_codex_home_with_link;
+pub use super::codex_auth::{prepare_codex_home, reconcile_codex_home_auth};
 
 pub fn get<'a>(parent: &'a ParentEnv, key: &str) -> Option<&'a str> {
     parent

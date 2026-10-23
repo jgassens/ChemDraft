@@ -1,6 +1,7 @@
 //! Host-owned external CLI runner and main-window-only Tauri boundary.
 #![allow(dead_code)] // Some catalog/platform helpers are exercised on the other platform or by tests.
 pub mod catalog;
+mod codex_auth;
 pub mod consent;
 pub mod env;
 pub mod install;
@@ -201,6 +202,7 @@ pub struct ExternalToolsInner {
 pub struct ExternalToolsState {
     pub inner: Mutex<ExternalToolsInner>,
     pub probes: probe::ProbeCache,
+    codex_processes: Arc<run::CodexProcesses>,
     installing: AtomicBool,
     cancel_install: AtomicBool,
     install_snapshot: Mutex<Option<(ToolId, Option<ToolInstallProgress>)>>,
@@ -284,6 +286,10 @@ impl ExternalToolsState {
             &environment,
             Duration::from_millis(request.timeout_ms.unwrap_or(600_000)),
             binding,
+            (request.tool == ToolId::Codex).then(|| {
+                codex_auth::CodexAuth::new(probe::ProbePlatform::current(), base, parent)
+                    .tracked(&self.codex_processes)
+            }),
         )
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
         let started = ExternalToolRunStarted {
@@ -340,6 +346,7 @@ impl ExternalToolsState {
         for run in &runs {
             run.cancel(KillReason::AppExit);
         }
+        self.codex_processes.shutdown();
         for run in &runs {
             run.wait_finished(Duration::from_secs(5));
         }
@@ -433,7 +440,6 @@ fn status_impl(
     plugin_id: Option<&str>,
     parent: &env::ParentEnv,
 ) -> Result<ExternalToolStatus, String> {
-    let (parent, notice) = run_parent(base, tool, parent);
     // Auth file replacement or a repaired link can change the effective home between probes.
     let mut status = status_prepared_impl(
         base,
@@ -441,8 +447,11 @@ fn status_impl(
         tool,
         refresh || tool == ToolId::Codex,
         plugin_id,
-        &parent,
+        parent,
     )?;
+    let notice = (tool == ToolId::Codex)
+        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
+        .and_then(|home| home.fallback_reason);
     if let Some(notice) = notice {
         status.detail = Some(match status.detail {
             Some(detail) => format!("{detail} {notice}"),
@@ -450,19 +459,6 @@ fn status_impl(
         });
     }
     Ok(status)
-}
-
-fn run_parent(
-    base: &Path,
-    tool: ToolId,
-    parent: &env::ParentEnv,
-) -> (env::ParentEnv, Option<String>) {
-    if tool == ToolId::Codex {
-        let home = env::prepare_codex_home(probe::ProbePlatform::current(), base, parent);
-        (home.apply(parent), home.fallback_reason)
-    } else {
-        (parent.clone(), None)
-    }
 }
 
 fn status_prepared_impl(
@@ -504,6 +500,7 @@ fn status_prepared_impl(
         let run_dir = base.join("probes");
         private_dir(&run_dir).map_err(|e| e.to_string())?;
         let probe_platform = probe::ProbePlatform::current();
+        let codex_auth = (tool == ToolId::Codex).then(|| codex_auth::CodexAuth::new(probe_platform, base, parent).tracked(&state.codex_processes));
         let home = env::get(parent, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or("");
         let mut paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, None);
         let mut candidate = probe::resolve_candidates(&paths, |p| p.is_file());
@@ -516,13 +513,13 @@ fn status_prepared_impl(
             }
         }
         let user = match candidate {
-            probe::Candidate::Runnable(path) => Some(probe::probe_tool(&tool.spec(), &path, parent, &run_dir, false)),
+            probe::Candidate::Runnable(path) => Some(probe::probe_tool(&tool.spec(), &path, parent, &run_dir, false, codex_auth.as_ref())),
             probe::Candidate::ShimNeedsResolution(_) => Some(Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into())),
             probe::Candidate::Missing => None,
         };
         if let Some(Ok(result)) = user.as_ref() { return Ok(result.clone()); }
         if let Some(managed) = status.managed.as_ref() {
-            return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true);
+            return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true, codex_auth.as_ref());
         }
         user.unwrap_or_else(|| Err(status.detail.clone().unwrap_or_else(|| "Tool is not installed.".into())))
     });
@@ -922,10 +919,8 @@ fn run_start_impl(
             ));
         }
     }
-    // Select the home once: --version, login status and this run all receive the exact same home.
-    // Refresh Codex auth rather than reusing a result for a previously available auth link.
-    let (parent, home_notice) = run_parent(base, request.tool, parent);
-    let parent = &parent;
+    // Each Codex process reconciles and selects its home, including version/auth probes.
+    // Keep the original parent here so a probe conflict makes the next process use the real home.
     let status = status_prepared_impl(
         base,
         state,
@@ -1050,9 +1045,6 @@ fn run_start_impl(
         .env
         .extend(env::with_mcp_token(env::ParentEnv::new(), token));
     let started = state.start_bound(base, &request, rendered, parent, managed, binding)?;
-    if let Some(notice) = home_notice {
-        state.run_by_id(&started.run_id)?.log_notice(&notice);
-    }
     config_cleanup.0 = None;
     Ok(started)
 }

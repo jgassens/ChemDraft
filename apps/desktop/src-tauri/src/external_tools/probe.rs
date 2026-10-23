@@ -1,6 +1,7 @@
 //! Platform-parameterized discovery and bounded CLI probes. Batch shims are never executable.
 use super::{
     catalog::{AuthStatus, RenderedRun, ToolId, ToolSpec},
+    codex_auth::CodexAuth,
     env::{self, ParentEnv},
     run::{CaptureError, RunStatus, ToolRun},
 };
@@ -235,12 +236,13 @@ impl ProbeCache {
         entries.remove(&tool);
     }
 }
-pub fn probe_tool(
+pub(super) fn probe_tool(
     spec: &ToolSpec,
     path: &Path,
     parent: &ParentEnv,
     run_dir: &Path,
     managed: bool,
+    codex_auth: Option<&CodexAuth>,
 ) -> Result<ProbeResult, String> {
     if matches!(
         resolve_candidates(&[path.to_owned()], |p| p.is_file()),
@@ -248,10 +250,10 @@ pub fn probe_tool(
     ) {
         return Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into());
     }
-    let output = execute(
+    let output = execute_in_home(
         path,
         spec.version_args,
-        parent,
+        (parent, codex_auth),
         run_dir,
         managed,
         Duration::from_secs(10),
@@ -269,10 +271,10 @@ pub fn probe_tool(
             spec.display_name, spec.minimum_version
         ));
     }
-    let auth = execute(
+    let auth = execute_in_home(
         path,
         spec.auth_status_args,
-        parent,
+        (parent, codex_auth),
         run_dir,
         managed,
         Duration::from_secs(15),
@@ -299,8 +301,29 @@ pub(super) fn execute(
     timeout: Duration,
     cap: usize,
 ) -> Result<ProbeOutput, String> {
+    execute_in_home(
+        program,
+        args,
+        (parent, None),
+        run_dir,
+        managed,
+        timeout,
+        cap,
+    )
+}
+
+pub(super) fn execute_in_home(
+    program: &Path,
+    args: &[&str],
+    home: (&ParentEnv, Option<&CodexAuth>),
+    run_dir: &Path,
+    managed: bool,
+    timeout: Duration,
+    cap: usize,
+) -> Result<ProbeOutput, String> {
+    let (parent, codex_auth) = home;
     let environment = env::child_env(ProbePlatform::current(), parent, program, run_dir, managed);
-    let run = ToolRun::spawn_with_output_limit(
+    let run = ToolRun::spawn_with_auth(
         RenderedRun {
             program: program.to_owned(),
             args: args.iter().map(|s| (*s).into()).collect(),
@@ -311,6 +334,7 @@ pub(super) fn execute(
         &environment,
         timeout,
         Some(cap),
+        codex_auth.cloned(),
     )?;
     let output = run
         .capture_output(cap, || false)
