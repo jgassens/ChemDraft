@@ -74,9 +74,11 @@ therefore reaches the checkout under test. `PATH` and every other parent
 environment variable are preserved; `CODEX_HOME` stays the isolated directory
 described above, so login shells can still find Node and pnpm.
 
-The ChemDraft skill is copied, with symlinks dereferenced, to
-`$CODEX_HOME/skills/chemdraft`. This uses Codex's user skill location; the
-installed binary's embedded skill documentation references
+The ChemDraft skill at `$CODEX_HOME/skills/chemdraft` links to
+`<checkout>/skills/chemdraft`, using a directory junction on Windows. This
+matches the link under the fake home and Codex's documented install layout, so
+the skill's checkout discovery resolves the checkout under test. This uses
+Codex's user skill location; the installed binary's embedded skill documentation references
 `$CODEX_HOME/skills/.system/...` (the CLI help does not list skill roots).
 The copied home and initial work directory are checked for `AGENTS.md`.
 Codex may subsequently create its own session/cache files in the isolated home.

@@ -5,9 +5,9 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, linkCodexSkill, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 // @ts-expect-error stream.mjs is intentionally plain JavaScript.
-import { inspectStream } from './stream.mjs';
+import { hashTree, inspectStream } from './stream.mjs';
 
 const root = path.resolve(import.meta.dirname, '../../../..');
 const runner = path.join(root, 'tools/agent-skill/stress/runner/run.mjs');
@@ -202,15 +202,15 @@ describe('stress runner', { timeout: 30_000 }, () => {
       env: { CHEMDRAFT_STRESS_CODEX_AUTH_HOME: sourceHome, FAKE_CODEX_TRACE: path.join(out, 'trace.json') } };
   }
 
-  async function tree(directory: string): Promise<string[]> {
+  async function tree(directory: string, links: string[] = []): Promise<string[]> {
     const result: string[] = [];
     for (const entry of await readdir(directory)) {
       const file = path.join(directory, entry);
       const info = await lstat(file);
-      expect(info.isSymbolicLink()).toBe(false);
+      expect(info.isSymbolicLink()).toBe(links.includes(file));
       expect(entry.toLowerCase()).not.toBe('agents.md');
       result.push(file);
-      if (info.isDirectory()) result.push(...await tree(file));
+      if (info.isDirectory()) result.push(...await tree(file, links));
     }
     return result;
   }
@@ -240,11 +240,11 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(config).toContain('network_access = true');
     expect(config).toContain(`writable_roots = [${JSON.stringify(path.join(caseDir, 'work'))}]`);
     expect(config).not.toMatch(/^model\s*=/m);
-    await tree(home); await tree(path.join(caseDir, 'work'));
     const skill = path.join(home, 'skills', 'chemdraft');
-    expect(await readFile(path.join(skill, 'SKILL.md'), 'utf8')).toBe(await readFile(path.join(root, 'skills/chemdraft/SKILL.md'), 'utf8'));
-    await writeFile(path.join(skill, 'SKILL.md'), 'Changed copy');
-    expect(await readFile(path.join(root, 'skills/chemdraft/SKILL.md'), 'utf8')).not.toBe('Changed copy');
+    await tree(home, [skill]); await tree(path.join(caseDir, 'work'));
+    expect((await lstat(skill)).isSymbolicLink()).toBe(true);
+    expect(realpathSync.native(skill)).toBe(realpathSync.native(path.join(root, 'skills/chemdraft')));
+    expect(path.dirname(path.dirname(realpathSync.native(skill)))).toBe(realpathSync.native(root));
     expect(JSON.parse(await readFile(path.join(caseDir, 'tool-calls.json'), 'utf8'))).toEqual([
       { name: 'mcp__chemdraft__render_structure', input: { smiles: 'C' }, result: { content: [
         { type: 'image', mimeType: 'image/png' }, { type: 'text', text: '<svg xmlns="http://www.w3.org/2000/svg"></svg>' },
@@ -259,6 +259,7 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(JSON.parse(await readFile(path.join(caseDir, 'files.json'), 'utf8'))).toEqual([expect.objectContaining({ path: 'drawing.txt', size: 16 })]);
     expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8'))).toMatchObject({ agent: 'codex', codexVersion: 'fake-codex 0.162.1', status: 'complete', model: 'fake-default-model', numTurns: 1,
       usage: { input_tokens: 20, cached_input_tokens: 10, output_tokens: 5 }, mcpServers: [{ name: 'chemdraft', status: 'connected' }], isolation: { verified: true, configuredMcpServers: ['chemdraft'] } });
+    expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8')).skillSha256).toBe(await hashTree(path.join(root, 'skills/chemdraft')));
     expect(JSON.parse(await readFile(path.join(out, 'run.json'), 'utf8')).agent).toBe('codex');
   });
 
@@ -443,6 +444,18 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(realpathSync.native(path.join(home, '.codex/skills/chemdraft'))).toBe(realpathSync.native(path.join(checkout, 'skills/chemdraft')));
     expect(repoAccess([{ name: 'Read', input: { file_path: path.join(home, '.codex/skills/chemdraft/SKILL.md') } }], checkout)
       .some((entry: { classification: string }) => entry.classification === 'foreign-checkout')).toBe(false);
+  });
+
+  it.each(['darwin', 'win32'])('links the Codex user skill root to the checkout on %s', async (platform) => {
+    const checkout = await fakeCheckout(false), caseDir = await outDirectory();
+    const linkTypes: string[] = [];
+    const skill = await linkCodexSkill(path.join(caseDir, 'codex-home'), checkout, { platform,
+      link: async (target: string, destination: string, type: 'dir' | 'junction') => {
+        linkTypes.push(type); await symlink(target, destination, process.platform === 'win32' ? 'junction' : type);
+      } });
+    expect(linkTypes).toEqual([platform === 'win32' ? 'junction' : 'dir']);
+    expect(realpathSync.native(skill)).toBe(realpathSync.native(path.join(checkout, 'skills/chemdraft')));
+    expect(path.dirname(path.dirname(realpathSync.native(skill)))).toBe(realpathSync.native(checkout));
   });
 
   it.each(['darwin', 'win32'])('detects and caches foreign checkouts from absolute paths on %s', async (platform) => {
