@@ -145,13 +145,14 @@ Naming: commands `plugin.<pluginName>.<action>` (schema-enforced for toolset con
 
 ### 4.4 Writing to the document
 
-Plugins mutate documents only through patches. **Proposal review** is for results the user did not
-author and cannot vouch for; image recognition is always proposal-only. When the user supplied the
-input and the conversion is deterministic (a typed name parsed by OPSIN), the plugin declares
-`document.write` and calls `documents.applyPatch`, which works only while one of its own commands is
-running; the host commits one labelled undo entry, selects what was inserted, and opens no review
-window. `applyPatch` only inserts (`addObject`, `addAnnotation`); changing or removing what is already
-there goes through proposal review. Reports are for failures; success needs no window.
+Plugins mutate documents only through patches. A plugin with `document.write` calls
+`documents.applyPatch` only while one of its own commands is running. It may insert objects, and may
+change or remove only objects selected when that command started plus objects it inserted during
+that command. Writes land directly, with one labelled undo entry per plugin command (per AI request
+for the assistant), leaving what changed selected. Undo and redo restore recorded states exactly;
+they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
+results (MolScribe); other plugin writes need no review window. Reports are for failures; success
+needs no window.
 
 ### 4.5 Structure recognition (MolScribe OCSR)
 
