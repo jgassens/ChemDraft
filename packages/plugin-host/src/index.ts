@@ -1054,11 +1054,14 @@ export class PluginHost {
 
             const invocationToken = Symbol(command.id);
             const documentKey = this.getActiveDocumentKey?.();
-            const selection = invocationContext.writeSelection ?? this.getSelectionSnapshot?.();
-            // Copy synchronous snapshots before yielding; never widen the scope on later selection changes.
-            const selectedIds = selection && "then" in selection
-              ? [...((await selection)?.objectIds ?? [])]
-              : [...(selection?.objectIds ?? [])];
+            // Snapshot ids only: the plugin-visible selection provider may build molfiles and
+            // collect warnings, so it must run only when the plugin explicitly reads selection.
+            const document = invocationContext.writeSelection ? undefined : this.getActiveDocument?.();
+            const selectedIds = invocationContext.writeSelection
+              ? [...invocationContext.writeSelection.objectIds]
+              : document && "then" in document
+                ? [...((await document)?.selection.objectIds ?? [])]
+                : [...(document?.selection.objectIds ?? [])];
             this.activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
               commandId: command.id,

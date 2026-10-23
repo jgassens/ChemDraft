@@ -19,6 +19,7 @@ function fixture(
   document = applyPatch(document, { op: "batch", patches: ["mol_1", "mol_7"].map((id) => ({
     op: "addObject", pageId, object: text(id)
   })) }, { now });
+  document = { ...document, selection: { pageId, objectIds: selectedIds } };
   const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
     const patch = request.patch.patch as DocumentPatch;
     document = applyPatch(document, patch, { now });
@@ -28,6 +29,7 @@ function fixture(
     return { applied: true as const, objectIds };
   });
   const host = new PluginHost({
+    getActiveDocument: () => document,
     getSelection: getSelection ?? (() => snapshot(selectedIds)),
     applyDocumentPatch
   });
@@ -124,14 +126,30 @@ describe("direct-write invocation scope", () => {
       return ctx.documents.applyPatch!({ reason: "initial selection", patch: { op: "removeObject", objectId: "mol_1" } });
     }, getSelection);
     await f.host.invokeCommand("plugin.scope.run", override ? { writeSelection: snapshot(["mol_1"]) } : {});
-    expect(getSelection).toHaveBeenCalledTimes(override ? 0 : 1);
+    expect(getSelection).not.toHaveBeenCalled();
     expect(f.document().pages[0]!.objects.map((object) => object.id)).toEqual(["mol_7"]);
   });
 
-  it("reads an asynchronous selection callback once at invocation start", async () => {
+  it("snapshots an asynchronous document callback without reading plugin selection", async () => {
     const getSelection = vi.fn(async () => snapshot(["mol_7"]));
-    const f = fixture([], (ctx) => ctx.documents.applyPatch!({ reason: "selected", patch: operations[0]! }), getSelection);
-    await f.host.invokeCommand("plugin.scope.run");
-    expect(getSelection).toHaveBeenCalledOnce();
+    const f = fixture(["mol_7"], (ctx) => ctx.documents.applyPatch!({ reason: "selected", patch: operations[0]! }), getSelection);
+    const document = f.document();
+    const host = new PluginHost({ getActiveDocument: async () => document, getSelection, applyDocumentPatch: f.applyDocumentPatch });
+    host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+      commandHandlers: { "plugin.scope.run": (ctx) => ctx.documents.applyPatch!({ reason: "selected", patch: operations[0]! }) }
+    });
+    await host.invokeCommand("plugin.scope.run");
+    expect(getSelection).not.toHaveBeenCalled();
+    expect(f.applyDocumentPatch).toHaveBeenCalledOnce();
+  });
+
+  it("honors Send's selection instead of the current document selection", async () => {
+    const f = fixture(["mol_7"], async (ctx) => {
+      await expect(ctx.documents.applyPatch!({ reason: "current selection", patch: operations[0]! }))
+        .rejects.toThrow("mol_7 was not selected");
+      return ctx.documents.applyPatch!({ reason: "Send selection", patch: { op: "removeObject", objectId: "mol_1" } });
+    });
+    await f.host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1"]) });
+    expect(f.document().pages[0]!.objects.map(object => object.id)).toEqual(["mol_7"]);
   });
 });

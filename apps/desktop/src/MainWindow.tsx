@@ -3077,6 +3077,13 @@ export function MainWindow({
     if (label) documentUndoLabelsRef.current.set(clean, label);
     return clean;
   }, []);
+  // Ordinary edits and assistant history pushes/amendments share commit preparation.
+  const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, undoLabel?: string) => {
+    const present = normalizeCommittedDocument(nextDocument);
+    const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
+    if (label) documentUndoLabelsRef.current.set(present, label);
+    return present;
+  }, []);
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string
@@ -3090,11 +3097,7 @@ export function MainWindow({
       return false;
     }
 
-    const present = normalizeCommittedDocument(nextDocument);
-    const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
-    if (label) {
-      documentUndoLabelsRef.current.set(present, label);
-    }
+    const present = prepareDocumentCommit(nextDocument, undoLabel);
     installDocumentHistory({
       past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
       present,
@@ -3106,7 +3109,7 @@ export function MainWindow({
       return nextFileState;
     });
     return true;
-  }, [atomLabelHistorySnapshot, installDocumentHistory]);
+  }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
   const assistantHistoryPort = useMemo<AssistantHistoryPort>(() => {
     const readHistory = (tabId: string): DocumentHistory | undefined => {
       if (!assistantHistoryMountedRef.current || !documentTabsRef.current.some(tab => tab.id === tabId)) return undefined;
@@ -3133,8 +3136,7 @@ export function MainWindow({
       return history;
     };
     const labelled = (document: ChemDraftDocument, label: string) => {
-      const present = normalizeCommittedDocument(document);
-      documentUndoLabelsRef.current.set(present, label);
+      const present = prepareDocumentCommit(document, label);
       assistantRecordedAfterRef.current.set(present, present);
       return present;
     };
@@ -3173,7 +3175,7 @@ export function MainWindow({
         return true;
       }
     };
-  }, [installDocumentHistory, setSelectedNativeMoleculePart]);
+  }, [installDocumentHistory, prepareDocumentCommit, setSelectedNativeMoleculePart]);
   const assistantTransactions = useMemo(() => getAssistantTransactions(assistantHistoryPort), [assistantHistoryPort]);
   useEffect(() => {
     assistantHistoryMountedRef.current = true;

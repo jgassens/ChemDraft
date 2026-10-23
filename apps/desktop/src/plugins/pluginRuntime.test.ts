@@ -659,6 +659,18 @@ describe("selection warnings are scoped to the command invocation that read the 
     contributes: { commands: [{ id, title: name }] }
   });
 
+  it("does not read selection for a command that never writes or requests selection", async () => {
+    const getSelection = vi.fn(() => emptySelection);
+    const runtime = makeRuntime({ getSelection });
+    runtime.registerPlugin(reader("plugin.idle.run", "idle"), {
+      commandHandlers: { "plugin.idle.run": () => undefined }
+    });
+    const warnings: string[] = [];
+    await runtime.invokeCommand("plugin.idle.run", { selectionWarnings: warnings });
+    expect(getSelection).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
   it("a concurrent read by another plugin, or a read outside any invocation, never lands in this command's warnings", async () => {
     let reads = 0;
     const runtime = makeRuntime({

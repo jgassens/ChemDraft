@@ -16,4 +16,5 @@ partial registration is rolled back, and uninstall removes only commands still o
 Direct writes enforce an invocation's initial selection plus its accepted insertions. Flat `batch`
 patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
-the host reads `getSelection` once at invocation start. `writePatchOps` flattens a validated batch.
+the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
+calling the plugin-visible selection provider. `writePatchOps` flattens a validated batch.

@@ -7,4 +7,3 @@
  * plugin builds in a session.
  */
 export const RESERVED_PLUGIN_OBJECT_IDS = new Set<string>();
-
