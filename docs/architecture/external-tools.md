@@ -82,8 +82,9 @@ Claude uses `HOME` to find `~/.claude`, honouring `CLAUDE_CONFIG_DIR` when set. 
 Keychain entry is keyed to that config directory; on Windows credentials live in
 `%USERPROFILE%\.claude\.credentials.json` (or the configured directory). Codex uses `$CODEX_HOME`
 or the default `~/.codex` directory (`%USERPROFILE%\.codex` on Windows) as its home.
-Codex can keep its own login in `auth.json` there or in OS secret storage; pinned Windows
-Codex 0.163.0 enables `secret_auth_storage` for OS storage such as Windows Credential Manager.
+Codex can keep its own login in `auth.json` there or use its own encrypted local secrets backend
+through `secret_auth_storage`. Pinned Codex 0.163.0 lists this feature on both macOS and Windows;
+it is default-on only on Windows and present but off on macOS.
 ChemDraft keeps that feature enabled so an existing Codex login remains accessible; it grants
 no tool to the model. The environment allowlist preserves `HOME`, `CLAUDE_CONFIG_DIR`, and
 `CODEX_HOME`, plus Windows `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, and `LOCALAPPDATA`,
@@ -161,9 +162,9 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml external_tools::tes
 ```
 
 The Codex check parses `features list` and fails on any unclassified default-on feature reported
-by that platform's binary. Feature availability differs by platform: for example,
-`secret_auth_storage` is listed by pinned Windows Codex but absent on macOS. Classified KEEP or
-DISABLE entries absent from the current platform's list are logged and accepted.
+by that platform's binary. Every KEEP and DISABLE entry must appear in the pinned binary's list.
+Only names explicitly listed in the platform-only allowlist may be absent on platforms where they
+are not available; the allowlist is empty for the current pin.
 It then runs the rendered first-turn arguments with a local test
 provider requiring an absent API key and the MCP connection disabled: config validation finishes,
 then authentication fails before a model request. A 30 s timeout bounds the check, which rejects

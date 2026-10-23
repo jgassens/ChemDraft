@@ -10,8 +10,8 @@ pub const CODEX_FEATURES_KEEP: &[&str] = &[
     "compaction_image_budget", // Context compaction accounting; does not expose image tools.
     "content_item_kinds",      // Message content representation, not a tool registration.
     "enable_request_compression", // Compresses existing API traffic; adds no destination.
-    // Codex's own login in OS secret storage (Windows), not a model-callable capability;
-    // disabling could hide a user's existing Codex login.
+    // Codex's own encrypted local secrets backend for its login, not a model-callable capability;
+    // disabling could hide a user's existing Codex login. Default-on only on Windows.
     "secret_auth_storage",
     "system_proxy_fallback", // Transport for existing requests, not model-directed networking.
     "tool_call_mcp_elicitation", // Protocol replies for the explicitly configured MCP server.
@@ -76,6 +76,11 @@ pub const CODEX_FEATURES_DISABLE: &[&str] = &[
     "worktrees",                     // Worktree management.
     "write_stdin_approval",          // Process input approval is unnecessary without execution.
 ];
+
+/// Features whose availability differs by platform, mapped to the platforms where they exist.
+/// Add an entry only after verifying the pinned binaries on every supported platform; a missing
+/// entry is otherwise a parity failure. The list is currently empty.
+pub const CODEX_FEATURES_PLATFORM_ONLY: &[(&str, &[super::pins::ToolPlatform])] = &[];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

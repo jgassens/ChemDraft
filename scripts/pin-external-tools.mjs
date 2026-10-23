@@ -180,8 +180,9 @@ export function parityPlatformMessage(platform = process.platform, arch = proces
   const checkedPlatform = platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : null;
   const notChecked = checkedPlatform === "macOS" ? "Windows" : checkedPlatform === "Windows" ? "macOS" : "macOS and Windows";
   const host = checkedPlatform ? `${checkedPlatform} (${platform}-${arch})` : `${platform}-${arch} (no supported desktop platform)`;
-  const rerun = checkedPlatform === "macOS" ? "Windows" : "macOS";
-  return `Pinned CLI parity checked on host ${host}; NOT checked on ${notChecked}. Run --check on a ${rerun} host too.`;
+  const rerun = notChecked;
+  const hosts = rerun.includes(" and ") ? `${rerun} hosts` : `a ${rerun} host`;
+  return `Pinned CLI parity checked on host ${host}; NOT checked on ${notChecked}. Run --check on ${hosts} too.`;
 }
 
 // Use argv and an explicit environment, never a shell string (Windows paths can contain spaces).

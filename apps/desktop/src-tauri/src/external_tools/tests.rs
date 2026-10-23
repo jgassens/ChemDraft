@@ -1,6 +1,10 @@
 use super::*;
-use catalog::{render_run, ToolRunInputs, CODEX_FEATURES_DISABLE, CODEX_FEATURES_KEEP};
+use catalog::{
+    render_run, ToolRunInputs, CODEX_FEATURES_DISABLE, CODEX_FEATURES_KEEP,
+    CODEX_FEATURES_PLATFORM_ONLY,
+};
 use env::ParentEnv;
+use pins::ToolPlatform;
 use probe::{Candidate, ProbePlatform};
 use run::{OutputStream, RunStatus};
 use std::{process::Command, sync::OnceLock, thread, time::Instant};
@@ -370,43 +374,101 @@ fn codex_feature_rows_parse_multiword_stages() {
     );
 }
 
-fn classify_codex_features(features: &[(&str, bool)]) -> Result<(), String> {
-    for feature in CODEX_FEATURES_KEEP.iter().chain(CODEX_FEATURES_DISABLE) {
+fn classify_codex_features_with_platform_only(
+    features: &[(&str, bool)],
+    platform: ToolPlatform,
+    keep: &[&str],
+    disable: &[&str],
+    platform_only: &[(&str, &[ToolPlatform])],
+) -> Result<(), String> {
+    for feature in keep.iter().chain(disable) {
         if !features.iter().any(|(name, _)| name == feature) {
-            eprintln!("Classified Codex feature not listed on this platform: {feature}");
+            if platform_only
+                .iter()
+                .any(|(name, platforms)| name == feature && !platforms.contains(&platform))
+            {
+                continue;
+            }
+            return Err(format!(
+                "Classified Codex feature not listed on this platform: {feature}"
+            ));
         }
     }
     for &(name, enabled) in features {
-        if enabled
-            && !CODEX_FEATURES_KEEP.contains(&name)
-            && !CODEX_FEATURES_DISABLE.contains(&name)
-        {
+        if enabled && !keep.contains(&name) && !disable.contains(&name) {
             return Err(format!("Unclassified default-on Codex feature: {name}"));
         }
     }
     Ok(())
 }
 
+fn classify_codex_features(
+    features: &[(&str, bool)],
+    platform: ToolPlatform,
+) -> Result<(), String> {
+    classify_codex_features_with_platform_only(
+        features,
+        platform,
+        CODEX_FEATURES_KEEP,
+        CODEX_FEATURES_DISABLE,
+        CODEX_FEATURES_PLATFORM_ONLY,
+    )
+}
+
 #[test]
-fn codex_feature_classification_tolerates_platform_specific_entries() {
-    // macOS omits the Windows-only KEEP entry; either platform may omit other policy entries.
-    let macos = codex_feature_rows("apps stable true\nauth_elicitation stable true\n");
-    assert!(!macos.iter().any(|(name, _)| *name == "secret_auth_storage"));
-    assert_eq!(classify_codex_features(&macos), Ok(()));
-    let windows = codex_feature_rows(
-        "apps stable true\nauth_elicitation stable true\nsecret_auth_storage stable true\n",
+fn codex_feature_classification_allows_explicit_platform_only_absence() {
+    let features = codex_feature_rows("apps stable true\n");
+    let platform_only = [("auth_elicitation", &[ToolPlatform::WindowsX64][..])];
+    assert_eq!(
+        classify_codex_features_with_platform_only(
+            &features,
+            ToolPlatform::DarwinArm64,
+            &["apps", "auth_elicitation"],
+            &[],
+            &platform_only
+        ),
+        Ok(())
     );
-    assert_eq!(classify_codex_features(&windows), Ok(()));
+}
+
+#[test]
+fn codex_feature_classification_rejects_missing_disable_entry() {
+    let typo = "typo_feature";
+    let features = codex_feature_rows("apps stable true\n");
+    assert_eq!(
+        classify_codex_features_with_platform_only(
+            &features,
+            ToolPlatform::DarwinArm64,
+            &["apps"],
+            &[typo],
+            &[],
+        ),
+        Err(format!(
+            "Classified Codex feature not listed on this platform: {typo}"
+        ))
+    );
 }
 
 #[test]
 fn codex_feature_classification_rejects_unknown_default_on() {
     assert_eq!(
-        classify_codex_features(&codex_feature_rows("unknown_tool stable true\n")),
+        classify_codex_features_with_platform_only(
+            &codex_feature_rows("unknown_tool stable true\n"),
+            ToolPlatform::DarwinArm64,
+            &[],
+            &[],
+            &[],
+        ),
         Err("Unclassified default-on Codex feature: unknown_tool".into())
     );
     assert_eq!(
-        classify_codex_features(&codex_feature_rows("unknown_tool stable false\n")),
+        classify_codex_features_with_platform_only(
+            &codex_feature_rows("unknown_tool stable false\n"),
+            ToolPlatform::DarwinArm64,
+            &[],
+            &[],
+            &[],
+        ),
         Ok(())
     );
 }
@@ -422,7 +484,8 @@ fn pinned_codex_accepts_rendered_run() {
     assert_eq!(output.code, Some(0), "{}", output.stderr);
     let features = codex_feature_rows(&output.stdout);
     assert!(!features.is_empty(), "features list must report features");
-    classify_codex_features(&features).unwrap_or_else(|message| panic!("{message}"));
+    let platform = current_platform().expect("pinned parity runs on a supported desktop platform");
+    classify_codex_features(&features, platform).unwrap_or_else(|message| panic!("{message}"));
 
     let system_prompt = temp.0.join("system-prompt.md");
     fs::write(&system_prompt, "ChemDraft CLI parity check.").unwrap();

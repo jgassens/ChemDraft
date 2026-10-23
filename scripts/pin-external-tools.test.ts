@@ -38,6 +38,7 @@ describe("external tool pin script", () => {
   it("states which platform was checked and which still needs a parity run", () => {
     expect(parityPlatformMessage("darwin", "arm64")).toBe("Pinned CLI parity checked on host macOS (darwin-arm64); NOT checked on Windows. Run --check on a Windows host too.");
     expect(parityPlatformMessage("win32", "x64")).toBe("Pinned CLI parity checked on host Windows (win32-x64); NOT checked on macOS. Run --check on a macOS host too.");
+    expect(parityPlatformMessage("linux", "x64")).toBe("Pinned CLI parity checked on host linux-x64 (no supported desktop platform); NOT checked on macOS and Windows. Run --check on macOS and Windows hosts too.");
   });
 
   it("does not inherit a parity binary for a tool absent on the host", () => {
