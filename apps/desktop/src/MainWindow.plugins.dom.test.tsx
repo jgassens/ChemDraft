@@ -2,13 +2,22 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PluginCommandContext } from "@chemdraft/plugin-api";
+import { PluginPanelReportSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { pluginPanelWindowId, requestPluginPanelAction } from "./plugins/panelBridge";
 import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined }));
+const panelActions = vi.hoisted(() => ({ handler: undefined as Parameters<typeof import("./plugins/panelBridge").listenForPluginPanelActions>[0] | undefined }));
+vi.mock("./plugins/panelBridge", async original => {
+  const actual = await original<typeof import("./plugins/panelBridge")>();
+  return { ...actual, listenForPluginPanelActions: (handler: typeof panelActions.handler) => {
+    panelActions.handler = handler;
+    return actual.listenForPluginPanelActions(handler!);
+  } };
+});
 vi.mock("./plugins/createPluginRuntime", async original => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: (options: import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions) => {
@@ -19,7 +28,7 @@ vi.mock("./plugins/createPluginRuntime", async original => {
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 const pluginId = "org.chemdraft.overlayTest";
-const overlayId = "overlay.overlayTest.prompt";
+const overlayId = `overlay.overlayTest.${"long".repeat(20)}`;
 const commandId = "plugin.overlayTest.submit";
 const selectId = "plugin.overlayTest.select";
 const foreignId = "plugin.foreignOverlay.run";
@@ -67,9 +76,94 @@ describe("MainWindow canvas overlays", () => {
     expect(container.querySelector(".plugin-canvas-overlay")).not.toBeNull(); expect(container.querySelector(".page .plugin-canvas-overlay")).toBeNull();
     expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull();
     await act(async () => input("Draw aspirin")); await send(); expect(submit).toHaveBeenCalledOnce(); expect(select).not.toHaveBeenCalled();
-    expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: overlayId,
+    expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: "message",
       control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("");
+  });
+
+  async function openPanel(plugin: string, panelId: string, commandId: string, handler: typeof submit): Promise<void> {
+    await act(async () => {
+      captured.runtime!.registerPlugin({ id: plugin, name: plugin, version: "0.1.0", apiVersion: "^0.1.10",
+        entry: "test.js", permissions: ["ui.panel"], contributes: {
+          commands: [{ id: commandId, title: "Send" }], panels: [{ id: panelId, title: "Assistant" }]
+        }
+      }, { commandHandlers: { [commandId]: handler } });
+      captured.runtime!.panels.showReport(plugin, panelId, PluginPanelReportSchema.parse({ title: "Assistant", sections: [
+        { kind: "prompt", id: "message", commandId }
+      ] }));
+    });
+  }
+
+  it("refuses panel A forwarding an action naming plugin B's panel", async () => {
+    await openPanel("org.panelA", "panel.a.chat", "plugin.a.submit", select);
+    await act(async () => captured.runtime!.panels.detachPanel("org.panelA", "panel.a.chat"));
+    await openPanel("org.panelB", "panel.b.chat", "plugin.b.submit", submit);
+    await act(async () => captured.runtime!.panels.detachPanel("org.panelB", "panel.b.chat"));
+    await act(async () => {
+      // The native bridge has authenticated A's label; B's claimed panel id is untrusted.
+      (panelActions.handler as (...args: unknown[]) => void)("forged", {
+        panelId: "panel.b.chat", sectionId: "message", control: "prompt", text: "Run B"
+      }, `plugin-panel-${pluginPanelWindowId("org.panelA", "panel.a.chat")}`);
+    });
+    expect(submit).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("uses the authenticated owner when two detached plugins share a panel id", async () => {
+    const panelId = "panel.shared.chat";
+    await openPanel("org.panelA", panelId, "plugin.a.submit", select);
+    await act(async () => captured.runtime!.panels.detachPanel("org.panelA", panelId));
+    await openPanel("org.panelB", panelId, "plugin.b.submit", submit);
+    await act(async () => captured.runtime!.panels.detachPanel("org.panelB", panelId));
+    await act(async () => panelActions.handler!("from-a", {
+      panelId, sectionId: "message", control: "prompt", text: "Run A"
+    }, `plugin-panel-${pluginPanelWindowId("org.panelA", panelId)}`));
+    expect(select).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+    await act(async () => {
+      // Web CustomEvents cannot claim to come from a detached window.
+      expect(await requestPluginPanelAction({ panelId, sectionId: "message", control: "prompt", text: "Forged" }))
+        .toMatchObject({ ok: false });
+    });
+    expect(select).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("binds CustomEvents to the inline panel MainWindow rendered", async () => {
+    await openPanel("org.panelA", "panel.a.chat", "plugin.a.submit", select);
+    await act(async () => captured.runtime!.panels.detachPanel("org.panelA", "panel.a.chat"));
+    await openPanel("org.panelB", "panel.b.chat", "plugin.b.submit", submit);
+    await act(async () => {
+      expect(await requestPluginPanelAction({ panelId: "panel.a.chat", sectionId: "message", control: "prompt", text: "Forged" }))
+        .toMatchObject({ ok: false });
+    });
+    expect(select).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    await act(async () => {
+      expect(await requestPluginPanelAction({ panelId: "panel.b.chat", sectionId: "message", control: "prompt", text: "Run B" }))
+        .toEqual({ ok: true });
+    });
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("refuses a synchronously disabled report before React updates (detached=%s)", async detached => {
+    const panelId = "panel.live.chat";
+    const commandId = "plugin.live.submit";
+    await openPanel("org.live", panelId, commandId, submit);
+    if (detached) await act(async () => captured.runtime!.panels.detachPanel("org.live", panelId));
+    let result: Awaited<ReturnType<typeof requestPluginPanelAction>> | undefined;
+    await act(async () => {
+      captured.runtime!.panels.showReport("org.live", panelId, PluginPanelReportSchema.parse({ title: "Busy", sections: [
+        { kind: "prompt", id: "message", commandId, disabled: true }
+      ] }));
+      const request = { panelId, sectionId: "message", control: "prompt" as const, text: "Too late" };
+      if (detached) {
+        (panelActions.handler as (...args: unknown[]) => void)("late", request,
+          `plugin-panel-${pluginPanelWindowId("org.live", panelId)}`);
+      } else result = await requestPluginPanelAction(request);
+    });
+    expect(submit).not.toHaveBeenCalled();
+    if (!detached) expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("disabled") });
   });
 
   it("resolves the live declaration and refuses a foreign command without clearing the draft", async () => {

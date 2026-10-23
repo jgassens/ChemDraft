@@ -179,6 +179,7 @@ import {
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
+  parsePluginPanelWindowLabel,
   pluginPanelIdentityKey,
   respondToCopyMolecularInspector,
   respondToPluginPanelAction,
@@ -11209,11 +11210,11 @@ export function MainWindow({
     const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
     if (!declaration) return { ok: false, message: "This overlay is no longer available." };
     const overlay = declaration.overlay;
-    if (request.sectionId !== overlay.id) return { ok: false, message: "Unknown overlay section." };
+    if (request.sectionId !== overlay.prompt.id) return { ok: false, message: "Unknown overlay section." };
     // Reuse the panel validator for live limits, controls and ownership. The overlay's top-level
     // command owns Send; its prompt.commandId is never trusted as an alternate submit route.
     const resolved = resolvePluginPanelAction({ title: overlay.title, sections: [
-      { ...overlay.prompt, id: overlay.id, commandId: overlay.commandId }
+      { ...overlay.prompt, commandId: overlay.commandId }
     ] }, { ...request, panelId: "panel.overlay.input" }, commandId => {
       const command = registry.get(commandId);
       return command?.source === "plugin" && command.pluginId === pluginId
@@ -11226,32 +11227,32 @@ export function MainWindow({
     return acceptPluginInput(resolved.commandId, parsed.data);
   };
 
-  // Keep one subscription while resolving every action against the report last shown by this
-  // window and the current host registry. A panel message cannot supply command metadata.
+  // Keep one subscription; identity comes from native IPC or the inline panel we rendered,
+  // and control metadata comes synchronously from the controller, never a render/broadcast cache.
   const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
-  pluginPanelActionHandlerRef.current = (id, request) => {
+  pluginPanelActionHandlerRef.current = (id, request, sourceLabel) => {
     const refuse = (reason: string) => {
       void respondToPluginPanelAction(id, { ok: false, reason }).catch(() => undefined);
     };
     const runtime = pluginRuntime.runtime;
     const openPanel = runtime.panels.getOpenPanel();
-    const panels = [
-      ...runtime.panels.getDetachedPanels(),
-      ...(openPanel ? [openPanel] : [])
-    ].filter((panel) => panel.panelId === request.panelId);
-    // Panel ids can be shared by plugins. The input envelope cannot disambiguate their owners.
-    if (panels.length !== 1) {
-      refuse(panels.length ? "The panel owner is ambiguous." : "This panel is no longer open.");
+    const identity = sourceLabel === undefined
+      ? !isDesktopRuntime() ? pluginRuntime.openPanel : undefined
+      : parsePluginPanelWindowLabel(sourceLabel);
+    if (!identity) {
+      refuse("This panel is no longer open.");
       return;
     }
-    const panel = panels[0]!;
-    const displayedOpenPanel = pluginRuntime.openPanel;
-    const report = panel === openPanel
-      ? displayedOpenPanel?.pluginId === panel.pluginId && displayedOpenPanel.panelId === panel.panelId
-        ? displayedOpenPanel.report : undefined
-      : pluginPanelReportsRef.current.get(pluginPanelIdentityKey(panel.pluginId, panel.panelId))?.report;
-    if (!report) {
-      refuse("This panel has no displayed report.");
+    if (identity.panelId !== request.panelId) {
+      refuse("The action does not belong to its source panel.");
+      return;
+    }
+    const panel = sourceLabel === undefined
+      ? openPanel?.pluginId === identity.pluginId && openPanel.panelId === identity.panelId ? openPanel : undefined
+      : runtime.panels.getDetachedPanels().find(candidate =>
+        candidate.pluginId === identity.pluginId && candidate.panelId === identity.panelId);
+    if (!panel) {
+      refuse("This panel is no longer open.");
       return;
     }
     const ownsCommand = (commandId: string) => {
@@ -11259,7 +11260,7 @@ export function MainWindow({
       return command?.source === "plugin" && command.pluginId === panel.pluginId
         && runtime.host.getPlugin(panel.pluginId)?.manifest.contributes.commands.some((item) => item.id === commandId) === true;
     };
-    const resolved = resolvePluginPanelAction(report, request, ownsCommand);
+    const resolved = resolvePluginPanelAction(panel.report, request, ownsCommand);
     if (!resolved.ok) {
       refuse(resolved.reason);
       return;
@@ -11270,8 +11271,8 @@ export function MainWindow({
       .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }))
       .catch(() => undefined);
   };
-  useEffect(() => listenForPluginPanelActions((id, request) => {
-    pluginPanelActionHandlerRef.current(id, request);
+  useEffect(() => listenForPluginPanelActions((id, request, sourceLabel) => {
+    pluginPanelActionHandlerRef.current(id, request, sourceLabel);
   }), []);
 
   // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the

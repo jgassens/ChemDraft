@@ -133,7 +133,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           onPointerDown={event => event.stopPropagation()}
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
-      <PluginPromptSection section={{ ...overlay.prompt, id: overlay.id }} onAction={onAction} includeSelected />
+      <PluginPromptSection section={overlay.prompt} onAction={onAction} includeSelected />
       <p className="plugin-canvas-overlay-status" role="status">{status}</p>
       {onOpenPanel ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>Open assistant panel</button> : null}
     </div>

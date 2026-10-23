@@ -1294,6 +1294,8 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            plugin_panel_action_forward,
+            plugin_panel_event_forward,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
@@ -2763,6 +2765,83 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelActionForwardRequest {
+    id: String,
+    request: serde_json::Value,
+}
+
+/// Only native IPC supplies `sourceLabel`; callers cannot nominate another panel's label.
+fn authenticated_plugin_panel_action(
+    label: &str,
+    request: PluginPanelActionForwardRequest,
+) -> Result<serde_json::Value, String> {
+    if !is_plugin_panel_window_label(label) {
+        return Err("Only a ChemDraft panel window may forward panel actions.".into());
+    }
+    Ok(serde_json::json!({
+        "id": request.id,
+        "request": request.request,
+        "sourceLabel": label,
+    }))
+}
+
+#[tauri::command]
+fn plugin_panel_action_forward(
+    window: tauri::WebviewWindow,
+    request: PluginPanelActionForwardRequest,
+) -> Result<(), String> {
+    let payload = authenticated_plugin_panel_action(window.label(), request)?;
+    window
+        .app_handle()
+        .emit_to(
+            MAIN_WINDOW_LABEL,
+            "chemdraft://plugin-panel-action",
+            payload,
+        )
+        .map_err(|error| error.to_string())
+}
+
+/// Panel windows cannot emit arbitrary events (including forged authenticated actions).
+/// Preserve their existing non-command bridges through this fixed list only.
+fn validate_plugin_panel_event(
+    label: &str,
+    event: &str,
+    payload: &serde_json::Value,
+) -> Result<(), String> {
+    if !is_plugin_panel_window_label(label) {
+        return Err("Only a ChemDraft panel window may forward panel events.".into());
+    }
+    match event {
+        "chemdraft://plugin-panel-request"
+        | "chemdraft://plugin-panel-rerun"
+        | "chemdraft://plugin-panel-closed" => {
+            let plugin_id = payload["pluginId"].as_str().ok_or("Missing panel owner.")?;
+            let panel_id = payload["panelId"].as_str().ok_or("Missing panel id.")?;
+            if plugin_panel_identity_window_label(plugin_id, panel_id) != label {
+                return Err("This event does not belong to its source panel.".into());
+            }
+            Ok(())
+        }
+        "chemdraft://analysis-window-action" => Ok(()),
+        _ => Err("This event cannot be forwarded by a panel window.".into()),
+    }
+}
+
+#[tauri::command]
+fn plugin_panel_event_forward(
+    window: tauri::WebviewWindow,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    validate_plugin_panel_event(window.label(), &event, &payload)?;
+    window
+        .app_handle()
+        .emit_to(MAIN_WINDOW_LABEL, &event, payload)
+        .map_err(|error| error.to_string())
+}
+
 /// The IPC injects the calling window; it never accepts a caller-selected target label.
 fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
     if is_plugin_panel_window_label(label) {
@@ -2918,6 +2997,14 @@ fn cancel_plugin_panel_restore(
     if identity.plugin_id.is_empty() || identity.panel_id.is_empty() {
         return;
     }
+    let label = plugin_panel_identity_window_label(&identity.plugin_id, &identity.panel_id);
+    suspension
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .closed(&label);
+}
+
+fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String {
     let hex = |value: &str| {
         value
             .as_bytes()
@@ -2925,15 +3012,7 @@ fn cancel_plugin_panel_restore(
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
-    let label = plugin_panel_window_label(&format!(
-        "v1x{}x{}",
-        hex(&identity.plugin_id),
-        hex(&identity.panel_id)
-    ));
-    suspension
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .closed(&label);
+    plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
 }
 
 fn is_plugin_panel_window_label(label: &str) -> bool {
@@ -2961,6 +3040,67 @@ mod plugin_panel_label_tests {
         choose_analysis_window_position, is_plugin_panel_window_label, is_valid_plugin_storage_id,
         plugin_panel_window_label, OpenPluginPanelRequest, ScreenRect,
     };
+
+    #[test]
+    fn plugin_panel_action_forward_authenticates_the_injected_caller() {
+        use super::{authenticated_plugin_panel_action, PluginPanelActionForwardRequest};
+        let request = || PluginPanelActionForwardRequest {
+            id: "request-1".into(),
+            request: serde_json::json!({"panelId": "panel.b.chat", "sectionId": "message"}),
+        };
+        for label in ["main", "preferences", "toolset-core-main", "plugin-panel-"] {
+            assert!(authenticated_plugin_panel_action(label, request()).is_err());
+        }
+        let label = plugin_panel_window_label("v1x61x70616e656c");
+        let forwarded = authenticated_plugin_panel_action(&label, request()).unwrap();
+        assert_eq!(forwarded["sourceLabel"], label);
+        assert_eq!(forwarded["id"], "request-1");
+        assert_eq!(forwarded["request"]["panelId"], "panel.b.chat");
+        // Even a forged extra field is refused by the IPC argument schema.
+        assert!(
+            serde_json::from_value::<PluginPanelActionForwardRequest>(serde_json::json!({
+                "id": "forged", "request": {}, "sourceLabel": "plugin-panel-other"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn plugin_panel_event_forward_cannot_spoof_authenticated_actions() {
+        use super::validate_plugin_panel_event;
+        let label = plugin_panel_window_label("v1x61x62");
+        let payload = serde_json::json!({"pluginId": "a", "panelId": "b"});
+        for event in [
+            "chemdraft://plugin-panel-action",
+            "chemdraft://plugin-panel-action-result",
+            "menu-command",
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_err());
+        }
+        for event in [
+            "chemdraft://plugin-panel-request",
+            "chemdraft://plugin-panel-rerun",
+            "chemdraft://plugin-panel-closed",
+            "chemdraft://analysis-window-action",
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_ok());
+            assert!(validate_plugin_panel_event("main", event, &payload).is_err());
+        }
+        for event in [
+            "chemdraft://plugin-panel-request",
+            "chemdraft://plugin-panel-rerun",
+            "chemdraft://plugin-panel-closed",
+        ] {
+            assert!(validate_plugin_panel_event(
+                &label,
+                event,
+                &serde_json::json!({
+                    "pluginId": "other", "panelId": "b"
+                })
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {

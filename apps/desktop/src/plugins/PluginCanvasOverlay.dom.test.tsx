@@ -127,7 +127,7 @@ describe("PluginCanvasOverlay", () => {
     }
     expect(action).not.toHaveBeenCalled();
     await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    expect(action).toHaveBeenCalledWith({ sectionId: overlay.id, control: "prompt", text: "Draw aspirin", selected: "codex" });
+    expect(action).toHaveBeenCalledWith({ sectionId: overlay.prompt.id, control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(textarea.value).toBe("Draw aspirin"); expect(textarea.disabled).toBe(false);
     expect(container.querySelector("[role=alert]")?.textContent).toBe("Finish the pending confirmation.");
     await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
@@ -137,10 +137,10 @@ describe("PluginCanvasOverlay", () => {
   it("includes a changed choice in Send and catches action rejection inline", async () => {
     await expand(); const select = container.querySelector("select")!;
     await act(async () => { select.value = "claude"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(action).toHaveBeenLastCalledWith({ sectionId: overlay.id, control: "select", controlId: "provider", selected: "claude" });
+    expect(action).toHaveBeenLastCalledWith({ sectionId: overlay.prompt.id, control: "select", controlId: "provider", selected: "claude" });
     action.mockRejectedValueOnce(new Error("No host")); await act(async () => enterText("Try again"));
     await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    expect(action).toHaveBeenLastCalledWith({ sectionId: overlay.id, control: "prompt", text: "Try again", selected: "claude" });
+    expect(action).toHaveBeenLastCalledWith({ sectionId: overlay.prompt.id, control: "prompt", text: "Try again", selected: "claude" });
     expect(container.querySelector("[role=alert]")?.textContent).toBe("The action could not be completed.");
     expect(container.querySelector("textarea")!.value).toBe("Try again");
   });
