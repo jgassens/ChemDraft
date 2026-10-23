@@ -2,7 +2,7 @@
 // into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
-import type { ApplyPatchOptions } from "@chemdraft/chem-core";
+import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
@@ -109,6 +109,8 @@ export interface CommandDefinition {
 export interface CommandInvocationContext {
   pluginId?: string;
   permissions?: ReadonlySet<PluginPermission>;
+  /** Host-supplied selection captured at Send, instead of reading the live selection. */
+  writeSelection?: PluginSelectionSnapshot;
 }
 
 export type CommandHandler<Result = unknown> = (
@@ -264,12 +266,21 @@ export const PermissionsForbiddenToRecognizers = [
 ] as const satisfies readonly PluginPermission[];
 
 /**
- * The only patch ops `documents.applyPatch` accepts. The direct-write exception (API 0.1.4, AGENTS.md
- * §7) covers deterministic INSERTION of what the user supplied; changing or removing chemistry that is
- * already in the document is not insertion and must go through proposal review. Both ops refuse an id
- * that already exists, so neither can overwrite an object.
+ * Direct writes may insert, or change objects in the command's fixed write scope.
+ * Recognition remains proposal-only.
  */
-export const DirectWritePatchOps = ["addObject", "addAnnotation"] as const;
+export const DirectWritePatchOps = [
+  "addObject", "addAnnotation", "updateObject", "removeObject", "moveObject", "setObjectOrder"
+] as const;
+
+/** Flatten a validated flat batch for scope checks and touched-object tracking. */
+export function writePatchOps(patch: DocumentPatch): Exclude<DocumentPatch, { op: "batch" }>[] {
+  if (patch.op !== "batch") return [patch];
+  if (patch.patches.length < 1 || patch.patches.length > 256 || patch.patches.some((op) => op.op === "batch")) {
+    throw new PluginHostError("A batch must contain 1..256 patches and no nested batch.");
+  }
+  return patch.patches as Exclude<DocumentPatch, { op: "batch" }>[];
+}
 
 /**
  * Review cut points on the engine's overall confidence score, used when the embedding host supplies no
@@ -493,7 +504,10 @@ export class PluginHost {
     this.notifySubscribers();
   }
 
-  async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
+  async invokeCommand<Result = unknown>(
+    commandId: string,
+    options: { writeSelection?: PluginSelectionSnapshot } = {}
+  ): Promise<Result> {
     const definition = this.commands.get(commandId);
     if (!definition) {
       throw new CommandRegistryError(`Command "${commandId}" is not registered.`);
@@ -506,7 +520,8 @@ export class PluginHost {
     const plugin = this.requireRegisteredPlugin(definition.pluginId);
     return await this.commands.invoke<Result>(commandId, {
       pluginId: definition.pluginId,
-      permissions: plugin.permissions
+      permissions: plugin.permissions,
+      writeSelection: options.writeSelection
     });
   }
 
@@ -851,11 +866,19 @@ export class PluginHost {
       );
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
-    const op = (parsedPatch.patch as { op: string }).op;
-    if (!(DirectWritePatchOps as readonly string[]).includes(op)) {
-      throw new PluginHostError(
-        `Plugin "${pluginId}" passed a "${op}" patch to documents.applyPatch, which only inserts new content (${DirectWritePatchOps.join(", ")}); changing or removing what is already in the document must go through documents.proposePatch for review.`
-      );
+    const scope = new Set(invocation.writeScope);
+    for (const op of writePatchOps(parsedPatch.patch)) {
+      if (!(DirectWritePatchOps as readonly string[]).includes(op.op)) {
+        throw new PluginHostError(`Plugin "${pluginId}" passed an unsupported "${op.op}" patch to documents.applyPatch.`);
+      }
+      if (op.op === "addObject" || op.op === "addAnnotation") {
+        scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
+      } else {
+        const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
+        for (const id of ids) {
+          if (!scope.has(id)) throw new PluginHostError(`${id} was not selected when the command started`);
+        }
+      }
     }
     // Recognition is proposal-only (AGENTS.md §7/§8). Registration already refuses a recognizer that
     // declares `document.write` (`assertRecognizerPermissions`); these per-invocation checks stay as
@@ -883,7 +906,10 @@ export class PluginHost {
       patch: parsedPatch,
       undoLabel: `${plugin.name}: ${invocation.commandTitle}`
     });
-    return AppliedPatchReceiptSchema.parse(receipt);
+    const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
+    // Only a successful write grows the scope; use actual ids returned by the host after rebasing.
+    for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
+    return parsedReceipt;
   }
 
   /**
@@ -985,7 +1011,7 @@ export class PluginHost {
             defaultShortcut: command.defaultShortcut,
             enabled: command.enabled && Boolean(handler)
           },
-          async () => {
+          async (invocationContext) => {
             if (!handler) {
               throw new CommandRegistryError(`Command "${command.id}" has no registered handler.`);
             }
@@ -995,11 +1021,18 @@ export class PluginHost {
             }
 
             const invocationToken = Symbol(command.id);
+            const documentKey = this.getActiveDocumentKey?.();
+            const selection = invocationContext.writeSelection ?? this.getSelectionSnapshot?.();
+            // Copy synchronous snapshots before yielding; never widen the scope on later selection changes.
+            const selectedIds = selection && "then" in selection
+              ? [...((await selection)?.objectIds ?? [])]
+              : [...(selection?.objectIds ?? [])];
             this.activeCommandInvocations.set(invocationToken, {
               pluginId: manifest.id,
               commandId: command.id,
               commandTitle: command.title,
-              documentKey: this.getActiveDocumentKey?.(),
+              documentKey,
+              writeScope: new Set(selectedIds),
               recognized: false,
               recognizedImages: []
             });
@@ -1460,6 +1493,7 @@ export class PluginHost {
 }
 
 interface ActiveCommandInvocation {
+  writeScope: Set<string>;
   pluginId: string;
   commandId: string;
   commandTitle: string;

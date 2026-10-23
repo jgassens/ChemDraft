@@ -878,7 +878,7 @@ describe("PluginHost", () => {
     expect(host.listProposedPatches()).toHaveLength(0);
   });
 
-  it("lets documents.applyPatch insert new content only; edits and removals must be proposed", async () => {
+  it("refuses unselected edits and unsupported direct ops, while proposals stay available", async () => {
     const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: [] }));
     const host = new PluginHost({ applyDocumentPatch, now: () => timestamp });
     const patches: Record<string, unknown> = {
@@ -928,7 +928,9 @@ describe("PluginHost", () => {
     for (const op of Object.keys(patches)) {
       expect(outcomes[op], op).toBeInstanceOf(PluginHostError);
       expect((outcomes[op] as Error).message).toBe(
-        `Plugin "org.test.edit-write" passed a "${op}" patch to documents.applyPatch, which only inserts new content (addObject, addAnnotation); changing or removing what is already in the document must go through documents.proposePatch for review.`
+        ["removeObject", "updateObject", "moveObject"].includes(op)
+          ? "mol_001 was not selected when the command started"
+          : `Plugin "org.test.edit-write" passed an unsupported "${op}" patch to documents.applyPatch.`
       );
     }
     expect(applyDocumentPatch).toHaveBeenCalledTimes(2);

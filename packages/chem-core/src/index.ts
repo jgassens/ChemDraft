@@ -147,6 +147,7 @@ export {
 
 export {
   DocumentPatchError,
+  BatchDocumentPatchSchema,
   admitParsedDocument,
   adoptDerivedDocument,
   applyPatch,

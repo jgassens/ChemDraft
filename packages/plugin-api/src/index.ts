@@ -616,6 +616,15 @@ const DocumentPatchLikeSchema = z
       })
       .passthrough()
   )
+  .superRefine((patch, ctx) => {
+    if (patch.op !== "batch") return;
+    const result = z.array(z.object({ op: NonEmptyStringSchema }).passthrough().refine(
+      (entry) => entry.op !== "batch", "Nested batch patches are not allowed."
+    )).min(1).max(256).safeParse(patch.patches);
+    if (!result.success) {
+      for (const issue of result.error.issues) ctx.addIssue({ ...issue, path: ["patches", ...issue.path] });
+    }
+  })
   .transform((patch) => patch as unknown as DocumentPatch);
 
 export const ProposedDocumentPatchSchema = z
@@ -710,7 +719,8 @@ export interface PluginDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
   /** Present only with `document.write`; valid only during one of this plugin's command invocations.
-   *  Inserts only (`addObject`, `addAnnotation`): the host refuses any other op, which must be proposed.
+   *  Inserts content or edits/removes objects selected when the command started, plus its insertions.
+   *  Flat batches of 1..256 ops are atomic. Other operations must be proposed.
    *  A plugin declaring the recognition permissions may not declare `document.write` at all. */
   applyPatch?(patch: ProposedDocumentPatch): Promise<AppliedPatchReceipt>;
 }
