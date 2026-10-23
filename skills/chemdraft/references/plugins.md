@@ -11,6 +11,7 @@ user action from configuring a headless tool.
 |---|---|
 | NMR Shift Predictor (`org.chemdraft.nmr.predictor`) | Desktop plugin; `nmr` / `predict_nmr` loads a separate owner-trusted source checkout |
 | Name to Structure (OPSIN) (`org.chemdraft.opsin.nameToStructure`) | Desktop insertion plugin; `name` / `name_to_structure` independently uses the bundled OPSIN runtime, without loading this plugin |
+| Name from Structure (Orthonym) (`org.chemdraft.naming.orthonym`) | Desktop naming plugin; `structure_to_name` reports the host naming-engine result and does not open installation UI |
 | Structure from Image (MolScribe) (`org.chemdraft.ocsr.molscribe`) | Experimental desktop-only recognition, through proposal review; no CLI/MCP image-recognition tool |
 
 MolScribe runs locally, with a host-managed engine installed only on
@@ -45,7 +46,7 @@ Plugin imports may use only `@chemdraft/plugin-api` among ChemDraft packages,
 plus ordinary npm dependencies and their own modules.
 
 A manifest declares `id`, `name`, `version`, `apiVersion`, `entry`,
-`permissions`, and any `contributes` entries. Current API is `0.1.6`;
+`permissions`, and any `contributes` entries. Current API is `0.1.9`;
 declare the caret version needed. Additive API changes bump patch, breaking
 changes bump minor. Code `license` and dataset `dataLicenses` are separate
 claims; a code licence alone does not cover bundled data.

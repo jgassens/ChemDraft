@@ -224,6 +224,20 @@ running a `.cmd` shim. Start sign-in: it opens Terminal on macOS / a new console
 refresh status until it flips. Quit during a run and confirm no `claude`, `codex`, or `node` process
 remains. On Windows, confirm no console flash and that the Job Object kills child processes.
 
+## ChemDraft Assistant tools (macOS and Windows)
+
+Exercise this section once the Assistant plugin is installed. Submit an insertion request and verify
+that its objects land directly on the page (no approval window) and finish selected. One Undo removes
+the entire request; Redo restores exactly those objects and selection without starting the AI or
+making another provider/tool call. Select one existing object, then ask to edit, restyle, move, and
+delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
+selected: insertions work, while edits, restyles, moves, and deletes are refused.
+
+While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
+Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running
+request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its
+consent text must say that it does and that page content can leave the computer.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

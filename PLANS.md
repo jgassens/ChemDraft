@@ -28,10 +28,13 @@ current document and selection and place results directly on the page through ty
 
 ## Delivery sequence
 
-1. **PR A — runner (this PR):** external-tool catalog, pins, probe/install/sign-in, consent,
+1. **PR A — runner (merged, #186):** external-tool catalog, pins, probe/install/sign-in, consent,
    supervised runs, plugin API tools, dialog/controller, and documentation.
-2. **PR B — assistant tools + local tool server:** batch/write scope, assistant transaction,
-   document tools, layout move, and loopback MCP.
+2. **PR B — assistant tools + local tool server (current):** batch/write scope, direct assistant
+   writes and request transaction, document tools, shared reaction/grid layout, API 0.1.9
+   `assistant`, run-to-session binding, and the hardened loopback MCP server. Owner decisions are
+   applied: writes need no approval window; scope is the Send selection plus request insertions;
+   each request is one undo entry; provider web access is open.
 3. **PR C — panel input + canvas overlay:** plugin input sections, panel action routing, and the
    viewport prompt overlay.
 4. **Plugin repository:** `org.chemdraft.assistant`, providers, system prompt, transcript, tests,
