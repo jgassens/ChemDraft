@@ -3,7 +3,7 @@ import { spawnCommandSpec } from '../spawn-command.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { copyFile, cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -16,9 +16,16 @@ const PERMITTED_TOOLS = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Skill
 
 /** Resolve an existing path to the filesystem's canonical spelling. */
 export function canonicalPath(value, { platform = process.platform, realpathNative = realpathSync.native } = {}) {
-  const paths = platform === 'win32' ? path.win32 : path;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
   const resolved = paths.resolve(value);
-  try { return realpathNative(resolved); } catch { return resolved; }
+  // A glob or a newly written file may not exist, but its parent can be a link.
+  let current = resolved;
+  for (;;) {
+    try { return paths.join(realpathNative(current), paths.relative(current, resolved)); } catch { /* Try its parent. */ }
+    const parent = paths.dirname(current);
+    if (parent === current) return resolved;
+    current = parent;
+  }
 }
 
 function comparisonPath(value, options = {}) {
@@ -42,6 +49,20 @@ export function claudeArgs(options, prompt, mcpPath) {
 
 export function codexArgs(prompt) {
   return ['exec', '--json', '--skip-git-repo-check', '--', prompt];
+}
+
+export function codexEnvironment(caseDir, codexHome, { platform = process.platform, environment = process.env } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const home = paths.join(caseDir, 'home');
+  return { ...environment, HOME: home, ...(platform === 'win32' ? { USERPROFILE: home } : {}), CODEX_HOME: codexHome };
+}
+
+export async function createCaseHome(caseDir, checkout, { platform = process.platform, link = symlink } = {}) {
+  const home = path.join(caseDir, 'home');
+  const skills = path.join(home, '.codex', 'skills');
+  await mkdir(skills, { recursive: true });
+  await link(path.resolve(checkout, 'skills', 'chemdraft'), path.join(skills, 'chemdraft'), platform === 'win32' ? 'junction' : 'dir');
+  return home;
 }
 
 function codexConfig(options, work) {
@@ -77,13 +98,13 @@ export function parseArgs(argv) {
 
 function isInside(repo, out, options = {}) {
   const platform = options.platform ?? process.platform;
-  const paths = platform === 'win32' ? path.win32 : path;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
   const relative = paths.relative(comparisonPath(repo, options), comparisonPath(out, options));
   return relative === '' || (!relative.startsWith(`..${paths.sep}`) && relative !== '..' && !paths.isAbsolute(relative));
 }
 
 function isInsideOrParent(checkout, output, options = {}) {
-  const paths = (options.platform ?? process.platform) === 'win32' ? path.win32 : path;
+  const paths = (options.platform ?? process.platform) === 'win32' ? path.win32 : path.posix;
   return isInside(checkout, output, options) || isInside(paths.dirname(checkout), output, options);
 }
 
@@ -105,6 +126,21 @@ export function commandOutputTargets(commandText, options = {}) {
   return targets;
 }
 
+/** Retain file inputs even when the agent created them outside its work folder. */
+export function commandInputTargets(commandText, options = {}) {
+  const words = commandWords(commandText, options), targets = [];
+  const fileOption = /^--(?:document|batch|reaction|input|jobs)(?:-file|-path)?$/;
+  for (let index = 0; index < words.length; index++) {
+    const [option, ...suffix] = words[index].split('=');
+    if (!fileOption.test(option)) continue;
+    const value = suffix.length ? suffix.join('=') : words[index + 1];
+    if (typeof value !== 'string' || !value || value.startsWith('--')) continue;
+    targets.push(value);
+    if (!suffix.length) index++;
+  }
+  return targets;
+}
+
 function finalOutputTargets(final, work) {
   const targets = new Map();
   for (const match of final.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
@@ -117,10 +153,10 @@ function finalOutputTargets(final, work) {
   return [...targets].map(([target, requestedPath]) => ({ target, requestedPath }));
 }
 
-async function filesAtOutputTarget(target) {
+async function filesAtOutputTarget(target, input = false) {
   let info;
   try { info = await lstat(target); } catch { return []; }
-  if (info.isFile()) return outputExtension.test(target) ? [target] : [];
+  if (info.isFile()) return input || outputExtension.test(target) ? [target] : [];
   if (!info.isDirectory() || info.isSymbolicLink()) return [];
   const files = [];
   let oversized = false;
@@ -140,7 +176,7 @@ async function filesAtOutputTarget(target) {
     }
   }
   await visit(target);
-  return oversized ? [] : files.filter((file) => outputExtension.test(file));
+  return oversized ? [] : files.filter((file) => input || outputExtension.test(file));
 }
 
 async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
@@ -149,7 +185,17 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
     for (const target of commandOutputTargets(call.input.command)) {
       targets.set(path.isAbsolute(target) ? target : path.resolve(work, target), { requestedPath: target, toolCallIndex });
     }
+    for (const target of commandInputTargets(call.input.command)) {
+      targets.set(path.resolve(work, target), { requestedPath: target, toolCallIndex, input: true });
+    }
   } else if (call.name?.startsWith('mcp__chemdraft__')) {
+    // MCP inputs are structured; only explicit file fields are paths, not inline document JSON.
+    for (const key of ['documentPath', 'batchPath', 'reactionPath', 'inputPath']) {
+      const value = call.input?.[key];
+      if (typeof value === 'string' && value && !/[\r\n]/.test(value)) {
+        targets.set(path.resolve(work, value), { requestedPath: value, toolCallIndex, input: true });
+      }
+    }
     const visit = (value) => {
       if (typeof value === 'string') {
         try { visit(JSON.parse(value)); } catch {
@@ -164,8 +210,8 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
   await mkdir(outputDir, { recursive: true });
   const manifest = [];
   const copied = new Set();
-  for (const [target, { requestedPath, toolCallIndex }] of targets) {
-    for (const source of await filesAtOutputTarget(target)) {
+  for (const [target, { requestedPath, toolCallIndex, input }] of targets) {
+    for (const source of await filesAtOutputTarget(target, input)) {
       const resolved = canonicalPath(source);
       if (!resolved || isInside(codexHome, resolved) || copied.has(resolved)) continue;
       copied.add(resolved);
@@ -195,28 +241,82 @@ function inputStrings(value, strings = []) {
   return strings;
 }
 
-export function repoAccess(toolCalls, checkout, { platform = process.platform, work = checkout, fileChanges = [] } = {}) {
+/** Find the nearest checkout, caching both positive and negative ancestor checks. */
+export function checkoutAt(value, { platform = process.platform, exists = existsSync, realpathNative = realpathSync.native, cache = new Map() } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  let current = canonicalPath(value, { platform, realpathNative });
+  const visited = [];
+  let found = null;
+  for (;;) {
+    const key = platform === 'win32' ? current.toLowerCase() : current;
+    if (cache.has(key)) { found = cache.get(key); break; }
+    visited.push(key);
+    if (exists(paths.join(current, 'packages', 'chemdraft-cli', 'package.json')) && exists(paths.join(current, 'skills', 'chemdraft', 'SKILL.md'))) {
+      found = current;
+      break;
+    }
+    const parent = paths.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const key of visited) cache.set(key, found);
+  return found;
+}
+
+function referencedPaths(text, { platform, environment }) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const expanded = text.replace(/\$\{(HOME|CODEX_HOME|USERPROFILE)\}|\$(HOME|CODEX_HOME|USERPROFILE)\b|%(HOME|CODEX_HOME|USERPROFILE)%/g,
+    (match, braced, plain, windows) => environment[braced ?? plain ?? windows] ?? match);
+  const candidates = [];
+  if (paths.isAbsolute(expanded)) candidates.push(expanded);
+  const assignment = expanded.indexOf('=');
+  if (assignment >= 0 && paths.isAbsolute(expanded.slice(assignment + 1))) candidates.push(expanded.slice(assignment + 1));
+  // Include assignments and paths embedded in quoted scripts; never execute text.
+  for (const match of expanded.matchAll(/(["'`])((?:[A-Za-z]:[\\/]|\\\\|\/)[^\r\n]*?)\1/g)) candidates.push(match[2]);
+  for (const match of expanded.matchAll(/(?:^|[\s"'`=(:,;])((?:[A-Za-z]:[\\/]|\\\\|\/)[^\s"'`<>|;,)]*)/g)) candidates.push(match[1]);
+  return candidates;
+}
+
+export function repoAccess(toolCalls, checkout, { platform = process.platform, work = checkout, fileChanges = [],
+  environment = process.env, exists = existsSync, realpathNative = realpathSync.native, cache = new Map() } = {}) {
   const accesses = [];
-  const paths = platform === 'win32' ? path.win32 : path;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const pathOptions = { platform, realpathNative };
   const inCheckout = (value) => {
-    const relative = paths.relative(comparisonPath(checkout, { platform }), comparisonPath(paths.resolve(work, value), { platform }));
+    const relative = paths.relative(comparisonPath(checkout, pathOptions), comparisonPath(paths.resolve(work, value), pathOptions));
     return relative === '' || relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+  };
+  const auditForeign = (call, values) => {
+    const seen = new Set();
+    for (const value of values) for (const referenced of referencedPaths(value, { platform, environment })) {
+      const foreign = checkoutAt(referenced, { ...pathOptions, exists, cache });
+      if (!foreign || pathsEqual(foreign, checkout, pathOptions) || seen.has(foreign)) continue;
+      seen.add(foreign);
+      accesses.push({ tool: call.name, path: referenced, checkout: foreign, classification: 'foreign-checkout',
+        ...(call.name === 'Bash' ? { command: call.input.command } : {}) });
+    }
   };
   for (const call of toolCalls) {
     if (call.name === 'Bash' && typeof call.input?.command === 'string') {
+      let words;
+      try { words = commandWords(call.input.command, { platform }); } catch { words = []; }
+      auditForeign(call, [...words, call.input.command]);
       if (call.input.command.includes(checkout)) accesses.push({ tool: 'Bash', command: call.input.command,
         classification: isCliCommand(call.input.command, checkout, { platform }) ? 'cli' : 'source-read' });
     } else if (['Write', 'Edit', 'NotebookEdit'].includes(call.name)) {
+      auditForeign(call, inputStrings(call.input));
       for (const value of [call.input?.file_path, call.input?.path, call.input?.notebook_path].filter((value) => typeof value === 'string')) {
         if (inCheckout(value)) accesses.push({ tool: call.name, path: value, classification: 'source-write' });
       }
     } else if (['Read', 'Grep', 'Glob'].includes(call.name)) {
+      auditForeign(call, inputStrings(call.input));
       for (const value of inputStrings(call.input)) if (value.includes(checkout)) {
         accesses.push({ tool: call.name, path: value, classification: 'source-read' });
         break;
       }
     }
   }
+  for (const change of fileChanges) if (typeof change.path === 'string') auditForeign({ name: 'file_change' }, [change.path]);
   for (const change of fileChanges) if (typeof change.path === 'string' && inCheckout(change.path)) {
     accesses.push({ tool: 'file_change', path: change.path, classification: 'source-write' });
   }
@@ -396,6 +496,7 @@ async function runOne(caseItem, options, shared, stderr) {
   const configPath = path.join(codexHome, 'config.toml');
   const config = codexConfig(options, work);
   if (options.agent === 'codex') {
+    await createCaseHome(caseDir, options.checkout);
     await cp(shared.codexAuth, path.join(codexHome, 'auth.json'), { dereference: true });
     await writeFile(configPath, config);
     await assertNoAgentInstructions(codexHome);
@@ -403,8 +504,9 @@ async function runOne(caseItem, options, shared, stderr) {
   } else await writeFile(mcpPath, `${JSON.stringify(mcp)}\n`);
   const startedAt = new Date().toISOString();
   const started = Date.now();
+  const environment = options.agent === 'codex' ? codexEnvironment(caseDir, codexHome) : process.env;
   const executed = await command(shared.binary, options.agent === 'codex' ? codexArgs(caseItem.prompt) : claudeArgs(options, caseItem.prompt, mcpPath),
-    { cwd: work, timeoutMs: options.timeoutMin * 60_000, env: options.agent === 'codex' ? { ...process.env, CODEX_HOME: codexHome } : process.env });
+    { cwd: work, timeoutMs: options.timeoutMin * 60_000, env: environment });
   const endedAt = new Date().toISOString();
   await writeFile(path.join(caseDir, 'transcript.jsonl'), executed.stdout);
   if (options.agent === 'codex') await writeFile(path.join(caseDir, 'stderr.log'), executed.stderr);
@@ -431,12 +533,13 @@ async function runOne(caseItem, options, shared, stderr) {
   const checkoutStatusAfter = await gitValue(options.checkout, ['status', '--porcelain', '--untracked-files=all']);
   const newCheckoutChanges = checkoutChanges(shared.checkoutStatusBefore, checkoutStatusAfter);
   const checkoutModified = newCheckoutChanges.length > 0;
-  const accesses = repoAccess(parsed.toolCalls, options.checkout, { work, fileChanges: parsed.fileChanges });
-  isolationLeak ||= checkoutModified || accesses.some((access) => access.classification === 'source-write');
+  const accesses = repoAccess(parsed.toolCalls, options.checkout, { work, environment, fileChanges: parsed.fileChanges, cache: shared.checkoutCache });
+  const foreignCheckout = accesses.find((access) => access.classification === 'foreign-checkout');
+  isolationLeak ||= checkoutModified || !!foreignCheckout || accesses.some((access) => access.classification === 'source-write');
   parsed.isolated &&= !isolationLeak;
   let status = executed.timedOut ? 'timeout' : executed.exitCode === 0 && !parsed.failed ? 'complete' : 'error';
   let reason = executed.timedOut ? 'timeout' : status === 'complete' ? undefined : parsed.failureReason || executed.stderr || `${options.agent} exited unsuccessfully`;
-  if (isolationLeak) { status = 'error'; reason = 'isolation-leak'; }
+  if (isolationLeak) { status = 'error'; reason = foreignCheckout ? `isolation-leak: foreign checkout ${foreignCheckout.checkout}` : 'isolation-leak'; }
   else if (status !== 'timeout' && !parsed.isolated) { status = 'error'; reason = 'isolation'; }
   const meta = { id: caseItem.id, status, exitCode: executed.exitCode, startedAt, endedAt, durationMs: Date.now() - started,
     model: options.agent === 'codex' ? parsed.model : options.model, ...versionMeta(options, shared), skillSha256: await hashTree(copied), checkoutHead: shared.checkoutHead,
@@ -473,7 +576,7 @@ export async function run(options, io = {}) {
     if (!existsSync(java)) throw new Error(`OPSIN runtime is missing: ${java}. Build it with node scripts/build-opsin-runtime.mjs, or use --skip-preflight only for runner tests.`);
   }
   await mkdir(options.out, { recursive: true });
-  const shared = { binary, agentctl: process.env.CHEMDRAFT_STRESS_AGENTCTL_BIN || 'agentctl',
+  const shared = { binary, agentctl: process.env.CHEMDRAFT_STRESS_AGENTCTL_BIN || 'agentctl', checkoutCache: new Map(),
     agentVersion: null, checkoutHead: await gitValue(options.checkout, ['rev-parse', 'HEAD']),
     checkoutStatusBefore: await gitValue(options.checkout, ['status', '--porcelain', '--untracked-files=all']) };
   if (options.agent === 'codex') {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { assertOutputIsolation, checkoutChanges, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 // @ts-expect-error stream.mjs is intentionally plain JavaScript.
 import { inspectStream } from './stream.mjs';
 
@@ -35,6 +35,8 @@ async function fakeCheckout(withOpsin: boolean) {
   const directory = path.join(container, 'repo');
   await mkdir(directory);
   await cp(path.join(root, 'skills'), path.join(directory, 'skills'), { recursive: true });
+  await mkdir(path.join(directory, 'packages/chemdraft-cli'), { recursive: true });
+  await writeFile(path.join(directory, 'packages/chemdraft-cli/package.json'), '{}');
   if (withOpsin) {
     const java = path.join(directory, 'apps/desktop/src-tauri/resources/opsin/jre/bin', process.platform === 'win32' ? 'java.exe' : 'java');
     await mkdir(path.dirname(java), { recursive: true });
@@ -88,6 +90,7 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(result.code).toBe(0);
     const invocation = JSON.parse(await readFile(trace, 'utf8'));
     expect(invocation.cwd).toBe(path.join(out, 'S01', 'work'));
+    expect(invocation.home).toBe(process.env.HOME);
     expect(invocation.argv).toContain('Verbatim prompt: use $ and "quotes".');
     expect(invocation.argv).toEqual(expect.arrayContaining(['--strict-mcp-config', '--setting-sources', 'project', '--allowedTools']));
     expect(invocation.argv).not.toContain('--bare');
@@ -218,7 +221,12 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(result.code).toBe(0);
     const caseDir = path.join(out, 'S01'); const home = path.join(caseDir, 'codex-home');
     const invocation = JSON.parse(await readFile(env.FAKE_CODEX_TRACE, 'utf8'));
-    expect(invocation).toEqual({ argv: ['exec', '--json', '--skip-git-repo-check', '--', 'Verbatim prompt: use $ and "quotes".'], cwd: path.join(caseDir, 'work'), codexHome: home });
+    expect(invocation).toEqual({ argv: ['exec', '--json', '--skip-git-repo-check', '--', 'Verbatim prompt: use $ and "quotes".'],
+      cwd: path.join(caseDir, 'work'), codexHome: home, home: path.join(caseDir, 'home'), path: process.env.PATH,
+      ...(process.env.USERPROFILE || process.platform === 'win32' ? { userprofile: process.platform === 'win32' ? path.join(caseDir, 'home') : process.env.USERPROFILE } : {}) });
+    const linkedSkill = path.join(caseDir, 'home/.codex/skills/chemdraft');
+    expect((await lstat(linkedSkill)).isSymbolicLink()).toBe(true);
+    expect(realpathSync.native(linkedSkill)).toBe(realpathSync.native(path.join(root, 'skills/chemdraft')));
     expect((await readdir(home)).sort()).toEqual(['auth.json', 'config.toml', 'skills']);
     expect(await readFile(path.join(home, 'auth.json'), 'utf8')).toBe(await readFile(path.join(sourceHome, 'auth.json'), 'utf8'));
     const config = await readFile(path.join(home, 'config.toml'), 'utf8');
@@ -328,6 +336,33 @@ describe('stress runner', { timeout: 30_000 }, () => {
     ]);
   });
 
+  it('retains external CLI and MCP input files with tool provenance after the case', async () => {
+    const { out, args, env } = await codexFixture();
+    const inputs = await outDirectory();
+    const names = ['document', 'batch', 'reaction', 'reaction-file', 'input', 'input-file', 'document-file'];
+    const files = names.map((name) => path.join(inputs, `${name} file.${name === 'batch' ? 'data' : 'json'}`));
+    const mcpFile = path.join(inputs, 'mcp document.json');
+    for (const file of [...files, mcpFile]) await writeFile(file, '{"retained":true}');
+    const oversized = path.join(inputs, 'too-many-files');
+    await mkdir(oversized);
+    await Promise.all(Array.from({ length: 51 }, (_, i) => writeFile(path.join(oversized, `${i}.json`), '{}')));
+    const privateFile = path.join(out, 'S01/codex-home/auth.json');
+    const options = files.map((file, i) => i % 2 ? `--${names[i]}="${file}"` : `--${names[i]} "${file}"`).join(' ');
+    const result = await invoke(args, { ...env, FAKE_CODEX_DOCUMENT_PATH: mcpFile,
+      FAKE_CODEX_INPUT_COMMAND: `pnpm -s chemdraft render-document ${options} --jobs "${oversized}" --document-path "${privateFile}"` });
+    expect(result.code).toBe(0);
+    const manifest = JSON.parse(await readFile(path.join(out, 'S01/outputs.json'), 'utf8'));
+    expect(manifest).toHaveLength(8);
+    for (const file of [...files, mcpFile]) {
+      const entry = manifest.find((item: { requestedPath: string }) => item.requestedPath === file);
+      expect(entry).toMatchObject({ requestedPath: file, originalPath: realpathSync.native(file),
+        toolCallIndex: file === mcpFile ? 0 : 1, size: 17, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(await readFile(path.join(out, 'S01/outputs', entry.copiedName), 'utf8')).toBe('{"retained":true}');
+    }
+    const assets = JSON.parse(await readFile(path.join(out, 'S01/assets.json'), 'utf8'));
+    expect(assets.filter((item: { originalPath: string }) => [...files, mcpFile].includes(item.originalPath))).toHaveLength(8);
+  });
+
   it('fails Claude result errors and turn-limit subtypes even with exit zero', async () => {
     for (const failure of ['is_error', 'error_max_turns', 'error_during_execution']) {
       const cases = await fixtureCases(), out = await outDirectory();
@@ -389,6 +424,86 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(meta.checkoutStatusBefore).not.toContain('unexpected.txt');
   });
 
+  it.each(['darwin', 'win32'])('preserves the parent environment and links the case home on %s', async (platform) => {
+    const paths = platform === 'win32' ? path.win32 : path.posix;
+    const caseDir = platform === 'win32' ? 'C:\\runs\\S01' : '/runs/S01';
+    const codexHome = paths.join(caseDir, 'codex-home');
+    const parent = { HOME: '/real/home', USERPROFILE: 'C:\\real\\home', PATH: 'node-and-pnpm-path', CODEX_HOME: '/real/codex', EXTRA: 'keep' };
+    expect(codexEnvironment(caseDir, codexHome, { platform, environment: parent })).toEqual({
+      ...parent, HOME: paths.join(caseDir, 'home'), CODEX_HOME: codexHome,
+      USERPROFILE: platform === 'win32' ? paths.join(caseDir, 'home') : parent.USERPROFILE,
+    });
+    const checkout = await fakeCheckout(false), actualCase = await outDirectory();
+    const linkTypes: string[] = [];
+    const home = await createCaseHome(actualCase, checkout, { platform,
+      link: async (target: string, destination: string, type: 'dir' | 'junction') => {
+        linkTypes.push(type); await symlink(target, destination, process.platform === 'win32' ? 'junction' : type);
+      } });
+    expect(linkTypes).toEqual([platform === 'win32' ? 'junction' : 'dir']);
+    expect(realpathSync.native(path.join(home, '.codex/skills/chemdraft'))).toBe(realpathSync.native(path.join(checkout, 'skills/chemdraft')));
+    expect(repoAccess([{ name: 'Read', input: { file_path: path.join(home, '.codex/skills/chemdraft/SKILL.md') } }], checkout)
+      .some((entry: { classification: string }) => entry.classification === 'foreign-checkout')).toBe(false);
+  });
+
+  it.each(['darwin', 'win32'])('detects and caches foreign checkouts from absolute paths on %s', async (platform) => {
+    const container = await outDirectory();
+    const paths = platform === 'win32' ? path.win32 : path.posix;
+    const virtualRoot = platform === 'win32' ? 'C:\\fixtures' : '/fixtures';
+    const checkout = paths.join(virtualRoot, 'tested'), foreign = paths.join(virtualRoot, 'other checkout');
+    for (const name of ['tested', 'other checkout']) {
+      await mkdir(path.join(container, name, 'packages/chemdraft-cli'), { recursive: true });
+      await mkdir(path.join(container, name, 'skills/chemdraft'), { recursive: true });
+      await writeFile(path.join(container, name, 'packages/chemdraft-cli/package.json'), '{}');
+      await writeFile(path.join(container, name, 'skills/chemdraft/SKILL.md'), 'fake skill');
+    }
+    const translate = (value: string) => {
+      const relative = paths.relative(virtualRoot, value);
+      if (relative.startsWith('..') || paths.isAbsolute(relative)) throw new Error('Outside fixture');
+      return path.join(container, ...relative.split(paths.sep));
+    };
+    let probes = 0;
+    const exists = (value: string) => { probes++; try { return existsSync(translate(value)); } catch { return false; } };
+    const realpathNative = (value: string) => paths.join(virtualRoot, ...path.relative(container, realpathSync.native(translate(value))).split(path.sep));
+    const options = { platform, exists, realpathNative, cache: new Map() };
+    const source = paths.join(foreign, 'packages/chemdraft-cli/source.ts');
+    const calls = [
+      { name: 'Bash', input: { command: `pnpm -s --dir "${foreign}" chemdraft render` } },
+      { name: 'Bash', input: { command: `repo="${foreign}"; cd "$repo"` } },
+      { name: 'Bash', input: { command: `node -e "readFileSync('${source.replaceAll('\\', '\\\\')}')"` } },
+      ...['Read', 'Grep', 'Glob', 'Write', 'Edit', 'NotebookEdit'].map((name) => ({ name, input: { file_path: source } })),
+    ];
+    const accesses = repoAccess(calls, checkout, options);
+    expect(accesses).toHaveLength(calls.length);
+    expect(accesses.every((entry: { classification: string; checkout: string }) => entry.classification === 'foreign-checkout' && entry.checkout === foreign)).toBe(true);
+    const before = probes;
+    expect(checkoutAt(source, options)).toBe(foreign);
+    expect(probes).toBe(before);
+    expect(checkoutAt(paths.join(virtualRoot, 'ordinary/missing.txt'), options)).toBeNull();
+    const negativeProbes = probes;
+    expect(checkoutAt(paths.join(virtualRoot, 'ordinary/another.txt'), options)).toBeNull();
+    expect(probes - negativeProbes).toBeLessThanOrEqual(1);
+    expect(repoAccess([{ name: 'Read', input: { path: paths.join(checkout, 'skills/chemdraft/SKILL.md') } }], checkout, options))
+      .not.toContainEqual(expect.objectContaining({ classification: 'foreign-checkout' }));
+  });
+
+  it('fails isolation for foreign checkout commands and accepts the fake home skill path', async () => {
+    const foreign = await fakeCheckout(false);
+    const { out, args, env } = await codexFixture();
+    await invoke(args, { ...env, FAKE_CODEX_INPUT_COMMAND: `pnpm -s --dir "${foreign}" chemdraft render` });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error',
+      reason: `isolation-leak: foreign checkout ${foreign}`, isolation: { verified: false },
+      repoAccess: [expect.objectContaining({ classification: 'foreign-checkout', checkout: foreign })] });
+    const ownSkill = path.join(out, 'S01/home/.codex/skills/chemdraft/SKILL.md');
+    await invoke([...args, '--force'], { ...env, FAKE_CODEX_INPUT_COMMAND: `cat "${ownSkill}"` });
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'complete', isolation: { verified: true } });
+    // A real user install linking to a foreign checkout is still detected.
+    const home = await outDirectory();
+    const linked = path.join(home, 'chemdraft');
+    await symlink(path.join(foreign, 'skills/chemdraft'), linked, 'junction');
+    expect(repoAccess([{ name: 'Edit', input: { file_path: path.join(linked, 'new-file.md') } }], root))
+      .toContainEqual(expect.objectContaining({ classification: 'foreign-checkout', checkout: foreign }));
+  });
+
   it('audits Claude writes and Codex file changes inside the checkout on both platforms', async () => {
     for (const platform of ['darwin', 'win32']) {
       const checkout = platform === 'win32' ? 'C:\\repo' : '/repo';
@@ -403,6 +518,8 @@ describe('stress runner', { timeout: 30_000 }, () => {
     }
     const windowsCommand = String.raw`cmd.exe /d /s /c "pnpm.cmd -s --dir C:\repo chemdraft render --smiles CCO --out C:\Users\x\figure.svg"`;
     expect(commandOutputTargets(windowsCommand, { platform: 'win32' })).toEqual(['C:\\Users\\x\\figure.svg']);
+    expect(commandInputTargets(String.raw`cmd.exe /d /s /c "pnpm.cmd -s chemdraft render-document --document="C:\Users\x\input file.json" --batch C:\jobs.json"`,
+      { platform: 'win32' })).toEqual(['C:\\Users\\x\\input file.json', 'C:\\jobs.json']);
     expect(repoAccess([{ name: 'Bash', input: { command: windowsCommand } }], 'C:\\repo', { platform: 'win32' }))
       .toEqual([expect.objectContaining({ classification: 'cli' })]);
     const { out, args, env } = await codexFixture();

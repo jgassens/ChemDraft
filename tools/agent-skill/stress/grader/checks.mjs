@@ -43,7 +43,7 @@ function distinctDrawingCalls(drawn) {
   for (const item of drawn) {
     // Extraction sources are deliberately prefixed with this stable call id.
     const call = /^call\[\d+\]/.exec(item.source)?.[0] ?? item.source;
-    const key = item.error ? `invalid:${item.smiles}` : item.canonical;
+    const key = item.error ? `invalid:${item.source}` : item.canonical;
     const inCall = seenInCall.get(call) ?? new Set();
     const repeatedInCall = inCall.has(key);
     inCall.add(key);
@@ -109,6 +109,7 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
   const checks = Object.fromEntries(CHECKS.map((id) => [id, check()]));
   const drawn = [];
   for (const item of extracted.drawn) {
+    if (item.status === 'unresolvable') { drawn.push(item); continue; }
     try { drawn.push({ ...item, canonical: await chemistry.canonical(item.smiles), constitution: await chemistry.canonical(item.smiles, true) }); }
     catch (error) {
       if (!/RDKit could not canonicalize/.test(error.message)) throw error;
@@ -153,6 +154,7 @@ export async function gradeCase(testCase, run, extracted, chemistry, referenceLo
       }
     }
     if (!refs.length) for (const item of drawn) {
+      if (item.error) continue;
       const drawnCounts = await chemistry.stereo(item.smiles);
       comparisons.push({ smiles: item.smiles, source: item.source, reference: null,
         referenceCounts: { unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0 }, referenceCountSource: 'default', ...drawnCounts });

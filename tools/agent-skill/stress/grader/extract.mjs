@@ -229,7 +229,7 @@ function reactionInput(input, objects) {
 function documentSchemes(native) {
   const schemes = [];
   for (const page of native.document.pages) {
-    const molecules = native.molecules.filter((molecule) => molecule.pageId === page.id);
+    const molecules = native.molecules.filter((molecule) => molecule.pageId === page.id && molecule.status !== 'unresolvable');
     const byId = new Map(molecules.map((molecule) => [molecule.objectId, molecule.smiles]));
     const text = (object) => object?.text ?? '';
     const reactions = page.objects.filter((object) => object.type === 'reaction');
@@ -276,7 +276,13 @@ export async function extract(run, chemistry, scratch) {
     documents.add(resolve(file));
     try {
       const recovered = await chemistry.native(file);
-      for (const molecule of recovered.molecules) add(molecule.smiles, `${source}#${molecule.objectId}`);
+      for (const molecule of recovered.molecules) {
+        const location = `${source}#${molecule.objectId}`;
+        if (molecule.status === 'unresolvable') {
+          drawn.push({ status: 'unresolvable', source: location, error: molecule.error, warnings: molecule.warnings });
+          errors.push(`${location}: ${molecule.error}`);
+        } else add(molecule.smiles, location);
+      }
       if (rendered) schemes.push(...documentSchemes(recovered).map((scheme) => ({ ...scheme, source })));
     }
     catch (error) { error.harness = !error.agentInput && !['SyntaxError', 'ZodError'].includes(error.name); throw error; }

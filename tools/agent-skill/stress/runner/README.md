@@ -25,6 +25,7 @@ The runner was checked against Claude Code `2.1.304` with `claude --help` on
 `--strict-mcp-config`; its only project is the empty per-case work folder,
 which contains the copied ChemDraft skill and no settings. `--bare` is omitted
 so normal OAuth sign-in and automatic skill discovery remain available.
+Claude keeps the parent's `HOME` unchanged because its sign-in depends on it.
 The init event must report only the connected `chemdraft` MCP server and the
 `chemdraft` skill; otherwise the case records an isolation error.
 
@@ -66,6 +67,13 @@ That server has `default_tools_approval_mode = "approve"`, so tool calls can run
 under Codex's otherwise `never` approval policy. Shell commands can write the
 working directory and access the network for lookups such as PubChem.
 
+Codex also gets `<out>/<id>/home` as `HOME` (and `USERPROFILE` on Windows).
+Inside it, `.codex/skills/chemdraft` links to `<checkout>/skills/chemdraft`, using
+a directory junction on Windows. The skill's documented install resolution
+therefore reaches the checkout under test. `PATH` and every other parent
+environment variable are preserved; `CODEX_HOME` stays the isolated directory
+described above, so login shells can still find Node and pnpm.
+
 The ChemDraft skill is copied, with symlinks dereferenced, to
 `$CODEX_HOME/skills/chemdraft`. This uses Codex's user skill location; the
 installed binary's embedded skill documentation references
@@ -94,9 +102,23 @@ runner copies supported output files named in the final report or passed through
 `--out`, `--out-dir`, or shell redirection into `outputs/`; `outputs.json`
 records each original path, copied name, byte size, and SHA-256. Paths under the
 isolated Codex home are excluded, and output directories with more than 50 files
-are not traversed. Metadata's `repoAccess` records every agent shell command
-that names the checkout, classified as the ChemDraft CLI or a source read, plus
-Claude Read, Grep, and Glob calls that name it. `run.json` and each case's
+are not traversed. File inputs passed through `--document`, `--batch`, `--reaction`,
+`--input`, `--jobs`, their `-file`/`-path` variants, or MCP `documentPath`,
+`batchPath`, `reactionPath`, and `inputPath` are retained the same way, including
+outside `work/`. These copies keep `requestedPath`, canonical `originalPath`, and
+`toolCallIndex`, and use the same traversal limits as outputs. Explicit input
+files are retained regardless of extension.
+Metadata's `repoAccess` records agent shell commands that name the checkout,
+classified as the ChemDraft CLI or a source read, plus Claude file/search calls.
+It also classifies referenced absolute paths in shell commands and
+Read/Grep/Glob/Write/Edit/NotebookEdit calls (and Codex file changes) as
+`foreign-checkout` when an ancestor contains both
+`packages/chemdraft-cli/package.json` and `skills/chemdraft/SKILL.md` and is not
+`--checkout`. Ancestor detection is cached and resolves symlinks, including
+the fake home's skill link. Any foreign checkout access makes the case `error`
+with reason `isolation-leak: foreign checkout <path>`. This audits recorded
+paths; it does not interpret arbitrary shell programs or prevent disk access.
+`run.json` and each case's
 metadata identify the agent. Codex metadata also records `codexVersion`,
 reported model, and event token usage; no dollar cost is inferred.
 

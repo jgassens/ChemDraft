@@ -20,8 +20,11 @@ included in it. A report treats cases absent from the aggregate as unscored harn
 
 The grader installs the repository's existing tsx loaders and loads ChemDraft modules in-process.
 It registers the Node RDKit adapter once, then keeps its engine cached throughout the grade.
-Canonical SMILES use the CLI's `canonicalSmiles` helper; stereo uses the exact shared RDKit
-depiction and stereo-perception/counting functions used by `stereo`. Analysis runs only requested
+Canonical isomeric SMILES come directly from the adapter's cached RDKit molecule,
+without generating a depiction. Stereo normally uses the shared RDKit depiction and
+stereo-perception/counting functions used by `stereo`; if RDKit rejects a depiction for
+changing source stereochemistry, OCL counts the source SMILES directly without a
+molfile round trip. Other engine failures remain harness failures. Analysis runs only requested
 method ids and uses the CLI's summary conventions. Short case ids `logp` and `tpsa` map to
 `rdkit.crippen-logp` and `rdkit.tpsa`.
 
@@ -29,6 +32,9 @@ Native documents are recovered from their live atom/bond graph using the shared 
 `moleculeSmiles` path, never a stale stored SMILES. Expired `render_document` paths can use the
 tool result's reported canonical molecule identities. Horizontal native reaction schemes and
 native reaction membership are supported; unsupported layouts cannot satisfy A5 automatically.
+An atom label that cannot be written as a single SMILES atom makes that molecule
+`unresolvable`, with its source and export warnings retained. It matches no reference;
+A1–A3 still evaluate the other molecules, and exact-set A2 counts it as an extra.
 References are canonicalised through RDKit, including after tetrahedral inversion for relative
 stereo; E/Z is retained. Constitution comparison removes stereo while retaining charge/isotopes.
 Drawn occurrences retain multiplicity: repeated actual calls count repeatedly for `set_match`.
@@ -64,6 +70,10 @@ has its own denominators and Wilson 95% intervals; harness cases are excluded, a
 pooled. Non-passes retain one primary reviewer cause. Without `--visual`, counts are explicitly
 provisional automatic-only, V is pending (n=0), and causes are provisional `agent-error` labels.
 Wrong-and-confident and honest-decline classifications require independent visual judgment.
+Each category/split also reports foreign-checkout access cases from the runner's
+`repoAccess` audit, including isolation failures excluded from scored denominators.
+The column should be zero for isolated runs. JSON retains case ids in
+`foreign_checkout_cases`; public Markdown shows only the count for held-out cases.
 `report.md` includes only aggregate scores for held-out cases; their failure
 details go to `report-heldout.md`, for the final adjudicator only. The complete
 `report.json` has the same access restriction as the held-out detail report.

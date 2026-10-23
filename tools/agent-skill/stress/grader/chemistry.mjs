@@ -25,6 +25,8 @@ export async function createChemistry(checkout) {
   const cliRequire = createRequire(join(checkout, 'packages/chemdraft-cli/package.json'));
   const adapter = await import(pathToFileURL(cliRequire.resolve('@chemdraft/rdkit-adapter')).href);
   const ocl = await import(pathToFileURL(cliRequire.resolve('@chemdraft/ocl-adapter')).href);
+  const oclRequire = createRequire(cliRequire.resolve('@chemdraft/ocl-adapter'));
+  const { Molecule } = await import(pathToFileURL(oclRequire.resolve('openchemlib')).href);
   const workflow = await import(pathToFileURL(cliRequire.resolve('@chemdraft/document-workflow-core')).href);
   const { computeStructureIdentifiers } = await import(pathToFileURL(cliRequire.resolve('@chemdraft/rdkit-adapter/identifiers')).href);
   const { loadAgentDocument } = await load('packages/chemdraft-cli/src/documentInput.ts');
@@ -39,11 +41,19 @@ export async function createChemistry(checkout) {
   async function canonical(smiles, constitution = false) {
     const key = `${constitution}:${smiles}`;
     if (!cache.has(key)) {
-      await warm();
+      const rdkit = await warm();
       // Removing SMILES stereo descriptors only is lossless for constitution, isotopes,
       // charge and disconnected components. RDKit then canonicalises the resulting graph.
       const input = constitution ? smiles.replace(/@(?:TH|AL|SP|TB|OH)\d+|@@?/g, '').replace(/[\\/]/g, '') : smiles;
-      cache.set(key, await document.canonicalSmiles(input, 'grader input'));
+      // Read identity directly from the adapter's cached RDKit module. Generating a
+      // depiction first can fail on a perfectly valid stereochemical graph.
+      const molecule = rdkit.get_mol(input);
+      if (!molecule) throw new Error('RDKit could not canonicalize the grader input.');
+      try {
+        const value = molecule.get_smiles();
+        if (!value) throw new Error('RDKit could not canonicalize the grader input.');
+        cache.set(key, value);
+      } finally { molecule.delete(); }
     }
     return cache.get(key);
   }
@@ -51,11 +61,35 @@ export async function createChemistry(checkout) {
   async function stereo(smiles) {
     if (!stereoCache.has(smiles)) {
       await warm();
-      const molfile = await adapter.generateSmiles2DMolfile(smiles);
-      const centers = ocl.perceiveStereoCentersFromMolfile(molfile);
-      const doubleBonds = await perceiveDoubleBondStereo(molfile);
-      const counts = document.stereoCenterCounts(centers);
-      const unspecifiedDoubleBonds = doubleBonds.filter((bond) => bond.descriptor === 'unspecified').length;
+      let counts, unspecifiedDoubleBonds;
+      try {
+        const molfile = await adapter.generateSmiles2DMolfile(smiles);
+        const centers = ocl.perceiveStereoCentersFromMolfile(molfile);
+        const doubleBonds = await perceiveDoubleBondStereo(molfile);
+        counts = document.stereoCenterCounts(centers);
+        unspecifiedDoubleBonds = doubleBonds.filter((bond) => bond.descriptor === 'unspecified').length;
+      } catch (error) {
+        if (!/RDKit standard 2D depiction changed the source isomeric stereochemistry/.test(error.message)) throw error;
+        // Count the source graph without a molfile/depiction round trip. Keep OCL's
+        // stereo perception conventions (including bridgehead N) on this fallback.
+        const molecule = Molecule.fromSmiles(smiles, { noCoordinates: true });
+        molecule.ensureHelperArrays(Molecule.cHelperCIP);
+        counts = { stereoCenters: 0, unspecifiedStereoCenters: 0 };
+        for (let atom = 0; atom < molecule.getAllAtoms(); atom++) {
+          if (!molecule.isAtomStereoCenter(atom)) continue;
+          const cip = molecule.getAtomCIPParity(atom);
+          const specified = molecule.getAtomPi(atom) < 2 &&
+            [Molecule.cAtomCIPParityRorM, Molecule.cAtomCIPParitySorP].includes(cip);
+          counts[specified ? 'stereoCenters' : 'unspecifiedStereoCenters']++;
+        }
+        unspecifiedDoubleBonds = 0;
+        for (let bond = 0; bond < molecule.getAllBonds(); bond++) {
+          if (molecule.getBondOrder(bond) !== 2) continue;
+          const cip = molecule.getBondCIPParity(bond);
+          if (![Molecule.cBondCIPParityEorP, Molecule.cBondCIPParityZorM].includes(cip) &&
+            molecule.getBondParity(bond) === Molecule.cBondParityUnknown) unspecifiedDoubleBonds++;
+        }
+      }
       stereoCache.set(smiles, { ...counts, unspecifiedDoubleBonds,
         unspecifiedCount: counts.unspecifiedStereoCenters + unspecifiedDoubleBonds });
     }
@@ -88,6 +122,11 @@ export async function createChemistry(checkout) {
       const warnings = [];
       const smiles = await workflow.moleculeSmiles(object, molecules.length, warnings,
         computeStructureIdentifiers, undefined, { requireEngineAtomStates: true });
+      if (warnings.some((warning) => warning.code === 'export.smiles_atom_label')) {
+        molecules.push({ status: 'unresolvable', warnings, error: warnings.map((warning) => warning.message).join('; '),
+          objectId: object.id, pageId: page.id, object });
+        continue;
+      }
       if (warnings.some((warning) => !['export.smiles_abbreviation_expanded', 'export.smiles_charge_separated'].includes(warning.code))) {
         throw new Error(`Cannot recover native molecule ${object.id}: ${warnings.map((warning) => warning.message).join('; ')}`);
       }
