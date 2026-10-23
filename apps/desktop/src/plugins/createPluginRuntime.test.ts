@@ -33,13 +33,15 @@ describe("createPluginRuntime canvas overlays", () => {
     }
   };
 
-  it("publishes registration, status, clearing and unregister updates without leaking snapshots", async () => {
+  it("publishes status changes only to overlay status subscribers without leaking snapshots", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
-    const seen: { ids: string[]; statuses: [string, string][] }[] = [];
-    const unsubscribe = runtime.onDidChange(() => seen.push({
+    const contributionChanges: { ids: string[]; statuses: [string, string][] }[] = [];
+    const statusChanges: [string, string][][] = [];
+    const unsubscribe = runtime.onDidChange(() => contributionChanges.push({
       ids: runtime.listCanvasOverlays().map(entry => entry.overlay.id),
       statuses: [...runtime.getCanvasOverlayStatuses()]
     }));
+    const unsubscribeStatus = runtime.subscribeCanvasOverlayStatus(() => statusChanges.push([...runtime.getCanvasOverlayStatuses()]));
     expect(runtime.listCanvasOverlays()).toEqual([]);
     expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
     runtime.registerPlugin(manifest, { commandHandlers: {
@@ -53,7 +55,8 @@ describe("createPluginRuntime canvas overlays", () => {
     const snapshot = runtime.getCanvasOverlayStatuses();
     expect(snapshot.get(overlayId)).toBe("Working");
     await runtime.invokeCommand(commandId, { input }); // unchanged status does not notify
-    expect(seen).toHaveLength(2);
+    expect(contributionChanges).toHaveLength(1);
+    expect(statusChanges).toEqual([[[overlayId, "Working"]]]);
     await runtime.invokeCommand(commandId);
     expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
     expect(snapshot.get(overlayId)).toBe("Working");
@@ -61,16 +64,20 @@ describe("createPluginRuntime canvas overlays", () => {
     runtime.unregisterPlugin(manifest.id);
     expect(runtime.listCanvasOverlays()).toEqual([]);
     expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
-    expect(seen).toEqual([
+    expect(contributionChanges).toEqual([
       { ids: [overlayId], statuses: [] },
-      { ids: [overlayId], statuses: [[overlayId, "Working"]] },
-      { ids: [overlayId], statuses: [] },
-      { ids: [overlayId], statuses: [[overlayId, "Working"]] },
       { ids: [], statuses: [] }
     ]);
+    expect(statusChanges).toEqual([
+      [[overlayId, "Working"]],
+      [],
+      [[overlayId, "Working"]],
+      []
+    ]);
     unsubscribe();
+    unsubscribeStatus();
     runtime.registerPlugin(manifest);
-    expect(seen).toHaveLength(5);
+    expect(contributionChanges).toHaveLength(2);
     runtime.unregisterPlugin(manifest.id);
   });
 

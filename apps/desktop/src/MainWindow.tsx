@@ -20114,9 +20114,10 @@ export function MainWindow({
               overlayLayerRef={canvasOverlayLayerRef}
               statusRowRef={statusRowRef}
               gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
-              status={pluginRuntime.canvasOverlayStatuses.get(overlay.id)}
+              statusSource={pluginRuntime.runtime}
               onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
               onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
+              panelTitle={panel?.title}
               onOpenPanel={panel ? () => {
                 const livePanel = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest.contributes.panels.find(item => item.id === panel.id);
                 if (livePanel?.commandId) void Promise.resolve(invokeCommandRef.current(livePanel.commandId)).catch(() => undefined);

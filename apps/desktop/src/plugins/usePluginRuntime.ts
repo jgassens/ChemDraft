@@ -109,7 +109,6 @@ export interface PluginRuntimeView {
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
   canvasOverlays: readonly RegisteredCanvasOverlay[];
-  canvasOverlayStatuses: ReadonlyMap<string, string>;
   openPanel: OpenPluginPanel | undefined;
   /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
@@ -524,7 +523,6 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     plugins,
     pluginMenuItems,
     canvasOverlays: runtime.listCanvasOverlays(),
-    canvasOverlayStatuses: runtime.getCanvasOverlayStatuses(),
     openPanel,
     detachedPanels,
     openTextPrompt,

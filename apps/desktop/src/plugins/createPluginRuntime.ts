@@ -209,9 +209,11 @@ export interface DesktopPluginRuntime {
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
+  /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
+  subscribeCanvasOverlayStatus(listener: () => void): () => void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
-  /** Notified when contributions or overlay statuses change. Returns unsubscribe. */
+  /** Notified when plugin contributions change. Returns unsubscribe. */
   onDidChange(listener: () => void): () => void;
 }
 
@@ -415,7 +417,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   }
   const canvasOverlayStatuses = new Map<string, string>();
   const listeners = new Set<() => void>();
+  const canvasOverlayStatusListeners = new Set<() => void>();
   const notify = () => listeners.forEach((listener) => listener());
+  const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
@@ -427,7 +431,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           if (canvasOverlayStatuses.get(overlayId) === text) return;
           canvasOverlayStatuses.set(overlayId, text);
         }
-        notify();
+        notifyCanvasOverlayStatus();
       }
     },
     getActiveDocument: options.getActiveDocument,
@@ -540,9 +544,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       (toolsetsByPluginId.get(pluginId) ?? []).forEach((toolset) => pluginIdByToolsetId.delete(toolset.id));
       toolsetsByPluginId.delete(pluginId);
       registrations.delete(pluginId);
+      let overlayStatusesChanged = false;
       for (const overlayId of canvasOverlayStatuses.keys()) {
-        if (!host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId)) canvasOverlayStatuses.delete(overlayId);
+        const overlayStillRegistered = host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId);
+        if (!overlayStillRegistered) {
+          overlayStatusesChanged = true;
+          canvasOverlayStatuses.delete(overlayId);
+        }
       }
+      if (overlayStatusesChanged) notifyCanvasOverlayStatus();
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
@@ -558,6 +568,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     },
     listCanvasOverlays: () => host.listCanvasOverlays(),
     getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
+    subscribeCanvasOverlayStatus(listener) {
+      canvasOverlayStatusListeners.add(listener);
+      return () => {
+        canvasOverlayStatusListeners.delete(listener);
+      };
+    },
     listPluginToolsets: () => [...toolsetsByPluginId.values()].flat(),
     pluginIdForToolset: (toolsetId) => pluginIdByToolsetId.get(toolsetId),
     onDidChange(listener) {

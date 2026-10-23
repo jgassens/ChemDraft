@@ -30,6 +30,7 @@ let openPanel: ReturnType<typeof vi.fn>;
 let gestureActive: boolean;
 let status: string;
 let withPanel: boolean;
+let panelTitle: string | undefined;
 let platform: ShortcutPlatform;
 const viewportRef = createRef<HTMLElement>();
 const overlayLayerRef = createRef<HTMLElement>();
@@ -51,7 +52,7 @@ async function render(): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={overlay} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId="main" shortcutPlatform={platform}
-    onOpenPanel={withPanel ? openPanel : undefined} onFocusDrawing={() => drawing.focus()} />));
+    onOpenPanel={withPanel ? openPanel : undefined} panelTitle={panelTitle} onFocusDrawing={() => drawing.focus()} />));
 }
 async function expand(): Promise<void> {
   await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
@@ -60,7 +61,7 @@ function widget(): HTMLDivElement { return container.querySelector(".plugin-canv
 
 describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
-    vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; platform = "macos";
+    vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; panelTitle = undefined; platform = "macos";
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
     viewportWidth = 600; viewportHeight = 400;
     viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
@@ -180,9 +181,15 @@ describe("PluginCanvasOverlay", () => {
   });
 
   it("only shows the panel link for a contributed panel and invokes its open path", async () => {
-    await expand(); expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull(); withPanel = true; await render();
+    await expand(); expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull(); withPanel = true; panelTitle = "Assistant panel"; await render();
+    expect(container.querySelector(".plugin-canvas-overlay-panel")?.textContent).toBe("Open Assistant panel");
     await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-panel")!.click());
     expect(openPanel).toHaveBeenCalledOnce();
+  });
+
+  it("uses a generic panel label when no title is supplied", async () => {
+    withPanel = true; await render(); await expand();
+    expect(container.querySelector(".plugin-canvas-overlay-panel")?.textContent).toBe("Open panel");
   });
 
   it("works outside Tauri when storage is unavailable or malformed", async () => {

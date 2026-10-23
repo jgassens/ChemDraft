@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import type { PluginCanvasOverlayContribution } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
@@ -7,10 +7,29 @@ import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 
 type Position = { x: number; y: number };
+type CanvasOverlayStatusSource = {
+  getCanvasOverlayStatuses: () => ReadonlyMap<string, string>;
+  subscribeCanvasOverlayStatus: (listener: () => void) => () => void;
+};
+
+const subscribeNever = () => () => undefined;
+
+function OverlayStatus({ overlayId, status, statusSource }: {
+  overlayId: string;
+  status: string | undefined;
+  statusSource: CanvasOverlayStatusSource | undefined;
+}) {
+  const liveStatus = useSyncExternalStore(
+    statusSource?.subscribeCanvasOverlayStatus ?? subscribeNever,
+    () => statusSource?.getCanvasOverlayStatuses().get(overlayId) ?? status ?? "",
+    () => status ?? ""
+  );
+  return <p className="plugin-canvas-overlay-status" role="status">{liveStatus}</p>;
+}
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, onOpenPanel, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   viewportRef: RefObject<HTMLElement | null>;
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
@@ -18,8 +37,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   statusRowRef?: RefObject<HTMLElement | null>;
   gestureActive: boolean;
   status?: string;
+  /** Status updates subscribe inside the overlay, never through MainWindow's toolset synchronizer. */
+  statusSource?: CanvasOverlayStatusSource;
   onAction: PluginPanelActionHandler;
   onOpenPanel?: () => void;
+  /** The contributed panel's live title, supplied by the document window. */
+  panelTitle?: string;
   onFocusDrawing: () => void;
   windowId?: string;
   shortcutPlatform?: ShortcutPlatform;
@@ -165,8 +188,10 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
       <PluginPromptSection section={overlay.prompt} onAction={onAction} includeSelected />
-      <p className="plugin-canvas-overlay-status" role="status">{status}</p>
-      {onOpenPanel ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>Open assistant panel</button> : null}
+      <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
+      {onOpenPanel ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
+        {panelTitle ? `Open ${panelTitle}` : "Open panel"}
+      </button> : null}
     </div>
   </div>;
 }

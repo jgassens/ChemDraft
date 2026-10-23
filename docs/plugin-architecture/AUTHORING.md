@@ -355,7 +355,7 @@ export const manifest = parsePluginManifest({
     panels: [{ id: "panel.prompt.main", title: "Prompt", preferredWindowSize: { width: 420, height: 560 }],
     canvasOverlays: [{ id: "overlay.prompt.quick", title: "Quick prompt", icon: "data:image/png;base64,...",
       commandId: "plugin.prompt.send", prompt: { kind: "prompt", id: "quick", commandId: "plugin.prompt.send" } }]
-  }
+  },
 });
 
 const send: PluginCommandHandler = async (context) => {
