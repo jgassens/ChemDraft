@@ -105,3 +105,13 @@ pub fn child_env(
     result.extend(tool_overrides(managed));
     result
 }
+
+/// Never inherit CHEMDRAFT_* values. Only a Rust-owned credential supplied
+/// explicitly for a bound run is allowed (Codex reads this variable by name).
+pub(super) fn with_mcp_token(mut environment: ParentEnv, bound_token: Option<&str>) -> ParentEnv {
+    environment.retain(|key, _| !key.to_ascii_uppercase().starts_with("CHEMDRAFT_"));
+    if let Some(token) = bound_token {
+        environment.insert("CHEMDRAFT_MCP_TOKEN".into(), token.into());
+    }
+    environment
+}

@@ -66,7 +66,13 @@ export class ExternalToolsController implements PluginHostExternalTools {
       check();
       await this.ensureConsent(plugin, status, check, signal);
       check();
-      const run = await this.engine.runStart({ ...request, pluginId: plugin.id });
+      // Rust checks session ownership and reserves it atomically with the run binding.
+      const run = await this.engine.runStart({ ...request, pluginId: plugin.id }).catch((error: unknown) => {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "notOwner") {
+          throw fail("notOwner");
+        }
+        throw error;
+      });
       try { check(); }
       catch (error) { await this.engine.runCancel(run.runId).catch(() => undefined); throw error; }
       this.runs.set(run.runId, plugin.id);

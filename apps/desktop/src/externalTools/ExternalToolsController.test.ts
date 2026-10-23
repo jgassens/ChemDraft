@@ -14,6 +14,27 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("ExternalToolsController", () => {
+  it("passes the MCP session and trusted plugin identity to Rust", async () => {
+    const e = engine(); vi.mocked(e.status).mockResolvedValue(status(true));
+    const controller = new ExternalToolsController(e);
+    await controller.run(plugin, { ...request, mcpSessionId: "session-owned-by-plugin" });
+    expect(e.runStart).toHaveBeenCalledWith({ ...request, mcpSessionId: "session-owned-by-plugin", pluginId: plugin.id });
+  });
+  it("maps Rust's MCP ownership refusal to a typed host error without tracking a run", async () => {
+    const e = engine(); vi.mocked(e.status).mockResolvedValue(status(true));
+    vi.mocked(e.runStart).mockRejectedValue({ code: "notOwner", message: "MCP session belongs to another plugin." });
+    const controller = new ExternalToolsController(e);
+    await expect(controller.run(plugin, { ...request, mcpSessionId: "another-plugins-session" })).rejects.toMatchObject({ code: "notOwner", message: "notOwner" });
+    await expect(controller.poll(plugin, { runId: "run", cursor: 0 })).rejects.toThrow("notOwner");
+    controller.cancelAllForPlugin(plugin.id);
+    expect(e.runCancel).not.toHaveBeenCalled();
+  });
+  it("preserves other native run errors", async () => {
+    const e = engine(); vi.mocked(e.status).mockResolvedValue(status(true));
+    const error = { code: "busy", message: "MCP session is already bound to a run." };
+    vi.mocked(e.runStart).mockRejectedValue(error);
+    await expect(new ExternalToolsController(e).run(plugin, request)).rejects.toBe(error);
+  });
   it("does not start after unloading during status discovery", async () => {
     const e = engine(); const pending = deferred<ReturnType<typeof status>>();
     vi.mocked(e.status).mockReturnValue(pending.promise);

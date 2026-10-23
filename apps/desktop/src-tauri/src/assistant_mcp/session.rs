@@ -288,31 +288,148 @@ pub(crate) fn manager() -> &'static Arc<SessionManager> {
 }
 
 /// Only the Rust run renderer may obtain the bearer token. Never register as a Tauri command.
-#[allow(dead_code)] // Consumed by the run binding in PR B7.
 pub(crate) fn session_credentials(session_id: &str) -> Option<(String, String)> {
     manager().credentials(session_id)
 }
 
-#[allow(dead_code)] // Consumed by the run binding in PR B7.
-pub(crate) fn bind_session(session_id: &str, plugin_id: &str, run_id: &str) -> Result<(), String> {
-    let session = manager().lookup(session_id).ok_or("Unknown MCP session")?;
-    if session.plugin_id != plugin_id {
-        return Err("MCP session belongs to another plugin".into());
-    }
-    let mut binding = session.bound_run.lock().unwrap();
-    if binding.is_some() {
-        return Err("MCP session is already bound".into());
-    }
-    *binding = Some(run_id.into());
-    Ok(())
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BindError {
+    UnknownSession,
+    NotOwner,
+    AlreadyBound,
 }
 
-#[allow(dead_code)] // Consumed by the run binding in PR B7.
-pub(crate) fn unbind_session(session_id: &str, run_id: &str) {
-    if let Some(session) = manager().lookup(session_id) {
-        let mut binding = session.bound_run.lock().unwrap();
-        if binding.as_deref() == Some(run_id) {
+/// Holds the reservation through preparation, spawn, and child supervision.
+/// Dropping on any failure or terminal path permits the next turn to reuse it.
+pub(crate) struct RunBinding {
+    session: Arc<Session>,
+    pub run_id: String,
+}
+impl Drop for RunBinding {
+    fn drop(&mut self) {
+        let mut binding = self.session.bound_run.lock().unwrap();
+        if binding.as_deref() == Some(&self.run_id) {
             *binding = None;
         }
+    }
+}
+
+impl SessionManager {
+    pub(crate) fn bind(
+        &self,
+        session_id: &str,
+        plugin_id: &str,
+        run_id: &str,
+    ) -> Result<RunBinding, BindError> {
+        // Serialize with close, so close cannot race a successful reservation.
+        let inner = self.inner.lock().unwrap();
+        let session = inner
+            .sessions
+            .get(session_id)
+            .ok_or(BindError::UnknownSession)?;
+        if session.closed.load(Ordering::SeqCst) {
+            return Err(BindError::UnknownSession);
+        }
+        if session.plugin_id != plugin_id {
+            return Err(BindError::NotOwner);
+        }
+        let mut binding = session.bound_run.lock().unwrap();
+        if binding.is_some() {
+            return Err(BindError::AlreadyBound);
+        }
+        *binding = Some(run_id.into());
+        // Each CLI process starts a fresh MCP handshake, even on a reused conversation.
+        session.initialized.store(false, Ordering::SeqCst);
+        Ok(RunBinding {
+            session: session.clone(),
+            run_id: run_id.into(),
+        })
+    }
+}
+
+pub(crate) fn bind_session(
+    session_id: &str,
+    plugin_id: &str,
+    run_id: &str,
+) -> Result<RunBinding, BindError> {
+    manager().bind(session_id, plugin_id, run_id)
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    struct Sink;
+    impl BridgeSink for Sink {
+        fn send(&self, _: McpBridgeRequest) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Exercise reservation policy without needing permission to bind a test socket.
+    fn fixture() -> (Arc<SessionManager>, Arc<Session>) {
+        let manager = Arc::new(SessionManager::default());
+        let session = Arc::new(Session {
+            id: "session".into(),
+            plugin_id: "plugin.a".into(),
+            token: "rust-only".into(),
+            sink: Arc::new(Sink),
+            initialized: AtomicBool::new(true),
+            closed: AtomicBool::new(false),
+            pending: Mutex::new(HashMap::new()),
+            permits: Arc::new(Semaphore::new(4)),
+            sequence: AtomicU64::new(1),
+            bound_run: Mutex::new(None),
+        });
+        manager
+            .inner
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(session.id.clone(), session.clone());
+        (manager, session)
+    }
+
+    #[test]
+    fn binding_requires_a_live_session_and_matching_owner() {
+        let (manager, session) = fixture();
+        assert!(matches!(
+            manager.bind("missing", "plugin.a", "run"),
+            Err(BindError::UnknownSession)
+        ));
+        assert!(matches!(
+            manager.bind("session", "plugin.b", "run"),
+            Err(BindError::NotOwner)
+        ));
+        assert!(session.bound_run.lock().unwrap().is_none());
+        assert!(session.initialized.load(Ordering::SeqCst));
+        manager.close("session");
+        assert!(matches!(
+            manager.bind("session", "plugin.a", "run"),
+            Err(BindError::UnknownSession)
+        ));
+    }
+
+    #[test]
+    fn exclusive_binding_releases_on_drop_and_resets_each_handshake() {
+        let (manager, session) = fixture();
+        let binding = manager.bind("session", "plugin.a", "run.1").unwrap();
+        assert_eq!(session.bound_run.lock().unwrap().as_deref(), Some("run.1"));
+        assert!(!session.initialized.load(Ordering::SeqCst));
+        session.initialized.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            manager.bind("session", "plugin.a", "run.2"),
+            Err(BindError::AlreadyBound)
+        ));
+        // A refused reservation must not disrupt the active process's handshake.
+        assert!(session.initialized.load(Ordering::SeqCst));
+        drop(binding);
+        assert!(session.bound_run.lock().unwrap().is_none());
+        assert_eq!(manager.status().session_count, 1);
+        let next = manager.bind("session", "plugin.a", "run.2").unwrap();
+        assert!(!session.initialized.load(Ordering::SeqCst));
+        manager.close("session");
+        drop(next); // Closing a bound session and then dropping its guard is safe.
+        assert!(session.bound_run.lock().unwrap().is_none());
     }
 }

@@ -15,7 +15,10 @@ mod tests;
 #[cfg(test)]
 mod wire_tests;
 
-use crate::local_engine::InstallError;
+use crate::{
+    assistant_mcp::session::{self, BindError, RunBinding},
+    local_engine::InstallError,
+};
 use catalog::{identifier, Effort, RenderedRun, ToolId};
 use run::{KillReason, ToolRun};
 use serde::{Deserialize, Serialize};
@@ -215,7 +218,22 @@ impl ExternalToolsState {
         parent: &env::ParentEnv,
         managed: bool,
     ) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
+        self.start_bound(base, request, rendered, parent, managed, None)
+    }
+    fn start_bound(
+        &self,
+        base: &Path,
+        request: &ExternalToolRunRequest,
+        rendered: RenderedRun,
+        parent: &env::ParentEnv,
+        managed: bool,
+        binding: Option<RunBinding>,
+    ) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
         request.validate()?;
+        let run_id = binding
+            .as_ref()
+            .map(|b| b.run_id.clone())
+            .unwrap_or_else(nonce);
         let mut state = self.inner.lock().unwrap();
         if state.shutting_down {
             return Err(ExternalToolRunError::new(
@@ -260,14 +278,14 @@ impl ExternalToolsState {
             &cwd,
             managed,
         );
-        let run = ToolRun::spawn(
+        let run = ToolRun::spawn_bound(
             rendered,
             &cwd,
             &environment,
             Duration::from_millis(request.timeout_ms.unwrap_or(600_000)),
+            binding,
         )
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
-        let run_id = nonce();
         let started = ExternalToolRunStarted {
             run_id: run_id.clone(),
             pid: run.pid,
@@ -799,16 +817,27 @@ pub async fn external_tool_consent_list<R: Runtime>(
     .map_err(|e| e.to_string())?
 }
 
-const MCP_SESSIONS_AVAILABLE: bool = false;
-fn validate_mcp_session(request: &ExternalToolRunRequest) -> Result<(), ExternalToolRunError> {
-    // TODO(assistant-mcp): PR B run⇄session binding must validate ownership and supply the Rust-only URL/token before enabling this.
-    if !MCP_SESSIONS_AVAILABLE && !request.mcp_session_id.is_empty() {
-        return Err(ExternalToolRunError::new(
-            RunErrorCode::InvalidArgs,
-            "MCP sessions are not available in this build",
-        ));
+fn bind_mcp_session(
+    request: &ExternalToolRunRequest,
+) -> Result<Option<RunBinding>, ExternalToolRunError> {
+    if request.mcp_session_id.is_empty() {
+        return Ok(None);
     }
-    Ok(())
+    session::bind_session(&request.mcp_session_id, &request.plugin_id, &nonce())
+        .map(Some)
+        .map_err(|error| match error {
+            BindError::UnknownSession => {
+                ExternalToolRunError::new(RunErrorCode::InvalidArgs, "Unknown MCP session.")
+            }
+            BindError::NotOwner => ExternalToolRunError::new(
+                RunErrorCode::NotOwner,
+                "MCP session belongs to another plugin.",
+            ),
+            BindError::AlreadyBound => ExternalToolRunError::new(
+                RunErrorCode::Busy,
+                "MCP session is already bound to a run.",
+            ),
+        })
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -823,7 +852,14 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(bytes)
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    // Windows uses the per-conversation directory and its inherited user ACL.
+    file.write_all(bytes)
 }
 
 fn run_start_impl(
@@ -833,7 +869,7 @@ fn run_start_impl(
     parent: &env::ParentEnv,
 ) -> Result<ExternalToolRunStarted, ExternalToolRunError> {
     request.validate()?;
-    validate_mcp_session(&request)?;
+    let binding = bind_mcp_session(&request)?;
     {
         let _consent = state.consent_lock.lock().unwrap();
         if !consent::ConsentStore::new(base)
@@ -901,8 +937,28 @@ fn run_start_impl(
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?;
     let system = cwd.join("system-prompt.md");
     let config = cwd.join("claude-mcp.json");
+    let credentials = if binding.is_some() {
+        Some(
+            session::session_credentials(&request.mcp_session_id).ok_or_else(|| {
+                ExternalToolRunError::new(
+                    RunErrorCode::InvalidArgs,
+                    "MCP session closed before run start.",
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+    let config_json = match &credentials {
+        Some((url, token)) if request.tool == ToolId::Claude => {
+            serde_json::json!({"mcpServers":{"chemdraft":{
+                "type":"http", "url":url, "headers":{"Authorization":format!("Bearer {token}")}
+            }}})
+        }
+        _ => serde_json::json!({"mcpServers":{}}),
+    };
     write_private(&system, request.system_prompt.as_bytes())
-        .and_then(|()| write_private(&config, br#"{"mcpServers":{}}"#))
+        .and_then(|()| write_private(&config, config_json.to_string().as_bytes()))
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?;
     let mut spec = request.tool.spec();
     spec.program = status.path.ok_or_else(|| {
@@ -919,7 +975,10 @@ fn run_start_impl(
             prompt_file: &request.prompt,
             system_prompt_file: &system,
             mcp_config_file: &config,
-            mcp_url: "",
+            mcp_url: credentials
+                .as_ref()
+                .map(|(url, _)| url.as_str())
+                .unwrap_or(""),
             resume_id: request.resume_id.as_deref(),
             model: request.model.as_deref(),
             effort: request.effort,
@@ -927,7 +986,16 @@ fn run_start_impl(
         },
     )
     .map_err(|e| ExternalToolRunError::new(RunErrorCode::InvalidArgs, e))?;
-    state.start(base, &request, rendered, parent, managed)
+    let mut rendered = rendered;
+    // Supplied only by Rust after binding; never accept a parent's token.
+    let token = credentials
+        .as_ref()
+        .filter(|_| request.tool == ToolId::Codex)
+        .map(|(_, token)| token.as_str());
+    rendered
+        .env
+        .extend(env::with_mcp_token(env::ParentEnv::new(), token));
+    state.start_bound(base, &request, rendered, parent, managed, binding)
 }
 
 #[tauri::command]
