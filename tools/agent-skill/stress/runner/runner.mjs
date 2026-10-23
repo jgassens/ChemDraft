@@ -65,6 +65,15 @@ export async function createCaseHome(caseDir, checkout, { platform = process.pla
   return home;
 }
 
+/** Link Codex's user skill root to the checkout, matching the documented install. */
+export async function linkCodexSkill(codexHome, checkout, { platform = process.platform, link = symlink } = {}) {
+  const skills = path.join(codexHome, 'skills');
+  const skill = path.join(skills, 'chemdraft');
+  await mkdir(skills, { recursive: true });
+  await link(path.resolve(checkout, 'skills', 'chemdraft'), skill, platform === 'win32' ? 'junction' : 'dir');
+  return skill;
+}
+
 function codexConfig(options, work) {
   // JSON string quoting is also valid TOML basic-string quoting for these paths.
   return `${options.model ? `model = ${JSON.stringify(options.model)}\n` : ''}approval_policy = "never"\nsandbox_mode = "workspace-write"\n\n[features]\nplugins = false\n\n[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [${JSON.stringify(work)}]\n\n[mcp_servers.chemdraft]\ncommand = "pnpm"\nargs = ${JSON.stringify(['-s', '--dir', options.checkout, 'chemdraft-mcp'])}\ndefault_tools_approval_mode = "approve"\n`;
@@ -489,14 +498,15 @@ async function runOne(caseItem, options, shared, stderr) {
   await rm(work, { recursive: true, force: true });
   await mkdir(work, { recursive: true });
   const codexHome = path.join(caseDir, 'codex-home');
-  const copied = options.agent === 'codex' ? path.join(codexHome, 'skills', 'chemdraft') : path.join(work, '.claude', 'skills', 'chemdraft');
-  await copiedSkill(path.join(options.checkout, 'skills', 'chemdraft'), copied);
+  const skill = options.agent === 'codex' ? path.join(codexHome, 'skills', 'chemdraft') : path.join(work, '.claude', 'skills', 'chemdraft');
+  if (options.agent === 'claude') await copiedSkill(path.join(options.checkout, 'skills', 'chemdraft'), skill);
   const mcp = { mcpServers: { chemdraft: { command: 'pnpm', args: ['-s', '--dir', options.checkout, 'chemdraft-mcp'] } } };
   const mcpPath = path.join(caseDir, 'mcp.json');
   const configPath = path.join(codexHome, 'config.toml');
   const config = codexConfig(options, work);
   if (options.agent === 'codex') {
     await createCaseHome(caseDir, options.checkout);
+    await linkCodexSkill(codexHome, options.checkout);
     await cp(shared.codexAuth, path.join(codexHome, 'auth.json'), { dereference: true });
     await writeFile(configPath, config);
     await assertNoAgentInstructions(codexHome);
@@ -542,10 +552,10 @@ async function runOne(caseItem, options, shared, stderr) {
   if (isolationLeak) { status = 'error'; reason = foreignCheckout ? `isolation-leak: foreign checkout ${foreignCheckout.checkout}` : 'isolation-leak'; }
   else if (status !== 'timeout' && !parsed.isolated) { status = 'error'; reason = 'isolation'; }
   const meta = { id: caseItem.id, status, exitCode: executed.exitCode, startedAt, endedAt, durationMs: Date.now() - started,
-    model: options.agent === 'codex' ? parsed.model : options.model, ...versionMeta(options, shared), skillSha256: await hashTree(copied), checkoutHead: shared.checkoutHead,
+    model: options.agent === 'codex' ? parsed.model : options.model, ...versionMeta(options, shared), skillSha256: await hashTree(skill), checkoutHead: shared.checkoutHead,
     numTurns: parsed.numTurns, usage: parsed.usage ?? parsed.result?.usage ?? null, total_cost_usd: parsed.result?.total_cost_usd ?? null,
     mcpServers: parsed.mcpServers ?? parsed.init?.mcp_servers ?? parsed.init?.mcpServers ?? [], tools: parsed.tools ?? parsed.init?.tools ?? [],
-    isolation: { verified: parsed.isolated, ...(options.agent === 'codex' ? { configuredMcpServers: ['chemdraft'], skillPath: copied } : {}) },
+    isolation: { verified: parsed.isolated, ...(options.agent === 'codex' ? { configuredMcpServers: ['chemdraft'], skillPath: skill } : {}) },
     checkoutModified, checkoutStatusBefore: shared.checkoutStatusBefore, checkoutStatusAfter, newCheckoutChanges,
     repoAccess: accesses, ...(reason ? { reason } : {}) };
   await writeMeta(caseDir, meta);
