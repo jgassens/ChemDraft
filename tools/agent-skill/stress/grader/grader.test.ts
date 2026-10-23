@@ -251,6 +251,33 @@ describe('automatic scoring on fixture run folders', () => {
     await expect(gradeCase(item, { meta: { status: 'complete' } }, { drawn: [{ smiles: 'CC', source: 'call[0]' }], errors: [], reached: true },
       { canonical: async () => { throw new Error('engine crashed'); } })).rejects.toThrow('engine crashed');
   });
+  it('recovers native documents retained from paths outside work through both manifests', async () => {
+    const folder = join(root, 'retained-native-manifests');
+    const calls = [
+      { name: 'Bash', input: { command: 'pnpm -s chemdraft render-document --document /tmp/outputs-document.json' } },
+      { name: 'Bash', input: { command: "pnpm -s chemdraft render-document --document 'C:\\temp\\assets-document.json'" } },
+    ];
+    await mkdir(join(folder, 'outputs'), { recursive: true });
+    const outputDocument = join(folder, 'outputs', '001-outputs-document.json');
+    const assetDocument = join(folder, 'outputs', '002-assets-document.json');
+    await writeFile(outputDocument, '{}'); await writeFile(assetDocument, '{}');
+    await writeFile(join(folder, 'outputs.json'), JSON.stringify([
+      { originalPath: '/tmp/outputs-document.json', copiedName: '001-outputs-document.json' },
+    ]));
+    await writeFile(join(folder, 'assets.json'), JSON.stringify([
+      { originalPath: 'C:\\temp\\assets-document.json', path: 'outputs/002-assets-document.json' },
+    ]));
+    const recovered: string[] = [];
+    const result = await extract({ folder, calls }, {
+      native: async (file: string) => {
+        recovered.push(file);
+        return { molecules: [{ smiles: 'CC', objectId: 'm1' }], document: { pages: [] } };
+      },
+    }, join(root, 'scratch'));
+    expect(recovered).toEqual([outputDocument, assetDocument]);
+    expect(result.harnessErrors).toEqual([]);
+    expect(result.drawn).toHaveLength(2);
+  });
   it('pairs copied assets by their original Windows basename without pairing unrelated calls', async () => {
     const folder = join(runs, 'mcp-both', 'images');
     const files = [join(folder, '001-mcp__chemdraft__render_structure.png'), join(folder, '002-mcp__chemdraft__render_structure.svg')];
