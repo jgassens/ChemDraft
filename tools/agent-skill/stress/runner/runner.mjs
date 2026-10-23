@@ -331,6 +331,13 @@ function codexStderrHasMcpLeak(stderr) {
 async function markHalted(caseItem, options, shared) {
   assertCaseId(caseItem.id);
   const caseDir = path.join(options.out, caseItem.id);
+  const metaPath = path.join(caseDir, 'meta.json');
+  try {
+    const existing = JSON.parse(await readFile(metaPath, 'utf8'));
+    // The post-halt sweep reaches cases that no worker visited. Preserve a
+    // completed prior attempt instead of replacing its resume metadata.
+    if (existing.status === 'complete') return existing;
+  } catch (error) { if (error.code !== 'ENOENT') { /* Replace malformed metadata. */ } }
   await mkdir(caseDir, { recursive: true });
   const now = new Date().toISOString();
   const meta = { id: caseItem.id, status: 'halted-usage', exitCode: null, startedAt: now, endedAt: now, durationMs: 0,

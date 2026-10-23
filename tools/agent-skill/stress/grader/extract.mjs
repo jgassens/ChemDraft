@@ -144,6 +144,22 @@ async function savedPath(folder, requested) {
     if (!inside(folder, candidate)) continue;
     try { await access(candidate); return candidate; } catch { /* Try retained copy. */ }
   }
+  // Outputs written outside work/ are retained under outputs/.  Match their
+  // original paths with the same slash-normalisation used for shell paths so
+  // a Windows-run manifest can be graded on another host.
+  for (const manifestName of ['outputs.json', 'assets.json']) {
+    let manifest;
+    try { manifest = await json(join(folder, manifestName)); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (!Array.isArray(manifest)) continue;
+    for (const entry of manifest) {
+      if (typeof entry?.originalPath !== 'string' || entry.originalPath.replace(/\\/g, '/') !== portable) continue;
+      const retained = typeof entry.copiedName === 'string' ? join(folder, 'outputs', entry.copiedName) :
+        typeof entry.path === 'string' ? resolve(folder, entry.path) : null;
+      if (!retained || !inside(folder, retained)) continue;
+      try { await access(retained); return retained; } catch { /* Try another retained manifest entry. */ }
+    }
+  }
   throw new Error(`Retained run file is missing or ambiguous: ${requested}`);
 }
 

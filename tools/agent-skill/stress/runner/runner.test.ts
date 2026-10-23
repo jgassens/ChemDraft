@@ -115,6 +115,17 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(JSON.parse(await readFile(path.join(out, 'S02/meta.json'), 'utf8')).status).toBe('halted-usage');
   });
 
+  it('preserves a completed resumed case when usage halts before it is visited', async () => {
+    const cases = await fixtureCases(); const out = await outDirectory();
+    await invoke(['--cases', cases, '--out', out, '--ids', 'S02', '--checkout', root, '--concurrency', '1']);
+    const before = await readFile(path.join(out, 'S02/meta.json'), 'utf8');
+    const result = await invoke(['--cases', cases, '--out', out, '--checkout', root, '--concurrency', '1'], { FAKE_USAGE_REMAINING: '14' });
+    expect(result.code).toBe(3);
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).status).toBe('halted-usage');
+    expect(await readFile(path.join(out, 'S02/meta.json'), 'utf8')).toBe(before);
+    expect(JSON.parse(await readFile(path.join(out, 'S02/meta.json'), 'utf8')).status).toBe('complete');
+  });
+
   it('rejects an init event that contains another MCP server', async () => {
     const cases = await fixtureCases(); const out = await outDirectory();
     await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_EXTRA_MCP: '1' });
