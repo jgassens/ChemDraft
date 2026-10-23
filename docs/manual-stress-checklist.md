@@ -617,3 +617,14 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+2. **Fresh-document startup, on macOS and Windows:** with the preference OFF, create named and
+   unsaved tabs, quit, and relaunch using the approved worktree launch command; confirm restoration.
+   Toggle Start with a fresh document while editing and verify content, selection and undo/redo
+   remain intact. Quit and relaunch with it ON: confirm exactly one clean Untitled drawing, default
+   new-document view and no old history or file path. Quit this untouched blank and confirm the
+   previous session file is unchanged. Launch by opening a file and confirm no old or extra blank
+   tabs; repeat with the app running and with an invalid file. Edit and save new work during a fresh
+   run, quit, turn the option OFF and relaunch: confirm the new run restores. Repeat with retained
+   unrestored tabs and a corrupt outer session: recovery data must remain and corrupt reads must
+   keep autosave blocked. Record native results separately for each platform.

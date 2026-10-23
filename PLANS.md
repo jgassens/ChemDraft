@@ -8,8 +8,14 @@ in progress rather than a changelog.
 
 # In flight
 
-Nothing is in flight on `main`. (Label anchoring, jgassens/ChemDraft#97, is recorded in
-`docs/shipped/README.md`.)
+Start with a fresh document preference on pref-start-fresh, based on upstream/main
+5835116c3299c786624ff0845847eabe3566c796. Scope: launch-only preference, existing session
+restore/write gates, regression tests and desktop documentation. Preserve file-open routing,
+quit behavior, canvas defaults and retained recovery data. Implementation and three independent
+reviews are complete; recovery-retention and slow-start autosave findings were fixed and re-reviewed.
+Full Vitest had three timeouts (affected suites passed isolated reruns). Native launch succeeded on
+Windows, but remaining interactive quit/relaunch checks are blocked by the unavailable computer-use
+connection; macOS is unavailable. This slice is not yet shipped.
 
 ---
 

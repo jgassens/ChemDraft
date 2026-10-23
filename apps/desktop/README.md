@@ -66,3 +66,22 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Startup preference
+
+Preferences > Startup offers **Start with a fresh document**, off by default. It opens one
+clean Untitled drawing on the next application launch instead of restoring the previous tabs.
+Changing it leaves the current drawings and their undo histories intact. Explicit startup files
+and later OS file-open requests still use the normal Open flow; an untouched blank is replaced.
+
+The saved session is read and validated even when restoration is skipped. A corrupt outer session
+continues to block autosave, and retained unrestored tabs remain available through the existing
+recovery controls. An untouched startup blank (including viewport or selection changes) does not
+replace the previous session, even on quit. Editing, explicitly saving, opening a file, creating
+additional tabs, or explicitly saving/discarding retained recovery tabs allows the normal autosave
+and quit flush to replace it. Once replaced, later blank documents follow normal session rules.
+Turning the option off cannot recover an older session after new work has replaced it.
+
+The preference uses the same localStorage mechanism as other boolean preferences. It is captured
+synchronously once by the document window before its asynchronous session read; no live document
+broadcast is needed for a next-launch-only option. No native command or session migration is added.

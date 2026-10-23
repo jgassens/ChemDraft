@@ -1,3 +1,4 @@
+import { saveStartWithFreshDocument } from "./startupSettings";
 // @vitest-environment jsdom
 import * as smilesListPaste from "./smilesListPaste";
 import { act, createElement, StrictMode } from "react";
@@ -1799,6 +1800,159 @@ describe("documents in one window", () => {
     expect(pendingPrompt).toBeUndefined();
     expect(reject).not.toHaveBeenCalled();
     expect(runtime.host.listProposedPatches("pending")).toEqual([proposal]);
+  });
+
+
+  describe("fresh-document launch preference", () => {
+    it.each([false, true])("uses the launch preference %s without changing live history", async enabled => {
+      const defaultViewport = bridge().snapshot().viewport;
+      const previous = threeTabSession();
+      previous.tabs!.forEach(tab => { tab.view!.viewport = { ...tab.view!.viewport, scale: 2, translateX: 321 }; });
+      native.session = previous;
+      saveStartWithFreshDocument(enabled);
+      await remount();
+      expect(tabs()).toHaveLength(enabled ? 1 : 3);
+      expect(bridge().snapshot().document.title).toBe(enabled ? "Untitled" : "Second");
+      if (enabled) {
+        expect(bridge().snapshot().file).toEqual({ dirty: false });
+        expect(bridge().snapshot().selection.objectIds).toEqual([]);
+        expect(bridge().snapshot().viewport).toEqual(defaultViewport);
+        expect(bridge().snapshot().document.pages.flatMap(p => p.objects)).toEqual([]);
+        await command("edit.undo");
+        expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+      }
+      await paste("Current work");
+      const currentTabIndex = active();
+      await command("document.new");
+      await activate(currentTabIndex);
+      const current = bridge().snapshot().document;
+      const currentViewport = bridge().snapshot().viewport;
+      const currentSelection = bridge().snapshot().selection;
+      saveStartWithFreshDocument(!enabled);
+      expect(bridge().snapshot().document).toEqual(current);
+      expect(bridge().snapshot().viewport).toEqual(currentViewport);
+      expect(bridge().snapshot().selection).toEqual(currentSelection);
+      await command("edit.undo");
+      expect(drawnText()).not.toContain("Current work");
+      await command("edit.redo");
+      expect(drawnText()).toContain("Current work");
+    });
+
+    it("keeps the old session through autosave and quit of the untouched blank, then saves new work", async () => {
+      const previous = threeTabSession(); native.session = previous;
+      saveStartWithFreshDocument(true); await remount();
+      native.saveSession.mockClear();
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 900)); });
+      await flush();
+      expect(native.saveSession).not.toHaveBeenCalled();
+      expect(native.session).toEqual(previous);
+      await paste("New run work");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 900)); });
+      expect(native.saveSession).toHaveBeenCalled();
+      native.savePicker.mockResolvedValueOnce("D:\\new-run.chemdraft");
+      await command("document.save");
+      expect(native.writeFile).toHaveBeenCalled();
+      const saved = await flush();
+      expect(saved.tabs).toHaveLength(1);
+      saveStartWithFreshDocument(false); await remount();
+      expect(drawnText()).toContain("New run work");
+      expect(bridge().snapshot().file.path).toBe("D:\\new-run.chemdraft");
+    });
+
+    it.each([[false, "MacIntel"], [true, "MacIntel"], [false, "Win32"], [true, "Win32"]] as const)("queues startup file opens and preserves later OS opens (fresh %s, %s)", async (enabled, platform) => {
+      vi.stubGlobal("navigator", { platform });
+      saveStartWithFreshDocument(enabled);
+      let resolve!: (value: unknown) => void;
+      native.load.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+      await remount();
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/startup.chemdraft", displayName: "startup.chemdraft", contents: fileContents("Startup file")
+      }));
+      await act(async () => resolve(threeTabSession()));
+      expect(tabs()).toHaveLength(enabled ? 1 : 4);
+      expect(bridge().snapshot().document.title).toBe("Startup file");
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/later.chemdraft", displayName: "later.chemdraft", contents: fileContents("Later OS file")
+      }));
+      expect(tabs()).toHaveLength(enabled ? 2 : 5);
+      expect(bridge().snapshot().document.title).toBe("Later OS file");
+    });
+
+    it.each([false, true])("does not replace live drawings on invalid OS file requests (fresh %s)", async enabled => {
+      saveStartWithFreshDocument(enabled); native.session = threeTabSession(); await remount();
+      const before = bridge().snapshot(); const count = tabs().length;
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path: "/tmp/invalid.chemdraft", displayName: "invalid.chemdraft", contents: "not a document"
+      }));
+      expect(tabs()).toHaveLength(count);
+      expect(bridge().snapshot().document).toEqual(before.document);
+      expect(bridge().snapshot().file).toEqual(before.file);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Open failed:");
+    });
+
+    it("captures opt-in before a slow read, keeps early work, and ignores a live toggle", async () => {
+      saveStartWithFreshDocument(true);
+      let resolve!: (value: unknown) => void;
+      native.load.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+      await remount(); await paste("Early fresh work");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 900)); });
+      native.saveSession.mockClear();
+      saveStartWithFreshDocument(false);
+      await act(async () => resolve(threeTabSession()));
+      expect(tabs()).toHaveLength(1);
+      expect(drawnText()).toContain("Early fresh work");
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 900)); });
+      expect(native.saveSession).toHaveBeenCalled();
+      expect(parseDocumentSessionEnvelope(native.session)!.tabs).toHaveLength(1);
+    });
+
+    it.each([false, true])("keeps corrupt outer-session writes blocked (fresh %s)", async enabled => {
+      saveStartWithFreshDocument(enabled);
+      const raw = { version: 99, contents: "recoverable bytes" }; native.session = raw;
+      await remount(); native.saveSession.mockClear();
+      await paste("New work"); await flush();
+      expect(native.saveSession).not.toHaveBeenCalled(); expect(native.session).toEqual(raw);
+    });
+
+    it("keeps previously retained tabs even when their contents are now readable", async () => {
+      saveStartWithFreshDocument(true);
+      const previous = threeTabSession();
+      const kept = { ...previous.tabs![0]!, extraRecoveryData: { keep: true } };
+      previous.unrestoredTabs = [kept]; native.session = previous;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      await modalButton("Cancel");
+      await paste("Fresh work beside newly readable recovery");
+      expect((await flush()).unrestoredTabs).toEqual([kept]);
+    });
+
+    it("retains schema-valid envelopes with unreadable document contents in a fresh run", async () => {
+      saveStartWithFreshDocument(true);
+      const previous = threeTabSession();
+      const corrupt = { ...previous.tabs![0]!, contents: "not a document", extraRecoveryData: { keep: true } };
+      previous.tabs![0] = corrupt; native.session = previous;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+      await modalButton("Cancel");
+      await paste("Fresh work beside recovery");
+      expect((await flush()).unrestoredTabs).toEqual([corrupt]);
+    });
+
+    it("retains unrestored tabs while skipping readable tabs and never discards automatically", async () => {
+      saveStartWithFreshDocument(true);
+      const previous = sessionWithUnrestoredTabs(); native.session = previous;
+      await remount();
+      expect(tabs()).toHaveLength(1);
+      expect(bridge().snapshot().document.title).toBe("Untitled");
+      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
+      await modalButton("Cancel");
+      native.saveSession.mockClear(); await flush();
+      expect(native.saveSession).not.toHaveBeenCalled();
+      await paste("New run with recovery");
+      expect((await flush()).unrestoredTabs).toEqual(previous.unrestoredTabs);
+    });
   });
 
   function threeTabSession() {
