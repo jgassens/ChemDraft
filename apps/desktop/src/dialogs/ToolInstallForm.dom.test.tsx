@@ -12,14 +12,16 @@ it.each([["Anthropic", "Claude Code"], ["OpenAI", "Codex"]])('names %s and web a
   try {
     const { disclosure } = toolInstallSnapshot({ tool: toolName === "Codex" ? "codex" : "claude", publisher, state: "missing", pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: 2_000_000_000, canInstall: true, consented: false, probedAt: "now" }, { id: "plugin", name: "Plugin" });
     await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), disclosure, toolName }, onAction: vi.fn(), platform: "macos" })));
-    expect(container.textContent?.split("The AI can search the web and read web pages.")).toHaveLength(2);
-    expect(container.textContent).toContain("the open page — including any unpublished structures — leave this computer");
-    expect(container.textContent).toContain(`go to ${publisher} under your own ${toolName} account.`);
+    expect(container.textContent?.match(/leaves? this computer/g)).toHaveLength(1);
+    expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
+    expect(container.textContent).toContain(`open page, including any unpublished structures, leave this computer and go to ${publisher}`);
+    expect(container.textContent).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
     expect(container.textContent).toContain(`Download from ${publisher}: version 2.0.0, from downloads.example.test, 125 MB.`);
     await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), disclosure, toolName, state: { status: "consent" }, buttons: ["allow", "close"] }, onAction: vi.fn(), platform: "windows" })));
-    expect(container.textContent?.split("The AI can search the web and read web pages.")).toHaveLength(2);
-    expect(container.textContent).toContain("the open page — including any unpublished structures — leave this computer");
-    expect(container.textContent).toContain(`go to ${publisher} under your own ${toolName} account.`);
+    expect(container.textContent?.match(/leaves? this computer/g)).toHaveLength(1);
+    expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
+    expect(container.textContent).toContain(`open page, including any unpublished structures, leave this computer and go to ${publisher}`);
+    expect(container.textContent).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
     expect([...container.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Allow", "Close"]);
   } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
 });

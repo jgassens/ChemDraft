@@ -12,8 +12,10 @@ describe("toolInstallSnapshot", () => {
   it.each([["claude", "Anthropic"], ["codex", "OpenAI"]] as const)("names %s's publisher", (tool, publisher) => {
     const snapshot = toolInstallSnapshot({ ...base, tool, publisher }, { id: "plugin", name: "Plugin" });
     expect(snapshot.publisher).toBe(publisher);
-    expect(snapshot.disclosure.split("The AI can search the web and read web pages.")).toHaveLength(2);
-    expect(snapshot.disclosure).toContain(`Your prompt and the open page, including unpublished structures, leave this computer and go to ${publisher}`);
+    expect(snapshot.disclosure.match(/leaves? this computer/g)).toHaveLength(1);
+    expect(snapshot.disclosure.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
+    expect(snapshot.disclosure).toContain(`Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher}`);
+    expect(snapshot.disclosure).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
   });
   it("uses the pinned size and available disk space reported by the host", () => {
     const snapshot = toolInstallSnapshot({ ...base, tool: "claude", publisher: "Anthropic" }, { id: "plugin", name: "Plugin" });

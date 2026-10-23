@@ -16,7 +16,7 @@ export function toolInstallSnapshot(status: ExternalToolStatus, plugin: External
     title: `${toolNameFor(status.tool)} for ${plugin.name}`,
     toolName: toolNameFor(status.tool), publisher, version: status.pinnedVersion,
     downloadHost: TOOL_DOWNLOAD_HOSTS[status.tool], downloadBytes: status.pinnedDownloadBytes, pluginName: plugin.name, pluginId: plugin.id,
-    disclosure: `The AI can search the web and read web pages. Your prompt and the open page, including unpublished structures, leave this computer and go to ${publisher} when this tool is used. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
+    disclosure: `The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
     requiredDiskBytes: status.pinnedDownloadBytes * 2 + 64 * 1024 * 1024, freeDiskBytes: status.freeDiskBytes, state: selected,
     buttons: selected.status === "consent" ? ["allow", "close"] : selected.status === "installing" ? ["cancelInstall", "close"] : selected.status === "installed" ? ["close"] : ["install", "close"]
   };
