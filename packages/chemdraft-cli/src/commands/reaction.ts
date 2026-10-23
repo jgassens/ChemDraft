@@ -3,12 +3,14 @@ import { basename, dirname, extname, join } from "node:path";
 
 import {
   createEmptyDocument,
+  DocumentTextStyle,
   type ArrowObject,
   type ChemDraftDocument,
   type MoleculeObject,
   type NativeTextStyle
 } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
 import {
   insertNativeReactionArrow,
@@ -17,6 +19,7 @@ import {
 } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
@@ -50,7 +53,7 @@ export interface ParsedReactionSmiles {
   products: string[];
 }
 
-interface ReactionJob {
+interface ReactionJob extends FigureStyleOptions {
   name: string;
   input: ParsedReactionSmiles;
   rxn?: string;
@@ -75,7 +78,7 @@ interface BatchReactionJob {
   background?: RenderBackground;
 }
 
-interface ParsedArguments {
+interface ParsedArguments extends FigureStyleOptions {
   mode: "single" | "batch";
   jobsFile?: string;
   outDir?: string;
@@ -139,6 +142,7 @@ Batch input is a JSON array of named jobs containing either "rxn" or the arrays 
 "out"; otherwise --out-dir is required and files are named from the job name (PNG by default).
 
 Options:
+${figureStyleHelp}
   --conditions <text>             Additional conditions shown above the arrow
   --arrow <kind>                  forward|equilibrium|resonance|retrosynthesis (default: forward)
   --width <px>                    PNG width (default: ${DEFAULT_REACTION_WIDTH})
@@ -152,6 +156,9 @@ Output:
   Exit 0 when every reaction succeeds, 1 when any render fails, and 2 for bad arguments.`;
 
 const reactionOptions = {
+  ...figureStyleOptions,
+  "--bond-length": { kind: "value" },
+  "--padding": { kind: "value" },
   "--rxn": { kind: "value" },
   "--reactant": { kind: "value", repeated: true },
   "--agent": { kind: "value", repeated: true },
@@ -255,6 +262,10 @@ function repeatedReactionComponents(
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, reactionOptions);
+  const figure = parseFigureStyle(parsed);
+  for (const flag of ["--bond-length", "--padding"]) {
+    if (parsed.options[flag] !== undefined) throw new CliUsageError(`${flag} is not supported by reaction.`);
+  }
   if (parsed.positionals.length > 0) {
     throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
   }
@@ -285,7 +296,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       );
     }
     const format = requestedFormat === undefined ? undefined : reactionFormat(requestedFormat);
-    return { mode: "batch", jobsFile, outDir, format, conditions, arrow, width, background };
+    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, arrow, width, background };
   }
 
   if (!out) throw new CliUsageError("Single-reaction mode requires --out.");
@@ -304,11 +315,13 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const extension = extname(out);
   return {
     mode: "single",
+    ...figure,
     conditions,
     arrow,
     width,
     background,
     job: {
+      ...figure,
       name: basename(out, extension) || "reaction",
       input,
       ...(rxn !== undefined ? { rxn } : {}),
@@ -364,6 +377,7 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
 
 async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   const jobs = await readBatchFile(args.jobsFile!, parseBatchJob, (job) => {
+    if (args.style === "document" && job.width !== undefined) throw new CliUsageError(`Batch job "${job.name}" width conflicts with --style document.`);
     const hasArrays = job.reactants !== undefined || job.agents !== undefined || job.products !== undefined;
     if ((job.rxn === undefined) === !hasArrays) {
       throw new CliUsageError(
@@ -389,6 +403,8 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
         );
     return {
       name: job.name,
+      style: args.style,
+      dpi: args.dpi,
       input,
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {}),
       out: job.out ?? join(args.outDir!, `${job.name}.${format}`),
@@ -415,10 +431,11 @@ function translateMolecule(
   };
 }
 
-async function depictComponent(smiles: string, index: number): Promise<BuiltSmilesDocument> {
+async function depictComponent(smiles: string, index: number, style?: FigureStyle): Promise<BuiltSmilesDocument> {
   try {
     return await buildSmilesDocument(smiles, {
       name: `reaction-component-${index + 1}`,
+      style,
       bondLength: renderDefaults.bondLength
     });
   } catch (error) {
@@ -612,11 +629,14 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
 export async function renderReactionScheme(
   input: string | ParsedReactionSmiles,
   options: {
+    style?: FigureStyle;
     arrow?: ReactionArrowKind;
     conditions?: string;
     background?: RenderBackground;
   } = {}
 ): Promise<RenderedReactionScheme> {
+  const conditionsStyle = options.style === "document" ? { ...CONDITIONS_STYLE, ...DocumentTextStyle } : CONDITIONS_STYLE;
+  const plusStyle = options.style === "document" ? { ...PLUS_STYLE, ...DocumentTextStyle } : PLUS_STYLE;
   const parsed = typeof input === "string" ? parseReactionSmiles(input) : input;
   const arrow = options.arrow ?? "forward";
   if (!ARROW_KINDS.has(arrow)) reactionArrow(arrow);
@@ -628,7 +648,7 @@ export async function renderReactionScheme(
   const depictAll = async (components: readonly string[]): Promise<BuiltSmilesDocument[]> => {
     const depicted: BuiltSmilesDocument[] = [];
     for (const smiles of components) {
-      depicted.push(await depictComponent(smiles, componentIndex));
+      depicted.push(await depictComponent(smiles, componentIndex, options.style));
       componentIndex += 1;
     }
     return depicted;
@@ -641,9 +661,9 @@ export async function renderReactionScheme(
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
   const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, CONDITIONS_STYLE)
+    ? nativeTextObjectSizeForText(conditionText, conditionsStyle)
     : { width: 0, height: 0 };
-  const plusSize = nativeTextObjectSizeForText("+", PLUS_STYLE);
+  const plusSize = nativeTextObjectSizeForText("+", plusStyle);
   const boundsByComponent = new Map(visible.map((component) => {
     const bounds = documentVisualBounds(component.document);
     return [component, {
@@ -726,7 +746,7 @@ export async function renderReactionScheme(
     arrow
   );
   for (const point of plusPoints) {
-    document = insertNativeTextObject(document, point, "+", PLUS_STYLE);
+    document = insertNativeTextObject(document, point, "+", plusStyle);
   }
   if (conditionText) {
     document = insertNativeTextObject(
@@ -736,7 +756,7 @@ export async function renderReactionScheme(
         y: centerY - conditionSize.height - REACTION_GUTTER / 2
       },
       conditionText,
-      CONDITIONS_STYLE
+      conditionsStyle
     );
   }
 
@@ -747,7 +767,9 @@ export async function renderReactionScheme(
     exported.contents,
     document,
     renderDefaults.padding,
-    background
+    background,
+    false,
+    options.style
   );
 
   return {
@@ -770,6 +792,7 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
   writeProgress(io, `Rendering reaction ${job.name}\u2026`);
   try {
     const rendered = await renderReactionScheme(job.input, {
+      style: job.style,
       arrow: job.arrow,
       conditions: job.conditions,
       background: job.background
@@ -778,11 +801,12 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
     const format = outputFormat(job.out);
     await writeFile(
       job.out,
-      format === "svg" ? rendered.svg : svgToPng(rendered.svg, job.width)
+      format === "svg" ? rendered.svg : svgToPng(rendered.svg, job.width, job.style, job.dpi)
     );
     writeJsonLine(io, {
       name: job.name,
       ok: true,
+      ...figureStyleResult(job, rendered.viewBox, format === "png"),
       out: job.out,
       reactants: rendered.reactants,
       agents: rendered.agents,
@@ -799,6 +823,7 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
     writeJsonLine(io, {
       name: job.name,
       ok: false,
+      style: job.style ?? "fit",
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {
         reactants: job.input.reactants,
         agents: job.input.agents,
@@ -823,6 +848,7 @@ export async function runReactionCommand(
       return cliExitCode.ok;
     }
     const jobs = parsed.mode === "single" ? [parsed.job!] : await readReactionJobs(parsed);
+    validateFigureDpi(parsed, jobs.some((job) => outputFormat(job.out) === "png"));
     let allSucceeded = true;
     for (const job of jobs) {
       if (!await renderReactionJob(job, io)) allSucceeded = false;

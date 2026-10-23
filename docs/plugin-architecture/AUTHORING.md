@@ -26,11 +26,12 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.7`). API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should
-declare `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
+`0.1.8`). API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
+API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
+`^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
-capability. Existing `^0.1.0` through `^0.1.7` packages remain compatible, each on a host at or above the version it declares.
+capability. Existing `^0.1.0` through `^0.1.8` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -109,6 +110,21 @@ settled). Only a prompt the user was actually shown uses up that allowance: a ca
 first — an invalid request, another of the plugin's prompts still open, or a host with no prompt UI —
 leaves it, so a corrected retry in the same invocation still works. Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
+
+## External tools (0.1.8)
+
+`context.tools` lets a plugin use host-managed AI command-line tools (`claude` and `codex`). Declare
+both `assistant.run` and `native.execute`, and `apiVersion: "^0.1.8"`. The capability is absent
+without either permission, and every method re-checks both when called. Manifest validation refuses
+`assistant.run` without `native.execute` because external tools spawn processes. The
+host obtains consent separately for each plugin and each tool, so a plugin must be prepared for
+install or run to be declined.
+
+Plugins send typed tool requests, never argv, environment variables, or file paths. The host renders
+the fixed command line and owns installation, sign-in, process lifecycle, and output limits. A
+long-running command can poll with `tools.poll` (up to one second of waiting) while its submitting
+command remains active. Stopping a run is a separate plugin command that calls `tools.cancel`; do not
+try to cancel by ending the submitting command.
 
 ## Host-owned image acquisition
 

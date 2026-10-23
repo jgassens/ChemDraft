@@ -85,6 +85,10 @@ impl UtilitySuspension {
         self.deferred_panels.contains_key(label)
     }
 
+    pub(crate) fn needs_restore(&self, label: &str) -> bool {
+        self.restore.contains(label)
+    }
+
     /// Drain on the creation worker after the main-thread restore transaction. Building on the
     /// main thread deadlocks WebView2; building during a prompt orders macOS children onscreen.
     pub(crate) fn take_deferred_panels(

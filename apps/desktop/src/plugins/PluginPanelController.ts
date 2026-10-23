@@ -22,7 +22,11 @@ export class PluginPanelController {
     private readonly host: PluginHost,
     private readonly nowIso: () => string,
     private readonly defaultSurface: "inApp" | "window" = "inApp"
-  ) {}
+  ) {
+    // The host notifies subscribers after plugin registration changes. Reports belong to the
+    // installed runtime instance, so discard them as soon as their owner is unregistered.
+    this.host.subscribe(() => this.clearUnregisteredPluginReports());
+  }
 
   /** Entry point wired to `PluginHostOptions.showPanelReport`. Also safe to call from desktop code. */
   showReport(pluginId: string, panelId: string, report: PluginPanelReport): void {
@@ -181,6 +185,21 @@ export class PluginPanelController {
   private recordDiagnostic(code: string, message: string): void {
     this.diagnostics = [...this.diagnostics, { code, message, at: this.nowIso() }];
     this.notify();
+  }
+
+  private clearUnregisteredPluginReports(): void {
+    let changed = false;
+    if (this.open && !this.host.getPlugin(this.open.pluginId)) {
+      this.open = undefined;
+      changed = true;
+    }
+    for (const [key, panel] of this.detached) {
+      if (!this.host.getPlugin(panel.pluginId)) {
+        this.detached.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) this.notify();
   }
 
   private notify(): void {

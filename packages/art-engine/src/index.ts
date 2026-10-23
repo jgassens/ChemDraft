@@ -3823,6 +3823,13 @@ function graphicPathD(
   return storedPath;
 }
 
+/** Uniformly scale stored SVG geometry, including arc radii and Bezier controls. */
+export function scaleGraphicPathD(pathD: string, scale: number): string {
+  if (scale === 1) return pathD;
+  return new SVGPathCommander(pathD, { round: 6, origin: [0, 0, 0] })
+    .transform({ scale: [scale, scale], origin: [0, 0, 0] }).toString();
+}
+
 function translateSvgPathD(pathD: string, x: number, y: number): string {
   if (Math.abs(x) < 0.001 && Math.abs(y) < 0.001) {
     return pathD;

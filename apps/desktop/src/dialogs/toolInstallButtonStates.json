@@ -1,0 +1,8 @@
+[
+  { "state": { "status": "notInstalled" }, "buttons": ["install", "close"] },
+  { "state": { "status": "consent" }, "buttons": ["allow", "close"] },
+  { "state": { "status": "installing", "phase": "Downloading", "bytesDone": 1, "bytesTotal": 2 }, "buttons": ["cancelInstall", "close"] },
+  { "state": { "status": "installed" }, "buttons": ["close"] },
+  { "state": { "status": "failed", "message": "Download failed" }, "buttons": ["install", "close"] },
+  { "state": { "status": "broken", "detail": "Missing receipt" }, "buttons": ["install", "close"] }
+]

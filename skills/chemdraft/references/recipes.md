@@ -39,7 +39,7 @@ Question: Which structure is ethanol? Create choices in a fixed order:
 
 ```sh
 node -e "require('node:fs').writeFileSync(require('node:path').join(process.argv[1], 'choices.json'), JSON.stringify([{name:'ethanol',smiles:'CCO'},{name:'dimethyl-ether',smiles:'COC'},{name:'acetone',smiles:'CC(=O)C'},{name:'acetic-acid',smiles:'CC(=O)O'}]))" "$scratch"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft grid --batch "$scratch/choices.json" --out "$scratch/question.png" --columns 2 --labels letters --width 1000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft grid --batch "$scratch/choices.json" --out "$scratch/question.svg" --columns 2 --labels letters --style document
 ```
 
 Answer key: A (ethanol), B (dimethyl ether), C (acetone), D (acetic acid).
@@ -52,7 +52,7 @@ Question: Assign each drawn center's absolute configuration.
 
 ```sh
 node -e "require('node:fs').writeFileSync(require('node:path').join(process.argv[1], 'stereo.json'), JSON.stringify([{name:'first',smiles:'C[C@H](O)C(=O)O'},{name:'second',smiles:'C[C@@H](O)C(=O)O'}]))" "$scratch"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft grid --batch "$scratch/stereo.json" --out "$scratch/stereo-question.png" --columns 2 --width 1000
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft grid --batch "$scratch/stereo.json" --out "$scratch/stereo-question.svg" --columns 2 --style document
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft stereo --batch "$scratch/stereo.json"
 ```
 
@@ -69,7 +69,7 @@ For E/Z exercises, use `stereo` on slash-specified alkene SMILES too.
 Show an acid workup of sodium acetate. Preserve the salt as one reactant:
 
 ```sh
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant '[Na+].[O-]C(=O)C' --agent 'Cl' --product 'CC(=O)O' --conditions 'aqueous acid workup' --out "$scratch/salt.svg"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant '[Na+].[O-]C(=O)C' --agent 'Cl' --product 'CC(=O)O' --conditions 'aqueous acid workup' --out "$scratch/salt.svg" --style document
 ```
 
 Check sodium/counterion identity and the HCl agent label. This simplified
@@ -83,8 +83,8 @@ Show oxidation of ethanol to acetic acid, then esterification. These are
 supplied illustrative transformations, not products inferred by ChemDraft.
 
 ```sh
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant 'CCO' --product 'CC(=O)O' --conditions 'oxidation' --out "$scratch/step-1.png"
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant 'CC(=O)O' --reactant 'CCO' --agent 'OS(=O)(=O)O' --product 'CC(=O)OCC' --conditions 'reflux' --out "$scratch/step-2.png"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant 'CCO' --product 'CC(=O)O' --conditions 'oxidation' --out "$scratch/step-1.svg" --style document
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft reaction --reactant 'CC(=O)O' --reactant 'CCO' --agent 'OS(=O)(=O)O' --product 'CC(=O)OCC' --conditions 'reflux' --out "$scratch/step-2.svg" --style document
 ```
 
 Place the two verified images in order. Keep conditions as supplied;
@@ -178,16 +178,23 @@ Check every export JSON line too. Failed jobs never become guessed structures.
 ## 9. Transparent slide figure
 
 ```sh
-pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out "$scratch/slide-aspirin" --format both --background transparent --width 1200 --padding 24
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out "$scratch/slide-aspirin.svg" --background transparent --style document
 ```
 
-Inspect the PNG, then place SVG if the slide software supports it; otherwise
-use PNG. Check contrast against the slide background. Keep the SMILES/options.
+Insert the SVG at its natural size (100%), using its reported `widthPt` and
+`heightPt`; never scale, zoom, stretch or crop it to fit the slide. Adjust the
+slide layout instead and keep every structure on the deck at the same scale.
+If the slide software cannot show SVG, render a PNG from the same document
+style with `--style document --dpi 300` and insert it at the SVG's reported
+physical size, not a fitted width. Check contrast against the slide
+background. Keep the SMILES/options.
 Known limitation: `render` still paints an opaque white patch behind each
 atom label (the O and OH here) on a transparent background. On a coloured
-slide, build the figure with `document`, set
+slide, build the figure with `document --style document`, set
 `molecule.style.atomLabelBackgroundColor` to `"transparent"`, and render it
-with `render-document --background transparent` ([art](art.md)).
+with `render-document --style document --background transparent`
+([art](art.md)). This document-style path keeps the figure's colours and the
+transparent label background; it changes only its fixed physical sizes.
 
 ## 10. Human hand-edit loop via CDXML
 

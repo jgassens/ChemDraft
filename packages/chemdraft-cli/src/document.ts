@@ -2,6 +2,7 @@ import { Resvg } from "@resvg/resvg-js";
 
 import {
   createEmptyDocument,
+  DocumentStylePreset,
   isDativeBond,
   moleculeToMolfileV2000,
   moleculeToMolfileV3000,
@@ -10,10 +11,13 @@ import {
   type MoleculeBond,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import {
   atomLabelHaloWidthPx,
+  DocumentStyleScale,
+  documentStylePointBounds,
+  type FigureStyle,
   nativeBondOrderResolution,
   planMoleculeAtomLabels,
   planPageSvgRender,
@@ -28,6 +32,7 @@ import {
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import {
   applyMoleculeTargetBondLength,
+  applyDocumentStyle,
   assertMolfileHasKnownBondOrders,
   expandNativeMoleculeLabelGroups,
   nativeSingleHeavyElementLabelValence,
@@ -44,6 +49,8 @@ export type RenderBackground = "white" | "transparent";
 export type DepictionEngine = "rdkit" | "ocl";
 
 export interface RenderSmilesOptions {
+  style?: FigureStyle;
+  dpi?: number;
   name?: string;
   width?: number;
   background?: RenderBackground;
@@ -478,6 +485,30 @@ export async function currentMoleculeIdentityMolfile(
   return result;
 }
 
+/** Restyling scales coordinates, so refresh the verified stored CTAB as well. In particular,
+ * unknown E/Z flags must survive a scale change rather than being mistaken for a graph edit.
+ */
+export async function documentWithPhysicalStyle(document: ChemDraftDocument, warnings: ExportWarning[] = []): Promise<ChemDraftDocument> {
+  const sources = new Map<string, { canonical: string; semantics: SourceBondSemantics }>();
+  for (const page of document.pages) for (const molecule of page.objects) {
+    if (molecule.type !== "molecule") continue;
+    const verified = await currentMoleculeIdentityMolfile(molecule);
+    sources.set(molecule.id, { canonical: await canonicalSmiles(verified.contents, "input"),
+      semantics: sourceBondSemantics(verified.contents) });
+  }
+  const styleWarnings: { code: string; message: string }[] = [];
+  let styled = applyDocumentStyle(document, styleWarnings);
+  warnings.push(...styleWarnings.map((warning) => ({ ...warning, severity: "warning" as const })));
+  for (const page of styled.pages) for (const molecule of page.objects) {
+    if (molecule.type !== "molecule") continue;
+    const source = sources.get(molecule.id)!;
+    const serialized = identityMolfile(molecule, source.semantics);
+    await assertCanonicalIdentity(source.canonical, serialized.contents);
+    styled = replaceMolecule(styled, { ...molecule, structure: serialized.contents, structureFormat: serialized.format });
+  }
+  return styled;
+}
+
 class UnsupportedMolfileLabelError extends Error {}
 
 function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
@@ -780,27 +811,49 @@ function rewriteSvgRootToViewBox(
   return rewritten;
 }
 
+/** First-page crop in native coordinates, shared by native build reports and SVG export. */
+function documentContentViewBox(
+  document: ChemDraftDocument,
+  padding: number,
+  includeObjectFrames = false,
+  style: FigureStyle = "fit"
+): RenderedSmiles["viewBox"] {
+  const bounds = style === "document" && document.pages[0]?.objects.length === 0
+    ? { minX: 0, minY: 0, maxX: 0, maxY: 0 } : documentVisualBounds(document, includeObjectFrames);
+  const contentPadding = style === "document" ? DocumentStyleScale.marginPt / DocumentStyleScale.pointsPerUnit : finiteNonNegative(padding, "Padding");
+  return {
+    x: bounds.minX - contentPadding,
+    y: bounds.minY - contentPadding,
+    width: Math.max(1, bounds.maxX - bounds.minX + contentPadding * 2),
+    height: Math.max(1, bounds.maxY - bounds.minY + contentPadding * 2)
+  };
+}
+
+export function documentPhysicalSize(document: ChemDraftDocument) {
+  return documentStylePointBounds(documentContentViewBox(document, 0, false, "document"));
+}
+
 /** Crop an exported document SVG to all visible first-page content plus requested padding. */
 export function cropDocumentSvgToContent(
   svg: string,
   document: ChemDraftDocument,
   padding: number,
   background: RenderBackground,
-  includeObjectFrames = false
+  includeObjectFrames = false,
+  style: FigureStyle = "fit"
 ): { svg: string; viewBox: RenderedSmiles["viewBox"] } {
-  const bounds = documentVisualBounds(document, includeObjectFrames);
-  const contentPadding = finiteNonNegative(padding, "Padding");
-  const viewBox = {
-    x: bounds.minX - contentPadding,
-    y: bounds.minY - contentPadding,
-    width: Math.max(1, bounds.maxX - bounds.minX + contentPadding * 2),
-    height: Math.max(1, bounds.maxY - bounds.minY + contentPadding * 2)
-  };
-  return { svg: rewriteSvgRootToViewBox(svg, viewBox, background), viewBox };
+  const viewBox = documentContentViewBox(document, padding, includeObjectFrames, style);
+  const cropped = rewriteSvgRootToViewBox(svg, viewBox, background);
+  return style === "document" ? documentStyleSvg(cropped, viewBox) : { svg: cropped, viewBox };
 }
 
 /** Rasterize an SVG to a PNG whose output width is measured in pixels. */
-export function svgToPng(svg: string, width: number): Uint8Array {
+export function svgToPng(svg: string, width: number, style: FigureStyle = "fit", dpi = DocumentStyleScale.defaultDpi as number): Uint8Array {
+  if (style === "document") {
+    if (!Number.isFinite(dpi) || dpi < DocumentStyleScale.minDpi || dpi > DocumentStyleScale.maxDpi) throw new Error("DPI must be between 72 and 1200.");
+    // resvg resolves pt at its configured DPI; no fitTo transform is applied.
+    return new Resvg(svg, { dpi }).render().asPng();
+  }
   const pngWidth = validateRasterWidth(width, "PNG width");
   return new Resvg(svg, {
     fitTo: { mode: "width", value: Math.round(pngWidth) }
@@ -808,6 +861,7 @@ export function svgToPng(svg: string, width: number): Uint8Array {
 }
 
 export interface BuildSmilesDocumentOptions {
+  style?: FigureStyle;
   name?: string;
   bondLength?: number;
 }
@@ -836,7 +890,8 @@ export async function buildSmilesDocument(
   const trimmedSmiles = normalizedSmilesInput(smiles);
 
   const name = options.name ?? "structure";
-  const bondLength = finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
+  const bondLength = options.style === "document" ? DocumentStylePreset.drawing.bondLengthPx
+    : finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
   const depicted = await depictSmiles(trimmedSmiles);
   let document = createEmptyDocument({ title: name });
   const page = document.pages[0];
@@ -852,6 +907,10 @@ export async function buildSmilesDocument(
   document = replaceMolecule(document, molecule);
   if (Math.abs(bondLength - smilesPasteBondLengthPx) > 0.0001) {
     document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
+    molecule = moleculeFromDocument(document);
+  }
+  if (options.style === "document") {
+    document = applyDocumentStyle(document);
     molecule = moleculeFromDocument(document);
   }
 
@@ -905,14 +964,14 @@ export async function renderSmilesToAssets(
     throw new Error(`Background must be "white" or "transparent", received "${String(background)}".`);
   }
 
-  const built = await buildSmilesDocument(smiles, { name, bondLength });
+  const built = await buildSmilesDocument(smiles, { name, bondLength, style: options.style });
   const { document, molecule } = built;
 
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
   });
-  const cropped = cropDocumentSvgToContent(exported.contents, document, padding, background);
-  const png = svgToPng(cropped.svg, width);
+  const cropped = cropDocumentSvgToContent(exported.contents, document, padding, background, false, options.style);
+  const png = svgToPng(cropped.svg, width, options.style, options.dpi);
 
   return {
     name,

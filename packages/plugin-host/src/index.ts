@@ -21,6 +21,16 @@ import type {
   PluginImagesAPI,
   PluginRecognitionAPI,
   PluginRecognitionResult,
+  PluginToolsAPI,
+  PluginExternalToolStatus,
+  PluginExternalToolRunRequest,
+  PluginExternalToolRunHandle,
+  PluginExternalToolRunPoll,
+  PluginExternalToolStatusRequest,
+  PluginExternalToolInstallRequest,
+  PluginExternalToolPollRequest,
+  PluginExternalToolCancelRequest,
+  PluginExternalToolClearConversationRequest,
   RecognitionConfidenceTier,
   RecognitionProposalReview,
   RecognitionWarning,
@@ -70,6 +80,16 @@ import {
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
   PluginStructureFromSmilesRequestSchema,
+  PluginExternalToolStatusSchema,
+  PluginExternalToolRunRequestSchema,
+  PluginExternalToolRunHandleSchema,
+  PluginExternalToolRunPollSchema,
+  PluginExternalToolStatusRequestSchema,
+  PluginExternalToolInstallRequestSchema,
+  PluginExternalToolSignInResultSchema,
+  PluginExternalToolPollRequestSchema,
+  PluginExternalToolCancelRequestSchema,
+  PluginExternalToolClearConversationRequestSchema,
   ProposedDocumentPatchSchema,
   parsePluginManifest
 } from "@chemdraft/plugin-api";
@@ -279,6 +299,17 @@ export interface HostRecognitionReview {
  *  recognized structure, the host's own review facts. */
 export type HostRecognitionOutcome = PluginRecognitionResult & { hostReview?: HostRecognitionReview };
 
+export interface PluginHostExternalTools {
+  status(plugin: { id: string; name: string }, request: PluginExternalToolStatusRequest): PluginExternalToolStatus | Promise<PluginExternalToolStatus>;
+  install(plugin: { id: string; name: string }, request: PluginExternalToolInstallRequest, signal: AbortSignal): PluginExternalToolStatus | Promise<PluginExternalToolStatus>;
+  signIn(plugin: { id: string; name: string }, request: PluginExternalToolInstallRequest): { launched: boolean; method: "terminal.command" | "newConsole"; detail?: string } | Promise<{ launched: boolean; method: "terminal.command" | "newConsole"; detail?: string }>;
+  run(plugin: { id: string; name: string }, request: PluginExternalToolRunRequest): PluginExternalToolRunHandle | Promise<PluginExternalToolRunHandle>;
+  poll(plugin: { id: string; name: string }, request: PluginExternalToolPollRequest): PluginExternalToolRunPoll | Promise<PluginExternalToolRunPoll>;
+  cancel(plugin: { id: string; name: string }, request: PluginExternalToolCancelRequest): void | Promise<void>;
+  clearConversation(plugin: { id: string; name: string }, request: PluginExternalToolClearConversationRequest): void | Promise<void>;
+  cancelAllForPlugin(pluginId: string): void;
+}
+
 export interface PluginHostOptions {
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
@@ -302,6 +333,8 @@ export interface PluginHostOptions {
     request: NormalizedPluginPromptTextRequest,
     signal: AbortSignal
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
+  /** Host-managed AI command-line tools. Plugins never supply argv or environment variables. */
+  externalTools?: PluginHostExternalTools;
   /** Acquires an image through host-owned UI. The signal aborts when the command ends/unregisters. */
   requestImage?: (
     plugin: { id: string; name: string },
@@ -354,6 +387,7 @@ export class PluginHost {
   private readonly createStorage?: PluginHostOptions["createStorage"];
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
+  private readonly externalTools?: PluginHostOptions["externalTools"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
@@ -375,6 +409,7 @@ export class PluginHost {
   private readonly openImageRequests = new Map<symbol, Set<AbortController>>();
   private readonly providedImagesByInvocation = new Map<symbol, PluginProvidedImage[]>();
   private readonly openRecognitionRequests = new Map<symbol, Set<AbortController>>();
+  private readonly openExternalToolInstalls = new Map<symbol, Set<AbortController>>();
   /** Real recognition insertions withheld from plugins without `document.read`, per invocation, keyed
    *  by the opaque `ref` the plugin was handed instead (see `HostHeldRecognitionPatchOp`). */
   private readonly heldRecognitionPatches = new Map<symbol, Map<string, NormalizedProposedDocumentPatch>>();
@@ -392,6 +427,7 @@ export class PluginHost {
     this.createStorage = options.createStorage;
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
+    this.externalTools = options.externalTools;
     this.requestImage = options.requestImage;
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
@@ -448,6 +484,7 @@ export class PluginHost {
     const plugin = this.requireRegisteredPlugin(pluginId);
     this.cancelOpenTextPrompt(pluginId);
     this.cancelOpenImageRequests(pluginId);
+    this.externalTools?.cancelAllForPlugin(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
       this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
@@ -592,6 +629,17 @@ export class PluginHost {
               this.recognizeStructureForPlugin(pluginId, invocationToken, image)
           }
         : undefined;
+    const tools: PluginToolsAPI | undefined = this.hasPermission(pluginId, "assistant.run") && this.hasPermission(pluginId, "native.execute")
+      ? {
+          status: (request) => this.externalToolStatusForPlugin(pluginId, request),
+          install: (request) => this.externalToolInstallForPlugin(pluginId, invocationToken, request),
+          signIn: (request) => this.externalToolSignInForPlugin(pluginId, request),
+          run: (request) => this.externalToolRunForPlugin(pluginId, request),
+          poll: (request) => this.externalToolPollForPlugin(pluginId, request),
+          cancel: (request) => this.externalToolCancelForPlugin(pluginId, request),
+          clearConversation: (request) => this.externalToolClearConversationForPlugin(pluginId, request)
+        }
+      : undefined;
     const analysis: PluginAnalysisAPI | undefined = this.hasPermission(pluginId, "analysis.write")
       ? {
           write: async (input) => {
@@ -711,6 +759,7 @@ export class PluginHost {
       dialogs,
       images,
       recognition,
+      tools,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -1021,6 +1070,80 @@ export class PluginHost {
     }
   }
 
+  private externalToolsFor(pluginId: string): { id: string; name: string } {
+    this.requirePermission(pluginId, "assistant.run");
+    this.requirePermission(pluginId, "native.execute");
+    if (!this.externalTools) {
+      throw new PluginHostError("This host provides no external tools.");
+    }
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    return { id: plugin.manifest.id, name: plugin.manifest.name };
+  }
+
+  private async externalToolStatusForPlugin(
+    pluginId: string,
+    request: PluginExternalToolStatusRequest
+  ): Promise<PluginExternalToolStatus> {
+    const plugin = this.externalToolsFor(pluginId);
+    const parsed = PluginExternalToolStatusRequestSchema.parse(request);
+    return PluginExternalToolStatusSchema.parse(await this.externalTools!.status(plugin, parsed));
+  }
+
+  private async externalToolInstallForPlugin(
+    pluginId: string,
+    invocationToken: symbol | undefined,
+    request: PluginExternalToolInstallRequest
+  ): Promise<PluginExternalToolStatus> {
+    const plugin = this.externalToolsFor(pluginId);
+    const parsed = PluginExternalToolInstallRequestSchema.parse(request);
+    if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call tools.install only while one of its own commands is executing.`
+      );
+    }
+    const abortController = new AbortController();
+    const requests = this.openExternalToolInstalls.get(invocationToken) ?? new Set<AbortController>();
+    requests.add(abortController);
+    this.openExternalToolInstalls.set(invocationToken, requests);
+    try {
+      return PluginExternalToolStatusSchema.parse(await this.externalTools!.install(plugin, parsed, abortController.signal));
+    } finally {
+      requests.delete(abortController);
+      if (requests.size === 0) this.openExternalToolInstalls.delete(invocationToken);
+    }
+  }
+
+  private async externalToolSignInForPlugin(pluginId: string, request: PluginExternalToolInstallRequest) {
+    const plugin = this.externalToolsFor(pluginId);
+    const parsed = PluginExternalToolInstallRequestSchema.parse(request);
+    return PluginExternalToolSignInResultSchema.parse(await this.externalTools!.signIn(plugin, parsed));
+  }
+
+  private async externalToolRunForPlugin(pluginId: string, request: PluginExternalToolRunRequest): Promise<PluginExternalToolRunHandle> {
+    const plugin = this.externalToolsFor(pluginId);
+    const parsed = PluginExternalToolRunRequestSchema.parse(request);
+    return PluginExternalToolRunHandleSchema.parse(await this.externalTools!.run(plugin, parsed));
+  }
+
+  private async externalToolPollForPlugin(pluginId: string, request: PluginExternalToolPollRequest): Promise<PluginExternalToolRunPoll> {
+    const plugin = this.externalToolsFor(pluginId);
+    const parsed = PluginExternalToolPollRequestSchema.parse(request);
+    return PluginExternalToolRunPollSchema.parse(await this.externalTools!.poll(plugin, parsed));
+  }
+
+  private async externalToolCancelForPlugin(pluginId: string, request: PluginExternalToolCancelRequest): Promise<void> {
+    const plugin = this.externalToolsFor(pluginId);
+    await this.externalTools!.cancel(plugin, PluginExternalToolCancelRequestSchema.parse(request));
+  }
+
+  private async externalToolClearConversationForPlugin(
+    pluginId: string,
+    request: PluginExternalToolClearConversationRequest
+  ): Promise<void> {
+    const plugin = this.externalToolsFor(pluginId);
+    await this.externalTools!.clearConversation(plugin, PluginExternalToolClearConversationRequestSchema.parse(request));
+  }
+
   private async promptTextForPlugin(
     pluginId: string,
     invocationToken: symbol | undefined,
@@ -1275,6 +1398,10 @@ export class PluginHost {
       controller.abort();
     }
     this.openRecognitionRequests.delete(invocationToken);
+    for (const controller of this.openExternalToolInstalls.get(invocationToken) ?? []) {
+      controller.abort();
+    }
+    this.openExternalToolInstalls.delete(invocationToken);
     if (pluginId && this.openTextPrompts.get(pluginId)?.invocationToken === invocationToken) {
       this.cancelOpenTextPrompt(pluginId);
     }
@@ -1297,6 +1424,10 @@ export class PluginHost {
         controller.abort();
       }
       this.openRecognitionRequests.delete(invocationToken);
+      for (const controller of this.openExternalToolInstalls.get(invocationToken) ?? []) {
+        controller.abort();
+      }
+      this.openExternalToolInstalls.delete(invocationToken);
     }
   }
 

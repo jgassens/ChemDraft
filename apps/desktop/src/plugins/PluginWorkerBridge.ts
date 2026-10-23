@@ -417,6 +417,8 @@ export class PluginWorkerBridge {
         return context.images;
       case "recognition":
         return context.recognition;
+      case "tools":
+        return context.tools;
     }
   }
 

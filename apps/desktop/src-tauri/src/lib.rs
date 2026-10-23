@@ -2,6 +2,7 @@ mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
 mod export;
+mod external_tools;
 mod fonts;
 mod installed_plugins;
 mod local_engine;
@@ -19,6 +20,8 @@ mod plugin_package;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
+#[cfg(test)]
+mod utility_suspension_tests;
 mod window_drag;
 mod windows_clipboard;
 
@@ -43,7 +46,7 @@ use tauri::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
     },
     webview::PageLoadEvent,
-    Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(target_os = "macos")]
@@ -884,6 +887,7 @@ pub fn run() {
         .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
+        .manage(external_tools::ExternalToolsState::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
@@ -1000,6 +1004,7 @@ pub fn run() {
                         APP_QUITTING.store(true, Ordering::SeqCst);
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        external_tools::shutdown(window.app_handle());
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
@@ -1164,6 +1169,14 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            // Programmatic panel removal hides a reusable window, so it produces neither
+            // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
+            // messages that clear the report and notify the host of a panel's close control.
+            for event in [PLUGIN_PANEL_REPORT_CLEARED_EVENT, PLUGIN_PANEL_CLOSED_EVENT] {
+                app.listen(event, |event| {
+                    cancel_plugin_panel_restore(&UTILITY_SUSPENSION, event.payload());
+                });
+            }
             problem_reports::install_panic_hook(app);
             #[cfg(target_os = "macos")]
             if let Err(error) = macos_quit::install(app) {
@@ -1172,6 +1185,7 @@ pub fn run() {
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
+            external_tools::setup(app);
             let naming = app.state::<naming_engine::NamingEngineState>();
             naming.start_idle_reaper();
             naming.remove_stale_staging(app);
@@ -1226,6 +1240,19 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            external_tools::external_tool_status,
+            external_tools::external_tool_install,
+            external_tools::external_tool_cancel_install,
+            external_tools::external_tool_uninstall,
+            external_tools::external_tool_sign_in,
+            external_tools::external_tool_consent_set,
+            external_tools::external_tool_consent_list,
+            external_tools::external_tool_consent_revoke,
+            external_tools::external_tool_consent_clear_plugin,
+            external_tools::external_tool_run_start,
+            external_tools::external_tool_run_poll,
+            external_tools::external_tool_run_cancel,
+            external_tools::external_tool_conversation_clear,
             diagnose_download_host,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
@@ -1327,6 +1354,7 @@ pub fn run() {
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                    external_tools::shutdown(app);
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
             }
@@ -1336,6 +1364,7 @@ pub fn run() {
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                external_tools::shutdown(app);
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
             // Dock-icon click with no visible windows; a macOS-only event.
@@ -2068,6 +2097,15 @@ fn buffer_utility_recovery_position<R: Runtime>(window: &tauri::WebviewWindow<R>
 fn restore_utility_in_document_group<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    // A close/removal may arrive after the restore list was collected or while a deferred
+    // WebView2 build was waiting for the main thread. Never reveal that cancelled window.
+    if !UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .needs_restore(window.label())
+    {
+        return Ok(());
+    }
     let app = window.app_handle();
     let main = app
         .get_webview_window(MAIN_WINDOW_LABEL)
@@ -2841,6 +2879,44 @@ async fn set_plugin_panel_input_focus(
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
 const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
+const PLUGIN_PANEL_REPORT_CLEARED_EVENT: &str = "chemdraft://plugin-panel-report-cleared";
+const PLUGIN_PANEL_CLOSED_EVENT: &str = "chemdraft://plugin-panel-closed";
+
+/// Mirror panelBridge.ts's UTF-8 hex identity, including the plugin owner: contributed panel ids
+/// alone are not unique. Extra payload fields (such as the report revision) are intentionally ignored.
+fn cancel_plugin_panel_restore(
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+    payload: &str,
+) {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PanelIdentity {
+        plugin_id: String,
+        panel_id: String,
+    }
+    let Ok(identity) = serde_json::from_str::<PanelIdentity>(payload) else {
+        return;
+    };
+    if identity.plugin_id.is_empty() || identity.panel_id.is_empty() {
+        return;
+    }
+    let hex = |value: &str| {
+        value
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let label = plugin_panel_window_label(&format!(
+        "v1x{}x{}",
+        hex(&identity.plugin_id),
+        hex(&identity.panel_id)
+    ));
+    suspension
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .closed(&label);
+}
 
 fn is_plugin_panel_window_label(label: &str) -> bool {
     label.len() > PLUGIN_PANEL_WINDOW_LABEL_PREFIX.len()
@@ -3220,12 +3296,20 @@ fn resume_deferred_plugin_panels(
                 .release(true);
             return Ok(());
         }
+        if !suspension
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .needs_restore(&label)
+        {
+            continue;
+        }
         request._focus = false;
         if let Err(error) = builder(request.clone()) {
-            suspension
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .defer_panel(label, request);
+            let mut state = suspension.lock().unwrap_or_else(|p| p.into_inner());
+            // A removal during the native build must not be undone by its error/retry path.
+            if state.needs_restore(&label) {
+                state.defer_panel(label, request);
+            }
             result = Err(error);
         } else {
             suspension
@@ -8215,6 +8299,7 @@ mod tests {
         send_sync::<QuitFlow>();
         send_sync::<tauri::AppHandle<tauri::Wry>>();
         send_sync::<ocsr_engine::OcsrEngineState>();
+        send_sync::<external_tools::ExternalToolsState>();
         send_sync::<naming_engine::NamingEngineState>();
     }
 
@@ -8459,13 +8544,14 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),
-            include_str!("../capabilities/download-diagnosis.json")
+            include_str!("../capabilities/download-diagnosis.json"),
+            include_str!("../capabilities/external-tools.json")
         );
 
         let handler_start = lib_source
