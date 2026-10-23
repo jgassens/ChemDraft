@@ -1884,6 +1884,8 @@ export function MainWindow({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const canvasOverlayLayerRef = useRef<HTMLDivElement | null>(null);
+  const statusRowRef = useRef<HTMLDivElement | null>(null);
   const canvasOverlaysPresentRef = useRef(false);
   const [canvasPointerActive, setCanvasPointerActive] = useState(false);
   const [canvasZoomActive, setCanvasZoomActive] = useState(false);
@@ -20104,11 +20106,13 @@ export function MainWindow({
             </div>
           </div>
         </section>
-        <div className="plugin-canvas-overlay-layer">
+        <div ref={canvasOverlayLayerRef} className="plugin-canvas-overlay-layer">
           {pluginRuntime.canvasOverlays.map(({ pluginId, overlay }) => {
             const panel = pluginRuntime.plugins.find(plugin => plugin.id === pluginId)?.contributes.panels[0];
             return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
               viewportRef={canvasRegionRef}
+              overlayLayerRef={canvasOverlayLayerRef}
+              statusRowRef={statusRowRef}
               gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
               status={pluginRuntime.canvasOverlayStatuses.get(overlay.id)}
               onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
@@ -20195,7 +20199,7 @@ export function MainWindow({
         {/* One row along the bottom of the workspace: the status (its text truncating), the warnings
             count and the modifier hint on the left, the build stamp on the right, giving way first (App.css).
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
-        <div className="status-row" data-status-row>
+        <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
             <span data-status-message role="status" aria-live="polite" className="status-message">
               {interactive3dWorkspace

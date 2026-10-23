@@ -56,6 +56,7 @@
   --cd-shadow-tab: 0 -1px 3px color-mix(in srgb, var(--cd-text-primary) 12%, transparent);
   /* One explicit overlay scale: panels < menus < context menus < blocking modals. */
   --cd-z-floating-panel: 1200;
+  --cd-z-canvas-overlay: 1100;
   --cd-z-menu: 1300;
   --cd-z-context-menu: 1400;
   --cd-z-modal: 2000;
@@ -867,7 +868,8 @@ textarea:focus-visible,
 .plugin-canvas-overlay-layer {
   position: absolute;
   inset: 0;
-  z-index: 100;
+  /* Above the status/build stamp, below panels, menus, and dialogs. */
+  z-index: var(--cd-z-canvas-overlay);
   overflow: hidden;
   pointer-events: none;
 }

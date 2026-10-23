@@ -328,6 +328,13 @@ foreign, or over-limit controls. The textarea itself is never disabled while an 
 because doing so would end its native input-focus lease; only Send and the select become unavailable.
 Its draft clears only after the host accepts the action.
 
+The host acknowledges a panel or overlay submission as soon as it **accepts and queues** the
+command; it does not wait for a long-running command such as an AI run. The accepted draft therefore
+clears immediately. A **host refusal** — a stale or closed panel, disabled control, too-long text,
+unknown option, or foreign command — keeps the draft and appears inline. A refusal or failure decided
+by the plugin's own command is the plugin's to report in its panel or overlay content (for example, a
+transcript line or `overlays.setStatus`); the document status line also reports command failures.
+
 The native **Plugins** menu is the `plugins` menu location. A plugin may also contribute at most one
 `canvasOverlays` entry. It requires `ui.canvas` and has an `overlay.<plugin>.<name>` id, a title of
 at most 80 characters, a base64 PNG or SVG data-URI icon of at most 64 KB, the overlay command id,

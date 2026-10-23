@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginPanelReportSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
@@ -79,6 +80,14 @@ describe("MainWindow canvas overlays", () => {
     expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: "message",
       control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("");
+  });
+
+  it("stacks the canvas overlay above the build stamp but below floating panels", () => {
+    const css = readFileSync("apps/desktop/src/App.css", "utf8");
+    expect(css).toMatch(/--cd-z-canvas-overlay:\s*1100/);
+    expect(css).toMatch(/\.plugin-canvas-overlay-layer\s*\{[\s\S]*?z-index:\s*var\(--cd-z-canvas-overlay\)/);
+    expect(css).toMatch(/\.status-row\s*\{[\s\S]*?z-index:\s*1000/);
+    expect(css).toMatch(/--cd-z-floating-panel:\s*1200/);
   });
 
   async function openPanel(plugin: string, panelId: string, commandId: string, handler: typeof submit): Promise<void> {

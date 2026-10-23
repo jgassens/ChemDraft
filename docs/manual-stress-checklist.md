@@ -243,8 +243,10 @@ consent text must say that it does and that page content can leave the computer.
 In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
 and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
 the composition must not submit early. Force a host refusal (for example by making the panel stale
-or disconnecting it) and confirm the inline refusal keeps the draft; after acceptance, the draft
-clears. Confirm a panel report containing a prompt hides Run again. While the transcript grows, scroll
+or disconnecting it) and confirm the inline host refusal keeps the draft; after host acceptance, the draft
+clears. Confirm a panel report containing a prompt hides Run again. A refusal or failure from the plugin's
+own command appears in that plugin's transcript or overlay status, while command failures also reach the
+document status line. While the transcript grows, scroll
 away from its bottom and submit or receive another report: it must not pull the reader down; submit
 from the prompt and it may follow the new output. Keep typing while a report refreshes: focus and the
 draft must stay in the textarea. Also invoke a plugin contribution at location `plugins` and confirm

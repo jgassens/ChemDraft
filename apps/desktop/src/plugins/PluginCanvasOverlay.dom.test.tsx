@@ -21,6 +21,9 @@ const storageKey = `chemdraft:canvas-overlay:main:${overlay.id}`;
 let container: HTMLDivElement;
 let root: Root;
 let viewport: HTMLDivElement;
+let statusRow: HTMLDivElement;
+let rulerLeft: HTMLDivElement;
+let rulerTop: HTMLDivElement;
 let drawing: HTMLButtonElement;
 let action: ReturnType<typeof vi.fn<PluginPanelActionHandler>>;
 let openPanel: ReturnType<typeof vi.fn>;
@@ -29,6 +32,10 @@ let status: string;
 let withPanel: boolean;
 let platform: ShortcutPlatform;
 const viewportRef = createRef<HTMLElement>();
+const overlayLayerRef = createRef<HTMLElement>();
+const statusRowRef = createRef<HTMLElement>();
+let viewportWidth: number;
+let viewportHeight: number;
 
 function pointer(target: Element, type: string, x: number, y: number): void {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
@@ -42,6 +49,7 @@ function enterText(value: string): void {
 }
 async function render(): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={overlay} viewportRef={viewportRef}
+    overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId="main" shortcutPlatform={platform}
     onOpenPanel={withPanel ? openPanel : undefined} onFocusDrawing={() => drawing.focus()} />));
 }
@@ -54,12 +62,28 @@ describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; platform = "macos";
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
-    viewport = document.createElement("div"); viewportRef.current = viewport;
+    viewportWidth = 600; viewportHeight = 400;
+    viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
+    statusRow = document.createElement("div"); statusRowRef.current = statusRow;
+    rulerLeft = document.createElement("div"); rulerLeft.className = "ruler-left";
+    rulerTop = document.createElement("div"); rulerTop.className = "ruler-top";
     container = document.createElement("div"); drawing = document.createElement("button"); drawing.textContent = "Drawing";
-    viewport.append(container, drawing); document.body.append(viewport); drawing.focus(); root = createRoot(container);
+    viewport.append(rulerLeft, rulerTop, container, drawing, statusRow); document.body.append(viewport); drawing.focus(); root = createRoot(container);
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, get: () => viewportWidth - 16 },
+      clientHeight: { configurable: true, get: () => viewportHeight }
+    });
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      const width = this === viewport ? 600 : this.dataset.expanded === "true" ? 300 : 36;
-      const height = this === viewport ? 400 : this.dataset.expanded === "true" ? 220 : 36;
+      if (this === viewport) return { x: 0, y: 0, left: 0, top: 0, right: viewportWidth, bottom: viewportHeight,
+        width: viewportWidth, height: viewportHeight, toJSON() {} };
+      if (this === statusRow) return { x: 0, y: viewportHeight - 24, left: 0, top: viewportHeight - 24,
+        right: viewportWidth, bottom: viewportHeight, width: viewportWidth, height: 24, toJSON() {} };
+      if (this === rulerLeft) return { x: 0, y: 0, left: 0, top: 0, right: 32, bottom: viewportHeight,
+        width: 32, height: viewportHeight, toJSON() {} };
+      if (this === rulerTop) return { x: 0, y: 0, left: 0, top: 0, right: viewportWidth - 16, bottom: 32,
+        width: viewportWidth - 16, height: 32, toJSON() {} };
+      const width = this.dataset.expanded === "true" ? 300 : 36;
+      const height = this.dataset.expanded === "true" ? 220 : 36;
       return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON() {} };
     });
     await render();
@@ -68,7 +92,8 @@ describe("PluginCanvasOverlay", () => {
 
   it("starts collapsed at the declared corner, expands on click, and Esc restores drawing focus and preserves the draft", async () => {
     expect(document.activeElement).toBe(drawing);
-    expect(widget().style.left).toBe("552px"); expect(widget().style.top).toBe("352px");
+    // The 16 px scrollbar, 24 px status strip, and measured rulers are outside the drawing area.
+    expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
     expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("Assistant");
     expect(widget().dataset.expanded).toBe("false"); await expand();
     const textarea = container.querySelector("textarea")!;
@@ -82,13 +107,22 @@ describe("PluginCanvasOverlay", () => {
   it("clamps header drags to every viewport edge and restores the saved place on remount", async () => {
     await expand(); const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 310, 180); pointer(header, "pointermove", -1000, -1000); });
-    expect(widget().style.left).toBe("0px"); expect(widget().style.top).toBe("0px");
+    expect(widget().style.left).toBe("32px"); expect(widget().style.top).toBe("32px");
     await act(async () => pointer(header, "pointermove", 2000, 2000));
-    expect(widget().style.left).toBe("300px"); expect(widget().style.top).toBe("180px");
+    expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
     await act(async () => pointer(header, "pointerup", 2000, 2000));
-    expect(JSON.parse(window.localStorage.getItem(storageKey)!)).toEqual({ x: 300, y: 180 });
+    expect(JSON.parse(window.localStorage.getItem(storageKey)!)).toEqual({ x: 284, y: 156 });
     await act(async () => root.unmount()); root = createRoot(container); await render();
-    expect(widget().style.left).toBe("300px"); expect(widget().style.top).toBe("180px");
+    expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
+  });
+
+  it("re-clamps a remembered position on load and when the visible drawing area resizes", async () => {
+    await act(async () => root.unmount()); window.localStorage.setItem(storageKey, JSON.stringify({ x: 900, y: 900 }));
+    root = createRoot(container); await render();
+    expect(widget().style.left).toBe("548px"); expect(widget().style.top).toBe("340px");
+    viewportWidth = 500; viewportHeight = 300;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.left).toBe("448px"); expect(widget().style.top).toBe("240px");
   });
 
   it("stops overlay pointer and keyboard events before they reach the canvas", async () => {
@@ -153,7 +187,7 @@ describe("PluginCanvasOverlay", () => {
 
   it("works outside Tauri when storage is unavailable or malformed", async () => {
     await act(async () => root.unmount()); window.localStorage.setItem(storageKey, '{"x":"bad","y":null}');
-    root = createRoot(container); await render(); expect(widget().style.left).toBe("552px");
+    root = createRoot(container); await render(); expect(widget().style.left).toBe("536px");
     await act(async () => root.unmount());
     vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("Storage blocked"); });
     vi.spyOn(window.localStorage, "setItem").mockImplementation(() => { throw new Error("Storage blocked"); });

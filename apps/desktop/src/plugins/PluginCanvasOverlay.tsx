@@ -10,9 +10,12 @@ type Position = { x: number; y: number };
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  onOpenPanel, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, onOpenPanel, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   viewportRef: RefObject<HTMLElement | null>;
+  /** The positioned layer and bottom workspace chrome define the visible drawing area. */
+  overlayLayerRef?: RefObject<HTMLElement | null>;
+  statusRowRef?: RefObject<HTMLElement | null>;
   gestureActive: boolean;
   status?: string;
   onAction: PluginPanelActionHandler;
@@ -35,12 +38,37 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const elementRef = useRef<HTMLDivElement>(null);
   const focusOnExpandRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position } | null>(null);
-  const clampPosition = (point: Position): Position => {
+  const drawingArea = () => {
     const viewport = viewportRef.current?.getBoundingClientRect();
+    const layer = overlayLayerRef?.current?.getBoundingClientRect() ?? viewport;
+    const viewportElement = viewportRef.current;
+    if (!viewport || !layer || !viewportElement) return { left: 0, top: 0, right: 0, bottom: 0 };
+
+    // client dimensions exclude classic scrollbars; on platforms with overlay scrollbars they
+    // naturally remain available. clientLeft/clientTop also preserve a scrollbar on the leading edge.
+    let left = viewport.left + viewportElement.clientLeft;
+    let top = viewport.top + viewportElement.clientTop;
+    let right = left + (viewportElement.clientWidth || viewport.width);
+    let bottom = top + (viewportElement.clientHeight || viewport.height);
+    for (const ruler of viewportElement.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) {
+      const rect = ruler.getBoundingClientRect();
+      if ((ruler.classList.contains("ruler-left") || ruler.classList.contains("ruler-corner"))
+        && rect.right > left && rect.left <= left && rect.top < bottom && rect.bottom > top) left = Math.min(right, rect.right);
+      if ((ruler.classList.contains("ruler-top") || ruler.classList.contains("ruler-corner"))
+        && rect.bottom > top && rect.top <= top && rect.left < right && rect.right > left) top = Math.min(bottom, rect.bottom);
+    }
+    const status = statusRowRef?.current?.getBoundingClientRect();
+    if (status && status.top > top && status.top < bottom && status.right > left && status.left < right) bottom = status.top;
+    return { left: left - layer.left, top: top - layer.top, right: right - layer.left, bottom: bottom - layer.top };
+  };
+  const clampPosition = (point: Position): Position => {
+    const bounds = drawingArea();
     const widget = elementRef.current?.getBoundingClientRect();
+    const width = widget?.width || 36;
+    const height = widget?.height || 36;
     return {
-      x: Math.max(0, Math.min(point.x, Math.max(0, (viewport?.width ?? 0) - (widget?.width ?? 36)))),
-      y: Math.max(0, Math.min(point.y, Math.max(0, (viewport?.height ?? 0) - (widget?.height ?? 36))))
+      x: Math.max(bounds.left, Math.min(point.x, Math.max(bounds.left, bounds.right - width))),
+      y: Math.max(bounds.top, Math.min(point.y, Math.max(bounds.top, bounds.bottom - height)))
     };
   };
 
@@ -49,11 +77,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     const element = elementRef.current;
     if (!viewport || !element || gestureActive) return;
     const fit = () => setPosition(current => {
-      const bounds = viewport.getBoundingClientRect();
+      const bounds = drawingArea();
       const size = element.getBoundingClientRect();
       const next = clampPosition(current ?? {
-        x: overlay.defaultCorner.endsWith("right") ? bounds.width - size.width - 12 : 12,
-        y: overlay.defaultCorner.startsWith("bottom") ? bounds.height - size.height - 12 : 12
+        x: overlay.defaultCorner.endsWith("right") ? bounds.right - (size.width || 36) - 12 : bounds.left + 12,
+        y: overlay.defaultCorner.startsWith("bottom") ? bounds.bottom - (size.height || 36) - 12 : bounds.top + 12
       });
       return current?.x === next.x && current.y === next.y ? current : next;
     });
@@ -61,13 +89,16 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
     observer?.observe(viewport);
     observer?.observe(element);
+    if (overlayLayerRef?.current) observer?.observe(overlayLayerRef.current);
+    if (statusRowRef?.current) observer?.observe(statusRowRef.current);
+    for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
     window.addEventListener("resize", fit);
     if (expanded && focusOnExpandRef.current) {
       focusOnExpandRef.current = false;
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
     return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [expanded, gestureActive, overlay.defaultCorner, viewportRef]);
+  }, [expanded, gestureActive, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
   const remember = (point: Position) => {
     try { window.localStorage.setItem(storageKey, JSON.stringify(point)); } catch { /* Optional persistence. */ }
