@@ -305,6 +305,12 @@ API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
 may also declare `preferredWindowSize: { width, height }`, where both values are positive integers.
 It is a preferred native-window size, not a fixed frame.
 
+Set the panel contribution's `commandId` to the command that opens it and calls
+`context.panels.showReport(panelId, report)`. The overlay's "Open …" link invokes that command;
+creating a native window alone cannot initialize plugin content. Older packages without this field
+can use an unambiguous owned menu command whose title matches the panel title (a trailing ellipsis
+is ignored). Prefer the explicit field, especially for plugins with multiple panels or menus.
+
 `PluginPanelReport.sections` adds these section kinds. Control and section ids use
 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and must be unique within the report.
 
@@ -350,9 +356,9 @@ export const manifest = parsePluginManifest({
   id: "org.example.prompt", name: "Prompt", version: "0.1.0", apiVersion: "^0.1.10", entry: "src/index.ts",
   permissions: ["ui.panel", "ui.canvas", "ui.menu"],
   contributes: {
-    commands: [{ id: "plugin.prompt.send", title: "Send" }],
-    menus: [{ id: "menu.prompt.open", title: "Open Prompt", commandId: "plugin.prompt.send", location: "plugins" }],
-    panels: [{ id: "panel.prompt.main", title: "Prompt", preferredWindowSize: { width: 420, height: 560 } }],
+    commands: [{ id: "plugin.prompt.send", title: "Send" }, { id: "plugin.prompt.open", title: "Open Prompt" }],
+    menus: [{ id: "menu.prompt.open", title: "Prompt…", commandId: "plugin.prompt.open", location: "plugins" }],
+    panels: [{ id: "panel.prompt.main", title: "Prompt", commandId: "plugin.prompt.open", preferredWindowSize: { width: 420, height: 560 } }],
     canvasOverlays: [{ id: "overlay.prompt.quick", title: "Quick prompt", icon: "data:image/png;base64,...",
       commandId: "plugin.prompt.send", prompt: { kind: "prompt", id: "quick", commandId: "plugin.prompt.send" } }]
   },
@@ -361,6 +367,12 @@ export const manifest = parsePluginManifest({
 const send: PluginCommandHandler = async (context) => {
   if (context.input?.control === "prompt") await context.overlays?.setStatus({
     overlayId: "overlay.prompt.quick", text: `Received ${context.input.text?.length ?? 0} characters`
+  });
+};
+const open: PluginCommandHandler = async (context) => {
+  await context.panels?.showReport("panel.prompt.main", {
+    title: "Prompt",
+    sections: [{ kind: "prompt", id: "message", commandId: "plugin.prompt.send" }]
   });
 };
 ```

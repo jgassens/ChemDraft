@@ -224,10 +224,20 @@ or after that reader submitted; a report with a prompt hides the generic Run aga
 `canvasOverlays` are host-rendered document-viewport chrome, not plugin React. The runtime permits
 one declaration per plugin and requires `ui.canvas`. The collapsed icon expands to the same prompt
 control, status line, and optional panel opener; its submissions are resolved by the same action
-path with `context.input.source = "overlay"`. It is draggable but clamped to the viewport, persists
-its position per window and overlay id, hides during canvas gestures and export, and Esc collapses it
+path with `context.input.source = "overlay"`. Both the icon and expanded header are draggable; an
+icon click expands only if it has not moved at least four pixels. Each mode persists its own position
+per window and overlay id. Moving the icon anchors the next expansion nearby; subsequent expansions
+restore the box's saved position. Both positions clamp to the drawing area on resize, and the box is
+at most 300 px wide, further limited by that area's width and height. The overlay hides during canvas
+gestures and export, and Esc collapses it
 and returns focus to the drawing. It takes keyboard focus only after a click. `overlays.setStatus`
 is the permission-gated host capability that supplies the status line.
+
+The overlay's panel link invokes the panel contribution's `commandId`, which must publish its report.
+For packages omitting that optional field, the host also accepts a unique owned menu command with
+the same title (ignoring a trailing ellipsis). It never picks an unrelated command. A reportless panel
+with no resolvable opener produces a specific status message instead of an empty native window.
+Existing report-only panels can still reopen their cached detached content.
 
 Native menu contributions at location `plugins` form the dedicated Plugins block, appended after a
 separator in `plugins_menu`. The same native builder supplies macOS and Windows; the other standard

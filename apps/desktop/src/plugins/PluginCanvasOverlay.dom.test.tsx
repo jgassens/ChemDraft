@@ -18,6 +18,8 @@ const overlay = PluginCanvasOverlayContributionSchema.parse({
     ] } }
 });
 const storageKey = `chemdraft:canvas-overlay:main:${overlay.id}`;
+const collapsedKey = `${storageKey}:collapsed`;
+const expandedKey = `${storageKey}:expanded`;
 let container: HTMLDivElement;
 let root: Root;
 let viewport: HTMLDivElement;
@@ -69,10 +71,10 @@ function enterText(value: string): void {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
-async function render(): Promise<void> {
+async function render(windowId = "main"): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={overlay} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
-    gestureActive={gestureActive} status={status} onAction={action} windowId="main" shortcutPlatform={platform}
+    gestureActive={gestureActive} status={status} onAction={action} windowId={windowId} shortcutPlatform={platform}
     statusSource={statusSource}
     onOpenPanel={withPanel ? openPanel : undefined} panelTitle={panelTitle} onFocusDrawing={() => drawing.focus()} />));
 }
@@ -135,18 +137,72 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => pointer(header, "pointermove", 2000, 2000));
     expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
     await act(async () => pointer(header, "pointerup", 2000, 2000));
-    expect(JSON.parse(window.localStorage.getItem(storageKey)!)).toEqual({ x: 284, y: 156 });
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 284, y: 156 });
     await act(async () => root.unmount()); root = createRoot(container); await render();
+    expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
+    await expand();
     expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
   });
 
   it("re-clamps a remembered position on load and when the visible drawing area resizes", async () => {
-    await act(async () => root.unmount()); window.localStorage.setItem(storageKey, JSON.stringify({ x: 900, y: 900 }));
+    await act(async () => root.unmount()); window.localStorage.setItem(collapsedKey, JSON.stringify({ x: 900, y: 900 }));
     root = createRoot(container); await render();
     expect(widget().style.left).toBe("548px"); expect(widget().style.top).toBe("340px");
     viewportWidth = 500; viewportHeight = 300;
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.left).toBe("448px"); expect(widget().style.top).toBe("240px");
+  });
+
+  it("migrates old header positions to the box without moving the icon, and scopes them to the window", async () => {
+    await act(async () => root.unmount());
+    window.localStorage.setItem(storageKey, JSON.stringify({ x: 120, y: 80 }));
+    root = createRoot(container); await render();
+    expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
+    await expand(); expect(widget().style.left).toBe("120px"); expect(widget().style.top).toBe("80px");
+    await act(async () => root.unmount()); root = createRoot(container); await render("second-window");
+    await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 120, y: 80 });
+  });
+
+  it("drags the collapsed icon beyond a threshold, suppresses the drag click, and anchors expansion nearby", async () => {
+    const icon = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!;
+    await act(async () => {
+      pointer(icon, "pointerdown", 550, 340);
+      pointer(icon, "pointermove", 250, 140);
+      pointer(icon, "pointerup", 250, 140);
+      icon.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    });
+    expect(widget().dataset.expanded).toBe("false");
+    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
+    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 236, y: 128 });
+    await act(async () => {
+      pointer(icon, "pointerdown", 250, 140); pointer(icon, "pointermove", 252, 141);
+      pointer(icon, "pointerup", 252, 141); icon.click();
+    });
+    expect(widget().dataset.expanded).toBe("true");
+    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
+    const header = container.querySelector(".plugin-canvas-overlay-header")!;
+    await act(async () => { pointer(header, "pointerdown", 250, 140); pointer(header, "pointermove", 46, 44); pointer(header, "pointerup", 46, 44); });
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 32, y: 32 });
+    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 236, y: 128 });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
+    await act(async () => root.unmount()); root = createRoot(container); await render();
+    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
+    await expand(); expect(widget().style.left).toBe("32px"); expect(widget().style.top).toBe("32px");
+  });
+
+  it("clamps both saved modes on resize, including the hidden icon, and caps the box to the drawing area", async () => {
+    await expand();
+    viewportWidth = 260; viewportHeight = 250;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.maxWidth).toBe("212px");
+    expect(widget().style.maxHeight).toBe("194px");
+    expect(widget().style.left).toBe("32px"); expect(widget().style.top).toBe("32px");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(widget().style.left).toBe("208px"); expect(widget().style.top).toBe("190px");
+    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 208, y: 190 });
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 32, y: 32 });
   });
 
   it("stops overlay pointer and keyboard events before they reach the canvas", async () => {
@@ -237,7 +293,9 @@ describe("PluginCanvasOverlay", () => {
   });
 
   it("works outside Tauri when storage is unavailable or malformed", async () => {
-    await act(async () => root.unmount()); window.localStorage.setItem(storageKey, '{"x":"bad","y":null}');
+    await act(async () => root.unmount());
+    window.localStorage.setItem(collapsedKey, '{"x":"bad","y":null}');
+    window.localStorage.setItem(expandedKey, "not JSON");
     root = createRoot(container); await render(); expect(widget().style.left).toBe("536px");
     await act(async () => root.unmount());
     vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("Storage blocked"); });

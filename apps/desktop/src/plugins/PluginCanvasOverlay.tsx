@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
 import type { PluginCanvasOverlayContribution } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
@@ -7,6 +7,20 @@ import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 
 type Position = { x: number; y: number };
+type Mode = "collapsed" | "expanded";
+type Positions = Record<Mode, Position | null>;
+const ICON_SIZE = 36;
+const DRAG_THRESHOLD = 4;
+
+function readPosition(key: string): Position | null {
+  try {
+    const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
+    if (saved && typeof saved === "object" && "x" in saved && "y" in saved
+      && typeof saved.x === "number" && typeof saved.y === "number"
+      && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y };
+  } catch { /* Storage may be unavailable in a webview. */ }
+  return null;
+}
 type CanvasOverlayStatusSource = {
   getCanvasOverlayStatuses: () => ReadonlyMap<string, string>;
   subscribeCanvasOverlayStatus: (listener: () => void) => () => void;
@@ -49,18 +63,19 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
 }) {
   const storageKey = `chemdraft:canvas-overlay:${windowId}:${overlay.id}`;
   const [expanded, setExpanded] = useState(false);
-  const [position, setPosition] = useState<Position | null>(() => {
-    try {
-      const saved: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? "null");
-      if (saved && typeof saved === "object" && "x" in saved && "y" in saved
-        && typeof saved.x === "number" && typeof saved.y === "number"
-        && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y };
-    } catch { /* Storage may be unavailable in a webview. */ }
-    return null;
-  });
+  const [positions, setPositions] = useState<Positions>(() => ({
+    collapsed: readPosition(`${storageKey}:collapsed`),
+    // The old shared key was written only by header drags, so migrate it to the box, never the icon.
+    expanded: readPosition(`${storageKey}:expanded`) ?? readPosition(storageKey)
+  }));
+  const mode: Mode = expanded ? "expanded" : "collapsed";
+  const position = positions[mode];
   const elementRef = useRef<HTMLDivElement>(null);
   const focusOnExpandRef = useRef(false);
-  const dragRef = useRef<{ pointerId: number; start: Position; origin: Position } | null>(null);
+  const expandedSizeRef = useRef({ width: 300, height: 220 });
+  const anchorNextExpansionRef = useRef(false);
+  const suppressClickRef = useRef(false);
+  const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
   const drawingArea = () => {
     const viewport = viewportRef.current?.getBoundingClientRect();
     const layer = overlayLayerRef?.current?.getBoundingClientRect() ?? viewport;
@@ -84,11 +99,9 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (status && status.top > top && status.top < bottom && status.right > left && status.left < right) bottom = status.top;
     return { left: left - layer.left, top: top - layer.top, right: right - layer.left, bottom: bottom - layer.top };
   };
-  const clampPosition = (point: Position): Position => {
+  const clampPosition = (point: Position, targetMode: Mode): Position => {
     const bounds = drawingArea();
-    const widget = elementRef.current?.getBoundingClientRect();
-    const width = widget?.width || 36;
-    const height = widget?.height || 36;
+    const { width, height } = targetMode === "expanded" ? expandedSizeRef.current : { width: ICON_SIZE, height: ICON_SIZE };
     return {
       x: Math.max(bounds.left, Math.min(point.x, Math.max(bounds.left, bounds.right - width))),
       y: Math.max(bounds.top, Math.min(point.y, Math.max(bounds.top, bounds.bottom - height)))
@@ -99,15 +112,24 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     const viewport = viewportRef.current;
     const element = elementRef.current;
     if (!viewport || !element || gestureActive) return;
-    const fit = () => setPosition(current => {
+    const fit = () => {
       const bounds = drawingArea();
+      // Size to the drawing area, not the larger overlay layer behind rulers/status/scrollbars.
+      element.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
+      element.style.maxHeight = `${Math.max(0, bounds.bottom - bounds.top)}px`;
       const size = element.getBoundingClientRect();
-      const next = clampPosition(current ?? {
-        x: overlay.defaultCorner.endsWith("right") ? bounds.right - (size.width || 36) - 12 : bounds.left + 12,
-        y: overlay.defaultCorner.startsWith("bottom") ? bounds.bottom - (size.height || 36) - 12 : bounds.top + 12
+      if (expanded) expandedSizeRef.current = { width: size.width || 300, height: size.height || 220 };
+      setPositions(current => {
+        const collapsed = clampPosition(current.collapsed ?? {
+          x: overlay.defaultCorner.endsWith("right") ? bounds.right - ICON_SIZE - 12 : bounds.left + 12,
+          y: overlay.defaultCorner.startsWith("bottom") ? bounds.bottom - ICON_SIZE - 12 : bounds.top + 12
+        }, "collapsed");
+        const box = current.expanded ?? (expanded ? collapsed : null);
+        const next = { collapsed, expanded: box && clampPosition(box, "expanded") };
+        return current.collapsed?.x === next.collapsed.x && current.collapsed.y === next.collapsed.y
+          && current.expanded?.x === next.expanded?.x && current.expanded?.y === next.expanded?.y ? current : next;
       });
-      return current?.x === next.x && current.y === next.y ? current : next;
-    });
+    };
     fit();
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
     observer?.observe(viewport);
@@ -123,8 +145,42 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
   }, [expanded, gestureActive, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
-  const remember = (point: Position) => {
-    try { window.localStorage.setItem(storageKey, JSON.stringify(point)); } catch { /* Optional persistence. */ }
+  useEffect(() => {
+    for (const mode of ["collapsed", "expanded"] as const) {
+      if (positions[mode]) {
+        try { window.localStorage.setItem(`${storageKey}:${mode}`, JSON.stringify(positions[mode])); } catch { /* Optional persistence. */ }
+      }
+    }
+  }, [positions, storageKey]);
+
+  const startDrag = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    if (event.button !== 0 || event.isPrimary === false) return;
+    // Preserve normal button focus/click semantics for the icon; a drag will suppress its click.
+    if (expanded) event.preventDefault();
+    suppressClickRef.current = false;
+    dragRef.current = { pointerId: event.pointerId, start: { x: event.clientX, y: event.clientY },
+      origin: position ?? { x: 0, y: 0 }, mode, moved: false };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+  const moveDrag = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.start.x;
+    const dy = event.clientY - drag.start.y;
+    if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    drag.moved = true;
+    suppressClickRef.current = true;
+    if (drag.mode === "collapsed") anchorNextExpansionRef.current = true;
+    const next = clampPosition({ x: drag.origin.x + dx, y: drag.origin.y + dy }, drag.mode);
+    setPositions(current => ({ ...current, [drag.mode]: next }));
+  };
+  const stopDrag = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   return <div
     ref={elementRef}
@@ -152,36 +208,23 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   >
     <button type="button" className="plugin-canvas-overlay-icon" hidden={expanded}
       aria-label={overlay.title} aria-expanded={expanded}
-      onClick={() => { focusOnExpandRef.current = true; setExpanded(true); }}>
+      onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag}
+      onPointerCancel={stopDrag} onLostPointerCapture={stopDrag}
+      onClick={event => {
+        if (suppressClickRef.current && event.detail !== 0) { suppressClickRef.current = false; return; }
+        suppressClickRef.current = false;
+        if (anchorNextExpansionRef.current) {
+          setPositions(current => ({ ...current, expanded: current.collapsed }));
+          anchorNextExpansionRef.current = false;
+        }
+        focusOnExpandRef.current = true; setExpanded(true);
+      }}>
       <img src={overlay.icon} alt="" draggable={false} />
     </button>
     <div hidden={!expanded}>
       <div className="plugin-canvas-overlay-header"
-        onPointerDown={event => {
-          event.stopPropagation();
-          if (event.button !== 0) return;
-          event.preventDefault();
-          dragRef.current = { pointerId: event.pointerId,
-            start: { x: event.clientX, y: event.clientY }, origin: position ?? { x: 0, y: 0 } };
-          event.currentTarget.setPointerCapture?.(event.pointerId);
-        }}
-        onPointerMove={event => {
-          event.stopPropagation();
-          const drag = dragRef.current;
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          const next = clampPosition({ x: drag.origin.x + event.clientX - drag.start.x,
-            y: drag.origin.y + event.clientY - drag.start.y });
-          setPosition(next);
-          remember(next);
-        }}
-        onPointerUp={event => {
-          event.stopPropagation();
-          if (dragRef.current?.pointerId !== event.pointerId) return;
-          dragRef.current = null;
-          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onPointerCancel={() => { dragRef.current = null; }}
-        onLostPointerCapture={() => { dragRef.current = null; }}>
+        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag}
+        onPointerCancel={stopDrag} onLostPointerCapture={stopDrag}>
         <span>{overlay.title}</span>
         <button type="button" aria-label={`Collapse ${overlay.title}`}
           onPointerDown={event => event.stopPropagation()}

@@ -891,7 +891,7 @@ textarea:focus-visible,
   touch-action: auto;
 }
 
-.plugin-canvas-overlay[data-expanded="true"] { width: 300px; padding: var(--cd-space-3); }
+.plugin-canvas-overlay[data-expanded="true"] { width: min(300px, 100%); padding: var(--cd-space-3); }
 .plugin-canvas-overlay[data-expanded="false"] { border: 0; }
 .plugin-canvas-overlay-icon {
   display: block;
@@ -902,6 +902,7 @@ textarea:focus-visible,
   border-radius: var(--cd-radius-control);
   background: transparent;
   cursor: pointer;
+  touch-action: none;
 }
 .plugin-canvas-overlay-icon[hidden] { display: none; }
 .plugin-canvas-overlay-icon img { width: 24px; height: 24px; }

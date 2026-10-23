@@ -258,7 +258,16 @@ frame must remain clamped inside. Quit/reopen or hide/re-show the window and con
 remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
 (and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
 keyboard focus to the drawing. It takes focus only when clicked, never merely when it appears or the
-report changes.
+report changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
+or slight pointer jitter must still expand it. Move the box elsewhere, then collapse: the icon returns
+to its own position. Restart and verify both positions persist independently. Shrink the drawing area
+while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
+next shown, and the box must fit even when the drawing area is narrower than 300 px.
+
+Install the real ChemDraft Assistant package and use both its overlay's "Open ChemDraft Assistant"
+button and Plugins → ChemDraft Assistant…. Each must show a titled chat report with provider controls
+in a detached window. Close/reopen it and repeat after restarting the app; the initial report broadcast
+may precede the new webview, so the authenticated snapshot replay must also work.
 
 On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
 do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does

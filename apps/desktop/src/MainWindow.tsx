@@ -194,6 +194,7 @@ import {
 } from "./plugins/panelBridge";
 import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
+import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
@@ -1613,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.23.11.00-codex";
+const CURRENT_BUILD_STAMP = "10.23.17.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -20119,10 +20120,13 @@ export function MainWindow({
               onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
               panelTitle={panel?.title}
               onOpenPanel={panel ? () => {
-                const livePanel = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest.contributes.panels.find(item => item.id === panel.id);
-                if (livePanel?.commandId) void Promise.resolve(invokeCommandRef.current(livePanel.commandId)).catch(() => undefined);
-                else if (isDesktopRuntime()) void openPluginPanelWindow({ pluginId, panelId: panel.id,
-                  title: panel.title, ...panel.preferredWindowSize, focus: true }).catch(() => undefined);
+                const manifest = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest;
+                const commandId = manifest && pluginPanelOpenCommand(manifest, panel.id);
+                if (commandId) void Promise.resolve(invokeCommandRef.current(commandId)).catch(() => undefined);
+                else if (pluginRuntime.runtime.panels.getDetachedPanels().some(item => item.pluginId === pluginId && item.panelId === panel.id)) {
+                  if (isDesktopRuntime()) void openPluginPanelWindow({ pluginId, panelId: panel.id,
+                    title: panel.title, ...panel.preferredWindowSize, focus: true }).catch(() => undefined);
+                } else setStatus(`The plugin has not supplied content or an open command for ${panel.title}.`);
               } : undefined} />;
           })}
         </div>
