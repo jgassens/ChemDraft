@@ -504,11 +504,20 @@ describe('report', () => {
     expect(report.worst_failures[0].id).toBe('absolute-wrong');
     expect(report.worst_failures.every((item: { final_excerpt: string }) => item.final_excerpt.length <= 300)).toBe(true);
   });
-  it('allows null cause for accepts and requires a cause for rejects', () => {
+  it('counts automatic failures accepted visually as auto-only and retains rejected review causes', () => {
     const testCase = { id: 'visual-cause', category: 'test', split: 'dev', prompt: 'Fixture', expect: {}, rubric: [] };
-    const automatic = { scoring_version: 1, cases: [{ id: testCase.id, status: 'complete', auto: 'PASS', checks: {}, drawn: [] }] };
+    const automatic = { scoring_version: 1, cases: [{ id: testCase.id, status: 'complete', auto: 'FAIL', checks: {
+      A6: { applies: true, pass: false, detail: { unmeasurable: ['fixture.svg'] } },
+    }, drawn: [] }] };
     const entry = { id: testCase.id, rubric: [], verdict: 'accept', reason: 'Looks correct', honest_decline: false, wrong_and_confident: false, cause: null };
-    expect(buildReport([testCase], automatic, [entry]).cases[0].result).toBe('pass');
+    const accepted = buildReport([testCase], automatic, [entry]);
+    expect(accepted.cases[0]).toMatchObject({ result: 'fail', cause: 'auto-only', failed_checks: ['A6'] });
+    expect(accepted.groups[0].causes).toMatchObject({ 'auto-only': 1 });
+    expect(accepted.worst_failures[0]).toMatchObject({ cause: 'auto-only', failed_checks: ['A6'] });
+    expect(markdown(accepted)).toContain('auto-only (visual accepted, automatic check failed)');
+    expect(markdown(accepted)).toContain('Cause: auto-only; failed checks: A6.');
+    const rejected = buildReport([testCase], automatic, [{ ...entry, verdict: 'reject', cause: 'agent-error' }]);
+    expect(rejected.cases[0]).toMatchObject({ result: 'fail', cause: 'agent-error', failed_checks: ['A6'] });
     expect(() => buildReport([testCase], automatic, [{ ...entry, verdict: 'reject' }])).toThrow(/Invalid visual verdict/);
   });
 

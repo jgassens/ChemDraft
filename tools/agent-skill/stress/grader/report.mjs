@@ -3,6 +3,15 @@ import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { args, json, readCases, saveJson, isMain, CHECKS, CAUSES, SCORING_VERSION } from './common.mjs';
 
+// This is an automatic-result bucket, not a visual reviewer cause. Keep it out
+// of CAUSES so visual reviews cannot assign it.
+const REPORT_CAUSES = [...Object.keys(CAUSES).filter((cause) => cause !== 'harness'), 'auto-only', 'harness'];
+const CAUSE_LABELS = { 'auto-only': 'auto-only (visual accepted, automatic check failed)' };
+
+function failedAutomaticChecks(checks) {
+  return CHECKS.filter((id) => checks[id]?.applies && checks[id].pass === false);
+}
+
 export function wilson(passed, n) {
   if (!Number.isInteger(n) || !Number.isInteger(passed) || n < 0 || passed < 0 || passed > n) throw new Error('Invalid Wilson counts');
   if (!n) return { pass: 0, n: 0, rate: null, lower: null, upper: null };
@@ -38,9 +47,11 @@ export function validateVisual(entries, cases) {
 }
 
 export function mergeCase(testCase, auto, visual, visualPending) {
+  const failedChecks = failedAutomaticChecks(auto?.checks ?? {});
   const base = { id: testCase.id, category: testCase.category, split: testCase.split, prompt: testCase.prompt,
     checks: auto?.checks ?? {}, drawn: auto?.drawn ?? [], reference: testCase.expect ?? {}, auto: auto?.auto ?? null,
-    visual: visual ?? null, visual_pending: visualPending, cause: null, cause_provisional: false, wrong_and_confident: false };
+    visual: visual ?? null, visual_pending: visualPending, cause: null, cause_provisional: false, wrong_and_confident: false,
+    failed_checks: failedChecks };
   if (!auto || auto.status === 'harness' || visual?.cause === 'harness') {
     return { ...base, result: 'harness', cause: 'harness', reason: auto?.error ?? visual?.reason ?? 'Automatic grade missing; re-run this case' };
   }
@@ -54,7 +65,8 @@ export function mergeCase(testCase, auto, visual, visualPending) {
   // Human review attests to the absence of anything wrong for an honest decline. It is
   // intentionally allowed to override missing-figure or no-tool automatic failures.
   const result = autoPass && visual.verdict === 'accept' ? 'pass' : visual.honest_decline ? 'honest decline' : 'fail';
-  return { ...base, result, reason: visual.reason, cause: result === 'pass' ? null : visual.cause,
+  const cause = result === 'pass' ? null : result === 'fail' && visual.verdict === 'accept' ? 'auto-only' : visual.cause;
+  return { ...base, result, reason: visual.reason, cause,
     wrong_and_confident: result === 'fail' && visual.wrong_and_confident };
 }
 
@@ -72,7 +84,7 @@ function groupResults(cases) {
     }
     const reviewed = scored.filter((item) => item.visual);
     checks.V = wilson(reviewed.filter((item) => item.visual.verdict === 'accept').length, reviewed.length);
-    const causes = Object.fromEntries(Object.keys(CAUSES).map((cause) => [cause, all.filter((item) => item.result !== 'pass' && item.cause === cause).length]));
+    const causes = Object.fromEntries(REPORT_CAUSES.map((cause) => [cause, all.filter((item) => item.result !== 'pass' && item.cause === cause).length]));
     groups.push({ category, split, n: scored.length, pass: count('pass'), honest_decline: count('honest decline'), fail: count('fail'),
       wrong_and_confident: scored.filter((item) => item.wrong_and_confident).length, harness: all.length-scored.length,
       visual_pending: scored.filter((item) => item.visual_pending).length, pass_rate: wilson(count('pass'), scored.length), checks, causes });
@@ -94,7 +106,7 @@ export function buildReport(cases, automatic, visualEntries, finals = {}, agent 
   const merged = cases.map((item) => ({ ...mergeCase(item, byId.get(item.id), visual.get(item.id), visualPending),
     repo_source_read: repoSourceReads.has(item.id), foreign_checkout_access: foreignCheckoutCases.has(item.id) }));
   const worst = merged.filter((item) => item.result !== 'pass').map((item) => {
-    const failed = CHECKS.filter((id) => item.checks[id]?.applies && item.checks[id].pass === false);
+    const failed = item.failed_checks;
     return { id: item.id, category: item.category, split: item.split, result: item.result,
       wrong_and_confident: item.wrong_and_confident, failed_checks: failed,
       failed_check_count: failed.length + (item.visual?.verdict === 'reject' ? 1 : 0), prompt: item.prompt,
@@ -134,7 +146,7 @@ export function markdown(report, { heldoutDetails = false } = {}) {
   for (const group of report.groups) for (const [id, value] of Object.entries(group.checks)) lines.push(`| ${cell(group.category)} | ${group.split} | ${id} | ${id === 'V' && report.visual_pending ? 'Visual pending (n=0)' : rate(value)} |`);
   lines.push('', '## Causes by category and split', '',
     ...(report.visual_pending ? ['Causes are provisional automatic-only labels until independent visual review and conductor adjudication.', ''] : []),
-    `| Category | Split | ${Object.keys(CAUSES).join(' | ')} |`, `|---|---|${Object.keys(CAUSES).map(() => '---:').join('|')}|`);
+    `| Category | Split | ${REPORT_CAUSES.map((cause) => CAUSE_LABELS[cause] ?? cause).join(' | ')} |`, `|---|---|${REPORT_CAUSES.map(() => '---:').join('|')}|`);
   for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${Object.values(group.causes).join(' | ')} |`);
   lines.push('', '## Worst failures', '', 'Non-passes ranked by wrong-and-confident first, then failed A/V check count. Harness entries are not scored.', '');
   for (const item of report.worst_failures.filter((item) => heldoutDetails ? item.split === 'heldout' : item.split !== 'heldout')) {
