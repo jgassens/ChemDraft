@@ -766,6 +766,7 @@ import { PluginImageRequestDialog } from "./plugins/PluginImageRequestDialog";
 import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitionInstallDialog";
 import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
 import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
+import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
@@ -10510,6 +10511,7 @@ export function MainWindow({
   // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
   // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
   useEffect(() => {
+    if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(pluginRuntime.pluginMenuItems);
   }, [pluginRuntime.pluginMenuItems]);
 
