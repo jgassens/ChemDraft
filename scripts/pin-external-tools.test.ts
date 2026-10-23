@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { formatToolPin, hostToolPins, parityCommand, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
+import { formatToolPin, hostToolPins, parityCommand, parityPlatformMessage, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
 
 describe("external tool pin script", () => {
   it("selects both host binaries on macOS and Windows and skips unsupported hosts", () => {
@@ -33,6 +33,11 @@ describe("external tool pin script", () => {
     } });
     expect(command.options.cwd).toBe(fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, ""));
     expect(command.options.env).not.toHaveProperty("chemdraft_pinned_codex");
+  });
+
+  it("states which platform was checked and which still needs a parity run", () => {
+    expect(parityPlatformMessage("darwin", "arm64")).toBe("Pinned CLI parity checked on host macOS (darwin-arm64); NOT checked on Windows. Run --check on a Windows host too.");
+    expect(parityPlatformMessage("win32", "x64")).toBe("Pinned CLI parity checked on host Windows (win32-x64); NOT checked on macOS. Run --check on a macOS host too.");
   });
 
   it("does not inherit a parity binary for a tool absent on the host", () => {

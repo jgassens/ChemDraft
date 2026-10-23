@@ -1,6 +1,7 @@
 # Windows Updates
 
 - [ ] Run `node scripts/pin-external-tools.mjs --check` before a release; refresh pins if it differs.
+- [ ] For any pin bump, run that check on both Windows and macOS; each run checks only its host platform.
 
 ChemDraft on Windows updates itself with Tauri's updater (`tauri-plugin-updater`). It behaves like
 the macOS Sparkle updater ([`macos-updates.md`](macos-updates.md)):

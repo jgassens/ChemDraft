@@ -176,6 +176,14 @@ export function hostToolPins(pins, platform = process.platform, arch = process.a
   return pins.filter((pin) => host !== undefined && pin.platform === host);
 }
 
+export function parityPlatformMessage(platform = process.platform, arch = process.arch) {
+  const checkedPlatform = platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : null;
+  const notChecked = checkedPlatform === "macOS" ? "Windows" : checkedPlatform === "Windows" ? "macOS" : "macOS and Windows";
+  const host = checkedPlatform ? `${checkedPlatform} (${platform}-${arch})` : `${platform}-${arch} (no supported desktop platform)`;
+  const rerun = checkedPlatform === "macOS" ? "Windows" : "macOS";
+  return `Pinned CLI parity checked on host ${host}; NOT checked on ${notChecked}. Run --check on a ${rerun} host too.`;
+}
+
 // Use argv and an explicit environment, never a shell string (Windows paths can contain spaces).
 export function parityCommand(binaries, parentEnv = process.env) {
   const env = Object.fromEntries(Object.entries(parentEnv).filter(([key]) => !/^CHEMDRAFT_PINNED_(CODEX|CLAUDE)$/i.test(key)));
@@ -229,6 +237,7 @@ async function prepareHostBinary(pin, temp) {
 }
 
 async function checkParity(pins, temp) {
+  console.log(parityPlatformMessage());
   const selected = hostToolPins(pins);
   const binaries = {};
   for (const tool of ["Codex", "Claude"]) {

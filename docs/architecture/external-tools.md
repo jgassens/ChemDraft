@@ -45,6 +45,13 @@ a failing test makes `--check` fail. A tool with no pinned binary for the host p
 is explicitly skipped. Temporary downloads and binaries are removed afterward. Managed copies
 run with updates disabled.
 
+### Pin bumps
+
+The parity check covers only binaries for the host platform running it; a macOS run cannot execute
+the Windows Codex and Claude binaries, and a Windows run cannot execute the macOS binaries. Every pin
+bump must run `node scripts/pin-external-tools.mjs --check` on both macOS and Windows. The command
+prints the host platform it checked and the platform it did not check; run it on the other host too.
+
 ## Discovery, installation, and sign-in
 
 User installs win over managed copies. macOS probes `~/.local/bin`, `/opt/homebrew/bin`,
