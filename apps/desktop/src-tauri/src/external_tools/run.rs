@@ -135,6 +135,16 @@ pub struct ToolRun {
     pub started_at: String,
     shared: Arc<Shared>,
 }
+// Keep credential-file lifetime within the bound run, including failed spawns.
+struct RunConfigCleanup(Option<PathBuf>);
+impl Drop for RunConfigCleanup {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 impl ToolRun {
     pub fn spawn(
         rendered: RenderedRun,
@@ -170,6 +180,8 @@ impl ToolRun {
         output_limit: Option<usize>,
         binding: Option<RunBinding>,
     ) -> Result<Arc<Self>, String> {
+        let config_cleanup =
+            RunConfigCleanup(binding.as_ref().map(|_| cwd.join("claude-mcp.json")));
         if rendered
             .program
             .extension()
@@ -343,6 +355,8 @@ impl ToolRun {
             };
             #[cfg(windows)]
             drop(job);
+            // The child (and its Windows Job Object) has exited; discard credentials now.
+            drop(config_cleanup);
             let _ = writer.join();
             let _ = stdout.join();
             let _ = stderr.join();

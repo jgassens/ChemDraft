@@ -148,9 +148,10 @@ Naming: commands `plugin.<pluginName>.<action>` (schema-enforced for toolset con
 Plugins mutate documents only through patches. A plugin with `document.write` calls
 `documents.applyPatch` only while one of its own commands is running. It may insert objects, and may
 change or remove only objects selected when that command started plus objects it inserted during
-that command. Writes land directly, with one labelled undo entry per plugin command (per AI request
-for the assistant), leaving what changed selected. Undo and redo restore recorded states exactly;
-they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
+that command. Writes land directly, leaving what changed selected. The assistant transaction groups
+writes into one labelled undo entry per AI request; for other plugins, each `documents.applyPatch`
+call creates its own labelled undo entry (including a batch patch). Undo and redo restore recorded
+states exactly; they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
 results (MolScribe); other plugin writes need no review window. Reports are for failures; success
 needs no window.
 

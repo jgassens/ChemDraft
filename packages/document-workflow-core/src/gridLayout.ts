@@ -9,7 +9,7 @@ import {
 } from "@chemdraft/chem-core";
 import { nativeTextObjectSizeForText } from "./textObjects";
 import type { LayoutBounds } from "./reactionScheme";
-import { phase4Timestamp } from "./shared";
+import { nextObjectId, phase4Timestamp } from "./shared";
 
 export interface GridLayoutEntry {
   molecule: MoleculeObject;
@@ -79,7 +79,7 @@ export function layoutGrid(options: GridLayoutOptions): GridLayout {
     if (entry.label !== null) {
       const size = nativeTextObjectSizeForText(entry.label);
       const label = createGridLabel(
-        nextLayoutId("text", objects.length + 1),
+        nextObjectId({ ...empty, pages: [{ ...page, objects }] }, "text"),
         { x: cellX + (cellWidth - size.width) / 2, y: cellY + moleculeHeight + labelGap },
         entry.label,
         page.width,
@@ -135,8 +135,4 @@ function createGridLabel(
 
 function clampToPage(value: number, maximum: number): number {
   return Math.min(Math.max(value, 0), Math.max(0, maximum));
-}
-
-function nextLayoutId(prefix: string, index: number): string {
-  return `${prefix}_${String(index).padStart(3, "0")}`;
 }

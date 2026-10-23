@@ -2121,6 +2121,10 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
             state.inner.lock().unwrap().runs[&started.run_id].mcp_session_id,
             session_id
         );
+        assert!(
+            !config_path.exists(),
+            "Run completion must remove MCP credentials"
+        );
         // Completion releases the reservation and preserves the session.
         drop(session::bind_session(&session_id, plugin, "after-exit").unwrap());
         assert!(session::session_credentials(&session_id).is_some());
@@ -2168,6 +2172,7 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
             _ => KillReason::Timeout,
         };
         assert_eq!(run.status(), RunStatus::Killed { reason: expected });
+        assert!(!started.cwd.join("claude-mcp.json").exists());
         drop(session::bind_session(&session_id, plugin, "after-kill").unwrap());
         if mode == "shutdown" {
             assert!(!started.cwd.exists());
