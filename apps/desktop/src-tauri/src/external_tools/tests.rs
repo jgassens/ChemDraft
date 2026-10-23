@@ -209,9 +209,9 @@ fn run_templates_first_turn_and_resume() {
                     "--mcp-config",
                     "/runs/conversation/claude-mcp.json",
                     "--tools",
-                    "",
+                    "WebSearch,WebFetch",
                     "--allowedTools",
-                    "mcp__chemdraft__*",
+                    "mcp__chemdraft__*,WebSearch,WebFetch",
                     "--permission-mode",
                     "dontAsk",
                     "--permission-prompts",
@@ -251,6 +251,10 @@ fn run_templates_first_turn_and_resume() {
                     .iter()
                     .any(|arg| arg.starts_with("features.") || arg.starts_with("tools.")));
                 assert!(run.args.contains(&"approval_policy=\"never\"".into()));
+                assert!(run
+                    .args
+                    .windows(2)
+                    .any(|pair| pair == ["-c", "web_search=\"live\""]));
                 assert!(run
                     .args
                     .contains(&"mcp_servers.chemdraft.required=true".into()));
@@ -494,6 +498,17 @@ fn pinned_codex_accepts_rendered_run() {
     input.system_prompt_file = &system_prompt;
     input.effort = Some(Effort::High);
     let mut rendered = render_run(&spec, input).unwrap();
+    assert!(rendered
+        .args
+        .windows(2)
+        .any(|pair| pair == ["-c", "web_search=\"live\""]));
+    let disabled: Vec<_> = rendered
+        .args
+        .windows(2)
+        .filter(|pair| pair[0] == "--disable")
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(disabled, CODEX_FEATURES_DISABLE);
     // An undefined provider exits before ignored-setting diagnostics are emitted. Instead use a
     // valid local provider whose required key is absent from the scrubbed environment: config
     // validation completes, then authentication fails before any model request. Disable the MCP
@@ -699,11 +714,6 @@ fn pinned_claude_accepts_rendered_run() {
             );
         }
     }
-    // Some installations reject unauthenticated print mode before emitting init.
-    if init.is_none() && diagnostics.to_ascii_lowercase().contains("not logged in") {
-        eprintln!("Skipping Claude init parity: pinned CLI reports not logged in; rerun with the user's subscription login available.");
-        return;
-    }
     let init = init.unwrap_or_else(|| {
         panic!("Claude did not emit system/init within 60 seconds: {diagnostics}")
     });
@@ -713,12 +723,23 @@ fn pinned_claude_accepts_rendered_run() {
 // Fail closed on unexpected init shapes as well as unexpected capabilities.
 fn assert_claude_init_is_restricted(init: &serde_json::Value) {
     let tools = init["tools"].as_array().expect("init must list tools");
+    for required in ["WebSearch", "WebFetch"] {
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool.as_str() == Some(required))
+                .count(),
+            1,
+            "Claude must expose {required} exactly once: {tools:?}"
+        );
+    }
     for tool in tools {
         let name = tool.as_str().expect("tool name must be a string");
         // CLI reference: https://code.claude.com/docs/en/cli-reference
-        // --tools "" removes EndConversation only when no MCP tools remain.
+        // The pinned CLI may retain EndConversation alongside explicitly enabled tools.
         assert!(
-            name.starts_with("mcp__chemdraft__") || name == "EndConversation",
+            name.starts_with("mcp__chemdraft__")
+                || matches!(name, "EndConversation" | "WebSearch" | "WebFetch"),
             "Unexpected Claude tool: {name}"
         );
     }
@@ -752,11 +773,31 @@ fn assert_claude_init_is_restricted(init: &serde_json::Value) {
 
 #[test]
 fn claude_init_restriction_assertions_reject_extra_capabilities() {
-    let init = serde_json::json!({"tools":["EndConversation", "mcp__chemdraft__draw"], "mcp_servers":[{"name":"chemdraft","status":"failed"}], "plugins":[], "slash_commands":[], "skills":[]});
+    let init = serde_json::json!({"tools":["WebSearch", "WebFetch", "EndConversation", "mcp__chemdraft__draw"], "mcp_servers":[{"name":"chemdraft","status":"failed"}], "plugins":[], "slash_commands":[], "skills":[]});
     assert_claude_init_is_restricted(&init);
     for (key, value) in [
-        ("tools", serde_json::json!(["Bash"])),
-        ("tools", serde_json::json!(["mcp__other__draw"])),
+        ("tools", serde_json::json!(["WebSearch"])),
+        ("tools", serde_json::json!(["WebFetch"])),
+        (
+            "tools",
+            serde_json::json!(["WebSearch", "WebFetch", "Bash"]),
+        ),
+        (
+            "tools",
+            serde_json::json!(["WebSearch", "WebFetch", "Read"]),
+        ),
+        (
+            "tools",
+            serde_json::json!(["WebSearch", "WebFetch", "Edit"]),
+        ),
+        (
+            "tools",
+            serde_json::json!(["WebSearch", "WebFetch", "WebFetch"]),
+        ),
+        (
+            "tools",
+            serde_json::json!(["WebSearch", "WebFetch", "mcp__other__draw"]),
+        ),
         ("mcp_servers", serde_json::json!([{"name":"other"}])),
         ("mcp_servers", serde_json::json!([])),
         ("plugins", serde_json::json!([{"name":"user-plugin"}])),

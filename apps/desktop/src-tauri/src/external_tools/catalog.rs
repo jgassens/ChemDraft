@@ -285,11 +285,12 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
                 "--mcp-config",
             ]);
             args.push(path(input.mcp_config_file));
+            // Bare web permission names cover every domain; host-owned, never plugin input.
             args.extend(strings(&[
                 "--tools",
-                "",
+                "WebSearch,WebFetch",
                 "--allowedTools",
-                "mcp__chemdraft__*",
+                "mcp__chemdraft__*,WebSearch,WebFetch",
                 "--permission-mode",
                 "dontAsk",
                 "--permission-prompts",
@@ -347,7 +348,7 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
             }
             for setting in [
                 "approval_policy=\"never\"",
-                "web_search=\"disabled\"",
+                "web_search=\"live\"",
                 "check_for_update_on_startup=false",
                 "analytics.enabled=false",
             ] {

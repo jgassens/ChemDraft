@@ -25,7 +25,7 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
     <h2>{snapshot.toolName}</h2>
     <p>Requested by {snapshot.pluginName} ({snapshot.pluginId})</p>
     {state.status === "notInstalled" ? <p>Download from {snapshot.publisher}: version {snapshot.version}, from {snapshot.downloadHost}, {formatBytes(snapshot.downloadBytes)}.</p> : null}
-    {sendsDrawing ? <p>When you send a request, your prompt and the open page — including any unpublished structures — leave this computer and go to {snapshot.publisher} under your own {snapshot.toolName} account.</p> : null}
+    {sendsDrawing ? <p>The AI can search the web and read web pages. When you send a request, your prompt and the open page — including any unpublished structures — leave this computer and go to {snapshot.publisher} under your own {snapshot.toolName} account.</p> : null}
     <p>{snapshot.disclosure}</p>
     <p>Needs about {formatBytes(snapshot.requiredDiskBytes)} free while installing. {snapshot.freeDiskBytes === null ? "Free space on this disk: unknown." : `Free now: ${formatBytes(snapshot.freeDiskBytes)}.`}</p>
     {state.status === "consent" ? <p role="status">Allow {snapshot.pluginName} to download and use {snapshot.toolName}?</p> : null}

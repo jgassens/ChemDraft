@@ -98,7 +98,7 @@ These are the templates rendered by `catalog.rs` (optional resume/model/effort a
 only when supplied):
 
 ```text
-claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --strict-mcp-config --mcp-config <run>/claude-mcp.json --tools "" --allowedTools mcp__chemdraft__* --permission-mode dontAsk --permission-prompts none --max-turns 40 --system-prompt-file <run>/system-prompt.md --setting-sources "" --disable-slash-commands --settings {"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-plugin-authoring@builtin":false}} [--resume <id>] [--model <model>] [--effort low|medium|high]
+claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --strict-mcp-config --mcp-config <run>/claude-mcp.json --tools "WebSearch,WebFetch" --allowedTools "mcp__chemdraft__*,WebSearch,WebFetch" --permission-mode dontAsk --permission-prompts none --max-turns 40 --system-prompt-file <run>/system-prompt.md --setting-sources "" --disable-slash-commands --settings {"disableAllHooks":true,"enabledPlugins":{"cc-plugin-agents-md@builtin":false,"cc-plugin-plugin-authoring@builtin":false}} [--resume <id>] [--model <model>] [--effort low|medium|high]
 ```
 
 Claude receives a newline-terminated stream-JSON user message on stdin. Its config points at the
@@ -108,9 +108,7 @@ the real login directory is preserved, and hooks are disabled explicitly. The tw
 by default in pinned Claude 2.1.308 (`cc-plugin-agents-md@builtin` and
 `cc-plugin-plugin-authoring@builtin`) are also explicitly disabled: settings-source isolation
 alone does not disable built-in plugins. The init parity assertion catches newly enabled plugins
-when pins change. `EndConversation` may remain alongside MCP tools: the
-[CLI reference](https://code.claude.com/docs/en/cli-reference) specifies that `--tools ""`
-removes it only when no MCP tools remain.
+when pins change. `EndConversation` may remain alongside the explicitly enabled web and MCP tools.
 
 ```text
 codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-config --ignore-rules
@@ -132,7 +130,7 @@ codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-c
   --disable ultrafast_mode --disable unified_exec --disable unified_exec_tty
   --disable view_image --disable workspace_dependencies
   --disable worktrees --disable write_stdin_approval
-  -c approval_policy="never" -c web_search="disabled" -c check_for_update_on_startup=false
+  -c approval_policy="never" -c web_search="live" -c check_for_update_on_startup=false
   -c analytics.enabled=false
   [-c mcp_servers.chemdraft.url="<url>"
    -c mcp_servers.chemdraft.bearer_token_env_var="CHEMDRAFT_MCP_TOKEN"
@@ -177,12 +175,14 @@ hook that writes a marker, plus an enabled plugin), a skill, a slash command, `.
 `planted` server, and `CLAUDE.md`. It uses a one-line stream-JSON prompt, an unreachable
 `127.0.0.1` MCP endpoint and the nonexistent model `chemdraft-parity-check-does-not-exist`, so no
 model call can succeed. It reads stream-JSON until `system/init` (60 s limit), then kills the
-process and checks that tools are only `mcp__chemdraft__*` or `EndConversation`, the only MCP
+process and checks that both `WebSearch` and `WebFetch` are present exactly once, with no other tools
+except `mcp__chemdraft__*` and optional `EndConversation`, the only MCP
 server is `chemdraft`, plugins and commands/skills are empty, and no hook events appeared. The
 test also requires the hook marker to be absent, adds `--include-hook-events` for visibility,
 and adds `--no-session-persistence` to avoid leaving a test transcript in `~/.claude/projects`.
-That persistence flag is test-only; product runs retain transcripts for resume. If the CLI reports "not logged in" before init,
-it prints a clear skip message; rerun on a logged-in host to verify init. Consult the CLI reference
+That persistence flag is test-only; product runs retain transcripts for resume. A configured Claude
+binary must emit init; a missing subscription login fails the check rather than skipping the web-tool
+assertions. Consult the CLI reference
 before adding a new help exception. Run these checks on macOS and Windows before changing pins or
 releasing. Recorded auth fixtures under `external_tools/fixtures/auth/` cover both CLIs' signed-in
 and signed-out status formats without executing binaries.
@@ -199,6 +199,44 @@ Output is bounded to 4 MiB or 20,000 lines (oldest lines are dropped and counted
 and 5,000 lines per poll. Cancellation/timeout sends SIGINT on Unix, waits two seconds, then kills
 the process tree. Windows also starts without a console flash and places the suspended child in a
 kill-on-close Job Object before resuming it, so descendants die on cancellation or host loss.
+
+## Web access
+
+Web access is on by owner decision (2026-10-22 20:30), including chemical-structure lookups.
+It is open web: ChemDraft applies no domain allowlist to searches or page reads. Only the host-owned
+`catalog.rs` run templates enable it, on first turns and resumes; there is no plugin parameter for
+web access or arbitrary tools. CLI/provider restrictions can still make individual pages unavailable.
+
+- Claude Code 2.1.308 exposes `WebSearch` and `WebFetch`, plus ChemDraft's MCP tools and optional
+  `EndConversation`. The [CLI reference](https://code.claude.com/docs/en/cli-reference) distinguishes
+  tool availability (`--tools`) from permission rules (`--allowedTools`). Bare `WebSearch` and
+  `WebFetch` permission names allow all domains without prompting; a bare `WebFetch` grants fetches
+  without widening shell-network permissions ([permission rules](https://code.claude.com/docs/en/permissions#allow-or-deny-every-fetch)).
+- Codex 0.163.0 uses `-c web_search="live"`, its most capable supported search mode, to expose the
+  native Responses web-search tool. That service supports live search and page opening/reading
+  (and finding text within pages), rather than browser or computer automation. The pinned CLI's
+  `features list` and configuration expose no separate plain-page-fetch switch, so no additional
+  fetch capability is enabled. The pinned binary's generated app-server schema confirms
+  `WebSearchMode` values `disabled`, `cached`, `indexed`, and `live`, and `WebSearchAction` variants
+  `search`, `openPage`, and `findInPage` (plus `other`). The `CODEX_FEATURES_DISABLE` list is unchanged: `browser_use*`,
+  `browser_annotation_api`, `computer_use`, `in_app_browser`, shell, execution, and local-image tools
+  remain disabled. See the [configuration reference](https://developers.openai.com/codex/config-reference/)
+  and [native web-search actions](https://developers.openai.com/api/docs/guides/tools-web-search).
+
+Web pages are untrusted input and can try to steer the AI through prompt injection. For example,
+a page might ask the AI to fetch an address carrying the drawing in its URL, disclosing unpublished
+structures to that site. The open-web setting permits such outbound requests; the editing limits
+and Undo do not prevent or reverse disclosure. Consent plainly says the AI can search the web and
+read web pages, and that the prompt and open page, including unpublished structures, go to Anthropic
+(Claude Code) or OpenAI (Codex).
+
+The assistant's host-enforced write scope is fixed at Send: it may change only what was selected
+then, plus objects it inserted earlier in that request; with no selection it can only add. Results
+land directly on the page without an approval window. Each request is one labelled Undo entry,
+leaving changed objects selected. Undo and redo restore the recorded change exactly and never call
+the AI. Shell, local-file tools, and other unrelated tools remain off; settings, hooks, plugins,
+telemetry, and permission prompts retain the restrictions described above. Write-scope and history
+enforcement belong to the assistant transaction layer in PR B, not to the CLI's web permissions.
 
 ## Consent and current Windows verification
 
