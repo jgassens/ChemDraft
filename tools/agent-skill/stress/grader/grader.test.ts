@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // @ts-expect-error Harness modules are intentionally plain JavaScript.
 import { gradeCase } from './checks.mjs';
 // @ts-expect-error Harness modules are intentionally plain JavaScript.
-import { extract } from './extract.mjs';
+import { extract, savedPath } from './extract.mjs';
 // @ts-expect-error Harness modules are intentionally plain JavaScript.
 import { saveToolAssets } from '../runner/stream.mjs';
 // @ts-expect-error Harness modules are intentionally plain JavaScript.
@@ -277,6 +277,37 @@ describe('automatic scoring on fixture run folders', () => {
     expect(recovered).toEqual([outputDocument, assetDocument]);
     expect(result.harnessErrors).toEqual([]);
     expect(result.drawn).toHaveLength(2);
+  });
+  it('matches retained manifests by requested spelling, canonical path, then a unique basename', async () => {
+    const folder = join(root, 'manifest-path-matching');
+    await mkdir(join(folder, 'outputs'), { recursive: true });
+    const retained = join(folder, 'outputs', '001-x.json');
+    await writeFile(retained, '{}');
+    await writeFile(join(folder, 'outputs.json'), JSON.stringify([
+      { originalPath: '/private/tmp/x.json', requestedPath: '/agent-spelling/x.json', copiedName: '001-x.json' },
+      { originalPath: '/private/tmp/requested.json', requestedPath: '/tmp/requested.json', copiedName: '001-x.json' },
+    ]));
+    expect(await savedPath(folder, '/tmp/requested.json')).toBe(retained);
+    const macosRealpath = (value: string) => value === '/tmp/x.json' ? '/private/tmp/x.json' : value;
+    expect(await savedPath(folder, '/tmp/x.json', { realpathNative: macosRealpath })).toBe(retained);
+
+    await writeFile(join(folder, 'assets.json'), JSON.stringify([
+      { originalPath: String.raw`C:\Users\runneradmin\AppData\Local\Temp\artifact.json`, path: 'outputs/001-x.json' },
+    ]));
+    const realpathNative = (value: string) => value.toLowerCase().includes('runner~1')
+      ? String.raw`C:\Users\runneradmin\AppData\Local\Temp\artifact.json`
+      : value;
+    expect(await savedPath(folder, String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\ARTIFACT.json`, { platform: 'win32', realpathNative })).toBe(retained);
+
+    await writeFile(join(folder, 'outputs.json'), JSON.stringify([
+      { originalPath: '/expired/a/unique.json', copiedName: '001-x.json' },
+    ]));
+    expect(await savedPath(folder, '/other/unique.json')).toBe(retained);
+    await writeFile(join(folder, 'outputs.json'), JSON.stringify([
+      { originalPath: '/expired/a/ambiguous.json', copiedName: '001-x.json' },
+      { originalPath: '/expired/b/ambiguous.json', copiedName: '001-x.json' },
+    ]));
+    await expect(savedPath(folder, '/other/ambiguous.json')).rejects.toThrow('Retained run file is missing or ambiguous');
   });
   it('pairs copied assets by their original Windows basename without pairing unrelated calls', async () => {
     const folder = join(runs, 'mcp-both', 'images');

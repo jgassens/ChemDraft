@@ -123,7 +123,7 @@ export async function saveToolAssets(events, imageDir) {
         const destination = path.join(imageDir, filename);
         await writeFile(destination, image || blob ? Buffer.from(image || blob, 'base64') : item.text, image || blob ? undefined : 'utf8');
         written.push({ path: `images/${filename}`, toolCallIndex: producer?.index ?? null,
-          toolCallId: block.tool_use_id, originalPath: item.resource?.uri ?? null });
+          toolCallId: block.tool_use_id, originalPath: item.resource?.uri ?? null, requestedPath: item.resource?.uri ?? null });
       }
     }
   }

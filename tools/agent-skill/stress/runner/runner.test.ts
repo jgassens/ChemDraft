@@ -135,6 +135,23 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(JSON.parse(await readFile(path.join(out, 'S02/meta.json'), 'utf8')).status).toBe('complete');
   });
 
+  it('replaces a completed attempt from the other agent when usage halts', async () => {
+    for (const agent of ['claude', 'codex']) {
+      const cases = await fixtureCases(); const out = await outDirectory();
+      const other = agent === 'claude' ? 'codex' : 'claude';
+      await mkdir(path.join(out, 'S01'), { recursive: true });
+      await writeFile(path.join(out, 'S01/meta.json'), JSON.stringify({ id: 'S01', agent: other, status: 'complete' }));
+      const args = ['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root, '--agent', agent];
+      const codexHome = path.join(out, 'source-home');
+      if (agent === 'codex') { await mkdir(codexHome); await writeFile(path.join(codexHome, 'auth.json'), '{}'); }
+      const result = await invoke(args, agent === 'codex'
+        ? { FAKE_OPENAI_REMAINING: '14', CHEMDRAFT_STRESS_CODEX_AUTH_HOME: codexHome }
+        : { FAKE_USAGE_REMAINING: '14' });
+      expect(result.code).toBe(3);
+      expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8'))).toMatchObject({ agent, status: 'halted-usage' });
+    }
+  });
+
   it('rejects an init event that contains another MCP server', async () => {
     const cases = await fixtureCases(); const out = await outDirectory();
     await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_EXTRA_MCP: '1' });
@@ -246,7 +263,7 @@ describe('stress runner', { timeout: 30_000 }, () => {
     await invoke(args, { ...env, FAKE_CODEX_OUTPUT_FILE: artifact, FAKE_CODEX_CHECKOUT: root });
     const caseDir = path.join(out, 'S01');
     const outputs = JSON.parse(await readFile(path.join(caseDir, 'outputs.json'), 'utf8'));
-    expect(outputs).toEqual([expect.objectContaining({ originalPath: artifact, copiedName: '001-artifact.svg', size: 41 })]);
+    expect(outputs).toEqual([expect.objectContaining({ originalPath: artifact, requestedPath: artifact, copiedName: '001-artifact.svg', size: 41 })]);
     expect(await readFile(path.join(caseDir, 'outputs/001-artifact.svg'), 'utf8')).toContain('<svg');
     expect(JSON.parse(await readFile(path.join(caseDir, 'meta.json'), 'utf8')).repoAccess).toEqual([
       expect.objectContaining({ tool: 'Bash', classification: 'cli' }),
