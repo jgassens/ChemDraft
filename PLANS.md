@@ -47,6 +47,19 @@ current document and selection and place results directly on the page through ty
 - Cancel/quit kills process trees (including the Windows Job Object); output limits and typed errors
   are reported. Assistant writes obey scope, group into one undo, and select touched objects.
 
+## Journal presets (feature branch)
+
+On `codex/journal-formatting-presets`: add Edit > Journal Presets through the shared
+command registry and native dialog host, with a browser fallback. Five sourced starter
+profiles cover JACS, Organic Letters, Analytical Methods, RSC Advances and Nature Chemistry.
+Journal metadata and versioned rule data stay separate. An explicitly loaded optional style-pack
+adds fifteen sourced identities: 20 total, all with partial coverage. Omit unverified journals.
+Record individual official sources, unknowns and conflicts. Reuse native object styles and document metadata, preserve chemistry,
+preview before one undoable transaction, and reject stale originating-document snapshots.
+Include export preflight, regression tests, provenance, a manual checklist and a draft PR.
+Native macOS and Windows verification is required before merge; unavailable checks must be
+reported. No dependency or public plugin API changes are planned.
+
 ---
 
 # Parked

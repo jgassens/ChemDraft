@@ -2580,9 +2580,9 @@ describe("ChemDraft desktop shell", () => {
     // is the flush (documentForFlush), which writes the document as an open label edit's close
     // would leave it. History snapshots strip live drafts before a seventh normalization;
     // restoring each document tab normalizes it through the same funnel once more.
-    // Modeless Page Size and arrangement spacing also commit into inactive tab histories
+    // Modeless Page Size, arrangement spacing and journal presets also commit into inactive tab histories
     // through this funnel; each must normalize the document it installs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(10);
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,

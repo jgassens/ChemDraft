@@ -372,6 +372,58 @@ describe("documents in one window", () => {
     expect(container.textContent).toContain("native unavailable"); expect(bridge().snapshot().document).toEqual(source);
     spy.mockRestore(); expect(nativeDialogTransport.open).toBe(open); saveCompoundLayoutSettings({ enabled: false });
   });
+  async function journalDrawing() {
+    const source = applyNativeChainTool(createPhase4Document("Journal origin"), { x: 100, y: 100 }, { x: 200, y: 130 });
+    act(() => root!.unmount()); container.innerHTML = ""; await mount(source);
+    await import("./journal-presets/owner");
+    return bridge().snapshot().document;
+  }
+  const journalDraft = { profileId: "rsc-advances", figureType: "scheme", scope: "document", resizeBonds: false };
+  it("journal preview and Cancel leave the original document and history untouched", async () => {
+    const before = await journalDrawing();
+    await command("edit.journalPresets");
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "journalPresets", data: { title: "Journal origin" } });
+    expect(container.querySelector('.journal-preset-form')).toBeNull();
+    await pageSizeMessage("ready", {});
+    await pageSizeMessage("action", { action: "preview", journal: journalDraft });
+    await vi.waitFor(() => expect(native.dialogPublish.mock.calls.some(call => (call[1] as DialogMessage).type === "result" && (call[1] as { data: { status: string } }).data.status === "preview")).toBe(true));
+    expect(bridge().snapshot().document).toEqual(before);
+    await pageSizeMessage("action", { action: "cancel" });
+    expect(bridge().snapshot().document).toEqual(before);
+    await command("edit.undo"); expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+  });
+  it("applies a journal preset to its originating inactive tab with a single undo and redo", async () => {
+    const before = await journalDrawing();
+    await command("edit.journalPresets"); await pageSizeMessage("ready", {});
+    await command("document.new"); const other = bridge().snapshot().document;
+    await pageSizeMessage("action", { action: "apply", journal: journalDraft });
+    await vi.waitFor(() => expect(native.dialogClose).toHaveBeenCalledWith("opaque", "apply"));
+    expect(bridge().snapshot().document).toEqual(other);
+    await activate(0);
+    expect(bridge().snapshot().document.pages[0].objects[0].style).toHaveProperty("journalPreset");
+    await command("edit.undo"); expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Apply Journal Preset");
+    await command("edit.redo"); expect(bridge().snapshot().document.pages[0].objects[0].style).toHaveProperty("journalPreset");
+  });
+  it("does not absorb an unfinished atom-label edit into the journal style transaction", async () => {
+    await mountHoverChain(); await hoverChainAtom(1);
+    for (const key of "NMe") await labelKey(key);
+    const before = bridge().snapshot().document;
+    await command("edit.journalPresets");
+    expect(native.dialogSnapshot).toBeUndefined();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Finish editing text or atom labels");
+    expect(labelEditor()?.value).toBe("NMe"); expect(bridge().snapshot().document).toEqual(before);
+    await labelKey("Enter"); await command("edit.journalPresets");
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "journalPresets" });
+  });
+  it("rejects a journal Apply after the originating drawing changes", async () => {
+    await journalDrawing(); await command("edit.journalPresets"); await pageSizeMessage("ready", {});
+    await command("page.setSize.a4"); const changed = bridge().snapshot().document;
+    await pageSizeMessage("action", { action: "apply", journal: journalDraft });
+    await vi.waitFor(() => expect(native.dialogPublish.mock.calls.some(call => (call[1] as DialogMessage).type === "result" && (call[1] as { data: { error?: string } }).data.error?.includes("Drawing or selection changed"))).toBe(true));
+    expect(bridge().snapshot().document).toEqual(changed);
+    expect(native.dialogClose).not.toHaveBeenCalled();
+  });
   it("native Page Size stays modeless and applies to its originating inactive tab with one undo entry", async () => {
     const originalLayout = bridge().snapshot().document.pages[0]!.layout;
     await command("page.setSizeCustom");

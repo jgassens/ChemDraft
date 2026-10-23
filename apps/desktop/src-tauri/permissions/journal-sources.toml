@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-journal-source"
+description = "Open an allowlisted official journal guideline from a registered Journal Presets window."
+commands.allow = ["dialog_open_journal_source"]

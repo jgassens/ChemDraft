@@ -1,0 +1,76 @@
+[
+  {
+    "id": "jacs",
+    "title": "Journal of the American Chemical Society",
+    "publisher": "ACS",
+    "aliases": [
+      "JACS"
+    ],
+    "issns": [
+      "0002-7863",
+      "1520-5126"
+    ],
+    "guidelinesUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat",
+    "identitySource": "https://api.crossref.org/journals/0002-7863",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "organic-letters",
+    "title": "Organic Letters",
+    "publisher": "ACS",
+    "aliases": [
+      "Org. Lett."
+    ],
+    "issns": [
+      "1523-7060",
+      "1523-7052"
+    ],
+    "guidelinesUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=orlef7",
+    "identitySource": "https://api.crossref.org/journals/1523-7060",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "analytical-methods",
+    "title": "Analytical Methods",
+    "publisher": "RSC",
+    "aliases": [
+      "Royal Society of Chemistry"
+    ],
+    "issns": [
+      "1759-9660",
+      "1759-9679"
+    ],
+    "guidelinesUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/analytical-methods",
+    "identitySource": "https://api.crossref.org/journals/1759-9660",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "rsc-advances",
+    "title": "RSC Advances",
+    "publisher": "RSC",
+    "aliases": [
+      "Royal Society of Chemistry"
+    ],
+    "issns": [
+      "2046-2069"
+    ],
+    "guidelinesUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances",
+    "identitySource": "https://api.crossref.org/journals/2046-2069",
+    "identityCheckedAt": "2026-10-21"
+  },
+  {
+    "id": "nature-chemistry",
+    "title": "Nature Chemistry",
+    "publisher": "Nature Portfolio",
+    "aliases": [
+      "Nat. Chem."
+    ],
+    "issns": [
+      "1755-4330",
+      "1755-4349"
+    ],
+    "guidelinesUrl": "https://www.nature.com/nchem/submission-guidelines/aip-and-formatting",
+    "identitySource": "https://api.crossref.org/journals/1755-4330",
+    "identityCheckedAt": "2026-10-21"
+  }
+]

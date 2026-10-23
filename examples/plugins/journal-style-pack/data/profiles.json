@@ -1,0 +1,1368 @@
+[
+  {
+    "id": "advanced-materials",
+    "journalId": "advanced-materials",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "fontSize": {
+        "value": 12,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "bondLength": {
+        "value": 17,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "boldWidth": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "lineWidth": {
+        "value": 0.75,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "marginWidth": {
+        "value": 2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "hashSpacing": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure-vector",
+        "label": "Chemical structure: vector (preferred)",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "pdf",
+          "ps",
+          "eps"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: vector formats and maximum image width"
+      },
+      {
+        "id": "structure-raster",
+        "label": "Chemical structure: raster fallback",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 1200,
+          "color": 1200
+        },
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/15214095/author-guidelines",
+        "section": "Graphics FAQ: raster fallback for vector graphics"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "The 178 mm maximum is verified; 85 mm is described as a usual single-column size, not enforced as a mandatory width.",
+      "The source describes bond spacing as 18% of width. Its relationship to ChemDraft bond-length spacing is ambiguous, so spacing is retained.",
+      "Bitmap microscopy guidance (300 dpi) is not used for rasterized chemical structures; the vector-graphics fallback specifies at least 1200 dpi."
+    ]
+  },
+  {
+    "id": "angewandte-chemie",
+    "journalId": "angewandte-chemie",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines",
+        "section": "Section 4: recommended sans serif lettering"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "jpeg",
+          "png"
+        ],
+        "minDpi": {
+          "line-art": 300,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines",
+        "section": "Section 4"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "jpeg",
+          "png"
+        ],
+        "minDpi": {
+          "line-art": 300,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines",
+        "section": "Section 4"
+      },
+      {
+        "id": "toc-square",
+        "label": "TOC: narrow option only",
+        "maxWidthMm": 55,
+        "maxHeightMm": 50,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": null,
+        "sourceUrl": "https://onlinelibrary.wiley.com/page/journal/15213773/homepage/graphics-guidelines",
+        "section": "Section 2.3 (agrees with Notice to Authors)"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Official sources conflict: Graphics Guidelines gives wide TOC 110 × 25 mm; Notice to Authors gives 115 × 25 mm. The wide option is withheld. Both agree on 55 × 50 mm.",
+      "Figure text is described as 1.5–2 mm tall (approximately 7–8 pt). No exact font size or bond dimensions are inferred.",
+      "A separate editable CDX structure submission is requested; verify that export manually. No proprietary template was copied."
+    ]
+  },
+  {
+    "id": "chemical-reviews",
+    "journalId": "chemical-reviews",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Appendix 2: Size"
+      },
+      "fontSize": {
+        "value": 4.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Appendix 2: Size"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Appendix 2: Size"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84.66666666666667,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 177.79999999999998,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": 105.83333333333333,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "toc",
+        "label": "TOC graphic: 50 × 50 mm",
+        "maxWidthMm": 50,
+        "maxHeightMm": 50,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": null,
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay",
+        "section": "Table of Contents Graphic"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Exact bond length, bold width, hash spacing and exact font size were not specified in the checked instructions; existing values are retained.",
+      "Height limits include the caption. Allow space for captions outside this drawing."
+    ]
+  },
+  {
+    "id": "advanced-functional-materials",
+    "journalId": "advanced-functional-materials",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "fontSize": {
+        "value": 12,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "bondLength": {
+        "value": 17,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "boldWidth": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "lineWidth": {
+        "value": 0.75,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "marginWidth": {
+        "value": 2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "hashSpacing": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure-vector",
+        "label": "Chemical structure: vector (preferred)",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "pdf",
+          "ps",
+          "eps"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: vector formats and maximum image width"
+      },
+      {
+        "id": "structure-raster",
+        "label": "Chemical structure: raster fallback",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 1200,
+          "color": 1200
+        },
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16163028/author-guidelines",
+        "section": "Graphics FAQ: raster fallback for vector graphics"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "The 178 mm maximum is verified; 85 mm is described as a usual single-column size, not enforced as a mandatory width.",
+      "The source describes bond spacing as 18% of width. Its relationship to ChemDraft bond-length spacing is ambiguous, so spacing is retained.",
+      "Bitmap microscopy guidance (300 dpi) is not used for rasterized chemical structures; the vector-graphics fallback specifies at least 1200 dpi."
+    ]
+  },
+  {
+    "id": "chemical-society-reviews",
+    "journalId": "chemical-society-reviews",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "bondLength": {
+        "value": 12.2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "boldWidth": {
+        "value": 1.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "hashSpacing": {
+        "value": 1.8,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / scheme",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "eps",
+          "pdf"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Chemical structures"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / graphical abstract",
+        "maxWidthMm": 80,
+        "maxHeightMm": 40,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/chem-soc-rev",
+        "section": "Table of contents specifications"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "General scheme dimensions are not specified by this profile. TOC graphics require TIFF; check export support before submission.",
+      "The source gives rounded cm and pt equivalents; this profile uses the published pt values."
+    ]
+  },
+  {
+    "id": "advanced-energy-materials",
+    "journalId": "advanced-energy-materials",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "fontSize": {
+        "value": 12,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "bondLength": {
+        "value": 17,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "boldWidth": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "lineWidth": {
+        "value": 0.75,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "marginWidth": {
+        "value": 2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "hashSpacing": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure-vector",
+        "label": "Chemical structure: vector (preferred)",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "pdf",
+          "ps",
+          "eps"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: vector formats and maximum image width"
+      },
+      {
+        "id": "structure-raster",
+        "label": "Chemical structure: raster fallback",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 1200,
+          "color": 1200
+        },
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/16146840/author-guidelines",
+        "section": "Graphics FAQ: raster fallback for vector graphics"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "The 178 mm maximum is verified; 85 mm is described as a usual single-column size, not enforced as a mandatory width.",
+      "The source describes bond spacing as 18% of width. Its relationship to ChemDraft bond-length spacing is ambiguous, so spacing is retained.",
+      "Bitmap microscopy guidance (300 dpi) is not used for rasterized chemical structures; the vector-graphics fallback specifies at least 1200 dpi."
+    ]
+  },
+  {
+    "id": "acs-nano",
+    "journalId": "acs-nano",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+        "section": "Appendix 2: Size"
+      },
+      "fontSize": {
+        "value": 4.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+        "section": "Appendix 2: Size"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+        "section": "Appendix 2: Size"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84.66666666666667,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 177.79999999999998,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": 105.83333333333333,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=ancac3",
+        "section": "Appendix 2: Resolution and Size"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Exact bond length, bold width, hash spacing and exact font size were not specified in the checked instructions; existing values are retained.",
+      "Height limits include the caption. Allow space for captions outside this drawing."
+    ]
+  },
+  {
+    "id": "energy-environmental-science",
+    "journalId": "energy-environmental-science",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "bondLength": {
+        "value": 12.2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "boldWidth": {
+        "value": 1.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "hashSpacing": {
+        "value": 1.8,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / scheme",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "eps",
+          "pdf"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Chemical structures"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / graphical abstract",
+        "maxWidthMm": 80,
+        "maxHeightMm": 40,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/energy-and-environmental-science",
+        "section": "Table of contents specifications"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "General scheme dimensions are not specified by this profile. TOC graphics require TIFF; check export support before submission.",
+      "The source gives rounded cm and pt equivalents; this profile uses the published pt values."
+    ]
+  },
+  {
+    "id": "molecules",
+    "journalId": "molecules",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {},
+    "figures": [
+      {
+        "id": "figure",
+        "label": "Figure / scheme: export guidance only",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "png",
+          "jpeg",
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.mdpi.com/journal/molecules/instructions",
+        "section": "Preparing Figures, Schemes and Tables"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Export guidance only: 600 dpi is a recommendation, not an absolute acceptance threshold. No verified chemical drawing dimensions or font settings; appearance is retained.",
+      "The 8 pt table-font guidance is not applied to atom labels. Graphical-abstract requirements are not covered."
+    ]
+  },
+  {
+    "id": "nature-materials",
+    "journalId": "nature-materials",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondLength": {
+        "value": 0.381,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "lineWidth": {
+        "value": 0.021,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "boldWidth": {
+        "value": 0.055,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "marginWidth": {
+        "value": 0.042,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "hashSpacing": {
+        "value": 0.06,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondSpacing": {
+        "value": 18,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure",
+        "label": "Chemical structure: shared Nature guide",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": null,
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Guide scope and drawing preferences"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Shared chemical-structure guide explicitly covers Nature Research journals; these are production preferences, not initial-submission acceptance rules.",
+      "Individual journal final-formatting pages could not be retrieved. Figure dimensions, formats and DPI are unknown; no values are borrowed from Nature Chemistry."
+    ]
+  },
+  {
+    "id": "advanced-science",
+    "journalId": "advanced-science",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "fontSize": {
+        "value": 12,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "bondLength": {
+        "value": 17,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "boldWidth": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "lineWidth": {
+        "value": 0.75,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "marginWidth": {
+        "value": 2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      },
+      "hashSpacing": {
+        "value": 2.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: chemical structure settings"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure-vector",
+        "label": "Chemical structure: vector (preferred)",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "pdf",
+          "ps",
+          "eps"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: vector formats and maximum image width"
+      },
+      {
+        "id": "structure-raster",
+        "label": "Chemical structure: raster fallback",
+        "maxWidthMm": 178,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 1200,
+          "color": 1200
+        },
+        "sourceUrl": "https://advanced.onlinelibrary.wiley.com/hub/journal/21983844/author-guidelines",
+        "section": "Graphics FAQ: raster fallback for vector graphics"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "The 178 mm maximum is verified; 85 mm is described as a usual single-column size, not enforced as a mandatory width.",
+      "The source describes bond spacing as 18% of width. Its relationship to ChemDraft bond-length spacing is ambiguous, so spacing is retained.",
+      "Bitmap microscopy guidance (300 dpi) is not used for rasterized chemical structures; the vector-graphics fallback specifies at least 1200 dpi."
+    ]
+  },
+  {
+    "id": "nature-energy",
+    "journalId": "nature-energy",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondLength": {
+        "value": 0.381,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "lineWidth": {
+        "value": 0.021,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "boldWidth": {
+        "value": 0.055,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "marginWidth": {
+        "value": 0.042,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "hashSpacing": {
+        "value": 0.06,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "bondSpacing": {
+        "value": 18,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Page 4: Fonts/formatting"
+      }
+    },
+    "figures": [
+      {
+        "id": "structure",
+        "label": "Chemical structure: shared Nature guide",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": null,
+        "sourceUrl": "https://www.nature.com/documents/nr-chemical-structures-guide.pdf",
+        "section": "Guide scope and drawing preferences"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Shared chemical-structure guide explicitly covers Nature Research journals; these are production preferences, not initial-submission acceptance rules.",
+      "Individual journal final-formatting pages could not be retrieved. Figure dimensions, formats and DPI are unknown; no values are borrowed from Nature Chemistry."
+    ]
+  },
+  {
+    "id": "acs-catalysis",
+    "journalId": "acs-catalysis",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+        "section": "Appendix 2: Size"
+      },
+      "fontSize": {
+        "value": 4.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+        "section": "Appendix 2: Size"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "minimum",
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+        "section": "Appendix 2: Size"
+      }
+    },
+    "figures": [
+      {
+        "id": "single-column",
+        "label": "Figure / scheme: single column",
+        "maxWidthMm": 84.66666666666667,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": null,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+        "section": "Appendix 2: Resolution and Size"
+      },
+      {
+        "id": "double-column",
+        "label": "Figure / scheme: double column",
+        "maxWidthMm": 177.79999999999998,
+        "maxHeightMm": 232.83333333333331,
+        "minWidthMm": 105.83333333333333,
+        "formats": null,
+        "minDpi": {
+          "line-art": 1200,
+          "grayscale": 600,
+          "color": 300
+        },
+        "sourceUrl": "https://researcher-resources.acs.org/publish/author_guidelines?coden=accacs",
+        "section": "Appendix 2: Resolution and Size"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "Exact bond length, bold width, hash spacing and exact font size were not specified in the checked instructions; existing values are retained.",
+      "Height limits include the caption. Allow space for captions outside this drawing."
+    ]
+  },
+  {
+    "id": "journal-materials-chemistry-a",
+    "journalId": "journal-materials-chemistry-a",
+    "version": "1.0.0",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "bondLength": {
+        "value": 12.2,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "lineWidth": {
+        "value": 0.5,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "boldWidth": {
+        "value": 1.6,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "hashSpacing": {
+        "value": 1.8,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "fontFamily": {
+        "value": "Arial, Helvetica, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      }
+    },
+    "figures": [
+      {
+        "id": "scheme",
+        "label": "Chemical structure / scheme",
+        "maxWidthMm": null,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "eps",
+          "pdf"
+        ],
+        "minDpi": null,
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Chemical structures"
+      },
+      {
+        "id": "toc",
+        "label": "TOC / graphical abstract",
+        "maxWidthMm": 80,
+        "maxHeightMm": 40,
+        "minWidthMm": null,
+        "formats": [
+          "tiff"
+        ],
+        "minDpi": {
+          "line-art": 600,
+          "grayscale": 600,
+          "color": 600
+        },
+        "sourceUrl": "https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/journal-of-materials-chemistry-a",
+        "section": "Table of contents specifications"
+      }
+    ],
+    "limitations": [
+      "Partial automation: arrows, brackets, images, individual atom/bond overrides and rich-text runs retain their existing appearance. Review the exported figure.",
+      "Bond angles are not rearranged; chemical connectivity and stereochemistry are preserved.",
+      "General scheme dimensions are not specified by this profile. TOC graphics require TIFF; check export support before submission.",
+      "The source gives rounded cm and pt equivalents; this profile uses the published pt values."
+    ]
+  },
+  {
+    "id": "cell",
+    "journalId": "cell",
+    "version": "1.0.1",
+    "checkedAt": "2026-10-21",
+    "status": "partial",
+    "rules": {
+      "fontFamily": {
+        "value": "Arial, sans-serif",
+        "unit": "font-stack",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "fontSize": {
+        "value": 7,
+        "unit": "pt",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "bondLength": {
+        "value": 0.45,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "lineWidth": {
+        "value": 0.015,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "boldWidth": {
+        "value": 0.05,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "hashSpacing": {
+        "value": 0.065,
+        "unit": "cm",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      },
+      "bondSpacing": {
+        "value": 20,
+        "unit": "percent",
+        "relation": "exact",
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Chemical structure drawing settings (final production)"
+      }
+    },
+    "figures": [
+      {
+        "id": "research-single",
+        "label": "Chemical figure: research/review, one column",
+        "maxWidthMm": 85,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      },
+      {
+        "id": "research-one-half",
+        "label": "Chemical figure: research/review, 1.5 columns",
+        "maxWidthMm": 114,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      },
+      {
+        "id": "research-full",
+        "label": "Chemical figure: research/review, full width",
+        "maxWidthMm": 174,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      },
+      {
+        "id": "commentary-single",
+        "label": "Chemical figure: preview/commentary, one column",
+        "maxWidthMm": 55,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      },
+      {
+        "id": "commentary-double",
+        "label": "Chemical figure: preview/commentary, two columns",
+        "maxWidthMm": 114,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      },
+      {
+        "id": "commentary-full",
+        "label": "Chemical figure: preview/commentary, full width",
+        "maxWidthMm": 174,
+        "maxHeightMm": null,
+        "minWidthMm": null,
+        "formats": [
+          "tiff",
+          "pdf",
+          "cdx"
+        ],
+        "minDpi": {
+          "line-art": 1000,
+          "grayscale": 300,
+          "color": 300
+        },
+        "sourceUrl": "https://www.cell.com/information-for-authors/figure-guidelines",
+        "section": "Figure requirements, chemical structures and artwork preparation (final production)"
+      }
+    ],
+    "limitations": [
+      "Partial automation: molecules and plain text only; arrows, brackets, images, rich-text runs and explicit atom/bond overrides need manual review.",
+      "Verified for Cell via its Final submission page linking this shared guide. These settings concern final production, not initial peer review. Graphical abstracts and Leading Edge artwork are outside this profile.",
+      "Existing coordinates and bond angles are retained unless resizing is explicitly selected. Terminal-carbon labels and implicit-hydrogen display preferences are not changed.",
+      "The guide lists separate stereo-bond width 0.056 cm. ChemDraft does not expose an independent stereo-width setting in this operation; verify wedge/hash appearance manually.",
+      "Chemical-specific bond width 0.015 cm (about 0.425 pt) differs from the general artwork advice of 0.5–1.5 pt. This profile uses the explicit chemical value; confirm any editorial exceptions.",
+      "Column widths are maximum bounds for the named article layout. The general 6.5 × 8 inch figure-size recommendation is not treated as a mandatory page size. Reserve room for the caption.",
+      "TIFF/PDF are preferred chemical-figure exports; CDX is also accepted for conversion during typesetting. Other general artwork formats need manual review. Verify embedded fonts and RGB color in the exported file.",
+      "Line art requires at least 1000 dpi, grayscale/color 300 dpi. The separate black-and-white category is 500 dpi; export advisories conservatively use 1000 dpi for chemical line art."
+    ]
+  }
+]
