@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { assertOutputIsolation, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, expandLeadingHome, linkCodexSkill, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, canonicalPath, checkoutAt, checkoutChanges, codexEnvironment, createCaseHome, expandLeadingHome, linkCodexSkill, commandInputTargets, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 // @ts-expect-error stream.mjs is intentionally plain JavaScript.
 import { hashTree, inspectStream } from './stream.mjs';
 
@@ -100,6 +100,14 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(pathsEqual(short, long, { platform: 'win32', realpathNative })).toBe(true);
   });
 
+  it.each(['darwin', 'win32'])('keeps default canonicalisation in the requested path family on %s', (platform) => {
+    const paths = platform === 'win32' ? path.win32 : path.posix;
+    const source = platform === 'win32' ? String.raw`C:\__chemdraft_audit_fixture__\source.ts` : '/__chemdraft_audit_fixture__/source.ts';
+    expect(canonicalPath(source, { platform })).toBe(source);
+    expect(checkoutAt(source, { platform })).toBeNull();
+    expect(paths.isAbsolute(canonicalPath(source, { platform }))).toBe(true);
+  });
+
   it('expands only a leading home-directory shorthand', () => {
     const environment = { HOME: '/users/chemist' };
     expect(expandLeadingHome('./x', { platform: 'darwin', environment })).toBe('./x');
@@ -108,6 +116,7 @@ describe('stress runner', { timeout: 30_000 }, () => {
     expect(expandLeadingHome('~', { platform: 'darwin', environment })).toBe('/users/chemist');
     expect(expandLeadingHome('~/x', { platform: 'darwin', environment })).toBe('/users/chemist/x');
     expect(expandLeadingHome('~\\x', { platform: 'win32', environment: { HOME: 'C:\\Users\\chemist' } })).toBe('C:\\Users\\chemist\\x');
+    expect(expandLeadingHome('~\\x', { platform: 'win32', environment: { USERPROFILE: 'C:\\Users\\chemist' } })).toBe('C:\\Users\\chemist\\x');
   });
 
   it('runs an isolated case and saves transcript-derived artifacts', async () => {
@@ -614,13 +623,15 @@ describe('stress runner', { timeout: 30_000 }, () => {
     for (const platform of ['darwin', 'win32']) {
       const checkout = platform === 'win32' ? 'C:\\repo' : '/repo';
       const source = platform === 'win32' ? 'C:\\repo\\source.ts' : '/repo/source.ts';
+      // These paths are virtual, regardless of which host runs the suite.
+      const options = { platform, exists: () => false, realpathNative: (value: string) => value, environment: {} };
       for (const name of ['Write', 'Edit', 'NotebookEdit']) {
-        expect(repoAccess([{ name, input: { file_path: source } }], checkout, { platform })).toEqual([
+        expect(repoAccess([{ name, input: { file_path: source } }], checkout, options)).toEqual([
           expect.objectContaining({ tool: name, classification: 'source-write' })]);
       }
-      expect(repoAccess([], checkout, { platform, fileChanges: [{ path: source }] })).toEqual([
+      expect(repoAccess([], checkout, { ...options, fileChanges: [{ path: source }] })).toEqual([
         expect.objectContaining({ tool: 'file_change', classification: 'source-write' })]);
-      expect(repoAccess([{ name: 'Write', input: { file_path: `${checkout}-other/file` } }], checkout, { platform })).toEqual([]);
+      expect(repoAccess([{ name: 'Write', input: { file_path: `${checkout}-other/file` } }], checkout, options)).toEqual([]);
     }
     const windowsCommand = String.raw`cmd.exe /d /s /c "pnpm.cmd -s --dir C:\repo chemdraft render --smiles CCO --out C:\Users\x\figure.svg"`;
     expect(commandOutputTargets(windowsCommand, { platform: 'win32' })).toEqual(['C:\\Users\\x\\figure.svg']);
@@ -636,6 +647,70 @@ describe('stress runner', { timeout: 30_000 }, () => {
     await invoke(['--cases', cases, '--out', claudeOut, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_WRITE_EVENT: path.join(root, 'source.ts') });
     expect(JSON.parse(await readFile(path.join(claudeOut, 'S01/meta.json'), 'utf8'))).toMatchObject({ status: 'error', reason: 'isolation-leak',
       repoAccess: [expect.objectContaining({ classification: 'source-write', tool: 'Edit' })] });
+  });
+
+  it.each(['darwin', 'win32'])('never audits the checkout itself or nested checkouts as foreign on %s', (platform) => {
+    const paths = platform === 'win32' ? path.win32 : path.posix;
+    const checkout = platform === 'win32' ? 'C:\\repo' : '/repo';
+    const nested = paths.join(checkout, 'nested');
+    const markers = new Set([checkout, nested].flatMap((directory) => [
+      paths.join(directory, 'packages', 'chemdraft-cli', 'package.json'),
+      paths.join(directory, 'skills', 'chemdraft', 'SKILL.md'),
+    ]));
+    const options = { platform, exists: (value: string) => markers.has(value), realpathNative: (value: string) => value, environment: {} };
+    expect(checkoutAt(nested, options)).toBe(nested);
+    for (const source of [checkout, paths.join(checkout, 'source.ts'), paths.join(nested, 'new.ts')]) {
+      expect(repoAccess([{ name: 'Write', input: { file_path: source } }], checkout, options)).toEqual([
+        { tool: 'Write', path: source, classification: 'source-write' },
+      ]);
+      expect(repoAccess([], checkout, { ...options, fileChanges: [{ path: source }] })).toEqual([
+        { tool: 'file_change', path: source, classification: 'source-write' },
+      ]);
+    }
+  });
+
+  it('audits Windows case, separators, dot segments and 8.3 aliases using one canonical filesystem', () => {
+    const checkout = String.raw`C:\Users\me\chemdraw`;
+    const shortCheckout = String.raw`C:\Users\me\CHEMDR~1`;
+    const foreign = String.raw`C:\Users\me\other`;
+    const paths = path.win32;
+    const existing = new Map<string, string>();
+    for (const directory of [checkout, foreign]) for (const entry of [directory, paths.join(directory, 'packages'),
+      paths.join(directory, 'packages', 'chemdraft-cli', 'package.json'), paths.join(directory, 'skills', 'chemdraft', 'SKILL.md')]) {
+      existing.set(entry.toLowerCase(), entry);
+    }
+    const key = (value: string) => {
+      expect(paths.isAbsolute(value)).toBe(true);
+      return paths.normalize(value).toLowerCase().replace('\\chemdr~1', '\\chemdraw');
+    };
+    const options = { platform: 'win32', environment: {}, exists: (value: string) => existing.has(key(value)),
+      realpathNative: (value: string) => {
+        const resolved = existing.get(key(value));
+        if (!resolved) throw new Error('Missing virtual path');
+        return resolved;
+      } };
+    // Files do not exist yet: canonicalisation must find their existing parent.
+    for (const source of ['c:/users/ME/chemdraw/packages/x.ts', String.raw`C:\Users\me\chemdraw\..\chemdraw\x`,
+      String.raw`C:\Users\me\CHEMDR~1\packages\x.ts`]) {
+      for (const tested of [checkout, shortCheckout]) {
+        expect(checkoutAt(source, options)).toBe(checkout);
+        for (const name of ['Write', 'Edit', 'NotebookEdit']) {
+          expect(repoAccess([{ name, input: { file_path: source } }], tested, options)).toEqual([
+            { tool: name, path: source, classification: 'source-write' },
+          ]);
+        }
+        expect(repoAccess([], tested, { ...options, fileChanges: [{ path: source }] })).toEqual([
+          { tool: 'file_change', path: source, classification: 'source-write' },
+        ]);
+        expect(repoAccess([{ name: 'Read', input: { file_path: source } }], tested, options)).toEqual([
+          { tool: 'Read', path: source, classification: 'source-read' },
+        ]);
+      }
+    }
+    expect(repoAccess([{ name: 'Bash', input: { command: `pnpm -s --dir "${shortCheckout}" chemdraft render` } }], checkout, options))
+      .toEqual([expect.objectContaining({ classification: 'cli' })]);
+    expect(repoAccess([{ name: 'Read', input: { file_path: paths.join(foreign, 'x.ts') } }], checkout, options))
+      .toEqual([expect.objectContaining({ classification: 'foreign-checkout', checkout: foreign })]);
   });
 
   it('clearly rejects missing Codex auth without running an agent', async () => {
