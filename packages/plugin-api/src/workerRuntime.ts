@@ -30,6 +30,7 @@ import type {
   PluginToolsAPI,
   PluginManifest,
   PluginPanelAPI,
+  PluginOverlaysAPI,
   PluginPermission,
   PluginSelectionAPI,
   PluginStorage
@@ -194,6 +195,12 @@ export function runPluginWorker(
       ? { getSelection: () => call("selection", "getSelection", []) as ReturnType<PluginSelectionAPI["getSelection"]> }
       : undefined;
 
+    const overlays: PluginOverlaysAPI | undefined = has("ui.canvas")
+      ? { setStatus: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "setStatus", [request]) as Promise<void>;
+        } }
+      : undefined;
     const panels: PluginPanelAPI | undefined = has("ui.panel")
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
@@ -325,6 +332,7 @@ export function runPluginWorker(
       storage,
       selection,
       panels,
+      overlays,
       dialogs,
       images,
       recognition,

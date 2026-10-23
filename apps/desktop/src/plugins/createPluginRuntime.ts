@@ -34,6 +34,7 @@ import {
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
 
+import type { RegisteredCanvasOverlay } from "./types";
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
 import { PluginPromptTextController } from "./PluginPromptTextController";
@@ -206,9 +207,11 @@ export interface DesktopPluginRuntime {
    * neither add to it nor take from it.
    */
   invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  listCanvasOverlays(): RegisteredCanvasOverlay[];
+  getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
-  /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
+  /** Notified when contributions or overlay statuses change. Returns unsubscribe. */
   onDidChange(listener: () => void): () => void;
 }
 
@@ -410,9 +413,23 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       };
     }
   }
+  const canvasOverlayStatuses = new Map<string, string>();
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
+    overlays: {
+      setStatus: (_pluginId, overlayId, text) => {
+        if (text === "") {
+          if (!canvasOverlayStatuses.delete(overlayId)) return;
+        } else {
+          if (canvasOverlayStatuses.get(overlayId) === text) return;
+          canvasOverlayStatuses.set(overlayId, text);
+        }
+        notify();
+      }
+    },
     getActiveDocument: options.getActiveDocument,
     getActiveDocumentKey:
       options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
@@ -452,8 +469,6 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();
   const registrations = new Map<string, { manifest: PluginManifest; options: RegisterPluginOptions }>();
-  const listeners = new Set<() => void>();
-  const notify = () => listeners.forEach((listener) => listener());
 
   const runtime: DesktopPluginRuntime = {
     host,
@@ -525,6 +540,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       (toolsetsByPluginId.get(pluginId) ?? []).forEach((toolset) => pluginIdByToolsetId.delete(toolset.id));
       toolsetsByPluginId.delete(pluginId);
       registrations.delete(pluginId);
+      for (const overlayId of canvasOverlayStatuses.keys()) {
+        if (!host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId)) canvasOverlayStatuses.delete(overlayId);
+      }
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
@@ -538,6 +556,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         armedSelectionWarnings = undefined;
       }
     },
+    listCanvasOverlays: () => host.listCanvasOverlays(),
+    getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
     listPluginToolsets: () => [...toolsetsByPluginId.values()].flat(),
     pluginIdForToolset: (toolsetId) => pluginIdByToolsetId.get(toolsetId),
     onDidChange(listener) {

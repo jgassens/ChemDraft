@@ -405,6 +405,8 @@ export class PluginWorkerBridge {
         return context.analysis;
       case "storage":
         return context.storage;
+      case "overlays":
+        return context.overlays;
       case "panels":
         return context.panels;
       case "documents":

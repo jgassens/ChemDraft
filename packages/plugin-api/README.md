@@ -35,3 +35,13 @@ host boundary; their domain-specific `payload` remains opaque to the SDK.
 For compatibility with the already-packaged standalone NMR plugin, manifest parsing accepts a legacy
 `plugin.<pluginName>.<name>` analyzer id and immediately normalizes it to the canonical `analyzer.*`
 form. Commands, menus, and panels do not have this compatibility exception.
+
+API 0.1.10 also adds one optional `canvasOverlays` contribution per plugin, requiring the
+non-dangerous `ui.canvas` permission. An overlay declares a namespaced `overlay.<plugin>.<name>`
+id, title (1–80 characters), base64 SVG/PNG `icon` URI (at most 64,000 characters), an owned
+`commandId`, `prompt`, and optional `defaultCorner` (defaults to `bottom-right`) and
+`requiredPermissions`. The `prompt` value is a `PluginPanelPromptSectionSchema` object,
+including `kind: "prompt"`; its command and optional select command must also belong to the
+plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, accepts at most
+120 characters, and clears the status with an empty string. Overlay commands receive
+`context.input.source = "overlay"` with the owned `overlayId`.

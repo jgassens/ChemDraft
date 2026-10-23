@@ -21,6 +21,78 @@ import type {
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
 
+describe("createPluginRuntime canvas overlays", () => {
+  const commandId = "plugin.chat.submit";
+  const overlayId = "overlay.chat.main";
+  const manifest = {
+    id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+    permissions: ["ui.canvas"], contributes: {
+      commands: [{ id: commandId, title: "Send" }],
+      canvasOverlays: [{ id: overlayId, title: "Chat", icon: "data:image/png;base64,YQ==",
+        commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
+    }
+  };
+
+  it("publishes registration, status, clearing and unregister updates without leaking snapshots", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
+    const seen: { ids: string[]; statuses: [string, string][] }[] = [];
+    const unsubscribe = runtime.onDidChange(() => seen.push({
+      ids: runtime.listCanvasOverlays().map(entry => entry.overlay.id),
+      statuses: [...runtime.getCanvasOverlayStatuses()]
+    }));
+    expect(runtime.listCanvasOverlays()).toEqual([]);
+    expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
+    runtime.registerPlugin(manifest, { commandHandlers: {
+      [commandId]: async ctx => {
+        await ctx.overlays!.setStatus({ overlayId, text: ctx.input?.text ?? "" });
+        return ctx.input;
+      }
+    } });
+    const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Working" };
+    expect(await runtime.invokeCommand(commandId, { input })).toEqual(input);
+    const snapshot = runtime.getCanvasOverlayStatuses();
+    expect(snapshot.get(overlayId)).toBe("Working");
+    await runtime.invokeCommand(commandId, { input }); // unchanged status does not notify
+    expect(seen).toHaveLength(2);
+    await runtime.invokeCommand(commandId);
+    expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
+    expect(snapshot.get(overlayId)).toBe("Working");
+    await runtime.invokeCommand(commandId, { input });
+    runtime.unregisterPlugin(manifest.id);
+    expect(runtime.listCanvasOverlays()).toEqual([]);
+    expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
+    expect(seen).toEqual([
+      { ids: [overlayId], statuses: [] },
+      { ids: [overlayId], statuses: [[overlayId, "Working"]] },
+      { ids: [overlayId], statuses: [] },
+      { ids: [overlayId], statuses: [[overlayId, "Working"]] },
+      { ids: [], statuses: [] }
+    ]);
+    unsubscribe();
+    runtime.registerPlugin(manifest);
+    expect(seen).toHaveLength(5);
+    runtime.unregisterPlugin(manifest.id);
+  });
+
+  it("rolls back a duplicate overlay registration and clears status on replacement", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
+    runtime.registerPlugin(manifest);
+    await runtime.host.createCommandContext(manifest.id).overlays!.setStatus({ overlayId, text: "Old" });
+    expect(() => runtime.registerPlugin({ ...manifest, id: "other", contributes: {
+      commands: [{ id: "plugin.other.submit", title: "Other" }],
+      canvasOverlays: [{ ...manifest.contributes.canvasOverlays[0], commandId: "plugin.other.submit",
+        prompt: { kind: "prompt", id: "composer", commandId: "plugin.other.submit" } }]
+    } })).toThrow(/already contributed/);
+    expect(runtime.host.commands.has("plugin.other.submit")).toBe(false);
+    expect(runtime.listCanvasOverlays()).toHaveLength(1);
+    runtime.replacePlugin(manifest.id, { ...manifest, contributes: { ...manifest.contributes, canvasOverlays: [] } });
+    expect(runtime.listCanvasOverlays()).toEqual([]);
+    expect(runtime.getCanvasOverlayStatuses().size).toBe(0);
+    runtime.unregisterPlugin(manifest.id);
+  });
+});
+
+
 describe("createPluginRuntime panel input", () => {
   it("omits the host options argument when input is undefined", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });

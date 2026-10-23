@@ -8,6 +8,7 @@ import type {
   PluginStorage
 } from "@chemdraft/plugin-api";
 import type { CommandRegistry, PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
+import type { RegisteredCanvasOverlay } from "./types";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { PluginAppMenuItem } from "../appMenu";
@@ -107,6 +108,8 @@ export interface PluginRuntimeView {
   updateInstalledPlugin: ((prepared: PreparedPluginUpdate) => Promise<void>) | undefined;
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
+  canvasOverlays: readonly RegisteredCanvasOverlay[];
+  canvasOverlayStatuses: ReadonlyMap<string, string>;
   openPanel: OpenPluginPanel | undefined;
   /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
@@ -196,6 +199,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   }), [runtime]);
   useEffect(() => {
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
+    const unsubscribeRuntime = runtime.onDidChange(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);
     const unsubscribePrompts = runtime.prompts.subscribe(bumpVersion);
     const unsubscribeImages = runtime.images.subscribe(bumpVersion);
@@ -221,6 +225,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     return () => {
       detachInstallPresenter();
       unsubscribeHost();
+      unsubscribeRuntime();
       unsubscribePanels();
       unsubscribePrompts();
       unsubscribeImages();
@@ -518,6 +523,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       stagingFs && installedPluginCatalogReady ? updateInstalledPlugin : undefined,
     plugins,
     pluginMenuItems,
+    canvasOverlays: runtime.listCanvasOverlays(),
+    canvasOverlayStatuses: runtime.getCanvasOverlayStatuses(),
     openPanel,
     detachedPanels,
     openTextPrompt,

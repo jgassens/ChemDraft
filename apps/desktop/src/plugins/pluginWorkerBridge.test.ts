@@ -147,6 +147,53 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("round-trips overlay input and status through the real worker capability boundary", async () => {
+    const commandId = "plugin.chat.submit";
+    const overlayId = "overlay.chat.main";
+    const setStatus = vi.fn();
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: ["ui.canvas"], contributes: {
+        commands: [{ id: commandId, title: "Send" }],
+        canvasOverlays: [{ id: overlayId, title: "Chat", icon: "data:image/png;base64,YQ==",
+          commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
+      }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => {
+        await context.overlays!.setStatus({ overlayId, text: "Working" });
+        await expect(context.overlays!.setStatus({ overlayId: "overlay.other.main", text: "Foreign" }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setStatus({ overlayId, text: "x".repeat(121) })).rejects.toThrow();
+        await context.overlays!.setStatus({ overlayId, text: "" });
+        return context.input;
+      }
+    } });
+    const host = new PluginHost({ overlays: { setStatus } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
+    try {
+      expect(await host.invokeCommand(commandId, { input })).toEqual(input);
+      expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
+    } finally { bridge.terminate(); }
+  });
+
+  it("omits overlay stubs without ui.canvas", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: [], contributes: { commands: [{ id: commandId, title: "Send" }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: context => context.overlays === undefined
+    } });
+    const host = new PluginHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      expect(await host.invokeCommand(commandId)).toBe(true);
+    } finally { bridge.terminate(); }
+  });
+
   it("round-trips panel input through the host and worker, scoped to each concurrent invocation", async () => {
     const commandId = "plugin.chat.submit";
     const manifest = parsePluginManifest({

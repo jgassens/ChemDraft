@@ -9,6 +9,8 @@ import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
   PluginAnalysisAPI,
+  PluginCanvasOverlayContribution,
+  PluginOverlaysAPI,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
@@ -79,6 +81,7 @@ import {
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginOverlayStatusRequestSchema,
   PluginCommandInputSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
@@ -332,6 +335,9 @@ export type PluginHostAssistant = {
 } & { closeAllForPlugin(pluginId: string): void };
 
 export interface PluginHostOptions {
+  overlays?: {
+    setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
+  };
   assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
@@ -411,6 +417,7 @@ export class PluginHost {
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly externalTools?: PluginHostOptions["externalTools"];
   private readonly assistant?: PluginHostAssistant;
+  private readonly overlays?: PluginHostOptions["overlays"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
@@ -452,6 +459,7 @@ export class PluginHost {
     this.promptText = options.promptText;
     this.externalTools = options.externalTools;
     this.assistant = options.assistant;
+    this.overlays = options.overlays;
     this.requestImage = options.requestImage;
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
@@ -476,6 +484,11 @@ export class PluginHost {
 
     this.assertContributionPermissions(manifest);
     this.assertContributionCommands(manifest);
+    for (const overlay of manifest.contributes.canvasOverlays ?? []) {
+      if (this.listCanvasOverlays().some(entry => entry.overlay.id === overlay.id)) {
+        throw new PluginHostError(`Canvas overlay "${overlay.id}" is already contributed by another plugin.`);
+      }
+    }
     this.assertCommandIdsAvailable(manifest);
 
     const registered: RegisteredPlugin = {
@@ -572,6 +585,11 @@ export class PluginHost {
     );
   }
 
+  listCanvasOverlays(): { pluginId: string; overlay: PluginCanvasOverlayContribution }[] {
+    return this.collectContributions(manifest => manifest.contributes.canvasOverlays ?? [])
+      .map(({ pluginId, contribution }) => ({ pluginId, overlay: contribution }));
+  }
+
   listPanelContributions(): RegisteredContribution<PluginPanelContribution>[] {
     return this.collectContributions((manifest) => manifest.contributes.panels);
   }
@@ -611,9 +629,13 @@ export class PluginHost {
     if (raw === undefined) return undefined;
     const input = PluginCommandInputSchema.parse(raw);
     if (!pluginId) throw new PluginHostError("Panel input can invoke only a plugin's own command.");
-    if (input.source === "overlay") throw new PluginHostError("Canvas overlay input is not supported by this host.");
     const plugin = this.requireRegisteredPlugin(pluginId);
-    if (!plugin.manifest.contributes.panels.some(panel => panel.id === input.panelId)) {
+    if (input.source === "overlay") {
+      this.requirePermission(pluginId, "ui.canvas");
+      if (!plugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === input.overlayId)) {
+        throw new PluginHostError(`Plugin "${pluginId}" does not declare overlay "${input.overlayId}".`);
+      }
+    } else if (!plugin.manifest.contributes.panels.some(panel => panel.id === input.panelId)) {
       throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${input.panelId}".`);
     }
     // Preserve the submitted values across asynchronous selection capture and in-process handlers.
@@ -645,6 +667,20 @@ export class PluginHost {
             // Hand plugins an independent, immutable copy — never a live document reference, and
             // never an object a later caller could observe being mutated.
             return freezeSelectionSnapshot(snapshot);
+          }
+        }
+      : undefined;
+    const overlays: PluginOverlaysAPI | undefined = this.hasPermission(pluginId, "ui.canvas")
+      ? {
+          setStatus: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayStatusRequestSchema.parse(request);
+            const currentPlugin = this.requireRegisteredPlugin(pluginId);
+            if (!currentPlugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === parsed.overlayId)) {
+              throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
+            }
+            if (!this.overlays) throw new PluginHostError("This host provides no canvas overlays.");
+            await this.overlays.setStatus(pluginId, parsed.overlayId, parsed.text);
           }
         }
       : undefined;
@@ -829,6 +865,7 @@ export class PluginHost {
       storage,
       selection,
       panels,
+      overlays,
       dialogs,
       images,
       recognition,
@@ -1163,6 +1200,11 @@ export class PluginHost {
         );
       }
     };
+    for (const overlay of manifest.contributes.canvasOverlays ?? []) {
+      check(overlay.commandId, `overlay "${overlay.id}"`);
+      check(overlay.prompt.commandId, `overlay "${overlay.id}" prompt`);
+      check(overlay.prompt.select?.commandId, `overlay "${overlay.id}" select`);
+    }
     for (const menu of manifest.contributes.menus) {
       check(menu.commandId, `menu "${menu.id}"`);
     }

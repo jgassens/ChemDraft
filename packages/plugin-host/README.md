@@ -24,3 +24,10 @@ patches (1–256 operations) are checked as a whole before application. `invokeC
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
 calling the plugin-visible selection provider. `writePatchOps` flattens a validated batch.
+
+Canvas overlays are registered only with `ui.canvas`, owned command references, and an overlay id
+unique across registered plugins. `listCanvasOverlays()` returns `{ pluginId, overlay }` entries.
+An embedding host can supply `overlays.setStatus(pluginId, overlayId, text)`; the capability
+re-checks permission, ownership, and the 120-character limit before forwarding each call. Without
+a sink the capability rejects with a specific error. Overlay input is accepted only for an overlay
+contributed by the invoked command's plugin, including invocation through the shared registry.

@@ -39,6 +39,7 @@ export type PluginWorkerCapabilityNamespace =
   | "analysis"
   | "storage"
   | "panels"
+  | "overlays"
   | "documents"
   | "chemistry"
   | "dialogs"
@@ -72,6 +73,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   storage: ["get", "set", "delete", "listKeys"],
   documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
+  overlays: ["setStatus"],
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
   dialogs: ["promptText"],
   images: ["requestImage"],
