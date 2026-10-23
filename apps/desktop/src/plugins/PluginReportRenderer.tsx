@@ -22,7 +22,7 @@ export function PluginReportRenderer({ report, copyText = writeClipboardText, on
     <div className="plugin-report">
       {report.sections.map((section, index) => (
         <PluginReportSectionView
-          key={(section.kind === "prompt" || section.kind === "actions") ? section.id : index}
+          key={(section.kind === "prompt" || section.kind === "actions") ? `ctl:${section.id}` : `idx:${index}`}
           section={section}
           copyText={copyText}
           onAction={onAction}
@@ -142,12 +142,13 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   const canSubmit = !!onAction && !section.disabled && !pending;
   const submit = async (): Promise<void> => {
     if (!canSubmit || !onAction) return;
+    const submittedDraft = draft;
     setPending(true);
     setMessage(undefined);
     try {
-      const result = await onAction({ sectionId: section.id, control: "prompt", text: draft,
+      const result = await onAction({ sectionId: section.id, control: "prompt", text: submittedDraft,
         ...(includeSelected && selected !== undefined ? { selected } : {}) });
-      if (result.ok) setDraft("");
+      if (result.ok) setDraft(currentDraft => currentDraft === submittedDraft ? "" : currentDraft);
       else setMessage(result.message);
     } catch {
       setMessage("The action could not be completed.");

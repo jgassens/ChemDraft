@@ -136,6 +136,23 @@ describe("interactive report sections", () => {
     } finally { act(() => view.root.unmount()); }
   });
 
+  it("keeps text entered while an earlier prompt submission is pending", async () => {
+    let resolveAction: (result: { ok: true }) => void = () => undefined;
+    const onAction = vi.fn(() => new Promise<{ ok: true }>((resolve) => {
+      resolveAction = resolve;
+    }));
+    const view = mount(prompt(), onAction);
+    try {
+      await view.render();
+      const textarea = view.container.querySelector("textarea")!;
+      await act(async () => enterText(textarea, "first"));
+      await act(async () => view.container.querySelector("button")!.click());
+      await act(async () => enterText(textarea, "later"));
+      await act(async () => resolveAction({ ok: true }));
+      expect(textarea.value).toBe("later");
+    } finally { act(() => view.root.unmount()); }
+  });
+
   it("caps prompt drafts at the report maxLength", async () => {
     const onAction = vi.fn(async () => ({ ok: false as const, message: "No" }));
     const view = mount(prompt(), onAction);
@@ -159,6 +176,45 @@ describe("interactive report sections", () => {
       expect(view.container.querySelector("select")?.disabled).toBe(true);
       await view.render(prompt({ disabled: true, hint: "Updated report" }));
       expect(view.container.querySelector("textarea")).toBe(textarea);
+    } finally { act(() => view.root.unmount()); }
+  });
+
+  it("preserves a numeric prompt id's textarea and draft as transcript sections are added", async () => {
+    const numericPrompt = prompt({ id: "1" });
+    const view = mount({
+      title: numericPrompt.title,
+      sections: [
+        { kind: "text", body: "Before the transcript" },
+        { kind: "text", body: "Transcript" },
+        ...numericPrompt.sections
+      ]
+    } as PluginPanelReport);
+    try {
+      await view.render();
+      const textarea = view.container.querySelector("textarea")!;
+      await act(async () => enterText(textarea, "draft"));
+      await view.render({
+        title: numericPrompt.title,
+        sections: [
+          { kind: "text", body: "Before the transcript" },
+          ...numericPrompt.sections,
+          { kind: "text", body: "Transcript" },
+          { kind: "text", body: "After the prompt" }
+        ]
+      } as PluginPanelReport);
+      expect(view.container.querySelector("textarea")).toBe(textarea);
+      expect(textarea.value).toBe("draft");
+      await view.render({
+        title: numericPrompt.title,
+        sections: [
+          { kind: "text", body: "Before the prompt" },
+          { kind: "text", body: "Transcript" },
+          ...numericPrompt.sections,
+          { kind: "text", body: "After the prompt" }
+        ]
+      } as PluginPanelReport);
+      expect(view.container.querySelector("textarea")).toBe(textarea);
+      expect(textarea.value).toBe("draft");
     } finally { act(() => view.root.unmount()); }
   });
 
