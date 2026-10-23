@@ -492,7 +492,8 @@ describe('report', () => {
     const visual = cases.map((testCase) => ({ id: testCase.id,
       rubric: [{ line: 1, verdict: testCase.id === 'exact' ? 'met' : 'not_met', note: 'Independent fixture review' }],
       verdict: testCase.id === 'exact' || testCase.id === 'absolute-wrong' ? 'accept' : 'reject', reason: 'Fixture visual verdict',
-      honest_decline: testCase.id === 'decline', wrong_and_confident: testCase.id === 'absolute-wrong', cause: 'agent-error' }));
+      honest_decline: testCase.id === 'decline', wrong_and_confident: testCase.id === 'absolute-wrong',
+      cause: testCase.id === 'exact' || testCase.id === 'absolute-wrong' ? null : 'agent-error' }));
     const visualPath = join(root, 'visual.json'); await writeFile(visualPath, JSON.stringify(visual));
     node('report.mjs', ['--visual', visualPath]);
     const report = JSON.parse(await readFile(join(runs, 'grade/report.json'), 'utf8'));
@@ -503,6 +504,14 @@ describe('report', () => {
     expect(report.worst_failures[0].id).toBe('absolute-wrong');
     expect(report.worst_failures.every((item: { final_excerpt: string }) => item.final_excerpt.length <= 300)).toBe(true);
   });
+  it('allows null cause for accepts and requires a cause for rejects', () => {
+    const testCase = { id: 'visual-cause', category: 'test', split: 'dev', prompt: 'Fixture', expect: {}, rubric: [] };
+    const automatic = { scoring_version: 1, cases: [{ id: testCase.id, status: 'complete', auto: 'PASS', checks: {}, drawn: [] }] };
+    const entry = { id: testCase.id, rubric: [], verdict: 'accept', reason: 'Looks correct', honest_decline: false, wrong_and_confident: false, cause: null };
+    expect(buildReport([testCase], automatic, [entry]).cases[0].result).toBe('pass');
+    expect(() => buildReport([testCase], automatic, [{ ...entry, verdict: 'reject' }])).toThrow(/Invalid visual verdict/);
+  });
+
   it('grades and reports only cases present in a partial run, naming cases not run', async () => {
     const partial = join(root, 'partial-runs');
     await mkdir(partial, { recursive: true });

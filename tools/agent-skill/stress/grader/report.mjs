@@ -19,7 +19,9 @@ export function validateVisual(entries, cases) {
     const testCase = cases.find((item) => item.id === entry.id);
     if (!testCase || byId.has(entry.id)) throw new Error(`Unknown/duplicate visual case ${entry.id}`);
     if (!['accept', 'reject'].includes(entry.verdict) || typeof entry.reason !== 'string' ||
-      typeof entry.honest_decline !== 'boolean' || typeof entry.wrong_and_confident !== 'boolean' || !Object.hasOwn(CAUSES, entry.cause)) {
+      typeof entry.honest_decline !== 'boolean' || typeof entry.wrong_and_confident !== 'boolean' ||
+      (entry.verdict === 'reject' && !Object.hasOwn(CAUSES, entry.cause)) ||
+      (entry.verdict === 'accept' && entry.cause != null && !Object.hasOwn(CAUSES, entry.cause))) {
       throw new Error(`Invalid visual verdict for ${entry.id}`);
     }
     if (!Array.isArray(entry.rubric) || entry.rubric.length !== (testCase.rubric ?? []).length) throw new Error(`Incomplete visual rubric for ${entry.id}`);
