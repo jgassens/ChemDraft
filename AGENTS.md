@@ -47,7 +47,9 @@ other platform is a follow-up" is not an acceptable state to merge.
   did not run.
 - **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
   the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
-  version the other does not. See `docs/releasing/`.
+  version the other does not. See `docs/releasing/`. The Windows installer is
+  built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
+  2026-10-22), never on a local machine or VM; the Windows session tests the installer CI built.
 
 ## 2. Orientation
 
