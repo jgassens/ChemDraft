@@ -22,3 +22,4 @@ export * from "./shared";
 export * from "./smiles";
 export * from "./structureName";
 export * from "./textObjects";
+export * from "./documentStyle";

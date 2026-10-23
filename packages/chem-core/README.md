@@ -1,6 +1,6 @@
 # @chemdraft/chem-core
 
-Owns the native document model, schema versions, migrations, validation, serialization, and patch application.
+Owns the native document model, schema versions, migrations, validation, serialization, patch application, and native style presets (including `DocumentStylePreset`).
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 

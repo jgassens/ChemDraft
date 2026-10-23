@@ -3,6 +3,8 @@ import {
   type ChemDraftDocument
 } from "@chemdraft/chem-core";
 import {
+  DocumentStyleScale,
+  documentStylePointBounds,
   planPageSvgRender,
   type PageSvgAttributeValue,
   type PageSvgFragment
@@ -28,6 +30,21 @@ export interface SvgExportResult {
   format: "svg";
   contents: string;
   warnings: ExportWarning[];
+}
+
+/** Give cropped native SVG geometry its natural physical size, with one user unit = one pt.
+ * The supplied SVG already contains its cropped background; scale it with all other content.
+ */
+export function documentStyleSvg(svg: string, bounds: { x: number; y: number; width: number; height: number }) {
+  const scale = DocumentStyleScale.pointsPerUnit;
+  const viewBox = documentStylePointBounds(bounds);
+  const number = (value: number) => Number(value.toFixed(6)).toString();
+  const contents = svg.replace(/<svg\b[^>]*>/, (root) => root
+    .replace(/\bwidth="[^"]*"/, `width="${number(viewBox.width)}pt"`)
+    .replace(/\bheight="[^"]*"/, `height="${number(viewBox.height)}pt"`)
+    .replace(/\bviewBox="[^"]*"/, `viewBox="${Object.values(viewBox).map(number).join(" ")}"`)
+    + `\n<g transform="scale(${scale})">`).replace(/<\/svg>\s*$/, "</g>\n</svg>");
+  return { svg: contents, viewBox };
 }
 
 export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExportOptions = {}): SvgExportResult {

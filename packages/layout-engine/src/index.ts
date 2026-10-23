@@ -1,5 +1,9 @@
+export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
+export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
+
 import {
   DefaultNativeDrawingStyle,
+  DocumentStylePreset,
   drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
@@ -3758,7 +3762,7 @@ function mechanismArrowFragment(
       d: geometry.pathD,
       fill: "none",
       stroke: "#111111",
-      "stroke-width": 1.6,
+      "stroke-width": typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.6,
       "stroke-linecap": "round"
     }),
     elementFragment("polygon", `mechanism-head-${object.id}`, {
@@ -4607,6 +4611,7 @@ export function planNativeArtVisual(
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.5;
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
@@ -4628,7 +4633,7 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
         x2: end.x,
         y2: end.y,
         stroke: "#172026",
-        "stroke-width": 1.5,
+        "stroke-width": strokeWidth,
         "stroke-linecap": "round"
       });
     }),
@@ -4642,7 +4647,7 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
           .join(" "),
         fill: head.filled ? "#172026" : "none",
         stroke: head.filled ? "none" : "#172026",
-        "stroke-width": head.filled ? undefined : 1.5,
+        "stroke-width": head.filled ? undefined : strokeWidth,
         "stroke-linejoin": head.filled ? undefined : "round"
       })
     )
@@ -6153,6 +6158,8 @@ function nativeDashedBondDashes(
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
+  // The physical preset specifies its broad wedge end explicitly, like its bold bonds.
+  if (drawingStyle.stylePresetId === DocumentStylePreset.id) return drawingStyle.bondBoldWidthPx;
   // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
   // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
   // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining

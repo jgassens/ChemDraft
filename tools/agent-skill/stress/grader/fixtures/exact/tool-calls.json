@@ -1,0 +1,1 @@
+[{"name":"mcp__chemdraft__render_structure","input":{"smiles":"C[C@@H](N)C(=O)O","format":"svg"},"result":{"content":[{"type":"text","text":"{\"ok\":true,\"smiles\":\"C[C@@H](N)C(=O)O\"}"}]}}]
