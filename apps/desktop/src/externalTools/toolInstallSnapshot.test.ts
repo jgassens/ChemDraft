@@ -12,7 +12,7 @@ describe("toolInstallSnapshot", () => {
   it.each([["claude", "Anthropic"], ["codex", "OpenAI"]] as const)("names %s's publisher", (tool, publisher) => {
     const snapshot = toolInstallSnapshot({ ...base, tool, publisher }, { id: "plugin", name: "Plugin" });
     expect(snapshot.publisher).toBe(publisher);
-    expect(snapshot.disclosure).toContain("The AI can search the web and read web pages.");
+    expect(snapshot.disclosure.split("The AI can search the web and read web pages.")).toHaveLength(2);
     expect(snapshot.disclosure).toContain(`Your prompt and the open page, including unpublished structures, leave this computer and go to ${publisher}`);
   });
   it("uses the pinned size and available disk space reported by the host", () => {

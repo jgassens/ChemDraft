@@ -4,18 +4,20 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { ToolInstallForm } from "./ToolInstallForm";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
+import { toolInstallSnapshot } from "../externalTools/toolInstallSnapshot";
 
 it.each([["Anthropic", "Claude Code"], ["OpenAI", "Codex"]])('names %s and web access in both download and consent copy', async (publisher, toolName) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   try {
-    await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), toolName }, onAction: vi.fn(), platform: "macos" })));
-    expect(container.textContent).toContain("The AI can search the web and read web pages.");
+    const { disclosure } = toolInstallSnapshot({ tool: toolName === "Codex" ? "codex" : "claude", publisher, state: "missing", pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: 2_000_000_000, canInstall: true, consented: false, probedAt: "now" }, { id: "plugin", name: "Plugin" });
+    await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), disclosure, toolName }, onAction: vi.fn(), platform: "macos" })));
+    expect(container.textContent?.split("The AI can search the web and read web pages.")).toHaveLength(2);
     expect(container.textContent).toContain("the open page — including any unpublished structures — leave this computer");
     expect(container.textContent).toContain(`go to ${publisher} under your own ${toolName} account.`);
     expect(container.textContent).toContain(`Download from ${publisher}: version 2.0.0, from downloads.example.test, 125 MB.`);
-    await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), toolName, state: { status: "consent" }, buttons: ["allow", "close"] }, onAction: vi.fn(), platform: "windows" })));
-    expect(container.textContent).toContain("The AI can search the web and read web pages.");
+    await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), disclosure, toolName, state: { status: "consent" }, buttons: ["allow", "close"] }, onAction: vi.fn(), platform: "windows" })));
+    expect(container.textContent?.split("The AI can search the web and read web pages.")).toHaveLength(2);
     expect(container.textContent).toContain("the open page — including any unpublished structures — leave this computer");
     expect(container.textContent).toContain(`go to ${publisher} under your own ${toolName} account.`);
     expect([...container.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Allow", "Close"]);

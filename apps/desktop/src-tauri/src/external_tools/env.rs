@@ -90,9 +90,15 @@ pub fn child_env(
     let path = match platform {
         ProbePlatform::MacOS => format!("{parent_dir}:/usr/bin:/bin:/usr/sbin:/sbin"),
         ProbePlatform::Windows => {
-            let root = get(parent, "SystemRoot")
-                .unwrap_or(r"C:\Windows")
-                .trim_end_matches(['\\', '/']);
+            // Winsock needs SystemRoot even when the caller supplies an empty parent.
+            let root = get(parent, "SystemRoot").unwrap_or(r"C:\Windows");
+            let windir = get(parent, "windir").unwrap_or(root);
+            result.retain(|key, _| {
+                !key.eq_ignore_ascii_case("SystemRoot") && !key.eq_ignore_ascii_case("windir")
+            });
+            result.insert("SystemRoot".into(), root.into());
+            result.insert("windir".into(), windir.into());
+            let root = root.trim_end_matches(['\\', '/']);
             format!("{parent_dir};{root}\\System32;{root};{root}\\System32\\Wbem")
         }
     };

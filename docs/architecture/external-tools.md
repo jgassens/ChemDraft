@@ -226,9 +226,9 @@ web access or arbitrary tools. CLI/provider restrictions can still make individu
 Web pages are untrusted input and can try to steer the AI through prompt injection. For example,
 a page might ask the AI to fetch an address carrying the drawing in its URL, disclosing unpublished
 structures to that site. The open-web setting permits such outbound requests; the editing limits
-and Undo do not prevent or reverse disclosure. Consent plainly says the AI can search the web and
-read web pages, and that the prompt and open page, including unpublished structures, go to Anthropic
-(Claude Code) or OpenAI (Codex).
+and Undo do not prevent or reverse disclosure. Consent says “The AI can search the web and read
+web pages.” once, in the shared disclosure, and states that the prompt and open page, including
+unpublished structures, leave the computer and go to Anthropic (Claude Code) or OpenAI (Codex).
 
 The assistant's host-enforced write scope is fixed at Send: it may change only what was selected
 then, plus objects it inserted earlier in that request; with no selection it can only add. Results

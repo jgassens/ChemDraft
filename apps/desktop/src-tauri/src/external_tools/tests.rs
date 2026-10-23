@@ -905,6 +905,38 @@ fn environment_is_an_allowlist_for_both_platforms() {
     }
 }
 #[test]
+fn windows_child_environment_always_has_system_directories() {
+    for (parent, root, windir) in [
+        (ParentEnv::new(), r"C:\Windows", r"C:\Windows"),
+        (
+            map(&[("SystemRoot", r"D:\Windows")]),
+            r"D:\Windows",
+            r"D:\Windows",
+        ),
+        (
+            map(&[("systemroot", r"D:\Windows"), ("WINDIR", r"E:\Windows")]),
+            r"D:\Windows",
+            r"E:\Windows",
+        ),
+    ] {
+        let child = env::child_env(
+            ProbePlatform::Windows,
+            &parent,
+            Path::new(r"C:\Tools\codex.exe"),
+            Path::new("run"),
+            false,
+        );
+        assert_eq!(child["SystemRoot"], root);
+        assert_eq!(child["windir"], windir);
+        for key in ["SystemRoot", "windir"] {
+            assert_eq!(
+                child.keys().filter(|k| k.eq_ignore_ascii_case(key)).count(),
+                1
+            );
+        }
+    }
+}
+#[test]
 fn discovery_both_platforms_and_batch_shims() {
     let mac = probe::candidate_paths(
         ToolId::Claude,
@@ -2070,6 +2102,7 @@ async fn live_mcp_run_binding_ownership_credentials_and_cleanup() {
     );
     assert!(!temp.0.join("runs").exists());
 
+    // Deliberately omit SystemRoot: child_env must supply the Windows Winsock default.
     // Both first and follow-up CLI processes must be able to initialize the same session.
     for tool in [ToolId::Claude, ToolId::Codex, ToolId::Claude] {
         req.tool = tool;
