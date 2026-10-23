@@ -17,6 +17,8 @@ runtime at `apps/desktop/src-tauri/resources/opsin/jre/bin/java` (`java.exe` on
 Windows). `--skip-preflight` exists only for fake-runner tests.
 Completed cases resume only for the same agent; use separate output directories
 when comparing agents or models, or `--force` to replace an attempt.
+An `--out` directory inside a different ChemDraft checkout makes every case fail
+as a foreign-checkout isolation leak.
 
 ## Claude isolation
 
@@ -109,7 +111,9 @@ are not traversed. File inputs passed through `--document`, `--batch`, `--reacti
 `batchPath`, `reactionPath`, and `inputPath` are retained the same way, including
 outside `work/`. These copies keep `requestedPath`, canonical `originalPath`, and
 `toolCallIndex`, and use the same traversal limits as outputs. Explicit input
-files are retained regardless of extension.
+files are retained regardless of extension. Input retention copies any file the
+agent names, so `outputs/` may hold files from anywhere the agent pointed; do not
+share run folders blindly.
 Metadata's `repoAccess` records agent shell commands that name the checkout,
 classified as the ChemDraft CLI or a source read, plus Claude file/search calls.
 It also classifies referenced absolute paths in shell commands and
@@ -123,6 +127,9 @@ paths; it does not interpret arbitrary shell programs or prevent disk access.
 `run.json` and each case's
 metadata identify the agent. Codex metadata also records `codexVersion`,
 reported model, and event token usage; no dollar cost is inferred.
+
+On Windows hosts Claude's Bash is Git Bash, while retention parsing still uses
+cmd rules; this is a known limitation.
 
 Codex event handling follows the official
 [non-interactive JSONL documentation](https://developers.openai.com/codex/noninteractive/)

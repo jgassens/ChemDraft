@@ -499,6 +499,37 @@ describe('stress runner', { timeout: 30_000 }, () => {
       .not.toContainEqual(expect.objectContaining({ classification: 'foreign-checkout' }));
   });
 
+  it.each(['claude', 'codex'])('detects a shell-word tilde path to a foreign checkout for %s on both platforms', async (agent) => {
+    for (const platform of ['darwin', 'win32'] as const) {
+      const container = await outDirectory();
+      const paths = platform === 'win32' ? path.win32 : path.posix;
+      const virtualRoot = platform === 'win32' ? 'C:\\fixtures' : '/fixtures';
+      const checkout = paths.join(virtualRoot, 'tested');
+      const home = agent === 'codex' ? paths.join(virtualRoot, 'runs', 'S01', 'home') : paths.join(virtualRoot, 'users', 'claude');
+      const foreign = paths.join(home, 'programming', 'other-checkout');
+      for (const directory of [checkout, foreign]) {
+        const relative = paths.relative(virtualRoot, directory);
+        const local = path.join(container, ...relative.split(paths.sep));
+        await mkdir(path.join(local, 'packages/chemdraft-cli'), { recursive: true });
+        await mkdir(path.join(local, 'skills/chemdraft'), { recursive: true });
+        await writeFile(path.join(local, 'packages/chemdraft-cli/package.json'), '{}');
+        await writeFile(path.join(local, 'skills/chemdraft/SKILL.md'), 'fake skill');
+      }
+      const translate = (value: string) => {
+        const relative = paths.relative(virtualRoot, value);
+        if (relative.startsWith('..') || paths.isAbsolute(relative)) throw new Error('Outside fixture');
+        return path.join(container, ...relative.split(paths.sep));
+      };
+      const exists = (value: string) => { try { return existsSync(translate(value)); } catch { return false; } };
+      const realpathNative = (value: string) => paths.join(virtualRoot, ...path.relative(container, realpathSync.native(translate(value))).split(path.sep));
+      const relativeSkill = platform === 'win32' ? '~\\programming\\other-checkout\\skills\\chemdraft\\SKILL.md' : '~/programming/other-checkout/skills/chemdraft/SKILL.md';
+      const command = platform === 'win32' ? `type ${relativeSkill}` : `cat ${relativeSkill}`;
+      expect(repoAccess([{ name: 'Bash', input: { command } }], checkout,
+        { platform, environment: { HOME: home }, exists, realpathNative, cache: new Map() }))
+        .toContainEqual(expect.objectContaining({ classification: 'foreign-checkout', checkout: foreign }));
+    }
+  });
+
   it('fails isolation for foreign checkout commands and accepts the fake home skill path', async () => {
     const foreign = await fakeCheckout(false);
     const { out, args, env } = await codexFixture();

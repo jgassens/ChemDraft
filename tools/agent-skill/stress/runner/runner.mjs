@@ -272,6 +272,15 @@ export function checkoutAt(value, { platform = process.platform, exists = exists
   return found;
 }
 
+function expandLeadingHome(value, { platform, environment }) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const home = environment.HOME;
+  if (typeof home !== 'string' || !home || value === '~') return value === '~' && home ? home : value;
+  const separator = value[1];
+  if (separator !== '/' && !(platform === 'win32' && separator === '\\')) return value;
+  return paths.join(home, value.slice(2));
+}
+
 function referencedPaths(text, { platform, environment }) {
   const paths = platform === 'win32' ? path.win32 : path.posix;
   const expanded = text.replace(/\$\{(HOME|CODEX_HOME|USERPROFILE)\}|\$(HOME|CODEX_HOME|USERPROFILE)\b|%(HOME|CODEX_HOME|USERPROFILE)%/g,
@@ -309,7 +318,7 @@ export function repoAccess(toolCalls, checkout, { platform = process.platform, w
     if (call.name === 'Bash' && typeof call.input?.command === 'string') {
       let words;
       try { words = commandWords(call.input.command, { platform }); } catch { words = []; }
-      auditForeign(call, [...words, call.input.command]);
+      auditForeign(call, [...words.map((word) => expandLeadingHome(word, { platform, environment })), call.input.command]);
       if (call.input.command.includes(checkout)) accesses.push({ tool: 'Bash', command: call.input.command,
         classification: isCliCommand(call.input.command, checkout, { platform }) ? 'cli' : 'source-read' });
     } else if (['Write', 'Edit', 'NotebookEdit'].includes(call.name)) {
