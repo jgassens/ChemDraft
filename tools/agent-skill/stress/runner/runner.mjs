@@ -106,15 +106,15 @@ export function commandOutputTargets(commandText, options = {}) {
 }
 
 function finalOutputTargets(final, work) {
-  const targets = new Set();
+  const targets = new Map();
   for (const match of final.matchAll(/!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
     const link = match[1].replace(/^<|>$/g, '');
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(link) || /^[a-z]:[\\/]/i.test(link)) targets.add(path.resolve(work, link));
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(link) || /^[a-z]:[\\/]/i.test(link)) targets.set(path.resolve(work, link), link);
   }
   for (const match of final.matchAll(/(?:^|[\s("'])((?:\/[\w. -]+)+\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json))(?=$|[\s)'".,])/gi)) {
-    targets.add(match[1]);
+    targets.set(match[1], match[1]);
   }
-  return [...targets];
+  return [...targets].map(([target, requestedPath]) => ({ target, requestedPath }));
 }
 
 async function filesAtOutputTarget(target) {
@@ -144,15 +144,17 @@ async function filesAtOutputTarget(target) {
 }
 
 async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
-  const targets = new Map(finalOutputTargets(final, work).map((target) => [target, null]));
+  const targets = new Map(finalOutputTargets(final, work).map(({ target, requestedPath }) => [target, { requestedPath, toolCallIndex: null }]));
   for (const [toolCallIndex, call] of toolCalls.entries()) if (call.name === 'Bash' && typeof call.input?.command === 'string') {
     for (const target of commandOutputTargets(call.input.command)) {
-      targets.set(path.isAbsolute(target) ? target : path.resolve(work, target), toolCallIndex);
+      targets.set(path.isAbsolute(target) ? target : path.resolve(work, target), { requestedPath: target, toolCallIndex });
     }
   } else if (call.name?.startsWith('mcp__chemdraft__')) {
     const visit = (value) => {
       if (typeof value === 'string') {
-        try { visit(JSON.parse(value)); } catch { if (outputExtension.test(value) && !/[\r\n]/.test(value)) targets.set(path.resolve(work, value), toolCallIndex); }
+        try { visit(JSON.parse(value)); } catch {
+          if (outputExtension.test(value) && !/[\r\n]/.test(value)) targets.set(path.resolve(work, value), { requestedPath: value, toolCallIndex });
+        }
       } else if (Array.isArray(value)) value.forEach(visit);
       else if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) if (!['data', 'blob'].includes(key)) visit(child);
     };
@@ -162,7 +164,7 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
   await mkdir(outputDir, { recursive: true });
   const manifest = [];
   const copied = new Set();
-  for (const [target, toolCallIndex] of targets) {
+  for (const [target, { requestedPath, toolCallIndex }] of targets) {
     for (const source of await filesAtOutputTarget(target)) {
       const resolved = canonicalPath(source);
       if (!resolved || isInside(codexHome, resolved) || copied.has(resolved)) continue;
@@ -171,7 +173,7 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
       const destination = path.join(outputDir, copiedName);
       await copyFile(resolved, destination);
       const data = await readFile(resolved);
-      manifest.push({ originalPath: resolved, copiedName, toolCallIndex, size: (await stat(resolved)).size,
+      manifest.push({ originalPath: resolved, requestedPath, copiedName, toolCallIndex, size: (await stat(resolved)).size,
         sha256: createHash('sha256').update(data).digest('hex') });
     }
   }
@@ -352,9 +354,9 @@ async function markHalted(caseItem, options, shared) {
   const metaPath = path.join(caseDir, 'meta.json');
   try {
     const existing = JSON.parse(await readFile(metaPath, 'utf8'));
-    // The post-halt sweep reaches cases that no worker visited. Preserve a
-    // completed prior attempt instead of replacing its resume metadata.
-    if (existing.status === 'complete') return existing;
+    // The post-halt sweep reaches cases that no worker visited. Preserve only
+    // this agent's completed attempt, matching the resume rule in runOne.
+    if (existing.status === 'complete' && (existing.agent ?? 'claude') === options.agent) return existing;
   } catch (error) { if (error.code !== 'ENOENT') { /* Replace malformed metadata. */ } }
   await mkdir(caseDir, { recursive: true });
   const now = new Date().toISOString();

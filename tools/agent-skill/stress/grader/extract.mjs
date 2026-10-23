@@ -1,7 +1,8 @@
 import { commandWords, shellWords, unwrapShell } from '../shell-words.mjs';
 export { shellWords, unwrapShell } from '../shell-words.mjs';
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import { join, resolve, basename, relative } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, resolve, basename, relative, win32 } from 'node:path';
 import { json, filesUnder, inside } from './common.mjs';
 
 export function resultObjects(value) {
@@ -131,9 +132,33 @@ async function batchJobs(folder, requested, heredocs) {
   }
 }
 
-async function savedPath(folder, requested) {
+function portablePath(value) { return value.replace(/\\/g, '/'); }
+
+function manifestBasename(value, options) {
+  const name = portablePath(value).split('/').at(-1);
+  return (options?.platform ?? process.platform) === 'win32' ? name.toLowerCase() : name;
+}
+
+function canonicalManifestPath(value, { platform = process.platform, realpathNative = realpathSync.native } = {}) {
+  const paths = platform === 'win32' ? win32 : { resolve };
+  const resolved = paths.resolve(value);
+  try { return realpathNative(resolved); } catch { return resolved; }
+}
+
+function manifestPathsEqual(left, right, options) {
+  const normalise = (value) => (options?.platform ?? process.platform) === 'win32' ? value.toLowerCase() : value;
+  return normalise(canonicalManifestPath(left, options)) === normalise(canonicalManifestPath(right, options));
+}
+
+function retainedManifestPath(folder, entry) {
+  if (typeof entry?.copiedName === 'string') return join(folder, 'outputs', entry.copiedName);
+  if (typeof entry?.path === 'string') return resolve(folder, entry.path);
+  return null;
+}
+
+export async function savedPath(folder, requested, options = {}) {
   // Only retained run artifacts are read; original absolute tool temp paths may be gone.
-  const portable = requested.replace(/\\/g, '/');
+  const portable = portablePath(requested);
   const candidates = [resolve(folder, 'work', requested), resolve(folder, requested)];
   const workAt = portable.lastIndexOf('/work/');
   if (workAt >= 0) candidates.push(resolve(folder, 'work', portable.slice(workAt + 6)));
@@ -147,18 +172,39 @@ async function savedPath(folder, requested) {
   // Outputs written outside work/ are retained under outputs/.  Match their
   // original paths with the same slash-normalisation used for shell paths so
   // a Windows-run manifest can be graded on another host.
+  const manifestEntries = [];
   for (const manifestName of ['outputs.json', 'assets.json']) {
     let manifest;
     try { manifest = await json(join(folder, manifestName)); }
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     if (!Array.isArray(manifest)) continue;
-    for (const entry of manifest) {
-      if (typeof entry?.originalPath !== 'string' || entry.originalPath.replace(/\\/g, '/') !== portable) continue;
-      const retained = typeof entry.copiedName === 'string' ? join(folder, 'outputs', entry.copiedName) :
-        typeof entry.path === 'string' ? resolve(folder, entry.path) : null;
+    manifestEntries.push(...manifest);
+  }
+  const tryEntries = async (entries) => {
+    for (const entry of entries) {
+      const retained = retainedManifestPath(folder, entry);
       if (!retained || !inside(folder, retained)) continue;
       try { await access(retained); return retained; } catch { /* Try another retained manifest entry. */ }
     }
+    return null;
+  };
+  // requestedPath preserves exactly what the agent typed, while originalPath
+  // is the runner's realpath.native result. Older manifests omit requestedPath.
+  const requestedForComparison = (options.platform ?? process.platform) === 'win32' ? portable.toLowerCase() : portable;
+  const byRequestedPath = await tryEntries(manifestEntries.filter((entry) => {
+    if (typeof entry?.requestedPath !== 'string') return false;
+    const stored = portablePath(entry.requestedPath);
+    return ((options.platform ?? process.platform) === 'win32' ? stored.toLowerCase() : stored) === requestedForComparison;
+  }));
+  if (byRequestedPath) return byRequestedPath;
+  const byCanonicalOriginal = await tryEntries(manifestEntries.filter((entry) =>
+    typeof entry?.originalPath === 'string' && manifestPathsEqual(entry.originalPath, requested, options)));
+  if (byCanonicalOriginal) return byCanonicalOriginal;
+  const sameBasename = manifestEntries.filter((entry) =>
+    typeof entry?.originalPath === 'string' && manifestBasename(entry.originalPath, options) === manifestBasename(requested, options));
+  if (sameBasename.length === 1) {
+    const byBasename = await tryEntries(sameBasename);
+    if (byBasename) return byBasename;
   }
   throw new Error(`Retained run file is missing or ambiguous: ${requested}`);
 }
