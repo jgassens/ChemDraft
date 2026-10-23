@@ -18,6 +18,7 @@ export * from "./molecule";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";
 export * from "./reactionScheme";
+export * from "./reactionArrowAttachments";
 export * from "./shared";
 export * from "./smiles";
 export * from "./structureName";

@@ -307,6 +307,7 @@ function buildRegistryWithFixture(): DesktopToolsetRegistry {
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
+    expect(appCss).toMatch(/\.toolbar-command-flyout-menu button\[data-command-id="layout\.arrangeOptions"\] > svg,[\s\S]*?width: 18px;[\s\S]*?height: 18px;/);
     [
       "--cd-bg-app",
       "--cd-bg-canvas",
@@ -5172,7 +5173,8 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-object-type="text"');
-    expect(markup).toContain('baseline-shift="super"');
+    expect(markup).not.toContain('baseline-shift="super"');
+    expect(markup).toContain('font-size="12.96"');
     expect(markup).toContain('fill="#b3261e"');
   });
 
