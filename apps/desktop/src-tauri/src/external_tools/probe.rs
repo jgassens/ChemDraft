@@ -244,11 +244,21 @@ pub(super) fn probe_tool(
     managed: bool,
     codex_auth: Option<&CodexAuth>,
 ) -> Result<ProbeResult, String> {
+    #[cfg(test)]
+    super::test_support::check_path(path)?;
     if matches!(
         resolve_candidates(&[path.to_owned()], |p| p.is_file()),
         Candidate::ShimNeedsResolution(_)
     ) {
         return Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into());
+    }
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|_| "External tool executable could not be resolved.".to_owned())?;
+    #[cfg(test)]
+    super::test_support::check_path(&resolved)?;
+    let path = resolved.as_path();
+    if spec.tool == ToolId::Codex {
+        require_codex_helper(path, ProbePlatform::current())?;
     }
     let output = execute_in_home(
         path,
@@ -286,6 +296,36 @@ pub(super) fn probe_tool(
         auth: spec.parse_auth(auth.code, &auth.stdout, &auth.stderr),
         probed_at: chrono::Utc::now().to_rfc3339(),
     })
+}
+
+pub(super) fn codex_helper_name(platform: ProbePlatform) -> &'static str {
+    match platform {
+        ProbePlatform::MacOS => "codex-code-mode-host",
+        ProbePlatform::Windows => "codex-code-mode-host.exe",
+    }
+}
+
+pub(super) fn require_codex_helper(binary: &Path, platform: ProbePlatform) -> Result<(), String> {
+    let helper = binary.with_file_name(codex_helper_name(platform));
+    #[cfg(test)]
+    super::test_support::check_path(&helper)?;
+    let metadata = std::fs::metadata(&helper).ok().filter(|m| m.is_file());
+    let Some(metadata) = metadata else {
+        return Err(format!("Codex's code-mode helper (codex-code-mode-host) is missing next to {}; reinstall Codex from its official package or let ChemDraft install it.", binary.display()));
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!(
+                "Codex's code-mode helper is not executable: {}.",
+                helper.display()
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    Ok(())
 }
 pub struct ProbeOutput {
     pub code: Option<i32>,

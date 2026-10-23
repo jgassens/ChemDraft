@@ -1740,6 +1740,171 @@ fn extract_tar_gz_with_ops(
     ))
 }
 
+/// Bounded exact-path extraction from a package tarball. Every header is checked, including
+/// resources we do not extract; only caller-selected regular files can reach the filesystem.
+pub(crate) fn extract_tar_entries_with_ops(
+    archive_path: &Path,
+    entries: &[(&str, &Path)],
+    ops: FileOps<'_>,
+) -> Result<(), InstallError> {
+    let file = File::open(archive_path).map_err(|e| ops.failed(e))?;
+    let mut archive = GzDecoder::new(file);
+    let mut found = vec![false; entries.len()];
+    let mut total = 0u64;
+    let mut count = 0;
+    loop {
+        let mut header = [0u8; 512];
+        archive.read_exact(&mut header).map_err(|e| ops.failed(e))?;
+        if header.iter().all(|b| *b == 0) {
+            break;
+        }
+        count += 1;
+        if count > 10_000 {
+            return Err(InstallError::failed("Too many tar entries."));
+        }
+        let checksum = parse_tar_octal(&header[148..156])?;
+        let actual: u64 = header
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                if (148..156).contains(&i) {
+                    32
+                } else {
+                    u64::from(*b)
+                }
+            })
+            .sum();
+        if checksum != actual {
+            return Err(InstallError::failed("Invalid tar header checksum."));
+        }
+        let field = |bytes: &[u8]| -> Result<String, InstallError> {
+            let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+            std::str::from_utf8(&bytes[..end])
+                .map(str::to_owned)
+                .map_err(|_| InstallError::failed("Invalid tar path encoding."))
+        };
+        let mut name = field(&header[..100])?;
+        if &header[257..263] == b"ustar\0" {
+            let prefix = field(&header[345..500])?;
+            if !prefix.is_empty() {
+                name = format!("{prefix}/{name}");
+            }
+        }
+        let name = name.trim_start_matches("./").trim_end_matches('/');
+        // Reuse the cross-platform traversal, drive, ADS and reserved-name guards.
+        guarded_zip_path(name)?;
+        let size = parse_tar_octal(&header[124..136])?;
+        if size > 512 * 1024 * 1024 {
+            return Err(InstallError::failed("Tar entry exceeds size limit."));
+        }
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| InstallError::failed("Tar size overflow."))?;
+        if total > 1024 * 1024 * 1024 {
+            return Err(InstallError::failed("Tar package exceeds size limit."));
+        }
+        let regular = matches!(header[156], 0 | b'0');
+        let pax = header[156] == b'x';
+        if !regular && !pax && (header[156] != b'5' || size != 0) {
+            return Err(InstallError::failed(
+                "Tar package contains a link or unsupported entry type.",
+            ));
+        }
+        if pax {
+            if size > 64 * 1024 {
+                return Err(InstallError::failed("PAX metadata exceeds size limit."));
+            }
+            let mut bytes = vec![0u8; size as usize];
+            archive.read_exact(&mut bytes).map_err(|e| ops.failed(e))?;
+            validate_tar_timestamps(&bytes)?;
+        } else if let Some(index) = entries.iter().position(|(wanted, _)| *wanted == name) {
+            if !regular || found[index] || size == 0 {
+                return Err(InstallError::failed(
+                    "Tar executable is empty, duplicated or not a regular file.",
+                ));
+            }
+            let destination = entries[index].1;
+            let mut output = ops.create(destination).map_err(|e| ops.failed(e))?;
+            let copied = ops
+                .copy(
+                    &mut Read::by_ref(&mut archive).take(size),
+                    archive_path,
+                    &mut output,
+                    destination,
+                )
+                .map_err(|e| ops.failed(e))?;
+            if copied != size {
+                return Err(InstallError::failed("Tar ended inside an executable."));
+            }
+            ops.sync(&output, destination).map_err(|e| ops.failed(e))?;
+            found[index] = true;
+        } else {
+            let copied = io::copy(&mut Read::by_ref(&mut archive).take(size), &mut io::sink())
+                .map_err(|e| ops.failed(e))?;
+            if copied != size {
+                return Err(InstallError::failed("Tar ended inside an entry."));
+            }
+        }
+        let padding = (512 - size % 512) % 512;
+        if io::copy(
+            &mut Read::by_ref(&mut archive).take(padding),
+            &mut io::sink(),
+        )
+        .map_err(|e| ops.failed(e))?
+            != padding
+        {
+            return Err(InstallError::failed("Tar entry padding is truncated."));
+        }
+    }
+    // Drain the gzip trailer so CRC/truncation errors cannot hide after the last tar header.
+    let mut tail = [0u8; 8192];
+    let mut remaining = 1024 * 1024;
+    loop {
+        let read = archive.read(&mut tail).map_err(|e| ops.failed(e))?;
+        if read == 0 {
+            break;
+        }
+        if read > remaining || tail[..read].iter().any(|b| *b != 0) {
+            return Err(InstallError::failed("Invalid tar end padding."));
+        }
+        remaining -= read;
+    }
+    if let Some(index) = found.iter().position(|present| !present) {
+        return Err(InstallError::failed(format!(
+            "Verified package is missing {}.",
+            entries[index].0
+        )));
+    }
+    Ok(())
+}
+
+/// Official packages carry PAX fractional mtimes. Never accept PAX path/link/size overrides.
+fn validate_tar_timestamps(mut bytes: &[u8]) -> Result<(), InstallError> {
+    while !bytes.is_empty() {
+        let invalid = || InstallError::failed("Unsupported or malformed PAX metadata.");
+        let space = bytes.iter().position(|b| *b == b' ').ok_or_else(invalid)?;
+        let length = std::str::from_utf8(&bytes[..space])
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or_else(invalid)?;
+        if length <= space + 1 || length > bytes.len() || bytes[length - 1] != b'\n' {
+            return Err(invalid());
+        }
+        let record = std::str::from_utf8(&bytes[space + 1..length - 1]).map_err(|_| invalid())?;
+        let (key, value) = record.split_once('=').ok_or_else(invalid)?;
+        if !matches!(key, "mtime" | "atime" | "ctime")
+            || value.is_empty()
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b".-".contains(&b))
+        {
+            return Err(invalid());
+        }
+        bytes = &bytes[length..];
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn extract_uv_zip<S: EngineSpec>(
     archive: &Path,

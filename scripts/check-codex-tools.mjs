@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -164,6 +164,74 @@ async function homeDocuments(realHome) {
   return documents;
 }
 
+export async function linkParityAuth(source, isolatedHome, platform = process.platform) {
+  await mkdir(isolatedHome, { recursive: true, mode: 0o700 });
+  const target = join(isolatedHome, "auth.json");
+  // Never chmod the link: on Windows that would change the user's original hard-linked file.
+  if (platform === "win32") await link(source, target);
+  else await symlink(source, target);
+  return { source, target, platform };
+}
+
+export async function discardParityAuth(auth, warn = console.warn) {
+  if (!auth) return;
+  try {
+    const target = await lstat(auth.target);
+    const source = await stat(auth.source);
+    const stillLinked = auth.platform === "win32"
+      ? target.dev === source.dev && target.ino === source.ino
+      : target.isSymbolicLink();
+    if (!stillLinked) warn("WARNING: Codex refreshed its temporary login. The temporary copy will be deleted without write-back; your own Codex will refresh on next use.");
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  finally { await rm(auth.target, { force: true }); }
+}
+
+// The CLI itself runs outside its model sandbox. Enforce read-only access to the linked source
+// at the OS boundary too: Seatbelt on macOS, a deny-write/delete file share on Windows.
+export async function executeWithReadOnlyAuth(program, args, options, auth) {
+  if (process.platform === "darwin") {
+    const quote = (value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+    const profile = `(version 1)(allow default)(deny file-write* (subpath ${quote(dirname(auth.source))}))`;
+    return execute("/usr/bin/sandbox-exec", ["-p", profile, program, ...args], options);
+  }
+  if (process.platform !== "win32") throw new Error("Read-only parity auth is supported only on macOS and Windows.");
+  const wrapper = join(options.cwd, "read-only-auth.ps1");
+  const invocation = join(options.cwd, "read-only-auth.json");
+  // Windows PowerShell 5 does not have ProcessStartInfo.ArgumentList. Encode native argv by
+  // the documented CommandLineToArgvW rules, not by PowerShell or cmd.exe interpolation.
+  await writeFile(wrapper, String.raw`param([string]$Invocation)
+$ErrorActionPreference = 'Stop'
+$request = Get-Content -LiteralPath $Invocation -Encoding UTF8 -Raw | ConvertFrom-Json
+function Quote-Argument([string]$value) {
+  return '"' + [regex]::Replace([regex]::Replace($value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+$authLock = [IO.File]::Open($request.auth, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+  $info = New-Object Diagnostics.ProcessStartInfo
+  $info.FileName = $request.program
+  $info.Arguments = (($request.argv | ForEach-Object { Quote-Argument $_ }) -join ' ')
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $info.RedirectStandardInput = $true
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $child = [Diagnostics.Process]::Start($info)
+  $out = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
+  $err = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
+  [Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)
+  $child.StandardInput.Close()
+  if (-not $child.WaitForExit([int]$request.timeout)) { $child.Kill(); throw 'Codex parity timed out' }
+  $out.Wait(); $err.Wait()
+  exit $child.ExitCode
+} finally { $authLock.Dispose() }
+`, { mode: 0o600 });
+  await writeFile(invocation, JSON.stringify({ auth: auth.source, program, argv: args, timeout: options.timeout ?? 180_000 }), { mode: 0o600 });
+  try {
+    const powershell = join(options.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    return await execute(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", wrapper, invocation], { ...options, timeout: (options.timeout ?? 180_000) + 5000 });
+  } finally { await rm(wrapper, { force: true }); await rm(invocation, { force: true }); }
+}
+
 export async function checkCodexTools({ binary, model, output }) {
   assert.ok(binary, "--codex must name the pinned native binary (not a shell or npm shim)");
   assert.ok(!/\.(cmd|bat)$/i.test(binary), "Batch shims are not supported");
@@ -171,16 +239,23 @@ export async function checkCodexTools({ binary, model, output }) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const runDir = await mkdtemp(join(directory, "run-"));
+  // Always fresh, even when artifacts are written to a reused --output directory. No production
+  // prepare/reconcile helper sees this home, including the Rust template-rendering test.
+  const codexHome = await mkdtemp(join(tmpdir(), "chemdraft-parity-home-"));
+  const realHome = process.env.CODEX_HOME || join(process.env.USERPROFILE || process.env.HOME || homedir(), ".codex");
   const requestPath = join(runDir, "render-request.json"), manifestPath = join(runDir, "rendered.json");
   const token = randomBytes(32).toString("hex");
   const calls = [], methods = [];
   const { server, url } = await startStub(token, calls, methods);
-  let manifest;
+  let manifest, auth;
   console.log(`Codex real-model parity artifacts: ${runDir}`);
   try {
+    auth = await linkParityAuth(await realpath(join(realHome, "auth.json")), codexHome);
     await writeFile(join(runDir, "system-prompt.md"), "You are the ChemDraft tool-parity test assistant. Follow the user's inventory and stub-tool requests exactly.\n", { mode: 0o600 });
-    await writeFile(requestPath, JSON.stringify({ binary: resolve(binary), runDir, baseDir: join(directory, "external-tools"), mcpUrl: url, token, model, prompt, output: manifestPath }), { mode: 0o600 });
-    // The ignored Rust test uses render_run, prepare_codex_home and child_env from production.
+    const parentEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(SystemRoot|windir|PATH|LANG|HTTPS?_PROXY|NO_PROXY|ALL_PROXY|SSL_CERT_FILE|SSL_CERT_DIR|NODE_EXTRA_CA_CERTS)$/i.test(key)));
+    for (const key of ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]) parentEnv[key] = codexHome;
+    await writeFile(requestPath, JSON.stringify({ binary: resolve(binary), runDir, codexHome, parentEnv, mcpUrl: url, token, model, prompt, output: manifestPath }), { mode: 0o600 });
+    // Pure Rust template/environment rendering; no auth filesystem access or vendor process.
     const rendered = await execute("cargo", ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "external_tools::tests::print_codex_template_args", "--", "--ignored", "--exact", "--nocapture"], {
       cwd: repoRoot, env: { ...process.env, CHEMDRAFT_CODEX_PARITY_REQUEST: requestPath }, timeout: 900_000,
     });
@@ -190,36 +265,40 @@ export async function checkCodexTools({ binary, model, output }) {
     await rm(requestPath); await rm(manifestPath);
     await writeFile(join(runDir, "argv.json"), JSON.stringify(manifest.args, null, 2), { mode: 0o600 });
     console.log(`Exact Codex argv: ${JSON.stringify(manifest.args)}`);
-    assert.equal(manifest.fallbackReason, null, `Parity requires isolation; production fallback: ${manifest.fallbackReason}`);
+    assert.equal(manifest.env.CODEX_HOME, codexHome, "Parity must use its disposable home");
     const options = { cwd: runDir, env: manifest.env };
-    const version = await execute(manifest.program, ["--version"], options);
+    const version = await executeWithReadOnlyAuth(manifest.program, ["--version"], options, auth);
     assertSuccess(version, "Codex version");
     assert.equal(version.stdout.trim(), `codex-cli ${manifest.version}`, "The binary must match pins.rs");
-    const auth = await execute(manifest.program, ["login", "status"], options);
-    assertSuccess(auth, "Codex login status (sign in using your real home first)");
-    assert.match(`${auth.stdout}\n${auth.stderr}`, /^Logged in/m, "Isolated home did not authenticate");
-    const result = await execute(manifest.program, manifest.args, { ...options, stdin: manifest.stdin, timeout: 300_000 });
+    const login = await executeWithReadOnlyAuth(manifest.program, ["login", "status"], options, auth);
+    assertSuccess(login, "Codex login status (sign in using your real home first)");
+    assert.match(`${login.stdout}\n${login.stderr}`, /^Logged in/m, "Isolated home did not authenticate");
+    const result = await executeWithReadOnlyAuth(manifest.program, manifest.args, { ...options, stdin: manifest.stdin, timeout: 300_000 }, auth);
     const redact = (text) => text.replaceAll(token, "[REDACTED_MCP_TOKEN]");
     await writeFile(join(runDir, "stdout.jsonl"), redact(result.stdout), { mode: 0o600 });
     await writeFile(join(runDir, "stderr.txt"), redact(result.stderr), { mode: 0o600 });
     assertSuccess(result, "Codex model run");
     const report = parseReport(result.stdout);
-    assertParity({ report, calls, transcript: result.stdout, homeDocuments: await homeDocuments(manifest.realCodexHome) });
+    assertParity({ report, calls, transcript: result.stdout, homeDocuments: await homeDocuments(realHome) });
     await writeFile(join(runDir, "report.json"), JSON.stringify(report, null, 2), { mode: 0o600 });
     console.log(`PASS: read/write MCP calls, explicit tool allowlist, and no home instructions (${process.platform}-${process.arch}).`);
     console.log(`Run the same check on ${process.platform === "win32" ? "macOS" : "Windows"} before release.`);
     return { runDir, report };
   } finally {
-    await rm(requestPath, { force: true }); await rm(manifestPath, { force: true });
-    await writeFile(join(runDir, "mcp-calls.json"), JSON.stringify({ methods, calls }, null, 2), { mode: 0o600 });
     server.closeAllConnections();
-    await new Promise((closed) => server.close(closed));
-    // Keep the stable isolated home for inspection/resume, but never retain its credential link.
-    if (manifest?.env?.CODEX_HOME && !manifest.fallbackReason) await rm(join(manifest.env.CODEX_HOME, "auth.json"), { force: true });
+    // Artifact or socket cleanup failure must never skip removing temporary credentials.
+    const cleanup = await Promise.allSettled([
+      (async () => { try { await discardParityAuth(auth); } finally { await rm(codexHome, { recursive: true, force: true }); } })(),
+      rm(requestPath, { force: true }), rm(manifestPath, { force: true }),
+      writeFile(join(runDir, "mcp-calls.json"), JSON.stringify({ methods, calls }, null, 2), { mode: 0o600 }),
+      new Promise((closed) => server.close(closed)),
+    ]);
+    const failed = cleanup.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
   }
 }
 
-function selfTest() {
+async function selfTest() {
   const report = { topLevelTools: ["functions.exec", "functions.wait", "collaboration.spawn_agent"], execTools: ["mcp__chemdraft__name_to_structure", "mcp__chemdraft__insert_structures", "apply_patch", "web__run"], homeInstructions: [] };
   const calls = [{ name: "name_to_structure", arguments: { name: "benzene" } }, { name: "insert_structures", arguments: { items: [{ kind: "molecule", smiles: "c1ccccc1" }] } }];
   const fixture = { report, calls, transcript: JSON.stringify(report), homeDocuments: ["My secret user instructions have eight distinctive private words."] };
@@ -233,6 +312,27 @@ function selfTest() {
   assert.throws(() => assertParity({ ...fixture, transcript: "My secret user instructions have eight distinctive private words." }));
   assert.deepEqual(parseReport(`${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(report) } })}\n{"type":"turn.completed"}`), report);
   assert.throws(() => parseReport('{"type":"turn.failed"}'));
+  const temporary = await mkdtemp(join(tmpdir(), "chemdraft-auth-self-test-"));
+  try {
+    const source = join(temporary, "fake-auth.json");
+    const original = '{"last_refresh":"2026-10-22T12:00:00Z","tokens":{"refresh_token":"fake-old"}}';
+    await writeFile(source, original, { mode: 0o600 });
+    for (const platform of process.platform === "win32" ? ["win32"] : ["darwin", "win32"]) {
+      for (const refresh of [false, true]) {
+        const auth = await linkParityAuth(source, await mkdtemp(join(temporary, "home-")), platform);
+        if (refresh) {
+          await rm(auth.target);
+          await writeFile(auth.target, '{"last_refresh":"2026-10-23T12:00:00Z","tokens":{"refresh_token":"fake-new"}}', { mode: 0o600 });
+        }
+        const warnings = [];
+        await discardParityAuth(auth, (text) => warnings.push(text));
+        assert.equal(warnings.length, Number(refresh));
+        assert.ok(warnings.every((text) => !text.includes("fake-")));
+        assert.equal(await readFile(source, "utf8"), original, "Parity must never write back credentials");
+        await assert.rejects(lstat(auth.target), { code: "ENOENT" });
+      }
+    }
+  } finally { await rm(temporary, { recursive: true, force: true }); }
   console.log("Codex parity assertion self-tests passed (offline).");
 }
 

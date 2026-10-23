@@ -12,6 +12,8 @@ pub mod probe;
 pub mod run;
 pub mod terminal;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod wire_tests;
@@ -202,6 +204,9 @@ pub struct ExternalToolsInner {
 pub struct ExternalToolsState {
     pub inner: Mutex<ExternalToolsInner>,
     pub probes: probe::ProbeCache,
+    /// Tests opt into specific temporary candidates; default discovery can never see host installs.
+    #[cfg(test)]
+    test_candidates: Mutex<Vec<PathBuf>>,
     codex_processes: Arc<run::CodexProcesses>,
     installing: AtomicBool,
     cancel_install: AtomicBool,
@@ -440,15 +445,8 @@ fn status_impl(
     plugin_id: Option<&str>,
     parent: &env::ParentEnv,
 ) -> Result<ExternalToolStatus, String> {
-    // Auth file replacement or a repaired link can change the effective home between probes.
-    let mut status = status_prepared_impl(
-        base,
-        state,
-        tool,
-        refresh || tool == ToolId::Codex,
-        plugin_id,
-        parent,
-    )?;
+    // Auth reconciliation selects the home independently of binary discovery.
+    let mut status = status_prepared_impl(base, state, tool, refresh, plugin_id, parent)?;
     let notice = (tool == ToolId::Codex)
         .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
         .and_then(|home| home.fallback_reason);
@@ -501,9 +499,19 @@ fn status_prepared_impl(
         private_dir(&run_dir).map_err(|e| e.to_string())?;
         let probe_platform = probe::ProbePlatform::current();
         let codex_auth = (tool == ToolId::Codex).then(|| codex_auth::CodexAuth::new(probe_platform, base, parent).tracked(&state.codex_processes));
+        #[cfg(not(test))]
         let home = env::get(parent, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or("");
+        #[cfg(not(test))]
         let mut paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, None);
+        #[cfg(test)]
+        let paths = state.test_candidates.lock().unwrap().clone();
+        #[cfg(test)]
+        for path in &paths { test_support::check_path(path)?; }
+        #[cfg(not(test))]
         let mut candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+        #[cfg(test)]
+        let candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+        #[cfg(not(test))]
         if probe_platform == probe::ProbePlatform::MacOS && !matches!(candidate, probe::Candidate::Runnable(_)) {
             if let Some(shell) = env::get(parent, "SHELL") {
                 if let Ok(path) = state.probes.login_path.capture(Path::new(shell), parent, &run_dir) {
@@ -919,17 +927,10 @@ fn run_start_impl(
             ));
         }
     }
-    // Each Codex process reconciles and selects its home, including version/auth probes.
-    // Keep the original parent here so a probe conflict makes the next process use the real home.
-    let status = status_prepared_impl(
-        base,
-        state,
-        request.tool,
-        request.tool == ToolId::Codex,
-        None,
-        parent,
-    )
-    .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
+    // Keep the binary selected by the cached status. Auth reconciliation happens at spawn;
+    // it must never force rediscovery and silently switch executables for this run.
+    let status = status_prepared_impl(base, state, request.tool, false, None, parent)
+        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
     // Probing may execute vendor code for seconds. Serialize only the commit, and
     // re-check consent and executable availability after taking the mutation lock.
     let _mutation = state.mutation.lock().unwrap();

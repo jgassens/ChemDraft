@@ -25,6 +25,8 @@ pub(super) struct CodexAuth {
 }
 impl CodexAuth {
     pub(super) fn new(platform: ProbePlatform, base: &Path, parent: &ParentEnv) -> Self {
+        #[cfg(test)]
+        let parent = &super::test_support::isolated_parent(parent, base).unwrap();
         let mut original = ParentEnv::new();
         if let Some(home) = env::real_codex_home(platform, parent) {
             // Relative overrides are relative to the host, never the conversation's cwd.
@@ -81,6 +83,15 @@ pub(super) fn prepare_codex_home_with_link(
     parent: &ParentEnv,
     link: impl FnOnce(ProbePlatform, &Path, &Path) -> io::Result<()>,
 ) -> CodexHome {
+    #[cfg(test)]
+    {
+        super::test_support::check_path(base).unwrap();
+        if let Some(home) = env::real_codex_home(platform, parent) {
+            super::test_support::check_path(&home).unwrap();
+            super::test_support::check_path(&home.join("auth.json")).unwrap();
+        }
+        super::test_support::check_path(&base.join("codex-home/auth.json")).unwrap();
+    }
     // Serializes reconciliation, quarantine and link creation, including overlapping probes.
     let _lock = AUTH_LOCK.lock().unwrap();
     let real_home = env::real_codex_home(platform, parent)
@@ -210,6 +221,8 @@ fn metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
     }
 }
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    #[cfg(test)]
+    super::test_support::check_path(path)?;
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound && metadata(path)?.is_none() => Ok(None),
@@ -267,10 +280,38 @@ fn reconcile_copy(target: &Path, auth: &Path) -> Result<(), String> {
 }
 
 fn atomic_write_back(auth: &Path, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), String> {
+    atomic_write_back_verified(auth, bytes, previous, verify_written_auth)
+}
+
+fn verify_written_auth(auth: &Path, expected: &[u8]) -> Result<(), String> {
+    let written = read_optional(auth)?.ok_or("Written Codex auth.json is missing.")?;
+    if last_refresh(&written)? != last_refresh(expected)? || written != expected {
+        return Err("Written Codex auth.json does not match the expected refresh.".into());
+    }
+    Ok(())
+}
+
+fn atomic_write_back_verified(
+    auth: &Path,
+    bytes: &[u8],
+    previous: Option<&[u8]>,
+    verify: impl FnOnce(&Path, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    super::test_support::check_path(auth)?;
+    let previous = previous.ok_or(
+        "User's Codex auth.json is missing; refusing write-back without an original backup.",
+    )?;
     let directory = auth
         .parent()
         .ok_or("User's Codex auth directory is unavailable.")?;
     let staged = directory.join(format!(".auth.json.chemdraft-{}.tmp", super::nonce()));
+    let backup = directory.join("auth.json.bak");
+    if metadata(&backup)?.is_some() {
+        return Err(
+            "Codex auth.json.bak already exists; retain it for recovery before retrying.".into(),
+        );
+    }
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -288,10 +329,39 @@ fn atomic_write_back(auth: &Path, bytes: &[u8], previous: Option<&[u8]>) -> Resu
             .map_err(|e| io_reason("sync Codex auth write-back", e))?;
         drop(file);
         // Do not overwrite another Codex process's refresh observed while staging the write.
-        if read_optional(auth)?.as_deref() != previous {
+        if read_optional(auth)?.as_deref() != Some(previous) {
             return Err("User's Codex auth changed during reconciliation.".into());
         }
-        fs::rename(&staged, auth).map_err(|e| io_reason("commit Codex auth write-back", e))
+        // Copy into a new private file, never move/truncate the live login. Keep this recovery
+        // copy across commit and verification (including failures or host termination).
+        {
+            let mut backup_file = options
+                .open(&backup)
+                .map_err(|e| io_reason("create Codex auth backup", e))?;
+            private_file(&backup).map_err(|e| io_reason("protect Codex auth backup", e))?;
+            backup_file
+                .write_all(previous)
+                .and_then(|_| backup_file.sync_all())
+                .map_err(|e| io_reason("sync Codex auth backup", e))?;
+        }
+        if read_optional(auth)?.as_deref() != Some(previous) {
+            return Err("User's Codex auth changed during reconciliation; backup retained.".into());
+        }
+        fs::rename(&staged, auth).map_err(|e| io_reason("commit Codex auth write-back", e))?;
+        if let Err(reason) = verify(auth, bytes) {
+            let restored = fs::rename(&backup, auth);
+            return Err(match restored {
+                Ok(()) => format!(
+                    "Codex auth write-back verification failed; original restored. {reason}"
+                ),
+                Err(e) => format!(
+                    "Codex auth write-back verification failed; backup retained. {reason} {}",
+                    io_reason("restore Codex auth backup", e)
+                ),
+            });
+        }
+        fs::remove_file(&backup).map_err(|e| io_reason("remove verified Codex auth backup", e))?;
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(staged);
@@ -395,6 +465,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("chemdraft-auth-{}", super::super::nonce()));
         super::super::private_dir(&directory).unwrap();
+        super::super::test_support::register(&directory);
         let auth = directory.join("auth.json");
         fs::write(&auth, b"fake-new-secret").unwrap();
         let error = atomic_write_back(&auth, b"fake-invalid-secret", Some(b"fake-old-secret"))
@@ -409,5 +480,49 @@ mod tests {
         );
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_survives_until_verification_and_bad_refresh_restores_original() {
+        for fail in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("chemdraft-auth-{}", super::super::nonce()));
+            super::super::private_dir(&directory).unwrap();
+            super::super::test_support::register(&directory);
+            let auth = directory.join("auth.json");
+            let backup = directory.join("auth.json.bak");
+            let old = br#"{"last_refresh":"2026-10-22T12:00:00Z","tokens":{"refresh_token":"fake-old-secret"}}"#;
+            let new = br#"{"last_refresh":"2026-10-23T12:00:00Z","tokens":{"refresh_token":"fake-new-secret"}}"#;
+            super::super::write_private(&auth, old).unwrap();
+            let result = atomic_write_back_verified(&auth, new, Some(old), |auth, expected| {
+                assert!(fs::read(&backup).unwrap() == old);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    assert_eq!(
+                        fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                }
+                if fail {
+                    fs::write(auth, b"{fake-invalid-secret").unwrap();
+                }
+                verify_written_auth(auth, expected)
+            });
+            assert_eq!(result.is_err(), fail);
+            if let Err(reason) = result {
+                assert!(reason.contains("original restored"));
+                assert!(!reason.contains("fake-"));
+            }
+            assert!(fs::read(&auth).unwrap() == if fail { &old[..] } else { &new[..] });
+            assert!(!backup.exists());
+            // A backup from an interrupted run must never be overwritten or removed.
+            fs::write(&backup, old).unwrap();
+            assert!(atomic_write_back(&auth, new, Some(old))
+                .unwrap_err()
+                .contains("already exists"));
+            assert!(fs::read(&backup).unwrap() == old);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

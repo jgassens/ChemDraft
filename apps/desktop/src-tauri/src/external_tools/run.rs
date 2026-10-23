@@ -239,6 +239,13 @@ impl ToolRun {
         binding: Option<RunBinding>,
         codex_auth: Option<CodexAuth>,
     ) -> Result<Arc<Self>, String> {
+        #[cfg(test)]
+        let environment = {
+            super::test_support::check_path(&rendered.program)?;
+            let mut final_environment = environment.clone();
+            final_environment.extend(rendered.env.clone());
+            &super::test_support::isolated_parent(&final_environment, cwd)?
+        };
         let processes = codex_auth.as_ref().and_then(|auth| auth.processes.clone());
         // Hold through registration so shutdown cannot miss a just-spawned probe.
         let mut registration = processes.as_ref().map(|p| p.0.lock().unwrap());

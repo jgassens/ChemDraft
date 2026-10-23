@@ -14,6 +14,7 @@ impl TempDir {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("chemdraft-tools-{}", nonce()));
         fs::create_dir_all(&dir).unwrap();
+        test_support::register(&dir);
         Self(dir)
     }
 }
@@ -62,7 +63,7 @@ fn assert_no_auth_tokens(text: &str) {
 #[test]
 fn codex_auth_reconciles_refresh_atomically_and_idempotently() {
     for platform in auth_platforms() {
-        for scenario in ["newer", "older", "missing", "equal", "offset"] {
+        for scenario in ["newer", "older", "equal", "offset"] {
             let temp = TempDir::new();
             let real = temp.0.join("user-codex");
             private_dir(&real).unwrap();
@@ -87,9 +88,6 @@ fn codex_auth_reconciles_refresh_atomically_and_idempotently() {
             let staged = isolated.join("vendor.tmp");
             fs::write(&staged, &refreshed).unwrap();
             fs::rename(&staged, &target).unwrap();
-            if scenario == "missing" {
-                fs::remove_file(&auth).unwrap();
-            }
             let expected = if ["older", "equal"].contains(&scenario) {
                 &original
             } else {
@@ -211,7 +209,7 @@ fn codex_changed_symlink_target_is_reconciled_and_the_user_link_is_preserved() {
 #[test]
 fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback() {
     for platform in auth_platforms() {
-        for scenario in ["json", "timestamp", "equal", "user-json", "io"] {
+        for scenario in ["json", "timestamp", "equal", "user-json", "io", "missing"] {
             let temp = TempDir::new();
             let real = temp.0.join("user-codex");
             private_dir(&real).unwrap();
@@ -240,6 +238,9 @@ fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback
                 fs::remove_file(&auth).unwrap();
                 fs::create_dir(&auth).unwrap();
             }
+            if scenario == "missing" {
+                fs::remove_file(&auth).unwrap();
+            }
             for _ in 0..2 {
                 let home = env::reconcile_codex_home_auth(platform, &base, &parent);
                 assert_eq!(home.path.as_ref(), Some(&real));
@@ -249,6 +250,8 @@ fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback
             }
             if scenario == "io" {
                 assert!(auth.is_dir());
+            } else if scenario == "missing" {
+                assert!(!auth.exists());
             } else {
                 assert!(
                     fs::read_to_string(&auth).unwrap() == original,
@@ -743,7 +746,8 @@ fn codex_feature_policy_has_no_duplicates_or_overlap() {
 }
 
 // Used by scripts/check-codex-tools.mjs. This renders the production template AND environment;
-// JavaScript must never maintain a second flag list or credential-link implementation.
+// This renderer is pure with respect to credentials. The opt-in script owns its disposable
+// read-only login link and must never call production auth reconciliation/write-back.
 #[test]
 #[ignore = "on-demand real-model parity script supplies CHEMDRAFT_CODEX_PARITY_REQUEST"]
 fn print_codex_template_args() {
@@ -757,12 +761,8 @@ fn print_codex_template_args() {
     let config = run_dir.join("claude-mcp.json");
     let mut spec = ToolId::Codex.spec();
     spec.program = fs::canonicalize(value("binary")).unwrap();
-    let parent = std::env::vars().collect();
-    let home = env::prepare_codex_home(
-        ProbePlatform::current(),
-        Path::new(value("baseDir")),
-        &parent,
-    );
+    let mut parent: ParentEnv = serde_json::from_value(request["parentEnv"].clone()).unwrap();
+    parent.insert("CODEX_HOME".into(), value("codexHome").into());
     let rendered = render_run(
         &spec,
         ToolRunInputs {
@@ -780,7 +780,7 @@ fn print_codex_template_args() {
     .unwrap();
     let mut environment = env::child_env(
         ProbePlatform::current(),
-        &home.apply(&parent),
+        &parent,
         &spec.program,
         run_dir,
         true,
@@ -790,8 +790,6 @@ fn print_codex_template_args() {
     let output = serde_json::json!({
         "program": spec.program, "args": rendered.args, "env": environment,
         "stdin": rendered.stdin, "version": pins::CODEX_VERSION,
-        "realCodexHome": env::real_codex_home(ProbePlatform::current(), &parent),
-        "fallbackReason": home.fallback_reason,
     });
     write_private(Path::new(value("output")), output.to_string().as_bytes()).unwrap();
     println!("{}", output["args"]);
@@ -952,29 +950,21 @@ fn codex_sign_in_uses_real_home_on_both_platforms() {
 }
 
 // Deliberately opt-in: release checks must use the pins, not whichever CLI happens to be on PATH.
-// Codex needs isolated config/auth to report defaults; Claude needs the real subscription login.
+// Release binaries are copied into the test root; neither vendor receives the user's home.
 fn pinned_cli(tool: ToolId, variable: &str, dir: &Path) -> Option<(catalog::ToolSpec, ParentEnv)> {
     let Some(binary) = std::env::var_os(variable) else {
         eprintln!("Skipping pinned CLI parity: {variable} is unset.");
         return None;
     };
     let mut spec = tool.spec();
-    spec.program = fs::canonicalize(binary).expect("pinned CLI binary must exist");
-    let mut parent: ParentEnv = std::env::vars().collect();
+    let source = fs::canonicalize(binary).expect("pinned CLI binary must exist");
+    spec.program = dir.join(source.file_name().unwrap());
+    fs::copy(&source, &spec.program).unwrap();
     if tool == ToolId::Codex {
-        let private_home = dir.join("home");
-        fs::create_dir_all(&private_home).unwrap();
-        for key in [
-            "HOME",
-            "USERPROFILE",
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-        ] {
-            parent.insert(key.into(), private_home.to_string_lossy().into_owned());
-        }
+        let helper = probe::codex_helper_name(ProbePlatform::current());
+        fs::copy(source.with_file_name(helper), dir.join(helper)).unwrap();
     }
+    let parent = test_support::fake_parent(dir);
     let version = parity_probe(&spec, spec.version_args, &parent, dir);
     let expected = match tool {
         ToolId::Claude => pins::CLAUDE_VERSION,
@@ -1712,7 +1702,7 @@ fn probing_releases_cache_lock_and_does_not_store_invalidated_results() {
 fn stub() -> &'static Path {
     static STUB: OnceLock<PathBuf> = OnceLock::new();
     STUB.get_or_init(||{
-        let root=std::env::temp_dir().join(format!("chemdraft-tool-stub-{}",nonce()));fs::create_dir_all(&root).unwrap();
+        let root=std::env::temp_dir().join(format!("chemdraft-tool-stub-{}",nonce()));fs::create_dir_all(&root).unwrap();test_support::register(&root);
         let source=root.join("stub.rs");let binary=root.join(if cfg!(windows) {"stub.exe"}else {"stub"});
         fs::write(&source,r#"
 use std::{env,fs,io::{self,Read,Write},process::{Command,Stdio},thread,time::Duration};
@@ -1724,6 +1714,8 @@ fn main() {
    return;
  }
  match args.get(1).map(String::as_str).unwrap_or("") {
+  "exec"=>{println!("cached-codex-stub-ok");println!("{}",env::var("CODEX_HOME").unwrap());},
+  "-l"=>{println!("__CHEMDRAFT_PATH__/usr/bin:/bin");},
   "--version"=>{println!("2.1.296 (Claude Code)");},
   "codex-version"=>{println!("codex-cli 0.163.0");},
   "codex-home-version"=>{fs::write("version-home",env::var("CODEX_HOME").unwrap()).unwrap();println!("codex-cli 0.163.0");},
@@ -1808,7 +1800,9 @@ fn mcp_live(args: &[String]) {
 }
 "#).unwrap();
         let output=Command::new("rustc").args(["--crate-name","chemdraft_external_tool_stub","--edition=2021"]).arg(&source).arg("-o").arg(&binary).output().unwrap();
-        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));binary
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+        fs::copy(&binary, root.join(probe::codex_helper_name(ProbePlatform::current()))).unwrap();
+        binary
     })
 }
 fn rendered(args: &[&str], stdin: Option<&str>) -> RenderedRun {
@@ -2131,6 +2125,119 @@ fn cached_stub(state: &ExternalToolsState, tool: ToolId) {
             })
         })
         .unwrap();
+}
+
+#[test]
+fn codex_run_uses_cached_binary_without_rediscovery_or_real_home() {
+    if current_platform().is_none() {
+        return;
+    }
+    let temp = TempDir::new();
+    let state = ExternalToolsState::default();
+    cached_stub(&state, ToolId::Codex);
+    let mut req = request(ToolId::Codex, "cached_codex");
+    req.mcp_session_id.clear();
+    consent::ConsentStore::new(&temp.0)
+        .set(req.tool, &req.plugin_id, true)
+        .unwrap();
+    let parent = test_support::fake_parent(&temp.0);
+    let started = run_start_impl(&temp.0, &state, req, &parent).unwrap();
+    let output = finished(&state.run_by_id(&started.run_id).unwrap());
+    assert!(output
+        .lines
+        .iter()
+        .any(|l| l.text == "cached-codex-stub-ok"));
+    assert!(output
+        .lines
+        .iter()
+        .any(|l| l.text == temp.0.join("codex-home").to_string_lossy()));
+    assert!(!output
+        .lines
+        .iter()
+        .any(|l| l.text.contains("isolation unavailable")));
+}
+
+#[test]
+fn codex_status_uses_injected_discovery_and_reports_missing_helper_as_broken() {
+    if current_platform().is_none() {
+        return;
+    }
+    let temp = TempDir::new();
+    let state = ExternalToolsState::default();
+    let binary = temp
+        .0
+        .join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    fs::copy(stub(), &binary).unwrap();
+    *state.test_candidates.lock().unwrap() = vec![binary.clone()];
+    let parent = test_support::fake_parent(&temp.0);
+    let status = status_impl(&temp.0, &state, ToolId::Codex, true, None, &parent).unwrap();
+    assert!(matches!(status.state, ToolState::Broken));
+    assert!(status
+        .detail
+        .unwrap()
+        .contains("Codex's code-mode helper (codex-code-mode-host) is missing next to"));
+    // Injection itself is guarded; even an explicitly supplied real executable cannot run.
+    *state.test_candidates.lock().unwrap() = vec![std::env::current_exe().unwrap()];
+    let status = status_impl(&temp.0, &state, ToolId::Codex, true, None, &parent).unwrap();
+    assert!(matches!(status.state, ToolState::Broken));
+    assert!(status
+        .detail
+        .unwrap()
+        .contains("outside their temporary directories"));
+}
+
+#[test]
+fn codex_helper_is_required_beside_resolved_binary_on_both_platforms() {
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        let temp = TempDir::new();
+        let binary = temp.0.join(if platform == ProbePlatform::Windows {
+            "codex.exe"
+        } else {
+            "codex"
+        });
+        fs::copy(stub(), &binary).unwrap();
+        let error = probe::require_codex_helper(&binary, platform).unwrap_err();
+        assert_eq!(error, format!("Codex's code-mode helper (codex-code-mode-host) is missing next to {}; reinstall Codex from its official package or let ChemDraft install it.", binary.display()));
+        let helper = binary.with_file_name(probe::codex_helper_name(platform));
+        fs::copy(stub(), &helper).unwrap();
+        probe::require_codex_helper(&binary, platform).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(probe::require_codex_helper(&binary, platform)
+                .unwrap_err()
+                .contains("not executable"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        let temp = TempDir::new();
+        let real = temp.0.join("package");
+        fs::create_dir(&real).unwrap();
+        let binary = real.join("codex");
+        fs::copy(stub(), &binary).unwrap();
+        let shim = temp.0.join("codex");
+        std::os::unix::fs::symlink(&binary, &shim).unwrap();
+        // A helper beside the shim is insufficient; it belongs beside the real executable.
+        fs::copy(stub(), temp.0.join("codex-code-mode-host")).unwrap();
+        let error = probe::probe_tool(
+            &ToolId::Codex.spec(),
+            &shim,
+            &ParentEnv::new(),
+            &temp.0,
+            false,
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains(
+            &fs::canonicalize(binary)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        ));
+    }
 }
 
 #[test]
@@ -2680,7 +2787,7 @@ fn probe_timeout_output_cap_and_login_shell_capture() {
     #[cfg(unix)]
     {
         let path = probe::LoginShellPath::default()
-            .capture(Path::new("/bin/sh"), &ParentEnv::new(), &temp.0)
+            .capture(stub(), &ParentEnv::new(), &temp.0)
             .unwrap();
         assert!(!path.is_empty());
         assert!(path.contains("/usr/bin"));
@@ -2739,7 +2846,7 @@ fn long_poll_caps_wait_and_shims_are_rejected_at_spawn() {
     run.cancel(KillReason::Cancelled);
     assert!(run.wait_finished(Duration::from_secs(5)));
     let mut batch = rendered(&[], None);
-    batch.program = PathBuf::from("codex.CMD");
+    batch.program = temp.0.join("codex.CMD");
     assert!(
         ToolRun::spawn(batch, &temp.0, &ParentEnv::new(), Duration::from_secs(1))
             .err()

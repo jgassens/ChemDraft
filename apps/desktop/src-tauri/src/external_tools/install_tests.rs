@@ -26,6 +26,7 @@ impl Temp {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("chemdraft-tool-install-{}", nonce()));
         fs::create_dir_all(&path).unwrap();
+        super::test_support::register(&path);
         Self(path)
     }
 }
@@ -530,7 +531,7 @@ fn filesystem_transaction_formats_reinstall_and_failures() {
         for name in ["1.0.0", "1.1.0.partial", "1.2.0.discard-stale"] {
             fs::create_dir_all(root.join(name)).unwrap();
         }
-        let parent: ParentEnv = std::env::vars().collect();
+        let parent = super::test_support::fake_parent(&base.0);
         let mut phases = Vec::new();
         let result = install_with_download(
             &base.0,
@@ -609,7 +610,7 @@ fn filesystem_transaction_cancel_and_failed_receipt_restore_old_copy() {
         "https://downloads.claude.ai/fixture",
     );
     let root = base.0.join("claude");
-    let parent: ParentEnv = std::env::vars().collect();
+    let parent = super::test_support::fake_parent(&base.0);
     for phase in [
         ToolInstallPhase::Downloading,
         ToolInstallPhase::Verifying,
@@ -713,111 +714,224 @@ fn insufficient_disk_refuses_before_sweep_or_download() {
 #[test]
 #[ignore]
 fn real_vendor_archives_extract() {
-    use crate::local_engine::{
-        file_ops::FileOps,
-        install::{extract_single_entry_with_ops, ArchiveKind as ExtractKind},
-    };
+    use crate::local_engine::{file_ops::FileOps, install::extract_tar_entries_with_ops};
     let Some(directory) = std::env::var_os("CHEMDRAFT_REAL_ARCHIVE_DIR") else {
         return;
     };
     let temp = Temp::new();
     let mut tested = 0;
-    for entry in fs::read_dir(directory).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let (binary, kind) = if let Some(binary) = name.strip_suffix(".tar.gz") {
-            (binary, ExtractKind::TarGz)
-        } else if let Some(binary) = name.strip_suffix(".zip") {
-            (binary, ExtractKind::ZipTree)
-        } else {
+    for pin in PINS.iter().filter(|p| p.tool == ToolId::Codex) {
+        let name = pin.url.rsplit('/').next().unwrap();
+        let archive = Path::new(&directory).join(name);
+        if !archive.is_file() {
             continue;
-        };
+        }
+        let bytes = fs::read(&archive).unwrap();
+        assert_eq!(bytes.len() as u64, pin.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), pin.sha256);
         let output = temp.0.join(format!("archive-{tested}"));
         fs::create_dir(&output).unwrap();
-        let destination = match kind {
-            ExtractKind::TarGz => output.join(binary),
-            _ => output.clone(),
-        };
-        extract_single_entry_with_ops(
-            &entry.path(),
-            kind,
-            binary,
-            &destination,
-            FileOps::with_prefix("[real vendor archive test]", None),
-        )
-        .unwrap_or_else(|error| panic!("{name}: {}", error.message));
-        let main = output.join(binary);
-        let metadata = fs::symlink_metadata(&main).unwrap();
-        assert!(
-            metadata.file_type().is_file() && metadata.len() > 0,
-            "{name}"
-        );
-        if name.ends_with(".tar.gz") {
-            assert_eq!(fs::read_dir(&output).unwrap().count(), 1, "{name}");
+        let helper = if pin.platform == ToolPlatform::WindowsX64 {
+            "codex-code-mode-host.exe"
         } else {
-            assert!(
-                output
-                    .join("codex-resources/codex-command-runner.exe")
-                    .is_file(),
-                "{name}"
-            );
+            "codex-code-mode-host"
+        };
+        extract_tar_entries_with_ops(
+            &archive,
+            &[
+                (pin.entry, &output.join(pin.binary)),
+                (&format!("bin/{helper}"), &output.join(helper)),
+            ],
+            FileOps::with_prefix("[real package test]", None),
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+        for path in [output.join(pin.binary), output.join(helper)] {
+            assert!(fs::metadata(path).unwrap().len() > 0);
         }
         tested += 1;
     }
-    assert!(
-        tested > 0,
-        "CHEMDRAFT_REAL_ARCHIVE_DIR contained no vendor archives"
-    );
+    assert!(tested > 0, "No pinned Codex packages found");
+}
+
+fn package_tar(entries: &[(&str, &[u8], u8)]) -> Vec<u8> {
+    let mut tar = Vec::new();
+    for (name, body, kind) in entries {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..107].copy_from_slice(b"0000755");
+        header[124..135].copy_from_slice(format!("{:011o}", body.len()).as_bytes());
+        header[156] = *kind;
+        header[148..156].fill(b' ');
+        let sum: u32 = header.iter().map(|b| u32::from(*b)).sum();
+        header[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+        tar.extend(header);
+        tar.extend(*body);
+        tar.resize(tar.len().div_ceil(512) * 512, 0);
+    }
+    tar.resize(tar.len() + 1024, 0);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&tar).unwrap();
+    encoder.finish().unwrap()
 }
 
 #[test]
-fn windows_codex_tree_install_preserves_packaged_binary_resources_and_status() {
-    let base = Temp::new();
-    let main = "codex-x86_64-pc-windows-msvc.exe";
-    let body = crate::local_engine::archive_tests::descriptor_zip(&[
-        (main, stub(), 0o100755),
-        (
-            "codex-package.json",
-            b"{\"binary\":\"codex-x86_64-pc-windows-msvc.exe\"}",
-            0o100644,
-        ),
-        (
-            "codex-resources/codex-command-runner.exe",
-            b"helper",
-            0o100755,
-        ),
-    ]);
-    let mut pinned = pin(
-        &body,
-        ArchiveKind::ZipTree,
-        "https://github.com/openai/codex/fixture",
-    );
-    pinned.tool = ToolId::Codex;
-    pinned.platform = ToolPlatform::WindowsX64;
-    pinned.entry = main;
-    pinned.binary = main;
-    let result = install_with_download(
-        &base.0,
-        &pinned,
-        &std::env::vars().collect(),
-        &AtomicBool::new(false),
-        &Signature(true),
-        |_| {},
-        |path, _| {
-            fs::write(path, &body).unwrap();
-            Ok(())
-        },
-    )
-    .unwrap();
-    assert_eq!(result.path.file_name().unwrap(), main);
-    let root = result.path.parent().unwrap();
-    assert!(!root.join("codex.exe").exists());
-    assert_eq!(
-        fs::read(root.join("codex-resources/codex-command-runner.exe")).unwrap(),
-        b"helper"
-    );
-    assert!(root.join("codex-package.json").is_file());
-    let status = managed_status(&base.0, &pinned);
-    assert!(matches!(status.state, ToolState::Installed));
-    assert_eq!(status.path, Some(result.path));
+fn codex_package_installs_only_two_binaries_and_requires_both_signatures() {
+    for platform in [
+        ToolPlatform::DarwinArm64,
+        ToolPlatform::DarwinX64,
+        ToolPlatform::WindowsX64,
+    ] {
+        for fail_helper in [false, true] {
+            let base = Temp::new();
+            let main = if platform == ToolPlatform::WindowsX64 {
+                "codex.exe"
+            } else {
+                "codex"
+            };
+            let helper = if platform == ToolPlatform::WindowsX64 {
+                "codex-code-mode-host.exe"
+            } else {
+                "codex-code-mode-host"
+            };
+            let body = package_tar(&[
+                ("././@PaxHeader", b"22 mtime=1792097863.0\n", b'x'),
+                (&format!("bin/{main}"), stub(), b'0'),
+                (&format!("bin/{helper}"), stub(), b'0'),
+                ("codex-package.json", b"{}", b'0'),
+                ("codex-path/rg", b"not installed", b'0'),
+                ("codex-resources/voice/unused", b"not installed", b'0'),
+            ]);
+            let mut pinned = pin(
+                &body,
+                ArchiveKind::TarGz,
+                "https://github.com/openai/codex/fixture",
+            );
+            pinned.tool = ToolId::Codex;
+            pinned.platform = platform;
+            pinned.entry = leak(format!("bin/{main}"));
+            pinned.binary = main;
+            struct Signatures {
+                paths: std::sync::Mutex<Vec<PathBuf>>,
+                fail_helper: bool,
+            }
+            impl SignatureChecker for Signatures {
+                fn verify(&self, binary: &Path) -> Result<(), String> {
+                    self.paths.lock().unwrap().push(binary.to_owned());
+                    if self.fail_helper
+                        && binary
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .contains("code-mode-host")
+                    {
+                        Err("invalid helper signature".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            let signatures = Signatures {
+                paths: Default::default(),
+                fail_helper,
+            };
+            let result = install_with_download(
+                &base.0,
+                &pinned,
+                &super::test_support::fake_parent(&base.0),
+                &AtomicBool::new(false),
+                &signatures,
+                |_| {},
+                |path, _| {
+                    fs::write(path, &body).unwrap();
+                    Ok(())
+                },
+            );
+            if fail_helper {
+                assert!(result.unwrap_err().message.contains("helper signature"));
+                assert_eq!(fs::read_dir(base.0.join("codex")).unwrap().count(), 0);
+                continue;
+            }
+            let installed = result.unwrap();
+            let root = installed.path.parent().unwrap();
+            assert_eq!(fs::read_dir(root).unwrap().count(), 3); // two executables + receipt
+            assert!(root.join(helper).is_file());
+            assert_eq!(signatures.paths.lock().unwrap().len(), 2);
+            assert!(matches!(
+                managed_status(&base.0, &pinned).state,
+                ToolState::Installed
+            ));
+            fs::remove_file(root.join(helper)).unwrap();
+            assert!(matches!(
+                managed_status(&base.0, &pinned).state,
+                ToolState::Broken
+            ));
+        }
+    }
+}
+
+#[test]
+fn codex_package_refuses_missing_duplicate_link_and_unsafe_entries() {
+    use crate::local_engine::{file_ops::FileOps, install::extract_tar_entries_with_ops};
+    for bad in [
+        "missing",
+        "duplicate",
+        "link",
+        "../escape",
+        "/absolute",
+        "C:/drive",
+        "bin/../codex",
+        "checksum",
+        "oversize",
+        "truncated",
+        "pax-path",
+    ] {
+        let temp = Temp::new();
+        let mut entries: Vec<(&str, &[u8], u8)> = vec![("bin/codex", b"main", b'0')];
+        if bad != "missing" {
+            entries.push(("bin/codex-code-mode-host", b"helper", b'0'));
+        }
+        match bad {
+            "duplicate" => entries.push(("bin/codex", b"again", b'0')),
+            "link" => entries.push(("other", b"", b'2')),
+            "pax-path" => entries.push(("././@PaxHeader", b"18 path=../escape\n", b'x')),
+            "missing" | "checksum" | "oversize" | "truncated" => (),
+            name => entries.push((name, b"unsafe", b'0')),
+        }
+        let mut body = package_tar(&entries);
+        if bad == "truncated" {
+            body.truncate(body.len() - 6);
+        }
+        if bad == "checksum" || bad == "oversize" {
+            let mut tar = Vec::new();
+            std::io::Read::read_to_end(
+                &mut flate2::read::GzDecoder::new(body.as_slice()),
+                &mut tar,
+            )
+            .unwrap();
+            if bad == "checksum" {
+                tar[0] ^= 1;
+            } else {
+                tar[124..135].copy_from_slice(format!("{:011o}", 513u64 * 1024 * 1024).as_bytes());
+                tar[148..156].fill(b' ');
+                let sum: u32 = tar[..512].iter().map(|b| u32::from(*b)).sum();
+                tar[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+            }
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&tar).unwrap();
+            body = encoder.finish().unwrap();
+        }
+        let archive = temp.0.join("package.tar.gz");
+        fs::write(&archive, &body).unwrap();
+        let result = extract_tar_entries_with_ops(
+            &archive,
+            &[
+                ("bin/codex", &temp.0.join("codex")),
+                ("bin/codex-code-mode-host", &temp.0.join("host")),
+            ],
+            FileOps::with_prefix("[test]", None),
+        );
+        assert!(result.is_err(), "accepted {bad}");
+    }
 }

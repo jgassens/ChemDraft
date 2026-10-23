@@ -12,7 +12,8 @@ use crate::local_engine::{
     download::{check_cancel, download_verified, DownloadClient},
     file_ops::FileOps,
     install::{
-        extract_single_entry_with_ops, make_executable_with_ops, ArchiveKind as ExtractKind,
+        extract_single_entry_with_ops, extract_tar_entries_with_ops, make_executable_with_ops,
+        ArchiveKind as ExtractKind,
     },
     platform::free_disk_bytes,
     progress::{ProgressThrottle, EMIT_INTERVAL},
@@ -153,7 +154,7 @@ fn validate_pin(pin: &ToolPin) -> Result<(), InstallError> {
             pin.version
         )));
     }
-    for part in [pin.version, pin.binary, pin.entry] {
+    for part in [pin.version, pin.binary] {
         if part.is_empty()
             || matches!(part, "." | "..")
             || !part
@@ -162,6 +163,29 @@ fn validate_pin(pin: &ToolPin) -> Result<(), InstallError> {
         {
             return Err(InstallError::unsupported("Invalid external tool pin path."));
         }
+    }
+    if pin.tool == ToolId::Codex {
+        let expected = if pin.platform == ToolPlatform::WindowsX64 {
+            "codex.exe"
+        } else {
+            "codex"
+        };
+        if pin.archive != ArchiveKind::TarGz
+            || pin.binary != expected
+            || pin.entry != format!("bin/{expected}")
+        {
+            return Err(InstallError::unsupported("Invalid Codex package entry."));
+        }
+    } else if pin.entry.is_empty()
+        || !pin
+            .entry
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || matches!(pin.entry, "." | "..")
+    {
+        return Err(InstallError::unsupported(
+            "Invalid external tool pin entry.",
+        ));
     }
     Ok(())
 }
@@ -265,7 +289,7 @@ pub(super) fn install_with_download(
     let ops = FileOps::with_prefix("[chemdraft external-tools]", Some(cancel));
     ops.create_dir_all(base).map_err(|e| ops.failed(e))?;
     let free = free_disk_bytes(base).map_err(InstallError::failed)?;
-    let needed = pin.size.saturating_mul(2).saturating_add(64 * 1024 * 1024);
+    let needed = pin.size.saturating_mul(4).saturating_add(64 * 1024 * 1024);
     if free < needed {
         return Err(InstallError {
             code: InstallErrorCode::InsufficientDisk,
@@ -312,6 +336,38 @@ pub(super) fn install_with_download(
     let binary = partial.join(binary_name(pin));
     match pin.archive {
         ArchiveKind::Raw => ops.rename(&archive, &binary).map_err(|e| ops.failed(e))?,
+        ArchiveKind::TarGz if pin.tool == ToolId::Codex => {
+            let helper_name =
+                super::probe::codex_helper_name(if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                });
+            let helper = partial.join(helper_name);
+            let helper_entry = format!("bin/{helper_name}");
+            extract_tar_entries_with_ops(
+                &archive,
+                &[(pin.entry, &binary), (&helper_entry, &helper)],
+                ops,
+            )?;
+            make_executable_with_ops(&helper, ops)?;
+            super::probe::require_codex_helper(
+                &binary,
+                if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                },
+            )
+            .map_err(InstallError::failed)?;
+            check_cancel(cancel)?;
+            signature.verify(&helper).map_err(|detail| {
+                InstallError::failed(format!(
+                    "Codex code-mode helper signature verification failed: {detail}"
+                ))
+            })?;
+            ops.remove_file(&archive).map_err(|e| ops.failed(e))?;
+        }
         ArchiveKind::TarGz | ArchiveKind::Zip | ArchiveKind::ZipTree => {
             let kind = match pin.archive {
                 ArchiveKind::TarGz => ExtractKind::TarGz,
@@ -578,6 +634,16 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
             .map_err(|_| "The managed tool executable is missing.".to_owned())?;
         if !metadata.is_file() {
             return Err("The managed tool executable is not a regular file.".into());
+        }
+        if pin.tool == ToolId::Codex {
+            super::probe::require_codex_helper(
+                &path,
+                if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                },
+            )?;
         }
         #[cfg(unix)]
         {
