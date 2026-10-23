@@ -632,6 +632,16 @@ fn default_menu_item_enabled() -> bool {
     true
 }
 
+fn plugin_menu_items_in<'a>(
+    items: &'a [PluginMenuItemInput],
+    location: &str,
+) -> Vec<&'a PluginMenuItemInput> {
+    items
+        .iter()
+        .filter(|item| item.location == location)
+        .collect()
+}
+
 /// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
 /// survive toolset-driven rebuilds, not only plugin syncs.
 #[derive(Default)]
@@ -5862,9 +5872,8 @@ fn build_analyze_submenu<R: Runtime>(
     // Separates the core Analyze commands from the plugin-contributed items below them.
     let core_separator = PredefinedMenuItem::separator(app)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let plugin_menu_items = plugin_items
-        .iter()
-        .filter(|item| item.location == "analyze")
+    let plugin_menu_items = plugin_menu_items_in(plugin_items, "analyze")
+        .into_iter()
         .map(|item| {
             MenuItem::with_id(
                 app,
@@ -5950,10 +5959,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             )?,
         ],
     )?;
-    let structure_plugin_items = plugin_items
-        .iter()
-        .filter(|item| item.location == "structure")
-        .collect::<Vec<_>>();
+    let structure_plugin_items = plugin_menu_items_in(plugin_items, "structure");
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in structure_plugin_items {
@@ -5979,6 +5985,19 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             None::<&str>,
         )?],
     )?;
+    let plugins_plugin_items = plugin_menu_items_in(plugin_items, "plugins");
+    if !plugins_plugin_items.is_empty() {
+        plugins_menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for item in plugins_plugin_items {
+            plugins_menu.append(&MenuItem::with_id(
+                app,
+                item.id.as_str(),
+                item.label.as_str(),
+                item.enabled,
+                None::<&str>,
+            )?)?;
+        }
+    }
 
     Menu::with_items(
         app,
@@ -8742,6 +8761,54 @@ mod tests {
             "plugin.molscribeOcsr.recognizeImage",
         ));
         expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
+    }
+
+    #[test]
+    fn plugin_menu_items_in_filters_by_location_and_keeps_order() {
+        let items = vec![
+            PluginMenuItemInput {
+                id: "plugin.first".to_owned(),
+                label: "First".to_owned(),
+                location: "plugins".to_owned(),
+                enabled: true,
+            },
+            PluginMenuItemInput {
+                id: "plugin.analyze".to_owned(),
+                label: "Analyze".to_owned(),
+                location: "analyze".to_owned(),
+                enabled: true,
+            },
+            PluginMenuItemInput {
+                id: "plugin.second".to_owned(),
+                label: "Second".to_owned(),
+                location: "plugins".to_owned(),
+                enabled: false,
+            },
+        ];
+
+        let plugin_ids = plugin_menu_items_in(&items, "plugins")
+            .into_iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(plugin_ids, vec!["plugin.first", "plugin.second"]);
+        assert_eq!(plugin_menu_items_in(&items, "structure").len(), 0);
+    }
+
+    #[test]
+    fn plugin_menu_block_uses_location_helper() {
+        let source = include_str!("lib.rs");
+        let plugins_menu_block = source
+            .split("let plugins_menu =")
+            .nth(1)
+            .and_then(|section| section.split("Menu::with_items(").next())
+            .expect("Plugins menu block");
+
+        assert!(plugins_menu_block.contains("plugin_menu_items_in(plugin_items, \"plugins\")"));
+    }
+
+    #[test]
+    fn plugin_menu_command_is_routed() {
+        expect_true(is_routed_menu_command("plugin.assistant.open"));
     }
 
     #[test]
