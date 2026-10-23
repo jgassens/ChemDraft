@@ -75,6 +75,7 @@ function groupResults(cases) {
       wrong_and_confident: scored.filter((item) => item.wrong_and_confident).length, harness: all.length-scored.length,
       visual_pending: scored.filter((item) => item.visual_pending).length, pass_rate: wilson(count('pass'), scored.length), checks, causes });
     groups.at(-1).repo_source_read_cases = all.filter((item) => item.repo_source_read).map((item) => item.id);
+    groups.at(-1).foreign_checkout_cases = all.filter((item) => item.foreign_checkout_access).map((item) => item.id);
   }
   return groups;
 }
@@ -83,12 +84,13 @@ function referenceSmiles(expect) {
   return [...(expect.structures ?? []).map((item) => typeof item === 'string' ? item : item.smiles),
     ...['reactants', 'products', 'products_any_of', 'intermediates'].flatMap((role) => (expect.reaction?.[role] ?? []).map((item) => typeof item === 'string' ? item : item.smiles))];
 }
-export function buildReport(cases, automatic, visualEntries, finals = {}, agent = null, repoSourceReads = new Set(), unrunCaseIds = []) {
+export function buildReport(cases, automatic, visualEntries, finals = {}, agent = null, repoSourceReads = new Set(), unrunCaseIds = [], foreignCheckoutCases = new Set()) {
   const byId = new Map(automatic.cases.map((item) => [item.id, item]));
   if (byId.size !== automatic.cases.length) throw new Error('Duplicate automatic case ids');
   const visualPending = visualEntries === undefined;
   const visual = visualPending ? new Map() : validateVisual(visualEntries, cases);
-  const merged = cases.map((item) => ({ ...mergeCase(item, byId.get(item.id), visual.get(item.id), visualPending), repo_source_read: repoSourceReads.has(item.id) }));
+  const merged = cases.map((item) => ({ ...mergeCase(item, byId.get(item.id), visual.get(item.id), visualPending),
+    repo_source_read: repoSourceReads.has(item.id), foreign_checkout_access: foreignCheckoutCases.has(item.id) }));
   const worst = merged.filter((item) => item.result !== 'pass').map((item) => {
     const failed = CHECKS.filter((id) => item.checks[id]?.applies && item.checks[id].pass === false);
     return { id: item.id, category: item.category, split: item.split, result: item.result,
@@ -120,9 +122,11 @@ export function markdown(report, { heldoutDetails = false } = {}) {
     `Agent: ${report.agent ?? 'unspecified'}.`, '',
     `Mode: **${report.mode}**.`, '', report.sampling, '',
     `Cases not run: ${[...visibleUnrun.map((item) => `\`${item.id}\``), ...(hiddenUnrunCount ? [`${hiddenUnrunCount} ${heldoutDetails ? 'dev' : 'heldout'} cases`] : [])].join(', ') || 'none'}.`, '',
-    '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Repo source-read cases | Pass rate (Wilson 95%) |',
-    '|---|---|---:|---:|---:|---:|---:|---:|---|---|'];
-  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${group.split === 'heldout' && !heldoutDetails ? group.repo_source_read_cases.length : group.repo_source_read_cases.map((id) => `\`${id}\``).join(', ') || '—'} | ${rate(group.pass_rate)} |`);
+    '| Category | Split | n | Pass | Honest decline | Fail | Wrong-and-confident | Harness (not scored) | Repo source-read cases | Foreign-checkout cases | Pass rate (Wilson 95%) |',
+    '|---|---|---:|---:|---:|---:|---:|---:|---|---|---|'];
+  const accessCases = (ids, split) => split === 'heldout' && !heldoutDetails ? String(ids.length) :
+    `${ids.length}${ids.length ? ` (${ids.map((id) => `\`${id}\``).join(', ')})` : ''}`;
+  for (const group of report.groups) lines.push(`| ${cell(group.category)} | ${group.split} | ${group.n} | ${group.pass} | ${group.honest_decline} | ${group.fail} | ${group.wrong_and_confident} | ${group.harness} | ${group.split === 'heldout' && !heldoutDetails ? group.repo_source_read_cases.length : group.repo_source_read_cases.map((id) => `\`${id}\``).join(', ') || '—'} | ${accessCases(group.foreign_checkout_cases, group.split)} | ${rate(group.pass_rate)} |`);
   lines.push('', '## Check pass rates', '', 'Each denominator includes only scored cases for which that check applies. V includes completed visual reviews only.', '',
     '| Category | Split | Check | Pass rate (Wilson 95%) |', '|---|---|---|---|');
   for (const group of report.groups) for (const [id, value] of Object.entries(group.checks)) lines.push(`| ${cell(group.category)} | ${group.split} | ${id} | ${id === 'V' && report.visual_pending ? 'Visual pending (n=0)' : rate(value)} |`);
@@ -155,16 +159,17 @@ export async function report(options) {
     (await Promise.all(allCases.map(async (item) => (await hasRunFolder(item.id)) ? item : null))).filter(Boolean);
   const unrunCaseIds = allCases.filter((item) => !selected.some((selectedCase) => selectedCase.id === item.id)).map((item) => item.id);
   const visual = options.visual ? await json(options.visual) : undefined, finals = {};
-  const agents = new Set(), repoSourceReads = new Set();
+  const agents = new Set(), repoSourceReads = new Set(), foreignCheckoutCases = new Set();
   for (const item of selected) {
     const meta = await json(join(options.runs, item.id, 'meta.json'));
     agents.add(meta.agent ?? null);
     if ((meta.repoAccess ?? []).some((entry) => entry?.classification === 'source-read')) repoSourceReads.add(item.id);
+    if ((meta.repoAccess ?? []).some((entry) => entry?.classification === 'foreign-checkout')) foreignCheckoutCases.add(item.id);
     try { finals[item.id] = await readFile(join(options.runs, item.id, 'final.md'), 'utf8'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   if (agents.size !== 1) throw new Error(`Cannot mix runs from different agents in one report: ${[...agents].map((agent) => agent ?? 'unspecified').join(', ')}`);
-  const result = buildReport(selected, automatic, visual, finals, [...agents][0], repoSourceReads, unrunCaseIds);
+  const result = buildReport(selected, automatic, visual, finals, [...agents][0], repoSourceReads, unrunCaseIds, foreignCheckoutCases);
   result.unrun_cases = allCases.filter((item) => unrunCaseIds.includes(item.id)).map(({ id, split }) => ({ id, split }));
   await mkdir(join(options.runs, 'grade'), { recursive: true });
   await saveJson(join(options.runs, 'grade', 'report.json'), result);

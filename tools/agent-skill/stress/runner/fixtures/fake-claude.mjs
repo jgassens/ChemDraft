@@ -6,7 +6,7 @@ if (process.argv.includes('--version')) {
   process.exit(0);
 }
 if (process.env.FAKE_CLAUDE_TRACE) {
-  await writeFile(process.env.FAKE_CLAUDE_TRACE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));
+  await writeFile(process.env.FAKE_CLAUDE_TRACE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), home: process.env.HOME }));
 }
 if (process.env.FAKE_CLAUDE_SLEEP === '1') {
   setInterval(() => {}, 1_000);

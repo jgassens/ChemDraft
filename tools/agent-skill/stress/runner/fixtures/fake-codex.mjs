@@ -7,16 +7,21 @@ if (process.argv.includes('--version')) {
   process.exit(0);
 }
 if (process.env.FAKE_CODEX_TRACE) {
-  await writeFile(process.env.FAKE_CODEX_TRACE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME }));
+  await writeFile(process.env.FAKE_CODEX_TRACE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME,
+    home: process.env.HOME, userprofile: process.env.USERPROFILE, path: process.env.PATH }));
 }
 if (process.env.FAKE_CODEX_PLUGIN_LEAK) await mkdir(path.join(process.env.CODEX_HOME, 'plugins'), { recursive: true });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const model = process.env.FAKE_CODEX_MODEL ?? 'fake-default-model';
 const call = { id: 'item_1', type: 'mcp_tool_call', server: 'chemdraft', tool: 'render_structure', arguments: { smiles: 'C' } };
+if (process.env.FAKE_CODEX_DOCUMENT_PATH) {
+  call.tool = 'render_document';
+  call.arguments = { documentPath: process.env.FAKE_CODEX_DOCUMENT_PATH };
+}
 const outputFile = process.env.FAKE_CODEX_OUTPUT_FILE;
 const payload = process.env.FAKE_CODEX_SOURCE_READ
   ? `rg ChemDraft "${process.env.FAKE_CODEX_CHECKOUT}/README.md"`
-  : outputFile ? `pnpm -s --dir "${process.env.FAKE_CODEX_CHECKOUT}" chemdraft render --out "${outputFile}"` : null;
+  : process.env.FAKE_CODEX_INPUT_COMMAND ?? (outputFile ? `pnpm -s --dir "${process.env.FAKE_CODEX_CHECKOUT}" chemdraft render --out "${outputFile}"` : null);
 const shellCommand = !payload ? 'echo drawn' : process.platform === 'win32' ?
   `cmd.exe /d /s /c "${payload}"` : `/bin/zsh -lc '${payload}'`;
 const events = [

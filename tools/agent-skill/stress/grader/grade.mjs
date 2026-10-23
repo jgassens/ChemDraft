@@ -34,7 +34,7 @@ export async function grade(options) {
     let result, run;
     try {
       run = await readRun(join(options.runs, testCase.id));
-      if (run.meta.status !== 'complete') result = harnessResult(testCase, `Runner status: ${run.meta.status ?? 'missing'}`);
+      if (run.meta.status !== 'complete') result = harnessResult(testCase, `Runner status: ${run.meta.status ?? 'missing'}${run.meta.reason ? `: ${run.meta.reason}` : ''}`);
       else {
         const extracted = await extract(run, chemistry, scratch);
         // Missing artifacts are a harness problem, not evidence of wrong chemistry.

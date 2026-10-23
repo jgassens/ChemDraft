@@ -12,6 +12,8 @@ import { extract, savedPath } from './extract.mjs';
 import { saveToolAssets } from '../runner/stream.mjs';
 // @ts-expect-error Harness modules are intentionally plain JavaScript.
 import { checkStyle } from './style.mjs';
+// @ts-expect-error Harness modules are intentionally plain JavaScript.
+import { buildReport, markdown } from './report.mjs';
 
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const checkout = resolve(directory, '../../../..');
@@ -22,6 +24,7 @@ type Call = { name: string; input: Record<string, unknown>; result?: unknown };
 const structure = 'C[C@@H](N)C(=O)O';
 const testosterone = 'C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=CC(=O)CC[C@]34C';
 const quinine = 'COC1=CC2=C(C=CN=C2C=C1)[C@H]([C@@H]3C[C@@H]4CCN3C[C@@H]4C=C)O';
+const artemisinin = 'C[C@@H]1CC[C@H]2[C@H](C(=O)O[C@H]3[C@@]24[C@H]1CC[C@](O3)(OO4)C)C';
 const render = (smiles: string): Call => ({ name: 'mcp__chemdraft__render_structure', input: { smiles } });
 const svg = (length: number, width = 2) => `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><g data-object-id="m1"><line data-bond-id="b1" x1="10" y1="10" x2="${10+length}" y2="10" stroke="black" stroke-width="${width}"/></g></svg>`;
 let root: string;
@@ -74,6 +77,9 @@ beforeAll(async () => {
   await fixture('unspecified-double', { structures: [{ smiles: 'C/C=C/C' }], full_stereo: true }, [render('CC=CC')]);
   await fixture('quinine-reference', { structures: [{ smiles: quinine }], full_stereo: true }, [render(quinine)]);
   await fixture('N07', { structures: [{ smiles: quinine }], full_stereo: true }, [render(quinine)]);
+  await fixture('artemisinin', { structures: [{ smiles: artemisinin }], set_match: true, full_stereo: true }, [render(artemisinin)]);
+  await fixture('artemisinin-unspecified-double', { structures: [{ smiles: `${artemisinin}.C/C=C/C` }], full_stereo: true },
+    [render(`${artemisinin}.CC=CC`)]);
   await fixture('quinine-extra-unspecified', { structures: [{ smiles: quinine }], full_stereo: true },
     [render(quinine.replace('[C@H]([C@@H]3', '[CH]([C@@H]3'))]);
   await fixture('duplicate', { structures: [{ smiles: 'CCO' }, { smiles: 'CC' }], set_match: true },
@@ -175,6 +181,14 @@ pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft grid --ba
   execFileSync(process.execPath, ['--import', 'tsx', 'packages/chemdraft-cli/src/cli.ts', 'document', '--smiles', 'CCO', '--out', template],
     { cwd: checkout, stdio: 'pipe', timeout: 30000 });
   const native = JSON.parse(await readFile(template, 'utf8'));
+  const labeled = structuredClone(native);
+  labeled.pages[0].objects[0].id = 'unresolvable-label';
+  labeled.pages[0].objects[0].atoms.find((atom: { element: string }) => atom.element === 'O').element = 'CH2OH';
+  labeled.pages[0].objects.push(structuredClone(native.pages[0].objects[0]));
+  await fixture('native-unresolvable', { structures: [{ smiles: 'CCO' }], set_match: true, full_stereo: true },
+    [{ name: 'mcp__chemdraft__render_document', input: { documentJson: JSON.stringify(labeled) } }]);
+  await fixture('native-unresolvable-missing', { structures: [{ smiles: 'CCO' }, { smiles: structure }], set_contains: true, full_stereo: true },
+    [{ name: 'mcp__chemdraft__render_document', input: { documentJson: JSON.stringify(labeled) } }]);
   const scheme = structuredClone(native);
   const members = ['O', 'N', 'S'].map((element, i) => {
     const molecule = structuredClone(native.pages[0].objects[0]);
@@ -206,6 +220,32 @@ pnpm -s --config.shell-emulator=true --dir /expired/checkout chemdraft grid --ba
 afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 
 describe('automatic scoring on fixture run folders', () => {
+  it('canonicalises artemisinin and counts stereo despite the RDKit depiction failure', () => {
+    const result = autos.get('artemisinin');
+    expect(result).toMatchObject({ status: 'scored', auto: 'PASS' });
+    expect(result?.drawn[0].canonical).toContain('@');
+    expect(result?.checks.A3.detail).toMatchObject({ counts: [expect.objectContaining({
+      stereoCenters: 7, unspecifiedStereoCenters: 0, unspecifiedDoubleBonds: 0,
+    })] });
+    const unspecified = autos.get('artemisinin-unspecified-double');
+    expect(unspecified?.status).toBe('scored');
+    expect(unspecified?.checks.A3.pass).toBe(false);
+    expect(unspecified?.checks.A3.detail).toMatchObject({ counts: [expect.objectContaining({ unspecifiedDoubleBonds: 1 })] });
+  });
+  it('keeps unresolvable native labels as nonmatching agent results and grades the remaining molecules', () => {
+    const result = autos.get('native-unresolvable');
+    expect(result).toMatchObject({ status: 'scored', auto: 'FAIL' });
+    expect(result?.drawn).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'unresolvable', error: expect.stringContaining('CH2OH'), source: expect.stringContaining('#unresolvable-label') }),
+      expect.objectContaining({ canonical: 'CCO' }),
+    ]));
+    expect(result?.checks.A1.pass).toBe(true);
+    expect(result?.checks.A2.pass).toBe(false);
+    expect(result?.checks.A3.pass).toBe(true);
+    const missing = autos.get('native-unresolvable-missing');
+    expect(missing?.status).toBe('scored');
+    for (const id of ['A1', 'A2', 'A3']) expect(missing?.checks[id].pass).toBe(false);
+  });
   it('loads RDKit exactly once for all cases', () => { expect(aggregate.engine_loads).toBe(1); });
   it('passes an exact absolute stereo match using the real RDKit path', () => {
     expect(autos.get('exact')?.checks.A1.pass).toBe(true); expect(autos.get('exact')?.checks.A3.pass).toBe(true);
@@ -391,6 +431,28 @@ describe('automatic scoring on fixture run folders', () => {
 });
 
 describe('report', () => {
+  it('reports foreign-checkout cases in each split, including unscored harness cases', () => {
+    const fixtures = ['dev', 'heldout'].flatMap((split) => ['clean', 'leak'].map((kind) => ({
+      id: `${split}-${kind}`, category: 'isolation', split, prompt: 'Fixture', expect: {}, rubric: [],
+    })));
+    const automatic = { scoring_version: 1, cases: fixtures.map((item) => ({ id: item.id,
+      status: item.id.endsWith('leak') ? 'harness' : 'complete', auto: 'PASS', checks: {}, drawn: [] })) };
+    const report = buildReport(fixtures, automatic, undefined, {}, 'codex', new Set(), [], new Set(['dev-leak', 'heldout-leak']));
+    for (const split of ['dev', 'heldout']) {
+      const group = report.groups.find((entry: { split: string }) => entry.split === split);
+      expect(group).toMatchObject({ n: 1, pass: 1, harness: 1, foreign_checkout_cases: [`${split}-leak`] });
+      expect(report.cases.find((entry: { id: string }) => entry.id === `${split}-leak`)).toMatchObject({ result: 'harness', foreign_checkout_access: true });
+    }
+    const publicReport = markdown(report), heldoutReport = markdown(report, { heldoutDetails: true });
+    expect(publicReport).toContain('Foreign-checkout cases');
+    expect(publicReport).toContain('1 (`dev-leak`)');
+    expect(publicReport).not.toContain('heldout-leak');
+    expect(heldoutReport).toContain('1 (`heldout-leak`)');
+    const clean = buildReport(fixtures.slice(0, 1), { ...automatic, cases: automatic.cases.slice(0, 1) }, undefined);
+    expect(clean.groups[0].foreign_checkout_cases).toEqual([]);
+    expect(markdown(clean)).toContain('| 0 | 1/1');
+  });
+
   it('rejects cases from different agents', async () => {
     expect(() => node('report.mjs')).toThrow(/Cannot mix runs from different agents/);
     // The remaining report checks exercise a single-agent selection, after proving the guard.
@@ -398,6 +460,8 @@ describe('report', () => {
   });
   it('keeps splits and categories separate, excludes harness, labels pending V, and computes Wilson 95%', async () => {
     await writeFile(join(runs, 'exact/meta.json'), JSON.stringify({ id: 'exact', status: 'complete', repoAccess: [{ classification: 'source-read', path: 'packages/chem-core/src/index.ts' }] }));
+    await writeFile(join(runs, 'timeout/meta.json'), JSON.stringify({ id: 'timeout', status: 'error',
+      reason: 'isolation-leak: foreign checkout /foreign', repoAccess: [{ classification: 'foreign-checkout', checkout: '/foreign' }] }));
     node('report.mjs');
     const report = JSON.parse(await readFile(join(runs, 'grade/report.json'), 'utf8'));
     const dev = report.groups.find((group: { category: string; split: string }) => group.category === 'split-test' && group.split === 'dev');
@@ -410,6 +474,8 @@ describe('report', () => {
     expect(report.groups.every((group: { split: string }) => ['dev', 'heldout'].includes(group.split))).toBe(true);
     const sourceReads = report.groups.find((group: { category: string; split: string }) => group.category === 'test' && group.split === 'dev');
     expect(sourceReads.repo_source_read_cases).toContain('exact');
+    expect(report.groups.find((group: { foreign_checkout_cases: string[] }) => group.foreign_checkout_cases.includes('timeout')).harness).toBeGreaterThan(0);
+    expect(report.cases.find((item: { id: string }) => item.id === 'timeout').foreign_checkout_access).toBe(true);
     const publicReport = await readFile(join(runs, 'grade/report.md'), 'utf8');
     const heldoutReport = await readFile(join(runs, 'grade/report-heldout.md'), 'utf8');
     expect(publicReport).toContain('| split-test | heldout |');

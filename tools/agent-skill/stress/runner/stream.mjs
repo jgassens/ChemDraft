@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, readlink, realpath, stat, writeFile } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -132,13 +132,30 @@ export async function saveToolAssets(events, imageDir) {
 
 export async function hashTree(root) {
   const hash = createHash('sha256');
+  const visitedDirectories = new Set();
+
   async function visit(directory) {
+    // `readdir` follows a root link, but nested links need explicit handling.
+    // Track canonical directories so a link back to an ancestor cannot recurse.
+    const canonicalDirectory = await realpath(directory);
+    if (visitedDirectories.has(canonicalDirectory)) return;
+    visitedDirectories.add(canonicalDirectory);
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const full = path.join(directory, entry.name);
       const relative = path.relative(root, full).split(path.sep).join('/');
       if (entry.isDirectory()) { hash.update(`d:${relative}\0`); await visit(full); }
       else if (entry.isFile()) { hash.update(`f:${relative}\0`); hash.update(await readFile(full)); }
+      else if (entry.isSymbolicLink()) {
+        // The target name is part of the skill identity as well as its
+        // dereferenced content. This makes retargeting observable even when
+        // both target files happen to contain identical bytes.
+        const target = await readlink(full);
+        hash.update(`l:${relative}\0${target}\0`);
+        const targetInfo = await stat(full);
+        if (targetInfo.isDirectory()) await visit(full);
+        else if (targetInfo.isFile()) hash.update(await readFile(full));
+      }
     }
   }
   await visit(root);
