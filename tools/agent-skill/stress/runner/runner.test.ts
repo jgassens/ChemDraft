@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error runner.mjs is intentionally plain JavaScript.
-import { assertOutputIsolation, checkoutChanges, commandOutputTargets, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
+import { assertOutputIsolation, checkoutChanges, commandOutputTargets, pathsEqual, repoAccess, run, quoteWindowsCmdArgument, resolveWindowsCommand, spawnCommandSpec } from './runner.mjs';
 // @ts-expect-error stream.mjs is intentionally plain JavaScript.
 import { inspectStream } from './stream.mjs';
 
@@ -17,7 +17,7 @@ const fakeAgentctl = path.join(root, 'tools/agent-skill/stress/runner/fixtures/f
 const temporary: string[] = [];
 
 async function fixtureCases() {
-  const directory = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-cases-')));
+  const directory = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-cases-')));
   temporary.push(directory);
   const file = path.join(directory, 'cases.json');
   await writeFile(file, JSON.stringify({ cases: [
@@ -27,10 +27,10 @@ async function fixtureCases() {
   return file;
 }
 
-async function outDirectory() { const value = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-'))); temporary.push(value); return value; }
+async function outDirectory() { const value = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-out-'))); temporary.push(value); return value; }
 
 async function fakeCheckout(withOpsin: boolean) {
-  const container = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-checkout-')));
+  const container = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-checkout-')));
   temporary.push(container);
   const directory = path.join(container, 'repo');
   await mkdir(directory);
@@ -71,6 +71,15 @@ describe('stress runner', { timeout: 30_000 }, () => {
       command: 'cmd.exe',
       args: ['/d', '/s', '/c', `"${shim}" "exec" "--" "Draw ^(S^)-ibuprofen ^& say \\"R\\" or 'S' 100%% $HOME"`],
     });
+  });
+
+  it('compares canonical Windows paths case-insensitively', () => {
+    const short = String.raw`C:\Users\RUNNER~1\AppData\Local\Temp\artifact.svg`;
+    const long = String.raw`c:\USERS\runneradmin\appdata\local\temp\ARTIFACT.svg`;
+    const realpathNative = (value: string) => value.toLowerCase().includes('runner~1')
+      ? String.raw`C:\Users\runneradmin\AppData\Local\Temp\artifact.svg`
+      : value;
+    expect(pathsEqual(short, long, { platform: 'win32', realpathNative })).toBe(true);
   });
 
   it('runs an isolated case and saves transcript-derived artifacts', async () => {
@@ -230,7 +239,7 @@ describe('stress runner', { timeout: 30_000 }, () => {
 
   it('collects externally written outputs and records CLI checkout access', async () => {
     const { out, args, env } = await codexFixture();
-    const external = realpathSync(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-external-')));
+    const external = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'chemdraft-stress-external-')));
     temporary.push(external);
     const artifact = path.join(external, 'artifact.svg');
     await writeFile(artifact, '<svg xmlns="http://www.w3.org/2000/svg"/>');

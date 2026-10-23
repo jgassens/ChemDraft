@@ -3,8 +3,8 @@ import { spawnCommandSpec } from '../spawn-command.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { copyFile, cp, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { copyFile, cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { hashTree, inspectStream, listFiles, parseStream, saveToolAssets } from './stream.mjs';
@@ -13,6 +13,22 @@ import { inspectCodexStream, reportedCodexModel } from './codex-stream.mjs';
 const defaultCheckout = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const DEFAULTS = { agent: 'claude', split: 'all', model: null, timeoutMin: 15, maxTurns: 60, concurrency: 2 };
 const PERMITTED_TOOLS = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Skill,mcp__chemdraft__*';
+
+/** Resolve an existing path to the filesystem's canonical spelling. */
+export function canonicalPath(value, { platform = process.platform, realpathNative = realpathSync.native } = {}) {
+  const paths = platform === 'win32' ? path.win32 : path;
+  const resolved = paths.resolve(value);
+  try { return realpathNative(resolved); } catch { return resolved; }
+}
+
+function comparisonPath(value, options = {}) {
+  const canonical = canonicalPath(value, options);
+  return (options.platform ?? process.platform) === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+export function pathsEqual(left, right, options = {}) {
+  return comparisonPath(left, options) === comparisonPath(right, options);
+}
 
 // Project settings are the isolated work folder, where the copied skill resides.
 // Do not use --bare: normal OAuth sign-in and skill discovery must remain available.
@@ -59,13 +75,16 @@ export function parseArgs(argv) {
   return result;
 }
 
-function isInside(repo, out) {
-  const relative = path.relative(repo, out);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+function isInside(repo, out, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const paths = platform === 'win32' ? path.win32 : path;
+  const relative = paths.relative(comparisonPath(repo, options), comparisonPath(out, options));
+  return relative === '' || (!relative.startsWith(`..${paths.sep}`) && relative !== '..' && !paths.isAbsolute(relative));
 }
 
-function isInsideOrParent(checkout, output) {
-  return isInside(checkout, output) || isInside(path.dirname(checkout), output);
+function isInsideOrParent(checkout, output, options = {}) {
+  const paths = (options.platform ?? process.platform) === 'win32' ? path.win32 : path;
+  return isInside(checkout, output, options) || isInside(paths.dirname(checkout), output, options);
 }
 
 const outputExtension = /\.(?:png|svg|pdf|cdxml|sdf|mol|chemdraft|json)$/i;
@@ -145,7 +164,7 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
   const copied = new Set();
   for (const [target, toolCallIndex] of targets) {
     for (const source of await filesAtOutputTarget(target)) {
-      const resolved = await realpath(source).catch(() => null);
+      const resolved = canonicalPath(source);
       if (!resolved || isInside(codexHome, resolved) || copied.has(resolved)) continue;
       copied.add(resolved);
       const copiedName = `${String(manifest.length + 1).padStart(3, '0')}-${path.basename(resolved)}`;
@@ -161,11 +180,10 @@ async function collectOutputs(caseDir, work, codexHome, final, toolCalls) {
 }
 
 function isCliCommand(commandText, checkout, { platform = process.platform } = {}) {
-  const paths = platform === 'win32' ? path.win32 : path;
   const words = commandWords(commandText, { platform });
   const pnpm = words.some((word) => /(?:^|[\\/])pnpm(?:\.cmd|\.exe)?$/i.test(word));
   const directory = words.findIndex((word) => word === '--dir');
-  return pnpm && directory >= 0 && paths.resolve(words[directory + 1] ?? '') === paths.resolve(checkout) && words.slice(directory + 2).includes('chemdraft');
+  return pnpm && directory >= 0 && pathsEqual(words[directory + 1] ?? '', checkout, { platform }) && words.slice(directory + 2).includes('chemdraft');
 }
 
 function inputStrings(value, strings = []) {
@@ -179,7 +197,7 @@ export function repoAccess(toolCalls, checkout, { platform = process.platform, w
   const accesses = [];
   const paths = platform === 'win32' ? path.win32 : path;
   const inCheckout = (value) => {
-    const relative = paths.relative(paths.resolve(checkout), paths.resolve(work, value));
+    const relative = paths.relative(comparisonPath(checkout, { platform }), comparisonPath(paths.resolve(work, value), { platform }));
     return relative === '' || relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
   };
   for (const call of toolCalls) {
@@ -242,25 +260,25 @@ export async function usageAllowsStart(agentctl, agent, stderr) {
 
 /** Reject inherited project instructions, including ancestors reached through symlinks. */
 export async function assertOutputIsolation(output, { home = homedir() } = {}) {
-  let current = path.resolve(output);
+  const canonicalHome = canonicalPath(home);
+  let current = canonicalPath(output);
   const directories = new Set();
   for (;;) {
-    directories.add(current);
-    try { directories.add(await realpath(current)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    directories.add(canonicalPath(current));
     const parent = path.dirname(current);
-    if (parent === current || current === path.resolve(home)) break;
+    if (parent === current || pathsEqual(current, canonicalHome)) break;
     current = parent;
   }
   for (const directory of directories) {
     let ancestor = directory;
     for (;;) {
       for (const entry of ['CLAUDE.md', 'AGENTS.md', '.claude', '.codex']) {
-        if ((entry === '.claude' || entry === '.codex') && ancestor === path.resolve(home)) continue;
+        if ((entry === '.claude' || entry === '.codex') && pathsEqual(ancestor, canonicalHome)) continue;
         if (existsSync(path.join(ancestor, entry))) throw new Error(`--out inherits agent instructions: ${path.join(ancestor, entry)}`);
       }
       // Include home itself, but never inspect its parents for home descendants.
-      if (ancestor === path.resolve(home) || path.dirname(ancestor) === ancestor) break;
-      ancestor = path.dirname(ancestor);
+      if (pathsEqual(ancestor, canonicalHome) || path.dirname(ancestor) === ancestor) break;
+      ancestor = canonicalPath(path.dirname(ancestor));
     }
   }
 }
@@ -431,8 +449,8 @@ async function runOne(caseItem, options, shared, stderr) {
 
 export async function run(options, io = {}) {
   const stderr = io.stderr ?? ((line) => process.stderr.write(`${line}\n`));
-  options.checkout = await realpath(path.resolve(options.checkout));
-  options.out = path.resolve(options.out);
+  options.checkout = canonicalPath(options.checkout);
+  options.out = canonicalPath(options.out);
   if (isInsideOrParent(options.checkout, options.out)) throw new Error('--out must be outside the repository and its parent directory');
   await assertOutputIsolation(options.out, { home: options.home });
   const casesData = JSON.parse(await readFile(options.cases, 'utf8'));
