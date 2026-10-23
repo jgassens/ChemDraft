@@ -856,6 +856,61 @@ textarea:focus-visible,
   max-width: calc(100vw - var(--palette-x) - 8px);
 }
 
+.document-viewport {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.plugin-canvas-overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.plugin-canvas-overlay {
+  position: absolute;
+  width: 36px;
+  max-width: 100%;
+  max-height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  pointer-events: auto;
+  color: var(--cd-text-primary);
+  background: var(--cd-bg-panel);
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  box-shadow: 0 2px 8px var(--cd-border-subtle);
+  font-size: 12px;
+  touch-action: auto;
+}
+
+.plugin-canvas-overlay[data-expanded="true"] { width: 300px; padding: var(--cd-space-3); }
+.plugin-canvas-overlay[data-expanded="false"] { border: 0; }
+.plugin-canvas-overlay-icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  padding: 5px;
+  border: 1px solid var(--cd-border-control);
+  border-radius: var(--cd-radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+.plugin-canvas-overlay-icon[hidden] { display: none; }
+.plugin-canvas-overlay-icon img { width: 24px; height: 24px; }
+.plugin-canvas-overlay-header { display: flex; align-items: center; justify-content: space-between; cursor: move; touch-action: none; }
+.plugin-canvas-overlay-header button { color: var(--cd-text-secondary); background: transparent; border: 0; cursor: pointer; }
+.plugin-canvas-overlay .plugin-report-composer { position: static; margin: 0; padding: var(--cd-space-3) 0 0; border: 0; }
+.plugin-canvas-overlay textarea { box-sizing: border-box; resize: none; }
+.plugin-canvas-overlay-status { margin: var(--cd-space-2) 0 0; color: var(--cd-text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.plugin-canvas-overlay-panel { padding: 0; margin-top: var(--cd-space-2); border: 0; color: var(--cd-accent-text); background: transparent; font: inherit; text-decoration: underline; cursor: pointer; }
+@media print { .plugin-canvas-overlay-layer, .plugin-canvas-overlay { display: none !important; } }
+
 .canvas-region {
   --ruler-thickness: 32px;
   position: relative;

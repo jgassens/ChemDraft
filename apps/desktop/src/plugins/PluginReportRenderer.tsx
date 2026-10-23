@@ -1,7 +1,7 @@
 import type { PluginPanelReport, PluginPanelSection } from "@chemdraft/plugin-api";
 
 import { LinkedFigureView } from "./LinkedFigureView";
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { writeClipboardText } from "../clipboard";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 
@@ -39,7 +39,7 @@ function PluginReportSectionView({ section, copyText, onAction }: {
 }) {
   switch (section.kind) {
     case "prompt":
-      return <PromptSection section={section} onAction={onAction} />;
+      return <PluginPromptSection section={section} onAction={onAction} />;
     case "actions":
       return <ActionsSection section={section} onAction={onAction} />;
     case "image":
@@ -128,20 +128,25 @@ function PluginReportSectionView({ section, copyText, onAction }: {
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
 }
 
-function PromptSection({ section, onAction }: {
+export function PluginPromptSection({ section, onAction, includeSelected = false }: {
   section: Extract<PluginPanelSection, { kind: "prompt" }>;
   onAction?: PluginPanelActionHandler;
+  /** Overlays retain the choice locally and include it with Send as well as select actions. */
+  includeSelected?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
   const [pending, setPending] = useState(false);
+  const [selected, setSelected] = useState(section.select?.value);
+  useEffect(() => setSelected(section.select?.value), [section.select?.value]);
   const canSubmit = !!onAction && !section.disabled && !pending;
   const submit = async (): Promise<void> => {
     if (!canSubmit || !onAction) return;
     setPending(true);
     setMessage(undefined);
     try {
-      const result = await onAction({ sectionId: section.id, control: "prompt", text: draft });
+      const result = await onAction({ sectionId: section.id, control: "prompt", text: draft,
+        ...(includeSelected && selected !== undefined ? { selected } : {}) });
       if (result.ok) setDraft("");
       else setMessage(result.message);
     } catch {
@@ -173,12 +178,22 @@ function PromptSection({ section, onAction }: {
       {select ? <label className="plugin-report-composer-select">
         <span>{select.label}</span>
         <select
-          value={select.value}
+          value={includeSelected ? selected : select.value}
           disabled={section.disabled || !onAction || pending}
           onChange={(event) => {
             if (!onAction) return;
-            void onAction({ sectionId: section.id, control: "select", controlId: select.id, selected: event.target.value })
-              .catch(() => undefined);
+            const value = event.target.value;
+            if (includeSelected) setSelected(value);
+            void onAction({ sectionId: section.id, control: "select", controlId: select.id, selected: value })
+              .then(result => {
+                if (!includeSelected) return;
+                setMessage(result.ok ? undefined : result.message);
+                if (!result.ok) setSelected(select.value);
+              }, () => {
+                if (!includeSelected) return;
+                setMessage("The action could not be completed.");
+                setSelected(select.value);
+              });
           }}
         >
           {select.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

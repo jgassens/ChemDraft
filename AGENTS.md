@@ -339,6 +339,11 @@ the first time and reopen where they were left, and use the shared dialog host
 toolbars stay usable beside them and a dialog can come in front of them. Simple confirmations use native message
 boxes. Existing in-viewport dialogs are being migrated; add no new ones.
 
+**Canvas overlay exception (owner rule, 2026-10-22).** One declared canvas overlay per plugin — an icon
+that expands into a prompt box with a status line, permission `ui.canvas` — is the only permitted
+in-viewport plugin surface. It is draggable, remembers its place, hides during canvas gestures and in
+exports, and takes focus only when clicked. Dialogs, palettes and panels still float as native windows.
+
 ## 13. Security, errors, and performance
 
 - **Security.** Plugins get no file, network, native, model, clipboard, or remote-recognition access

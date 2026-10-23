@@ -121,7 +121,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
-import type { PluginCommandInput, PluginPanelReport } from "@chemdraft/plugin-api";
+import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -192,6 +192,8 @@ import {
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
 import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
+import { PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
+import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
@@ -1881,6 +1883,34 @@ export function MainWindow({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const canvasOverlaysPresentRef = useRef(false);
+  const [canvasPointerActive, setCanvasPointerActive] = useState(false);
+  const [canvasZoomActive, setCanvasZoomActive] = useState(false);
+  const [canvasWheelActive, setCanvasWheelActive] = useState(false);
+  useEffect(() => {
+    const pointers = new Set<number>();
+    const down = (event: globalThis.PointerEvent) => {
+      if (!canvasOverlaysPresentRef.current || !(event.target instanceof Element) || !canvasRegionRef.current?.contains(event.target)
+        || event.target.closest(".plugin-canvas-overlay")) return;
+      pointers.add(event.pointerId);
+      setCanvasPointerActive(true);
+    };
+    const up = (event: globalThis.PointerEvent) => {
+      pointers.delete(event.pointerId);
+      setCanvasPointerActive(pointers.size > 0);
+    };
+    const clear = () => { pointers.clear(); setCanvasPointerActive(false); setCanvasZoomActive(false); setCanvasWheelActive(false); };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
   // Capture can belong to an object or a handle (even one later unmounted), not just the page.
@@ -3625,7 +3655,14 @@ export function MainWindow({
       return undefined;
     }
 
+    let wheelEndTimer: ReturnType<typeof setTimeout> | undefined;
     const handleNativeWheel = (event: globalThis.WheelEvent) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      if (canvasOverlaysPresentRef.current) {
+        setCanvasWheelActive(true);
+        clearTimeout(wheelEndTimer);
+        wheelEndTimer = setTimeout(() => setCanvasWheelActive(false), 150);
+      }
       if (!zoomCanvasFromWheelEvent(event)) {
         return;
       }
@@ -3634,11 +3671,14 @@ export function MainWindow({
       event.stopPropagation();
     };
     const handleGestureStart = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      if (canvasOverlaysPresentRef.current) setCanvasZoomActive(true);
       event.preventDefault();
       event.stopPropagation();
       gestureStartScaleRef.current = viewportRef.current.scale;
     };
     const handleGestureChange = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
       const gesture = event as WebKitGestureEvent;
       event.preventDefault();
       event.stopPropagation();
@@ -3648,6 +3688,8 @@ export function MainWindow({
       );
     };
     const handleGestureEnd = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      setCanvasZoomActive(false);
       event.preventDefault();
       event.stopPropagation();
       gestureStartScaleRef.current = viewportRef.current.scale;
@@ -3660,6 +3702,7 @@ export function MainWindow({
     canvas.addEventListener("gestureend", handleGestureEnd, listenerOptions);
 
     return () => {
+      clearTimeout(wheelEndTimer);
       canvas.removeEventListener("wheel", handleNativeWheel, listenerOptions);
       canvas.removeEventListener("gesturestart", handleGestureStart, listenerOptions);
       canvas.removeEventListener("gesturechange", handleGestureChange, listenerOptions);
@@ -10509,6 +10552,7 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
@@ -11146,6 +11190,42 @@ export function MainWindow({
 
   invokeCommandRef.current = invoke;
 
+  // Both surfaces accept control data only, then enqueue through the same per-command dispatcher.
+  const acceptPluginInput = async (commandId: string, input: PluginCommandInput): Promise<PluginPanelActionResult> => {
+    if (!registry.get(commandId)?.enabled) return { ok: false, message: "This command is disabled." };
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current) {
+      return { ok: false, message: "Finish the pending document confirmation before running this command." };
+    }
+    try {
+      await invokeCommandRef.current(commandId, { input });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const dispatchOverlayAction = async (pluginId: string, overlayId: string,
+    request: PluginPanelActionRequest): Promise<PluginPanelActionResult> => {
+    const runtime = pluginRuntime.runtime;
+    const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
+    if (!declaration) return { ok: false, message: "This overlay is no longer available." };
+    const overlay = declaration.overlay;
+    if (request.sectionId !== overlay.id) return { ok: false, message: "Unknown overlay section." };
+    // Reuse the panel validator for live limits, controls and ownership. The overlay's top-level
+    // command owns Send; its prompt.commandId is never trusted as an alternate submit route.
+    const resolved = resolvePluginPanelAction({ title: overlay.title, sections: [
+      { ...overlay.prompt, id: overlay.id, commandId: overlay.commandId }
+    ] }, { ...request, panelId: "panel.overlay.input" }, commandId => {
+      const command = registry.get(commandId);
+      return command?.source === "plugin" && command.pluginId === pluginId
+        && runtime.host.getPlugin(pluginId)?.manifest.contributes.commands.some(item => item.id === commandId) === true;
+    });
+    if (!resolved.ok) return { ok: false, message: resolved.reason };
+    const { panelId: _panelId, ...input } = resolved.input;
+    const parsed = PluginCommandInputSchema.safeParse({ ...input, source: "overlay", overlayId });
+    if (!parsed.success) return { ok: false, message: "The overlay action is invalid." };
+    return acceptPluginInput(resolved.commandId, parsed.data);
+  };
+
   // Keep one subscription while resolving every action against the report last shown by this
   // window and the current host registry. A panel message cannot supply command metadata.
   const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
@@ -11184,19 +11264,10 @@ export function MainWindow({
       refuse(resolved.reason);
       return;
     }
-    if (!registry.get(resolved.commandId)?.enabled) {
-      refuse("This command is disabled.");
-      return;
-    }
-    if (keptDrawingsPromptRef.current || quitInteractionRef.current) {
-      refuse("Finish the pending document confirmation before running this command.");
-      return;
-    }
     // invoke enqueues plugin work and returns immediately. Acknowledge acceptance, never wait
     // for completion: a long submit must leave the panel free to send its separate stop command.
-    void Promise.resolve(invokeCommandRef.current(resolved.commandId, { input: resolved.input }))
-      .then(() => respondToPluginPanelAction(id, { ok: true }), (error: unknown) =>
-        respondToPluginPanelAction(id, { ok: false, reason: error instanceof Error ? error.message : String(error) }))
+    void acceptPluginInput(resolved.commandId, resolved.input)
+      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }))
       .catch(() => undefined);
   };
   useEffect(() => listenForPluginPanelActions((id, request) => {
@@ -12510,6 +12581,7 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
       if (isBlockedByModalDialog(event.target)) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
@@ -19650,8 +19722,10 @@ export function MainWindow({
           <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
             onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
         </div>
+        <div className="document-viewport">
         <section
           ref={canvasRegionRef}
+          tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onDragOver={(event) => {
@@ -20029,6 +20103,24 @@ export function MainWindow({
             </div>
           </div>
         </section>
+        <div className="plugin-canvas-overlay-layer">
+          {pluginRuntime.canvasOverlays.map(({ pluginId, overlay }) => {
+            const panel = pluginRuntime.plugins.find(plugin => plugin.id === pluginId)?.contributes.panels[0];
+            return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+              viewportRef={canvasRegionRef}
+              gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
+              status={pluginRuntime.canvasOverlayStatuses.get(overlay.id)}
+              onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
+              onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
+              onOpenPanel={panel ? () => {
+                const livePanel = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest.contributes.panels.find(item => item.id === panel.id);
+                if (livePanel?.commandId) void Promise.resolve(invokeCommandRef.current(livePanel.commandId)).catch(() => undefined);
+                else if (isDesktopRuntime()) void openPluginPanelWindow({ pluginId, panelId: panel.id,
+                  title: panel.title, ...panel.preferredWindowSize, focus: true }).catch(() => undefined);
+              } : undefined} />;
+          })}
+        </div>
+        </div>
         {activeEditorMolecule ? (
           <KetcherEditorHost
             molecule={activeEditorMolecule}
