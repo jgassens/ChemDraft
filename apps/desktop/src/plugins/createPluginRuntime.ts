@@ -1,4 +1,5 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import type { AssistantToolContext } from "../assistant/AssistantToolContext";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
@@ -126,6 +127,8 @@ export interface DesktopPluginRuntimeOptions {
   assistantMcpEngine?: AssistantMcpEngine;
   assistantContext?: AssistantToolsControllerOptions["createContext"];
   assistantTransactions?: AssistantToolsControllerOptions["transactions"];
+  runAssistantWrite?: AssistantToolsControllerOptions["runWrite"];
+  getAssistantViewportRect?: AssistantToolContext["getViewportRect"];
   getAssistantDocument?: AssistantToolsControllerOptions["readDocument"];
   namingCanonicalizer?: NamingCanonicalizer;
   /** Chemistry validation seam used after recognition and before a proposal is built. */
@@ -266,10 +269,16 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     host: (): PluginHost => host,
     engine: options.assistantMcpEngine ?? (isTauriHost() ? new TauriAssistantMcpEngine() : new UnsupportedAssistantMcpEngine()),
     getActiveTabId: () => options.getActiveDocumentTab?.().id,
-    getSelection: () => options.getSelection?.(),
+    getSelectionIds: () => options.getActiveDocument()?.selection.objectIds ?? [],
+    runWrite: options.runAssistantWrite ?? (apply => {
+      const port = getAssistantHistoryPort();
+      if (!port.runWrite) throw new Error("The document window provides no assistant write gate.");
+      return port.runWrite(apply);
+    }),
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
     transactions: options.assistantTransactions,
     createContext: options.assistantContext ?? (({ getDocument }) => ({
+      getViewportRect: options.getAssistantViewportRect ?? (tabId => getAssistantHistoryPort().getViewportRect?.(tabId)),
       now: options.now ?? (() => new Date()),
       render: (svg, settings) => rasterizeSvgNative(svg, "png", settings),
       chemistry: {

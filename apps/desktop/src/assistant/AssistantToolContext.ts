@@ -20,8 +20,9 @@ export interface AssistantToolContext {
   /** Transaction-owned ids, including writes through another session for this run. */
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
-  /** applyPatchForPlugin inside the run's transaction and fixed write scope. */
-  write(patch: DocumentPatch): Promise<{ objectIds: string[] }>;
+  /** applyPatchForPlugin inside the run's transaction and fixed write scope.
+   * Recheck the signal after waiting for an active canvas gesture. */
+  write(patch: DocumentPatch, signal?: AbortSignal): Promise<{ objectIds: string[] }>;
   chemistry: {
     nameToStructure(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
     /** Host's RDKit -> OCL -> createSmilesMolecule path, bound to the pinned document. */

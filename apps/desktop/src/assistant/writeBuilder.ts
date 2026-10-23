@@ -7,6 +7,7 @@ import {
   nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
@@ -85,7 +86,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
   const latest = requireDocument(context);
-  if (latest !== document && JSON.stringify(latest) !== JSON.stringify(document)) {
+  if (latest !== document && !assistantDocumentContentUnchanged(document, latest)) {
     throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
   }
   const result = await context.write(built.patch);
@@ -251,6 +252,7 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
   const document = requireDocument(context);
   const { object: old, page } = findObject(document, input.objectId);
   if (old.type !== "molecule") throw new Error(`${old.id} is not a molecule.`);
+  refuseAnchoredElectronMarks(document, old.id, "edit");
   let object = (freshObjects(document, [await buildMolecule(context, input.smiles)])[0]!) as MoleculeObject;
   let warnings: string[] = [];
   if (input.keepPosition) {
@@ -304,10 +306,7 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     if (object.type === "mechanism-arrow" && (object.source.kind !== "point" || object.target.kind !== "point")) {
       throw new Error(`Cannot move atom-anchored mechanism arrow ${object.id} independently.`);
     }
-    if (object.type === "molecule" && document.pages.some(page => page.objects.some(candidate =>
-      candidate.type === "electron-mark" && candidate.anchor.objectId === object.id))) {
-      throw new Error(`Cannot safely move ${object.id} without its anchored electron marks.`);
-    }
+    refuseAnchoredElectronMarks(document, object.id, "move");
     if (object.type === "graphic" && object.data.pathD && !object.data.pathNodes && !object.data.lineStart && !object.data.arcCenter && !object.data.freehandPoints) {
       throw new Error(`Cannot safely move legacy path ${object.id} without editable path geometry.`);
     }
@@ -327,4 +326,12 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     return { op: "updateObject", objectId: object.id, changes };
   });
   return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: placed.warnings };
+}
+
+/** Refuse rather than leave chemistry-bearing mechanism marks pointing at stale atoms. */
+export function refuseAnchoredElectronMarks(document: ChemDraftDocument, objectId: string, action: string): void {
+  if (document.pages.some(page => page.objects.some(candidate =>
+    candidate.type === "electron-mark" && candidate.anchor.objectId === objectId))) {
+    throw new Error(`Cannot safely ${action} ${objectId} without its anchored electron marks; use the canvas tools to edit the linked mechanism.`);
+  }
 }

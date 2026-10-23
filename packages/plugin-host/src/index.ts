@@ -901,6 +901,14 @@ export class PluginHost {
         throw new PluginHostError(`Plugin "${pluginId}" passed an unsupported "${op.op}" patch to documents.applyPatch.`);
       }
       if (op.op === "addObject" || op.op === "addAnnotation") {
+        // The desktop validates complete native objects. Validate the identity needed by this
+        // scope check first, so malformed plugin input cannot throw while dereferencing it.
+        const object = op.op === "addObject" ? op.object : op.annotation;
+        if (!object || typeof object !== "object" || Array.isArray(object) ||
+          typeof object.id !== "string" || !object.id.trim() ||
+          typeof op.pageId !== "string" || !op.pageId.trim()) {
+          throw new PluginHostError(`Invalid ${op.op} patch: provide a valid ${op.op === "addObject" ? "object" : "annotation"} and pageId.`);
+        }
         scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
       } else {
         const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];

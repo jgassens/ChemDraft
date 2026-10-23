@@ -42,6 +42,17 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it.each(["addObject", "addAnnotation"])("rejects a malformed %s batch with a validation error before applying anything", async op => {
+    const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "malformed", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: "page_001", object: text("valid") },
+        { op, pageId: "page_001" } as DocumentPatch
+      ]
+    } }));
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(`Invalid ${op} patch`);
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document().pages[0]!.objects).toHaveLength(2);
+  });
   const operations: DocumentPatch[] = [
     { op: "updateObject", objectId: "mol_7", changes: { text: "changed" } },
     { op: "removeObject", objectId: "mol_7" },

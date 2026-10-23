@@ -38,9 +38,13 @@ describe("createPluginRuntime assistant integration", () => {
       status: vi.fn(async () => ({ listening: false, sessionCount: 0 }))
     };
     const ordinaryWrite = vi.fn();
+    const getSelection = vi.fn(() => { throw new Error("Send must not build molfiles"); });
+    const viewport = vi.fn((_tabId: string) => ({ x: 50, y: 600, width: 400, height: 200 }));
+    let activeTabId = context.tabId;
     const runtime = createPluginRuntime({ getActiveDocument: context.getDocument,
-      getActiveDocumentTab: () => ({ id: context.tabId }), getSelection: () => emptySelection,
-      assistantMcpEngine: engine, assistantContext: () => context, getAssistantDocument: port.read,
+      getActiveDocumentTab: () => ({ id: activeTabId }), getSelection,
+      assistantMcpEngine: engine, getAssistantDocument: port.read,
+      getAssistantViewportRect: viewport, runAssistantWrite: async apply => apply(),
       assistantTransactions: () => transactions, applyDocumentPatch: ordinaryWrite });
     expect(engine.open).not.toHaveBeenCalled();
     expect(engine.status).not.toHaveBeenCalled();
@@ -49,6 +53,7 @@ describe("createPluginRuntime assistant integration", () => {
     }, { commandHandlers: { "plugin.assistant.submit": async ctx => {
       const api = ctx.assistant!;
       const { requestId } = await api.beginRequest({ prompt: "caption" });
+      activeTabId = "other-tab";
       await api.createToolSession({ requestId });
       const result = await api.callTool({ name: "insert_text", input: { text: "Assistant caption" } });
       expect(result.isError).not.toBe(true);
@@ -59,7 +64,12 @@ describe("createPluginRuntime assistant integration", () => {
     expect(engine.close).toHaveBeenCalledWith("mcp");
     expect(push).toHaveBeenCalledOnce();
     expect(ordinaryWrite).not.toHaveBeenCalled();
+    expect(getSelection).not.toHaveBeenCalled();
+    expect(viewport).toHaveBeenCalledWith(context.tabId);
     expect(context.getDocument()!.pages[0]!.objects).toHaveLength(3);
+    const caption = context.getDocument()!.pages[0]!.objects[2]!;
+    expect(caption.x + caption.width / 2).toBeCloseTo(250);
+    expect(caption.y + caption.height / 2).toBeCloseTo(700);
     runtime.unregisterPlugin(context.plugin.id);
     transactions.dispose();
   });

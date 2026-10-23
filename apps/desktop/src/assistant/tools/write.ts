@@ -1,7 +1,7 @@
-import type { AssistantToolContext } from "../AssistantToolContext";
+import { requireDocument, type AssistantToolContext } from "../AssistantToolContext";
 import {
   applyAssistantWrite, buildEditStructure, buildInsertReaction, buildInsertStructures,
-  buildInsertText, buildMoveObjects, buildStyleObjects, scopeRefusal, type AssistantWrite
+  buildInsertText, buildMoveObjects, buildStyleObjects, scopeRefusal, refuseAnchoredElectronMarks, type AssistantWrite
 } from "../writeBuilder";
 import type { ToolInput } from "./schemas";
 
@@ -23,10 +23,13 @@ export async function editStructure(context: AssistantToolContext, input: ToolIn
   return scopedWrite(context, [input.objectId], () => buildEditStructure(context, input));
 }
 export async function deleteObjects(context: AssistantToolContext, input: ToolInput<"delete_objects">) {
-  return scopedWrite(context, input.objectIds, () => ({
-    patch: { op: "batch", patches: [...new Set(input.objectIds)].map(objectId => ({ op: "removeObject", objectId })) },
-    summary: `Deleted ${new Set(input.objectIds).size} objects`, warnings: []
-  }));
+  return scopedWrite(context, input.objectIds, () => {
+    for (const id of input.objectIds) refuseAnchoredElectronMarks(requireDocument(context), id, "delete");
+    return {
+      patch: { op: "batch", patches: [...new Set(input.objectIds)].map(objectId => ({ op: "removeObject", objectId })) },
+      summary: `Deleted ${new Set(input.objectIds).size} objects`, warnings: []
+    };
+  });
 }
 export async function styleObjects(context: AssistantToolContext, input: ToolInput<"style_objects">) {
   return scopedWrite(context, input.objectIds, () => buildStyleObjects(context, input));

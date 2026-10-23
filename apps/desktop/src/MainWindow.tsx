@@ -2131,6 +2131,7 @@ export function MainWindow({
     viewport: ViewportState;
     scrollLeft: number;
     scrollTop: number;
+    assistantViewportRect?: import("./assistant/AssistantToolContext").AssistantRect;
     parts: NativeMoleculeSelectionPart[];
     warnings?: OpenWarningsReport;
     status: string;
@@ -3142,6 +3143,33 @@ export function MainWindow({
     };
     return {
       read: tabId => readHistory(tabId)?.present,
+      runWrite: apply => {
+        if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; the assistant edit was refused.");
+        const gate = pluginWriteGateRef.current;
+        if (!gate) throw new Error("The document window is closing; the assistant edit was refused.");
+        return gate.run(() => {
+          if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; the assistant edit was refused.");
+          return apply();
+        });
+      },
+      getViewportRect: tabId => {
+        if (!readHistory(tabId)) return undefined;
+        if (tabId !== activeDocumentTabIdRef.current) return documentTabSnapshotsRef.current.get(tabId)?.assistantViewportRect;
+        const canvas = canvasRegionRef.current;
+        const page = pageRef.current;
+        if (!canvas || !page) return undefined;
+        const canvasRect = canvas.getBoundingClientRect();
+        const pageRect = page.getBoundingClientRect();
+        const inset = canvas.classList.contains("rulers-visible") ? RULER_THICKNESS : 0;
+        const scale = viewportRef.current.scale;
+        const left = Math.max(canvasRect.left + inset, pageRect.left);
+        const top = Math.max(canvasRect.top + inset, pageRect.top);
+        const right = Math.min(canvasRect.left + canvas.clientWidth, pageRect.right);
+        const bottom = Math.min(canvasRect.top + canvas.clientHeight, pageRect.bottom);
+        if (right <= left || bottom <= top || scale <= 0) return undefined;
+        return { x: (left - pageRect.left) / scale, y: (top - pageRect.top) / scale,
+          width: (right - left) / scale, height: (bottom - top) / scale };
+      },
       push: (tabId, before, after, label) => {
         const history = requireHistory(tabId);
         const present = labelled(after, label);
@@ -8178,10 +8206,11 @@ export function MainWindow({
     documentTabSnapshotsRef.current.set(activeDocumentTabIdRef.current, {
       history, file, viewport: viewportRef.current,
       scrollLeft: canvas?.scrollLeft ?? 0, scrollTop: canvas?.scrollTop ?? 0,
+      assistantViewportRect: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current),
       parts: selectedNativeMoleculePartsRef.current,
       warnings: tabWarningsRef.current, status: statusRef.current, pageFit: tabPageFitRef.current
     });
-  }, []);
+  }, [assistantHistoryPort]);
 
   const installDocumentTab = useCallback((id: string) => {
     const snapshot = documentTabSnapshotsRef.current.get(id);

@@ -258,6 +258,8 @@ export interface PluginWriteGate {
  *  would otherwise hold the plugin's command open for good. */
 export const PLUGIN_WRITE_MAX_WAIT_MS = 60_000;
 
+export class PluginWriteGateTimeoutError extends Error {}
+
 export function createPluginWriteGate({
   isGestureActive,
   pollMs = 50,
@@ -290,7 +292,7 @@ export function createPluginWriteGate({
     while (queue.length > 0 && !isGestureActive()) queue.shift()!.write();
     // Still busy: refuse what has waited too long, plainly, rather than apply it into the session.
     while (queue.length > 0 && now() - queue[0]!.queuedAt >= maxWaitMs) {
-      queue.shift()!.abandon(new Error("The canvas stayed busy with another edit; nothing was inserted. Try again."));
+      queue.shift()!.abandon(new PluginWriteGateTimeoutError("The canvas stayed busy with another edit; nothing was inserted. Try again."));
     }
     schedule();
   };

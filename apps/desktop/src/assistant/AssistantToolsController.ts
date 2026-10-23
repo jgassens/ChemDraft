@@ -1,6 +1,8 @@
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest, type PluginSelectionSnapshot } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
+import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
+import { runThumbnail } from "./runThumbnail";
 import type { AssistantToolContext } from "./AssistantToolContext";
 import { callAssistantTool, listAssistantTools } from "./assistantTools";
 import { getAssistantTransactions, type AssistantTransactions } from "./assistantTransaction";
@@ -24,7 +26,9 @@ export interface AssistantToolsControllerOptions {
   host(): PluginHost;
   engine: AssistantMcpEngine;
   getActiveTabId(): string | undefined;
-  getSelection(): PluginSelectionSnapshot | undefined;
+  /** IDs only: capturing Send must not serialize selected molecules. */
+  getSelectionIds(): readonly string[];
+  runWrite: PluginWriteGate["run"];
   readDocument?(tabId: string): ChemDraftDocument | undefined;
   transactions?(): AssistantTransactions;
   createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now">;
@@ -62,7 +66,7 @@ export class AssistantToolsController implements PluginHostAssistant {
     if ([...this.requests.values()].some(r => r.pluginId === plugin.id && !r.ended)) throw new Error("This plugin already has an assistant request running.");
     const tabId = this.options.getActiveTabId();
     if (!tabId) throw new Error("No document tab is open.");
-    const selection = [...(this.options.getSelection()?.objectIds ?? [])];
+    const selection = [...this.options.getSelectionIds()];
     const transactions = this.options.transactions?.() ?? getAssistantTransactions();
     const getDocument = () => this.options.readDocument ? this.options.readDocument(tabId) : getAssistantHistoryPort().read(tabId);
     const services = this.options.createContext({ plugin: manifest, tabId, getDocument });
@@ -96,26 +100,36 @@ export class AssistantToolsController implements PluginHostAssistant {
       work = callAssistantTool({ ...request.context,
         plugin: this.plugin(plugin),
         getDocument: () => request.ended || abort.signal.aborted ? undefined : request.context.getDocument(),
-        write: async patch => {
+        write: async (patch, signal) => {
           this.running(plugin, requestId);
-          if (abort.signal.aborted) throw new Error("Assistant tool call was cancelled.");
-          const receipt = await this.options.host().applyPatchForPlugin(plugin.id, undefined,
-            { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
-              objectIds: [...request.selection, ...request.inserted],
-              apply: application => {
-                this.running(plugin, requestId);
-                if (abort.signal.aborted) throw new Error("Assistant tool call was cancelled.");
-                const before = request.context.getDocument()!;
-                const after = applyPatch(before, application.patch.patch);
-                const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
-                  op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
-                request.transactions.writeAssistantTransaction(requestId, after, touched);
-                const existing = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
-                for (const id of touched) { request.touched.add(id); if (!existing.has(id)) request.inserted.add(id); }
-                return { applied: true as const, objectIds: touched };
-              }
-            });
-          return { objectIds: receipt.objectIds };
+          if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+          const apply = () => {
+            this.running(plugin, requestId);
+            if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+            return this.options.host().applyPatchForPlugin(plugin.id, undefined,
+              { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
+                objectIds: [...request.selection, ...request.inserted],
+                apply: application => {
+                  this.running(plugin, requestId);
+                  if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+                  const before = request.context.getDocument()!;
+                  const after = applyPatch(before, application.patch.patch);
+                  const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
+                    op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                  request.transactions.writeAssistantTransaction(requestId, after, touched);
+                  const existing = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+                  for (const id of touched) { request.touched.add(id); if (!existing.has(id)) request.inserted.add(id); }
+                  return { applied: true as const, objectIds: touched };
+                }
+              });
+          };
+          try {
+            const receipt = await this.options.runWrite(apply);
+            return { objectIds: receipt.objectIds };
+          } catch (error) {
+            if (error instanceof PluginWriteGateTimeoutError) throw new Error("The drawing is being edited; try again");
+            throw error;
+          }
         }
       }, input.name, input.input);
       // Cancelling a caller blocks its writes immediately, but does not make native work disappear.
@@ -138,7 +152,12 @@ export class AssistantToolsController implements PluginHostAssistant {
     // Mark ended before awaiting IPC, so a queued bridge call cannot write meanwhile.
     try {
       const result = request.transactions.endAssistantTransaction(requestId, { touchedIds: [...request.touched] });
-      return { ...result, summary: `${request.touched.size} object(s) changed.` };
+      let previewSvg: string | undefined;
+      try {
+        const document = request.context.getDocument();
+        if (document) previewSvg = runThumbnail(document, result.touchedIds);
+      } catch { /* A transcript preview must not turn a completed request into a failure. */ }
+      return { ...result, ...(previewSvg ? { previewSvg } : {}), summary: `${request.touched.size} object(s) changed.` };
     } finally {
       this.requests.delete(requestId);
       await this.closeRequestSessions(requestId);

@@ -7,6 +7,7 @@ import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
+import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
 
 function setup() {
   const fixture = testContext();
@@ -16,12 +17,16 @@ function setup() {
   let activeTabId = context.tabId;
   const baseline = context.getDocument()!;
   const history: { before: typeof baseline; after: typeof baseline; label: string }[] = [];
+  const userEdits = new Set<(tabId: string) => void>();
+  const gesture = { active: false };
+  const gate = createPluginWriteGate({ isGestureActive: () => gesture.active });
+  const getSelectionIds = vi.fn(() => selection);
   const port: AssistantHistoryPort = {
     read: tab => tab === context.tabId ? context.getDocument() : undefined,
     push: (_tab, before, after, label) => { history.push({ before, after, label }); replace(after); },
     amend: (_tab, after, label) => { Object.assign(history[history.length - 1]!, { after, label }); replace(after); },
     select: (_tab, ids) => replace({ ...context.getDocument()!, selection: { objectIds: [...ids] } }),
-    onUserEdit: () => () => {}, undo: () => false
+    onUserEdit: listener => { userEdits.add(listener); return () => { userEdits.delete(listener); }; }, undo: () => false
   };
   const transactions = new AssistantTransactions(port);
   const listeners = new Map<string, (message: McpBridgeRequest) => void>();
@@ -34,7 +39,7 @@ function setup() {
     status: vi.fn(async () => ({ listening: true, sessionCount: listeners.size }))
   };
   const controller = new AssistantToolsController({ host: (): PluginHost => host, engine,
-    getActiveTabId: () => activeTabId, getSelection: () => ({ objectIds: selection, molecules: [] }),
+    getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
     readDocument: port.read, transactions: () => transactions, createContext: () => context });
   const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }) });
   const plugin = { id: context.plugin.id, name: context.plugin.name };
@@ -52,13 +57,75 @@ function setup() {
     return engine.respond.mock.calls.find(call => call[0] === sessionId && call[1] === requestId)![2];
   };
   return { ...fixture, host, controller, engine, plugin, context, listeners, history, port, commandContext, bridge,
+    gesture, gate, getSelectionIds, userEdits,
     select: (ids: string[]) => { selection = ids; }, activate: (tabId: string) => { activeTabId = tabId; },
     finishCommand: async () => { release(); await command; },
-    finish: async () => { controller.closeAllForPlugin(plugin.id); release(); await command; transactions.dispose(); } };
+    finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command; transactions.dispose(); } };
 }
 
 afterEach(() => vi.useRealTimers());
 describe("assistant requests and MCP bridge", () => {
+  it("waits for a gesture to commit, then applies the write without losing either edit", async () => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      expect(s.getSelectionIds).toHaveBeenCalledOnce();
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "After drag" } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      expect(s.history).toHaveLength(0);
+      const before = s.context.getDocument()!;
+      const dragged = { ...before, pages: before.pages.map(page => ({ ...page,
+        objects: page.objects.map(object => object.id === s.text.id ? { ...object, x: object.x + 50 } : object)
+      })) };
+      s.port.push(s.context.tabId, before, dragged, "Drag");
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(await pending).toMatchObject({ structuredContent: { objectIds: [expect.any(String)] } });
+      expect(s.history).toHaveLength(2);
+      expect(s.history[1]!.before).toEqual(dragged);
+      expect(s.context.getDocument()!.pages[0]!.objects).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: s.text.id, x: s.text.x + 50 }),
+        expect.objectContaining({ type: "text", text: "After drag" })
+      ]));
+      const result = await s.controller.endRequest(s.plugin, { requestId });
+      expect(result.previewSvg).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+    } finally { await s.finish(); }
+  });
+  it("returns the gesture timeout as a tool error and never applies the abandoned write", async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Blocked" } });
+      await vi.advanceTimersByTimeAsync(PLUGIN_WRITE_MAX_WAIT_MS - 1);
+      expect(s.gate.pending()).toBe(1);
+      expect(s.history).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(51);
+      expect(await pending).toMatchObject({ isError: true,
+        content: [{ text: "The drawing is being edited; try again" }] });
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
+  it("does not apply a queued write after the request ends", async () => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Cancelled" } });
+      const rejection = expect(pending).rejects.toThrow();
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      await s.controller.endRequest(s.plugin, { requestId });
+      await rejection;
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
   it("captures selection at Send, writes through plugin scope and groups multiple calls into one undo entry", async () => {
     const s = setup();
     try {

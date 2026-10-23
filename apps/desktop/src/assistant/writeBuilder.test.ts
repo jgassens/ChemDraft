@@ -5,6 +5,34 @@ import { testContext } from "./tools/testContext";
 import { objectRect, overlaps } from "./placement";
 
 describe("assistant writes", () => {
+  it.each(["edit_structure", "delete_objects", "move_objects"])("refuses %s on molecules with anchored electron marks", async name => {
+    const { context, molecule, replace } = testContext();
+    const document = structuredClone(context.getDocument()!);
+    document.pages[0]!.objects.push({ id: "mark", type: "electron-mark", markKind: "charge", charge: 1,
+      x: 250, y: 250, width: 10, height: 10, rotation: 0, style: {},
+      anchor: { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[0]!.id } });
+    replace(document);
+    const input = name === "edit_structure" ? { objectId: molecule.id, smiles: "CC" } :
+      name === "move_objects" ? { objectIds: [molecule.id], to: { arrange: "row" } } : { objectIds: [molecule.id] };
+    const result = await callAssistantTool(context, name, input);
+    expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("anchored electron marks") }] });
+    expect(context.getDocument()).toEqual(document);
+    expect(context.write).not.toHaveBeenCalled();
+    expect(context.chemistry.structureFromSmiles).not.toHaveBeenCalled();
+  });
+  it("allows selection and timestamp changes during canonical verification without widening Send scope", async () => {
+    const { context, molecule, text, replace } = testContext();
+    const built = await buildInsertStructures(context, { items: [{ kind: "molecule", smiles: "CC" }] });
+    const inspect = context.chemistry.inspectStructure;
+    context.chemistry.inspectStructure = async (format, value) => {
+      replace({ ...context.getDocument()!, selection: { objectIds: [text.id] }, updatedAt: "2026-10-22T01:00:00Z" });
+      return inspect(format, value);
+    };
+    await expect(applyAssistantWrite(context, built)).resolves.toMatchObject({ objectIds: [expect.any(String)] });
+    expect(context.write).toHaveBeenCalledOnce();
+    expect(context.getSelectionAtSend()).toEqual([molecule.id]);
+    expect((await callAssistantTool(context, "delete_objects", { objectIds: [text.id] })).structuredContent?.refused).toBe(true);
+  });
   it.each([
     ["edit_structure", { objectId: "outside", smiles: "CC" }],
     ["delete_objects", { objectIds: ["outside"] }],

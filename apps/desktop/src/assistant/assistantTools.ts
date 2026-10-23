@@ -60,6 +60,8 @@ function result(value: unknown): AssistantToolResult {
 export async function callAssistantTool(context: AssistantToolContext, name: string, input: unknown): Promise<AssistantToolResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let active = true;
+  const abort = new AbortController();
+  let waitForWrite: (() => void) | undefined;
   try {
     const tool = ASSISTANT_TOOLS.find(tool => tool.name === name);
     if (!tool) throw new Error(`Unknown assistant tool "${name}".`);
@@ -73,18 +75,26 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         if (!active) throw new Error(`Assistant tool ${name} timed out.`);
         requireDocument(context);
         const beforeIds = new Set(context.getDocument()!.pages.flatMap(page => page.objects.map(object => object.id)));
-        const written = await context.write(patch);
+        waitForWrite?.();
+        const written = await context.write(patch, abort.signal);
         recordAssistantInsertions(context, written.objectIds.filter(id => !beforeIds.has(id)));
         return written;
       }
     };
     const value = await Promise.race([
-      tool.handler(guarded, input), new Promise<never>((_, reject) => {
-        timer = setTimeout(() => { active = false; reject(new Error(`Assistant tool ${name} timed out after ${tool.timeoutMs} ms.`)); }, tool.timeoutMs);
+      Promise.resolve().then(() => tool.handler(guarded, input)), new Promise<never>((_, reject) => {
+        const deadline = (ms: number) => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => { active = false; abort.abort(); reject(new Error(`Assistant tool ${name} timed out after ${ms} ms.`)); }, ms);
+        };
+        // Preparation keeps its own deadline. Once ready, allow the desktop's 60s gesture
+        // gate to settle (including its polling interval) before the tool itself times out.
+        waitForWrite = () => deadline(61_000);
+        deadline(tool.timeoutMs);
       })
     ]);
     return result(value);
   } catch (error) {
     return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
-  } finally { active = false; if (timer) clearTimeout(timer); }
+  } finally { active = false; abort.abort(); if (timer) clearTimeout(timer); }
 }

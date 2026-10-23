@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyPatch, createEmptyDocument, type TextObject } from "@chemdraft/chem-core";
-import { runThumbnail } from "./runThumbnail";
+import { ASSISTANT_PREVIEW_MAX_LENGTH, runThumbnail } from "./runThumbnail";
 
 const caption = (id: string, x: number, width = 100): TextObject => ({
   id, type: "text", x, y: 60, width, height: 20, rotation: 0, style: {}, text: "α <script> & chemistry", spans: []
@@ -13,6 +13,10 @@ function documentWith(...objects: TextObject[]) {
 const svg = (uri: string | undefined) => decodeURIComponent(uri!.split(",").slice(1).join(","));
 
 describe("run thumbnail", () => {
+  it("omits an oversized SVG instead of returning a truncated data URI", () => {
+    const document = documentWith({ ...caption("large", 50), text: "x".repeat(ASSISTANT_PREVIEW_MAX_LENGTH) });
+    expect(runThumbnail(document, ["large"])).toBeUndefined();
+  });
   it("exports the union of touched bounds with 12px padding without editing the document", () => {
     const document = documentWith(caption("one", 50), caption("two", 200), caption("outside", 800));
     const before = structuredClone(document);

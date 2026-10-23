@@ -6,6 +6,9 @@ import {
 } from "@chemdraft/layout-engine";
 import { rotatedGraphicLocalBounds } from "../graphicHandleGeometry";
 
+/** Maximum encoded SVG data URI length; omit oversized previews rather than truncate SVG. */
+export const ASSISTANT_PREVIEW_MAX_LENGTH = 256 * 1024;
+
 /** Transcript preview only: never changes coordinates or chemistry in the source document. */
 export function runThumbnail(document: ChemDraftDocument, touchedIds: readonly string[]): string | undefined {
   const touched = new Set(touchedIds);
@@ -33,7 +36,8 @@ export function runThumbnail(document: ChemDraftDocument, touchedIds: readonly s
     return markup;
   }).join("\n");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width * scale}" height="${height * scale}" viewBox="0 0 ${width * scale} ${height * scale}" role="img" aria-label="Assistant changes"><rect width="100%" height="100%" fill="white"/><g transform="scale(${scale})">${body}</g></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  const uri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  return uri.length <= ASSISTANT_PREVIEW_MAX_LENGTH ? uri : undefined;
 }
 
 function objectBounds(object: DocumentObject): LayoutBounds {

@@ -1382,7 +1382,8 @@ export interface PluginAssistantAPI {
   callTool(request: { name: string; input: unknown }): Promise<PluginAssistantToolResult>;
   /** Capture the tab and selection at Send; open one labelled history transaction. */
   beginRequest(request: { prompt: string; label?: string }): Promise<{ requestId: string }>;
-  endRequest(request: { requestId: string }): Promise<{ touchedIds: string[]; summary: string; split: boolean }>;
+  /** Ends the request; previewSvg is an optional SVG data URI, capped at 256 KiB. */
+  endRequest(request: { requestId: string }): Promise<{ touchedIds: string[]; summary: string; split: boolean; previewSvg?: string }>;
   createToolSession(request: { requestId: string }): Promise<{ sessionId: string; serverName: "chemdraft"; tools: string[] }>;
   closeToolSession(request: { sessionId: string }): Promise<void>;
 }

@@ -1,3 +1,4 @@
+import type { AssistantRect } from "./AssistantToolContext";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 
 /** Selection patches rebuild page arrays too; array identity alone is not a document edit. */
@@ -16,6 +17,9 @@ export function assistantDocumentContentUnchanged(before: ChemDraftDocument, aft
 
 /** The assistant owns no editor state. Every operation addresses the tab captured at Send. */
 export interface AssistantHistoryPort {
+  /** Desktop gesture gate and page-coordinate viewport, bound to the requested tab. */
+  runWrite?<T>(apply: () => T): Promise<T>;
+  getViewportRect?(tabId: string): AssistantRect | undefined;
   read(tabId: string): ChemDraftDocument | undefined;
   push(tabId: string, before: ChemDraftDocument, after: ChemDraftDocument, label: string): void;
   amend(tabId: string, after: ChemDraftDocument, label: string): void;
