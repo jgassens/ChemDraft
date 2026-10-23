@@ -209,7 +209,7 @@ fn codex_changed_symlink_target_is_reconciled_and_the_user_link_is_preserved() {
 #[test]
 fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback() {
     for platform in auth_platforms() {
-        for scenario in ["json", "timestamp", "equal", "user-json", "io", "missing"] {
+        for scenario in ["json", "timestamp", "equal", "user-json", "backup"] {
             let temp = TempDir::new();
             let real = temp.0.join("user-codex");
             private_dir(&real).unwrap();
@@ -234,12 +234,8 @@ fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback
             };
             fs::remove_file(&target).unwrap();
             fs::write(&target, &refreshed).unwrap();
-            if scenario == "io" {
-                fs::remove_file(&auth).unwrap();
-                fs::create_dir(&auth).unwrap();
-            }
-            if scenario == "missing" {
-                fs::remove_file(&auth).unwrap();
+            if scenario == "backup" {
+                write_private(&real.join("auth.json.bak"), original.as_bytes()).unwrap();
             }
             for _ in 0..2 {
                 let home = env::reconcile_codex_home_auth(platform, &base, &parent);
@@ -248,15 +244,12 @@ fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback
                 assert_no_auth_tokens(&format!("{home:?}"));
                 assert!(!target.exists());
             }
-            if scenario == "io" {
-                assert!(auth.is_dir());
-            } else if scenario == "missing" {
-                assert!(!auth.exists());
-            } else {
-                assert!(
-                    fs::read_to_string(&auth).unwrap() == original,
-                    "user credential changed"
-                );
+            assert!(
+                fs::read_to_string(&auth).unwrap() == original,
+                "user credential changed"
+            );
+            if scenario == "backup" {
+                assert!(fs::read_to_string(real.join("auth.json.bak")).unwrap() == original);
             }
             let conflicts: Vec<_> = fs::read_dir(&isolated)
                 .unwrap()
@@ -923,6 +916,119 @@ fn codex_home_falls_back_without_copying_credentials() {
             fs::read_to_string(real.join("auth.json")).unwrap(),
             "test-credential"
         );
+    }
+}
+
+#[test]
+fn codex_logout_falls_back_without_quarantine_and_recovers_after_login() {
+    for platform in auth_platforms() {
+        for scenario in ["linked", "refreshed", "missing-home", "directory"] {
+            let temp = TempDir::new();
+            let real = temp.0.join("user-codex");
+            private_dir(&real).unwrap();
+            let auth = real.join("auth.json");
+            let original = auth_json("2026-10-22T12:00:00Z", "fake-old-secret");
+            write_private(&auth, original.as_bytes()).unwrap();
+            let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+            let base = temp.0.join("external-tools");
+            let home = env::prepare_codex_home(platform, &base, &parent);
+            assert!(home.fallback_reason.is_none());
+            let isolated = home.path.unwrap();
+            let target = isolated.join("auth.json");
+            fs::write(isolated.join("sessions-test"), "retained").unwrap();
+            if scenario == "refreshed" {
+                fs::remove_file(&target).unwrap();
+                write_private(
+                    &target,
+                    auth_json("2026-10-23T11:00:00Z", "fake-new-secret").as_bytes(),
+                )
+                .unwrap();
+            }
+            fs::remove_file(&auth).unwrap();
+            if scenario == "missing-home" {
+                fs::remove_dir(&real).unwrap();
+            } else if scenario == "directory" {
+                fs::create_dir(&auth).unwrap();
+            }
+            for _ in 0..2 {
+                let next = env::prepare_codex_home(platform, &base, &parent);
+                assert_eq!(next.path.as_ref(), Some(&real));
+                assert_eq!(env::get(&next.apply(&parent), "CODEX_HOME"), real.to_str());
+                assert_no_auth_tokens(&format!("{next:?}"));
+                assert!(next
+                    .fallback_reason
+                    .unwrap()
+                    .contains("auth.json is unavailable"));
+                assert!(!auth.is_file(), "logout was undone by write-back");
+                assert!(fs::symlink_metadata(&target).is_ok());
+                assert_eq!(fs::read_dir(&isolated).unwrap().count(), 2);
+            }
+            if scenario == "directory" {
+                fs::remove_dir(&auth).unwrap();
+            }
+            private_dir(&real).unwrap();
+            let login = auth_json("2026-10-23T12:00:00Z", "fake-new-secret");
+            write_private(&auth, login.as_bytes()).unwrap();
+            let recovered = env::prepare_codex_home(platform, &base, &parent);
+            assert_eq!(recovered.path.as_ref(), Some(&isolated));
+            assert!(recovered.fallback_reason.is_none());
+            assert!(fs::read_to_string(&auth).unwrap() == login);
+            // Verify a restored link, not merely equal credential bytes.
+            fs::write(&auth, &original).unwrap();
+            assert!(fs::read_to_string(&target).unwrap() == original);
+            assert_eq!(
+                fs::read_to_string(isolated.join("sessions-test")).unwrap(),
+                "retained"
+            );
+            assert_eq!(fs::read_dir(&isolated).unwrap().count(), 2);
+        }
+    }
+}
+
+#[test]
+fn codex_relink_failure_falls_back_without_quarantine_and_retries() {
+    for platform in auth_platforms() {
+        let temp = TempDir::new();
+        let real = temp.0.join("user-codex");
+        private_dir(&real).unwrap();
+        let auth = real.join("auth.json");
+        let original = auth_json("2026-10-22T12:00:00Z", "fake-old-secret");
+        write_private(&auth, original.as_bytes()).unwrap();
+        let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        let base = temp.0.join("external-tools");
+        let home = env::prepare_codex_home(platform, &base, &parent);
+        assert!(home.fallback_reason.is_none());
+        let isolated = home.path.unwrap();
+        let target = isolated.join("auth.json");
+        let refreshed = auth_json("2026-10-23T12:00:00Z", "fake-new-secret");
+        let staged = isolated.join("vendor.tmp");
+        write_private(&staged, refreshed.as_bytes()).unwrap();
+        fs::rename(&staged, &target).unwrap();
+        for _ in 0..2 {
+            let next =
+                env::prepare_codex_home_with_link(platform, &base, &parent, |actual, _, _| {
+                    assert_eq!(actual, platform);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "fake-invalid-secret",
+                    ))
+                });
+            assert_eq!(next.path.as_ref(), Some(&real));
+            assert_eq!(env::get(&next.apply(&parent), "CODEX_HOME"), real.to_str());
+            assert_no_auth_tokens(&format!("{next:?}"));
+            assert!(next
+                .fallback_reason
+                .unwrap()
+                .contains("Could not link Codex auth.json"));
+            assert!(fs::read_to_string(&auth).unwrap() == refreshed);
+            assert_eq!(fs::read_dir(&isolated).unwrap().count(), 0);
+            assert!(!real.join("auth.json.bak").exists());
+        }
+        let recovered = env::prepare_codex_home(platform, &base, &parent);
+        assert_eq!(recovered.path.as_ref(), Some(&isolated));
+        assert!(recovered.fallback_reason.is_none());
+        fs::write(&auth, &original).unwrap();
+        assert!(fs::read_to_string(&target).unwrap() == original);
     }
 }
 

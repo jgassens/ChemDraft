@@ -26,7 +26,7 @@ an outstanding check, not a claimed fix.
 The fixture's entry SHA-256 is
 `e7a59b33a6265a882bcb0f34a9fc164450f2f3f0bc7649231d2d54da91f6964a`, matching the installed entry in
 the `assistant-c` app data. Its recorded running build is commit `8cb8baee`, stamp
-`10.23.11.00-codex`. The new source stamp is `10.23.17.00-codex`.
+`10.23.11.00-codex`. The new source stamp is `10.23.17.30-codex`.
 
 The collapsed icon had no drag handlers; only the expanded header did. Both modes also shared one
 position. The icon now distinguishes a click from a drag using a four-pixel threshold and suppresses

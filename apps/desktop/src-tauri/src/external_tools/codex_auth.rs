@@ -113,7 +113,9 @@ pub(super) fn prepare_codex_home_with_link(
         if fs::canonicalize(real_home).ok().as_ref() == Some(&isolated) {
             return Err("User's CODEX_HOME is already ChemDraft's isolated home.".into());
         }
-        // A conflict is deliberately persistent across launches, and contains no credential copy.
+        // The persistent conflict marker contains no credentials. Within this home, quarantine
+        // files are the only other retained credential files besides auth.json: private (0600
+        // on Unix, the user's directory ACL on Windows), with contents never logged.
         if metadata(&isolated.join(BLOCKED))?.is_some()
             || fs::read_dir(&isolated)
                 .map_err(|e| io_reason("inspect Codex home", e))?
@@ -126,23 +128,17 @@ pub(super) fn prepare_codex_home_with_link(
             return Err(format!("Unresolved Codex auth reconciliation conflict in {}. Review the quarantined auth file before re-enabling isolation.", isolated.display()));
         }
         let requested = real_home.join("auth.json");
+        // Logout leaves a dangling symlink on macOS but a readable hard link on Windows.
+        // Neither is evidence of a conflicting refresh. Leave it unused and retry isolation
+        // after the user's login is available again, without resurrecting it via write-back.
+        if !requested.is_file() {
+            return Err(
+                "User's Codex auth.json is unavailable (login may use the keychain).".into(),
+            );
+        }
         // Preserve user-owned symlinks by writing to their actual target, never replacing them.
-        let resolved = (|| match fs::canonicalize(&requested) {
-            Ok(path) => Ok(path),
-            Err(e) if e.kind() == io::ErrorKind::NotFound && metadata(&requested)?.is_none() => {
-                fs::canonicalize(real_home)
-                    .map(|home| home.join("auth.json"))
-                    .map_err(|e| io_reason("resolve user's Codex home", e))
-            }
-            Err(e) => Err(io_reason("resolve user's Codex auth.json", e)),
-        })();
-        let auth = resolved.map_err(|reason| {
-            if fs::symlink_metadata(&target).is_ok() {
-                quarantine(&isolated, &target, reason)
-            } else {
-                reason
-            }
-        })?;
+        let auth = fs::canonicalize(&requested)
+            .map_err(|e| io_reason("resolve user's Codex auth.json", e))?;
         if auth == target {
             return Err("User's CODEX_HOME is already ChemDraft's isolated home.".into());
         }
@@ -157,13 +153,7 @@ pub(super) fn prepare_codex_home_with_link(
                 match same_file(&target, &auth) {
                     Ok(same) => same,
                     Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-                    Err(e) => {
-                        return Err(quarantine(
-                            &isolated,
-                            &target,
-                            io_reason("identify Codex auth link", e),
-                        ))
-                    }
+                    Err(e) => return Err(io_reason("identify Codex auth link", e)),
                 }
             } else {
                 false

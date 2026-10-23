@@ -114,7 +114,12 @@ A newer valid refresh is staged privately beside the user's auth file. The origi
 over the original atomically. The host re-reads and parses the committed JSON, checks its expected
 `last_refresh` and complete bytes, and only then deletes `.bak`. Failed verification restores the original
 by rename and records a reason. An existing `.bak` is retained and blocks another write-back until reviewed.
-If the original auth file disappeared, write-back is refused because no original can be backed up.
+A leftover `auth.json.bak` (for example, after a crash between rename and backup removal) sends the next
+refresh to quarantine instead of writing it back; after checking which login is current, delete or restore
+the `.bak`, then review and clear the quarantined file and `auth-reconcile-blocked` marker to re-enable isolation.
+If the original auth file disappears or its link cannot be restored, the next run uses the user's real
+Codex home with a recorded reason; both platforms retry isolation on subsequent preparation without a
+persistent block for logout or link failure, and never write credentials back over a missing login.
 Conflicting/invalid refreshes are quarantined privately, without logging token contents; isolation falls
 back with an explicit reason. User-owned symlinks are preserved by resolving their target before write-back.
 Unit tests inject temporary homes with fake tokens and temporary stub binaries; test-only guards refuse
