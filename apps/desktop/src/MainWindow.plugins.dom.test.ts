@@ -9,6 +9,8 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import {
   PLUGIN_PANEL_ACTION_EVENT,
+  PLUGIN_PANEL_ACTION_RESULT_EVENT,
+  pluginPanelWindowId,
   requestPluginPanelAction,
   type PluginPanelActionResult
 } from "./plugins/panelBridge";
@@ -21,6 +23,14 @@ import {
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined }));
+const panelActions = vi.hoisted(() => ({ handler: undefined as Parameters<typeof panelBridge.listenForPluginPanelActions>[0] | undefined }));
+vi.mock("./plugins/panelBridge", async original => {
+  const actual = await original<typeof import("./plugins/panelBridge")>();
+  return { ...actual, listenForPluginPanelActions: (handler: NonNullable<typeof panelActions.handler>) => {
+    panelActions.handler = handler;
+    return actual.listenForPluginPanelActions(handler);
+  } };
+});
 vi.mock("./plugins/createPluginRuntime", async original => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: (options: import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions) => {
@@ -171,19 +181,43 @@ describe("MainWindow panel input dispatch", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it("dispatches detached input against the retained report and rejects ambiguous panel owners", async () => {
+  it("dispatches authenticated detached input against the retained report and rejects ambiguous panel owners", async () => {
+    const sourceLabel = `plugin-panel-${pluginPanelWindowId(pluginId, panelId)}`;
+    const forwardedAction = async (text: string): Promise<PluginPanelActionResult> => {
+      const answer = new Promise<PluginPanelActionResult>(resolve => {
+        window.addEventListener(PLUGIN_PANEL_ACTION_RESULT_EVENT, event => {
+          resolve((event as CustomEvent<{ result: PluginPanelActionResult }>).detail.result);
+        }, { once: true });
+      });
+      // Rust authenticates this label before the bridge delivers the forwarded event.
+      let result!: PluginPanelActionResult;
+      await act(async () => {
+        panelActions.handler!("detached-action", { panelId, sectionId: "message", control: "prompt", text }, sourceLabel);
+        result = await answer;
+      });
+      return result;
+    };
     await act(async () => { captured.runtime!.panels.detachPanel(pluginId, panelId); });
-    expect(await action({ sectionId: "message", control: "prompt", text: "Detached" })).toEqual({ ok: true });
+    expect(captured.runtime!.panels.getOpenPanel()).toBeUndefined();
+    expect(await forwardedAction("Detached")).toEqual({ ok: true });
     expect(submit.mock.calls[0]![0].input?.text).toBe("Detached");
+    const foreign = vi.fn();
     await act(async () => {
       captured.runtime!.registerPlugin({ id: "org.chemdraft.otherPanelInput", name: "Other", version: "0.1.0",
         apiVersion: "^0.1.10", entry: "test.js", permissions: ["ui.panel"],
         contributes: { commands: [{ id: foreignId, title: "Other command" }], panels: [{ id: panelId, title: "Other chat" }] }
-      }, { commandHandlers: { [foreignId]: vi.fn() } });
+      }, { commandHandlers: { [foreignId]: foreign } });
       captured.runtime!.panels.showReport("org.chemdraft.otherPanelInput", panelId, report);
+      captured.runtime!.panels.detachPanel("org.chemdraft.otherPanelInput", panelId);
     });
-    expect(await action({ sectionId: "message", control: "prompt", text: "Ambiguous" })).toEqual({ ok: false, reason: "The panel owner is ambiguous." });
+    // A bare panel id cannot choose between detached owners; only native forwarding supplies
+    // the authenticated owner. The other plugin's retained report must never be invoked.
+    expect(await action({ sectionId: "message", control: "prompt", text: "Ambiguous" })).toEqual({ ok: false, reason: "This panel is no longer open." });
     expect(submit).toHaveBeenCalledTimes(1);
+    expect(await forwardedAction("Still the original owner")).toEqual({ ok: true });
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit.mock.calls[1]![0].input?.text).toBe("Still the original owner");
+    expect(foreign).not.toHaveBeenCalled();
   });
 
   it("registers once across re-renders and removes the listener on unmount", async () => {
