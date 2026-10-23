@@ -146,6 +146,10 @@ impl Drop for RunConfigCleanup {
 }
 
 impl ToolRun {
+    pub(super) fn log_notice(&self, message: &str) {
+        self.shared
+            .push(OutputStream::Stderr, message.as_bytes(), false);
+    }
     pub fn spawn(
         rendered: RenderedRun,
         cwd: &Path,

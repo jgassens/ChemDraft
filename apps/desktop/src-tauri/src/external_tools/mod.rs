@@ -433,6 +433,46 @@ fn status_impl(
     plugin_id: Option<&str>,
     parent: &env::ParentEnv,
 ) -> Result<ExternalToolStatus, String> {
+    let (parent, notice) = run_parent(base, tool, parent);
+    // Auth file replacement or a repaired link can change the effective home between probes.
+    let mut status = status_prepared_impl(
+        base,
+        state,
+        tool,
+        refresh || tool == ToolId::Codex,
+        plugin_id,
+        &parent,
+    )?;
+    if let Some(notice) = notice {
+        status.detail = Some(match status.detail {
+            Some(detail) => format!("{detail} {notice}"),
+            None => notice,
+        });
+    }
+    Ok(status)
+}
+
+fn run_parent(
+    base: &Path,
+    tool: ToolId,
+    parent: &env::ParentEnv,
+) -> (env::ParentEnv, Option<String>) {
+    if tool == ToolId::Codex {
+        let home = env::prepare_codex_home(probe::ProbePlatform::current(), base, parent);
+        (home.apply(parent), home.fallback_reason)
+    } else {
+        (parent.clone(), None)
+    }
+}
+
+fn status_prepared_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    tool: ToolId,
+    refresh: bool,
+    plugin_id: Option<&str>,
+    parent: &env::ParentEnv,
+) -> Result<ExternalToolStatus, String> {
     let platform = current_platform();
     let pin = pins::pin_for(tool, platform.unwrap_or(pins::ToolPlatform::DarwinArm64));
     let mut status = install::managed_status(base, pin);
@@ -882,8 +922,19 @@ fn run_start_impl(
             ));
         }
     }
-    let status = status_impl(base, state, request.tool, false, None, parent)
-        .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
+    // Select the home once: --version, login status and this run all receive the exact same home.
+    // Refresh Codex auth rather than reusing a result for a previously available auth link.
+    let (parent, home_notice) = run_parent(base, request.tool, parent);
+    let parent = &parent;
+    let status = status_prepared_impl(
+        base,
+        state,
+        request.tool,
+        request.tool == ToolId::Codex,
+        None,
+        parent,
+    )
+    .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
     // Probing may execute vendor code for seconds. Serialize only the commit, and
     // re-check consent and executable availability after taking the mutation lock.
     let _mutation = state.mutation.lock().unwrap();
@@ -999,6 +1050,9 @@ fn run_start_impl(
         .env
         .extend(env::with_mcp_token(env::ParentEnv::new(), token));
     let started = state.start_bound(base, &request, rendered, parent, managed, binding)?;
+    if let Some(notice) = home_notice {
+        state.run_by_id(&started.run_id)?.log_notice(&notice);
+    }
     config_cleanup.0 = None;
     Ok(started)
 }

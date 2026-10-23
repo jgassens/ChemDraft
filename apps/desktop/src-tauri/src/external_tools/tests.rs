@@ -246,6 +246,14 @@ fn run_templates_first_turn_and_resume() {
                     .map(|pair| pair[1].as_str())
                     .collect();
                 assert_eq!(disabled, CODEX_FEATURES_DISABLE);
+                for feature in ["code_mode", "code_mode_host", "code_mode_interrupt"] {
+                    assert!(!disabled.contains(&feature));
+                    assert!(CODEX_FEATURES_KEEP.contains(&feature));
+                }
+                assert!(disabled.contains(&"multi_agent_v2"));
+                assert!(run.args.contains(
+                    &"mcp_servers.chemdraft.default_tools_approval_mode=\"approve\"".into()
+                ));
                 assert!(!run
                     .args
                     .iter()
@@ -293,6 +301,203 @@ fn codex_feature_policy_has_no_duplicates_or_overlap() {
             classified.insert(feature),
             "Feature classified twice: {feature}"
         );
+    }
+}
+
+// Used by scripts/check-codex-tools.mjs. This renders the production template AND environment;
+// JavaScript must never maintain a second flag list or credential-link implementation.
+#[test]
+#[ignore = "on-demand real-model parity script supplies CHEMDRAFT_CODEX_PARITY_REQUEST"]
+fn print_codex_template_args() {
+    let request_path = std::env::var_os("CHEMDRAFT_CODEX_PARITY_REQUEST")
+        .expect("CHEMDRAFT_CODEX_PARITY_REQUEST is required");
+    let request: serde_json::Value =
+        serde_json::from_slice(&fs::read(request_path).unwrap()).unwrap();
+    let value = |key: &str| request[key].as_str().unwrap();
+    let run_dir = Path::new(value("runDir"));
+    let system = run_dir.join("system-prompt.md");
+    let config = run_dir.join("claude-mcp.json");
+    let mut spec = ToolId::Codex.spec();
+    spec.program = fs::canonicalize(value("binary")).unwrap();
+    let parent = std::env::vars().collect();
+    let home = env::prepare_codex_home(
+        ProbePlatform::current(),
+        Path::new(value("baseDir")),
+        &parent,
+    );
+    let rendered = render_run(
+        &spec,
+        ToolRunInputs {
+            run_dir,
+            prompt_file: value("prompt"),
+            system_prompt_file: &system,
+            mcp_config_file: &config,
+            mcp_url: value("mcpUrl"),
+            resume_id: request["resumeId"].as_str(),
+            model: request["model"].as_str(),
+            effort: None,
+            managed_copy: true,
+        },
+    )
+    .unwrap();
+    let mut environment = env::child_env(
+        ProbePlatform::current(),
+        &home.apply(&parent),
+        &spec.program,
+        run_dir,
+        true,
+    );
+    environment.extend(rendered.env);
+    let environment = env::with_mcp_token(environment, Some(value("token")));
+    let output = serde_json::json!({
+        "program": spec.program, "args": rendered.args, "env": environment,
+        "stdin": rendered.stdin, "version": pins::CODEX_VERSION,
+        "realCodexHome": env::real_codex_home(ProbePlatform::current(), &parent),
+        "fallbackReason": home.fallback_reason,
+    });
+    write_private(Path::new(value("output")), output.to_string().as_bytes()).unwrap();
+    println!("{}", output["args"]);
+}
+
+#[test]
+fn codex_real_home_respects_parent_and_platform() {
+    let parent = map(&[("HOME", "/users/a"), ("USERPROFILE", r"C:\Users\a")]);
+    assert_eq!(
+        env::real_codex_home(ProbePlatform::MacOS, &parent).unwrap(),
+        Path::new("/users/a/.codex")
+    );
+    assert_eq!(
+        env::real_codex_home(ProbePlatform::Windows, &parent).unwrap(),
+        Path::new(r"C:\Users\a\.codex")
+    );
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        let parent = map(&[("codex_home", "custom-home")]);
+        assert_eq!(
+            env::real_codex_home(platform, &parent).unwrap(),
+            Path::new("custom-home")
+        );
+        let selected = env::CodexHome {
+            path: Some("isolated".into()),
+            fallback_reason: None,
+        }
+        .apply(&parent);
+        assert!(!selected.contains_key("codex_home"));
+        assert_eq!(selected["CODEX_HOME"], "isolated");
+    }
+}
+
+#[test]
+fn codex_home_links_auth_keeps_sessions_and_refreshes_replaced_auth() {
+    // A hard link is portable, so exercise the Windows behavior on every host too.
+    let platforms = if cfg!(unix) {
+        vec![ProbePlatform::MacOS, ProbePlatform::Windows]
+    } else {
+        vec![ProbePlatform::Windows]
+    };
+    for platform in platforms {
+        let temp = TempDir::new();
+        let real = temp.0.join("user-codex");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("auth.json"), "first-test-credential").unwrap();
+        fs::write(real.join("AGENTS.md"), "must not be copied").unwrap();
+        fs::write(real.join("config.toml"), "must not be copied").unwrap();
+        let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        let base = temp.0.join("external-tools");
+        let home = env::prepare_codex_home(platform, &base, &parent);
+        assert!(home.fallback_reason.is_none(), "{:?}", home.fallback_reason);
+        let isolated = home.path.unwrap();
+        assert_eq!(isolated, base.join("codex-home"));
+        assert!(!isolated.join("AGENTS.md").exists());
+        assert!(!isolated.join("config.toml").exists());
+        assert_eq!(
+            fs::symlink_metadata(isolated.join("auth.json"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            platform == ProbePlatform::MacOS
+        );
+        fs::write(real.join("auth.json"), "updated-test-credential").unwrap();
+        assert_eq!(
+            fs::read_to_string(isolated.join("auth.json")).unwrap(),
+            "updated-test-credential"
+        );
+        fs::write(isolated.join("sessions-test"), "retained").unwrap();
+        fs::remove_file(real.join("auth.json")).unwrap();
+        fs::write(real.join("auth.json"), "replacement-test-credential").unwrap();
+        let next = env::prepare_codex_home(platform, &base, &parent);
+        assert_eq!(next.path.as_ref(), Some(&isolated));
+        assert!(next.fallback_reason.is_none());
+        assert_eq!(
+            fs::read_to_string(isolated.join("auth.json")).unwrap(),
+            "replacement-test-credential"
+        );
+        assert_eq!(
+            fs::read_to_string(isolated.join("sessions-test")).unwrap(),
+            "retained"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&isolated).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+}
+
+#[test]
+fn codex_home_falls_back_without_copying_credentials() {
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        let temp = TempDir::new();
+        let real = temp.0.join("user-codex");
+        fs::create_dir(&real).unwrap();
+        let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        let base = temp.0.join("external-tools");
+        let absent = env::prepare_codex_home(platform, &base, &parent);
+        assert_eq!(absent.path.as_ref(), Some(&real));
+        assert!(absent
+            .fallback_reason
+            .unwrap()
+            .contains("auth.json is unavailable"));
+        fs::write(real.join("auth.json"), "test-credential").unwrap();
+        let failed = env::prepare_codex_home_with_link(platform, &base, &parent, |actual, _, _| {
+            assert_eq!(actual, platform);
+            Err(std::io::Error::other("cross-volume or permission failure"))
+        });
+        assert_eq!(failed.path.as_ref(), Some(&real));
+        assert!(failed
+            .fallback_reason
+            .unwrap()
+            .contains("cross-volume or permission failure"));
+        assert!(!base.join("codex-home/auth.json").exists());
+        assert_eq!(
+            fs::read_to_string(real.join("auth.json")).unwrap(),
+            "test-credential"
+        );
+    }
+}
+
+#[test]
+fn codex_sign_in_uses_real_home_on_both_platforms() {
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        let temp = TempDir::new();
+        let real = temp.0.join("user-codex");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("auth.json"), "test-credential").unwrap();
+        let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        terminal::launch_sign_in(
+            platform,
+            &ToolId::Codex.spec(),
+            &temp.0.join("signin"),
+            &parent,
+            false,
+            |command| {
+                assert_eq!(env::get(&command.env, "CODEX_HOME"), real.to_str());
+                Ok(())
+            },
+        )
+        .unwrap();
     }
 }
 
@@ -1071,6 +1276,9 @@ fn main() {
  match args.get(1).map(String::as_str).unwrap_or("") {
   "--version"=>{println!("2.1.296 (Claude Code)");},
   "codex-version"=>{println!("codex-cli 0.163.0");},
+  "codex-home-version"=>{fs::write("version-home",env::var("CODEX_HOME").unwrap()).unwrap();println!("codex-cli 0.163.0");},
+  "codex-home-login"=>{fs::write("login-home",env::var("CODEX_HOME").unwrap()).unwrap();eprintln!("Logged in using ChatGPT");},
+  "codex-home-run"=>{println!("{}",env::var("CODEX_HOME").unwrap());},
   "auth"=>{println!("{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}");},
   "login"=>{eprintln!("Logged in using ChatGPT");},
   "lines"=>{
@@ -1910,6 +2118,67 @@ fn probe_execution_uses_version_and_auth_contracts() {
         result.auth.signed_in,
         "Codex auth must read captured stderr"
     );
+}
+
+#[test]
+fn codex_probes_and_run_share_prepared_home_and_log_fallback() {
+    for missing_auth in [false, true] {
+        let temp = TempDir::new();
+        let real = temp.0.join("user-codex");
+        fs::create_dir(&real).unwrap();
+        if !missing_auth {
+            fs::write(real.join("auth.json"), "test-credential").unwrap();
+        }
+        let original = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        let base = temp.0.join("external-tools");
+        let (parent, notice) = run_parent(&base, ToolId::Codex, &original);
+        let selected = env::get(&parent, "CODEX_HOME").unwrap();
+        assert_eq!(
+            Path::new(selected),
+            if missing_auth {
+                real.clone()
+            } else {
+                base.join("codex-home")
+            }
+        );
+        let mut spec = ToolId::Codex.spec();
+        spec.version_args = &["codex-home-version"];
+        spec.auth_status_args = &["codex-home-login"];
+        assert!(
+            probe::probe_tool(&spec, stub(), &parent, &temp.0, false)
+                .unwrap()
+                .auth
+                .signed_in
+        );
+        assert_eq!(
+            fs::read_to_string(temp.0.join("version-home")).unwrap(),
+            selected
+        );
+        assert_eq!(
+            fs::read_to_string(temp.0.join("login-home")).unwrap(),
+            selected
+        );
+        let environment = env::child_env(ProbePlatform::current(), &parent, stub(), &temp.0, false);
+        let run = ToolRun::spawn(
+            rendered(&["codex-home-run"], None),
+            &temp.0,
+            &environment,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        if let Some(notice) = &notice {
+            run.log_notice(notice);
+        }
+        let output = run
+            .capture_output(16 * 1024, || false)
+            .unwrap_or_else(|_| panic!("stub output failed"));
+        assert_eq!(output.stdout.trim(), selected);
+        assert_eq!(notice.is_some(), missing_auth);
+        assert_eq!(
+            output.stderr.contains("Codex home isolation unavailable"),
+            missing_auth
+        );
+    }
 }
 
 #[test]
