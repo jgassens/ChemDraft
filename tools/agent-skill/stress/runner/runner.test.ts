@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm, writeFile, lstat, readdir, mkdir, symlink } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, unlink, writeFile, lstat, readdir, mkdir, symlink } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -188,6 +188,34 @@ describe('stress runner', { timeout: 30_000 }, () => {
     const result = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout], {}, false);
     expect(result.code).toBe(0);
     expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).status).toBe('complete');
+  });
+
+  it.each(['AGENTS.md', 'CLAUDE.md', '.claude', '.codex'])('rejects %s in both linked Codex skill locations', async (instruction) => {
+    const checkout = await fakeCheckout(true);
+    const instructionPath = path.join(checkout, 'skills', 'chemdraft', instruction);
+    if (instruction.startsWith('.')) await mkdir(instructionPath);
+    else await writeFile(instructionPath, 'untrusted instructions');
+    const { args, env } = await codexFixture();
+    args[args.indexOf(root)] = checkout;
+    const result = await invoke(args, env);
+    expect(result.code).toBe(2);
+    expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(false);
+  });
+
+  it('hashes dereferenced nested links, their targets, and link cycles', async () => {
+    const skill = await outDirectory();
+    await writeFile(path.join(skill, 'SKILL.md'), 'skill');
+    await writeFile(path.join(skill, 'first.md'), 'same content');
+    await writeFile(path.join(skill, 'second.md'), 'same content');
+    await symlink('first.md', path.join(skill, 'linked.md'));
+    await symlink('.', path.join(skill, 'cycle'));
+    const firstHash = await hashTree(skill);
+    await writeFile(path.join(skill, 'first.md'), 'changed content');
+    expect(await hashTree(skill)).not.toBe(firstHash);
+    await writeFile(path.join(skill, 'first.md'), 'same content');
+    await unlink(path.join(skill, 'linked.md'));
+    await symlink('second.md', path.join(skill, 'linked.md'));
+    expect(await hashTree(skill)).not.toBe(firstHash);
   });
 
   async function codexFixture() {

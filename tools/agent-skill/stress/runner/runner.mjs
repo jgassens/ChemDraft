@@ -3,7 +3,7 @@ import { spawnCommandSpec } from '../spawn-command.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { copyFile, cp, lstat, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -443,9 +443,24 @@ async function sessionModel(home) {
 }
 
 async function assertNoAgentInstructions(directory) {
-  for (const file of await listFiles(directory)) if (path.basename(file.path).toLowerCase() === 'agents.md') {
-    throw new Error(`Isolated Codex folder must not contain AGENTS.md: ${file.path}`);
+  const prohibited = new Set(['agents.md', 'claude.md', '.claude', '.codex']);
+  const visitedDirectories = new Set();
+  async function visit(current) {
+    // Resolve each directory before walking it: the two Codex skill roots are
+    // links into the checkout, and nested links can otherwise hide instructions.
+    const canonical = await realpath(current);
+    if (visitedDirectories.has(canonical)) return;
+    visitedDirectories.add(canonical);
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (prohibited.has(entry.name.toLowerCase())) {
+        throw new Error(`Isolated Codex folder must not contain agent instructions: ${full}`);
+      }
+      if (entry.isDirectory()) await visit(full);
+      else if (entry.isSymbolicLink() && (await stat(full)).isDirectory()) await visit(full);
+    }
   }
+  await visit(directory);
 }
 
 function assertCaseId(id) {
@@ -519,6 +534,11 @@ async function runOne(caseItem, options, shared, stderr) {
     await cp(shared.codexAuth, path.join(codexHome, 'auth.json'), { dereference: true });
     await writeFile(configPath, config);
     await assertNoAgentInstructions(codexHome);
+    // listFiles intentionally does not traverse links. Scan both documented
+    // Codex skill locations directly so instructions in the checkout skill
+    // cannot be concealed by either directory link.
+    await assertNoAgentInstructions(skill);
+    await assertNoAgentInstructions(path.join(caseDir, 'home', '.codex', 'skills', 'chemdraft'));
     await assertNoAgentInstructions(work);
   } else await writeFile(mcpPath, `${JSON.stringify(mcp)}\n`);
   const startedAt = new Date().toISOString();
