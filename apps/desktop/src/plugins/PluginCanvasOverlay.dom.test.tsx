@@ -32,6 +32,27 @@ let status: string;
 let withPanel: boolean;
 let panelTitle: string | undefined;
 let platform: ShortcutPlatform;
+class CanvasOverlayStatusSource {
+  private readonly statuses = new Map<string, string>();
+  private readonly listeners = new Set<() => void>();
+
+  getCanvasOverlayStatuses = (): ReadonlyMap<string, string> => this.statuses;
+  subscribeCanvasOverlayStatus = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  setStatus(overlayId: string, value: string): void {
+    this.statuses.set(overlayId, value);
+    this.emit();
+  }
+  unregister(overlayId: string): void {
+    this.statuses.delete(overlayId);
+    this.emit();
+  }
+  get subscriberCount(): number { return this.listeners.size; }
+  private emit(): void { this.listeners.forEach(listener => listener()); }
+}
+let statusSource: CanvasOverlayStatusSource;
 const viewportRef = createRef<HTMLElement>();
 const overlayLayerRef = createRef<HTMLElement>();
 const statusRowRef = createRef<HTMLElement>();
@@ -52,6 +73,7 @@ async function render(): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={overlay} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId="main" shortcutPlatform={platform}
+    statusSource={statusSource}
     onOpenPanel={withPanel ? openPanel : undefined} panelTitle={panelTitle} onFocusDrawing={() => drawing.focus()} />));
 }
 async function expand(): Promise<void> {
@@ -62,6 +84,7 @@ function widget(): HTMLDivElement { return container.querySelector(".plugin-canv
 describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; panelTitle = undefined; platform = "macos";
+    statusSource = new CanvasOverlayStatusSource();
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
     viewportWidth = 600; viewportHeight = 400;
     viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
@@ -151,6 +174,27 @@ describe("PluginCanvasOverlay", () => {
     await expand(); drawing.focus(); gestureActive = true; await render(); expect(widget().hidden).toBe(true);
     gestureActive = false; status = "Drawing 3 structures…"; await render(); expect(widget().hidden).toBe(false);
     expect(container.querySelector("[role=status]")?.textContent).toBe(status); expect(document.activeElement).toBe(drawing);
+  });
+
+  it("re-renders status-source updates without a parent render", async () => {
+    expect(container.querySelector("[role=status]")?.textContent).toBe("");
+    await act(async () => statusSource.setStatus(overlay.id, "Drawing 3 structures…"));
+    expect(container.querySelector("[role=status]")?.textContent).toBe("Drawing 3 structures…");
+  });
+
+  it("clears an old status when its plugin unregisters before an overlay id is reused", async () => {
+    await act(async () => statusSource.setStatus(overlay.id, "Working…"));
+    expect(container.querySelector("[role=status]")?.textContent).toBe("Working…");
+    await act(async () => statusSource.unregister(overlay.id));
+    expect(container.querySelector("[role=status]")?.textContent).toBe("");
+  });
+
+  it("unsubscribes from the status source when unmounted", async () => {
+    expect(statusSource.subscriberCount).toBe(1);
+    await act(async () => root.unmount());
+    expect(statusSource.subscriberCount).toBe(0);
+    root = createRoot(container);
+    await render();
   });
 
   it("sends Enter with the choice, leaves Shift+Enter and IME alone, and keeps refused drafts", async () => {

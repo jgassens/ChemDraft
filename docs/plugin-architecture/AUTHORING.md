@@ -352,7 +352,7 @@ export const manifest = parsePluginManifest({
   contributes: {
     commands: [{ id: "plugin.prompt.send", title: "Send" }],
     menus: [{ id: "menu.prompt.open", title: "Open Prompt", commandId: "plugin.prompt.send", location: "plugins" }],
-    panels: [{ id: "panel.prompt.main", title: "Prompt", preferredWindowSize: { width: 420, height: 560 }],
+    panels: [{ id: "panel.prompt.main", title: "Prompt", preferredWindowSize: { width: 420, height: 560 } }],
     canvasOverlays: [{ id: "overlay.prompt.quick", title: "Quick prompt", icon: "data:image/png;base64,...",
       commandId: "plugin.prompt.send", prompt: { kind: "prompt", id: "quick", commandId: "plugin.prompt.send" } }]
   },
