@@ -78,6 +78,24 @@ describe("DialogCoordinator", () => {
     expect(settled).toHaveBeenCalledExactlyOnceWith("tab-2");
     await coordinator.dispose();
   });
+  it('cancels native conditions when disabled without touching another dialog or accepting late Save',async()=>{
+    const h=host(),apply=vi.fn();
+    vi.mocked(h.transport.open).mockImplementation(async snapshot=>({hostId:snapshot.dialogKind,windowLabel:`dialog-main-${snapshot.dialogKind}-1`}));
+    const coordinator=new DialogCoordinator(h.transport,{...h.owner,applyReactionConditions:apply});
+    const draft={side:'above' as const,spans:[{text:'THF',script:'normal' as const}]};
+    await coordinator.openPageSize('tab-1',{title:'Drawing',width:8.5,height:11,unit:'inch'});
+    await coordinator.openReactionConditions('tab-1',{title:'Drawing',arrowId:'arrow-1',draft});
+    const snapshot=vi.mocked(h.transport.open).mock.calls.at(-1)![0];
+    await coordinator.closeReactionConditions();
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith('reactionConditions','cancel');
+    expect(coordinator.reactionConditionsArrowId('tab-1')).toBeUndefined();
+    await coordinator.receive({senderWindowId:'dialog-main-reactionConditions-1',windowLabel:'dialog-main-reactionConditions-1',
+      message:{...dialogEnvelope(snapshot),requestId:'late',type:'action',data:{action:'apply',draft}}});
+    expect(apply).not.toHaveBeenCalled();
+    await coordinator.dispose();
+    expect(h.transport.close).toHaveBeenCalledWith('pageSize','ownerClose');
+    await h.coordinator.dispose();
+  });
   it("cancels an opening while subscription is still pending", async () => {
     const h = host();
     let subscribed!: (stop: () => void) => void;

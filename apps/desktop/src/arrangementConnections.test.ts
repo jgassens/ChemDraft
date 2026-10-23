@@ -4,7 +4,7 @@ import { ArrangementLayouts, defaultArrangementDraft, planArrangementConnections
 import { graphicPathEditPoints, graphicOpenStrokePageSamplePoints, planNativeArtVisual } from "@chemdraft/art-engine";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { attachReactionArrowOffshoot, setReactionArrowConditions } from "@chemdraft/document-workflow-core";
-import { adjustArrangementSpacing, selectedArrangementDraft, arrangeSelectedDocumentObjectsWithOptions, createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects, setDocumentCustomPageSize, groupSelectedDocumentObjects, duplicateSelectedDocumentObjects } from "./documentWorkflow";
+import { adjustArrangementSpacing, selectedArrangementDraft, arrangeSelectedDocumentObjects, arrangeSelectedDocumentObjectsWithOptions, createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects, setDocumentCustomPageSize, groupSelectedDocumentObjects, duplicateSelectedDocumentObjects, normalizeCommittedDocument, createNativeArtLineGraphicObject, moveDocumentObjects } from "./documentWorkflow";
 
 function fixture(count = 6): ChemDraftDocument {
   let d = setDocumentCustomPageSize(createPhase4Document("Connected arrangement"), { width: 1600, height: 1200, unit: "css-px" });
@@ -15,6 +15,57 @@ function fixture(count = 6): ChemDraftDocument {
 const options = (extra: Partial<ArrangementDraft> = {}): ArrangementDraft => ({ ...defaultArrangementDraft, arrows: true, ...extra });
 
 describe("optional arrangement connections", () => {
+  it.each(['left','center','right'] as const)('reroutes a saved circle through the quick grid %s command, retaining matching arrows and their attachment trees',gridAlignment=>{
+    let source=arrangeSelectedDocumentObjectsWithOptions(fixture(4),options({layout:'circle',closeCycle:true})).document;
+    const arrows=source.pages[0].objects.filter(o=>o.arrangementConnection),retained=arrows[1];
+    source=applyPatches(source,[{op:'updateObject',objectId:retained.id,changes:{style:{...retained.style,strokeColor:'#aa2244'}}}]);
+    source=attachReactionArrowOffshoot(source,retained.id,'above','fullCurve');
+    const branchId=source.selection.objectIds[0];
+    source=setReactionArrowConditions(source,retained.id,{side:'above',spans:[{text:'SDK',script:'normal'}]});
+    const labelId=source.selection.objectIds[0];
+    const unrelated=createNativeArtLineGraphicObject(source,{x:80,y:80},{x:180,y:80},'tool.art.reactionArrow')!;
+    source=applyPatches(source,[{op:'addObject',pageId:source.pages[0].id,object:unrelated}]);
+    const molecules=source.pages[0].objects.filter(o=>o.type==='molecule');
+    source=selectDocumentObjects(source,source.pages[0].id,molecules.map(o=>o.id));
+    const result=arrangeSelectedDocumentObjects(source,'grid',{gridAlignment});
+    const after=normalizeCommittedDocument(result.document),connections=after.pages[0].objects.filter(o=>o.arrangementConnection);
+    expect(connections).toHaveLength(2);
+    expect(connections.every(o=>o.arrangementConnection!.settings?.layout==='grid')).toBe(true);
+    expect(connections.every(o=>o.arrangementConnection!.settings?.gridAlignment===gridAlignment)).toBe(true);
+    for(const arrow of connections) {
+      if(arrow.type!=='graphic')throw new Error('fixture');
+      const p=graphicPathEditPoints(arrow)!;
+      expect((p.middle.x-p.start.x)*(p.end.y-p.start.y)-(p.middle.y-p.start.y)*(p.end.x-p.start.x)).toBeCloseTo(0,5);
+    }
+    expect(after.pages[0].objects.find(o=>o.id===retained.id)?.style.strokeColor).toBe('#aa2244');
+    expect(after.pages[0].objects.find(o=>o.id===branchId)?.arrowAttachment?.parentObjectId).toBe(retained.id);
+    expect(after.pages[0].objects.find(o=>o.id===labelId)?.arrowAttachment?.parentObjectId).toBe(retained.id);
+    expect(after.pages[0].objects.find(o=>o.id===unrelated.id)).toEqual(unrelated);
+    const reopened=normalizeCommittedDocument(deserializeDocument(serializeDocument(after)));
+    expect(reopened.pages[0].objects).toEqual(after.pages[0].objects);
+    expect(exportDocumentToSvg(reopened).contents).toBe(exportDocumentToSvg(after).contents);
+    for(const original of molecules) {
+      const moved=after.pages[0].objects.find(o=>o.id===original.id)!;
+      expect(moved.width).toBe(original.width);expect(moved.height).toBe(original.height);
+    }
+  });
+  it('keeps ordinary molecule moves independent but reflows connections on an explicit same-layout command',()=>{
+    let source=arrangeSelectedDocumentObjectsWithOptions(fixture(4),options({layout:'circle',closeCycle:true})).document;
+    const oldArrow=source.pages[0].objects.find(o=>o.arrangementConnection)!;
+    const molecule=source.pages[0].objects.find(o=>o.type==='molecule')!;
+    source=normalizeCommittedDocument(moveDocumentObjects(source,[molecule.id],20,0));
+    expect(source.pages[0].objects.find(o=>o.id===oldArrow.id)).toEqual(oldArrow);
+    const after=arrangeSelectedDocumentObjects(source,'circle').document;
+    const updated=after.pages[0].objects.find(o=>o.id===oldArrow.id)!;
+    expect(updated).toBeDefined();
+    if(updated.type!=='graphic'||oldArrow.type!=='graphic')throw new Error('fixture');
+    expect(graphicPathEditPoints(updated)).not.toEqual(graphicPathEditPoints(oldArrow));
+  });
+  it('refuses a quick layout that cannot fit without moving compounds or arrows',()=>{
+    const source=arrangeSelectedDocumentObjectsWithOptions(fixture(4),options({layout:'circle',closeCycle:true})).document;
+    const result=arrangeSelectedDocumentObjects(source,'row',{gap:10000});
+    expect(result.document).toBe(source);expect(result.status).toContain('does not fit');
+  });
   it.each(['row','column'] as const)('preserves separate mixed directions/layouts (%s) for length-only edits but applies an intentional topology change',secondLayout=>{
     let d=fixture(4);const ids=d.selection.objectIds;
     for(const [i,reverse] of [false,true].entries()) {

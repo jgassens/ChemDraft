@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { nativeFormattedTextObjectSize, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { nativeTextObjectLineMetrics, nativeTextSpanMetrics } from '@chemdraft/layout-engine';
 import { detectDialogPlatform, validConditionsDraft, type DialogPlatform } from "./dialogProtocol";
@@ -14,8 +14,16 @@ function pack(chars: { text: string; script: Script }[]): ReactionConditionsDraf
   }
   return spans;
 }
-export function changeConditionsText(draft: ReactionConditionsDraft, text: string, script: Script): ReactionConditionsDraft {
+export function changeConditionsText(draft: ReactionConditionsDraft, text: string, script: Script,
+  edit?: { start: number; end: number }): ReactionConditionsDraft {
   const old = characters(draft), previous = old.map(char => char.text).join("");
+  if (edit && edit.start >= 0 && edit.end >= edit.start && edit.end <= previous.length &&
+      text.length >= edit.start + previous.length - edit.end &&
+      text.startsWith(previous.slice(0, edit.start)) && text.endsWith(previous.slice(edit.end))) {
+    const inserted = text.slice(edit.start, text.length - (previous.length - edit.end));
+    return { ...draft, spans: pack([...old.slice(0, edit.start),
+      ...inserted.split("").map(text => ({ text, script })), ...old.slice(edit.end)]) };
+  }
   let prefix = 0, suffix = 0;
   while (prefix < previous.length && prefix < text.length && previous[prefix] === text[prefix]) prefix++;
   while (suffix < previous.length - prefix && suffix < text.length - prefix && previous[previous.length - suffix - 1] === text[text.length - suffix - 1]) suffix++;
@@ -26,6 +34,16 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
   platform = detectDialogPlatform() }: { title: string; draft: ReactionConditionsDraft; onChange(draft: ReactionConditionsDraft): void;
   onSave(): void; onCancel(): void; busy?: boolean; error?: string; platform?: DialogPlatform }) {
   const id = useId(), textarea = useRef<HTMLTextAreaElement>(null), composing = useRef(false);
+  const pendingEdit = useRef<{ start: number; end: number; inputType: string } | undefined>(undefined);
+  useEffect(() => {
+    const field = textarea.current;
+    if (!field) return;
+    const captureEdit = (event: InputEvent) => {
+      pendingEdit.current = { start: field.selectionStart, end: field.selectionEnd, inputType: event.inputType };
+    };
+    field.addEventListener("beforeinput", captureEdit);
+    return () => field.removeEventListener("beforeinput", captureEdit);
+  }, []);
   const [script, setScript] = useState<Script>("normal");
   const text = draft.spans.map(span => span.text).join("");
   const valid = validConditionsDraft(draft);
@@ -67,16 +85,24 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
     <textarea id={`${id}-text`} ref={textarea} autoFocus rows={5} maxLength={2000} value={text} disabled={busy}
       placeholder={"e.g. K₂CO₃, THF\n80 °C, 2 h\n85% yield"}
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
-      onChange={event => onChange(changeConditionsText(draft, event.currentTarget.value, script))} />
+      onChange={event => {
+        let edit = pendingEdit.current; pendingEdit.current = undefined;
+        if (edit && edit.start === edit.end && edit.inputType.startsWith("delete")) {
+          const removed = Math.max(0, text.length - event.currentTarget.value.length);
+          if (edit.inputType.endsWith("Backward")) edit = { ...edit, start: Math.max(0, edit.start - removed) };
+          else if (edit.inputType.endsWith("Forward")) edit = { ...edit, end: Math.min(text.length, edit.end + removed) };
+        }
+        onChange(changeConditionsText(draft, event.currentTarget.value, script, edit));
+      }} />
     <p>Select text to format it, or choose a format before typing.</p>
     <div className="reaction-conditions-preview" aria-label="Formatted preview">
       {text ? <ConditionsPreview draft={draft} /> : "Formatted preview"}
     </div>
     <label htmlFor={`${id}-side`}>Label position</label>
     <select id={`${id}-side`} value={draft.side} disabled={busy} onChange={event => onChange({ ...draft, side: event.currentTarget.value as ReactionConditionsDraft["side"] })}>
-      <option value="above">Above / outside the curve</option><option value="below">Below / inside the curve</option>
+      <option value="above">Top / inside</option><option value="below">Bottom / outside</option>
     </select>
-    <p>Labels follow their arrow and stay on the chosen side. Drag a label to adjust crowded positions, or double-click to edit. Clear the text to remove it.</p>
+    <p>Labels follow their arrow. Top uses the inside of a curve; Bottom uses the outside. Straight arrows use page top and bottom. Drag a label to adjust crowded positions, or double-click to edit. Clear the text to remove it.</p>
     <p role="status">{error ?? (!valid ? "Shorten the conditions or use fewer formatting changes to save." : "")}</p>
     <footer><button type="button" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" disabled={busy || !valid}>Save</button></footer>
   </form>;

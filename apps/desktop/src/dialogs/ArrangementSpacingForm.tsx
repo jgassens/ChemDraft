@@ -56,12 +56,13 @@ export function ArrangementSpacingForm({ title, minPercent, maxPercent, percent,
     </fieldset> : null}
     {preview ? <img className="arrangement-spacing-preview" src={preview} alt="Arrangement spacing preview" />
       : <div className="arrangement-spacing-preview" role="status">{error ? "Preview unavailable" : "Updating preview…"}</div>}
-    {!arrangement ? <><label htmlFor={`${id}-spacing`}>Spacing <output>{percent}%</output></label>
-    <input autoFocus id={`${id}-spacing`} type="range" min={minPercent} max={maxPercent} step="1" value={percent}
-      disabled={busy} aria-valuetext={`${percent}% of original spacing`} onChange={event => onChange(Number(event.currentTarget.value))} />
+    <label htmlFor={`${id}-spacing`}>Spacing <output>{percent}%</output></label>
+    <input autoFocus={!arrangement} id={`${id}-spacing`} type="range" min={minPercent} max={maxPercent} step="1" value={percent}
+      disabled={busy} aria-valuetext={`${percent}% of ${arrangement ? "chosen layout" : "original spacing"}`} onChange={event => onChange(Number(event.currentTarget.value))} />
     <div className="arrangement-spacing-scale" aria-hidden="true"><span>Closer</span><span>Farther apart</span></div>
     <p>Molecule sizes stay fixed. Only the spacing between selected compounds changes.</p>
-    <p>The outlined white area is the page. Spacing stops at the page edge or 150%, whichever comes first.</p></> : <p>Molecule sizes stay fixed. The outlined white area is the page.</p>}
+    {arrangement ? <p>Spacing is relative to the chosen layout at 100%. Arrows follow the compounds. Overlapping or off-page previews cannot be saved.</p>
+      : <p>The outlined white area is the page. Spacing stops at the page edge or 150%, whichever comes first.</p>}
     <p role="status">{error}</p>
     <footer className="arrangement-spacing-actions">
       <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>

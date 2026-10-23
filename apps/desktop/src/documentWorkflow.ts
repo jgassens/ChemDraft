@@ -13599,6 +13599,15 @@ export function selectedArrangementObjectIds(document: ChemDraftDocument): strin
 
 export function arrangeSelectedDocumentObjects(document: ChemDraftDocument, layout: ArrangementLayout,
   options: Pick<ArrangementOptions, "gap" | "columns" | "gridAlignment"> = {}): { document: ChemDraftDocument; status: string } {
+  // An explicit layout change owns generated connections too. Ordinary molecule drags remain
+  // independent; only arrows with saved endpoint metadata enter this routing workflow.
+  if (selectedArrangementConnections(document).length) {
+    const result = arrangeSelectedDocumentObjectsWithOptions(document, {
+      ...selectedArrangementDraft(document), layout,
+      ...(options.gridAlignment !== undefined ? {gridAlignment:options.gridAlignment} : {})
+    }, {...options, preservePositions:false});
+    return {document:result.document,status:result.status};
+  }
   const page = selectionPage(document);
   const items = selectedArrangementObjectIds(document).map(id => arrangementItem(page.objects, id)!);
   const plan = planObjectArrangement(items, layout, { ...options, pageBounds: { x: 0, y: 0, width: page.width, height: page.height } });
@@ -13669,7 +13678,8 @@ export function selectedArrangementDraft(document:ChemDraftDocument):Arrangement
 }
 
 /** Preview and Save call the same operation; callers commit its whole result as one Undo entry. */
-export function arrangeSelectedDocumentObjectsWithOptions(document: ChemDraftDocument, draft: ArrangementDraft):
+export function arrangeSelectedDocumentObjectsWithOptions(document: ChemDraftDocument, draft: ArrangementDraft,
+  options: Pick<ArrangementOptions, "gap" | "columns"> & {preservePositions?:boolean} = {}):
   { document: ChemDraftDocument; ok: boolean; status: string } {
   const refuse = (status: string) => ({ document, ok: false, status });
   if (!validArrangementDraft(draft)) return refuse("Invalid arrangement options.");
@@ -13683,14 +13693,16 @@ export function arrangeSelectedDocumentObjectsWithOptions(document: ChemDraftDoc
   // the layout planner, rather than page stacking order, without moving anything.
   const legacyPlan=existing.some(o=>o.arrangementConnection?.itemObjectIds)?undefined:planObjectArrangement(items,draft.layout);
   const legacyOrder=legacyPlan?.ok?legacyPlan.placements.map(item=>item.id):ids;
-  const sameTopology=canPreserveArrangementConnections(ids,existing,draft,previous,legacyOrder);
+  const sameTopology=options.preservePositions!==false && canPreserveArrangementConnections(ids,existing,draft,previous,legacyOrder);
   const ownedIds=new Set(withArrowAttachmentIds(page.objects,existing.map(o=>o.id)));
   if(existing.length && !draft.arrows && sameTopology) {
     const next=applyPatches(document,[...ownedIds].map(objectId=>({op:'removeObject' as const,objectId})),{now:phase4Timestamp});
     return {document:applyPatches(next,[{op:'setSelection',pageId:page.id,objectIds:ids}],{now:phase4Timestamp}),ok:true,status:'Removed arrangement connecting arrows'};
   }
   const plan = planObjectArrangement(items, draft.layout, { gridAlignment: draft.gridAlignment,
-    ...(draft.arrows ? { gap: 64 } : {}), pageBounds: { x: 0, y: 0, width: page.width, height: page.height } });
+    ...(draft.arrows ? { gap: 64 } : {}),
+    ...(options.gap!==undefined?{gap:options.gap}:{}),...(options.columns!==undefined?{columns:options.columns}:{}),
+    pageBounds: { x: 0, y: 0, width: page.width, height: page.height } });
   if (!plan.ok && !sameTopology) return refuse(plan.reason === "page" ? "This arrangement does not fit on the page. Try a larger page or another layout." : "Select at least two objects or groups.");
   const carried = expandWithAnchoredMarkIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids));
   const obstacles = page.objects.filter(o => o.type !== "group" && !carried.has(o.id) && !ids.includes(o.id) && !ownedIds.has(o.id))
@@ -13799,6 +13811,18 @@ export function adjustArrangementSpacing(document:ChemDraftDocument,factor:numbe
   }
   result=reconcileReactionArrowAttachments(result);
   return {document:result,ok:true,status:`Spacing adjusted to ${Math.round(factor*100)}%`};
+}
+
+/** The unified dialog always previews and commits the same layout-then-spacing transaction.
+ * A spacing refusal must discard the intermediate arrangement, including generated arrows. */
+export function arrangeAndSpaceSelectedDocumentObjects(document: ChemDraftDocument, factor: number, arrangement?: ArrangementDraft):
+  { document: ChemDraftDocument; ok: boolean; status: string } {
+  if (!arrangement) return adjustArrangementSpacing(document, factor);
+  const arranged = arrangeSelectedDocumentObjectsWithOptions(document, arrangement);
+  if (!arranged.ok) return arranged;
+  if (Math.abs(factor - 1) < 1e-9) return arranged;
+  const spaced = adjustArrangementSpacing(arranged.document, factor);
+  return spaced.ok ? { ...spaced, status: `${arranged.status}; ${spaced.status}` } : { ...spaced, document };
 }
 
 export function arrangementSpacingRange(document:ChemDraftDocument):{min:number;max:number} {

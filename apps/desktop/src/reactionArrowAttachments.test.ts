@@ -24,8 +24,8 @@ const near = (a: { x: number; y: number }, b: { x: number; y: number }) => { exp
 describe("arrow offshoots and conditions", () => {
   it('registers full-curve availability beside existing offshoot commands',()=>{
     const {document,arrow}=fixture();
-    expect(createLayerActions(document).find(action=>action.id===arrowOffshootCommandId('fullCurve.above'))).toMatchObject({enabled:false,disabledReason:'Select one arrow'});
-    const actions=createLayerActions(selectDocumentObjects(document,document.pages[0].id,[arrow.id]));
+    expect(createLayerActions(document,true,{enabled:true,offshootArrows:true}).find(action=>action.id===arrowOffshootCommandId('fullCurve.above'))).toMatchObject({enabled:false,disabledReason:'Select one arrow'});
+    const actions=createLayerActions(selectDocumentObjects(document,document.pages[0].id,[arrow.id]),true,{enabled:true,offshootArrows:true});
     for(const choice of ['above','below','fullCurve.above','fullCurve.below'] as const)expect(actions.find(action=>action.id===arrowOffshootCommandId(choice))?.enabled).toBe(true);
   });
   it('creates a full U through the parent midpoint with a forward tangent and matching head',()=>{

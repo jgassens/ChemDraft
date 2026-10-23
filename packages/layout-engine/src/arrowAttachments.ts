@@ -37,27 +37,18 @@ const localPoint = (frame: ArrowAttachmentFrame, point: Point): Point => ({
 const near = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-7;
 const sameFrame = (a: ArrowAttachmentFrame, b: ArrowAttachmentFrame) => near(a.origin, b.origin) && near(a.tangent, b.tangent) && near(a.normal, b.normal) && Math.abs((a.length??b.length??0)-(b.length??a.length??0))<1e-7;
 
-/** Conditions on a branch face away from its parent shaft. A branch's own bow-facing
- * normal often faces the parent, so it cannot define the exterior of the arrow tree. */
+/** Conditions use the curve's inside/outside rather than arrow direction. For a straight
+ * shaft, Top is the upper page side (left for an exactly vertical shaft), including RTL. */
 export function reactionConditionsFrame(page: DocumentPage, arrow: DocumentObject): ArrowAttachmentFrame | undefined {
-  const frame=arrowAttachmentFrame(page,arrow),attachment=arrow.arrowAttachment;
-  if(!frame || attachment?.kind!=='offshoot')return frame;
-  const parent=page.objects.find(object=>object.id===attachment.parentObjectId);
-  let outward={x:attachment.frame.normal.x*(attachment.side==='above'?1:-1),
-    y:attachment.frame.normal.y*(attachment.side==='above'?1:-1)};
-  if(parent?.type==='graphic') {
-    const points=graphicOpenStrokePageSamplePoints(parent);
-    let nearest:Point|undefined,distance=Infinity;
-    for(let i=1;i<points.length;i++) {
-      const a=points[i-1],b=points[i],dx=b.x-a.x,dy=b.y-a.y;
-      const t=Math.max(0,Math.min(1,((frame.origin.x-a.x)*dx+(frame.origin.y-a.y)*dy)/(dx*dx+dy*dy||1)));
-      const point={x:a.x+t*dx,y:a.y+t*dy},d=Math.hypot(frame.origin.x-point.x,frame.origin.y-point.y);
-      if(d<distance){nearest=point;distance=d;}
-    }
-    if(nearest && distance>1e-6)outward={x:frame.origin.x-nearest.x,y:frame.origin.y-nearest.y};
-  }
-  return frame.normal.x*outward.x+frame.normal.y*outward.y<0
-    ? {...frame,normal:{x:-frame.normal.x,y:-frame.normal.y}} : frame;
+  const frame = arrowAttachmentFrame(page, arrow);
+  if (!frame) return undefined;
+  const points = arrowShaftSamplePoints(page, arrow), first = points[0], last = points.at(-1);
+  const chordLength = first && last ? Math.hypot(last.x-first.x, last.y-first.y) : 0;
+  const straight = first && last && chordLength > 1e-7 && points.every(point =>
+    Math.abs((point.x-first.x)*(last.y-first.y)-(point.y-first.y)*(last.x-first.x))/chordLength < .01);
+  // arrowAttachmentFrame points toward a curved shaft's bow, i.e. its exterior.
+  const flip = !straight || frame.normal.y > 1e-7 || Math.abs(frame.normal.y) <= 1e-7 && frame.normal.x > 0;
+  return flip ? {...frame, normal:{x:-frame.normal.x,y:-frame.normal.y}} : frame;
 }
 
 function scaledLocalOffset(old:ArrowAttachmentFrame,next:ArrowAttachmentFrame,offset:Point,sx:number,sy:number):Point {

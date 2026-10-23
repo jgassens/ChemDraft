@@ -2,7 +2,7 @@ import { type ArrangementDraft } from "@chemdraft/layout-engine";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
-import { arrangeSelectedDocumentObjectsWithOptions, adjustArrangementSpacing, arrangementSpacingRange, arrangementSpacingPreviewBounds } from "./documentWorkflow";
+import { arrangeAndSpaceSelectedDocumentObjects, arrangementSpacingRange, arrangementSpacingPreviewBounds } from "./documentWorkflow";
 import { ArrangementSpacingForm } from "./dialogs/ArrangementSpacingForm";
 
 export function frameArrangementSpacingPreviewSvg(svg: string, pageWidth: number, pageHeight: number): string {
@@ -22,7 +22,7 @@ export function frameArrangementSpacingPreviewSvg(svg: string, pageWidth: number
 
 /** Runs only in the document owner; native forms receive previews, never documents. */
 export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent: number, arrangement?: ArrangementDraft): string {
-  const result = arrangement ? arrangeSelectedDocumentObjectsWithOptions(source, arrangement) : adjustArrangementSpacing(source, percent / 100);
+  const result = arrangeAndSpaceSelectedDocumentObjects(source, percent / 100, arrangement);
   if (!result.ok) throw new Error(result.status);
   if (!arrangementSpacingPreviewBounds(source)) throw new Error("Select at least two compounds or groups.");
   const pageIndex = source.pages.findIndex(page => page.id === source.selection.pageId);
@@ -43,7 +43,7 @@ export function ArrangementSpacingDialog({ document: source, arrangement: initia
   const [arrangement, setArrangement] = useState(initialArrangement);
   const [percent, setPercent] = useState(100);
   const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
-  const range = useMemo(() => arrangementSpacingRange(source), [source]);
+  const range = useMemo(() => arrangement ? {min:.25,max:1.5} : arrangementSpacingRange(source), [source, arrangement]);
   const preview = useMemo(() => {
     try { return { image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(arrangementSpacingPreviewSvg(source, percent, arrangement))}` }; }
     catch (error) { return { error: String(error) }; }

@@ -366,6 +366,9 @@ export class DialogCoordinator {
   async closeArrangementSpacing(): Promise<void> {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "arrangementSpacing").map(s => this.settle(s, "cancel")));
   }
+  async closeReactionConditions(): Promise<void> {
+    await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "reactionConditions").map(s => this.settle(s, "cancel")));
+  }
   async dispose(reason: "quit" | "ownerClose" = "ownerClose"): Promise<void> {
     this.stopped = true;
     await Promise.all([...this.sessions.values()].map(s => this.settle(s, reason)));

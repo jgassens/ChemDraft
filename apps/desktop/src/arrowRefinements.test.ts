@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from '@chemdraft/export-engine';
-import { applyPatches, type GraphicObject, type TextObject } from "@chemdraft/chem-core";
+import { applyPatches, serializeDocument, deserializeDocument, type GraphicObject, type TextObject } from "@chemdraft/chem-core";
 import { attachReactionArrowOffshoot, setReactionArrowConditions, reactionConditionsDraft, nativeFormattedTextObjectSize } from "@chemdraft/document-workflow-core";
 import { resolveArrowAttachments, arrowAttachmentFrame, nativeTextObjectLineMetrics, nativeTextSpanMetrics, reactionConditionsFrame, moleculeOutlineForArrangement, nearestArrowObjectAtPoint, planArrangementConnections, defaultArrangementDraft } from "@chemdraft/layout-engine";
 import { artObstacleIntersectsBounds, graphicOpenStrokePageSamplePoints, graphicPathEditPoints, quadraticArrowGeometry, planNativeArtVisual } from "@chemdraft/art-engine";
@@ -18,6 +18,40 @@ function fixture() {
 const near=(a:{x:number;y:number},b:{x:number;y:number})=>{expect(a.x).toBeCloseTo(b.x,5);expect(a.y).toBeCloseTo(b.y,5);};
 
 describe('screenshot arrow refinements',()=>{
+  it.each([false,true])('places Top above and Bottom below a straight arrow independent of RTL=%s', reversed=>{
+    let d=createPhase4Document('Straight conditions sides');
+    const a={x:150,y:300},b={x:550,y:300};
+    const arrow=createNativeArtLineGraphicObject(d,reversed?b:a,reversed?a:b,'tool.art.reactionArrow')!;
+    d=applyPatches(d,[{op:'addObject',pageId:d.pages[0].id,object:arrow}]);
+    for(const side of ['above','below','above'] as const) {
+      d=normalizeCommittedDocument(setReactionArrowConditions(d,arrow.id,{side,spans:[{text:'H2O',script:'normal'}]}));
+      const label=d.pages[0].objects.find(o=>o.type==='text')!;
+      expect(side==='above'?label.y+label.height<300:label.y>300).toBe(true);
+      expect(normalizeCommittedDocument(d)).toBe(d);
+    }
+  });
+  it.each([200,400])('places Top inside and Bottom outside a curve bowed to y=%s, through transforms and reopen', bowY=>{
+    let d=setDocumentCustomPageSize(createPhase4Document('Curved conditions sides'),{width:1600,height:1400,unit:'css-px'});
+    const base=createNativeArtLineGraphicObject(d,{x:400,y:600},{x:1000,y:600},'tool.art.reactionArrow')!;
+    const arrow=quadraticArrowGeometry(base,{x:400,y:600},{x:1000,y:600},{x:700,y:bowY+300});
+    d=applyPatches(d,[{op:'addObject',pageId:d.pages[0].id,object:arrow}]);
+    for(const side of ['above','below','above'] as const) {
+      d=normalizeCommittedDocument(setReactionArrowConditions(d,arrow.id,{side,spans:[{text:'THF',script:'normal'}]}));
+      d=normalizeCommittedDocument(rotateDocumentObjectsAroundPoint(d,[arrow.id],{x:700,y:600},37));
+      d=normalizeCommittedDocument(scaleDocumentObjectsAroundPoint(d,[arrow.id],{x:700,y:600},1.05,.95));
+      const parent=d.pages[0].objects.find(o=>o.id===arrow.id)! as GraphicObject;
+      const points=graphicOpenStrokePageSamplePoints(parent),frame=arrowAttachmentFrame(d.pages[0],parent)!;
+      const label=d.pages[0].objects.find(o=>o.type==='text')!;
+      const chord={x:(points[0].x+points.at(-1)!.x)/2,y:(points[0].y+points.at(-1)!.y)/2};
+      const towardInside={x:chord.x-frame.origin.x,y:chord.y-frame.origin.y};
+      const dot=(label.x+label.width/2-frame.origin.x)*towardInside.x+(label.y+label.height/2-frame.origin.y)*towardInside.y;
+      expect(side==='above'?dot:-dot).toBeGreaterThan(0);
+      const reopened=normalizeCommittedDocument(deserializeDocument(serializeDocument(d)));
+      expect(reopened.pages[0].objects).toEqual(d.pages[0].objects);
+      expect(exportDocumentToSvg(reopened).contents).toBe(exportDocumentToSvg(d).contents);
+      expect(normalizeCommittedDocument(d)).toBe(d);
+    }
+  });
   it.each(['HHHH\nHHHH','HHHH\n\nHHHH'])('uses shared line baselines for normal font-size overrides (%s)',text=>{
     let {d,arrow}=fixture();
     d=setReactionArrowConditions(d,arrow.id,{side:'above',spans:[{text,script:'normal'}]});
@@ -68,7 +102,7 @@ describe('screenshot arrow refinements',()=>{
     expect(resolveArrowAttachments(edited.pages[0]).objects).toEqual(once.pages[0].objects);
     expect(exportDocumentToSvg(edited).contents).toBe(exportDocumentToSvg(once).contents);
   });
-  it('places default offshoot conditions on the free exterior and keeps explicit Below stable across toggles',()=>{
+  it('places conditions inside the curve and keeps explicit outside stable across toggles',()=>{
     const {d:source,branch}=cycleBranch();
     expect(reactionConditionsDraft(source,branch.id).side).toBe('above');
     const frame=reactionConditionsFrame(source.pages[0],branch)!,raw=arrowAttachmentFrame(source.pages[0],branch)!;
@@ -88,7 +122,7 @@ describe('screenshot arrow refinements',()=>{
       }
     }
   });
-  it.each(['move','rotate','scale'] as const)('keeps offshoot conditions outside after parent %s',transform=>{
+  it.each(['move','rotate','scale'] as const)('keeps offshoot conditions on the selected curve side after parent %s',transform=>{
     let {d,parent,branch}=cycleBranch();
     d=setReactionArrowConditions(d,branch.id,{side:'above',spans:[{text:'THF',script:'normal'}]});
     const pivot={x:750,y:350};

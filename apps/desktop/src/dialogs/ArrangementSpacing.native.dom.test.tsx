@@ -66,7 +66,7 @@ it("previews arrangement drafts, discards a stale image after changing arrows an
   await mount({ ...snapshot, data: { ...snapshot.data, arrangement: { ...defaultArrangementDraft } } } as DialogSnapshot);
   expect(container.textContent).toContain("Arrange selection");
   expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
-  expect(container.querySelector('input[type="range"]')).toBeNull();
+  expect(container.querySelector('input[id$="-spacing"]')).not.toBeNull();
   const initial = latestPreview(); await image(initial);
   const save = () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
   expect(save().disabled).toBe(false);
@@ -77,7 +77,7 @@ it("previews arrangement drafts, discards a stale image after changing arrows an
   const current = latestPreview();
   expect(current.data).toEqual({ action: "preview", percent: 100, arrangement: { ...defaultArrangementDraft, arrows: true } });
   await image(current); expect(save().disabled).toBe(false);
-  const length=container.querySelector<HTMLInputElement>('input[type="range"]')!;
+  const length=container.querySelector<HTMLInputElement>('input[id$="-arrow-length"]')!;
   expect(length).not.toBeNull();
   await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(length,'70');length.dispatchEvent(new Event('input',{bubbles:true}));});
   expect(save().disabled).toBe(true);
@@ -85,8 +85,16 @@ it("previews arrangement drafts, discards a stale image after changing arrows an
   const shorter=latestPreview();expect(shorter.data).toEqual({action:'preview',percent:100,arrangement:{...defaultArrangementDraft,arrows:true,arrowLength:70}});
   await image(current);expect(save().disabled).toBe(true);
   await image(shorter);expect(save().disabled).toBe(false);
+  const spacing=container.querySelector<HTMLInputElement>('input[id$="-spacing"]')!;
+  await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(spacing,'120');spacing.dispatchEvent(new Event('input',{bubbles:true}));});
+  expect(save().disabled).toBe(true);
+  await act(async()=>vi.advanceTimersByTimeAsync(121));
+  const spaced=latestPreview();
+  expect(spaced.data).toEqual({action:'preview',percent:120,arrangement:{...defaultArrangementDraft,arrows:true,arrowLength:70}});
+  await image(shorter);expect(save().disabled).toBe(true);
+  await image(spaced);expect(save().disabled).toBe(false);
   await act(async () => { save().click(); save().click(); });
   const applies = host.send.mock.calls.map(call => call[1] as DialogMessage).filter(m => m.type === "action" && m.data.action === "apply");
   expect(applies).toHaveLength(1);
-  expect(applies[0].data).toEqual({ action: "apply", percent: 100, arrangement: { ...defaultArrangementDraft, arrows: true,arrowLength:70 } });
+  expect(applies[0].data).toEqual({ action: "apply", percent: 120, arrangement: { ...defaultArrangementDraft, arrows: true,arrowLength:70 } });
 });

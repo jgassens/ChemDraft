@@ -7601,6 +7601,21 @@ textarea:focus-visible,
 
 .arrangement-spacing-scale { display: flex; justify-content: space-between; font-size: 12px; }
 
+.reaction-conditions-form { box-sizing: border-box; min-height: 100vh; max-height: 100vh; overflow-y: auto; padding: 20px; background: var(--cd-bg-panel); color: var(--cd-text-primary); font-size: 13px; }
+.reaction-conditions-form h2 { margin: 0 0 20px; font-size: 19px; }
+.reaction-conditions-form label { display: block; margin: 12px 0 6px; font-weight: 600; }
+.reaction-conditions-tools { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.reaction-conditions-tools button { min-width: 32px; padding: 5px 8px; }
+.reaction-conditions-tools button[aria-pressed="true"] { outline: 2px solid var(--cd-accent); }
+.reaction-conditions-form textarea, .reaction-conditions-form select { box-sizing: border-box; width: 100%; padding: 8px; font: inherit; color: inherit; background: var(--cd-bg-control); border: 1px solid var(--cd-border); border-radius: 4px; }
+.reaction-conditions-form textarea { resize: vertical; min-height: 100px; }
+.reaction-conditions-form p { line-height: 1.45; }
+.reaction-conditions-preview { white-space: pre-wrap; min-height: 36px; padding: 10px; text-align: center; overflow: auto; border: 1px solid var(--cd-border); background: var(--cd-bg-control); }
+.reaction-conditions-form footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.reaction-conditions-form footer button { padding: 6px 16px; }
+.reaction-conditions-browser-window { position: fixed; z-index: 1200; right: 24px; top: 70px; width: min(560px, calc(100vw - 48px)); height: min(620px, calc(100vh - 94px)); overflow: auto; resize: both; border: 1px solid var(--cd-border); box-shadow: 0 10px 36px #0003; }
+.reaction-conditions-browser-window .reaction-conditions-form { min-height: 100%; max-height: none; overflow: visible; }
+
 /* Frame depth stays inside the webview and follows any palette size or orientation.
    Paint above opaque children without intercepting title, tool, or resize-handle hits. */
 .palette-window-shell,
@@ -7636,3 +7651,19 @@ textarea:focus-visible,
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+.preferences-compound-layout-features {
+  border: 0;
+  padding: 0;
+  margin: 12px 0 0 28px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.preferences-compound-layout-features legend {
+  padding: 0 0 8px;
+  font-size: 13px;
+  width: max-content;
+  max-width: none;
+  white-space: nowrap;
+}
+.preferences-compound-layout-features:disabled { opacity: .6; }

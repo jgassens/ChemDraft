@@ -16,6 +16,7 @@ import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
+import { nativeTextObjectLineMetrics } from "@chemdraft/layout-engine";
 import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
@@ -69,6 +70,27 @@ describe("exportDocumentToPdf", () => {
     expect(sampled).toBeGreaterThan(100);
     expect(brightening).toBeLessThanOrEqual(2);
     dom.window.close();
+  });
+  it('preserves enlarged normal multiline spans with the shared SVG line baselines',async()=>{
+    const document=structuredClone(documentWithText('HHHH\n\nHHHH',{fontSizePx:16,textAlign:'center'}));
+    const object=document.pages[0].objects[0] as TextObject;
+    object.spans=[{text:object.text,script:'normal',style:{fontSizePx:48}}];
+    const metrics=nativeTextObjectLineMetrics(object),svg=exportDocumentToSvg(document).contents;
+    const baselines=[...svg.matchAll(/<tspan x="[^"]+" y="([^"]+)"\s*\/?>/g)].map(match=>Number(match[1]));
+    expect(baselines).toHaveLength(3);
+    metrics.lines.forEach((line,i)=>expect(baselines[i]).toBeCloseTo(object.y+line.baseline,3));
+    const result=await withPdfDom(domParser=>exportDocumentToPdf(document,{domParser,compress:false}));
+    expect(extractPdfTextRuns(result.bytes).join('')).toBe('HHHHHHHH');
+  });
+  it('preserves multiline formatted conditions with explicit independent script baselines',async()=>{
+    const document=structuredClone(documentWithText('H2O\nZn2+'));
+    const object=document.pages[0].objects[0] as TextObject;
+    object.spans=[{text:'H',script:'normal',style:{}},{text:'2',script:'subscript',style:{}},
+      {text:'O\nZn',script:'normal',style:{}},{text:'2+',script:'superscript',style:{}}];
+    const svg=exportDocumentToSvg(document).contents;
+    expect(svg).not.toContain('baseline-shift=');
+    const result=await withPdfDom(domParser=>exportDocumentToPdf(document,{domParser,compress:false}));
+    expect(extractPdfTextRuns(result.bytes).join('')).toBe('H2OZn2+');
   });
   it("does not count the white page background as drawing geometry", async () => {
     const document = createEmptyDocument({ now: timestamp });

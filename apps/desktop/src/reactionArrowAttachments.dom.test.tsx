@@ -2,15 +2,18 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches } from "@chemdraft/chem-core";
+import { graphicPathEditPoints } from "@chemdraft/art-engine";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createNativeArtLineGraphicObject, createPhase4Document, groupSelectedDocumentObjects, selectDocumentObjects } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { broadcastCompoundLayoutSettings, DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 let root: Root, container: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("localStorage", new MemoryStorage());
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  saveCompoundLayoutSettings({ enabled: true, offshootArrows: true, formattedReactionConditions: true });
   window.history.replaceState(null, "", "/?agentBridge=1");
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -42,6 +45,30 @@ async function clickCommand(id: string) {
   expect(button).not.toBeNull(); expect(button.disabled).toBe(false);
   await act(async () => button.click());
 }
+function type(text: string) {
+  const field = container.querySelector(".reaction-conditions-form textarea")!;
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+it('updates independent feature gates live, refuses routed commands, and closes a disabled conditions editor without editing',async()=>{
+  const id=await mount();await menu(id);
+  const before=snapshot();
+  await act(async()=>broadcastCompoundLayoutSettings({enabled:true,offshootArrows:false,formattedReactionConditions:true}));
+  expect(container.querySelector('[data-context-submenu="offshoot"]')).toBeNull();
+  expect(container.querySelector('[data-command-id="arrow.conditions"]')).not.toBeNull();
+  await route('arrow.attachOffshoot.above');expect(snapshot()).toEqual(before);
+  expect(container.textContent).toContain('Enable Offshoot Arrows in Settings');
+  await clickCommand('arrow.conditions');expect(container.querySelector('.reaction-conditions-form')).not.toBeNull();
+  await act(async()=>broadcastCompoundLayoutSettings({enabled:true,offshootArrows:true,formattedReactionConditions:false}));
+  expect(container.querySelector('.reaction-conditions-form')).toBeNull();
+  await menu(id);expect(container.querySelector('[data-command-id="arrow.conditions"]')).toBeNull();
+  expect(container.querySelector('[data-context-submenu="offshoot"]')).not.toBeNull();
+  await route('arrow.conditions');expect(snapshot()).toEqual(before);
+  expect(container.textContent).toContain('Enable Formatted Reaction Conditions in Settings');
+  await act(async()=>broadcastCompoundLayoutSettings({enabled:false,offshootArrows:true,formattedReactionConditions:true}));
+  await menu(id);expect(container.querySelector('[data-context-submenu="offshoot"]')).toBeNull();
+  await route('arrow.attachOffshoot.above');expect(snapshot()).toEqual(before);
+});
 it("right-click attaches an offshoot, and one Undo/Redo removes/restores it", async () => {
   const id = await mount(); await menu(id);
   expect(container.textContent).toContain("Attach offshoot");
@@ -95,4 +122,37 @@ it('closes the offshoot flyout with Left and preserves its owner focus and targe
 it("targets the right-clicked arrow inside a selected group", async () => {
   const id = await mount(true); await menu(id); await clickCommand("arrow.attachOffshoot.below");
   expect(snapshot().pages[0].objects.find(object => object.arrowAttachment)?.arrowAttachment?.parentObjectId).toBe(id);
+});
+it('conditions target the branch shaft even when an overlapping parent DOM frame receives the click',async()=>{
+  const id=await mount();await menu(id);await clickCommand('arrow.attachOffshoot.below');
+  const branch=snapshot().pages[0].objects.find(o=>o.arrowAttachment?.kind==='offshoot')!;
+  if(branch.type!=='graphic')throw new Error('fixture');
+  const point=graphicPathEditPoints(branch)!.end;
+  const scale=(window.__CHEMDRAFT_AGENT__!.snapshot().viewport as {scale:number}).scale;
+  const page=container.querySelector<HTMLElement>('.page')!;
+  vi.spyOn(page,'getBoundingClientRect').mockReturnValue({x:0,y:0,left:0,top:0,width:816*scale,height:1056*scale,right:816*scale,bottom:1056*scale,toJSON:()=>({})});
+  const parent=container.querySelector<SVGElement>(`[data-object-id="${id}"]`)!;
+  await act(async()=>parent.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:point.x*scale,clientY:point.y*scale})));
+  await clickCommand('arrow.conditions');await act(async()=>type('THF, 2 h'));
+  await act(async()=>container.querySelector('form.reaction-conditions-form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+  expect(snapshot().pages[0].objects.find(o=>o.type==='text')?.arrowAttachment?.parentObjectId).toBe(branch.id);
+});
+it("conditions Save commits once, Cancel does not edit, and double-click reopens its form", async () => {
+  const id = await mount(); await menu(id); await clickCommand("arrow.conditions");
+  expect(container.querySelector('.reaction-conditions-form')).not.toBeNull();
+  await act(async () => type("K₂CO₃\n80 °C, 2 h"));
+  const form = container.querySelector('form.reaction-conditions-form')!;
+  await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(container.querySelector('.reaction-conditions-form')).toBeNull();
+  const label = snapshot().pages[0].objects.find(object => object.type === "text")!;
+  expect(label.type === "text" && label.text).toBe("K₂CO₃\n80 °C, 2 h");
+  expect(snapshot().selection.objectIds).toEqual([label.id]);
+  const target = container.querySelector<SVGElement>(`[data-page-svg-object-visual="${label.id}"] text`)!;
+  await act(async () => target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })));
+  expect(container.querySelector<HTMLTextAreaElement>('.reaction-conditions-form textarea')?.value).toBe("K₂CO₃\n80 °C, 2 h");
+  await act(async () => type("changed"));
+  const cancel = [...container.querySelectorAll<HTMLButtonElement>('.reaction-conditions-form button')].find(button => button.textContent === "Cancel")!;
+  await act(async () => cancel.click());
+  expect(snapshot().pages[0].objects.find(object => object.id === label.id)).toEqual(label);
+  await route("edit.undo"); expect(snapshot().pages[0].objects).toHaveLength(1);
 });

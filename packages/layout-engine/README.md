@@ -1,5 +1,11 @@
 # @chemdraft/layout-engine
 
+`nativeTextObjectLineMetrics` and `nativeTextSpanMetrics` define formatted native text baselines,
+script offsets and per-line vertical extents. SVG rendering, formatted object sizing and the
+conditions preview consume them. Scripted or size-overridden SVG lines use explicit y anchors and their runs use
+measured offset deltas, preventing baseline drift across lines while preserving natural horizontal
+glyph advance. Unformatted text keeps its existing SVG.
+
 Owns page and object layout operations such as align, distribute, group, rotate, flip, z-order, guides, and page sizing.
 
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
@@ -100,6 +106,25 @@ text position and explicit text size, and page dimensions together. Molecule col
 toggles remain unchanged; pixel-valued molecule styles, per-atom/per-bond maps and visual-effect
 dimensions scale with the page.
 
+`arrowAttachments.ts` resolves an arrow's midpoint and local frame, including semantic arrows with
+page anchors, then places attached art arrows and condition text. Local offsets persist through
+parent movement, bends and rotation; simultaneous group movement does not apply a second delta.
+Path sampling and the tangential offshoot's geometry belong to art-engine.
+Full-curve offshoots additionally resolve a stored tail offset while anchoring their on-curve middle
+at a normalized parent-shaft fraction (default midpoint); half curves retain their anchored tail.
+The tether handle projects onto actual rotated shaft samples. Full curves use two native segments
+sharing the tether and a forward tangent; visible stroke sampling includes that junction exactly.
+Creation records the straight-shaft normal polarity, so RTL Top starts above while later transforms
+remain stable; curved outside geometry is unchanged. Both carry their offsets through
+nonuniform scaling, with editable geometry and inherited head size.
+Condition text remains upright, with its chosen outside/inside side and manual offset. Native save/reopen retains attachments;
+SVG/PDF/raster output uses the same resolved page geometry as the canvas.
+Resizing a parent carries its attachment tree and scales the offshoot's local geometry in both
+axes, including manual bend edits. A second normalization does not apply the scale again.
+Conditions use formatted text dimensions and seek clear positions on their chosen side, checking
+actual arrow ink, heads, branches, molecule outlines and other text. Dragging a label marks its
+position as manual so subsequent movement and editing preserve the chosen offset.
+
 ## Selection arrangement
 
 `planObjectArrangement` plans translation-only Circle, Oval, Grid, Row and Column layouts.
@@ -110,3 +135,29 @@ With a page frame, default Row/Column gaps tighten from 48 to no less than 12 do
 when necessary to fit. Explicit `gap` values remain fixed; molecule dimensions never change.
 `textVisualBoundsForArrangement` measures rotated caption frames around the same pivot as SVG
 text rendering, so grouped captions participate in layout clearance and page-fit checks.
+
+`planArrangementConnections` optionally routes between the resulting placements: curved cycle arcs,
+linear neighbors, independent grid rows or a snake sequence. Direction and closing a cycle are explicit.
+Each route includes endpoint IDs and its untrimmed midpoint bend, allowing the spacing workflow to
+reroute the same editable arrows after translating compounds. Arrow geometry remains in art-engine.
+Routes also retain their arrangement settings and ordered item IDs so reopening edits the same
+connections. Optional `arrowLength` (30–100, default 100) symmetrically trims the clear parameter
+interval; it changes neither layout placements nor molecular geometry.
+`arrangementConnectionPairs` shares directed-neighbor validation with the document workflow, so
+changed selection membership or missing edges cannot silently preserve an incomplete arrangement.
+It uses art-engine's trimmed quadratic routes to leave 12 px around visible item outlines and refuses
+blocked or too-short shafts. It assigns no reaction roles and does not alter molecules.
+`moleculeOutlineForArrangement` builds a tight convex ink envelope from the existing bond/stereo
+renderer and atom-label plans. Routing avoids rectangular frame corners without passing through
+ring interiors. Groups retain separate outlines for molecules and caption frames. The layout's
+page-fit and packing frames stay conservative; the tighter outlines control arrow trimming.
+
+Arrow context targeting uses `nearestArrowObjectAtPoint` to resolve actual shaft ink when sibling
+or parent frames overlap. `reactionConditionsFrame` independently orients condition labels into the curve for Top/inside
+and out of the curve for Bottom/outside. Straight shafts use page top/bottom regardless of LTR/RTL
+(left/right for exactly vertical shafts). Branch geometry keeps its original attachment frame,
+and saved manual labels stay put when their normal is corrected.
+Attachment resolution uses the same resolved ancestor snapshot for condition frames and clearance,
+including nested branches, so repeated normalization and export cannot flip their outside normal.
+Inside offshoots mirror the established outside tip across the
+parent's curved shaft; manual conditions positions bypass automatic clearance clamping.
