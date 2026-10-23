@@ -10637,8 +10637,8 @@ export function MainWindow({
         void openPluginPanelWindow({
           pluginId: panel.pluginId,
           panelId: panel.panelId,
-          title: panel.report.title || panel.title,
           ...panel.preferredWindowSize,
+          title: panel.report.title || panel.title,
           focus: false
         }).catch((error: unknown) => {
           openedPluginPanelWindowsRef.current.delete(key);

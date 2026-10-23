@@ -22,6 +22,23 @@ import type {
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
 
 describe("createPluginRuntime panel input", () => {
+  it("omits the host options argument when input is undefined", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
+    const commandId = "plugin.chat.submit";
+    runtime.registerPlugin({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js", permissions: ["ui.panel", "selection.read"],
+      contributes: { commands: [{ id: commandId, title: "Send" }], panels: [{ id: "panel.chat.main", title: "Chat" }] }
+    }, { commandHandlers: { [commandId]: async ctx => ctx.input } });
+    const invoke = vi.spyOn(runtime.host, "invokeCommand");
+    const input: PluginCommandInput = { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "Draw water" };
+
+    await runtime.invokeCommand(commandId);
+    expect(invoke).toHaveBeenLastCalledWith(commandId);
+    await runtime.invokeCommand(commandId, { input });
+    expect(invoke).toHaveBeenLastCalledWith(commandId, { input });
+    runtime.unregisterPlugin("org.test.chat");
+  });
+
   it("forwards input alongside selection warnings through the desktop host override", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
     const commandId = "plugin.chat.submit";

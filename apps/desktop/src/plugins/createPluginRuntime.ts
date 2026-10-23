@@ -530,7 +530,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     invokeCommand(commandId, invokeOptions = {}) {
       armedSelectionWarnings = invokeOptions.selectionWarnings;
       try {
-        return host.invokeCommand(commandId, { input: invokeOptions.input });
+        return invokeOptions.input === undefined
+          ? host.invokeCommand(commandId)
+          : host.invokeCommand(commandId, { input: invokeOptions.input });
       } finally {
         // Unclaimed when the command is not a plugin's or failed before its context was built.
         armedSelectionWarnings = undefined;
