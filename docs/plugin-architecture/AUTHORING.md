@@ -61,13 +61,14 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.9`). API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
+`0.1.10`). API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
+`^0.1.10`. API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
 API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
 `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.9` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.10` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -296,6 +297,66 @@ receipt without the patch. A second proposal of the same `ref`, a forged `ref`, 
 command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
+
+## Panel input and canvas overlays (0.1.10)
+
+API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
+`apiVersion: "^0.1.10"`; add `ui.panel` for a panel and `ui.canvas` for a canvas overlay. Panels
+may also declare `preferredWindowSize: { width, height }`, where both values are positive integers.
+It is a preferred native-window size, not a fixed frame.
+
+`PluginPanelReport.sections` adds these section kinds. Control and section ids use
+`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and must be unique within the report.
+
+- `prompt` has `id`, `commandId`, and optional `title`, `label`, `placeholder`, `submitLabel`
+  (default `"Send"`), `hint`, and `disabled`. Its `maxLength` is 1–20,000 (default 4,000), and
+  `rows` is 1–12 (default 3). It may have one `select`: `{ id, label, value, options,
+  commandId? }`, with 1–20 `{ value, label }` options and values no longer than 100 characters.
+- `actions` has `id`, optional `title`, and 1–8 buttons. A button has `id`, `label`, `commandId`,
+  optional JSON-serialisable `payload` (at most 4,000 characters), optional `disabled`, and a
+  `tone` of `default`, `primary`, or `danger`.
+- `image` has `dataUri`, `alt`, and optional `title`, `caption`, and positive-integer `maxWidthPx`.
+  The data URI is base64 `image/png`, `image/jpeg`, or `image/webp`, at most 1 MiB.
+
+When a user activates a control, its handler receives `context.input`. It contains `source`
+(`"panel"` or `"overlay"`), exactly the matching `panelId` or `overlayId`, `sectionId`, and
+`control` (`"prompt"`, `"select"`, or `"button"`), plus `controlId`, `text`, `selected`, or
+`payload` when that control supplies one. Treat it as invocation-scoped input, not stored UI state.
+The host takes the command id, button payload, select options, and input limits from the live report
+in the document window — never from the detached panel's message. It refuses unknown, disabled,
+foreign, or over-limit controls. The textarea itself is never disabled while an action is pending,
+because doing so would end its native input-focus lease; only Send and the select become unavailable.
+Its draft clears only after the host accepts the action.
+
+The native **Plugins** menu is the `plugins` menu location. A plugin may also contribute at most one
+`canvasOverlays` entry. It requires `ui.canvas` and has an `overlay.<plugin>.<name>` id, a title of
+at most 80 characters, a base64 PNG or SVG data-URI icon of at most 64 KB, the overlay command id,
+the same `prompt` declaration, an optional `defaultCorner` (`bottom-right` by default; also
+`bottom-left`, `top-right`, or `top-left`), and optional required permissions. `context.overlays?.setStatus({
+overlayId, text })` updates its status line; text is at most 120 characters (an empty string clears
+it). Per AGENTS.md §12, this icon-plus-prompt widget is the only allowed in-viewport plugin surface:
+one declared overlay per plugin. Panels, palettes, and dialogs remain separate floating native
+windows.
+
+```ts
+export const manifest = parsePluginManifest({
+  id: "org.example.prompt", name: "Prompt", version: "0.1.0", apiVersion: "^0.1.10", entry: "src/index.ts",
+  permissions: ["ui.panel", "ui.canvas", "ui.menu"],
+  contributes: {
+    commands: [{ id: "plugin.prompt.send", title: "Send" }],
+    menus: [{ id: "menu.prompt.open", title: "Open Prompt", commandId: "plugin.prompt.send", location: "plugins" }],
+    panels: [{ id: "panel.prompt.main", title: "Prompt", preferredWindowSize: { width: 420, height: 560 }],
+    canvasOverlays: [{ id: "overlay.prompt.quick", title: "Quick prompt", icon: "data:image/png;base64,...",
+      commandId: "plugin.prompt.send", prompt: { kind: "prompt", id: "quick", commandId: "plugin.prompt.send" } }]
+  }
+});
+
+const send: PluginCommandHandler = async (context) => {
+  if (context.input?.control === "prompt") await context.overlays?.setStatus({
+    overlayId: "overlay.prompt.quick", text: `Received ${context.input.text?.length ?? 0} characters`
+  });
+};
+```
 
 ## Direct document writes versus proposals
 

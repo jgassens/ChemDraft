@@ -238,6 +238,31 @@ Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Qui
 request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its
 consent text must say that it does and that page content can leave the computer.
 
+## Plugin panel input and canvas overlay (macOS and Windows)
+
+In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
+and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
+the composition must not submit early. Force a host refusal (for example by making the panel stale
+or disconnecting it) and confirm the inline refusal keeps the draft; after acceptance, the draft
+clears. Confirm a panel report containing a prompt hides Run again. While the transcript grows, scroll
+away from its bottom and submit or receive another report: it must not pull the reader down; submit
+from the prompt and it may follow the new output. Keep typing while a report refreshes: focus and the
+draft must stay in the textarea. Also invoke a plugin contribution at location `plugins` and confirm
+its item appears and works in the native Plugins menu.
+
+Exercise an installed or DEV canvas-overlay fixture: expand and collapse its icon, type and submit a
+prompt, and check the status line. Drag it toward every viewport edge and resize the viewport; its
+frame must remain clamped inside. Quit/reopen or hide/re-show the window and confirm its position is
+remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
+(and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
+keyboard focus to the drawing. It takes focus only when clicked, never merely when it appears or the
+report changes.
+
+On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
+do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does
+not cause a foreground flash. Repeat the focus checks on macOS and Windows with the panel and drawing
+window on separate monitors.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 

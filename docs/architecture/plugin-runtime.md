@@ -205,6 +205,34 @@ Plugin menu contributions become app-menu items via `pluginMenuModel`, tagged
 item — target location and enabled state included — to the native menu bridge;
 clicks return through the same `plugin.*` command route used by the web menu.
 
+## Panel actions, canvas overlays, and the Plugins menu
+
+Interactive panel controls do not invoke a command from their detached webview. The action path is
+panel window → `chemdraft://plugin-panel-action` → the main-window resolver → `invokeCommand` with
+validated `input` → `chemdraft://plugin-panel-action-result`. `requestPluginPanelAction` waits at
+most 10 seconds. Desktop panels use the Tauri event bridge (addressed to the main window); the web
+build uses the same named `CustomEvent`s. The main window keeps one listener and resolves each
+request against its current report and plugin ownership before invoking the command, so the message
+itself cannot choose a command id, payload, options, or length limit. It acknowledges acceptance
+without waiting for command completion, allowing an independent Stop command while a submit runs.
+
+The report renderer owns prompt, action, and image rendering. A prompt's textarea is kept through a
+report replacement, stays enabled to retain its input-focus lease, and clears its draft only after
+the main window accepts the action. Replacement autoscrolls only when the reader was at the bottom,
+or after that reader submitted; a report with a prompt hides the generic Run again action.
+
+`canvasOverlays` are host-rendered document-viewport chrome, not plugin React. The runtime permits
+one declaration per plugin and requires `ui.canvas`. The collapsed icon expands to the same prompt
+control, status line, and optional panel opener; its submissions are resolved by the same action
+path with `context.input.source = "overlay"`. It is draggable but clamped to the viewport, persists
+its position per window and overlay id, hides during canvas gestures and export, and Esc collapses it
+and returns focus to the drawing. It takes keyboard focus only after a click. `overlays.setStatus`
+is the permission-gated host capability that supplies the status line.
+
+Native menu contributions at location `plugins` form the dedicated Plugins block, appended after a
+separator in `plugins_menu`. The same native builder supplies macOS and Windows; the other standard
+locations (`file`, `edit`, `view`, and `tools`) remain web-only.
+
 ## Worker pattern
 
 Each analyzer plugin runs in its own lazy ES-module Worker through
