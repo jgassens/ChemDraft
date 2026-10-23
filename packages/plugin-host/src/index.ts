@@ -4,6 +4,7 @@
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
 import { applyPatch } from "@chemdraft/chem-core";
+import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
@@ -321,7 +322,14 @@ export interface PluginHostExternalTools {
   cancelAllForPlugin(pluginId: string): void;
 }
 
+export type PluginHostAssistant = {
+  [K in keyof PluginAssistantAPI]: (
+    plugin: { id: string; name: string }, ...args: Parameters<PluginAssistantAPI[K]>
+  ) => ReturnType<PluginAssistantAPI[K]>;
+} & { closeAllForPlugin(pluginId: string): void };
+
 export interface PluginHostOptions {
+  assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
   /**
@@ -399,6 +407,7 @@ export class PluginHost {
   private readonly showPanelReport?: PluginHostOptions["showPanelReport"];
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly externalTools?: PluginHostOptions["externalTools"];
+  private readonly assistant?: PluginHostAssistant;
   private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
@@ -439,6 +448,7 @@ export class PluginHost {
     this.showPanelReport = options.showPanelReport;
     this.promptText = options.promptText;
     this.externalTools = options.externalTools;
+    this.assistant = options.assistant;
     this.requestImage = options.requestImage;
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
@@ -496,6 +506,7 @@ export class PluginHost {
     this.cancelOpenTextPrompt(pluginId);
     this.cancelOpenImageRequests(pluginId);
     this.externalTools?.cancelAllForPlugin(pluginId);
+    this.assistant?.closeAllForPlugin(pluginId);
     for (const command of plugin.manifest.contributes.commands) {
       this.commands.unregisterOwnedByPlugin(command.id, pluginId);
     }
@@ -593,6 +604,20 @@ export class PluginHost {
 
   createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
+    const assistantCall = <K extends keyof PluginAssistantAPI>(method: K, args: Parameters<PluginAssistantAPI[K]>): ReturnType<PluginAssistantAPI[K]> => {
+      for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
+      if (!this.assistant) throw new PluginHostError("This host provides no assistant tools.");
+      const fn = this.assistant[method] as unknown as (plugin: { id: string; name: string }, ...args: Parameters<PluginAssistantAPI[K]>) => ReturnType<PluginAssistantAPI[K]>;
+      return fn.call(this.assistant, { id: pluginId, name: plugin.manifest.name }, ...args);
+    };
+    const assistant: PluginAssistantAPI | undefined = AssistantCapabilityPermissions.every(p => this.hasPermission(pluginId, p)) ? {
+      listTools: async () => assistantCall("listTools", []),
+      callTool: async r => assistantCall("callTool", [r]),
+      beginRequest: async r => assistantCall("beginRequest", [r]),
+      endRequest: async r => assistantCall("endRequest", [r]),
+      createToolSession: async r => assistantCall("createToolSession", [r]),
+      closeToolSession: async r => assistantCall("closeToolSession", [r])
+    } : undefined;
     const storage = this.hasPermission(pluginId, "plugin.storage") ? this.getStorage(pluginId) : undefined;
     const selection: PluginSelectionAPI | undefined = this.hasPermission(pluginId, "selection.read")
       ? {
@@ -775,6 +800,7 @@ export class PluginHost {
       images,
       recognition,
       tools,
+      assistant,
       analysis,
       hasPermission: (permission) => this.hasPermission(pluginId, permission),
       requirePermission: (permission) => this.requirePermission(pluginId, permission)
@@ -853,20 +879,23 @@ export class PluginHost {
     return { snapshot, hostHeld };
   }
 
-  private async applyPatchForPlugin(
+  async applyPatchForPlugin(
     pluginId: string,
     invocationToken: symbol | undefined,
-    patch: ProposedDocumentPatch
+    patch: ProposedDocumentPatch,
+    /** Trusted embedding-host override, never exposed on the plugin context. */
+    requestScope?: { objectIds: readonly string[]; apply: NonNullable<PluginHostOptions["applyDocumentPatch"]> }
   ): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
-    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) :
+      requestScope ? [...this.activeCommandInvocations.values()].find(candidate => candidate.pluginId === pluginId) : undefined;
     if (!invocation || invocation.pluginId !== pluginId) {
       throw new PluginHostError(
         `Plugin "${pluginId}" may call documents.applyPatch only while one of its own commands is executing.`
       );
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
-    const scope = new Set(invocation.writeScope);
+    const scope = new Set(requestScope?.objectIds ?? invocation.writeScope);
     for (const op of writePatchOps(parsedPatch.patch)) {
       if (!(DirectWritePatchOps as readonly string[]).includes(op.op)) {
         throw new PluginHostError(`Plugin "${pluginId}" passed an unsupported "${op.op}" patch to documents.applyPatch.`);
@@ -893,14 +922,15 @@ export class PluginHost {
         `Plugin "${pluginId}" passed a recognition proposal to documents.applyPatch; recognized structures must be proposed for review with documents.proposePatch.`
       );
     }
-    if (!this.applyDocumentPatch) {
+    const apply = requestScope?.apply ?? this.applyDocumentPatch;
+    if (!apply) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
     }
-    if (this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
+    if (!requestScope && this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
       throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
     }
     const plugin = this.requireRegisteredPlugin(pluginId).manifest;
-    const receipt = await this.applyDocumentPatch({
+    const receipt = await apply({
       plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
@@ -908,7 +938,9 @@ export class PluginHost {
     });
     const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
     // Only a successful write grows the scope; use actual ids returned by the host after rebasing.
-    for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
+    // Assistant requests own their scope separately. Their Send-time selection must not widen the
+    // surrounding command's ordinary document-write grant or the next request's grant.
+    if (!requestScope) for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
     return parsedReceipt;
   }
 

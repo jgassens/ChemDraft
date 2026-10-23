@@ -29,6 +29,7 @@ import {
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
+import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
 import { createBundledPluginDescriptors } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
@@ -909,6 +910,37 @@ describe("recognition.recognizeStructure survives the worker boundary", () => {
 });
 
 describe("tools survive the worker boundary", () => {
+  it("round-trips every assistant lifecycle method with Send-time request identity", async () => {
+    const manifest = parsePluginManifest({ id: "org.test.assistant-worker", name: "Assistant Worker", version: "0",
+      apiVersion: "^0.1.9", entry: "worker.js", permissions: [...AssistantCapabilityPermissions],
+      contributes: { commands: [{ id: "plugin.assistantWorker.submit", title: "Submit" }] } });
+    const assistant = {
+      listTools: vi.fn(async () => [{ name: "insert_text", description: "Insert", inputSchema: {} }]),
+      beginRequest: vi.fn(async () => ({ requestId: "req" })),
+      callTool: vi.fn(async () => ({ content: [{ type: "text" as const, text: "inserted" }] })),
+      endRequest: vi.fn(async () => ({ touchedIds: ["text"], summary: "One text", split: false })),
+      createToolSession: vi.fn(async () => ({ sessionId: "mcp", serverName: "chemdraft" as const, tools: ["insert_text"] })),
+      closeToolSession: vi.fn(async () => {}), closeAllForPlugin: vi.fn()
+    };
+    const host = new PluginHost({ assistant });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { "plugin.assistantWorker.submit": async context => {
+      const api = context.assistant!;
+      const { requestId } = await api.beginRequest({ prompt: "caption", label: "Caption" });
+      const tools = await api.listTools();
+      const session = await api.createToolSession({ requestId });
+      const result = await api.callTool({ name: tools[0]!.name, input: { text: "caption" } });
+      await api.closeToolSession({ sessionId: session.sessionId });
+      return { result, end: await api.endRequest({ requestId }) };
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    await expect(host.invokeCommand("plugin.assistantWorker.submit")).resolves.toMatchObject({
+      result: { content: [{ text: "inserted" }] }, end: { touchedIds: ["text"], split: false }
+    });
+    expect(assistant.beginRequest).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { prompt: "caption", label: "Caption" });
+    expect(assistant.createToolSession).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { requestId: "req" });
+    expect(assistant.endRequest).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { requestId: "req" });
+    bridge.terminate();
+  });
   it("round-trips every external-tools method and omits it without assistant.run", async () => {
     const manifest = parsePluginManifest({
       id: "org.test.tools-worker", name: "Worker Tools", version: "0", apiVersion: "^0.1.8", entry: "x",

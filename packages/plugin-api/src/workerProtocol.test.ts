@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { PluginApiVersion, parsePluginManifest, type PluginManifest } from "./index";
+import { AssistantCapabilityPermissions, PluginApiVersion, parsePluginManifest, type PluginManifest } from "./index";
 import {
   PLUGIN_WORKER_CAPABILITY_METHODS,
   PLUGIN_WORKER_PROTOCOL_VERSION,
@@ -112,6 +112,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.7", "0.1.6")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.8", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.8", "0.1.7")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.9", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.9", "0.1.8")).toBe(false);
   });
 });
 
@@ -146,6 +148,20 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it.each([undefined, ...AssistantCapabilityPermissions])("gates the assistant stub when missing %s", async missing => {
+    const permissions = AssistantCapabilityPermissions.filter(p => p !== missing && !(missing === "native.execute" && p === "assistant.run"));
+    const endpoint = new ControlledEndpoint();
+    let present: boolean | undefined;
+    runPluginWorker({ manifest: manifest(permissions), commandHandlers: {
+      [commandId]: context => { present = context.assistant !== undefined; }
+    } }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    expect(present).toBe(missing === undefined);
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.assistant).toEqual([
+      "listTools", "callTool", "beginRequest", "endRequest", "createToolSession", "closeToolSession"
+    ]);
+  });
   it.each<{ permissions: PluginManifest["permissions"]; present: boolean }>([
     { permissions: [], present: false },
     { permissions: ["assistant.run"], present: false },

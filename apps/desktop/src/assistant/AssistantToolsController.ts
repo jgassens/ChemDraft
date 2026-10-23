@@ -1,0 +1,210 @@
+import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest, type PluginSelectionSnapshot } from "@chemdraft/plugin-api";
+import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
+import type { AssistantToolContext } from "./AssistantToolContext";
+import { callAssistantTool, listAssistantTools } from "./assistantTools";
+import { getAssistantTransactions, type AssistantTransactions } from "./assistantTransaction";
+import { getAssistantHistoryPort } from "./historyPort";
+import type { AssistantMcpEngine, McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
+
+type Plugin = { id: string; name: string };
+interface Request {
+  pluginId: string;
+  tabId: string;
+  selection: string[];
+  inserted: Set<string>;
+  touched: Set<string>;
+  transactions: AssistantTransactions;
+  context: AssistantToolContext;
+  ended: boolean;
+  cancellations: Map<string, AbortController>;
+  opening: number;
+}
+export interface AssistantToolsControllerOptions {
+  host(): PluginHost;
+  engine: AssistantMcpEngine;
+  getActiveTabId(): string | undefined;
+  getSelection(): PluginSelectionSnapshot | undefined;
+  readDocument?(tabId: string): ChemDraftDocument | undefined;
+  transactions?(): AssistantTransactions;
+  createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now">;
+}
+
+/** Owns request lifetimes; plugin code receives only the typed, permission-checked host facade. */
+export class AssistantToolsController implements PluginHostAssistant {
+  private readonly requests = new Map<string, Request>();
+  private readonly sessions = new Map<string, { pluginId: string; requestId: string }>();
+  private activeCalls = 0;
+  constructor(private readonly options: AssistantToolsControllerOptions) {}
+
+  private plugin(plugin: Plugin): PluginManifest {
+    const host = this.options.host();
+    for (const permission of AssistantCapabilityPermissions) host.requirePermission(plugin.id, permission);
+    return host.getPlugin(plugin.id)!.manifest;
+  }
+  private running(plugin: Plugin, requestId: string): Request {
+    const request = this.ownedRequest(plugin, requestId);
+    if (!request.context.getDocument()) throw new Error("The assistant's document tab has closed.");
+    return request;
+  }
+  private ownedRequest(plugin: Plugin, requestId: string): Request {
+    this.plugin(plugin);
+    const request = this.requests.get(requestId);
+    if (!request || request.ended || request.pluginId !== plugin.id) throw new Error("The assistant request has ended or does not belong to this plugin.");
+    return request;
+  }
+  async listTools(plugin: Plugin) { this.plugin(plugin); return listAssistantTools(); }
+
+  async beginRequest(plugin: Plugin, input: Parameters<PluginAssistantAPI["beginRequest"]>[0]) {
+    const manifest = this.plugin(plugin);
+    if (typeof input?.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 20_000 ||
+      (input.label !== undefined && (typeof input.label !== "string" || input.label.length > 200))) throw new Error("Invalid assistant request prompt or label.");
+    if ([...this.requests.values()].some(r => r.pluginId === plugin.id && !r.ended)) throw new Error("This plugin already has an assistant request running.");
+    const tabId = this.options.getActiveTabId();
+    if (!tabId) throw new Error("No document tab is open.");
+    const selection = [...(this.options.getSelection()?.objectIds ?? [])];
+    const transactions = this.options.transactions?.() ?? getAssistantTransactions();
+    const getDocument = () => this.options.readDocument ? this.options.readDocument(tabId) : getAssistantHistoryPort().read(tabId);
+    const services = this.options.createContext({ plugin: manifest, tabId, getDocument });
+    const requestId = transactions.beginAssistantTransaction({ pluginId: plugin.id, runId: crypto.randomUUID(), tabId,
+      label: input.label ?? input.prompt, sendSelection: { objectIds: selection } });
+    const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
+      ended: false, cancellations: new Map(), opening: 0,
+      context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
+        getInsertedObjectIds: () => [...request.inserted], write: async () => { throw new Error("No tool call is running."); } } };
+    this.requests.set(requestId, request);
+    return { requestId };
+  }
+
+  async callTool(plugin: Plugin, input: Parameters<PluginAssistantAPI["callTool"]>[0]): Promise<PluginAssistantToolResult> {
+    const entry = [...this.requests].find(([, r]) => r.pluginId === plugin.id && !r.ended);
+    if (!entry) throw new Error("No assistant request is running.");
+    return this.call(plugin, entry[0], input);
+  }
+
+  private async call(plugin: Plugin, requestId: string, input: { name: string; input: unknown }, callId: string = crypto.randomUUID()): Promise<PluginAssistantToolResult> {
+    const request = this.running(plugin, requestId);
+    if (this.activeCalls >= 4) throw new Error("At most four assistant tool calls may run concurrently.");
+    if (typeof input?.name !== "string") throw new Error("An assistant tool name is required.");
+    const abort = new AbortController();
+    request.cancellations.set(callId, abort);
+    this.activeCalls++;
+    const deadline = setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded.")),
+      input.name === "name_to_structure" || input.name === "structure_to_name" ? 45_000 : input.name === "render" ? 60_000 : 120_000);
+    let work: Promise<PluginAssistantToolResult> | undefined;
+    try {
+      work = callAssistantTool({ ...request.context,
+        plugin: this.plugin(plugin),
+        getDocument: () => request.ended || abort.signal.aborted ? undefined : request.context.getDocument(),
+        write: async patch => {
+          this.running(plugin, requestId);
+          if (abort.signal.aborted) throw new Error("Assistant tool call was cancelled.");
+          const receipt = await this.options.host().applyPatchForPlugin(plugin.id, undefined,
+            { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
+              objectIds: [...request.selection, ...request.inserted],
+              apply: application => {
+                this.running(plugin, requestId);
+                if (abort.signal.aborted) throw new Error("Assistant tool call was cancelled.");
+                const before = request.context.getDocument()!;
+                const after = applyPatch(before, application.patch.patch);
+                const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
+                  op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                request.transactions.writeAssistantTransaction(requestId, after, touched);
+                const existing = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+                for (const id of touched) { request.touched.add(id); if (!existing.has(id)) request.inserted.add(id); }
+                return { applied: true as const, objectIds: touched };
+              }
+            });
+          return { objectIds: receipt.objectIds };
+        }
+      }, input.name, input.input);
+      // Cancelling a caller blocks its writes immediately, but does not make native work disappear.
+      // Keep its concurrency slot until the bounded tool invocation actually settles.
+      void work.then(() => { this.activeCalls--; }, () => { this.activeCalls--; });
+      return await Promise.race([work, new Promise<never>((_, reject) => {
+        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was cancelled.")), { once: true });
+      })]);
+    } finally {
+      if (!work) this.activeCalls--;
+      clearTimeout(deadline);
+      request.cancellations.delete(callId);
+    }
+  }
+
+  async endRequest(plugin: Plugin, { requestId }: { requestId: string }) {
+    const request = this.ownedRequest(plugin, requestId);
+    request.ended = true;
+    request.cancellations.forEach(stop => stop.abort());
+    // Mark ended before awaiting IPC, so a queued bridge call cannot write meanwhile.
+    try {
+      const result = request.transactions.endAssistantTransaction(requestId, { touchedIds: [...request.touched] });
+      return { ...result, summary: `${request.touched.size} object(s) changed.` };
+    } finally {
+      this.requests.delete(requestId);
+      await this.closeRequestSessions(requestId);
+    }
+  }
+
+  async createToolSession(plugin: Plugin, { requestId }: { requestId: string }) {
+    const request = this.running(plugin, requestId);
+    const count = [...this.sessions.values()].filter(s => s.pluginId === plugin.id).length + request.opening;
+    if (count >= 2) throw new Error("At most two MCP sessions per plugin are allowed.");
+    request.opening++;
+    try {
+      const session = await this.options.engine.open(plugin, message => { void this.bridge(plugin, requestId, message); });
+      if (request.ended || !request.context.getDocument()) {
+        await this.options.engine.close(session.sessionId);
+        throw new Error("The assistant request ended while opening its MCP session.");
+      }
+      this.sessions.set(session.sessionId, { pluginId: plugin.id, requestId });
+      return { ...session, tools: listAssistantTools().map(tool => tool.name) };
+    } finally { request.opening--; }
+  }
+  async closeToolSession(plugin: Plugin, { sessionId }: { sessionId: string }) {
+    this.plugin(plugin);
+    if (this.sessions.get(sessionId)?.pluginId !== plugin.id) throw new Error("MCP session does not belong to this plugin.");
+    const request = this.requests.get(this.sessions.get(sessionId)!.requestId);
+    request?.cancellations.forEach((stop, id) => { if (id.startsWith(`${sessionId}:`)) stop.abort(); });
+    this.sessions.delete(sessionId);
+    await this.options.engine.close(sessionId);
+  }
+  private async closeRequestSessions(requestId: string) {
+    await Promise.all([...this.sessions].filter(([, s]) => s.requestId === requestId).map(async ([id]) => {
+      this.sessions.delete(id); await this.options.engine.close(id);
+    }));
+  }
+  closeAllForPlugin(pluginId: string): void {
+    for (const [id, request] of this.requests) {
+      if (request.pluginId !== pluginId) continue;
+      this.abandonRequest(id, request);
+    }
+  }
+  closeAllForTab(tabId: string): void {
+    for (const [id, request] of this.requests) if (request.tabId === tabId) this.abandonRequest(id, request);
+  }
+  private abandonRequest(id: string, request: Request): void {
+    request.ended = true;
+    request.cancellations.forEach(stop => stop.abort());
+    try { request.transactions.endAssistantTransaction(id, { touchedIds: [...request.touched] }); } catch { /* Tab already closed. */ }
+    this.requests.delete(id);
+    void this.closeRequestSessions(id).catch(() => {});
+  }
+  private async bridge(plugin: Plugin, requestId: string, message: McpBridgeRequest): Promise<void> {
+    let response: McpBridgeResponse;
+    try {
+      const request = this.running(plugin, requestId);
+      const session = this.sessions.get(message.sessionId);
+      if (session?.requestId !== requestId || session.pluginId !== plugin.id) throw new Error("Unknown MCP session.");
+      const params = message.params as Record<string, unknown> | null;
+      if (message.method === "cancel") {
+        request.cancellations.get(`${message.sessionId}:${message.requestId}`)?.abort();
+        return;
+      }
+      if (message.method === "tools/list") response = { result: { tools: await this.listTools(plugin) } };
+      else if (message.method === "tools/call") response = { result: await this.call(plugin, requestId,
+        { name: params?.name as string, input: params?.arguments ?? {} }, `${message.sessionId}:${message.requestId}`) };
+      else throw new Error(`Unsupported MCP method ${message.method}.`);
+    } catch (error) { response = { error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }; }
+    try { await this.options.engine.respond(message.sessionId, message.requestId, response); } catch { /* Rust may already have closed or timed out the call. */ }
+  }
+}

@@ -419,6 +419,8 @@ export class PluginWorkerBridge {
         return context.recognition;
       case "tools":
         return context.tools;
+      case "assistant":
+        return context.assistant;
     }
   }
 

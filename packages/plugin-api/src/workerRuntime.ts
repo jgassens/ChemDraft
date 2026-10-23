@@ -16,6 +16,7 @@
  * unit-tests without a real Worker (a linked in-memory endpoint pair stands in).
  */
 
+import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "./index";
 import type {
   PluginAnalysisAPI,
   PluginChemistryAPI,
@@ -223,6 +224,19 @@ export function runPluginWorker(
           }
         : undefined;
 
+    const callAssistant = (method: CapabilityMethodOf<"assistant">, args: unknown[]): Promise<unknown> => {
+      for (const permission of AssistantCapabilityPermissions) requirePermission(permission);
+      return call("assistant", method, args);
+    };
+    const assistant: PluginAssistantAPI | undefined = AssistantCapabilityPermissions.every(has) ? {
+      listTools: () => callAssistant("listTools", []) as ReturnType<PluginAssistantAPI["listTools"]>,
+      callTool: r => callAssistant("callTool", [r]) as ReturnType<PluginAssistantAPI["callTool"]>,
+      beginRequest: r => callAssistant("beginRequest", [r]) as ReturnType<PluginAssistantAPI["beginRequest"]>,
+      endRequest: r => callAssistant("endRequest", [r]) as ReturnType<PluginAssistantAPI["endRequest"]>,
+      createToolSession: r => callAssistant("createToolSession", [r]) as ReturnType<PluginAssistantAPI["createToolSession"]>,
+      closeToolSession: r => callAssistant("closeToolSession", [r]) as ReturnType<PluginAssistantAPI["closeToolSession"]>
+    } : undefined;
+
     const callTools = (method: CapabilityMethodOf<"tools">, request: unknown): Promise<unknown> => {
       requirePermission("assistant.run");
       requirePermission("native.execute");
@@ -305,6 +319,7 @@ export function runPluginWorker(
       },
       documents,
       tools,
+      assistant,
       storage,
       selection,
       panels,

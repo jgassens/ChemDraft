@@ -44,7 +44,8 @@ export type PluginWorkerCapabilityNamespace =
   | "dialogs"
   | "images"
   | "recognition"
-  | "tools";
+  | "tools"
+  | "assistant";
 
 /**
  * The methods each namespace exposes. The host bridge validates an incoming request against this map
@@ -75,7 +76,8 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"],
-  tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"]
+  tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"],
+  assistant: ["listTools", "callTool", "beginRequest", "endRequest", "createToolSession", "closeToolSession"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
 /**

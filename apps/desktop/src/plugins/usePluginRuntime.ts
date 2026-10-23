@@ -61,6 +61,7 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 }
 
 export interface PluginRuntimeProviders {
+  assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
   getActiveDocument: () => ChemDraftDocument | undefined;
   /** Identifies the working document for a plugin's `documents.applyPatch` (see
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
@@ -175,7 +176,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         }
         return apply(request);
       },
-      defaultPanelSurface: isTauriHost() ? "window" : "inApp"
+      defaultPanelSurface: isTauriHost() ? "window" : "inApp",
+      assistantMcpEngine: providers.assistantMcpEngine
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };

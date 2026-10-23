@@ -15,6 +15,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * `PluginRecognitionAPI.recognizeStructure`; 0.1.7 adds host-owned local
  * `PluginChemistryAPI.structureToName` and the `chemicalName` report section.
  * 0.1.8 adds `PluginToolsAPI` (host-managed AI command-line tools, permissions `assistant.run` and `native.execute`).
+ * 0.1.9 adds `PluginAssistantAPI` (ChemDraft's tool set for an AI run, MCP tool sessions)
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -24,7 +25,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.8" as const;
+export const PluginApiVersion = "0.1.9" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -1360,6 +1361,32 @@ export type PluginExternalToolPollRequest = z.input<typeof PluginExternalToolPol
 export type PluginExternalToolCancelRequest = z.input<typeof PluginExternalToolCancelRequestSchema>;
 export type PluginExternalToolClearConversationRequest = z.input<typeof PluginExternalToolClearConversationRequestSchema>;
 
+export const AssistantCapabilityPermissions = [
+  "document.read", "document.write", "selection.read", "chemistry.compute", "native.execute", "assistant.run"
+] as const satisfies readonly PluginPermission[];
+
+export interface PluginAssistantToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+export type PluginAssistantContent = { type: "text"; text: string } |
+  { type: "image"; data: string; mimeType: "image/png" };
+export interface PluginAssistantToolResult {
+  content: PluginAssistantContent[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}
+export interface PluginAssistantAPI {
+  listTools(): Promise<PluginAssistantToolDescriptor[]>;
+  callTool(request: { name: string; input: unknown }): Promise<PluginAssistantToolResult>;
+  /** Capture the tab and selection at Send; open one labelled history transaction. */
+  beginRequest(request: { prompt: string; label?: string }): Promise<{ requestId: string }>;
+  endRequest(request: { requestId: string }): Promise<{ touchedIds: string[]; summary: string; split: boolean }>;
+  createToolSession(request: { requestId: string }): Promise<{ sessionId: string; serverName: "chemdraft"; tools: string[] }>;
+  closeToolSession(request: { sessionId: string }): Promise<void>;
+}
+
 export interface PluginToolsAPI {
   status(request: PluginExternalToolStatusRequest): Promise<PluginExternalToolStatus>;
   install(request: PluginExternalToolInstallRequest): Promise<PluginExternalToolStatus>;
@@ -1398,6 +1425,7 @@ export interface PluginCommandContext {
   recognition?: PluginRecognitionAPI;
   /** Present only when the plugin declares both "assistant.run" and "native.execute". */
   tools?: PluginToolsAPI;
+  assistant?: PluginAssistantAPI;
   hasPermission(permission: PluginPermission): boolean;
   requirePermission(permission: PluginPermission): void;
 }

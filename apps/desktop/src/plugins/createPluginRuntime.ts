@@ -1,4 +1,10 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
+import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
+import { getAssistantHistoryPort } from "../assistant/historyPort";
+import { rasterizeSvgNative } from "../nativeRasterExport";
+import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
+import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
 import { TauriStructureNamingEngine, type StructureNamingEngine } from "./structureNamingEngine";
 import { scopedNamingMolecule, type NamingCanonicalizer } from "./pluginStructureNaming";
@@ -117,6 +123,10 @@ export interface DesktopPluginRuntimeOptions {
   structureNamingEngine?: StructureNamingEngine;
   /** Native external-tools boundary; injectable so runtime tests do not require Tauri IPC. */
   externalToolsEngine?: ExternalToolsEngine;
+  assistantMcpEngine?: AssistantMcpEngine;
+  assistantContext?: AssistantToolsControllerOptions["createContext"];
+  assistantTransactions?: AssistantToolsControllerOptions["transactions"];
+  getAssistantDocument?: AssistantToolsControllerOptions["readDocument"];
   namingCanonicalizer?: NamingCanonicalizer;
   /** Chemistry validation seam used after recognition and before a proposal is built. */
   recognitionStructureValidator?: RecognitionStructureValidator;
@@ -171,6 +181,7 @@ export interface DesktopPluginRuntime {
   recognition: StructureRecognitionController;
   naming: StructureNamingController;
   externalTools: ExternalToolsController;
+  assistant: AssistantToolsController;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string): void;
@@ -251,6 +262,49 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   // collector to the snapshot builder for the synchronous span of each read, and nothing else can.
   const naming = new StructureNamingController(options.structureNamingEngine ?? new TauriStructureNamingEngine(), options.namingCanonicalizer);
   const externalTools = new ExternalToolsController(options.externalToolsEngine ?? (isTauriHost() ? new TauriExternalToolsEngine() : new UnsupportedExternalToolsEngine()));
+  const assistant = new AssistantToolsController({
+    host: (): PluginHost => host,
+    engine: options.assistantMcpEngine ?? (isTauriHost() ? new TauriAssistantMcpEngine() : new UnsupportedAssistantMcpEngine()),
+    getActiveTabId: () => options.getActiveDocumentTab?.().id,
+    getSelection: () => options.getSelection?.(),
+    readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
+    transactions: options.assistantTransactions,
+    createContext: options.assistantContext ?? (({ getDocument }) => ({
+      now: options.now ?? (() => new Date()),
+      render: (svg, settings) => rasterizeSvgNative(svg, "png", settings),
+      chemistry: {
+        nameToStructure: request => nameProvider ? nameProvider(request) : Promise.resolve({ available: false, reason: "Name-to-structure engine unavailable." }),
+        structureFromSmiles: request => options.buildStructureFromSmiles === null ?
+          Promise.resolve({ available: false, reason: "Structure layout engine unavailable." }) :
+          options.buildStructureFromSmiles ? options.buildStructureFromSmiles(request) : structureFromSmilesForPlugin(request, getDocument),
+        inspectStructure: async (_format, value) => {
+          const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
+          const module = await rdkit.ensureRdkit();
+          const molecule = module.get_mol(value, JSON.stringify({ removeHs: false }));
+          if (!molecule) return { valid: false, reason: "RDKit could not parse the structure." };
+          try {
+            const jsonMol = molecule as typeof molecule & { get_json?(): string };
+            const canonicalSmiles = molecule.get_smiles?.();
+            if (!jsonMol.get_json || !canonicalSmiles) throw new Error("RDKit structure inspection is unavailable.");
+            const graph = JSON.parse(jsonMol.get_json()) as Parameters<typeof rdkit.compositionFromRdkitJson>[0];
+            const composition = rdkit.compositionFromRdkitJson(graph);
+            return { valid: true, canonicalSmiles, formula: composition.formula, warnings: [],
+              heavyAtoms: graph.molecules.reduce((count, mol) => count + mol.atoms.filter(atom =>
+                (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
+          } finally { molecule.delete(); }
+        },
+        structureToName: async request => {
+          const engine = options.structureNamingEngine ?? new TauriStructureNamingEngine();
+          const status = await engine.status();
+          if (status.state === "unsupported") return { status: "unsupported", reason: status.detail ?? "This computer cannot run the naming engine." };
+          if (status.state !== "installed") return { status: "engineNotInstalled" };
+          const molecule = getDocument()?.pages.flatMap(page => page.objects).find(object => object.id === request.objectId);
+          if (!molecule || molecule.type !== "molecule") throw new Error("The requested molecule is unavailable.");
+          return nameStructureForPlugin(molecule, engine, status, options.namingCanonicalizer);
+        }
+      }
+    }))
+  });
   const namingInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
   let namingFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
@@ -377,6 +431,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
     recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
     externalTools,
+    assistant,
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -398,6 +453,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     recognition,
     naming,
     externalTools,
+    assistant,
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;
@@ -405,6 +461,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       return title === undefined ? undefined : { id, title };
     },
     closeProposalDocumentTab(tabId, title) {
+      assistant.closeAllForTab(tabId);
       closedTabTitles.set(tabId, title);
       pruneClosedTabTitles();
     },

@@ -4,6 +4,41 @@ A plugin is a TypeScript package that imports **only `@chemdraft/plugin-api`** a
 plus command handlers. Bundled examples are composed from source by the desktop build; an installable
 plugin is compiled into a verified multi-file worker package by `pnpm plugin:package`.
 
+## Assistant tools (0.1.9)
+
+Declare `document.read`, `document.write`, `selection.read`, `chemistry.compute`, `native.execute`,
+and `assistant.run` to receive `context.assistant`. Every method re-checks all six permissions;
+individual tools also check their own permissions. Declare `apiVersion: "^0.1.9"`.
+
+Keep the plugin's submit command pending for the whole run. At Send, call
+`assistant.beginRequest({ prompt, label? })`: the host captures the document tab and selection
+and opens a labelled transaction. Tools may change only that selection plus objects inserted
+earlier in the same request. Changing the selection during a run never widens its scope; an empty
+selection permits additions only. Results land directly on the page, with no approval window.
+
+`listTools()` returns the host's tool schemas. `callTool({ name, input })` executes a tool in the
+plugin's active request. For a command-line provider, call `createToolSession({ requestId })` and
+pass its `sessionId` to `tools.run` as `mcpSessionId`. The server is named `chemdraft`; the returned
+`tools` lists its names. The host allows two sessions per plugin and four concurrent tool calls.
+`closeToolSession({ sessionId })` releases one session. Ended requests, closed tabs, cancellation,
+deadlines, and unregistering the plugin prevent late writes.
+
+Always call `endRequest({ requestId })` in a `finally` block before the submit command returns.
+This closes its sessions and finishes one undo entry, leaving the changed objects selected. It
+returns `{ touchedIds, summary, split }`; `split` reports that a user edit interrupted the run's
+history entry. Undo and redo restore the recorded states exactly and never call the plugin or
+the AI again. Session ids belong to the plugin and request that created them.
+
+```ts
+const { requestId } = await context.assistant!.beginRequest({ prompt });
+try {
+  const session = await context.assistant!.createToolSession({ requestId });
+  // Start and await the provider run, using session.sessionId as mcpSessionId.
+} finally {
+  await context.assistant!.endRequest({ requestId });
+}
+```
+
 ## The one rule
 
 Runtime source may import `@chemdraft/plugin-api` and ordinary npm packages (e.g. `openchemlib`,
@@ -26,12 +61,13 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.8`). API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
+`0.1.9`). API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
 API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
 `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
-capability. Existing `^0.1.0` through `^0.1.8` packages remain compatible, each on a host at or above the version it declares.
+capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
+Existing `^0.1.0` through `^0.1.9` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 

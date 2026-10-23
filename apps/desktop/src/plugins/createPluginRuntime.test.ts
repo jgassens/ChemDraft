@@ -1,4 +1,9 @@
 import type { PluginSelectionSnapshot } from "@chemdraft/plugin-api";
+import { toEngineDocument } from "@chemdraft/chem-core";
+import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
+import { AssistantTransactions } from "../assistant/assistantTransaction";
+import { testContext } from "../assistant/tools/testContext";
+import type { AssistantHistoryPort } from "../assistant/historyPort";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
@@ -15,6 +20,50 @@ import type {
 } from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+
+describe("createPluginRuntime assistant integration", () => {
+  it("lazily wires an injectable MCP engine and request transaction through the host", async () => {
+    const fixture = testContext();
+    const { context, replace } = fixture;
+    replace(toEngineDocument(context.getDocument()!));
+    const push = vi.fn((_tab: string, _before: NonNullable<ReturnType<typeof context.getDocument>>, after: NonNullable<ReturnType<typeof context.getDocument>>) => { replace(after); });
+    const port: AssistantHistoryPort = {
+      read: () => context.getDocument(), push,
+      amend: (_tab, after) => replace(after), select: () => {}, onUserEdit: () => () => {}, undo: () => false
+    };
+    const transactions = new AssistantTransactions(port);
+    const engine = {
+      open: vi.fn(async () => ({ sessionId: "mcp", serverName: "chemdraft" as const })),
+      close: vi.fn(async () => {}), respond: vi.fn(async () => {}),
+      status: vi.fn(async () => ({ listening: false, sessionCount: 0 }))
+    };
+    const ordinaryWrite = vi.fn();
+    const runtime = createPluginRuntime({ getActiveDocument: context.getDocument,
+      getActiveDocumentTab: () => ({ id: context.tabId }), getSelection: () => emptySelection,
+      assistantMcpEngine: engine, assistantContext: () => context, getAssistantDocument: port.read,
+      assistantTransactions: () => transactions, applyDocumentPatch: ordinaryWrite });
+    expect(engine.open).not.toHaveBeenCalled();
+    expect(engine.status).not.toHaveBeenCalled();
+    runtime.registerPlugin({ id: context.plugin.id, name: "Assistant", version: "0", apiVersion: "^0.1.9", entry: "worker.js",
+      permissions: [...AssistantCapabilityPermissions], contributes: { commands: [{ id: "plugin.assistant.submit", title: "Submit" }] }
+    }, { commandHandlers: { "plugin.assistant.submit": async ctx => {
+      const api = ctx.assistant!;
+      const { requestId } = await api.beginRequest({ prompt: "caption" });
+      await api.createToolSession({ requestId });
+      const result = await api.callTool({ name: "insert_text", input: { text: "Assistant caption" } });
+      expect(result.isError).not.toBe(true);
+      return api.endRequest({ requestId });
+    } } });
+    await expect(runtime.invokeCommand("plugin.assistant.submit")).resolves.toMatchObject({ touchedIds: [expect.any(String)], split: false });
+    expect(engine.open).toHaveBeenCalledOnce();
+    expect(engine.close).toHaveBeenCalledWith("mcp");
+    expect(push).toHaveBeenCalledOnce();
+    expect(ordinaryWrite).not.toHaveBeenCalled();
+    expect(context.getDocument()!.pages[0]!.objects).toHaveLength(3);
+    runtime.unregisterPlugin(context.plugin.id);
+    transactions.dispose();
+  });
+});
 
 const molfile = [
   "Recognized carbon monoxide",
