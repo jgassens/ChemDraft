@@ -2,6 +2,7 @@
 
 import {
   createEmptyDocument,
+  DocumentTextStyle,
   type ArrowObject,
   type ChemDraftDocument,
   type MoleculeObject,
@@ -9,6 +10,7 @@ import {
   type TextObject,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
+import type { FigureStyle } from "@chemdraft/layout-engine";
 import { createNativeReactionArrow } from "./reactionArrows";
 import { phase4Timestamp } from "./shared";
 import { nativeTextObjectSizeForText } from "./textObjects";
@@ -34,6 +36,9 @@ export interface ReactionSchemeLayout {
 }
 
 export interface ReactionSchemeLayoutOptions {
+  /** Document uses the fixed physical text preset for conditions and plus signs. */
+  style?: FigureStyle;
+  textStyle?: Partial<NativeTextStyle>;
   reactants: readonly ReactionSchemeComponent[];
   products: readonly ReactionSchemeComponent[];
   arrowKind: ArrowObject["arrowKind"];
@@ -53,14 +58,17 @@ const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: 
  * is the left edge of the left-most component at the scheme's vertical centre.
  */
 export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): ReactionSchemeLayout {
+  const textStyle = { ...(options.style === "document" ? DocumentTextStyle : {}), ...options.textStyle };
+  const conditionsStyle = { ...CONDITIONS_STYLE, ...textStyle };
+  const plusStyle = { ...PLUS_STYLE, ...textStyle };
   const conditionText = options.conditionText?.trim() ?? "";
   const visible = [...options.reactants, ...options.products];
   if (visible.length === 0) throw new Error("A reaction scheme needs at least one molecule.");
 
   const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, CONDITIONS_STYLE)
+    ? nativeTextObjectSizeForText(conditionText, conditionsStyle)
     : { width: 0, height: 0 };
-  const plusSize = nativeTextObjectSizeForText("+", PLUS_STYLE);
+  const plusSize = nativeTextObjectSizeForText("+", plusStyle);
   const arrowLength = Math.max(options.bondLength * 2.5, conditionSize.width + options.gutter * 2);
 
   let cursor = options.anchor.x;
@@ -114,7 +122,7 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
     nextLayoutId("text", molecules.length + 2 + index),
     point,
     "+",
-    PLUS_STYLE,
+    plusStyle,
     pageWidth,
     pageHeight
   ));
@@ -125,7 +133,7 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
       y: options.anchor.y - conditionSize.height - options.gutter / 2
     },
     conditionText,
-    CONDITIONS_STYLE,
+    conditionsStyle,
     pageWidth,
     pageHeight
   ) : undefined;

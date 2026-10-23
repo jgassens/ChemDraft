@@ -2,11 +2,14 @@
 
 import {
   createEmptyDocument,
+  DocumentTextStyle,
   type ChemDraftDocument,
   type MoleculeObject,
+  type NativeTextStyle,
   type TextObject,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
+import type { FigureStyle } from "@chemdraft/layout-engine";
 import { nativeTextObjectSizeForText } from "./textObjects";
 import type { LayoutBounds } from "./reactionScheme";
 import { nextObjectId, phase4Timestamp } from "./shared";
@@ -18,6 +21,9 @@ export interface GridLayoutEntry {
 }
 
 export interface GridLayoutOptions {
+  /** Fit preserves the legacy layout; document sizes the page and cells to include labels. */
+  style?: FigureStyle;
+  textStyle?: Partial<NativeTextStyle>;
   entries: readonly GridLayoutEntry[];
   columns?: number;
   gutter: number;
@@ -37,6 +43,7 @@ export interface GridLayout {
 /** Position already-depicted molecules in a deterministic, non-overlapping grid. */
 export function layoutGrid(options: GridLayoutOptions): GridLayout {
   if (options.entries.length === 0) throw new Error("A grid needs at least one molecule.");
+  const textStyle = { ...(options.style === "document" ? DocumentTextStyle : {}), ...options.textStyle };
   const widths = options.entries.map((entry) => entry.bounds.maxX - entry.bounds.minX);
   const heights = options.entries.map((entry) => entry.bounds.maxY - entry.bounds.minY);
   const moleculeWidth = Math.max(...widths);
@@ -49,12 +56,23 @@ export function layoutGrid(options: GridLayoutOptions): GridLayout {
   const labelsPresent = options.entries.some((entry) => entry.label !== null);
   const labelHeight = labelsPresent ? Math.max(
     ...options.entries.filter((entry) => entry.label !== null)
-      .map((entry) => nativeTextObjectSizeForText(entry.label!).height)
+      .map((entry) => nativeTextObjectSizeForText(entry.label!, textStyle).height)
   ) : 0;
-  const cellWidth = moleculeWidth + options.gutter;
+  const labelWidth = Math.max(0, ...options.entries.map((entry) => entry.label === null
+    ? 0 : nativeTextObjectSizeForText(entry.label, textStyle).width));
+  const cellWidth = (options.style === "document" ? Math.max(moleculeWidth, labelWidth) : moleculeWidth) + options.gutter;
   const cellHeight = moleculeHeight + (labelsPresent ? labelGap + labelHeight : 0) + options.gutter;
+  const rows = Math.ceil(options.entries.length / columns);
   const empty = createEmptyDocument({ title: "ChemDraft grid", now: phase4Timestamp });
-  const page = empty.pages[0]!;
+  const initialPage = empty.pages[0]!;
+  const pageWidth = options.anchor.x * 2 + columns * cellWidth;
+  const pageHeight = options.anchor.y * 2 + rows * cellHeight;
+  const page = options.style === "document" ? {
+    ...initialPage,
+    width: pageWidth,
+    height: pageHeight,
+    layout: { ...initialPage.layout, presetId: "custom" as const, widthPx: pageWidth, heightPx: pageHeight }
+  } : initialPage;
   const molecules: MoleculeObject[] = [];
   const labels: TextObject[] = [];
   const objects: Array<MoleculeObject | TextObject> = [];
@@ -77,11 +95,12 @@ export function layoutGrid(options: GridLayoutOptions): GridLayout {
     molecules.push(molecule);
     objects.push(molecule);
     if (entry.label !== null) {
-      const size = nativeTextObjectSizeForText(entry.label);
+      const size = nativeTextObjectSizeForText(entry.label, textStyle);
       const label = createGridLabel(
         nextObjectId({ ...empty, pages: [{ ...page, objects }] }, "text"),
         { x: cellX + (cellWidth - size.width) / 2, y: cellY + moleculeHeight + labelGap },
         entry.label,
+        textStyle,
         page.width,
         page.height
       );
@@ -99,7 +118,7 @@ export function layoutGrid(options: GridLayoutOptions): GridLayout {
     molecules,
     labels,
     columns,
-    rows: Math.ceil(options.entries.length / columns)
+    rows
   };
 }
 
@@ -120,14 +139,15 @@ function createGridLabel(
   id: string,
   point: { x: number; y: number },
   text: string,
+  style: Partial<NativeTextStyle>,
   pageWidth: number,
   pageHeight: number
 ): TextObject {
-  const size = nativeTextObjectSizeForText(text, {}, { maxWidth: Math.max(36, pageWidth - point.x) });
+  const size = nativeTextObjectSizeForText(text, style, { maxWidth: Math.max(36, pageWidth - point.x) });
   return {
     id, type: "text", x: clampToPage(point.x, pageWidth - size.width),
     y: clampToPage(point.y, pageHeight - size.height), width: size.width, height: size.height, rotation: 0,
-    style: { ...textStyleToObjectStyle(), textBoxSizingMode: "auto" },
+    style: { ...textStyleToObjectStyle(style), textBoxSizingMode: "auto" },
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
     text, spans: [{ text, script: "normal", style: {} }]
   };

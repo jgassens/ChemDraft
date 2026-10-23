@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
 
-import { layoutGrid, layoutReactionScheme, type LayoutBounds } from "../src/index";
+import { layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
 
 function molecule(id: string, width = 40, height = 20): MoleculeObject {
   return {
@@ -62,5 +62,84 @@ describe("shared reaction and grid layout", () => {
     expect(layout.molecules.every((entry, index) => layout.molecules.slice(index + 1)
       .every((other) => !overlaps(entry, other)))).toBe(true);
     expect(layout.labels.every((label, index) => label.y > layout.molecules[index]!.y)).toBe(true);
+  });
+
+  it("sizes document grid cells around wide labels and grows the page before placing text", () => {
+    const entries = Array.from({ length: 6 }, (_, index) => ({
+      molecule: molecule(`source_${index}`, 40, 300),
+      bounds: bounds(40, 300),
+      label: "A wide molecule caption"
+    }));
+    const original = structuredClone(entries);
+    const options = { entries, columns: 2, gutter: 32, anchor: { x: 24, y: 24 }, pageWidth: 800 };
+    const fit = layoutGrid(options);
+    expect(layoutGrid({ ...options, style: "fit" }).document).toEqual(fit.document);
+    const layout = layoutGrid({ ...options, style: "document" });
+    const page = layout.document.pages[0]!;
+
+    expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
+    expect(page.height).toBeGreaterThan(fit.document.pages[0]!.height);
+    expect(layout.labels[0]!.width).toBeGreaterThan(layout.molecules[0]!.width);
+    expect(overlaps(layout.labels[0]!, layout.labels[1]!)).toBe(false);
+    expect(layout.labels[1]!.x - layout.labels[0]!.x).toBeCloseTo(layout.labels[0]!.width + 32);
+    expect(page.width).toBeCloseTo(48 + 2 * (layout.labels[0]!.width + 32));
+    for (const [index, label] of layout.labels.entries()) {
+      expect(nativeTextStyleFromObjectStyle(label.style)).toMatchObject(DocumentTextStyle);
+      expect(label.y).toBe(layout.molecules[index]!.y + 308);
+      expect(label.x).toBeGreaterThanOrEqual(24);
+      expect(label.x + label.width).toBeLessThanOrEqual(page.width - 24);
+      expect(label.y + label.height).toBeLessThanOrEqual(page.height - 24);
+    }
+    expect(entries).toEqual(original);
+  });
+
+  it("accepts a shared text style for grid labels and sizes cells with that style", () => {
+    const textStyle = { ...DocumentTextStyle, fontSizePx: 28, fontStyle: "italic" as const };
+    const label = "Wide caption";
+    const size = nativeTextObjectSizeForText(label, textStyle);
+    const layout = layoutGrid({
+      entries: [{ molecule: molecule("source"), bounds: bounds(), label }],
+      style: "document", textStyle, gutter: 16, anchor: { x: 40, y: 50 }, pageWidth: 800
+    });
+    expect(layout.labels[0]).toMatchObject({ width: size.width, height: size.height });
+    expect(nativeTextStyleFromObjectStyle(layout.labels[0]!.style)).toMatchObject(textStyle);
+    expect(layout.document.pages[0]!.width).toBe(80 + size.width + 16);
+    expect(layout.document.pages[0]!.height).toBe(100 + 20 + 8 + size.height + 16);
+  });
+
+  it("uses document text metrics for reaction spacing, conditions and plus signs", () => {
+    const options = {
+      reactants: ["one", "two"].map((id) => ({ molecule: molecule(id), bounds: bounds() })),
+      products: [{ molecule: molecule("product"), bounds: bounds() }],
+      arrowKind: "forward" as const,
+      conditionText: "room temperature",
+      anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
+    };
+    const original = structuredClone(options);
+    expect(layoutReactionScheme({ ...options, style: "fit" }).document)
+      .toEqual(layoutReactionScheme(options).document);
+    const layout = layoutReactionScheme({ ...options, style: "document" });
+    const condition = layout.condition!;
+    const plus = layout.pluses[0]!;
+    const conditionSize = nativeTextObjectSizeForText(options.conditionText, DocumentTextStyle);
+    const plusSize = nativeTextObjectSizeForText("+", DocumentTextStyle);
+
+    expect(nativeTextStyleFromObjectStyle(condition.style)).toMatchObject(DocumentTextStyle);
+    expect(nativeTextStyleFromObjectStyle(plus.style)).toMatchObject(DocumentTextStyle);
+    expect(condition).toMatchObject({ width: conditionSize.width, height: conditionSize.height });
+    expect(layout.arrow.width).toBeCloseTo(conditionSize.width + 48);
+    expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
+    expect(condition.y + condition.height).toBe(108);
+    const page = layout.document.pages[0]!;
+    expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);
+    expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
+    expect(options).toEqual(original);
+
+    const textStyle = { fontSizePx: 24, fontWeight: 700 };
+    const styled = layoutReactionScheme({ ...options, style: "document", textStyle });
+    expect(styled.arrow.width).toBeGreaterThan(layout.arrow.width);
+    for (const text of [styled.condition!, ...styled.pluses]) {
+      expect(nativeTextStyleFromObjectStyle(text.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
+    }
   });
 });

@@ -70,3 +70,13 @@ remain unchanged. Arrows and graphics without authored strokes use the fixed doc
 (1.134 pt); authored graphic strokes scale with the page, and image styles remain unchanged.
 Text defaults to Arial, Helvetica, sans-serif at 10 pt. Explicit object/span font sizes scale with
 the page. Only whole-molecule size/geometry style keys are replaced; other styling is preserved.
+
+`layoutGrid` and `layoutReactionScheme` accept `style: "fit" | "document"` (default `"fit"`)
+and an optional `textStyle` override. Document style applies `DocumentTextStyle` to grid labels,
+reaction conditions and plus signs; measurements and placement use the same resolved text style.
+Grid cells in document style accommodate the wider of the molecule or label, and the custom page
+fits all rows and columns with margins given by the anchor. Reaction pages fit the complete scheme;
+condition width sets the minimum arrow length and plus-sign width sets component spacing.
+Callers supply pre-depicted molecules at the intended bond length and a reaction anchor with enough
+room above its centre for the conditions. These layout functions translate molecules without
+rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
