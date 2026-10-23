@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { loadStartWithFreshDocument, saveStartWithFreshDocument } from "./startupSettings";
 import { loadExportPreviewEnabled, saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { loadAskToSaveBeforeQuit, saveAskToSaveBeforeQuit } from "./quitSettings";
 import {
@@ -95,6 +96,7 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
@@ -150,6 +152,17 @@ export function PreferencesWindow() {
           }} />
           <span className="preferences-radio-body"><strong>Compound layout tools</strong>
             <small>Enable circle, oval, grid, row and column layouts and a spacing preview. Off by default.</small></span>
+        </label>
+      </section>
+      <section className="preferences-section">
+        <h2>Startup</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={startFresh} onChange={(event) => {
+            setStartFresh(event.target.checked);
+            saveStartWithFreshDocument(event.target.checked);
+          }} />
+          <span className="preferences-radio-body"><span>Start with a fresh document</span>
+            <small>Open a blank drawing instead of reopening the previous session on the next launch.</small></span>
         </label>
       </section>
       <section className="preferences-section">
