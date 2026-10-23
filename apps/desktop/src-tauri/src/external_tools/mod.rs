@@ -957,6 +957,9 @@ fn run_start_impl(
         }
         _ => serde_json::json!({"mcpServers":{}}),
     };
+    // Arm cleanup before writing credentials: rendering and start_bound can still fail.
+    // On success the spawned run owns cleanup for the rest of the file's lifetime.
+    let mut config_cleanup = run::RunConfigCleanup(binding.as_ref().map(|_| config.clone()));
     write_private(&system, request.system_prompt.as_bytes())
         .and_then(|()| write_private(&config, config_json.to_string().as_bytes()))
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e.to_string()))?;
@@ -995,7 +998,9 @@ fn run_start_impl(
     rendered
         .env
         .extend(env::with_mcp_token(env::ParentEnv::new(), token));
-    state.start_bound(base, &request, rendered, parent, managed, binding)
+    let started = state.start_bound(base, &request, rendered, parent, managed, binding)?;
+    config_cleanup.0 = None;
+    Ok(started)
 }
 
 #[tauri::command]

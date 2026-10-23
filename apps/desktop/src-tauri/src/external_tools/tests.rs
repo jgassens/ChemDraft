@@ -2201,6 +2201,77 @@ fn failed_run_preparation_and_spawn_release_mcp_binding() {
         .set(req.tool, &req.plugin_id, true)
         .unwrap();
     let cwd = conversation_dir(&temp.0, &req.plugin_id, &req.conversation_id).unwrap();
+    for failure in ["missing executable", "render", "busy", "limit", "shutdown"] {
+        let state = ExternalToolsState::default();
+        cached_stub(&state, req.tool);
+        let mut failed_request = req.clone();
+        let mut active = None;
+        let expected = match failure {
+            "missing executable" => {
+                state
+                    .probes
+                    .get_or_probe(req.tool, true, || {
+                        Ok(probe::ProbeResult {
+                            path: temp.0.join("missing-binary"),
+                            version: "2.1.308".into(),
+                            auth: catalog::AuthStatus {
+                                signed_in: true,
+                                auth_method: None,
+                                detail: None,
+                            },
+                            probed_at: "2026-10-22T00:00:00Z".into(),
+                        })
+                    })
+                    .unwrap();
+                RunErrorCode::NotInstalled
+            }
+            "render" => {
+                // Request validation accepts this model, but template rendering refuses flags.
+                failed_request.model = Some("-invalid".into());
+                RunErrorCode::InvalidArgs
+            }
+            "busy" => {
+                let run = spawn(&["sleep"], None, &temp.0, Duration::from_secs(10));
+                state.inner.lock().unwrap().runs.insert(
+                    "active".into(),
+                    OwnedRun {
+                        tool: req.tool,
+                        plugin_id: req.plugin_id.clone(),
+                        conversation_id: "other_conversation".into(),
+                        mcp_session_id: String::new(),
+                        run: run.clone(),
+                    },
+                );
+                active = Some(run);
+                RunErrorCode::Busy
+            }
+            "limit" => {
+                for index in 0..8 {
+                    state.inner.lock().unwrap().conversations.insert(
+                        (req.plugin_id.clone(), format!("conversation_{index}")),
+                        temp.0.clone(),
+                    );
+                }
+                RunErrorCode::Limit
+            }
+            "shutdown" => {
+                state.inner.lock().unwrap().shutting_down = true;
+                RunErrorCode::Limit
+            }
+            _ => unreachable!(),
+        };
+        let error = run_start_impl(&temp.0, &state, failed_request, &ParentEnv::new()).unwrap_err();
+        assert_eq!(error.code, expected, "{failure}: {error:?}");
+        assert!(
+            !cwd.join("claude-mcp.json").exists(),
+            "{failure} leaked credentials"
+        );
+        drop(session::bind_session(&req.mcp_session_id, &req.plugin_id, "after-failure").unwrap());
+        if let Some(run) = active {
+            run.cancel(KillReason::Cancelled);
+            assert!(run.wait_finished(Duration::from_secs(5)));
+        }
+    }
     fs::create_dir(cwd.join("claude-mcp.json")).unwrap();
     assert_eq!(
         run_start_impl(&temp.0, &state, req.clone(), &ParentEnv::new())

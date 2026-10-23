@@ -136,7 +136,7 @@ pub struct ToolRun {
     shared: Arc<Shared>,
 }
 // Keep credential-file lifetime within the bound run, including failed spawns.
-struct RunConfigCleanup(Option<PathBuf>);
+pub(super) struct RunConfigCleanup(pub(super) Option<PathBuf>);
 impl Drop for RunConfigCleanup {
     fn drop(&mut self) {
         if let Some(path) = &self.0 {

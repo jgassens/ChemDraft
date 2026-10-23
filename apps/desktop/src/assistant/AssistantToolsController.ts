@@ -103,9 +103,22 @@ export class AssistantToolsController implements PluginHostAssistant {
         write: async (patch, signal) => {
           this.running(plugin, requestId);
           if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+          const plannedDocument = request.context.getDocument()!;
+          const dependencies = new Set(writePatchOps(patch).flatMap(op => "objectId" in op ? [op.objectId] : []));
+          // Relative placement also depends on the anchor, even though the patch never edits it.
+          const toolInput = input.input as { relativeTo?: { objectId: string }; to?: { relativeTo?: string } };
+          const anchor = toolInput?.relativeTo?.objectId ?? toolInput?.to?.relativeTo;
+          if (anchor) dependencies.add(anchor);
+          const dependencyContent = (document: ChemDraftDocument) => document.pages.flatMap(page =>
+            page.objects.filter(object => dependencies.has(object.id)).map(object => ({ pageId: page.id, object })));
+          const plannedContent = JSON.stringify(dependencyContent(plannedDocument));
           const apply = () => {
             this.running(plugin, requestId);
             if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+            // The gate may have waited for a gesture to commit. Never overwrite its new geometry.
+            if (JSON.stringify(dependencyContent(request.context.getDocument()!)) !== plannedContent) {
+              throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
+            }
             return this.options.host().applyPatchForPlugin(plugin.id, undefined,
               { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
                 objectIds: [...request.selection, ...request.inserted],

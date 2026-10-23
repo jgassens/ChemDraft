@@ -65,6 +65,36 @@ function setup() {
 
 afterEach(() => vi.useRealTimers());
 describe("assistant requests and MCP bridge", () => {
+  it.each([true, false])("rechecks a queued move after a gesture (target changed: %s)", async targetChanged => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "move selection" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id], to: { arrange: "row" } } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      const before = s.context.getDocument()!;
+      const draggedId = targetChanged ? s.molecule.id : s.text.id;
+      const dragged = { ...before, pages: before.pages.map(page => ({ ...page,
+        objects: page.objects.map(object => object.id === draggedId ? { ...object, x: object.x + 50 } : object)
+      })) };
+      s.port.push(s.context.tabId, before, dragged, "Drag");
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      s.gesture.active = false;
+      s.gate.flush();
+      const result = await pending;
+      if (targetChanged) {
+        expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("read it again and retry") }] });
+        expect(s.history).toHaveLength(1);
+        expect(s.context.getDocument()).toEqual(dragged);
+      } else {
+        expect(result.isError).not.toBe(true);
+        expect(s.history).toHaveLength(2);
+        expect(s.context.getDocument()!.pages[0]!.objects.find(object => object.id === s.text.id)!.x).toBe(s.text.x + 50);
+      }
+      await s.controller.endRequest(s.plugin, { requestId });
+    } finally { await s.finish(); }
+  });
   it("waits for a gesture to commit, then applies the write without losing either edit", async () => {
     const s = setup();
     try {
