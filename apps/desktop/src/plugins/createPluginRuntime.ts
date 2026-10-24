@@ -36,7 +36,7 @@ import {
 } from "@chemdraft/plugin-host";
 
 import type { RegisteredCanvasOverlay } from "./types";
-import type { CanvasOverlayContentSection } from "./pluginCanvasOverlayControls";
+import type { CanvasOverlayContentSection, CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
@@ -228,6 +228,9 @@ export interface DesktopPluginRuntime {
   getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
   subscribeCanvasOverlayTranscript(listener: () => void): () => void;
   getCanvasOverlayContents(): ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
+  getCanvasOverlayDraftRestore(overlayId: string): CanvasOverlayDraftRestore | undefined;
+  /** Consume a specific restore, or drop any pending restore on user input. */
+  clearCanvasOverlayDraftRestore(overlayId: string, expected?: CanvasOverlayDraftRestore): boolean;
   subscribeCanvasOverlayContent(listener: () => void): () => void;
   getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
   subscribeCanvasOverlayOpen(listener: () => void): () => void;
@@ -438,6 +441,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const canvasOverlayStatuses = new Map<string, string>();
   const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
   const canvasOverlayContents = new Map<string, readonly CanvasOverlayContentSection[]>();
+  const canvasOverlayDraftRestores = new Map<string, CanvasOverlayDraftRestore>();
   const canvasOverlayContentListeners = new Set<() => void>();
   const notifyCanvasOverlayContent = () => canvasOverlayContentListeners.forEach(listener => listener());
   const canvasOverlayOpenRequests = new Map<string, { readonly focus: boolean }>();
@@ -457,12 +461,15 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
         const disabled = prompt?.disabled ?? false;
         // The internal prompt section feeds the existing composer and command-dispatch guard.
-        // Each call replaces its state, including when content is empty or prompt is omitted.
-        const draftRestore = prompt?.restoreDraft === undefined ? undefined : Object.freeze({ text: prompt.restoreDraft });
-        const content: CanvasOverlayContentSection[] = disabled || declared.disabled || draftRestore
-          ? [...sections, { ...declared, disabled, ...(draftRestore ? { draftRestore } : {}) }] : sections;
+        // Content is replaceable; a restore survives updates until consumed or user input drops it.
+        if (prompt?.restoreDraft !== undefined) {
+          canvasOverlayDraftRestores.set(overlayId, Object.freeze({ text: prompt.restoreDraft }));
+        }
+        const content: CanvasOverlayContentSection[] = disabled || declared.disabled
+          ? [...sections, { ...declared, disabled }] : sections;
         if (content.length === 0) {
-          if (!canvasOverlayContents.delete(overlayId)) return;
+          const deleted = canvasOverlayContents.delete(overlayId);
+          if (!deleted && prompt?.restoreDraft === undefined) return;
         } else {
           canvasOverlayContents.set(overlayId, freezeOverlayContent(content));
         }
@@ -624,6 +631,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       for (const id of canvasOverlayContents.keys()) if (!owned.has(id)) {
         canvasOverlayContents.delete(id); contentChanged = true;
       }
+      for (const id of canvasOverlayDraftRestores.keys()) if (!owned.has(id)) {
+        canvasOverlayDraftRestores.delete(id); contentChanged = true;
+      }
       for (const id of canvasOverlayOpenRequests.keys()) if (!owned.has(id)) {
         canvasOverlayOpenRequests.delete(id); openChanged = true;
       }
@@ -646,6 +656,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
     getCanvasOverlayTranscripts: () => new Map(canvasOverlayTranscripts),
     getCanvasOverlayContents: () => new Map(canvasOverlayContents),
+    getCanvasOverlayDraftRestore: overlayId => canvasOverlayDraftRestores.get(overlayId),
+    clearCanvasOverlayDraftRestore(overlayId, expected) {
+      if (expected && canvasOverlayDraftRestores.get(overlayId) !== expected) return false;
+      if (!canvasOverlayDraftRestores.delete(overlayId)) return false;
+      notifyCanvasOverlayContent();
+      return true;
+    },
     getCanvasOverlayOpenRequests: () => new Map(canvasOverlayOpenRequests),
     subscribeCanvasOverlayContent(listener) {
       canvasOverlayContentListeners.add(listener);

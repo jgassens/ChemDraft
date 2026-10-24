@@ -129,7 +129,7 @@ function PluginReportSectionView({ section, copyText, onAction }: {
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
 }
 
-export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage, messageResetKey, requestPending = false, draftRestore }: {
+export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage, messageResetKey, requestPending = false, draftRestore, onConsumeDraftRestore, onDraftChange }: {
   section: Extract<PluginPanelSection, { kind: "prompt" }>;
   onAction?: PluginPanelActionHandler;
   /** Overlays retain the choice locally and include it with Send as well as select actions. */
@@ -142,6 +142,8 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   requestPending?: boolean;
   /** One host request per setContent, applied only to an empty draft and never submitted. */
   draftRestore?: { readonly text: string };
+  onConsumeDraftRestore?: (restore: { readonly text: string }) => boolean;
+  onDraftChange?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
@@ -159,8 +161,9 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
     // that acknowledgement first, then restore only if no new draft occupies the composer.
     if (!draftRestore || pending || submitting.current || consumedRestore.current === draftRestore) return;
     consumedRestore.current = draftRestore;
+    if (onConsumeDraftRestore?.(draftRestore) === false) return;
     setDraft(current => current.length === 0 ? draftRestore.text : current);
-  }, [draftRestore, pending]);
+  }, [draftRestore, pending, onConsumeDraftRestore]);
   const [selected, setSelected] = useState(section.select?.value);
   useEffect(() => setSelected(section.select?.value), [section.select?.value]);
   const busy = section.disabled || pending || requestPending;
@@ -210,7 +213,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
       rows={section.rows}
       aria-invalid={overLimit || undefined}
       aria-describedby={overLimit ? `plugin-prompt-${section.id}-error` : undefined}
-      onChange={(event) => { setDraft(event.target.value); setMessage(undefined); }}
+      onChange={(event) => { onDraftChange?.(); setDraft(event.target.value); setMessage(undefined); }}
       onKeyDown={keyDown}
     />
     {draft.length > section.maxLength * 0.9 ? <p className="plugin-report-composer-counter">

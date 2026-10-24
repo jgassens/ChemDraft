@@ -7,7 +7,7 @@ import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom } from "./pluginPanelAutoscroll";
 import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
-import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, type CanvasOverlayContentSection } from "./pluginCanvasOverlayControls";
+import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, type CanvasOverlayContentSection, type CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
 
 type Position = { x: number; y: number };
 type Mode = "collapsed" | "expanded";
@@ -46,6 +46,8 @@ const emptyTranscript: readonly PluginOverlayTranscriptEntry[] = Object.freeze([
 const emptyContent: readonly PluginOverlayContentSection[] = Object.freeze([]);
 type CanvasOverlayContentSource = {
   getCanvasOverlayContents: () => ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
+  getCanvasOverlayDraftRestore?: (overlayId: string) => CanvasOverlayDraftRestore | undefined;
+  clearCanvasOverlayDraftRestore?: (overlayId: string, expected?: CanvasOverlayDraftRestore) => boolean;
   subscribeCanvasOverlayContent: (listener: () => void) => () => void;
 };
 type CanvasOverlayOpenSource = {
@@ -140,6 +142,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const [ownSubmit, setOwnSubmit] = useState(0);
   const content = useSyncExternalStore(contentSource?.subscribeCanvasOverlayContent ?? subscribeNever,
     () => contentSource?.getCanvasOverlayContents().get(overlay.id) ?? emptyContent, () => emptyContent);
+  const draftRestore = useSyncExternalStore(contentSource?.subscribeCanvasOverlayContent ?? subscribeNever,
+    () => contentSource?.getCanvasOverlayDraftRestore?.(overlay.id), () => undefined);
   const firstActions = content.find(section => section.kind === "actions");
   const scrollingContent = content.filter(section => section !== firstActions && section.kind !== "prompt");
   const prompt = canvasOverlayPrompt(overlay, content);
@@ -463,7 +467,9 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         if (request.control === "prompt") setOwnSubmit(value => value + 1);
         return runAction(request);
       }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} messageResetKey={documentState} requestPending={requestPending}
-        draftRestore={prompt.draftRestore} />
+        draftRestore={draftRestore}
+        onConsumeDraftRestore={restore => contentSource?.clearCanvasOverlayDraftRestore?.(overlay.id, restore) ?? false}
+        onDraftChange={() => { contentSource?.clearCanvasOverlayDraftRestore?.(overlay.id); }} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
       {initializationError ? <p role="alert">{initializationError}</p> : null}
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>

@@ -150,6 +150,41 @@ describe("PluginCanvasOverlay", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); contentRuntime.unregisterPlugin("widget"); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+  it.each([false, true])("restores an empty composer after batched content replacements, exactly once and without sending (empty: %s)", async empty => {
+    await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    await act(async () => {
+      await Promise.all([
+        api.setContent({ overlayId: overlay.id, sections: [], prompt: { restoreDraft: "Draw aspirin" } }),
+        api.setContent({ overlayId: overlay.id, sections: empty ? [] : [{ kind: "text", body: "Ready" }] })
+      ]);
+    });
+    expect(container.querySelector("textarea")!.value).toBe("Draw aspirin");
+    expect(action).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    root = createRoot(container); await render(); await expand();
+    await act(async () => api.setContent({ overlayId: overlay.id, sections: [] }));
+    expect(container.querySelector("textarea")!.value).toBe("");
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it("drops a pending restoration when the user types before Send settles, even if they erase that typing", async () => {
+    await expand();
+    let finish!: (result: { ok: true }) => void;
+    action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => enterText("Original request"));
+    await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    await act(async () => api.setContent({ overlayId: overlay.id, sections: [], prompt: { restoreDraft: "Original request" } }));
+    await act(async () => enterText("New draft"));
+    await act(async () => enterText(""));
+    await act(async () => finish({ ok: true }));
+    expect(container.querySelector("textarea")!.value).toBe("");
+    await act(async () => api.setContent({ overlayId: overlay.id, sections: [] }));
+    expect(container.querySelector("textarea")!.value).toBe("");
+    expect(action).toHaveBeenCalledTimes(1); // Only the user's original Send.
+  });
+
   it.each(["macos", "windows"] as const)("keeps the resize header below palettes and resets it on double click on %s", async targetPlatform => {
     platform = targetPlatform;
     await act(async () => root.unmount());

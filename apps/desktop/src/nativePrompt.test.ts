@@ -24,16 +24,14 @@ afterEach(() => { plugin.native = true; plugin.owner = "main"; plugin.message.mo
 describe("nativePrompt", () => {
   const growth: NativePromptOptions = { title: "ChemDraft Assistant", kind: "info", owner: "document",
     message: "Olympiadane needs a page 1960 × 900 pt. Enlarge the page to fit?",
-    choices: [{ id: "enlarge", label: "Enlarge page" }, { id: "decline", label: "Don't enlarge", cancel: true }] };
+    choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }] };
 
   it.each(["macos", "windows"] as const)("requires the document window as native message-box owner on %s", async platform => {
-    for (const [answer, expected] of [["Enlarge page", "enlarge"], ["Don't enlarge", "decline"], ["Cancel", "decline"]]) {
+    for (const [answer, expected] of [["Enlarge Page", "enlarge"], ["Cancel", "decline"]]) {
       plugin.message.mockResolvedValue(answer);
       expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
       expect(plugin.message).toHaveBeenLastCalledWith(growth.message, {
-        title: growth.title, kind: "info", buttons: platform === "macos"
-          ? { yes: "Don't enlarge", no: "Enlarge page", cancel: "Cancel" }
-          : { ok: "Don't enlarge", cancel: "Enlarge page" }
+        title: growth.title, kind: "info", buttons: { ok: "Cancel", cancel: "Enlarge Page" }
       });
     }
     plugin.owner = "plugin-panel";
@@ -43,17 +41,11 @@ describe("nativePrompt", () => {
     expect(plugin.message).not.toHaveBeenCalled();
   });
 
-  it.each(["macos", "windows"] as const)("declines enlargement on Return and Escape, requiring an explicit Enlarge page choice on %s", async platform => {
-    const buttons = nativePromptButtons(growth, platform);
-    // rfd makes the first custom button the Return default on both hosts. AppKit only binds
-    // Escape to the literal Cancel title; Windows returns IDCANCEL (the string Cancel).
-    const returnLabel = "yes" in buttons ? buttons.yes : buttons.ok;
-    expect(returnLabel).toBe("Don't enlarge");
-    if (platform === "macos") expect(Object.values(buttons)).toContain("Cancel");
-    for (const [answer, expected] of [[returnLabel, "decline"], ["Cancel", "decline"], ["Enlarge page", "enlarge"]]) {
-      plugin.message.mockResolvedValue(answer);
-      expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
-    }
+  it.each(["macos", "windows"] as const)("rejects the obsolete platform-dependent three-button growth prompt on %s", platform => {
+    expect(() => nativePromptButtons({ ...growth, choices: [growth.choices[0]!,
+      // Regression: the obsolete special case silently admitted a third macOS button.
+      { id: "decline", label: "Don't enlarge", cancel: true }
+    ] } as NativePromptOptions, platform)).toThrow(/Cancel/);
   });
 
   it("ignores approval after cancellation while the native message box is open", async () => {
@@ -64,7 +56,7 @@ describe("nativePrompt", () => {
     await vi.waitFor(() => expect(plugin.message).toHaveBeenCalledOnce());
     stop.abort();
     expect(await response).toBe("decline");
-    answer("Enlarge page");
+    answer("Enlarge Page");
     await vi.waitFor(() => expect(plugin.invoke).toHaveBeenLastCalledWith("suspend_toolset_windows", { suspended: false }));
   });
 

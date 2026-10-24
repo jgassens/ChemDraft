@@ -52,6 +52,34 @@ describe("createPluginRuntime canvas overlays", () => {
     expect(runtime.getCanvasOverlayContents().size).toBe(0);
   });
 
+  it("keeps pending restores separate per overlay, ignores stale consumption, and clears them on plugin replacement", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    const otherId = "overlay.other.main";
+    const other = { ...manifest, id: "org.test.other", contributes: {
+      commands: [{ id: "plugin.other.submit", title: "Send" }],
+      canvasOverlays: [{ ...manifest.contributes.canvasOverlays[0], id: otherId,
+        commandId: "plugin.other.submit", prompt: { kind: "prompt", id: "composer", commandId: "plugin.other.submit" } }]
+    } };
+    runtime.registerPlugin(manifest);
+    runtime.registerPlugin(other);
+    const api = runtime.host.createCommandContext(manifest.id).overlays!;
+    await api.setContent({ overlayId, sections: [], prompt: { restoreDraft: "First" } });
+    const stale = runtime.getCanvasOverlayDraftRestore(overlayId)!;
+    await api.setContent({ overlayId, sections: [], prompt: { restoreDraft: "Latest" } });
+    await runtime.host.createCommandContext(other.id).overlays!.setContent({
+      overlayId: otherId, sections: [], prompt: { restoreDraft: "Other" }
+    });
+    expect(runtime.clearCanvasOverlayDraftRestore(overlayId, stale)).toBe(false);
+    expect(runtime.getCanvasOverlayDraftRestore(overlayId)?.text).toBe("Latest");
+    runtime.replacePlugin(manifest.id, manifest);
+    expect(runtime.getCanvasOverlayDraftRestore(overlayId)).toBeUndefined();
+    expect(runtime.getCanvasOverlayDraftRestore(otherId)?.text).toBe("Other");
+    runtime.clearCanvasOverlayDraftRestore(otherId);
+    expect(runtime.getCanvasOverlayDraftRestore(otherId)).toBeUndefined();
+    runtime.unregisterPlugin(manifest.id);
+    runtime.unregisterPlugin(other.id);
+  });
+
   it("keeps content/open notifications separate from toolset sync and clears them on replacement", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
     runtime.registerPlugin(manifest, { commandHandlers: { [commandId]: ctx => ctx.overlays!.open({ overlayId, focus: true }) } });

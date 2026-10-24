@@ -9,8 +9,8 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
  * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". A page-growth question additionally offers "Don't enlarge" as its Return default;
- * its macOS Cancel button means the same safe answer. A notice has one "OK" button.
+ * "Cancel". With Cancel first, AppKit gives neither button the Return default (native probe);
+ * Windows defaults to that first, safe button. A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -18,7 +18,7 @@ export type NativePromptChoice =
   | { id: string; label: string; cancel?: false; destructive?: boolean }
   | {
       id: string;
-      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL | "Don't enlarge";
+      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL;
       cancel: true;
       destructive?: false;
     };
@@ -42,7 +42,7 @@ export function setNativePromptProvider(next: NativePromptProvider): () => void 
 }
 
 export function nativePromptButtons(prompt: NativePromptOptions,
-  platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
+  _platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
   const { choices } = prompt;
   const cancel = choices.find((choice) => choice.cancel);
   if (!cancel || choices.filter((choice) => choice.cancel).length !== 1 ||
@@ -57,22 +57,16 @@ export function nativePromptButtons(prompt: NativePromptOptions,
     if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
     return { ok: cancel.label };
   }
-  // The owner chose this page-growth wording. Preserve its safe default and Escape behavior
-  // using the actual rfd contracts: AppKit needs a literal Cancel button; Windows returns
-  // IDCANCEL independently of custom labels. Only an explicit Enlarge page click approves.
-  if (prompt.owner === "document" && choices.length === 2 && cancel.label === "Don't enlarge") {
-    return platform === "macos"
-      ? { yes: cancel.label, no: actions[0]!.label, cancel: NATIVE_PROMPT_CANCEL_LABEL }
-      : { ok: cancel.label, cancel: actions[0]!.label };
-  }
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
-  // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
-  // must be a safe action. For a destructive confirmation, Cancel itself occupies the default.
-  // rfd's Windows custom cancel button has a distinct ID from IDCANCEL: Escape returns the
-  // literal "Cancel", while clicking the second button returns its custom label. AppKit finds
-  // Escape's button by the literal title "Cancel". Both therefore cancel this reversed pair.
+  // Windows source: rfd 0.16.0, src/backend/win_cid/message_dialog.rs, WinMessageDialog::run
+  // (tauri-plugin-dialog 2.7.1 enables common-controls-v6). OkCancelCustom orders IDs 1000/1001;
+  // TASKDIALOGCONFIG.nDefaultButton = 0 selects the first button. TDF_ALLOW_DIALOG_CANCELLATION
+  // makes Escape return IDCANCEL -> "Cancel", not custom ID 1001's label. Keep Cancel first.
+  // macOS rfd only calls NSAlert.addButtonWithTitle: the native probe with Cancel first found
+  // Escape selects Cancel and neither button is Return's default. Return thus never enlarges
+  // on opening either platform's box; an explicitly focused action can still be activated.
   const safe = actions.find((choice) => !choice.destructive);
   if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
   if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };

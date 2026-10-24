@@ -48,9 +48,10 @@ For `insert_structures`, `insert_reaction`, and `insert_text`, if an item is too
 wrapped set runs off the bottom, the host computes one enlarged page size for the entire call.
 It asks once in a native message box owned by the document window on macOS and Windows, naming
 the item (using its label when available) and the proposed size in points. Both platforms show
-exactly two buttons: **Enlarge Page** and **Cancel**. Cancel declines enlargement and is the default
-for Return and Escape. Enlarge Page must be chosen explicitly. Internal CSS-pixel sizes are
-converted to physical points for this message.
+exactly two buttons in the same library order: **Cancel**, then **Enlarge Page**. Esc chooses Cancel;
+Return never enlarges the page (on macOS it does nothing until a button is clicked or focused).
+On Windows, Cancel is the initial Return default. Enlarge Page must be chosen explicitly.
+Internal CSS-pixel sizes are converted to physical points for this message.
 Approval adds a host-issued `updatePageLayout` alongside the object patches inside the same
 assistant request transaction. One Undo restores both page and objects; Redo restores both without
 asking again. Plugins and the AI do not acquire a page-layout write capability.
@@ -70,7 +71,7 @@ after the answer to cancel the remaining request. Write calls have a
 gate. Transport expiry sends cancellation and likewise ignores the pending answer.
 A document edit while confirmation is open invalidates the plan.
 The native API cannot programmatically close an open message box, so an ignored box may remain
-until dismissed; Escape and Return both dismiss with the safe decline answer.
+until dismissed; Escape chooses Cancel. Return declines on Windows and initially does nothing on macOS.
 This growth confirmation applies only to assistant insert tools, not paste, Insert Name, templates,
 or import. It replaces the former off-page placement warning.
 

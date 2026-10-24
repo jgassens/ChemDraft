@@ -260,7 +260,9 @@ On both platforms, stress the assistant's one-box controls:
   returns to the empty prompt without sending. Repeat while typing a new draft during the pending
   consent: restoration must preserve the new draft, including whitespace. Clear the draft afterward;
   unrelated status/transcript updates must not replay the restoration. A new `setContent` restoration
-  can restore the same text once again.
+  can restore the same text once again. Immediately follow that restoration with `setContent` without
+  `restoreDraft`: an empty prompt must still receive the text, without sending. While Send is settling,
+  type and erase a new draft before the pending restoration applies: the prompt must stay empty.
 - The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
   its position remains remembered and its hover/focus feedback still works.
 
@@ -283,8 +285,9 @@ that wraps past the bottom: one document-owned native box names the item and new
 Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
 molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
 omits non-fitting items and their captions but keeps fitting ones; the assistant reports the refusal.
-Fitting calls never prompt. Esc and Return both choose the default Cancel; Enlarge Page requires an
-explicit choice. The native box is modal by design: its overlay Stop button cannot be clicked until
+Fitting calls never prompt. Esc chooses Cancel; Return never enlarges the page (on macOS it does
+nothing until a button is clicked or focused). On Windows, Return initially chooses Cancel.
+Enlarge Page requires an explicit choice. The native box is modal by design: its overlay Stop button cannot be clicked until
 the box closes. Cancel is the stop for that item. Immediately after answering, verify Stop can again
 cancel the remaining request and typing returns to the prompt.
 

@@ -8,7 +8,7 @@ import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
 import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
-import { nativePromptButtons, setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { objectRect } from "./placement";
 
 function setup() {
@@ -159,10 +159,6 @@ describe("assistant host page enlargement", () => {
         message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
         choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
       });
-      for (const platform of ["macos", "windows"] as const) {
-        // rfd uses the first button for Return, and literal Cancel for Escape on both platforms.
-        expect(nativePromptButtons(prompt.mock.calls[0]![0], platform)).toEqual({ ok: "Cancel", cancel: "Enlarge Page" });
-      }
       const molecule = page.objects.find(object => object.type === "molecule")!;
       if (molecule.type !== "molecule") throw new Error("Expected molecule");
       expect(molecule.atoms[1]!.x - molecule.atoms[0]!.x).toBeCloseTo(1000);
