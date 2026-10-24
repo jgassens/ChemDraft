@@ -52,6 +52,18 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Branch slice: Shapes dropdown on Main and Annotations
+
+User-requested scope for `feat/shapes-toolbar-dropdown`: expose the existing Rectangle,
+Rounded Rectangle, Circle, and Ellipse drawing tools from the Shape Tool slots on Main and
+Annotations. Keep `tool.art.rect` as the stable item identity and primary action. Reuse the
+Art toolbar's command-grid submenu and existing native/inline flyout routing.
+
+Validation: exercise every shape choice on all three toolbars and verify native popover
+snapshots. Run focused tests, root typecheck, and available build checks. Before merge,
+check long-press, drawing, and saved toolbar layouts in packaged macOS and Windows builds.
+No new geometry, dependencies, native implementation, or chemistry behavior is in scope.
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.
