@@ -15,8 +15,8 @@ type Positions = Record<Mode, Position | null>;
 const ICON_SIZE = 36;
 const DRAG_THRESHOLD = 4;
 const MIN_CHAT_HEIGHT = 220;
-// Leave about eight 16px transcript lines above the composer and primary controls.
-const DEFAULT_CHAT_HEIGHT = 360;
+// Leave about three 16px transcript lines above the composer and primary controls.
+const DEFAULT_CHAT_HEIGHT = 280;
 const PALETTE_CLEARANCE = 72;
 
 function readHeight(key: string): number {
@@ -462,7 +462,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       <PluginPromptSection section={{ ...prompt, rows: 1 }} onAction={request => {
         if (request.control === "prompt") setOwnSubmit(value => value + 1);
         return runAction(request);
-      }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} messageResetKey={documentState} requestPending={requestPending} />
+      }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} messageResetKey={documentState} requestPending={requestPending}
+        draftRestore={prompt.draftRestore} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
       {initializationError ? <p role="alert">{initializationError}</p> : null}
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>

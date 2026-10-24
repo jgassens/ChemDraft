@@ -8,7 +8,7 @@ import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
 import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
-import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { nativePromptButtons, setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { objectRect } from "./placement";
 
 function setup() {
@@ -88,6 +88,43 @@ function placementSetup() {
 }
 
 describe("assistant host page enlargement", () => {
+  it.each([false, true])("applies the same page-growth decision to native group labels (accepted: %s)", async accepted => {
+    const s = placementSetup();
+    const document = s.context.getDocument()!;
+    s.replace(applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0]!.id,
+      layout: createCustomPageLayout(200, 160, "css-px", { top: 36, right: 36, bottom: 36, left: 36 }) }));
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = structuredClone(s.context.getDocument()!.pages[0]!);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "draw groups" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: Array.from({ length: 24 }, (_, index) => ({ kind: "group", label: ["CH3", "Ph", "Boc", "OTs"][index % 4] }))
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      if (accepted) {
+        expect(page.objects).toHaveLength(24);
+        expect(page.height).toBeGreaterThan(before.height);
+      } else {
+        expect(page.width).toBe(before.width); expect(page.height).toBe(before.height);
+        expect(page.objects.length).toBeGreaterThan(0);
+        expect(page.objects.length).toBeLessThan(24);
+        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page", declined: expect.any(Array) });
+      }
+      for (const object of page.objects) {
+        expect(object).toMatchObject({ type: "molecule", atoms: [expect.objectContaining({ labelLiteral: true })], bonds: [] });
+        const rect = objectRect(object);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+      }
+      // The answer has returned control to the request; Stop can immediately cancel it again.
+      await s.controller.endRequest(s.plugin, { requestId });
+      await expect(s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "After Stop" } })).rejects.toThrow();
+    } finally { restore(); await s.finish(); }
+  });
+
   it("does not prompt for a fitting insertion", async () => {
     const s = placementSetup();
     const prompt = vi.fn(async () => "enlarge");
@@ -120,8 +157,12 @@ describe("assistant host page enlargement", () => {
       expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
       expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
         message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
-        choices: [{ id: "enlarge", label: "Enlarge page" }, { id: "decline", label: "Don't enlarge", cancel: true }]
+        choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
       });
+      for (const platform of ["macos", "windows"] as const) {
+        // rfd uses the first button for Return, and literal Cancel for Escape on both platforms.
+        expect(nativePromptButtons(prompt.mock.calls[0]![0], platform)).toEqual({ ok: "Cancel", cancel: "Enlarge Page" });
+      }
       const molecule = page.objects.find(object => object.type === "molecule")!;
       if (molecule.type !== "molecule") throw new Error("Expected molecule");
       expect(molecule.atoms[1]!.x - molecule.atoms[0]!.x).toBeCloseTo(1000);
@@ -282,7 +323,7 @@ describe("assistant host page enlargement", () => {
     } finally { answer?.("decline"); restore(); await s.finish(); }
   });
 
-  it("ignores a late Enlarge answer after Stop and draws none of the pending call's items", async () => {
+  it("ignores a late Enlarge answer after host cancellation and draws none of the pending call's items", async () => {
     const s = placementSetup();
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));

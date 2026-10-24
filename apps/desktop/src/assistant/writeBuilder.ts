@@ -1,10 +1,12 @@
 import {
-  applyPatch, cloneDocument, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
+  applyPatch, cloneDocument, ChemDraftSyntheticStylePreset, stylePresetToObjectStyle, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
   createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile
+  nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
+  nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
+  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
@@ -92,6 +94,23 @@ async function buildMolecule(context: AssistantToolContext, smiles: string): Pro
   if (object.type !== "molecule") throw new Error("The structure builder did not return a molecule.");
   await assertCanonical(context, object, smiles);
   return object;
+}
+
+/** A typed native label, with the same literal-atom semantics and warnings as the canvas. */
+function buildGroup(label: string): MoleculeObject {
+  const reading = nativeAtomLabelReading(label, { bonded: false, typed: true });
+  if (!["group", "spelled", "formula"].includes(reading.kind)) {
+    throw new Error(`Unknown standalone group label "${label}". Use an abbreviation or condensed formula such as CH3, Me, Ph, Boc, OTs or OMe; placeholders and bare element symbols are not groups.`);
+  }
+  const atoms = [{ id: "atom_001", element: label, x: 0, y: 0, formalCharge: 0, labelLiteral: true }];
+  return normalizeNativeMoleculeGeometry({
+    id: "group", type: "molecule", x: 0, y: 0, width: 0, height: 0, rotation: 0,
+    transform: { ...defaultNativeMoleculeTransform },
+    style: { ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset), source: "chemdraft-native-drawing" },
+    compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
+    structureFormat: "smiles", structure: nativeSingleBondGraphSmiles(atoms, []),
+    chemistry: nativeSingleBondGraphMetadata(atoms, []), atoms, bonds: [], superatoms: [], rGroups: []
+  });
 }
 
 /** Validate the entire batch on an isolated document before invoking the transaction. */
@@ -221,7 +240,10 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const document = requireDocument(context);
   const page = document.pages[0]!;
   const sourceMolecules: MoleculeObject[] = [];
-  for (const item of input.items) if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
+  for (const item of input.items) {
+    if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
+    if (item.kind === "group") sourceMolecules.push(buildGroup(item.label));
+  }
   const columns = input.arrangement === "row" ? input.items.length : Math.ceil(Math.sqrt(input.items.length));
   let moleculeIndex = 0;
   const cells = input.items.map(item => {
@@ -229,25 +251,26 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
     const molecule = sourceMolecules[moleculeIndex++]!;
     const bounds = objectRect(molecule);
     const cell: DocumentObject[] = [translateObject(molecule, -bounds.x, -bounds.y)];
-    if (item.label) {
+    if (item.kind === "molecule" && item.label) {
       const label = assistantText(document, item.label);
       cell.push({ ...label, x: (bounds.width - label.width) / 2, y: bounds.height + 8 });
     }
     return freshObjects(document, cell);
   });
   const placed = arrangeCells(context, cells, page.id, columns);
-  const inputs = input.items.filter(item => item.kind === "molecule");
-  const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, inputs[index]!.smiles]));
-  const labels = input.items.map((item, index) => item.kind === "molecule" ? item.label ?? cells[index]![0]!.id : item.text.slice(0, 80));
+  const expected = new Map(input.items.flatMap((item, index) => item.kind === "molecule"
+    ? [[cells[index]![0]!.id, item.smiles] as const] : []));
+  const labels = input.items.map((item, index) => item.kind === "text" ? item.text.slice(0, 80) : item.label ?? cells[index]![0]!.id);
   const needsRoom = placed.plan.nonFitting.map(index => input.items[index]!);
   const first = needsRoom[0];
   const description = needsRoom.length === 1
-    ? first!.kind === "molecule" ? first!.label ?? "This molecule" : "This text"
-    : needsRoom.length <= 3 && needsRoom.every(item => item.kind === "molecule" && item.label)
-      ? needsRoom.map(item => item.kind === "molecule" ? item.label : "").join(", ")
+    ? first!.kind !== "text" ? first!.label ?? "This molecule" : "This text"
+    : needsRoom.length <= 3 && needsRoom.every(item => item.kind !== "text" && item.label)
+      ? needsRoom.map(item => item.kind !== "text" ? item.label : "").join(", ")
       : `These ${needsRoom.length} structures`;
   return insertionPlan(document, insertWrite(placed.page.id, placed.objects,
-    `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`, [], expected),
+    `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`,
+    sourceMolecules.flatMap(molecule => molecule.chemistry?.warnings?.map(warning => warning.message) ?? []), expected),
   placed.plan, placed.page.id, cells, labels, description);
 }
 function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], pageId: string, columns: number, exclude: readonly string[] = []) {

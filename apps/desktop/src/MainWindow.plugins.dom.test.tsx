@@ -48,6 +48,24 @@ async function send(): Promise<void> {
     .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
 }
 
+/** jsdom has no browser text insertion default. Deliver each real DOM key event to the
+ * focused element, then emulate only its uncancelled text insertion (never refocus it).
+ * These traverse MainWindow's document/window shortcut listeners, not the agent bridge. */
+async function typeAtFocus(text: string): Promise<void> {
+  for (const key of text) await act(async () => {
+    const target = document.activeElement!;
+    const options = { key, code: key === " " ? "Space" : `Key${key.toUpperCase()}`, bubbles: true, cancelable: true };
+    const allowed = target.dispatchEvent(new KeyboardEvent("keydown", options))
+      && target.dispatchEvent(new KeyboardEvent("keypress", { ...options, charCode: key.charCodeAt(0) }));
+    if (allowed && target instanceof HTMLTextAreaElement
+      && target.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: key }))) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(target, target.value + key);
+      target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: key }));
+    }
+    target.dispatchEvent(new KeyboardEvent("keyup", options));
+  });
+}
+
 describe("MainWindow canvas overlays", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("ResizeObserver", TestResizeObserver); vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -226,7 +244,7 @@ describe("MainWindow canvas overlays", () => {
     } finally { await act(async () => finish?.()); }
   });
 
-  it.each(["Finish setup", "New conversation", "Stop"])("restores focus after the actual %s command finishes, despite canvas handback", async label => {
+  it.each(["Finish setup", "New conversation", "Stop"])("keeps real typing out of canvas shortcuts after %s and releases focus on Esc", async label => {
     const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
     await act(async () => api.setContent({ overlayId, sections: [
       { kind: "actions", id: "actions", buttons: [{ id: "action", label, commandId: selectId }] }
@@ -246,12 +264,58 @@ describe("MainWindow canvas overlays", () => {
     const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
     expect(document.activeElement).toBe(textarea);
     const activeTool = container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool");
-    await act(async () => {
-      for (const key of "draw aspirin") document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
-      input("draw aspirin");
-    });
+    expect(activeTool).toBeTruthy();
+    const invoke = vi.spyOn(captured.runtime!.host.commands, "invoke");
+    const keys = vi.fn();
+    document.addEventListener("keydown", keys, true);
+    try { await typeAtFocus("draw aspirin"); }
+    finally { document.removeEventListener("keydown", keys, true); }
+    expect(keys).toHaveBeenCalledTimes("draw aspirin".length);
     expect(textarea.value).toBe("draw aspirin");
     expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(activeTool);
+    expect(invoke.mock.calls.filter(([id]) => id.startsWith("tool."))).toEqual([]);
+    expect(submit).not.toHaveBeenCalled();
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(container.querySelector(".canvas-region"));
+    // Positive control: the same DOM path now reaches the live drawing-tool shortcuts.
+    await typeAtFocus("t");
+    expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe("tool.text");
+    expect(invoke.mock.calls.some(([id]) => id === "tool.text")).toBe(true);
+  });
+
+  it.each(["", "New draft", " "])("restores a declined request only into an empty composer (current: %s)", async nextDraft => {
+    const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
+    let decline!: () => void;
+    submit.mockImplementationOnce(async context => {
+      await new Promise<void>(resolve => { decline = resolve; });
+      await context.overlays!.setContent({ overlayId, sections: [], prompt: { restoreDraft: context.input!.text! } });
+    });
+    await act(async () => input("draw aspirin")); await send();
+    const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+    expect(textarea.value).toBe("");
+    await act(async () => input(nextDraft));
+    await act(async () => decline());
+    expect(textarea.value).toBe(nextDraft || "draw aspirin");
+    expect(submit).toHaveBeenCalledOnce();
+    // A restore is consumed even if skipped. Clearing later or unrelated updates never replay it.
+    await act(async () => input(""));
+    await act(async () => api.setStatus({ overlayId, text: "Ready" }));
+    expect(textarea.value).toBe("");
+    await act(async () => api.setContent({ overlayId, sections: [], prompt: { restoreDraft: "draw aspirin" } }));
+    expect(textarea.value).toBe("draw aspirin");
+    expect(submit).toHaveBeenCalledOnce();
+    await send();
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(textarea.value).toBe(""); // A later Send cannot replay the consumed restore.
+  });
+
+  it("restores an immediately refused request without sending it again", async () => {
+    submit.mockImplementationOnce(async context => {
+      await context.overlays!.setContent({ overlayId, sections: [], prompt: { restoreDraft: context.input!.text! } });
+    });
+    await act(async () => input("draw aspirin")); await send();
+    expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("draw aspirin");
+    expect(submit).toHaveBeenCalledOnce();
   });
 
   it("allows Stop during a running Send and returns focus when Stop completes", async () => {

@@ -207,8 +207,8 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => { pointer(header, "pointerdown", 300, 256); pointer(header, "pointermove", 300, 356); pointer(header, "pointerup", 300, 356); });
     expect(widget().style.height).toBe("420px");
     await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
-    expect(widget().style.height).toBe("360px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("360");
+    expect(widget().style.height).toBe("280px");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("280");
   });
 
   it.each(["macos", "windows"] as const)("refuses concurrent or plugin-disabled sends inline without losing focus or drafts on %s", async targetPlatform => {
@@ -415,20 +415,20 @@ describe("PluginCanvasOverlay", () => {
     }
   });
 
-  it.each(["macos", "windows"] as const)("defaults to room for eight transcript lines and resets within the viewport cap on %s", async targetPlatform => {
+  it.each(["macos", "windows"] as const)("defaults to room for three transcript lines and resets within the viewport cap on %s", async targetPlatform => {
     platform = targetPlatform;
     await act(async () => root.unmount());
     window.localStorage.removeItem(`${storageKey}:height`);
     viewportHeight = 800; root = createRoot(container); await render(); await expand();
-    expect(widget().style.height).toBe("360px");
+    expect(widget().style.height).toBe("280px");
     expect(widget().style.maxHeight).toBe("672px");
     expect(container.querySelector('[role="log"]')!.compareDocumentPosition(container.querySelector("textarea")!)
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 300, 416); pointer(header, "pointermove", 300, 516); pointer(header, "pointerup", 300, 516); });
-    expect(widget().style.height).toBe("260px");
+    expect(widget().style.height).toBe("220px");
     await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
-    expect(widget().style.height).toBe("360px");
+    expect(widget().style.height).toBe("280px");
   });
 
   it("resumes following replies after the reader submits their own prompt", async () => {

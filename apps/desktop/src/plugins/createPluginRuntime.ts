@@ -458,8 +458,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         const disabled = prompt?.disabled ?? false;
         // The internal prompt section feeds the existing composer and command-dispatch guard.
         // Each call replaces its state, including when content is empty or prompt is omitted.
-        const content: CanvasOverlayContentSection[] = disabled || declared.disabled
-          ? [...sections, { ...declared, disabled }] : sections;
+        const draftRestore = prompt?.restoreDraft === undefined ? undefined : Object.freeze({ text: prompt.restoreDraft });
+        const content: CanvasOverlayContentSection[] = disabled || declared.disabled || draftRestore
+          ? [...sections, { ...declared, disabled, ...(draftRestore ? { draftRestore } : {}) }] : sections;
         if (content.length === 0) {
           if (!canvasOverlayContents.delete(overlayId)) return;
         } else {

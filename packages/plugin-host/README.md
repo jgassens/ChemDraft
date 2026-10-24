@@ -35,6 +35,10 @@ API 0.1.11 adds the optional embedding sink `overlays.setTranscript(pluginId, ov
 The host snapshots and validates entries (50 maximum, 4,000 characters each, 64 KiB UTF-8 JSON total),
 checks ownership and `ui.canvas` on each call, and rejects specifically if no transcript sink exists.
 
+API 0.1.14 adds `restoreDraft?: string` to that prompt argument, validates it against the owned
+overlay prompt's `maxLength`, and snapshots it before forwarding. Embedding hosts restore once per
+call into an empty draft only; restoration never submits or overwrites a draft typed meanwhile.
+
 API 0.1.13 forwards a validated, snapshotted optional fourth argument `prompt: { disabled?: boolean }`
 to the `overlays.setContent` embedding sink. Hosts replace the prompt's disabled flag on every call;
 an omitted prompt or disabled flag means false. Permission and ownership checks remain unchanged.

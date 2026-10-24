@@ -16,12 +16,14 @@ const manifest = {
 };
 
 describe("canvas overlay schemas", () => {
-  it("accepts only the optional disabled flag in a content prompt override", () => {
+  it("accepts only bounded restoreDraft and disabled in a strict content prompt override", () => {
     const request = { overlayId: overlay.id, sections: [] };
-    for (const prompt of [{ disabled: true }, { disabled: false }, {}]) {
+    for (const prompt of [{ disabled: true }, { disabled: false }, {}, { restoreDraft: "" },
+      { restoreDraft: "x".repeat(20000) }, { disabled: false, restoreDraft: "draw aspirin" }]) {
       expect(PluginOverlayContentRequestSchema.parse({ ...request, prompt })).toEqual({ ...request, prompt });
     }
-    for (const prompt of [{ disabled: true, label: "Busy" }, { disabled: "true" }, { commandId }, null]) {
+    for (const prompt of [{ disabled: true, label: "Busy" }, { disabled: "true" }, { commandId }, null,
+      { restoreDraft: "x".repeat(20001) }, { restoreDraft: 1 }, { restoreDraft: null }]) {
       expect(PluginOverlayContentRequestSchema.safeParse({ ...request, prompt }).success).toBe(false);
     }
   });

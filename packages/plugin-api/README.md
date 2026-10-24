@@ -4,6 +4,10 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.14 adds optional `prompt.restoreDraft` to `overlays.setContent`. The host restores it once
+per call into an empty draft only, never overwrites typed text, and never sends it. The string must
+fit the contributed prompt's `maxLength` (at most 20,000); the prompt object remains strict.
+
 API 0.1.13 adds optional `prompt: { disabled?: boolean }` to `overlays.setContent`. The prompt
 object is strict; every call replaces the disabled state, defaulting to false when omitted.
 

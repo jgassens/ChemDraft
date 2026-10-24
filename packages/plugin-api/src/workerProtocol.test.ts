@@ -122,6 +122,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.12", "0.1.11")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.13", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.13", "0.1.12")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.14", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
   });
 });
 

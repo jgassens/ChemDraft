@@ -237,7 +237,7 @@ On both platforms, stress the assistant's one-box controls:
 - With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
   header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
   the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
-  double-click the header to restore the 360 px default height, showing about eight transcript lines
+  double-click the header to restore the 280 px default height, showing about three transcript lines
   above the composer (or the available height in a small window).
 - Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
   Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
@@ -256,6 +256,11 @@ On both platforms, stress the assistant's one-box controls:
   when the activated button disappeared. Click the drawing or Tab to another control before an action
   completes and verify completion leaves focus there. Tab to a still-mounted action without activating
   it and verify a content update keeps focus on that button.
+- With an API 0.1.14 plugin, decline provider consent before a request is sent: the submitted text
+  returns to the empty prompt without sending. Repeat while typing a new draft during the pending
+  consent: restoration must preserve the new draft, including whitespace. Clear the draft afterward;
+  unrelated status/transcript updates must not replay the restoration. A new `setContent` restoration
+  can restore the same text once again.
 - The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
   its position remains remembered and its hover/focus feedback still works.
 
@@ -266,14 +271,22 @@ making another provider/tool call. Select one existing object, then ask to edit,
 delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
 selected: insertions work, while edits, restyles, moves, and deletes are refused.
 
+Ask to draw a methyl group (`CH3`), `Ph`, `Boc`, and `OTs`: each is one editable native molecule
+label, not a caption or placeholder. Compare rendering, formula and valence warnings with typing
+the same isolated atom label on the canvas. Unknown labels are refused with accepted examples.
+Mix groups, molecules and captions; check placement, selection, Undo/Redo, and the growth question
+when the page is full. An isolated `Ac` is an element in the native grammar and must be refused as
+a group rather than changed to acetyl.
+
 On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
 that wraps past the bottom: one document-owned native box names the item and new page size;
-Enlarge page preserves molecule size and grows the page, with one Undo/Redo restoring page and
-objects together. Don't enlarge omits non-fitting items and their captions but keeps fitting ones;
-the assistant reports the refusal. Fitting calls never prompt. Esc or Return answers Don't enlarge.
-Enlarge page must be chosen explicitly. The native box is modal over the document, so its overlay
-Stop button cannot be clicked until the box closes. On macOS the additional Cancel button also
-answers Don't enlarge.
+Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
+molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
+omits non-fitting items and their captions but keeps fitting ones; the assistant reports the refusal.
+Fitting calls never prompt. Esc and Return both choose the default Cancel; Enlarge Page requires an
+explicit choice. The native box is modal by design: its overlay Stop button cannot be clicked until
+the box closes. Cancel is the stop for that item. Immediately after answering, verify Stop can again
+cancel the remaining request and typing returns to the prompt.
 
 While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
 Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running

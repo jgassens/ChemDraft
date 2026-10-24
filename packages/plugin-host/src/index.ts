@@ -343,7 +343,7 @@ export interface PluginHostOptions {
   overlays?: {
     setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
     setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
-    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean }): void | Promise<void>;
+    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean; restoreDraft?: string }): void | Promise<void>;
     open?(pluginId: string, overlayId: string, focus: boolean): void | Promise<void>;
   };
   assistant?: PluginHostAssistant;
@@ -727,6 +727,9 @@ export class PluginHost {
             const overlay = requireOwnOverlay(parsed.overlayId);
             // Content control ids must also be distinct from the permanent composer/select.
             const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });
+            if (parsed.prompt?.restoreDraft !== undefined && parsed.prompt.restoreDraft.length > overlay.prompt.maxLength) {
+              throw new PluginHostError(`Restored draft exceeds the overlay prompt's ${overlay.prompt.maxLength} character limit.`);
+            }
             requireOwnReportCommands(report);
             if (!this.overlays?.setContent) throw new PluginHostError("This host provides no canvas content.");
             await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections, parsed.prompt);

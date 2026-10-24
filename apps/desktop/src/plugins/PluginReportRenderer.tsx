@@ -129,7 +129,7 @@ function PluginReportSectionView({ section, copyText, onAction }: {
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
 }
 
-export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage, messageResetKey, requestPending = false }: {
+export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage, messageResetKey, requestPending = false, draftRestore }: {
   section: Extract<PluginPanelSection, { kind: "prompt" }>;
   onAction?: PluginPanelActionHandler;
   /** Overlays retain the choice locally and include it with Send as well as select actions. */
@@ -140,6 +140,8 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   messageResetKey?: unknown;
   /** Host command lifetime when acceptance returns before execution completes. */
   requestPending?: boolean;
+  /** One host request per setContent, applied only to an empty draft and never submitted. */
+  draftRestore?: { readonly text: string };
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
@@ -151,6 +153,14 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   useEffect(clearBusyMessage, [messageResetKey]);
   // React state alone does not guard two events delivered before the next render.
   const submitting = useRef(false);
+  const consumedRestore = useRef<typeof draftRestore>(undefined);
+  useEffect(() => {
+    // A plugin can refuse before the Send acknowledgement clears the submitted text. Settle
+    // that acknowledgement first, then restore only if no new draft occupies the composer.
+    if (!draftRestore || pending || submitting.current || consumedRestore.current === draftRestore) return;
+    consumedRestore.current = draftRestore;
+    setDraft(current => current.length === 0 ? draftRestore.text : current);
+  }, [draftRestore, pending]);
   const [selected, setSelected] = useState(section.select?.value);
   useEffect(() => setSelected(section.select?.value), [section.select?.value]);
   const busy = section.disabled || pending || requestPending;

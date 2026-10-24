@@ -20,6 +20,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.11 adds bounded canvas chat transcripts via `PluginOverlaysAPI.setTranscript`.
  * 0.1.12 adds bounded overlay report content, command-scoped open/focus, and optional panel links.
  * 0.1.13 adds optional live prompt disabled state to overlays.setContent.
+ * 0.1.14 adds one-shot restoreDraft to overlays.setContent, without overwriting a user's draft.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -29,7 +30,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.13" as const;
+export const PluginApiVersion = "0.1.14" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -297,7 +298,8 @@ export interface PluginOverlaysAPI {
   setStatus(request: z.infer<typeof PluginOverlayStatusRequestSchema>): Promise<void>;
   /** Replace an owned overlay's transcript; an empty list clears it. Requires ui.canvas. */
   setTranscript(request: z.infer<typeof PluginOverlayTranscriptRequestSchema>): Promise<void>;
-  /** Replace content above the transcript; [] clears it. Requires ui.canvas and owned commands. */
+  /** Replace content above the transcript; [] clears it. Requires ui.canvas and owned commands.
+   * prompt.restoreDraft restores once into an empty draft only, within the declared maxLength; never sends. */
   setContent(request: z.input<typeof PluginOverlayContentRequestSchema>): Promise<void>;
   /** Expand during an owned command. Only focus:true may move keyboard focus to the prompt. */
   open(request: z.infer<typeof PluginOverlayOpenRequestSchema>): Promise<void>;
@@ -712,7 +714,10 @@ export const PluginOverlayContentSectionSchema = z.discriminatedUnion("kind", [
 ]);
 export const PluginOverlayContentRequestSchema = z.object({
   overlayId: PluginCanvasOverlayIdSchema,
-  prompt: z.object({ disabled: z.boolean().optional() }).strict().optional(),
+  prompt: z.object({
+    disabled: z.boolean().optional(),
+    restoreDraft: z.string().max(20000).optional()
+  }).strict().optional(),
   sections: z.array(PluginOverlayContentSectionSchema).max(20).refine(
     sections => new TextEncoder().encode(JSON.stringify(sections)).byteLength <= 64 * 1024,
     "Overlay content must be at most 64 KiB of UTF-8 JSON."

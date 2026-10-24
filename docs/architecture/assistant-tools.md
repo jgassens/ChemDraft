@@ -19,7 +19,7 @@ at most 2,000 characters; structure inserts contain at most 24 items; a document
 | `name_to_structure` | name | Parsed SMILES and engine, or an unavailable/declined result | No |
 | `validate_smiles` | SMILES | Validity, canonical SMILES, formula, heavy-atom count and warnings | No |
 | `structure_to_name` | molecule `objectId` | Naming-engine result; reports an absent Orthonym engine without opening installation UI | No |
-| `insert_structures` | 1–24 molecule SMILES and/or text items; row/grid/auto | Inserted object IDs, summary, warnings | Yes |
+| `insert_structures` | 1–24 molecule SMILES, group labels and/or text items; row/grid/auto | Inserted object IDs, summary, warnings | Yes |
 | `insert_reaction` | 1–6 reactants, 1–6 products, optional reagents/conditions, arrow kind | Inserted object IDs, summary, warnings | Yes |
 | `insert_text` | text, optional relation and style | Inserted object IDs, summary, warnings | Yes |
 | `edit_structure` | molecule `objectId`, SMILES, optional keep-position | Replacement object IDs, summary, warnings | Yes |
@@ -32,14 +32,25 @@ not the model, chooses placement: it uses the pinned tab's visible free area or 
 area. Rows and grids use actual item widths and wrap at the page's content edge, including margins
 and captions; molecules are never rescaled. Models never supply page coordinates.
 
+Use `{kind: "group", label: "CH3"}` for “draw a methyl group”. A group is one native molecule
+atom with a literal abbreviation or condensed-formula label, drawn and interpreted exactly as a
+typed canvas label. Examples include `CH3`, `Me`, `Et`, `Ph`, `Bn`, `Boc`, `OTs`, `OMe`, `NO2`,
+`CF3`, and `CONH2`. Labels are trimmed, case-sensitive, and limited to 80 characters. No SMILES
+depiction or separate caption is made. The shared label grammar and `atoms.ts` supply all chemistry,
+including warnings about unfilled group valences and formulas without known connectivity; insertion
+does not add bonds, radicals, implicit hydrogens, or invented chemistry to complete a group.
+Unknown labels, placeholders (`R`, `*`), and bare elements are refused with accepted examples.
+In particular, isolated `Ac` means actinium in the native grammar; it is refused as a group rather
+than silently changed to acetyl. `get_document` includes literal `atomLabels` even when a label
+cannot be serialized to SMILES. Groups share molecule placement, page enlargement and undo rules.
+
 For `insert_structures`, `insert_reaction`, and `insert_text`, if an item is too wide/tall or the
 wrapped set runs off the bottom, the host computes one enlarged page size for the entire call.
 It asks once in a native message box owned by the document window on macOS and Windows, naming
-the item (using its label when available) and the proposed size in points: **Enlarge page** /
-**Don't enlarge**. Return defaults to **Don't enlarge**, and Escape also declines. Enlarge page
-must be chosen explicitly. The native dialog library requires a literal **Cancel** button for Escape
-on macOS, so that platform also shows Cancel with the same decline outcome. Internal CSS-pixel sizes
-are converted to physical points for this message.
+the item (using its label when available) and the proposed size in points. Both platforms show
+exactly two buttons: **Enlarge Page** and **Cancel**. Cancel declines enlargement and is the default
+for Return and Escape. Enlarge Page must be chosen explicitly. Internal CSS-pixel sizes are
+converted to physical points for this message.
 Approval adds a host-issued `updatePageLayout` alongside the object patches inside the same
 assistant request transaction. One Undo restores both page and objects; Redo restores both without
 asking again. Plugins and the AI do not acquire a page-layout write capability.
@@ -52,7 +63,9 @@ No answer within that time declines enlargement with
 `reason: "declined: no answer to the enlarge-page question within 5 minutes"`; fitting items are
 still retained, and a later answer cannot insert the omitted items or enlarge the page.
 Cancellation by the host ignores a late answer and draws none of that call's pending items. The
-document-owned box is modal, so the overlay's Stop button is unavailable while it is open. Write calls have a
+document-owned box is modal by design, so the overlay's Stop button cannot be pressed while it is
+open. **Cancel** is the stop for that non-fitting item; the overlay's **Stop** works again immediately
+after the answer to cancel the remaining request. Write calls have a
 480-second MCP transport and client budget, covering preparation, the human decision and the write
 gate. Transport expiry sends cancellation and likewise ignores the pending answer.
 A document edit while confirmation is open invalidates the plan.

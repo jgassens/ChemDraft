@@ -2,11 +2,15 @@ import type { PluginCanvasOverlayContribution, PluginManifest, PluginOverlayCont
 
 export const OVERLAY_BUSY_MESSAGE = "Wait for the current request to finish, or press Stop.";
 
-// The host synthesizes the internal prompt section from setContent's prompt.disabled override.
+// The host synthesizes the internal prompt section from setContent's prompt override.
 // Public content sections never admit a second composer or plugin-supplied prompt controls.
-export type CanvasOverlayContentSection = PluginOverlayContentSection | Extract<PluginPanelSection, { kind: "prompt" }>;
+type CanvasOverlayPrompt = Extract<PluginPanelSection, { kind: "prompt" }> & {
+  /** A new identity per setContent; rerenders must not replay a consumed restoration. */
+  draftRestore?: { readonly text: string };
+};
+export type CanvasOverlayContentSection = PluginOverlayContentSection | CanvasOverlayPrompt;
 
-export function canvasOverlayPrompt(overlay: PluginCanvasOverlayContribution, content: readonly CanvasOverlayContentSection[]) {
+export function canvasOverlayPrompt(overlay: PluginCanvasOverlayContribution, content: readonly CanvasOverlayContentSection[]): CanvasOverlayPrompt {
   const live = content.find(section => section.kind === "prompt" && section.id === overlay.prompt.id);
   return { ...(live?.kind === "prompt" ? live : overlay.prompt), commandId: overlay.commandId };
 }

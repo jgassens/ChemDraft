@@ -20,14 +20,27 @@ describe("PluginHost canvas overlays", () => {
     const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });
     host.registerPlugin(manifest);
     const api = host.createCommandContext(manifest.id).overlays!;
-    const prompt = { disabled: true };
+    const prompt = { disabled: true, restoreDraft: "draw aspirin" };
     await api.setContent({ overlayId, sections: [], prompt });
     prompt.disabled = false;
-    expect(setContent).toHaveBeenLastCalledWith(manifest.id, overlayId, [], { disabled: true });
+    prompt.restoreDraft = "mutated";
+    expect(setContent).toHaveBeenLastCalledWith(manifest.id, overlayId, [], { disabled: true, restoreDraft: "draw aspirin" });
     await expect(api.setContent({ overlayId, sections: [], prompt: { disabled: true, label: "Busy" } } as never)).rejects.toThrow();
     expect(setContent).toHaveBeenCalledOnce();
     await api.setContent({ overlayId, sections: [] });
     expect(setContent).toHaveBeenLastCalledWith(manifest.id, overlayId, [], undefined);
+  });
+
+  it("enforces the contributed prompt's maxLength for draft restoration", async () => {
+    const setContent = vi.fn();
+    const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });
+    host.registerPlugin({ ...manifest, contributes: { ...manifest.contributes, canvasOverlays: [{
+      ...manifest.contributes.canvasOverlays[0], prompt: { kind: "prompt", id: "composer", commandId, maxLength: 12 }
+    }] } });
+    const api = host.createCommandContext(manifest.id).overlays!;
+    await api.setContent({ overlayId, sections: [], prompt: { restoreDraft: "draw aspirin" } });
+    await expect(api.setContent({ overlayId, sections: [], prompt: { restoreDraft: "draw aspirin!" } })).rejects.toThrow(/12 character limit/);
+    expect(setContent).toHaveBeenCalledOnce();
   });
 
   it("bounds content, snapshots it, and checks permissions, ownership and report control rules", async () => {
