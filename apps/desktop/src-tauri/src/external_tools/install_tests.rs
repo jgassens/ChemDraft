@@ -515,6 +515,128 @@ fn invalid_receipts_and_non_executable_binaries_are_broken() {
         .contains("invalid"));
 }
 
+fn status_fixture(base: &Path, pin: &ToolPin) -> PathBuf {
+    let root = base.join(pin.tool.as_str()).join(pin.version);
+    fs::create_dir_all(&root).unwrap();
+    let receipt = serde_json::json!({"receiptVersion":1,"tool":pin.tool,"version":pin.version,"platform":pin.platform,
+        "url":pin.url,"size":pin.size,"sha256":pin.sha256,"installedAt":chrono::Utc::now().to_rfc3339()});
+    fs::write(
+        root.join("install.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
+    let binary = root.join(pin.binary);
+    let mut paths = vec![binary.clone()];
+    if pin.tool == ToolId::Codex {
+        paths.push(root.join(if pin.platform == ToolPlatform::WindowsX64 {
+            "codex-code-mode-host.exe"
+        } else {
+            "codex-code-mode-host"
+        }));
+    }
+    for path in paths {
+        fs::write(&path, b"status fixture; never executed").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+    binary
+}
+
+#[test]
+fn managed_status_accepts_each_pin_platform_on_any_host() {
+    for pin in &PINS {
+        let base = Temp::new();
+        status_fixture(&base.0, pin);
+        let status = managed_status(&base.0, pin);
+        assert!(
+            matches!(status.state, ToolState::Installed),
+            "{:?} {:?}: {:?}",
+            pin.tool,
+            pin.platform,
+            status.detail
+        );
+    }
+}
+
+#[test]
+fn managed_status_windows_pins_require_case_insensitive_exe_extension() {
+    for pin in PINS
+        .iter()
+        .filter(|p| p.platform == ToolPlatform::WindowsX64)
+    {
+        for (name, installed) in [
+            ("tool.exe", true),
+            ("tool.EXE", true),
+            ("tool", false),
+            ("tool.cmd", false),
+        ] {
+            let base = Temp::new();
+            let mut pin = pin.clone();
+            pin.binary = name;
+            status_fixture(&base.0, &pin);
+            let status = managed_status(&base.0, &pin);
+            if installed {
+                assert!(
+                    matches!(status.state, ToolState::Installed),
+                    "{name}: {:?}",
+                    status.detail
+                );
+            } else {
+                assert!(matches!(status.state, ToolState::Broken));
+                assert_eq!(
+                    status.detail.as_deref(),
+                    Some("The managed tool binary is not an executable (.exe).")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn managed_status_darwin_pins_preserve_unix_execute_permission_check() {
+    for pin in PINS
+        .iter()
+        .filter(|p| p.platform != ToolPlatform::WindowsX64)
+    {
+        let base = Temp::new();
+        let binary = status_fixture(&base.0, pin);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (mode, installed) in [(0o644, false), (0o100, true), (0o010, true), (0o001, true)] {
+                fs::set_permissions(&binary, fs::Permissions::from_mode(mode)).unwrap();
+                let status = managed_status(&base.0, pin);
+                if installed {
+                    assert!(
+                        matches!(status.state, ToolState::Installed),
+                        "{mode:o}: {:?}",
+                        status.detail
+                    );
+                } else {
+                    assert!(matches!(status.state, ToolState::Broken));
+                    assert_eq!(
+                        status.detail.as_deref(),
+                        Some("The managed tool binary is not executable.")
+                    );
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = binary;
+            assert!(matches!(
+                managed_status(&base.0, pin).state,
+                ToolState::Installed
+            ));
+        }
+    }
+}
+
 /// Runs the same transaction as the HTTP cases with only the transfer replaced. This also
 /// exercises the executable fixture and commit/rollback on hosts that prohibit loopback binds.
 #[test]

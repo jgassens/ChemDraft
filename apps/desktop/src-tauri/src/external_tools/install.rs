@@ -653,10 +653,12 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
             }
         }
         #[cfg(not(unix))]
-        if !path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        let _ = metadata;
+        if pin.platform == ToolPlatform::WindowsX64
+            && !path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
         {
             return Err("The managed tool binary is not an executable (.exe).".into());
         }
