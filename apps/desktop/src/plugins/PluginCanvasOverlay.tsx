@@ -7,6 +7,7 @@ import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom } from "./pluginPanelAutoscroll";
 import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
+import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, type CanvasOverlayContentSection } from "./pluginCanvasOverlayControls";
 
 type Position = { x: number; y: number };
 type Mode = "collapsed" | "expanded";
@@ -14,11 +15,12 @@ type Positions = Record<Mode, Position | null>;
 const ICON_SIZE = 36;
 const DRAG_THRESHOLD = 4;
 const MIN_CHAT_HEIGHT = 220;
+const PALETTE_CLEARANCE = 72;
 
 function readHeight(key: string): number {
   try {
     const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
-    if (typeof saved === "number" && Number.isFinite(saved) && saved >= MIN_CHAT_HEIGHT) return saved;
+    if (typeof saved === "number" && Number.isFinite(saved) && saved >= 0) return saved;
   } catch { /* Optional persistence. */ }
   return MIN_CHAT_HEIGHT;
 }
@@ -41,7 +43,7 @@ const subscribeNever = () => () => undefined;
 const emptyTranscript: readonly PluginOverlayTranscriptEntry[] = Object.freeze([]);
 const emptyContent: readonly PluginOverlayContentSection[] = Object.freeze([]);
 type CanvasOverlayContentSource = {
-  getCanvasOverlayContents: () => ReadonlyMap<string, readonly PluginOverlayContentSection[]>;
+  getCanvasOverlayContents: () => ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
   subscribeCanvasOverlayContent: (listener: () => void) => () => void;
 };
 type CanvasOverlayOpenSource = {
@@ -99,7 +101,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   viewportRef: RefObject<HTMLElement | null>;
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
@@ -114,6 +116,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   contentSource?: CanvasOverlayContentSource;
   openSource?: CanvasOverlayOpenSource;
   onAction: PluginPanelActionHandler;
+  /** Invoke the plugin's declared menu opener when an icon expansion has no live content. */
+  onInitialize?: () => Promise<void>;
   onOpenPanel?: () => void;
   /** The contributed panel's live title, supplied by the document window. */
   panelTitle?: string;
@@ -124,11 +128,15 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const storageKey = `chemdraft:canvas-overlay:${windowId}:${overlay.id}`;
   const [height, setHeight] = useState(() => readHeight(`${storageKey}:height`));
   const [displayHeight, setDisplayHeight] = useState(height);
+  const [autoFitContent, setAutoFitContent] = useState(true);
+  const [initializationError, setInitializationError] = useState<string>();
+  const initializing = useRef(false);
   const [ownSubmit, setOwnSubmit] = useState(0);
   const content = useSyncExternalStore(contentSource?.subscribeCanvasOverlayContent ?? subscribeNever,
     () => contentSource?.getCanvasOverlayContents().get(overlay.id) ?? emptyContent, () => emptyContent);
   const firstActions = content.find(section => section.kind === "actions");
-  const scrollingContent = content.filter(section => section !== firstActions);
+  const scrollingContent = content.filter(section => section !== firstActions && section.kind !== "prompt");
+  const prompt = canvasOverlayPrompt(overlay, content);
   const openRequest = useSyncExternalStore(openSource?.subscribeCanvasOverlayOpen ?? subscribeNever,
     () => openSource?.getCanvasOverlayOpenRequests().get(overlay.id), () => undefined);
   const [expanded, setExpanded] = useState(false);
@@ -177,10 +185,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   };
   const clampPosition = (point: Position, targetMode: Mode): Position => {
     const bounds = drawingArea();
+    const top = targetMode === "expanded" ? Math.min(bounds.bottom, bounds.top + PALETTE_CLEARANCE) : bounds.top;
     const { width, height } = targetMode === "expanded" ? expandedSizeRef.current : { width: ICON_SIZE, height: ICON_SIZE };
     return {
       x: Math.max(bounds.left, Math.min(point.x, Math.max(bounds.left, bounds.right - width))),
-      y: Math.max(bounds.top, Math.min(point.y, Math.max(bounds.top, bounds.bottom - height)))
+      y: Math.max(top, Math.min(point.y, Math.max(top, bounds.bottom - height)))
     };
   };
 
@@ -190,14 +199,18 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (!viewport || !element || gestureActive) return;
     const fit = () => {
       const bounds = drawingArea();
+      if (bounds.bottom <= bounds.top) return;
       // Size to the drawing area, not the larger overlay layer behind rulers/status/scrollbars.
       element.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
-      element.style.maxHeight = `${Math.max(0, bounds.bottom - bounds.top)}px`;
-      const available = Math.max(0, bounds.bottom - bounds.top);
+      const available = Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE);
+      element.style.maxHeight = `${expanded ? available : Math.max(0, bounds.bottom - bounds.top)}px`;
+      // Remember the current cap, so a previously window-tall box cannot reappear after resizing.
+      const rememberedHeight = Math.min(height, available);
+      setHeight(rememberedHeight);
       const contentHeight = contentRef.current?.firstElementChild?.scrollHeight ?? 0;
-      const fittedHeight = Math.min(available, content.length > 0
-        ? Math.max(height, Math.min(MIN_CHAT_HEIGHT + contentHeight, Math.floor(available * 0.7)))
-        : height);
+      const fittedHeight = Math.min(available, autoFitContent && content.length > 0
+        ? Math.max(rememberedHeight, Math.min(MIN_CHAT_HEIGHT + contentHeight, Math.floor((bounds.bottom - bounds.top) * 0.7)))
+        : rememberedHeight);
       setDisplayHeight(fittedHeight);
       if (expanded) element.style.height = `${fittedHeight}px`;
       const size = element.getBoundingClientRect();
@@ -230,7 +243,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
     return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [expanded, gestureActive, height, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
   useEffect(() => {
     try { window.localStorage.setItem(`${storageKey}:height`, JSON.stringify(height)); } catch { /* Optional persistence. */ }
@@ -275,7 +288,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   };
   const startResize = (event: PointerEvent<HTMLElement>) => {
     event.stopPropagation();
-    if (event.button !== 0 || event.isPrimary === false) return;
+    if (event.button !== 0 || event.isPrimary === false || (event.target as Element).closest("button")) return;
     event.preventDefault();
     const currentHeight = expandedSizeRef.current.height;
     resizeRef.current = { pointerId: event.pointerId, startY: event.clientY, height: currentHeight,
@@ -288,10 +301,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (!resize || resize.pointerId !== event.pointerId) return;
     const bounds = drawingArea();
     const bottom = Math.min(resize.bottom, bounds.bottom);
-    const available = Math.max(0, bottom - bounds.top);
+    const available = Math.max(0, bottom - bounds.top - PALETTE_CLEARANCE);
     const nextHeight = Math.min(available, Math.max(MIN_CHAT_HEIGHT, resize.height + resize.startY - event.clientY));
     expandedSizeRef.current.height = nextHeight;
-    setHeight(Math.max(MIN_CHAT_HEIGHT, nextHeight));
+    setAutoFitContent(false);
+    setHeight(nextHeight);
     setPositions(current => ({ ...current, expanded: clampPosition({
       x: current.expanded?.x ?? bounds.left, y: bottom - nextHeight
     }, "expanded") }));
@@ -301,6 +315,34 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (resizeRef.current?.pointerId !== event.pointerId) return;
     resizeRef.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resetHeight = () => {
+    const bounds = drawingArea();
+    const nextHeight = Math.min(MIN_CHAT_HEIGHT, Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE));
+    const bottom = Math.min(bounds.bottom, (position?.y ?? bounds.top) + expandedSizeRef.current.height);
+    expandedSizeRef.current.height = nextHeight;
+    setAutoFitContent(false);
+    setHeight(nextHeight);
+    setPositions(current => ({ ...current, expanded: clampPosition({
+      x: current.expanded?.x ?? bounds.left, y: bottom - nextHeight
+    }, "expanded") }));
+  };
+  const initialize = async () => {
+    if (content.length || !onInitialize || initializing.current) return;
+    initializing.current = true;
+    setInitializationError(undefined);
+    try { await onInitialize(); }
+    catch { setInitializationError("The assistant could not be opened. Collapse and reopen it to try again."); }
+    finally { initializing.current = false; }
+  };
+  const runAction: PluginPanelActionHandler = async request => {
+    try { return await onAction(request); }
+    finally {
+      const element = elementRef.current;
+      if ((request.control === "button" || request.control === "prompt") && element?.contains(document.activeElement)) {
+        element.querySelector("textarea")?.focus({ preventScroll: true });
+      }
+    }
   };
   return <div
     ref={elementRef}
@@ -339,6 +381,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           anchorNextExpansionRef.current = false;
         }
         focusOnExpandRef.current = true; setExpanded(true);
+        void initialize();
       }}>
       <img src={overlay.icon} alt="" draggable={false} />
     </button>
@@ -347,25 +390,28 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize} />
       <div className="plugin-canvas-overlay-header"
-        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag}
-        onPointerCancel={stopDrag} onLostPointerCapture={stopDrag}>
+        title="Drag to resize; double-click to reset height"
+        onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
+        onPointerCancel={stopResize} onLostPointerCapture={stopResize}
+        onDoubleClick={event => { if (!(event.target as Element).closest("button")) resetHeight(); }}>
         <span>{overlay.title}</span>
         <button type="button" aria-label={`Collapse ${overlay.title}`}
           onPointerDown={event => event.stopPropagation()}
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
-      <PluginPromptSection section={{ ...overlay.prompt, rows: 1 }} onAction={request => {
+      <PluginPromptSection section={{ ...prompt, rows: 1 }} onAction={request => {
         if (request.control === "prompt") setOwnSubmit(value => value + 1);
-        return onAction(request);
-      }} includeSelected />
+        return runAction(request);
+      }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} />
       {firstActions ? <div className="plugin-canvas-overlay-primary-actions">
-        <PluginReportRenderer report={{ title: overlay.title, sections: [firstActions] }} onAction={onAction} />
+        <PluginReportRenderer report={{ title: overlay.title, sections: [firstActions] }} onAction={runAction} />
       </div> : null}
       {content.length > 0 ? <div className="plugin-canvas-overlay-content" ref={contentRef}>
-        <PluginReportRenderer report={{ title: overlay.title, sections: [...scrollingContent] }} onAction={onAction} />
+        <PluginReportRenderer report={{ title: overlay.title, sections: scrollingContent }} onAction={runAction} />
       </div> : null}
       <OverlayTranscript overlayId={overlay.id} source={transcriptSource} expanded={expanded} ownSubmit={ownSubmit} height={displayHeight} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
+      {initializationError ? <p role="alert">{initializationError}</p> : null}
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
         {panelTitle ? `Open ${panelTitle}` : "Open panel"}
       </button> : null}

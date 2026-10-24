@@ -129,11 +129,13 @@ function PluginReportSectionView({ section, copyText, onAction }: {
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
 }
 
-export function PluginPromptSection({ section, onAction, includeSelected = false }: {
+export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage }: {
   section: Extract<PluginPanelSection, { kind: "prompt" }>;
   onAction?: PluginPanelActionHandler;
   /** Overlays retain the choice locally and include it with Send as well as select actions. */
   includeSelected?: boolean;
+  /** Overlay submissions stay editable and explain why a running request cannot accept Send. */
+  busyMessage?: string;
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
@@ -142,9 +144,19 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   const submitting = useRef(false);
   const [selected, setSelected] = useState(section.select?.value);
   useEffect(() => setSelected(section.select?.value), [section.select?.value]);
-  const canSubmit = !!onAction && !section.disabled && !pending && draft.trim().length > 0;
+  const busy = section.disabled || pending;
+  const overLimit = draft.length > section.maxLength;
+  const lengthMessage = overLimit
+    ? `Your request is ${draft.length.toLocaleString("en-US")} characters; the limit is ${section.maxLength.toLocaleString("en-US")}. Shorten it to send.`
+    : undefined;
+  const canAttempt = !!onAction && draft.trim().length > 0;
+  const canSubmit = canAttempt && !busy && !overLimit;
   const submit = async (): Promise<void> => {
-    if (!canSubmit || !onAction || submitting.current) return;
+    if (section.disabled || pending || submitting.current) {
+      if (busyMessage) setMessage(busyMessage);
+      return;
+    }
+    if (!canSubmit || !onAction) return;
     submitting.current = true;
     const submittedDraft = draft;
     setPending(true);
@@ -176,11 +188,15 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
       id={`plugin-prompt-${section.id}`}
       value={draft}
       placeholder={section.placeholder}
-      maxLength={section.maxLength}
       rows={section.rows}
-      onChange={(event) => setDraft(event.target.value.slice(0, section.maxLength))}
+      aria-invalid={overLimit || undefined}
+      aria-describedby={overLimit ? `plugin-prompt-${section.id}-error` : undefined}
+      onChange={(event) => { setDraft(event.target.value); setMessage(undefined); }}
       onKeyDown={keyDown}
     />
+    {draft.length > section.maxLength * 0.9 ? <p className="plugin-report-composer-counter">
+      {draft.length.toLocaleString("en-US")} / {section.maxLength.toLocaleString("en-US")}
+    </p> : null}
     <div className="plugin-report-composer-controls">
       {select ? <label className="plugin-report-composer-select">
         <span>{select.label}</span>
@@ -206,12 +222,13 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
           {select.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       </label> : null}
-      <button type="button" className="plugin-report-action plugin-report-action-primary" disabled={!canSubmit} onClick={() => void submit()}>
+      <button type="button" className="plugin-report-action plugin-report-action-primary"
+        disabled={!canAttempt || (busy && !busyMessage)} aria-disabled={!canSubmit || undefined} onClick={() => void submit()}>
         {section.submitLabel}
       </button>
     </div>
     {section.hint ? <p className="plugin-report-composer-hint">{section.hint}</p> : null}
-    {message ? <p className="plugin-report-composer-error" role="alert">{message}</p> : null}
+    {lengthMessage || message ? <p id={`plugin-prompt-${section.id}-error`} className="plugin-report-composer-error" role="alert">{lengthMessage ?? message}</p> : null}
   </section>;
 }
 

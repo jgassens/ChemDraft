@@ -195,6 +195,7 @@ import {
 import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
+import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
@@ -1614,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.09.47-codex";
+const CURRENT_BUILD_STAMP = "10.24.10.24-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11213,11 +11214,16 @@ export function MainWindow({
     const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
     if (!declaration) return { ok: false, message: "This overlay is no longer available." };
     const overlay = declaration.overlay;
+    const content = runtime.getCanvasOverlayContents().get(overlayId) ?? [];
+    const prompt = canvasOverlayPrompt(overlay, content);
+    if (request.control === "prompt" && request.sectionId === prompt.id && prompt.disabled) {
+      return { ok: false, message: OVERLAY_BUSY_MESSAGE };
+    }
     // Reuse the panel validator for live limits, controls and ownership. The overlay's top-level
     // command owns Send; its prompt.commandId is never trusted as an alternate submit route.
     const resolved = resolvePluginPanelAction({ title: overlay.title, sections: [
-      { ...overlay.prompt, commandId: overlay.commandId },
-      ...(runtime.getCanvasOverlayContents().get(overlayId) ?? [])
+      prompt,
+      ...content
     ] }, { ...request, panelId: "panel.overlay.input" }, commandId => {
       const command = registry.get(commandId);
       return command?.source === "plugin" && command.pluginId === pluginId
@@ -11227,7 +11233,14 @@ export function MainWindow({
     const { panelId: _panelId, ...input } = resolved.input;
     const parsed = PluginCommandInputSchema.safeParse({ ...input, source: "overlay", overlayId });
     if (!parsed.success) return { ok: false, message: "The overlay action is invalid." };
-    return acceptPluginInput(resolved.commandId, parsed.data);
+    const queueKey = `command:${resolved.commandId}`;
+    if (request.control === "prompt" && pluginCommandQueuesRef.current.has(queueKey)) {
+      return { ok: false, message: OVERLAY_BUSY_MESSAGE };
+    }
+    const result = await acceptPluginInput(resolved.commandId, parsed.data);
+    // invoke schedules plugin commands; overlay pending state must last through their completion.
+    if (result.ok) await pluginCommandQueuesRef.current.get(queueKey);
+    return result;
   };
 
   // Keep one subscription; identity comes from native IPC or the inline panel we rendered,
@@ -20109,7 +20122,9 @@ export function MainWindow({
         </section>
         <div ref={canvasOverlayLayerRef} className="plugin-canvas-overlay-layer">
           {pluginRuntime.canvasOverlays.map(({ pluginId, overlay }) => {
-            const panel = pluginRuntime.plugins.find(plugin => plugin.id === pluginId)?.contributes.panels[0];
+            const manifest = pluginRuntime.plugins.find(plugin => plugin.id === pluginId);
+            const panel = manifest?.contributes.panels[0];
+            const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
             return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
               viewportRef={canvasRegionRef}
               overlayLayerRef={canvasOverlayLayerRef}
@@ -20120,6 +20135,11 @@ export function MainWindow({
               contentSource={pluginRuntime.runtime}
               openSource={pluginRuntime.runtime}
               onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
+              onInitialize={openCommandId ? async () => {
+                const queueKey = `command:${openCommandId}`;
+                if (!pluginCommandQueuesRef.current.has(queueKey)) await invokeCommandRef.current(openCommandId);
+                await pluginCommandQueuesRef.current.get(queueKey);
+              } : undefined}
               onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
               panelTitle={panel?.title}
               onOpenPanel={panel && overlay.showPanelLink !== false ? () => {

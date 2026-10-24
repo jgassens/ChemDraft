@@ -145,7 +145,10 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     const storage = runtime.host.createCommandContext(manifest.id).storage!;
     await storage.set("provider", "codex");
     await storage.set("chosenProviders", ["codex"]);
-    await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click();
+      await vi.waitFor(() => expect(native.workerSettlements).toHaveLength(1), { timeout: 5000 });
+    });
     const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw benzene");
@@ -153,7 +156,7 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     });
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-      await vi.waitFor(() => expect(native.workerSettlements).toHaveLength(1), { timeout: 5000 });
+      await vi.waitFor(() => expect(native.workerSettlements).toHaveLength(2), { timeout: 5000 });
     });
     expect(native.invoke).toHaveBeenCalledWith("external_tool_run_start", expect.anything());
     const transcript = container.querySelector('[role="log"]')!;
@@ -194,7 +197,7 @@ it("dispatches live overlay content with no panel contribution and never opens a
         prompt: { kind: "prompt", id: "prompt", commandId } }]
     }
   }, { commandHandlers: {
-    [commandId]: ctx => { handler(ctx.input); },
+    [commandId]: ctx => handler(ctx.input),
     [replacementCommandId]: ctx => { replacementHandler(ctx.input); },
     [openId]: ctx => ctx.overlays!.open({ overlayId, focus: true })
   } }); });
@@ -252,6 +255,16 @@ it("dispatches live overlay content with no panel contribution and never opens a
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Hello");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  // A command started elsewhere must also block Send, independently of the composer's own lock.
+  let finish!: () => void;
+  handler.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  await act(async () => window.dispatchEvent(new CustomEvent("chemdraft:native-command", { detail: { commandId } })));
+  const calls = handler.mock.calls.length;
+  await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(handler).toHaveBeenCalledTimes(calls);
+  expect(container.querySelector(".plugin-canvas-overlay")!.textContent).toContain("Wait for the current request to finish, or press Stop.");
+  expect(textarea.value).toBe("Hello");
+  await act(async () => finish());
   await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
   expect(handler).toHaveBeenLastCalledWith({ source: "overlay", overlayId, sectionId: "prompt", control: "prompt", text: "Hello" });
   await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));

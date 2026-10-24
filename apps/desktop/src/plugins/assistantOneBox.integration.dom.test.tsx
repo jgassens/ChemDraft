@@ -203,7 +203,7 @@ async function command(action: () => void): Promise<void> {
   expect(native.workerSettlements.at(-1)).toMatchObject({ ok: true });
 }
 
-async function openFromPluginsMenu(origin: string): Promise<void> {
+async function loadAssistant(origin: string): Promise<void> {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -220,6 +220,10 @@ async function openFromPluginsMenu(origin: string): Promise<void> {
   expect(descriptor.manifest.contributes.canvasOverlays).toHaveLength(1);
   expect(descriptor.manifest.contributes.canvasOverlays![0]!.prompt.select).toBeUndefined();
   await act(async () => { native.runtime!.registerPlugin(descriptor!.manifest, descriptor!.options); });
+}
+
+async function openFromPluginsMenu(origin: string): Promise<void> {
+  await loadAssistant(origin);
   const menus = native.runtime!.host.listMenuContributions("plugins")
     .filter(item => item.pluginId === descriptor!.manifest.id);
   expect(menus).toHaveLength(1);
@@ -315,6 +319,70 @@ function expectCodexReply(): void {
 }
 
 describe.each(["tauri://localhost", "http://tauri.localhost"])("Assistant 0.1.3 one box (%s)", origin => {
+  it("loads the saved AI heading on the first expansion after relaunch", async () => {
+    await loadAssistant(origin);
+    const storage = native.runtime!.host.createCommandContext(descriptor!.manifest.id).storage!;
+    await storage.set("provider", "codex");
+    await storage.set("chosenProviders", ["codex"]);
+    await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    expectCodexChoice();
+    expectNothingRan();
+  });
+
+  it("initializes a cold icon expansion once through the declared menu opener, and retries only when empty", async () => {
+    await loadAssistant(origin);
+    expect(overlay().querySelector(".plugin-canvas-overlay-content")).toBeNull();
+    await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    expect(overlay().textContent).toContain("Setup — choose your AI");
+    expectNothingRan();
+    await finishCodexSetup();
+    const count = native.workerSettlements.length;
+    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse ChemDraft Assistant"]')!.click());
+    await act(async () => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    expect(native.workerSettlements).toHaveLength(count);
+    expectCodexChoice();
+    await act(async () => { await native.runtime!.host.createCommandContext(descriptor!.manifest.id).overlays!.setContent({
+      overlayId: descriptor!.manifest.contributes.canvasOverlays![0]!.id, sections: []
+    }); });
+    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse ChemDraft Assistant"]')!.click());
+    await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    expectCodexChoice();
+    expectNothingRan();
+  });
+
+  it("refuses a second request while the real command is pending and keeps the next draft", async () => {
+    await openFromPluginsMenu(origin); await finishCodexSetup();
+    const original = native.invoke.getMockImplementation()!;
+    let finish!: () => void;
+    const running = new Promise<void>(resolve => { finish = resolve; });
+    native.invoke.mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+      if (name === "external_tool_run_poll") await running;
+      return original(name, args);
+    });
+    const textarea = overlay().querySelector("textarea")!;
+    const type = async (text: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, text);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const enter = () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await type(prompt);
+    await act(async () => {
+      enter();
+      await vi.waitFor(() => expect(native.invoke.mock.calls.filter(([name]) => name === "external_tool_run_poll")).toHaveLength(1));
+    });
+    await type("Draw ethanol");
+    await act(async () => enter());
+    expect(overlay().textContent).toContain("Wait for the current request to finish, or press Stop.");
+    await act(async () => button("Send").click());
+    expect(textarea.value).toBe("Draw ethanol");
+    await act(async () => {
+      finish();
+      await vi.waitFor(() => expect(overlay().querySelector('[data-role="assistant"]')).not.toBeNull());
+    });
+    expect(native.invoke.mock.calls.filter(([name]) => name === "external_tool_run_start")).toHaveLength(1);
+    expect(textarea.value).toBe("Draw ethanol");
+  });
+
   it("uses the AI chosen in Setup when the owner's next action is typing and pressing Enter", async () => {
     await openFromPluginsMenu(origin);
     await finishCodexSetup();

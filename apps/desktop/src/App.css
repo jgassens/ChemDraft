@@ -892,7 +892,9 @@ textarea:focus-visible,
 }
 
 .plugin-canvas-overlay[data-expanded="true"] { width: min(300px, 100%); padding: var(--cd-space-3); }
-.plugin-canvas-overlay[data-expanded="false"] { border: 0; }
+.plugin-canvas-overlay[data-expanded="false"] { border: 0; opacity: 0.5; }
+.plugin-canvas-overlay[data-expanded="false"]:hover { opacity: 1; }
+.plugin-canvas-overlay[data-expanded="false"]:focus-within { opacity: 1; }
 .plugin-canvas-overlay-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .plugin-canvas-overlay-chat[hidden] { display: none; }
 .plugin-canvas-overlay-chat > :not(.plugin-canvas-overlay-transcript):not(.plugin-canvas-overlay-content) { flex-shrink: 0; }
@@ -935,7 +937,8 @@ textarea:focus-visible,
 }
 .plugin-canvas-overlay-icon[hidden] { display: none; }
 .plugin-canvas-overlay-icon img { width: 24px; height: 24px; }
-.plugin-canvas-overlay-header { display: flex; align-items: center; justify-content: space-between; cursor: move; touch-action: none; }
+.plugin-canvas-overlay-header { display: flex; align-items: center; justify-content: space-between; cursor: ns-resize; touch-action: none; user-select: none; }
+.plugin-report-composer-counter { margin: var(--cd-space-2) 0 0; color: var(--cd-text-muted); font-size: 11px; text-align: right; }
 .plugin-canvas-overlay-header button { color: var(--cd-text-secondary); background: transparent; border: 0; cursor: pointer; }
 .plugin-canvas-overlay .plugin-report-composer { position: static; margin: 0; padding: var(--cd-space-3) 0 0; border: 0; }
 .plugin-canvas-overlay textarea { box-sizing: border-box; resize: none; }

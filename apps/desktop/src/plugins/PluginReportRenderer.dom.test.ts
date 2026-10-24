@@ -153,15 +153,31 @@ describe("interactive report sections", () => {
     } finally { act(() => view.root.unmount()); }
   });
 
-  it("caps prompt drafts at the report maxLength", async () => {
-    const onAction = vi.fn(async () => ({ ok: false as const, message: "No" }));
-    const view = mount(prompt(), onAction);
+  it("counts long drafts without truncating and refuses Enter and Send until shortened", async () => {
+    const onAction = vi.fn(async () => ({ ok: true as const }));
+    const view = mount(prompt({ maxLength: 4000 }), onAction);
     try {
       await view.render();
       const textarea = view.container.querySelector("textarea")!;
-      await act(async () => enterText(textarea, "longer than five"));
+      expect(textarea.hasAttribute("maxlength")).toBe(false);
+      await act(async () => enterText(textarea, "x".repeat(3600)));
+      expect(view.container.querySelector(".plugin-report-composer-counter")).toBeNull();
+      await act(async () => enterText(textarea, "x".repeat(3601)));
+      expect(view.container.textContent).toContain("3,601 / 4,000");
+      await act(async () => enterText(textarea, "x".repeat(4256)));
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      expect(onAction).not.toHaveBeenCalled();
       await act(async () => view.container.querySelector("button")!.click());
-      expect(onAction).toHaveBeenCalledWith({ sectionId: "assistant.prompt", control: "prompt", text: "longe" });
+      expect(onAction).not.toHaveBeenCalled();
+      expect(textarea.value).toBe("x".repeat(4256));
+      expect(view.container.textContent).toContain("4,256 / 4,000");
+      expect(view.container.querySelector("[role=alert]")?.textContent)
+        .toBe("Your request is 4,256 characters; the limit is 4,000. Shorten it to send.");
+      await act(async () => enterText(textarea, "x".repeat(4000)));
+      expect(view.container.querySelector("[role=alert]")).toBeNull();
+      await act(async () => view.container.querySelector("button")!.click());
+      expect(onAction).toHaveBeenCalledWith({ sectionId: "assistant.prompt", control: "prompt", text: "x".repeat(4000) });
+      expect(textarea.value).toBe("");
     } finally { act(() => view.root.unmount()); }
   });
 

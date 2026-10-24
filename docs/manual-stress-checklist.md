@@ -226,6 +226,28 @@ remains. On Windows, confirm no console flash and that the Job Object kills chil
 
 ## ChemDraft Assistant tools (macOS and Windows)
 
+On both platforms, stress the assistant's one-box controls:
+
+- With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
+  header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
+  the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
+  double-click the header to restore the default height (or the available height in a small window).
+- Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
+  Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
+  without starting a request. Shorten to 4,000 and send; the complete shortened draft is submitted.
+  Check the same behavior in a plugin panel prompt.
+- During a slow request, type another draft and try Enter and Send. Both show “Wait for the current
+  request to finish, or press Stop.” The draft stays editable and no request runs automatically
+  after the first finishes. Stop stays available; after completion, explicitly Send the kept draft.
+- Relaunch, then expand the assistant icon before using its menu or Send. Its saved AI heading and
+  status (or setup content on first use) appear immediately. Collapse/re-expand without resetting
+  setup or conversation; initialization runs again only if plugin content is absent.
+- Click New conversation and other assistant action buttons, wait for completion, then type:
+  typing goes into the prompt. Move focus to the drawing before an action completes and verify
+  completion leaves focus there.
+- The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
+  its position remains remembered and its hover/focus feedback still works.
+
 Exercise this section once the Assistant plugin is installed. Submit an insertion request and verify
 that its objects land directly on the page (no approval window) and finish selected. One Undo removes
 the entire request; Redo restores exactly those objects and selection without starting the AI or
@@ -251,7 +273,7 @@ With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand a
 prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
 Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
 the box only as needed, up to about 70% of the drawing area, with scrolling for overflow; clearing
-it restores the user's remembered height. Repeat after resizing and moving the box beside a ruler
+it restores the user's remembered height. Repeat after resizing and moving the collapsed icon beside a ruler
 and after changing display scale. Drafts and focus survive updates. Disable/remove a button while
 clicking it: the stale control must not run. A plugin with no panel never shows an "Open …" link
 or opens a native panel on menu commands, prompt submissions, setup actions, or re-expansion.
@@ -284,7 +306,7 @@ remembered. Begin a drawing gesture and start an export: the overlay must be hid
 (and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
 keyboard focus to the drawing. It takes focus only when clicked or explicitly opened with
 `focus: true`, never merely when content changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
-or slight pointer jitter must still expand it. Move the box elsewhere, then collapse: the icon returns
+or slight pointer jitter must still expand it. Resize the box upward, then collapse: the icon returns
 to its own position. Restart and verify both positions persist independently. Shrink the drawing area
 while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
 next shown, and the box must fit even when the drawing area is narrower than 300 px.
