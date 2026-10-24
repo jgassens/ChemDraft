@@ -15,5 +15,5 @@ export function saveCompoundLayoutSettings(settings: CompoundLayoutSettings): vo
   catch { /* Best-effort, matching the existing Preferences storage policy. */ }
 }
 export function isCompoundLayoutCommand(id: string): boolean {
-  return id.startsWith("layout.arrange.") || id === "layout.adjustArrangementSpacing";
+  return id.startsWith("layout.arrange.") || id === "layout.adjustArrangementSpacing" || id === "layout.arrangeOptions";
 }

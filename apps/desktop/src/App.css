@@ -3082,6 +3082,7 @@ textarea:focus-visible,
 }
 
 .toolbar-command-flyout-menu button[data-command-id^="layout.arrange."] > svg,
+.toolbar-command-flyout-menu button[data-command-id="layout.arrangeOptions"] > svg,
 .toolbar-command-flyout-menu button[data-command-id="layout.adjustArrangementSpacing"] > svg {
   width: 18px;
   height: 18px;
@@ -4018,6 +4019,11 @@ textarea:focus-visible,
   border-color: var(--cd-accent-strong);
 }
 
+.graphic-path-edit-handle-tether {
+  border-radius: 3px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
 .graphic-path-edit-handle-node-selected {
   background: var(--cd-bg-active);
   border-color: var(--cd-accent-strong);
@@ -4556,6 +4562,14 @@ textarea:focus-visible,
   left: calc(50% - 17px);
 }
 
+.object-transform-frame[data-has-paired-curve="true"] .object-rotate-handle {
+  left: calc(50% - 34px);
+}
+
+.object-transform-frame[data-has-paired-curve="true"] .object-tilt3d-handle {
+  left: 50%;
+}
+
 .object-tilt3d-handle {
   position: absolute;
   top: -34px;
@@ -4603,6 +4617,45 @@ textarea:focus-visible,
   height: 19px;
   pointer-events: none;
 }
+
+.object-pair-curve-handle {
+  position: absolute;
+  top: -34px;
+  left: calc(50% + 34px);
+  z-index: 3;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  color: var(--cd-accent-text);
+  background: var(--cd-bg-control-opaque);
+  border: 1.5px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  box-shadow: var(--cd-focus-ring);
+  cursor: grab;
+  place-items: center;
+  pointer-events: all;
+  transform: translateX(-50%);
+}
+
+.object-pair-curve-handle::before {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1.5px;
+  height: 11px;
+  background: linear-gradient(to bottom, var(--cd-accent), rgb(29 127 104 / 12%));
+  content: "";
+  transform: translateX(-50%);
+}
+
+.object-pair-curve-handle:hover {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+}
+
+.object-pair-curve-handle:active { cursor: grabbing; }
+.object-pair-curve-handle svg { width: 19px; height: 19px; pointer-events: none; }
 
 .object-resize-handle {
   position: absolute;
@@ -7536,6 +7589,11 @@ textarea:focus-visible,
 .arrangement-spacing-dialog { box-sizing: border-box; font-size: 13px; padding: 18px; color: var(--cd-text-primary); background: var(--cd-bg-panel); min-height: 100vh; max-height: 100vh; overflow-y: auto; }
 .plugin-prompt-backdrop > .arrangement-spacing-dialog { min-height: 0; width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--cd-border); border-radius: var(--cd-radius-panel); }
 .arrangement-spacing-dialog h2 { margin-top: 0; font-size: 16px; }
+.arrangement-options { display: grid; gap: 10px; border: 0; padding: 0; margin: 0 0 16px; }
+.arrangement-options label { display: flex; align-items: center; gap: 8px; }
+.arrangement-options select { flex: 1; min-width: 0; padding: 6px; font: inherit; color: inherit; background: var(--cd-bg-control); border: 1px solid var(--cd-border); border-radius: 4px; }
+.arrangement-options input[type="checkbox"] { accent-color: var(--cd-accent); }
+.arrangement-options p { margin: 0; }
 .arrangement-spacing-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .arrangement-spacing-actions button { padding: 6px 14px; }
 .arrangement-spacing-dialog input[type="range"] { width: 100%; accent-color: var(--cd-accent); }

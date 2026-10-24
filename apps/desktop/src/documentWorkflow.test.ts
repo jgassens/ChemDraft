@@ -10176,6 +10176,35 @@ describe("Phase 4 document workflow", () => {
     expect(stretched.style.strokeWidth).toBeCloseTo(startStroke * meanScale, 3);
   });
 
+  it("softens arrow visual weight during a mixed molecule-and-arrow group resize", () => {
+    let document = insertNativeArtGraphicObject(
+      createPhase4Document("Mixed group visual weight"), { x: 220, y: 180 }, "tool.art.reactionArrow"
+    );
+    const arrowId = document.selection.objectIds[0]!;
+    const molecule = createNativeSingleBondMolecule(document, { x: 460, y: 300 });
+    document = applyPatch(document, { op: "addObject", pageId: document.pages[0].id, object: molecule });
+    document = workflowCore.attachReactionArrowOffshoot(document, arrowId, "above", "fullCurve");
+    const branchId = document.selection.objectIds[0]!;
+    const parent = graphicById(document, arrowId);
+    const branch = graphicById(document, branchId);
+    const bondWidth = nativeDrawingStyleFromObjectStyle(molecule.style).bondStrokeWidthPx;
+    const center = { x: 350, y: 270 };
+
+    const doubled = scaleDocumentObjectsAroundPoint(document, [molecule.id, arrowId], center, 2, 2);
+    const grown = graphicById(doubled, arrowId);
+    const grownBranch = graphicById(doubled, branchId);
+    const grownMolecule = doubled.pages[0].objects.find(object => object.id === molecule.id);
+    expect(grownMolecule?.type).toBe("molecule");
+    if (grownMolecule?.type !== "molecule") throw new Error("Expected scaled molecule");
+    expect(nativeDrawingStyleFromObjectStyle(grownMolecule.style).bondStrokeWidthPx).toBe(bondWidth);
+    expect(grown.style.strokeWidth).toBeCloseTo(parent.style.strokeWidth! * Math.SQRT2, 3);
+    expect(grown.data.markerEnd?.sizePx).toBeCloseTo((parent.data.markerEnd?.sizePx ?? 0) * Math.SQRT2, 3);
+    expect(grownBranch.style.strokeWidth).toBeCloseTo(branch.style.strokeWidth! * Math.SQRT2, 3);
+    expect(grownBranch.data.markerEnd?.sizePx).toBeCloseTo(grown.data.markerEnd?.sizePx ?? 0, 3);
+    expect(grown.width).toBeCloseTo(parent.width * 2, 3);
+    expect(serializeDocument(deserializeDocument(serializeDocument(doubled)))).toBe(serializeDocument(doubled));
+  });
+
   it("sets, clamps, scales, and clears the no-reaction ✗ size", () => {
     const inserted = insertNativeArtGraphicObject(
       createPhase4Document("No-Reaction Mark Size"),
