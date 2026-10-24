@@ -58,7 +58,11 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `name_to_structure` — convert a chemical name with OPSIN, optionally rendering it.
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
-- `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
+- `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES. CDXML exports follow the user's
+  default style file, `~/.config/chemdraft/cdxml-style.cdxml`, when it exists, or the CDXML file
+  named by `CHEMDRAFT_CDXML_STYLE_REFERENCE` in the server's environment: they take its bond
+  length, line widths and label font settings, and the result records `styleReference` (see the
+  CLI README, "CDXML style reference"). The style never comes from a tool argument.
 
 Radicals and isotopes that ChemDraft cannot preserve are refused rather than silently changed. Analysis values retain their method contracts and reported pKa intervals; NMR J values and multiplicities are estimates.
 

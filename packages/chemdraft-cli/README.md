@@ -394,3 +394,32 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+### CDXML style reference
+
+`--style-reference <file.cdxml>` gives CDXML exports the drawing settings of an existing CDXML
+file, such as one saved with a journal's document style:
+
+~~~bash
+pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml --style-reference house-style.cdxml
+~~~
+
+The reference's root `<CDXML>` element supplies `BondLength`, `LineWidth`, `BoldWidth`,
+`HashSpacing`, `MarginWidth`, `BondSpacing`, `ChainAngle`, `LabelSize`, `LabelFace` and `LabelFont`
+(resolved through its `<fonttable>`); caption settings are carried when present. The molecule is
+scaled so every visible bond is `BondLength` points long, styled to match, and the written file
+declares the same settings on its own root element, so a reader draws labels and lines at the
+reference's sizes. Only geometry and display change; the CDXML identity check still runs.
+
+**Default style.** Save a CDXML file in your house style as `~/.config/chemdraft/cdxml-style.cdxml`
+(on Windows, `.config\chemdraft\cdxml-style.cdxml` in your account profile, beside the plugin trust
+file) and every CDXML export uses it, from the CLI, the MCP server and every client that launches
+them, with no client configuration. The home directory comes from the OS account, as for the trust
+file. `CHEMDRAFT_CDXML_STYLE_REFERENCE` (a CDXML path; `~` expands to the home directory) overrides
+the default file, and `--style-reference` overrides both. Other formats ignore the defaults; with
+no default file and no override, CDXML exports keep ChemDraft's own style. A structure setting the reference leaves unset keeps ChemDraft's value and is named in
+the job's warnings. An unreadable reference, one larger than 5 MB, or one with an unusable value
+(for example `BondLength="0"`), including an unusable default file, fails the run with exit 2 and the
+reason, before any file is written.
+`--style-reference` with a format other than CDXML is a usage error. Successful records carry
+`styleReference`, the reference path used.

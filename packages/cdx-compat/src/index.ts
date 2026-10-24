@@ -28,7 +28,16 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { cdxmlDocumentStyleHeader, type CdxmlDocumentStyle } from "./documentStyle";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
+
+export {
+  cdxmlDocumentStyleHeader,
+  nativeDrawingStyleFromCdxmlStyle,
+  readCdxmlDocumentStyle,
+  type CdxmlDocumentStyle,
+  type CdxmlDocumentStyleReadResult
+} from "./documentStyle";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -42,6 +51,9 @@ export interface CompatibilityConversionWarning {
 
 export interface CdxmlExportOptions {
   creationProgram?: string;
+  /** Document-level drawing settings to declare on the root element. They describe the drawing
+   *  for a reader; they do not restyle it, so the caller styles the molecules to match. */
+  documentStyle?: CdxmlDocumentStyle;
 }
 
 export interface CdxmlExportResult {
@@ -185,7 +197,8 @@ export function exportDocumentToCdxml(
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages);
+  const header = options.documentStyle === undefined ? undefined : cdxmlDocumentStyleHeader(options.documentStyle);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, header);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -197,7 +210,7 @@ export function exportDocumentToCdxml(
   const envelopePages = parsedDocument.pages.map((page, pageIndex) =>
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, header);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -443,12 +456,17 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[]): string {
+function buildCdxmlEnvelope(
+  creationProgram: string,
+  pages: readonly string[],
+  header?: { attributes: string; fontTable: string }
+): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${header?.attributes ?? ""}>`,
     buildStandardColorTableXml(),
+    ...(header?.fontTable ? [header.fontTable] : []),
     ...pages,
     "</CDXML>",
     ""

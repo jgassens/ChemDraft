@@ -1,6 +1,8 @@
-import { DocumentMoleculeSizeStyle, DocumentStylePreset, DocumentTextStyle,
-  type ChemDraftDocument, type CompatibilityWarning } from "@chemdraft/chem-core";
+import { DocumentMoleculeSizeStyle, DocumentStylePreset, DocumentTextStyle, applyPatches,
+  type ChemDraftDocument, type CompatibilityWarning, type NativeDrawingStyle } from "@chemdraft/chem-core";
 import { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "@chemdraft/layout-engine";
+import { applyMoleculeTargetBondLength } from "./molecule";
+import { phase4Timestamp } from "./shared";
 
 /** Scale the first page as one figure, then set only the fixed document dimensions.
  * Exporters alone convert native canvas units to points. Later pages remain unchanged.
@@ -33,4 +35,23 @@ export function applyDocumentStyle(document: ChemDraftDocument, warnings: Compat
     }
     return object;
   }) }, ...document.pages.slice(1)] };
+}
+
+/** Give the listed molecules a drawing style taken from elsewhere (a CDXML style reference):
+ * scale each to the style's bond length, then set the style's fields. Only geometry and display
+ * change; atoms, bonds, charges and stereo are untouched.
+ */
+export function applyMoleculeDrawingStyle(
+  document: ChemDraftDocument,
+  moleculeObjectIds: readonly string[],
+  drawingStyle: Partial<NativeDrawingStyle>
+): ChemDraftDocument {
+  const scaled = drawingStyle.bondLengthPx === undefined ? document
+    : applyMoleculeTargetBondLength(document, moleculeObjectIds, drawingStyle.bondLengthPx);
+  const targetIds = new Set(moleculeObjectIds);
+  const patches = scaled.pages.flatMap((page) => page.objects.flatMap((object) =>
+    object.type === "molecule" && targetIds.has(object.id)
+      ? [{ op: "updateObject" as const, objectId: object.id, changes: { style: { ...object.style, ...drawingStyle } } }]
+      : []));
+  return patches.length > 0 ? applyPatches(scaled, patches, { now: phase4Timestamp }) : scaled;
 }

@@ -9,7 +9,8 @@ import {
   UnknownBondOrderError,
   type ChemDraftDocument,
   type MoleculeBond,
-  type MoleculeObject
+  type MoleculeObject,
+  type NativeDrawingStyle
 } from "@chemdraft/chem-core";
 import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
@@ -33,6 +34,7 @@ import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifier
 import {
   applyMoleculeTargetBondLength,
   applyDocumentStyle,
+  applyMoleculeDrawingStyle,
   assertMolfileHasKnownBondOrders,
   expandNativeMoleculeLabelGroups,
   nativeSingleHeavyElementLabelValence,
@@ -864,6 +866,8 @@ export interface BuildSmilesDocumentOptions {
   style?: FigureStyle;
   name?: string;
   bondLength?: number;
+  /** A drawing style read from elsewhere (a CDXML style reference); its bond length wins. */
+  drawingStyle?: Partial<NativeDrawingStyle>;
 }
 
 export interface BuiltSmilesDocument {
@@ -911,6 +915,10 @@ export async function buildSmilesDocument(
   }
   if (options.style === "document") {
     document = applyDocumentStyle(document);
+    molecule = moleculeFromDocument(document);
+  }
+  if (options.drawingStyle !== undefined) {
+    document = applyMoleculeDrawingStyle(document, [molecule.id], options.drawingStyle);
     molecule = moleculeFromDocument(document);
   }
 
