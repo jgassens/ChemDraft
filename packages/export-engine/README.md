@@ -7,6 +7,11 @@ Format-specific work should go through the correct adapters and compatibility pa
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
 
+Filled-ring label halos use the shared SVG composite paint (paper plus clipped ring fills).
+PDF converts that paint to a tiling pattern and applies it through a glyph soft mask, preserving
+gradients and opacity without a white outline. These documents use PDF 1.4 transparency; unfilled
+documents retain their existing path. See [the rendering contract](../../docs/architecture/ring-fill-label-halos.md).
+
 SVG text elements containing only Latin-1 (U+0000–U+00FF) and the 27 additional
 WinAnsi characters retain the existing standard-font path, including bold/italic
 and font-family selection. jsPDF 4.2.1 maps `ŒœŠšŸŽžƒˆ˜–—‘’‚“”„†‡•…‰‹›€™` to

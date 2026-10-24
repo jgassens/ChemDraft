@@ -43,10 +43,10 @@
 //                 read, by render-document in the --checkout, as the same molecule (canonical
 //                 SMILES; with explicit H, the standard InChIKey) with the same specified and
 //                 unspecified stereocentre counts as the build's own drawing; a change that does
-//                 not is undone and reported. What cannot be cleared is reported by name, and a
-//                 non-ring atom labels that remain on a fill are white or near-black by that
-//                 fill's luminance, with no label halo. Fills are notched only around labels of
-//                 their own atoms on the ring outline. Ring letters use the same luminance rule.
+//                 not is undone and reported. What cannot be cleared is reported by name;
+//                 atom labels on a fill, including ring atoms, are white or near-black by that
+//                 fill's luminance, with no label halo. Fills reach every atom centre on the ring
+//                 outline. Ring letters use the same luminance rule.
 //   relayout      rewrites <name>-job.json with the canonical SMILES in <name>-build.jsonl:
 //                 the same molecule in another atom order, which `document` lays out anew.
 //   identity-jobs reads <name>-render.jsonl (every `render-document` stdout line);
@@ -62,7 +62,7 @@
 // regular polygon of its size and mean side (area ratio >= 0.75, smallest interior angle >= 0.6 of
 // the regular angle, outline not crossing itself); no plain bond over 1.3x and no wedge or hash over
 // 1.3x the median bond length; no ring letter under 14 px or missing; no lettered ring more than 40%
-// under another lettered ring's fill; no emitted ring fill under a label of that ring's own atom;
+// under another lettered ring's fill; every emitted ring fill is its plain ring polygon;
 // no fusion CH stereocentre left without its H.
 //
 // Options (all optional), a JSON object; with none, the options file may be omitted:
@@ -97,7 +97,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PALETTE = ["#e53935", "#fdd835", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa",
   "#00acc1", "#d81b60", "#7cb342", "#3949ab", "#ff7043", "#00897b"];
@@ -627,10 +627,7 @@ function verifyFusionH(m, added, verify, warnings, undone) {
   return kept;
 }
 
-/** Labels that stay on a filled ring (a substituent the fill rule could not clear, or an atom in
- * another ring enclosed by a bridged ring) use the fill's contrast colour and no halo. A ring atom
- * is skipped only for a fill belonging to that same ring: the renderer notches that fill at its
- * outline. */
+/** Labels on ring fills, including outline atoms, use the same luminance contrast rule. */
 function colourLabelsOnFills(cm, letters, colours, opacity, meIds, carbonLabels) {
   const size = cm.mol.style?.atomLabelFontSizePx ?? 15;
   const fills = fillsOf(cm, letters), out = [];
@@ -638,7 +635,7 @@ function colourLabelsOnFills(cm, letters, colours, opacity, meIds, carbonLabels)
     const box = labelBox(cm, a, meIds, carbonLabels, size);
     if (!box) continue;
     const centre = { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
-    const on = fills.filter((f) => !f.atoms.has(a.id) && (depth(a, f.poly) > TOL || boxInFill(box, f.poly)))
+    const on = fills.filter((f) => (f.atoms.has(a.id) || depth(a, f.poly) > TOL || boxInFill(box, f.poly)))
       .sort((f, g) => depth(centre, g.poly) - depth(centre, f.poly))[0];
     if (!on) continue;
     const colour = letterColour(colours.get(on.r), opacity);
@@ -1502,10 +1499,7 @@ export function svgGeometry(svg) {
   return { labels, texts, strokes };
 }
 
-/** The ring-fill paths emitted by layout-engine are polygonal subpaths. Parse their M/L/H/V/Z
- * commands so the SVG check uses the actual even-odd holes, rather than recreating ring geometry
- * from the document. The rounded label notches are deliberately emitted as many short line
- * segments. */
+/** Parse polygonal paths so the figure check can reject subpaths and extra vertices. */
 function polygonPathFaces(d) {
   const tokens = d.match(/[MmLlHhVvZz]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) ?? [];
   const faces = [], point = { x: 0, y: 0 }, start = { x: 0, y: 0 };
@@ -1545,97 +1539,31 @@ function polygonPathFaces(d) {
   return faces.filter((points) => points.length >= 3);
 }
 
-/** True for an even-odd SVG fill: every contour, including a label-notch hole, toggles coverage. */
-function inEvenOddFill(point, faces) {
-  let inside = false;
-  for (const face of faces) {
-    for (let i = 0, j = face.length - 1; i < face.length; j = i++) {
-      const a = face[i], b = face[j];
-      if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
-    }
-  }
-  return inside;
-}
-
-/** Ring fills that visibly cover boxes of labels belonging to that fill's own ring atoms. The SVG
- * renderer gives atom-label groups a translated anchor, but intentionally does not emit atom ids
- * on those groups. Associate that anchor with the nearest document atom instead. A document atom
- * with a labelOffset is anchored at that offset, as the renderer is. Otherwise an above/below
- * molecule or per-atom placement offsets the anchor by the label's height and font gap, just as
- * the renderer does. Sample at 0.5 px after a
- * 0.5 px inset: this catches a fill under an outline label while allowing antialiased edges.
- * Non-ring substituent labels intentionally remain on the fill. The fill's own even-odd subpaths
- * are used, so rounded notch holes count as page background. */
-export function fillsUnderLabels(svg, ringAtomsByKey, atoms = [], tolerancePx = 0.5) {
-  const anchorTolerancePx = 1.5;
-  const anchorFor = (atom, label) => {
-    if (atom.labelOffset) return { x: atom.x + atom.labelOffset.x, y: atom.y + atom.labelOffset.y };
-    const placement = atom.labelPlacement;
-    if (placement !== "above" && placement !== "below") return { x: atom.x, y: atom.y };
-    // atomLabelLayout's ordinary bounds are 1.08 em high before padding. The SVG group's own
-    // runs include superscripts and isotope prefixes, so retain the larger extent when it is
-    // available. This keeps the renderer's 1.5 px anchor tolerance exact enough without widening.
-    const fontSize = atom.labelFontSizePx ?? label.fontSize ?? 15;
-    const labelHeight = Math.max(label.box.y1 - label.box.y0, fontSize * 1.08 + 2 * (atom.labelPaddingPx ?? 2));
-    const offset = labelHeight / 2 + fontSize * 0.35;
-    return { x: atom.x, y: atom.y + (placement === "above" ? -offset : offset) };
-  };
-  const atomAt = (label) => atoms
-    .map((atom) => {
-      const anchor = anchorFor(atom, label);
-      return { atom, anchor, distance: Math.hypot(anchor.x - label.x, anchor.y - label.y) };
-    })
-    .filter((match) => match.distance <= anchorTolerancePx)
-    .sort((a, b) => a.distance - b.distance || a.atom.id.localeCompare(b.atom.id))[0]?.atom;
-  const fills = [];
-  for (const p of svg.matchAll(/<path\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
-    const tag = " " + p[1];
+/** Every emitted ring fill must be its single, closed atom-centre polygon. Reject holes,
+ * evenodd notches, extra vertices and moved vertices, including fills with no visible labels. */
+export function invalidRingFillPaths(svg, ringAtomsByKey, atoms = []) {
+  const failures = [];
+  for (const match of svg.matchAll(/<path\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
+    const tag = " " + match[1];
     if (attr(tag, "data-molecule-fill-ring") !== "true") continue;
-    const d = attr(tag, "d");
-    if (d) fills.push({ ring: attr(tag, "data-ring-key") ?? "unknown ring", faces: polygonPathFaces(d) });
-  }
-  const labelsByAtomId = new Map();
-  for (const label of svgGeometry(svg).labels) {
-    const atom = atomAt(label);
-    if (!atom) continue;
-    // There is one rendered group per atom. Keeping the nearest pairing makes an accidentally
-    // duplicated group fail closed for the atom whose real label is absent.
-    const previous = labelsByAtomId.get(atom.id);
-    const anchor = anchorFor(atom, label);
-    const previousAnchor = previous && anchorFor(atom, previous);
-    if (!previous || Math.hypot(anchor.x - label.x, anchor.y - label.y) <
-      Math.hypot(previousAnchor.x - previous.x, previousAnchor.y - previous.y)) {
-      labelsByAtomId.set(atom.id, label);
+    const ring = attr(tag, "data-ring-key"), d = attr(tag, "d") ?? "";
+    const expected = [...(ringAtomsByKey.get(ring) ?? [])].map((id) => atoms.find((atom) => atom.id === id));
+    const faces = polygonPathFaces(d);
+    const points = faces[0] ?? [];
+    const remaining = [...points];
+    const matches = expected.length >= 3 && expected.every((atom) => {
+      const index = atom && remaining.findIndex((p) => Math.abs(p.x - atom.x) <= 0.001 && Math.abs(p.y - atom.y) <= 0.001);
+      if (index === undefined || index === -1) return false;
+      remaining.splice(index, 1);
+      return true;
+    });
+    if (attr(tag, "fill-rule") === "evenodd" || faces.length !== 1 || !/[zZ]\s*$/.test(d)
+      || (d.match(/[Mm]/g) ?? []).length !== 1 || (d.match(/[Zz]/g) ?? []).length !== 1
+      || /[^MmLlHhVvZz0-9eE+.,\s-]/.test(d) || !matches || remaining.length) {
+      failures.push({ ring, failure: `ring fill is not the plain ring polygon: ${ring}` });
     }
   }
-  const hits = [];
-  for (const fill of fills) {
-    for (const atomId of ringAtomsByKey.get(fill.ring) ?? []) {
-      const atom = atoms.find((candidate) => candidate.id === atomId);
-      // This is the labelBox distinction used elsewhere in this script: plain carbons have no
-      // label unless their caller marks them as one of the terminal-carbon labels it draws.
-      if (!atom || !(atom.labelShown ?? atom.element !== "C")) continue;
-      const label = labelsByAtomId.get(atom.id);
-      if (!label) {
-        hits.push({
-          missing: true,
-          atom: atom.id,
-          label: atom.element,
-          ring: fill.ring,
-          failure: `fill under a label: could not find the rendered label of ring atom ${atom.id} (${atom.element}) to check it`
-        });
-        continue;
-      }
-      let hit = null;
-      for (let x = label.box.x0 + tolerancePx; x <= label.box.x1 - tolerancePx && !hit; x += tolerancePx) {
-        for (let y = label.box.y0 + tolerancePx; y <= label.box.y1 - tolerancePx; y += tolerancePx) {
-          if (inEvenOddFill({ x, y }, fill.faces)) { hit = { x, y }; break; }
-        }
-      }
-      if (hit) hits.push({ label: label.text, ring: fill.ring, x: Number(hit.x.toFixed(1)), y: Number(hit.y.toFixed(1)) });
-    }
-  }
-  return hits;
+  return failures;
 }
 
 function ringAtomsByKey(buildMol) {
@@ -1682,10 +1610,8 @@ export function atomsWithDrawnLabels(mol) {
   }));
 }
 
-function fillUnderLabelFailure(hit, kind) {
-  return hit.missing
-    ? hit.failure
-    : `fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y}) (${kind})`;
+function ringFillFailure(hit, kind) {
+  return `${hit.failure} (${kind})`;
 }
 
 /** Label pairs that nearly touch, text objects that sit on a label or a bond, and, given
@@ -1721,13 +1647,13 @@ export function collisions(svg, nearPx = 1.5, incident = null) {
 /** Runs the CLI of a ChemDraft checkout the way `pnpm chemdraft` does (tsx on cli.ts), with
  * process.execPath and an argument list: no shell, the same on macOS and Windows. */
 export function chemdraftCli(checkout) {
-  const tsx = path.join(checkout, "node_modules", "tsx", "dist", "cli.mjs");
+  const tsx = path.join(checkout, "node_modules", "tsx", "dist", "loader.mjs");
   const entry = path.join(checkout, "packages", "chemdraft-cli", "src", "cli.ts");
   if (!fs.existsSync(tsx) || !fs.existsSync(entry)) fail(`--checkout ${checkout} is not an installed ChemDraft checkout (no ${path.relative(checkout, tsx)} or ${path.relative(checkout, entry)})`);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ring-style-"));
   let n = 0;
   const run = (args) => {
-    const r = spawnSync(process.execPath, [tsx, entry, ...args], { cwd: checkout, encoding: "utf8", maxBuffer: 1 << 28, windowsHide: true });
+    const r = spawnSync(process.execPath, ["--import", pathToFileURL(tsx).href, entry, ...args], { cwd: checkout, encoding: "utf8", maxBuffer: 1 << 28, windowsHide: true });
     if (r.error) fail(`Could not run the ChemDraft CLI (${args[0]}): ${r.error.message}`);
     const lines = (r.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("{"))
       .map((l, i) => parseIn(l, `ChemDraft CLI ${args[0]} output line ${i + 1}`));
@@ -1857,8 +1783,8 @@ function runStyle(dir, name, optionsFile, checkout) {
     for (const [kind, drawing] of [["carbon", carbon], ["picture", picture]]) {
       const drawingMol = drawing.pages.flatMap((page) => page.objects).find((object) => object.id === buildMol.objectId) ??
         drawing.pages.flatMap((page) => page.objects).find((object) => object.type === "molecule");
-      for (const hit of fillsUnderLabels(cli.renderSvg(drawing), ringAtomsByKey(buildMol), atomsWithDrawnLabels(drawingMol))) {
-        report.quality.failures.push(fillUnderLabelFailure(hit, kind));
+      for (const hit of invalidRingFillPaths(cli.renderSvg(drawing), ringAtomsByKey(buildMol), atomsWithDrawnLabels(drawingMol))) {
+        report.quality.failures.push(ringFillFailure(hit, kind));
       }
     }
     writeJson(path.join(dir, `${name}-carbon.json`), carbon);
@@ -1898,7 +1824,7 @@ function printFigureVerdict(failures) {
 }
 const figureChecksText = () => `no sliver ring (area >= ${LIMITS.ringArea} of regular, smallest angle >= ${LIMITS.ringAngle} of regular), ` +
   `no bond over ${LIMITS.bondStretch}x or wedge over ${LIMITS.wedgeStretch}x the median, letters >= ${LIMITS.letterPx} px, ` +
-  `no ring more than ${Math.round(LIMITS.hiddenRing * 100)}% under another fill, no fill under a label of its ring's own atom, every fusion H drawn`;
+  `no ring more than ${Math.round(LIMITS.hiddenRing * 100)}% under another fill, every fill is the plain ring polygon, every fusion H drawn`;
 
 function relayout(dir, name) {
   const lines = readLines(path.join(dir, `${name}-build.jsonl`));
@@ -1965,11 +1891,9 @@ function documentFaults(dir, name, renders) {
     for (const f of figureFaults(m, letters, placed, why, { fusionH: report.quality?.fusionH !== false }).failures) add(f, path.basename(file));
     for (const render of renders.filter((line) => line.document === file)) for (const svg of (render.files ?? []).filter((entry) => entry.toLowerCase().endsWith(".svg"))) {
       if (!fs.existsSync(svg)) { add(`${path.basename(svg)} is missing`, path.basename(file)); continue; }
-      for (const hit of fillsUnderLabels(readText(svg), ringAtomsByKey(buildMol), atomsWithDrawnLabels(mol))) {
+      for (const hit of invalidRingFillPaths(readText(svg), ringAtomsByKey(buildMol), atomsWithDrawnLabels(mol))) {
         const kind = path.basename(file);
-        add(hit.missing
-          ? hit.failure
-          : `fill under a label: ring ${hit.ring} covers atom label ${hit.label} near (${hit.x}, ${hit.y})`, kind);
+        add(hit.failure, kind);
       }
     }
   }

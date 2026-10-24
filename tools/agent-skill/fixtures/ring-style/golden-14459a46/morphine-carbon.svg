@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="246.882" height="209.503" viewBox="283.809 424.681 246.882 209.503" role="img" aria-label="morphine">
   <rect x="283.809" y="424.681" width="246.882" height="209.503" fill="#ffffff" />
-  <path data-object-id="ring-fill-B" data-layer-index="0" data-object-type="graphic" d="M 443.9731 483.0903 L 415.1946 483.0903 L 400.8054 508.0124 L 409.6979 535.3826 L 435.988 547.0878 L 442.231 516.6114 Z" stroke="#fdd835" stroke-opacity="0" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="4" fill="#fdd835" fill-opacity="0.9" />
-  <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b1|b2|b20|b3|b4|b5" d="M 427.0257 489.5145 L 417.1132 486.4132 L 413.0919 504.369 L 400.8054 508.0124 L 415.1946 483.0903 L 427.1829 483.0903 L 427.0257 483.8808 Z M 442.1685 483.0903 L 443.9731 483.0903 L 442.3257 484.6527 L 442.3257 483.8808 Z" fill-rule="evenodd" fill="#43a047" fill-opacity="0.9" stroke="none" pointer-events="none" />
+  <path data-object-id="ring-fill-mol_clipboard_001-B" data-layer-index="0" data-object-type="graphic" d="M 443.9731 483.0903 L 415.1946 483.0903 L 400.8054 508.0124 L 409.6979 535.3826 L 435.988 547.0878 L 442.231 516.6114 Z" stroke="#fdd835" stroke-opacity="0" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="4" fill="#fdd835" fill-opacity="0.9" />
+  <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b1|b2|b20|b3|b4|b5" d="M 434.676 491.908 L 417.113 486.413 L 413.092 504.369 L 400.805 508.012 L 415.195 483.09 L 443.973 483.09 Z" fill="#43a047" fill-opacity="0.9" stroke="none" pointer-events="none" />
   <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b10|b11|b12|b24|b8|b9" d="M 435.988 547.088 L 438.996 575.709 L 415.715 592.625 L 389.424 580.918 L 386.416 552.299 L 409.698 535.383 Z" fill="#e53935" fill-opacity="0.9" stroke="none" pointer-events="none" />
-  <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b14|b15|b21|b22|b9" d="M 373.0344 542.5757 L 373.0344 525.1054 L 372.8005 523.9295 L 372.1344 522.9326 L 371.1375 522.2665 L 369.9616 522.0326 L 367.4718 522.0326 L 372.0269 508.0124 L 400.8054 508.0124 L 409.6979 535.3826 L 386.4162 552.2986 Z" fill-rule="evenodd" fill="#1e88e5" fill-opacity="0.9" stroke="none" pointer-events="none" />
+  <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b14|b15|b21|b22|b9" d="M 409.698 535.383 L 386.416 552.299 L 363.134 535.383 L 372.027 508.012 L 400.805 508.012 Z" fill="#1e88e5" fill-opacity="0.9" stroke="none" pointer-events="none" />
   <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b16|b17|b18|b22|b23|b4" d="M 400.805 508.012 L 372.027 508.012 L 357.638 483.09 L 372.027 458.166 L 400.805 458.166 L 415.195 483.09 Z" fill="#fb8c00" fill-opacity="0.9" stroke="none" pointer-events="none" />
 
 
@@ -142,8 +142,7 @@
     <text data-atom-label-run="normal" x="-7.5" y="0" dy="0.35em" text-anchor="end">H</text>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
-  <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(363.134 535.383)" data-atom-label="O" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">O</text>
+  <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(363.134 535.383)" data-atom-label="O" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(328.859 483.09)" data-atom-label="HO" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
@@ -153,7 +152,22 @@
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(419.084 461.031)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-h_a5-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 400.805 508.012 L 372.027 508.012 L 357.638 483.09 L 372.027 458.166 L 400.805 458.166 L 415.195 483.09 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-h_a5" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-62.447" y="-13.35" width="72.347" height="61.332" viewBox="-62.44663467239661 -13.350000000000023 72.34663467239665 61.33183807579411">
+        <rect x="-62.447" y="-13.35" width="72.347" height="61.332" fill="#ffffff" />
+        <g transform="scale(1) translate(-419.08433361632143 -461.0305637374558)">
+          <g data-label-halo-ring="b16|b17|b18|b22|b23|b4" clip-path="url(#label-halo-mol_clipboard_001-h_a5-clip-0)">
+            <path d="M 400.805 508.012 L 372.027 508.012 L 357.638 483.09 L 372.027 458.166 L 400.805 458.166 L 415.195 483.09 Z" stroke="none" fill="#fb8c00" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-h_a5">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-h_a5)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">H</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(466.373 483.09)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
@@ -161,7 +175,22 @@
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(349.627 508.012)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-h_a16-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 400.805 508.012 L 372.027 508.012 L 357.638 483.09 L 372.027 458.166 L 400.805 458.166 L 415.195 483.09 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-h_a16" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-9.9" y="-50.846" width="76.468" height="64.196" viewBox="-9.899999999999977 -50.84620738049102 76.46768661949301 64.19620738049105">
+        <rect x="-9.9" y="-50.846" width="76.468" height="64.196" fill="#ffffff" />
+        <g transform="scale(1) translate(-349.62692781708915 -508.0124018132499)">
+          <g data-label-halo-ring="b16|b17|b18|b22|b23|b4" clip-path="url(#label-halo-mol_clipboard_001-h_a16-clip-0)">
+            <path d="M 400.805 508.012 L 372.027 508.012 L 357.638 483.09 L 372.027 458.166 L 400.805 458.166 L 415.195 483.09 Z" stroke="none" fill="#fb8c00" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-h_a16">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-h_a16)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">H</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
 
@@ -188,16 +217,16 @@
 
 
 
-  <text data-object-id="ring-letter-A" data-layer-index="2" data-object-type="text" x="412.416" y="571.583" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
+  <text data-object-id="ring-letter-mol_clipboard_001-A" data-layer-index="2" data-object-type="text" x="412.416" y="571.583" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
     <tspan x="412.416">A</tspan>
   </text>
-  <text data-object-id="ring-letter-B" data-layer-index="3" data-object-type="text" x="427.805" y="519.29" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
+  <text data-object-id="ring-letter-mol_clipboard_001-B" data-layer-index="3" data-object-type="text" x="427.805" y="519.29" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
     <tspan x="427.805">B</tspan>
   </text>
-  <text data-object-id="ring-letter-C" data-layer-index="4" data-object-type="text" x="386.134" y="535.212" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
+  <text data-object-id="ring-letter-mol_clipboard_001-C" data-layer-index="4" data-object-type="text" x="386.134" y="535.212" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
     <tspan x="386.134">C</tspan>
   </text>
-  <text data-object-id="ring-letter-E" data-layer-index="5" data-object-type="text" x="386.638" y="490.366" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
+  <text data-object-id="ring-letter-mol_clipboard_001-E" data-layer-index="5" data-object-type="text" x="386.638" y="490.366" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
     <tspan x="386.638">E</tspan>
   </text>
 

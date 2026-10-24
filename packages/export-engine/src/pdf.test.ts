@@ -4,22 +4,72 @@ import {
   createCustomPageLayout,
   createPageLayout,
   type TextObject,
+  type MoleculeObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
+import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
 import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
-import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../layout-engine/src/ringFillNotches.fixture";
+import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
+import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+
+function filledRingFixture(): MoleculeObject {
+  const atoms = [[100, 100], [180, 100], [180, 180], [100, 180]].map(([x, y], i) => ({ id: `a${i}`, element: "C", x: x!, y: y!, formalCharge: 0 }));
+  return { id: "square", type: "molecule", x: 90, y: 90, width: 100, height: 100, rotation: 0,
+    structureFormat: "smiles", structure: "C1CCC1", superatoms: [], rGroups: [], atoms,
+    bonds: atoms.map((a, i) => ({ id: `b${i}`, fromAtomId: a.id, toAtomId: atoms[(i + 1) % 4]!.id, order: "single" })), style: {} };
+}
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each(["pyridinium", "blue-box", "oxathiazinane"] as const)("%s PNG has no white antialias fringe around glyph halos", (name) => {
+    const { document, object } = ringHaloDocument(name, "solid");
+    const source = exportDocumentToSvg(document).contents.replace(/viewBox="[^"]*"/,
+      `viewBox="${object.x - 20} ${object.y - 20} ${object.width + 40} ${object.height + 40}"`);
+    const dom = new JSDOM(source, { contentType: "image/svg+xml" });
+    const raster = new Resvg(source, { fitTo: { mode: "width", value: 1000 } }).render();
+    const withHalos = raster.pixels;
+    dom.window.document.querySelectorAll("text").forEach((text) => text.remove());
+    const background = new Resvg(dom.serialize(), { fitTo: { mode: "width", value: 1000 } }).render().pixels;
+    const rings = nativeMoleculeRings(object);
+    const factor = Math.min(raster.width / (object.width + 40), raster.height / (object.height + 40));
+    const offsetX = (raster.width - (object.width + 40) * factor) / 2;
+    const offsetY = (raster.height - (object.height + 40) * factor) / 2;
+    let sampled = 0, brightening = 0;
+    for (let i = 0; i < background.length; i += 4) {
+      // Fully covered blue pixels exclude bonds and polygon boundaries. A black glyph can only
+      // darken them; the old paper-then-colour glyph overpainting left a bright outline here.
+      if (background[i] !== 30 || background[i + 1] !== 136 || background[i + 2] !== 229) continue;
+      const neighbors = [-3, 3, -3 * raster.width, 3 * raster.width];
+      if (!neighbors.every((offset) => background[i + offset * 4] === 30
+        && background[i + offset * 4 + 1] === 136 && background[i + offset * 4 + 2] === 229)) continue;
+      sampled++;
+      const difference = Math.max(...[0, 1, 2].map((c) => withHalos[i + c]! - background[i + c]!));
+      if (difference <= 2) continue;
+      const x = ((i / 4 % raster.width) - offsetX) / factor + object.x - 20;
+      const y = (Math.floor(i / 4 / raster.width) - offsetY) / factor + object.y - 20;
+      // Patterns and the base polygon may sample a shared ring edge on opposite sides of a
+      // pixel. Exclude every polygon boundary, including internal edges of the blue box.
+      const onBoundary = rings.some((ring) => ring.points.some((a, index) => {
+        const b = ring.points[(index + 1) % ring.points.length]!;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(x - a.x - t * dx, y - a.y - t * dy) < 1;
+      }));
+      if (!onBoundary) brightening = Math.max(brightening, difference);
+    }
+    expect(sampled).toBeGreaterThan(100);
+    expect(brightening).toBeLessThanOrEqual(2);
+    dom.window.close();
+  });
   it("does not count the white page background as drawing geometry", async () => {
     const document = createEmptyDocument({ now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
@@ -258,46 +308,72 @@ describe("exportDocumentToPdf", () => {
     expect(new TextDecoder().decode(result.bytes.slice(0, 5))).toBe("%PDF-");
   });
 
-  it("exports the same notched ring path as SVG, with an even-odd PDF hole", async () => {
-    const object = filledRingFixture();
-    object.atoms[0]!.element = "O";
-    // Only ring atoms notch the fill, even when their authored label offset is inward.
-    Object.assign(object.atoms[1]!, { element: "N", labelLiteral: true, labelOffset: { x: -40, y: 40 } });
-    object.style.atomLabelBackgroundColor = "#ffffff";
-    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
-      op: "addObject", pageId: "page_001", object
-    }, { now: timestamp });
-    const pathD = String(ringFixtureFills(object)[0]!.attrs.d);
-    const faces = polygonPathFaces(pathD);
-    expect(faces).toHaveLength(2); // A corner bite plus an interior hole.
-    const svg = exportDocumentToSvg(document).contents;
-    expect(svg).toContain(`d="${pathD}" fill-rule="evenodd"`);
-    let parsedPathD: string | null = null;
-    const result = await withPdfDom((domParser) => {
-      const trackingParser = {
-        parseFromString: (source: string, mime: DOMParserSupportedType) => {
-          const parsed = domParser.parseFromString(source, mime);
-          const fill = parsed.querySelector('[data-molecule-fill-ring="true"]')!;
-          parsedPathD = fill.getAttribute("d");
-          expect(fill.getAttribute("fill-rule")).toBe("evenodd");
-          return parsed;
+  for (const name of ["pyridinium", "blue-box", "oxathiazinane"] as const) {
+    for (const style of ["light", "solid", "vivid"] as const) {
+      it(`${name} ${style}: PDF uses the SVG polygons and clipped halo strokes`, async () => {
+        const { document, object } = ringHaloDocument(name, style);
+        const rings = nativeMoleculeRings(object);
+        const svg = exportDocumentToSvg(document).contents;
+        const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+          domParser: { parseFromString(source: string, mime: DOMParserSupportedType) {
+            expect(source).toBe(svg);
+            const parsed = domParser.parseFromString(source, mime);
+            const fills = [...parsed.querySelectorAll("[data-molecule-fill-ring]")];
+            expect(fills.map((f) => f.getAttribute("d"))).toEqual(rings.map((r) => r.pathD));
+            expect(fills.every((f) => !f.hasAttribute("fill-rule"))).toBe(true);
+            const halos = [...parsed.querySelectorAll("[data-label-halo-ring]")];
+            expect(halos.length).toBeGreaterThan(0);
+            for (const halo of halos) {
+              const fill = fills.find((f) => f.getAttribute("data-ring-key") === halo.getAttribute("data-label-halo-ring"))!;
+              expect(halo.getAttribute("clip-path")).toMatch(/^url/);
+              expect(halo.querySelector("path")!.getAttribute("fill")).toBe(fill.getAttribute("fill"));
+            }
+            return parsed;
+          } } as DOMParser, compress: false
+        }));
+        const pdf = new TextDecoder("latin1").decode(result.bytes);
+        // Actual PDF polygon fills, clipping operators and stroked glyphs, not only input SVG.
+        expect((pdf.match(/\nW\n/g) ?? []).length).toBeGreaterThanOrEqual(rings.length);
+        expect(pdf).toContain("1 Tr");
+        expect(pdf).toContain("/SMask << /S /Luminosity");
+        const masks = [...pdf.matchAll(/\/Group << \/S \/Transparency \/CS \/DeviceGray >>\n\/Resources [^\n]+\n\/Length (\d+) >>\nstream\n/g)];
+        expect(masks.length).toBeGreaterThan(0);
+        for (const mask of masks) {
+          const start = mask.index! + mask[0].length;
+          const content = pdf.slice(start, start + Number(mask[1]));
+          expect(pdf.slice(start + Number(mask[1]))).toMatch(/^\nendstream/);
+          expect(content).toContain("1 G\n3.375 w"); // 4.5 px halo at 0.75 pt/px.
+          expect(content.match(/\bq\b/g)?.length).toBe(content.match(/\bQ\b/g)?.length);
+          expect(content).toContain("1 Tr");
         }
-      } as DOMParser;
-      return exportDocumentToPdf(document, { domParser: trackingParser, compress: false });
-    });
-    expect(parsedPathD).toBe(pathD);
-    const pdfText = new TextDecoder("latin1").decode(result.bytes);
-    // Inspect actual PDF drawing operators, not just the SVG handed to the writer.
-    const filledPaths = [...pdfText.matchAll(/((?:[-\d.]+ [-\d.]+ [ml]\n|h\n)+)f\*/g)];
-    const vertices = faces.flat();
-    const ringPath = filledPaths.find((match) => (match[1]!.match(/[ml]\n/g) ?? []).length === vertices.length);
-    expect(ringPath, "PDF must emit the notched compound path with the even-odd f* operator").toBeDefined();
-    const pdfVertices = [...ringPath![1]!.matchAll(/([-\d.]+) ([-\d.]+) [ml]/g)];
-    pdfVertices.forEach((vertex, index) => {
-      expect(Number(vertex[1])).toBeCloseTo(vertices[index]!.x, 3);
-      expect(Number(vertex[2])).toBeCloseTo(vertices[index]!.y, 3);
-    });
-    expect((ringPath![1]!.match(/h\n/g) ?? []).length).toBe(faces.length);
+        const paths = [...pdf.matchAll(/((?:[-\d.]+ [-\d.]+ [ml]\n|h\n)+)f(?:\n|$)/g)].map((m) => m[1]!);
+        for (const ring of rings) {
+          const found = paths.some((path) => {
+            const vertices = [...path.matchAll(/([-\d.]+) ([-\d.]+) [ml]/g)];
+            return vertices.length === ring.points.length && vertices.every((v, i) =>
+              Math.abs(Number(v[1]) - ring.points[i]!.x) < 0.001 && Math.abs(Number(v[2]) - ring.points[i]!.y) < 0.001);
+          });
+          expect(found, ring.ringKey).toBe(true);
+        }
+      });
+    }
+  }
+
+  it.each(["linear-gradient", "radial-gradient"] as const)("paints %s halo strokes with a PDF pattern in the same coordinate space", async (kind) => {
+    const { document, object } = ringHaloDocument("pyridinium", "solid");
+    const ring = nativeMoleculeRings(object)[0]!;
+    object.rotation = 27;
+    object.style.ringStyles = { [ring.ringKey]: { fillOpacity: 0.25, fillPaint: {
+      kind, units: "object", x1: 0, y1: 0, x2: 1, y2: 1, cx: 0.5, cy: 0.5, r: 0.5,
+      stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }]
+    } } };
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const pdf = new TextDecoder("latin1").decode(result.bytes);
+    expect(pdf).toContain("/PatternType 1");
+    expect(pdf).toContain("/SMask << /S /Luminosity");
+    expect(pdf).toMatch(/\/Pattern cs\n\/P\d+ scn/);
+    expect(pdf).toContain(kind === "linear-gradient" ? "/ShadingType 2" : "/ShadingType 3");
+    expect(pdf).toContain("1 Tr");
   });
 
   it("uses the ChemDraft page dimensions for the PDF media box", async () => {
