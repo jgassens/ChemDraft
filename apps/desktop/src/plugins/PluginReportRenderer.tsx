@@ -129,22 +129,31 @@ function PluginReportSectionView({ section, copyText, onAction }: {
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
 }
 
-export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage }: {
+export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage, messageResetKey, requestPending = false }: {
   section: Extract<PluginPanelSection, { kind: "prompt" }>;
   onAction?: PluginPanelActionHandler;
   /** Overlays retain the choice locally and include it with Send as well as select actions. */
   includeSelected?: boolean;
   /** Overlay submissions stay editable and explain why a running request cannot accept Send. */
   busyMessage?: string;
+  /** Host document state; stale busy refusals must not travel to an edited or different document. */
+  messageResetKey?: unknown;
+  /** Host command lifetime when acceptance returns before execution completes. */
+  requestPending?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
   const [pending, setPending] = useState(false);
+  const clearBusyMessage = () => setMessage(current => current === busyMessage ? undefined : current);
+  useEffect(() => { if (!pending) clearBusyMessage(); }, [pending]);
+  useEffect(() => { if (!section.disabled) clearBusyMessage(); }, [section.disabled]);
+  useEffect(() => { if (!requestPending) clearBusyMessage(); }, [requestPending]);
+  useEffect(clearBusyMessage, [messageResetKey]);
   // React state alone does not guard two events delivered before the next render.
   const submitting = useRef(false);
   const [selected, setSelected] = useState(section.select?.value);
   useEffect(() => setSelected(section.select?.value), [section.select?.value]);
-  const busy = section.disabled || pending;
+  const busy = section.disabled || pending || requestPending;
   const overLimit = draft.length > section.maxLength;
   const lengthMessage = overLimit
     ? `Your request is ${draft.length.toLocaleString("en-US")} characters; the limit is ${section.maxLength.toLocaleString("en-US")}. Shorten it to send.`
@@ -152,7 +161,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   const canAttempt = !!onAction && draft.trim().length > 0;
   const canSubmit = canAttempt && !busy && !overLimit;
   const submit = async (): Promise<void> => {
-    if (section.disabled || pending || submitting.current) {
+    if (busy || submitting.current) {
       if (busyMessage) setMessage(busyMessage);
       return;
     }
@@ -202,7 +211,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
         <span>{select.label}</span>
         <select
           value={includeSelected ? selected : select.value}
-          disabled={section.disabled || !onAction || pending}
+          disabled={busy || !onAction}
           onChange={(event) => {
             if (!onAction) return;
             const value = event.target.value;

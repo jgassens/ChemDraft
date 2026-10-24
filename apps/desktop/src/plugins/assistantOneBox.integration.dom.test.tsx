@@ -312,7 +312,7 @@ function expectCodexReply(): void {
   expect(transcript.querySelector('[data-role="user"] span')!.textContent).toBe(prompt);
   expect(transcript.querySelector('[data-role="assistant"] span')!.textContent).toBe(reply.replaceAll("`", ""));
   expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
-  expect(overlay().querySelector("textarea")!.compareDocumentPosition(transcript) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(transcript.compareDocumentPosition(overlay().querySelector("textarea")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(status().textContent).toBe("Codex (OpenAI) replied — no changes to the page");
   expect(transcript.textContent).not.toMatch(/Done\.|Done —|replied — no changes to the page/i);
   expectCodexChoice();

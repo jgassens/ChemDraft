@@ -8,6 +8,7 @@ import { pluginPanelWindowId, requestPluginPanelAction } from "./plugins/panelBr
 import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined }));
@@ -225,6 +226,70 @@ describe("MainWindow canvas overlays", () => {
     } finally { await act(async () => finish?.()); }
   });
 
+  it.each(["Finish setup", "New conversation", "Stop"])("restores focus after the actual %s command finishes, despite canvas handback", async label => {
+    const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
+    await act(async () => api.setContent({ overlayId, sections: [
+      { kind: "actions", id: "actions", buttons: [{ id: "action", label, commandId: selectId }] }
+    ] }));
+    let finish!: () => void;
+    select.mockImplementationOnce(async context => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Ready" }] });
+      container.querySelector<HTMLElement>(".canvas-region")!.focus();
+    });
+    const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+    await act(async () => { button.focus(); button.click(); });
+    expect(select).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(button);
+    await act(async () => finish());
+    expect(button.isConnected).toBe(false);
+    const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+    expect(document.activeElement).toBe(textarea);
+    const activeTool = container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool");
+    await act(async () => {
+      for (const key of "draw aspirin") document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      input("draw aspirin");
+    });
+    expect(textarea.value).toBe("draw aspirin");
+    expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(activeTool);
+  });
+
+  it("allows Stop during a running Send and returns focus when Stop completes", async () => {
+    const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
+    let finish!: () => void;
+    submit.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    await act(async () => input("Long request")); await send();
+    await act(async () => api.setContent({ overlayId, sections: [
+      { kind: "actions", id: "actions", buttons: [{ id: "stop", label: "Stop", commandId: selectId }] }
+    ] }));
+    select.mockImplementationOnce(async context => {
+      finish();
+      await context.overlays!.setContent({ overlayId, sections: [] });
+      container.querySelector<HTMLElement>(".canvas-region")!.focus();
+    });
+    const stop = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+    await act(async () => { stop.focus(); stop.click(); });
+    expect(select).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(container.querySelector(".plugin-canvas-overlay textarea"));
+  });
+
+  it("clears busy refusals on draft edits and document changes without discarding the next draft", async () => {
+    let finish!: () => void;
+    submit.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      await act(async () => input("Long request")); await send();
+      await act(async () => input("Next request")); await send();
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")).not.toBeNull();
+      await act(async () => input("Changed draft"));
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")).toBeNull();
+      await send();
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")).not.toBeNull();
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "document.new" } })); });
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")).toBeNull();
+      expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("Changed draft");
+    } finally { await act(async () => finish?.()); }
+  });
+
   it.each(["Enter", "Send"])("refuses a second %s while the first request runs and keeps its draft without queueing", async method => {
     let finish!: () => void;
     submit.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
@@ -241,6 +306,7 @@ describe("MainWindow canvas overlays", () => {
       expect(textarea.value).toBe("Next request"); expect(textarea.disabled).toBe(false);
       await act(async () => finish());
       expect(submit).toHaveBeenCalledOnce();
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")).toBeNull();
       expect(textarea.value).toBe("Next request"); expect(textarea.disabled).toBe(false);
       await send();
       expect(submit).toHaveBeenCalledTimes(2);

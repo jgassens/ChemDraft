@@ -237,20 +237,25 @@ On both platforms, stress the assistant's one-box controls:
 - With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
   header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
   the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
-  double-click the header to restore the default height (or the available height in a small window).
+  double-click the header to restore the 360 px default height, showing about eight transcript lines
+  above the composer (or the available height in a small window).
 - Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
   Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
   without starting a request. Shorten to 4,000 and send; the complete shortened draft is submitted.
   Check the same behavior in a plugin panel prompt.
 - During a slow request, type another draft and try Enter and Send. Both show “Wait for the current
   request to finish, or press Stop.” The draft stays editable and no request runs automatically
-  after the first finishes. Stop stays available; after completion, explicitly Send the kept draft.
+  after the first finishes. The refusal hint clears when the request ends, when the plugin re-enables
+  Send, when the draft changes, and when the document changes. Stop stays available; after completion,
+  explicitly Send the kept draft.
 - Relaunch, then expand the assistant icon before using its menu or Send. Its saved AI heading and
   status (or setup content on first use) appear immediately. Collapse/re-expand without resetting
   setup or conversation; initialization runs again only if plugin content is absent.
-- Click New conversation and other assistant action buttons, wait for completion, then type:
-  typing goes into the prompt. Move focus to the drawing before an action completes and verify
-  completion leaves focus there.
+- Click Finish setup, New conversation, Stop, and other assistant action buttons, wait for completion,
+  then type “draw aspirin”: typing goes into the prompt and the drawing tool does not change, even
+  when the activated button disappeared. Click the drawing or Tab to another control before an action
+  completes and verify completion leaves focus there. Tab to a still-mounted action without activating
+  it and verify a content update keeps focus on that button.
 - The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
   its position remains remembered and its hover/focus feedback still works.
 
@@ -265,8 +270,10 @@ On both platforms, insert an oversized labelled molecule, a tall text block, a r
 that wraps past the bottom: one document-owned native box names the item and new page size;
 Enlarge page preserves molecule size and grows the page, with one Undo/Redo restoring page and
 objects together. Don't enlarge omits non-fitting items and their captions but keeps fitting ones;
-the assistant reports the refusal. Fitting calls never prompt. Stop while the box is open, then
-click Enlarge page: nothing from that pending call appears (the native box may require dismissal).
+the assistant reports the refusal. Fitting calls never prompt. Esc or Return answers Don't enlarge.
+Enlarge page must be chosen explicitly. The native box is modal over the document, so its overlay
+Stop button cannot be clicked until the box closes. On macOS the additional Cancel button also
+answers Don't enlarge.
 
 While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
 Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running

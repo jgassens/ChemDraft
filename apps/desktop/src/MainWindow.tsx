@@ -1615,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.10.41-codex";
+const CURRENT_BUILD_STAMP = "10.24.11.35-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -10435,6 +10435,7 @@ export function MainWindow({
   // suppresses obsolete status updates while the queue guarantees the newest requested run settles
   // last; ordinary commands remain serialized only with repeats of that same command.
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
+  const [pendingPluginCommands, setPendingPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
   // A refused analyzer run opens no report window; this notice says why (see AnalyzerNotice).
   const [analyzerNotice, setAnalyzerNotice] = useState<AnalyzerNotice | undefined>(undefined);
@@ -11132,6 +11133,7 @@ export function MainWindow({
       const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
       pluginCommandGenerationsRef.current.set(queueKey, generation);
       const previous = pluginCommandQueuesRef.current.get(queueKey) ?? Promise.resolve();
+      setPendingPluginCommands(current => new Set(current).add(queueKey));
       const run = previous
         .catch(() => undefined)
         .then(async () => {
@@ -11166,6 +11168,9 @@ export function MainWindow({
         if (pluginCommandQueuesRef.current.get(queueKey) === tracked) {
           pluginCommandQueuesRef.current.delete(queueKey);
           pluginCommandGenerationsRef.current.delete(queueKey);
+          setPendingPluginCommands(current => {
+            const next = new Set(current); next.delete(queueKey); return next;
+          });
         }
       });
       pluginCommandQueuesRef.current.set(queueKey, tracked);
@@ -11237,9 +11242,12 @@ export function MainWindow({
     if (request.control === "prompt" && pluginCommandQueuesRef.current.has(queueKey)) {
       return { ok: false, message: OVERLAY_BUSY_MESSAGE };
     }
-    // Acknowledge acceptance immediately so the composer clears this draft. The command queue
-    // retains the running request and refuses another Send until it finishes.
-    return acceptPluginInput(resolved.commandId, parsed.data);
+    // Send acknowledges acceptance immediately so the next draft stays editable. Action buttons
+    // instead settle with their command: focus recovery must cover its final content replacement,
+    // including Stop. Different commands still run independently, so Stop never waits for Send.
+    const accepted = await acceptPluginInput(resolved.commandId, parsed.data);
+    if (accepted.ok && request.control === "button") await pluginCommandQueuesRef.current.get(queueKey);
+    return accepted;
   };
 
   // Keep one subscription; identity comes from native IPC or the inline panel we rendered,
@@ -20133,6 +20141,8 @@ export function MainWindow({
               transcriptSource={pluginRuntime.runtime}
               contentSource={pluginRuntime.runtime}
               openSource={pluginRuntime.runtime}
+              requestPending={pendingPluginCommands.has(`command:${overlay.commandId}`)}
+              documentState={document}
               onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
               onInitialize={openCommandId ? async () => {
                 const queueKey = `command:${openCommandId}`;

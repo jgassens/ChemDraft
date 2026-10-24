@@ -36,7 +36,10 @@ For `insert_structures`, `insert_reaction`, and `insert_text`, if an item is too
 wrapped set runs off the bottom, the host computes one enlarged page size for the entire call.
 It asks once in a native message box owned by the document window on macOS and Windows, naming
 the item (using its label when available) and the proposed size in points: **Enlarge page** /
-**Don't enlarge**. Internal CSS-pixel sizes are converted to physical points for this message.
+**Don't enlarge**. Return defaults to **Don't enlarge**, and Escape also declines. Enlarge page
+must be chosen explicitly. The native dialog library requires a literal **Cancel** button for Escape
+on macOS, so that platform also shows Cancel with the same decline outcome. Internal CSS-pixel sizes
+are converted to physical points for this message.
 Approval adds a host-issued `updatePageLayout` alongside the object patches inside the same
 assistant request transaction. One Undo restores both page and objects; Redo restores both without
 asking again. Plugins and the AI do not acquire a page-layout write capability.
@@ -48,12 +51,13 @@ The host pauses its preparation deadlines while awaiting the answer, for at most
 No answer within that time declines enlargement with
 `reason: "declined: no answer to the enlarge-page question within 5 minutes"`; fitting items are
 still retained, and a later answer cannot insert the omitted items or enlarge the page.
-Stop ignores a late answer and draws none of that call's pending items. Write calls have a
+Cancellation by the host ignores a late answer and draws none of that call's pending items. The
+document-owned box is modal, so the overlay's Stop button is unavailable while it is open. Write calls have a
 480-second MCP transport and client budget, covering preparation, the human decision and the write
 gate. Transport expiry sends cancellation and likewise ignores the pending answer.
 A document edit while confirmation is open invalidates the plan.
 The native API cannot programmatically close an open message box, so an ignored box may remain
-until dismissed. On macOS the custom **Don't enlarge** title has no Escape binding; click the button.
+until dismissed; Escape and Return both dismiss with the safe decline answer.
 This growth confirmation applies only to assistant insert tools, not paste, Insert Name, templates,
 or import. It replaces the former off-page placement warning.
 

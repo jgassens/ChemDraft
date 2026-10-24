@@ -31,7 +31,9 @@ describe("nativePrompt", () => {
       plugin.message.mockResolvedValue(answer);
       expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
       expect(plugin.message).toHaveBeenLastCalledWith(growth.message, {
-        title: growth.title, kind: "info", buttons: { ok: "Enlarge page", cancel: "Don't enlarge" }
+        title: growth.title, kind: "info", buttons: platform === "macos"
+          ? { yes: "Don't enlarge", no: "Enlarge page", cancel: "Cancel" }
+          : { ok: "Don't enlarge", cancel: "Enlarge page" }
       });
     }
     plugin.owner = "plugin-panel";
@@ -39,6 +41,19 @@ describe("nativePrompt", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await nativePrompt(growth, async () => "decline", undefined, undefined, platform)).toBe("decline");
     expect(plugin.message).not.toHaveBeenCalled();
+  });
+
+  it.each(["macos", "windows"] as const)("declines enlargement on Return and Escape, requiring an explicit Enlarge page choice on %s", async platform => {
+    const buttons = nativePromptButtons(growth, platform);
+    // rfd makes the first custom button the Return default on both hosts. AppKit only binds
+    // Escape to the literal Cancel title; Windows returns IDCANCEL (the string Cancel).
+    const returnLabel = "yes" in buttons ? buttons.yes : buttons.ok;
+    expect(returnLabel).toBe("Don't enlarge");
+    if (platform === "macos") expect(Object.values(buttons)).toContain("Cancel");
+    for (const [answer, expected] of [[returnLabel, "decline"], ["Cancel", "decline"], ["Enlarge page", "enlarge"]]) {
+      plugin.message.mockResolvedValue(answer);
+      expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
+    }
   });
 
   it("ignores approval after cancellation while the native message box is open", async () => {

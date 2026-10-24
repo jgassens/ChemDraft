@@ -9,7 +9,8 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
  * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
+ * "Cancel". A page-growth question additionally offers "Don't enlarge" as its Return default;
+ * its macOS Cancel button means the same safe answer. A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -40,7 +41,8 @@ export function setNativePromptProvider(next: NativePromptProvider): () => void 
   return () => { provider = previous; };
 }
 
-export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogCustomButtons {
+export function nativePromptButtons(prompt: NativePromptOptions,
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
   const { choices } = prompt;
   const cancel = choices.find((choice) => choice.cancel);
   if (!cancel || choices.filter((choice) => choice.cancel).length !== 1 ||
@@ -55,10 +57,15 @@ export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogC
     if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
     return { ok: cancel.label };
   }
-  // The owner explicitly chose this two-button page-growth wording. Unlike Cancel, its custom
-  // title has no AppKit Escape binding; OS dismissals and aborted runs still fail closed.
-  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL &&
-      !(prompt.owner === "document" && choices.length === 2 && cancel.label === "Don't enlarge")) {
+  // The owner chose this page-growth wording. Preserve its safe default and Escape behavior
+  // using the actual rfd contracts: AppKit needs a literal Cancel button; Windows returns
+  // IDCANCEL independently of custom labels. Only an explicit Enlarge page click approves.
+  if (prompt.owner === "document" && choices.length === 2 && cancel.label === "Don't enlarge") {
+    return platform === "macos"
+      ? { yes: cancel.label, no: actions[0]!.label, cancel: NATIVE_PROMPT_CANCEL_LABEL }
+      : { ok: cancel.label, cancel: actions[0]!.label };
+  }
+  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
   // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
@@ -80,7 +87,7 @@ export async function nativePrompt(
   onShowing?: () => void | Promise<void>,
   platform: ShortcutPlatform = detectDesktopShortcutPlatform()
 ): Promise<string> {
-  const buttons = nativePromptButtons(prompt);
+  const buttons = nativePromptButtons(prompt, platform);
   const cancel = prompt.choices.find((choice) => choice.cancel)!;
   if (signal?.aborted) return cancel.id;
   const response = showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);

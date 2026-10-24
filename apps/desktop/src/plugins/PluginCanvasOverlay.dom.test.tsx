@@ -38,6 +38,8 @@ let showPanelLink: boolean | undefined;
 let panelTitle: string | undefined;
 let platform: ShortcutPlatform;
 let maxLength: number;
+let requestPending: boolean;
+let documentState: object;
 let contentSource: ComponentProps<typeof PluginCanvasOverlay>["contentSource"];
 class CanvasOverlayStatusSource {
   private readonly statuses = new Map<string, string>();
@@ -96,6 +98,7 @@ async function render(windowId = "main"): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={{ ...overlay, showPanelLink, prompt: { ...overlay.prompt, maxLength } }} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId={windowId} shortcutPlatform={platform}
+    requestPending={requestPending} documentState={documentState}
     statusSource={statusSource}
     transcriptSource={transcriptSource}
     contentSource={contentSource ?? contentRuntime} openSource={contentRuntime}
@@ -108,7 +111,7 @@ function widget(): HTMLDivElement { return container.querySelector(".plugin-canv
 
 describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
-    maxLength = 20; contentSource = undefined;
+    maxLength = 20; contentSource = undefined; requestPending = false; documentState = {};
     showPanelLink = undefined;
     contentRuntime = createPluginRuntime({ getActiveDocument: () => undefined });
     contentRuntime.registerPlugin({ id: "widget", name: "Widget", version: "0", apiVersion: "^0.1.12", entry: "test.js",
@@ -164,9 +167,9 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().style.height).toBe("272px");
     expect(widget().style.top).toBe("104px");
     await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
-    expect(widget().style.height).toBe("220px");
-    expect(widget().style.top).toBe("156px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("220");
+    expect(widget().style.height).toBe("272px");
+    expect(widget().style.top).toBe("104px");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
     viewportHeight = 300;
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.height).toBe("172px");
@@ -204,8 +207,8 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => { pointer(header, "pointerdown", 300, 256); pointer(header, "pointermove", 300, 356); pointer(header, "pointerup", 300, 356); });
     expect(widget().style.height).toBe("420px");
     await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
-    expect(widget().style.height).toBe("220px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("220");
+    expect(widget().style.height).toBe("360px");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("360");
   });
 
   it.each(["macos", "windows"] as const)("refuses concurrent or plugin-disabled sends inline without losing focus or drafts on %s", async targetPlatform => {
@@ -227,6 +230,7 @@ describe("PluginCanvasOverlay", () => {
     expect(document.activeElement).toBe(textarea);
     await act(async () => finish({ ok: true }));
     expect(textarea.value).toBe("Next");
+    expect(container.querySelector("[role=alert]")).toBeNull();
     // The plugin owns live prompt state; host content must update the one composer in place.
     await act(async () => contentRuntime.host.createCommandContext("widget").overlays!.setContent({
       overlayId: overlay.id, sections: [], prompt: { disabled: true }
@@ -242,12 +246,32 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => contentRuntime.host.createCommandContext("widget").overlays!.setContent({
       overlayId: overlay.id, sections: []
     }));
+    expect(container.querySelector("[role=alert]")).toBeNull();
     await act(async () => enter());
     expect(action).toHaveBeenCalledTimes(2);
     expect(textarea.value).toBe("");
   });
 
-  it.each(["macos", "windows"] as const)("returns action focus to the composer only while still inside the overlay on %s", async targetPlatform => {
+  it.each(["macos", "windows"] as const)("clears a busy hint independently on host completion, prompt re-enable, or document change on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => enterText("Next request"));
+    for (const reason of ["host completion", "prompt re-enabled", "document changed"]) {
+      requestPending = true; await render();
+      await act(async () => api.setContent({ overlayId: overlay.id, sections: [], prompt: { disabled: true } }));
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      expect(container.querySelector("[role=alert]")?.textContent).toBe("Wait for the current request to finish, or press Stop.");
+      if (reason === "host completion") { requestPending = false; await render(); }
+      else if (reason === "prompt re-enabled") await act(async () => api.setContent({ overlayId: overlay.id, sections: [] }));
+      else { documentState = {}; await render(); }
+      expect(container.querySelector("[role=alert]")).toBeNull();
+      expect(textarea.value).toBe("Next request");
+      expect(action).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["macos", "windows"] as const)("returns action focus unless the user clicks outside the overlay on %s", async targetPlatform => {
     platform = targetPlatform; await render(); await expand();
     await act(async () => { await contentRuntime.host.createCommandContext("widget").overlays!.setContent({ overlayId: overlay.id, sections: [
       { kind: "actions", id: "primary", buttons: [{ id: "new", label: "New conversation", commandId: overlay.commandId }] },
@@ -259,10 +283,10 @@ describe("PluginCanvasOverlay", () => {
       action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
       await act(async () => { button.focus(); button.click(); });
       expect(document.activeElement).toBe(button);
-      await act(async () => finish({ ok: true }));
+      await act(async () => { drawing.focus(); finish({ ok: true }); });
       expect(document.activeElement).toBe(container.querySelector("textarea"));
       action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-      await act(async () => { button.focus(); button.click(); drawing.focus(); });
+      await act(async () => { button.focus(); button.click(); pointer(drawing, "pointerdown", 0, 0); drawing.focus(); });
       await act(async () => finish({ ok: true }));
       expect(document.activeElement).toBe(drawing);
     }
@@ -281,7 +305,8 @@ describe("PluginCanvasOverlay", () => {
     ] });
     await act(async () => update("Running"));
     const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
-    button.focus();
+    container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    button.focus(); // jsdom does not perform Tab's default focus navigation.
     await act(async () => update("Still running"));
     expect(button.isConnected).toBe(true);
     expect(document.activeElement).toBe(button);
@@ -336,6 +361,74 @@ describe("PluginCanvasOverlay", () => {
       await act(async () => finish({ ok: true }));
       expect(document.activeElement).toBe(expected);
     }
+  });
+
+  it.each(["macos", "windows"] as const)("restores removed actions despite a programmatic canvas focus grab on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    for (const label of ["Finish setup", "New conversation", "Stop"]) {
+      for (const focusesButton of [true, false]) {
+        await act(async () => api.setContent({ overlayId: overlay.id, sections: [
+          { kind: "actions", id: "primary", buttons: [{ id: "action", label, commandId: overlay.commandId }] }
+        ] }));
+        let finish!: (result: { ok: true }) => void;
+        action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+        const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+        await act(async () => {
+          pointer(button, "pointerdown", 0, 0);
+          if (focusesButton) button.focus(); // macOS pointer activation need not focus a button.
+          button.click();
+        });
+        await act(async () => {
+          void api.setContent({ overlayId: overlay.id, sections: [{ kind: "text", body: "Ready" }] });
+          drawing.focus(); // Host/native focus fallback, with no user intent to leave.
+        });
+        expect(button.isConnected).toBe(false);
+        expect(document.activeElement).toBe(container.querySelector("textarea"));
+        await act(async () => { drawing.focus(); finish({ ok: true }); });
+        expect(document.activeElement).toBe(container.querySelector("textarea"));
+      }
+    }
+  });
+
+  it.each(["macos", "windows"] as const)("respects keyboard focus moves during actions and after completion on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    for (const finishBeforeTab of [false, true]) {
+      const sections = [{ kind: "actions" as const, id: "primary", buttons: [
+        { id: "new", label: "New conversation", commandId: overlay.commandId },
+        { id: "setup", label: "Setup", commandId: overlay.commandId }
+      ] }];
+      await act(async () => api.setContent({ overlayId: overlay.id, sections }));
+      let finish!: (result: { ok: true }) => void;
+      action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      const [button, destination] = container.querySelectorAll<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button");
+      await act(async () => { button!.focus(); button!.click(); });
+      if (finishBeforeTab) await act(async () => finish({ ok: true }));
+      await act(async () => {
+        document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+        destination!.focus();
+        void api.setContent({ overlayId: overlay.id, sections: [sections[0]!, { kind: "text", body: "Updated" }] });
+      });
+      if (!finishBeforeTab) await act(async () => finish({ ok: true }));
+      expect(document.activeElement).toBe(destination);
+    }
+  });
+
+  it.each(["macos", "windows"] as const)("defaults to room for eight transcript lines and resets within the viewport cap on %s", async targetPlatform => {
+    platform = targetPlatform;
+    await act(async () => root.unmount());
+    window.localStorage.removeItem(`${storageKey}:height`);
+    viewportHeight = 800; root = createRoot(container); await render(); await expand();
+    expect(widget().style.height).toBe("360px");
+    expect(widget().style.maxHeight).toBe("672px");
+    expect(container.querySelector('[role="log"]')!.compareDocumentPosition(container.querySelector("textarea")!)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const header = container.querySelector(".plugin-canvas-overlay-header")!;
+    await act(async () => { pointer(header, "pointerdown", 300, 416); pointer(header, "pointermove", 300, 516); pointer(header, "pointerup", 300, 516); });
+    expect(widget().style.height).toBe("260px");
+    await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(widget().style.height).toBe("360px");
   });
 
   it("resumes following replies after the reader submits their own prompt", async () => {
@@ -471,13 +564,13 @@ describe("PluginCanvasOverlay", () => {
     expect(container.querySelector("textarea")!.value).toBe("Draft");
   });
 
-  it.each(["macos", "windows"] as const)("keeps a compact default, grows upward, clamps and remembers height on %s", async targetPlatform => {
+  it.each(["macos", "windows"] as const)("shrinks below the default, grows upward, clamps and remembers height on %s", async targetPlatform => {
     platform = targetPlatform; await render(); await expand();
-    expect(widget().style.height).toBe("220px");
+    expect(widget().style.height).toBe("272px");
     expect(container.querySelector("textarea")!.rows).toBe(1);
     const handle = container.querySelector(".plugin-canvas-overlay-resize")!;
-    const bottom = Number.parseFloat(widget().style.top) + 220;
-    await act(async () => { pointer(handle, "pointerdown", 300, 156); pointer(handle, "pointermove", 300, 116); });
+    const bottom = Number.parseFloat(widget().style.top) + 272;
+    await act(async () => { pointer(handle, "pointerdown", 300, 104); pointer(handle, "pointermove", 300, 116); });
     expect(widget().style.height).toBe("260px");
     expect(Number.parseFloat(widget().style.top) + 260).toBe(bottom);
     await act(async () => pointer(handle, "pointermove", 300, -1000));
@@ -489,7 +582,7 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
     expect(widget().style.height).toBe("272px");
     await act(async () => root.unmount()); root = createRoot(container); await render("second-window"); await expand();
-    expect(widget().style.height).toBe("220px");
+    expect(widget().style.height).toBe("272px");
     expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
     await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
     viewportHeight = 300;
@@ -530,7 +623,7 @@ describe("PluginCanvasOverlay", () => {
     expect(transcriptSource.subscriberCount).toBe(1);
     await act(async () => root.unmount()); expect(transcriptSource.subscriberCount).toBe(0);
     root = createRoot(container); await render("second-window"); await expand();
-    expect(widget().style.height).toBe("220px");
+    expect(widget().style.height).toBe("272px");
   });
 
   it("starts collapsed at the declared corner, expands on click, and Esc restores drawing focus and preserves the draft", async () => {
@@ -577,7 +670,7 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
     await expand(); expect(widget().style.left).toBe("120px"); expect(widget().style.top).toBe("104px");
     await act(async () => root.unmount()); root = createRoot(container); await render("second-window");
-    await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
+    await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
     expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 120, y: 104 });
   });
 
@@ -597,7 +690,7 @@ describe("PluginCanvasOverlay", () => {
       pointer(icon, "pointerup", 252, 141); icon.click();
     });
     expect(widget().dataset.expanded).toBe("true");
-    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
+    expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("104px");
     const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 250, 140); pointer(header, "pointermove", 46, 44); pointer(header, "pointerup", 46, 44); });
     expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 236, y: 104 });
@@ -717,7 +810,7 @@ describe("PluginCanvasOverlay", () => {
     window.localStorage.setItem(expandedKey, "not JSON");
     window.localStorage.setItem(`${storageKey}:height`, '"invalid"');
     root = createRoot(container); await render(); expect(widget().style.left).toBe("536px");
-    await expand(); expect(widget().style.height).toBe("220px");
+    await expand(); expect(widget().style.height).toBe("272px");
     await act(async () => root.unmount());
     vi.spyOn(window.localStorage, "getItem").mockImplementation(() => { throw new Error("Storage blocked"); });
     vi.spyOn(window.localStorage, "setItem").mockImplementation(() => { throw new Error("Storage blocked"); });

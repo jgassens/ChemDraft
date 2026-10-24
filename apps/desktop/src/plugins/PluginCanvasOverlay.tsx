@@ -15,6 +15,8 @@ type Positions = Record<Mode, Position | null>;
 const ICON_SIZE = 36;
 const DRAG_THRESHOLD = 4;
 const MIN_CHAT_HEIGHT = 220;
+// Leave about eight 16px transcript lines above the composer and primary controls.
+const DEFAULT_CHAT_HEIGHT = 360;
 const PALETTE_CLEARANCE = 72;
 
 function readHeight(key: string): number {
@@ -22,7 +24,7 @@ function readHeight(key: string): number {
     const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
     if (typeof saved === "number" && Number.isFinite(saved) && saved >= 0) return saved;
   } catch { /* Optional persistence. */ }
-  return MIN_CHAT_HEIGHT;
+  return DEFAULT_CHAT_HEIGHT;
 }
 
 function readPosition(key: string): Position | null {
@@ -101,7 +103,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   viewportRef: RefObject<HTMLElement | null>;
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
@@ -124,6 +126,10 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   onFocusDrawing: () => void;
   windowId?: string;
   shortcutPlatform?: ShortcutPlatform;
+  /** The host acknowledges Send before its command completes. */
+  requestPending?: boolean;
+  /** A document edit or switch invalidates an earlier busy refusal, without discarding the draft. */
+  documentState?: unknown;
 }) {
   const storageKey = `chemdraft:canvas-overlay:${windowId}:${overlay.id}`;
   const [height, setHeight] = useState(() => readHeight(`${storageKey}:height`));
@@ -150,37 +156,44 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const elementRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnExpandRef = useRef(false);
-  const activatedActionRef = useRef<Element | null>(null);
+  const clickedActionRef = useRef<Element | null>(null);
+  const activatedActionRef = useRef<{ button: Element | null } | null>(null);
   const expandedSizeRef = useRef({ width: 300, height: 220 });
   const anchorNextExpansionRef = useRef(false);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; height: number; bottom: number } | null>(null);
   useEffect(() => {
-    const trackFocus = (event: FocusEvent) => {
-      // Removing the focused action can leave body active without a blur/focus event.
-      if (event.target === document.body) return;
-      if (event.target !== activatedActionRef.current) activatedActionRef.current = null;
-    };
     const trackPointer = (event: globalThis.PointerEvent) => {
-      // Clicking a nonfocusable canvas is a deliberate departure too.
-      if (event.target instanceof Node && !elementRef.current?.contains(event.target)) activatedActionRef.current = null;
+      // A later click (including on a nonfocusable canvas) is user intent. Native/programmatic
+      // focus handbacks are not. A new action will arm its own token after this pointerdown.
+      if (event.target !== activatedActionRef.current?.button) activatedActionRef.current = null;
+    };
+    const trackKeyboard = (event: globalThis.KeyboardEvent) => {
+      if (!event.isComposing && ["Tab", "F6", "Escape"].includes(event.key)) activatedActionRef.current = null;
+    };
+    const trackFocus = () => {
+      // Removal can trigger a later host/native canvas focus handback as well as body's fallback.
+      // Only an activated, removed control owns this recovery; a merely tabbed-to control does not.
+      restoreActionFocus(true);
     };
     document.addEventListener("focusin", trackFocus, true);
     document.addEventListener("pointerdown", trackPointer, true);
+    document.addEventListener("keydown", trackKeyboard, true);
     return () => {
       document.removeEventListener("focusin", trackFocus, true);
       document.removeEventListener("pointerdown", trackPointer, true);
+      document.removeEventListener("keydown", trackKeyboard, true);
+      activatedActionRef.current = null;
     };
   }, []);
   const restoreActionFocus = (replacementOnly = false) => {
     const element = elementRef.current;
-    const button = activatedActionRef.current;
-    const active = document.activeElement;
-    if (button && element?.dataset.expanded === "true" && !element.hidden
-      && (!replacementOnly || !button.isConnected)
-      && (active === document.body || (active && !active.isConnected) || (!replacementOnly && active === button))) {
-      element.querySelector("textarea")?.focus({ preventScroll: true });
+    const action = activatedActionRef.current;
+    if (action && element?.dataset.expanded === "true" && !element.hidden
+      && (!replacementOnly || (action.button && !action.button.isConnected))) {
+      const textarea = element.querySelector("textarea");
+      if (textarea !== document.activeElement) textarea?.focus({ preventScroll: true });
     }
   };
   // Content updates restore only a removed, activated button; mounted controls retain focus.
@@ -348,7 +361,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   };
   const resetHeight = () => {
     const bounds = drawingArea();
-    const nextHeight = Math.min(MIN_CHAT_HEIGHT, Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE));
+    const nextHeight = Math.min(DEFAULT_CHAT_HEIGHT, Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE));
     const bottom = Math.min(bounds.bottom, (position?.y ?? bounds.top) + expandedSizeRef.current.height);
     expandedSizeRef.current.height = nextHeight;
     setAutoFitContent(false);
@@ -366,18 +379,17 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     finally { initializing.current = false; }
   };
   const runAction: PluginPanelActionHandler = async request => {
-    if (request.control === "button") {
-      // Merely tabbing to an action must not arm focus restoration on content replacement.
-      const active = document.activeElement;
-      activatedActionRef.current = active?.matches("button.plugin-report-action") && elementRef.current?.contains(active)
-        ? active : null;
-    }
+    // Click capture identifies the activated control even on macOS, where pointer activation
+    // need not focus a button. Each invocation owns its token, so older completions cannot steal it.
+    const action = request.control === "button" || request.control === "prompt"
+      ? { button: clickedActionRef.current } : null;
+    clickedActionRef.current = null;
+    if (action) activatedActionRef.current = action;
     try { return await onAction(request); }
     finally {
-      const element = elementRef.current;
-      if (request.control === "button") restoreActionFocus();
-      if (request.control === "prompt" && element?.dataset.expanded === "true" && !element.hidden && element.contains(document.activeElement)) {
-        element.querySelector("textarea")?.focus({ preventScroll: true });
+      if (action && activatedActionRef.current === action) {
+        restoreActionFocus();
+        activatedActionRef.current = null;
       }
     }
   };
@@ -393,6 +405,10 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     onPointerUp={event => event.stopPropagation()}
     onPointerCancel={event => event.stopPropagation()}
     onClick={event => event.stopPropagation()}
+    onClickCapture={event => {
+      clickedActionRef.current = event.target instanceof Element
+        ? event.target.closest("button.plugin-report-action") : null;
+    }}
     onDoubleClick={event => event.stopPropagation()}
     onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
     onWheel={event => event.stopPropagation()}
@@ -436,10 +452,6 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           onPointerDown={event => event.stopPropagation()}
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
-      <PluginPromptSection section={{ ...prompt, rows: 1 }} onAction={request => {
-        if (request.control === "prompt") setOwnSubmit(value => value + 1);
-        return runAction(request);
-      }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} />
       {firstActions ? <div className="plugin-canvas-overlay-primary-actions">
         <PluginReportRenderer report={{ title: overlay.title, sections: [firstActions] }} onAction={runAction} />
       </div> : null}
@@ -447,6 +459,10 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         <PluginReportRenderer report={{ title: overlay.title, sections: scrollingContent }} onAction={runAction} />
       </div> : null}
       <OverlayTranscript overlayId={overlay.id} source={transcriptSource} expanded={expanded} ownSubmit={ownSubmit} height={displayHeight} />
+      <PluginPromptSection section={{ ...prompt, rows: 1 }} onAction={request => {
+        if (request.control === "prompt") setOwnSubmit(value => value + 1);
+        return runAction(request);
+      }} includeSelected busyMessage={OVERLAY_BUSY_MESSAGE} messageResetKey={documentState} requestPending={requestPending} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
       {initializationError ? <p role="alert">{initializationError}</p> : null}
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
