@@ -66,3 +66,10 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+Orbital tools remain active after placement. Click a lobe tip or p-orbital centre to join
+new orbital art at that node; repeated clicks choose an unused direction. Drag from the
+node to choose an arbitrary angle, holding Shift for 15-degree steps. Escape returns
+to Selection. Selected orbitals show a rotation handle immediately; double-click the
+handle for numeric entry, or use Direct Edit to change path nodes. Orbital joins are
+visual alignment and do not create or alter chemical bonds.
