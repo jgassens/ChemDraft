@@ -225,6 +225,30 @@ describe("MainWindow canvas overlays", () => {
     } finally { await act(async () => finish?.()); }
   });
 
+  it.each(["Enter", "Send"])("refuses a second %s while the first request runs and keeps its draft without queueing", async method => {
+    let finish!: () => void;
+    submit.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      await act(async () => input("Long request")); await send();
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(textarea.value).toBe(""); expect(textarea.disabled).toBe(false);
+      await act(async () => input("Next request"));
+      if (method === "Enter") await send();
+      else await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay .plugin-report-action-primary")!.click());
+      expect(submit).toHaveBeenCalledOnce();
+      expect(container.querySelector(".plugin-canvas-overlay [role=alert]")?.textContent)
+        .toBe("Wait for the current request to finish, or press Stop.");
+      expect(textarea.value).toBe("Next request"); expect(textarea.disabled).toBe(false);
+      await act(async () => finish());
+      expect(submit).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Next request"); expect(textarea.disabled).toBe(false);
+      await send();
+      expect(submit).toHaveBeenCalledTimes(2);
+      expect(submit.mock.calls[1]![0].input?.text).toBe("Next request");
+      expect(textarea.value).toBe(""); expect(textarea.disabled).toBe(false);
+    } finally { await act(async () => finish?.()); }
+  });
+
   it("keeps the overlay hidden until both wheel and native pinch gestures finish", async () => {
     vi.useFakeTimers();
     try {

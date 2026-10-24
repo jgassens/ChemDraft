@@ -1615,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.10.40-codex";
+const CURRENT_BUILD_STAMP = "10.24.10.41-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11237,10 +11237,9 @@ export function MainWindow({
     if (request.control === "prompt" && pluginCommandQueuesRef.current.has(queueKey)) {
       return { ok: false, message: OVERLAY_BUSY_MESSAGE };
     }
-    const result = await acceptPluginInput(resolved.commandId, parsed.data);
-    // invoke schedules plugin commands; overlay pending state must last through their completion.
-    if (result.ok) await pluginCommandQueuesRef.current.get(queueKey);
-    return result;
+    // Acknowledge acceptance immediately so the composer clears this draft. The command queue
+    // retains the running request and refuses another Send until it finishes.
+    return acceptPluginInput(resolved.commandId, parsed.data);
   };
 
   // Keep one subscription; identity comes from native IPC or the inline panel we rendered,
