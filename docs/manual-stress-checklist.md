@@ -473,8 +473,9 @@ for each drawing, suggesting its name and extension, and writes its exact saved 
 chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
 box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
 box without losing the drawing. Delete opens a second native confirmation saying “Delete the
-kept drawing? This cannot be undone.” Delete is the affirmative/default button; Escape declines. Cancel returns
-to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
+kept drawing? This cannot be undone.” Cancel occupies the ok/default slot; Delete occupies the cancel slot.
+Escape declines except for the known Windows issue below. Cancel returns to the summary; Delete removes
+the kept drawings. Floating toolbars stay
 hidden through the entire sequence, including save panels, failed saves and both confirmation
 boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
 Restore a kept drawing's supported schema and relaunch: it opens normally without a prompt.
@@ -484,10 +485,14 @@ and Art toolbars open, including at 125%/150% display scale:
 
 - For every prompt below, confirm the message box uses the OS appearance, stays above the floating
   toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
-  exactly Cancel, and Escape (on macOS too) and closing the box choose it; a notice has one OK
-  button that Return dismisses. No button appears twice. A two-button question puts its affirmative
-  action in the ok/default slot and Cancel in the cancel slot. Repeat in the web preview with `?agentBridge=1`:
-  the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+  exactly Cancel, and Escape (on macOS too) and closing the box choose it, except for the known Windows
+  issue below; a notice has one OK
+  button that Return dismisses. No button appears twice. A destructive single-action confirmation (Delete,
+  Clear Overrides, Remove Engine) puts Cancel in the ok/default slot and the action in the cancel slot.
+  A non-destructive single action (Enlarge Page) occupies the ok/default slot, with Cancel in the cancel slot.
+  Known pre-existing Windows issue (tracked for a separate fix): Esc on a destructive single-action confirmation currently returns the action; expect and report it.
+  Repeat in the web preview with `?agentBridge=1`: the retained in-app dialog renders and its buttons
+  and Escape produce the expected outcomes without the native Windows issue.
 - With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
   open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:
   nothing happens and the active drawing tool stays unchanged. Close the box: exactly the previously
