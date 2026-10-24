@@ -631,6 +631,13 @@ fn run_templates_first_turn_and_resume() {
             }
             assert!(!run.args.iter().any(|arg| arg.contains("draw ethanol")));
             if tool == ToolId::Claude {
+                assert!(run.env.contains(&("MCP_TIMEOUT".into(), "10000".into())));
+                assert!(run
+                    .env
+                    .contains(&("MCP_TOOL_TIMEOUT".into(), "480000".into())));
+                assert!(run
+                    .env
+                    .contains(&("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT".into(), "480000".into())));
                 let expected = [
                     "-p",
                     "--input-format",
@@ -693,6 +700,9 @@ fn run_templates_first_turn_and_resume() {
                     .iter()
                     .any(|arg| arg.starts_with("features.") || arg.starts_with("tools.")));
                 assert!(run.args.contains(&"approval_policy=\"never\"".into()));
+                assert!(run
+                    .args
+                    .contains(&"mcp_servers.chemdraft.tool_timeout_sec=480".into()));
                 assert!(run
                     .args
                     .windows(2)

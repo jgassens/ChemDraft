@@ -266,6 +266,7 @@ export async function checkCodexTools({ binary, model, output }) {
     await writeFile(join(runDir, "argv.json"), JSON.stringify(manifest.args, null, 2), { mode: 0o600 });
     console.log(`Exact Codex argv: ${JSON.stringify(manifest.args)}`);
     assert.equal(manifest.env.CODEX_HOME, codexHome, "Parity must use its disposable home");
+    assert.ok(manifest.args.includes("mcp_servers.chemdraft.tool_timeout_sec=480"), "Parity must allow the host's five-minute page decision");
     const options = { cwd: runDir, env: manifest.env };
     const version = await executeWithReadOnlyAuth(manifest.program, ["--version"], options, auth);
     assertSuccess(version, "Codex version");
@@ -273,7 +274,7 @@ export async function checkCodexTools({ binary, model, output }) {
     const login = await executeWithReadOnlyAuth(manifest.program, ["login", "status"], options, auth);
     assertSuccess(login, "Codex login status (sign in using your real home first)");
     assert.match(`${login.stdout}\n${login.stderr}`, /^Logged in/m, "Isolated home did not authenticate");
-    const result = await executeWithReadOnlyAuth(manifest.program, manifest.args, { ...options, stdin: manifest.stdin, timeout: 300_000 }, auth);
+    const result = await executeWithReadOnlyAuth(manifest.program, manifest.args, { ...options, stdin: manifest.stdin, timeout: 600_000 }, auth);
     const redact = (text) => text.replaceAll(token, "[REDACTED_MCP_TOKEN]");
     await writeFile(join(runDir, "stdout.jsonl"), redact(result.stdout), { mode: 0o600 });
     await writeFile(join(runDir, "stderr.txt"), redact(result.stderr), { mode: 0o600 });

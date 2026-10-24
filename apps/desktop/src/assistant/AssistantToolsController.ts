@@ -116,19 +116,28 @@ export class AssistantToolsController implements PluginHostAssistant {
           }
           prompted = true;
           const document = request.context.getDocument()!;
-          clearTimeout(deadline); // A human decision has no tool deadline; Stop still cancels it.
+          clearTimeout(deadline); // Pause preparation, but bound the human decision separately.
+          const decision = new AbortController();
+          const cancelDecision = () => decision.abort();
+          signal?.addEventListener("abort", cancelDecision, { once: true });
+          const decisionDeadline = setTimeout(cancelDecision, 300_000);
           try {
             const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
               message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
               choices: [{ id: "enlarge", label: "Enlarge page" }, { id: "decline", label: "Don't enlarge", cancel: true }]
-            }, async () => { throw new Error("The native page enlargement confirmation is unavailable; nothing was inserted."); }, signal);
+            }, async () => { throw new Error("The native page enlargement confirmation is unavailable; nothing was inserted."); }, decision.signal);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
+            if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
             if (choice !== "enlarge") return false;
             approvedGrowth = { growth, document };
             return true;
-          } finally { if (!abort.signal.aborted) deadline = startDeadline(); }
+          } finally {
+            clearTimeout(decisionDeadline);
+            signal?.removeEventListener("abort", cancelDecision);
+            if (!abort.signal.aborted) deadline = startDeadline();
+          }
         },
         write: async (patch, signal, checkPreconditions) => {
           this.running(plugin, requestId);

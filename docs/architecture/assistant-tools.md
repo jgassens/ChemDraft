@@ -44,9 +44,13 @@ asking again. Plugins and the AI do not acquire a page-layout write capability.
 Declining omits the non-fitting cells (including their captions, or an entire reaction scheme),
 retains the fitting items, and leaves the page size unchanged. The tool returns `declined` labels
 or IDs and `reason: "declined: the user chose not to enlarge the page"`, also in its text result.
-The host pauses its preparation deadlines while awaiting the answer. Stop ignores a late answer
-and draws none of that call's pending items. The native MCP transport still has its existing
-120-second deadline; expiry sends cancellation and likewise ignores the pending answer.
+The host pauses its preparation deadlines while awaiting the answer, for at most 300 seconds.
+No answer within that time declines enlargement with
+`reason: "declined: no answer to the enlarge-page question within 5 minutes"`; fitting items are
+still retained, and a later answer cannot insert the omitted items or enlarge the page.
+Stop ignores a late answer and draws none of that call's pending items. Write calls have a
+480-second MCP transport and client budget, covering preparation, the human decision and the write
+gate. Transport expiry sends cancellation and likewise ignores the pending answer.
 A document edit while confirmation is open invalidates the plan.
 The native API cannot programmatically close an open message box, so an ignored box may remain
 until dismissed. On macOS the custom **Don't enlarge** title has no Escape binding; click the button.
@@ -92,7 +96,10 @@ MCP protocol version, and JSON-RPC parse/invalid-request errors where applicable
 are `-32601`; an over-limit fifth call is `-32000 busy`. There are at most four in-flight calls per
 session, 16 connections, a 10-second header timeout, 60-second connection idle bound, and an 8 MiB
 result limit. Deadlines are 10 seconds for `tools/list`, 45 seconds for naming, 60 seconds for
-rendering, and 120 seconds for other calls; timeout is `-32000`.
+rendering, 120 seconds for other read calls, and 480 seconds for the seven write tools; timeout is
+`-32000`. Codex's server-wide tool timeout and Claude's `MCP_TOOL_TIMEOUT` and
+`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` allow 480 seconds;
+the host continues to enforce the shorter read deadlines.
 
 The credential never crosses the Rust-to-webview bridge or command line. Rust writes the Claude
 configuration with its bearer credential into the private run directory; Codex receives it only as

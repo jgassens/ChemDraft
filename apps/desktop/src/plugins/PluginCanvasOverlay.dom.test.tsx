@@ -272,6 +272,33 @@ describe("PluginCanvasOverlay", () => {
     expect(document.activeElement).toBe(container.querySelector("textarea"));
   });
 
+  it.each(["macos", "windows"] as const)("restores focus after an action button is removed, respecting deliberate focus moves on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    const otherInput = document.createElement("input"); viewport.append(otherInput);
+    const canvas = document.createElement("div"); viewport.append(canvas);
+    for (const destination of [undefined, otherInput, drawing, canvas]) {
+      await act(async () => api.setContent({ overlayId: overlay.id, sections: [
+        { kind: "actions", id: "primary", buttons: [{ id: "stop", label: "Stop", commandId: overlay.commandId }] }
+      ] }));
+      let finish!: (result: { ok: true }) => void;
+      action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+      await act(async () => { button.focus(); button.click(); });
+      if (destination) {
+        destination.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+        destination.focus();
+        if (destination === canvas) button.blur(); // A nonfocusable canvas leaves focus on body.
+      }
+      await act(async () => api.setContent({ overlayId: overlay.id, sections: [{ kind: "text", body: "Run ended" }] }));
+      expect(button.isConnected).toBe(false);
+      const expected = destination === canvas ? document.body : destination ?? container.querySelector("textarea");
+      expect(document.activeElement).toBe(expected);
+      await act(async () => finish({ ok: true }));
+      expect(document.activeElement).toBe(expected);
+    }
+  });
+
   it("resumes following replies after the reader submits their own prompt", async () => {
     await expand();
     const log = container.querySelector<HTMLElement>('[role="log"]')!;

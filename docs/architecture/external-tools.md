@@ -136,6 +136,10 @@ claude -p --input-format stream-json --output-format stream-json --verbose --inc
 
 Claude receives a newline-terminated stream-JSON user message on stdin. Its config points at the
 host MCP URL when supplied; runs without a bound MCP session receive an empty `mcpServers` config.
+The host sets `MCP_TIMEOUT=10000` for startup, `MCP_TOOL_TIMEOUT=480000` for tool calls, and
+`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=480000` for silent HTTP tool calls (all milliseconds).
+The tool budgets cover the bounded five-minute enlarge-page question plus preparation and the
+write gate. Rust retains the shorter per-tool deadlines for reads.
 Settings sources and slash commands are disabled to exclude user/project plugins and skills;
 the real login directory is preserved, and hooks are disabled explicitly. The two plugins enabled
 by default in pinned Claude 2.1.308 (`cc-plugin-agents-md@builtin` and
@@ -167,7 +171,7 @@ codex exec [resume <id>] --json [-C <run>] --skip-git-repo-check --ignore-user-c
   [-c mcp_servers.chemdraft.url="<url>"
    -c mcp_servers.chemdraft.bearer_token_env_var="CHEMDRAFT_MCP_TOKEN"
    -c mcp_servers.chemdraft.required=true -c mcp_servers.chemdraft.default_tools_approval_mode="approve"
-   -c mcp_servers.chemdraft.startup_timeout_sec=30 -c mcp_servers.chemdraft.tool_timeout_sec=120]
+   -c mcp_servers.chemdraft.startup_timeout_sec=30 -c mcp_servers.chemdraft.tool_timeout_sec=480]
   -c model_instructions_file="<run>/system-prompt.md" [-m <model>]
   [-c model_reasoning_effort="low|medium|high"] -
 ```

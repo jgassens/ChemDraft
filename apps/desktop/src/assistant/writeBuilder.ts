@@ -108,17 +108,19 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     await assertCanonical(context, object, smiles);
   }
   let declined: string[] = [];
+  let declineReason = PAGE_GROWTH_DECLINED;
   let patch = built.patch;
   let summary = built.summary;
   if (built.pageGrowth) {
     context.signal?.throwIfAborted();
     const accepted = await context.confirmPageGrowth(built.pageGrowth, context.signal);
     context.signal?.throwIfAborted();
-    if (!accepted) {
+    if (accepted !== true) {
+      if (accepted !== false) declineReason = accepted.reason;
       declined = built.pageGrowth.items.map(item => item.label);
       const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
       patch = { op: "batch", patches: patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) };
-      summary = `Inserted ${patch.patches.length} fitting objects; ${PAGE_GROWTH_DECLINED}: ${declined.join(", ")}.`;
+      summary = `Inserted ${patch.patches.length} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
     }
   }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
@@ -135,7 +137,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
   return { ...result, summary, warnings: built.warnings,
-    ...(declined.length ? { declined, reason: PAGE_GROWTH_DECLINED } : {}) };
+    ...(declined.length ? { declined, reason: declineReason } : {}) };
 }
 
 /** Translate coordinates, preserving all chemistry. Anchored chemistry is refused separately. */

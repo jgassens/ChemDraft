@@ -244,6 +244,44 @@ describe("assistant host page enlargement", () => {
     } finally { answer?.("decline"); restore(); await s.finish(); }
   });
 
+  it.each([false, true])("declines through the MCP bridge after five minutes and ignores a late Yes (fitting item: %s)", async includeFitting => {
+    vi.useFakeTimers();
+    const s = placementSetup();
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const { sessionId } = await s.controller.createToolSession(s.plugin, { requestId });
+      s.listeners.get(sessionId)!({ sessionId, requestId: "growth", method: "tools/call", params: {
+        name: "insert_structures", arguments: { items: [
+          { kind: "molecule", smiles: "CC" }, ...(includeFitting ? [{ kind: "text", text: "Fits" }] : [])
+        ] }
+      } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prompt).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(s.engine.respond).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const reason = "declined: no answer to the enlarge-page question within 5 minutes";
+      expect(s.engine.respond).toHaveBeenCalledExactlyOnceWith(sessionId, "growth", { result: expect.objectContaining({
+        structuredContent: expect.objectContaining({ reason, declined: expect.any(Array) }),
+        content: [expect.objectContaining({ text: expect.stringContaining(reason) })]
+      }) });
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.width).toBe(before.pages[0]!.width);
+      expect(after.pages[0]!.objects).toHaveLength(includeFitting ? 1 : 0);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      answer("enlarge");
+      await vi.advanceTimersByTimeAsync(480_000);
+      expect(s.context.getDocument()).toEqual(after);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      expect(s.engine.respond).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
   it("ignores a late Enlarge answer after Stop and draws none of the pending call's items", async () => {
     const s = placementSetup();
     let answer!: (choice: string) => void;

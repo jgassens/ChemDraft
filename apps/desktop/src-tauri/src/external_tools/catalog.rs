@@ -380,7 +380,8 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
                     // write tools under approval_policy=never, so they need explicit approval here.
                     "mcp_servers.chemdraft.default_tools_approval_mode=\"approve\"",
                     "mcp_servers.chemdraft.startup_timeout_sec=30",
-                    "mcp_servers.chemdraft.tool_timeout_sec=120",
+                    // Server deadlines still bound reads; writes may await a 300s human decision.
+                    "mcp_servers.chemdraft.tool_timeout_sec=480",
                 ] {
                     args.extend(strings(&["-c", setting]));
                 }
@@ -425,6 +426,10 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
     let mut env = super::env::tool_overrides(input.managed_copy);
     if spec.tool == ToolId::Claude {
         env.push(("MCP_TIMEOUT".into(), "10000".into()));
+        // MCP_TIMEOUT is startup only. Tool calls use a separate millisecond budget.
+        env.push(("MCP_TOOL_TIMEOUT".into(), "480000".into()));
+        // HTTP tools also have a silent-call idle timer; the native question emits no progress.
+        env.push(("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT".into(), "480000".into()));
     }
     Ok(RenderedRun {
         program: spec.program.clone(),

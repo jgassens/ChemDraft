@@ -23,7 +23,7 @@ export interface AssistantToolContext {
   getViewportRect?(tabId: string): AssistantRect | undefined;
   signal?: AbortSignal;
   /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
-  confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean>;
+  confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.
    * Recheck the signal and preparation preconditions after waiting for an active canvas gesture. */
   write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void): Promise<{ objectIds: string[] }>;

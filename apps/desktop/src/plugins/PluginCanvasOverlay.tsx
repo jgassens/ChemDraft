@@ -150,11 +150,40 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const elementRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const focusOnExpandRef = useRef(false);
+  const actionHadFocusRef = useRef(false);
   const expandedSizeRef = useRef({ width: 300, height: 220 });
   const anchorNextExpansionRef = useRef(false);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; height: number; bottom: number } | null>(null);
+  useEffect(() => {
+    const trackFocus = (event: FocusEvent) => {
+      // Removing the focused action can leave body active without a blur/focus event.
+      if (event.target === document.body) return;
+      const target = event.target;
+      actionHadFocusRef.current = target instanceof Element && !!elementRef.current?.contains(target)
+        && target.matches("button.plugin-report-action");
+    };
+    const trackPointer = (event: globalThis.PointerEvent) => {
+      // Clicking a nonfocusable canvas is a deliberate departure too.
+      if (event.target instanceof Node && !elementRef.current?.contains(event.target)) actionHadFocusRef.current = false;
+    };
+    document.addEventListener("focusin", trackFocus, true);
+    document.addEventListener("pointerdown", trackPointer, true);
+    return () => {
+      document.removeEventListener("focusin", trackFocus, true);
+      document.removeEventListener("pointerdown", trackPointer, true);
+    };
+  }, []);
+  const restoreActionFocus = () => {
+    const element = elementRef.current;
+    if (actionHadFocusRef.current && element?.dataset.expanded === "true" && !element.hidden
+      && (document.activeElement === document.body || element.contains(document.activeElement))) {
+      element.querySelector("textarea")?.focus({ preventScroll: true });
+    }
+  };
+  // Restore after React has removed/replaced the button, even if the action is still pending.
+  useLayoutEffect(restoreActionFocus, [content, expanded, gestureActive]);
   useLayoutEffect(() => {
     if (!openRequest) return;
     focusOnExpandRef.current = openRequest.focus;
@@ -339,7 +368,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     try { return await onAction(request); }
     finally {
       const element = elementRef.current;
-      if ((request.control === "button" || request.control === "prompt") && element?.contains(document.activeElement)) {
+      if (request.control === "button") restoreActionFocus();
+      if (request.control === "prompt" && element?.dataset.expanded === "true" && !element.hidden && element.contains(document.activeElement)) {
         element.querySelector("textarea")?.focus({ preventScroll: true });
       }
     }
