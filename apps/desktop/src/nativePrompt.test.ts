@@ -24,7 +24,7 @@ afterEach(() => { plugin.native = true; plugin.owner = "main"; plugin.message.mo
 describe("nativePrompt", () => {
   const growth: NativePromptOptions = { title: "ChemDraft Assistant", kind: "info", owner: "document",
     message: "Olympiadane needs a page 1960 × 900 pt. Enlarge the page to fit?",
-    choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }] };
+    choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }] };
 
   it.each(["macos", "windows"] as const)("requires the document window as native message-box owner on %s", async platform => {
     for (const [answer, expected] of [["Enlarge Page", "enlarge"], ["Cancel", "decline"]]) {
@@ -222,7 +222,7 @@ describe("nativePrompt", () => {
     expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: { ok: "OK" } }));
   });
 
-  it("prefers the safe action in a three-button prompt, regardless of input order", () => {
+  it("never puts a destructive choice in the native default slot, regardless of input order", () => {
     expect(nativePromptButtons(three)).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [...three.choices].reverse() })).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [
@@ -231,10 +231,10 @@ describe("nativePrompt", () => {
     ] })).toEqual({ yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" });
   });
 
-  it("keeps a confirmation's action in ok and decline in cancel without duplicating buttons", () => {
+  it("defaults a destructive confirmation to Cancel without duplicating buttons", () => {
     expect(nativePromptButtons({ ...three, choices: [
       { id: "remove", label: "Remove", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
-    ] })).toEqual({ ok: "Remove", cancel: "Cancel" });
+    ] })).toEqual({ ok: "Cancel", cancel: "Remove" });
     for (const prompt of [three, { ...three, choices: [{ id: "a", label: "Use A3 Page" }, { id: "c", label: "Cancel" as const, cancel: true as const }] }]) {
       const labels = Object.values(nativePromptButtons(prompt));
       expect(new Set(labels).size).toBe(labels.length);
@@ -250,7 +250,7 @@ describe("nativePrompt", () => {
       plugin.message.mockResolvedValue(result);
       expect(await nativePrompt(prompt)).toBe(id);
       expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({
-        buttons: { ok: "Delete", cancel: "Cancel" }
+        buttons: { ok: "Cancel", cancel: "Delete" }
       }));
     }
   });

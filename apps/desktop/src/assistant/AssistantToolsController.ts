@@ -126,7 +126,7 @@ export class AssistantToolsController implements PluginHostAssistant {
               message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
               // Enlarge Page is the affirmative/default action; Escape and close decline.
               // The request's single Undo restores both the page and inserted objects.
-              choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
+              choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
             }, async () => "decline", decision.signal);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();

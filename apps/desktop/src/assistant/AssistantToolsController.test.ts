@@ -157,7 +157,7 @@ describe("assistant host page enlargement", () => {
       expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
       expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
         message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
-        choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
+        choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
       });
       const molecule = page.objects.find(object => object.type === "molecule")!;
       if (molecule.type !== "molecule") throw new Error("Expected molecule");

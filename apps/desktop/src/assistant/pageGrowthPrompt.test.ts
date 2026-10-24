@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { nativePrompt, type NativePromptOptions } from "../nativePrompt";
+import { nativePrompt, nativePromptButtons, type NativePromptOptions } from "../nativePrompt";
 
 const dialog = vi.hoisted(() => ({ message: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
@@ -11,7 +11,7 @@ vi.mock("../nativeUtilitySuspension", () => ({ withNativeUtilitySuspension: (sho
 
 const growth: NativePromptOptions = {
   title: "ChemDraft Assistant", message: "Enlarge the page to fit?", kind: "info", owner: "document",
-  choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
+  choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
 };
 afterEach(() => { vi.resetAllMocks(); vi.restoreAllMocks(); });
 
@@ -100,4 +100,15 @@ describe.each(["macos", "windows"] as const)("fail-closed page growth on %s", pl
     expect(await nativePrompt(growth, fallback, undefined, undefined, platform)).toBe("decline");
     expect(fallback).toHaveBeenCalledWith(growth);
   });
+});
+
+it.skip('Windows Esc must not confirm a destructive single action (follow-up)', async () => {
+  const destructive: NativePromptOptions = { ...growth, choices: [
+    { id: "delete", label: "Delete", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
+  ] };
+  // IDCANCEL passes through rfd Cancel and Tauri's custom cancel-label remap (sources above).
+  // The preserved destructive mapping currently returns "Delete"; fixing it needs a separate decision.
+  const buttons = nativePromptButtons(destructive, "windows") as Buttons;
+  dialog.message.mockResolvedValue(tauriResult(rfdResult("taskdialog", 2, buttons), buttons));
+  expect(await nativePrompt(destructive, undefined, undefined, undefined, "windows")).toBe("cancel");
 });

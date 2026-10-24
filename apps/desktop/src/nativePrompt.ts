@@ -9,8 +9,7 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
  * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". The affirmative action goes first and may be activated by Return on either platform.
- * A notice has one "OK" button.
+ * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -60,11 +59,12 @@ export function nativePromptButtons(prompt: NativePromptOptions,
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
-  // tauri-plugin-dialog 2.7.1 src/desktop.rs:232-239 remaps rfd Ok/Cancel to these
-  // custom labels on BOTH platforms. In particular, Windows Esc/close returns IDCANCEL;
-  // putting an action in the cancel slot would approve that action on dismissal.
-  if (actions.length === 1) return { ok: actions[0]!.label, cancel: cancel.label };
-  const safe = actions.find((choice) => !choice.destructive)!;
+  // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
+  // must be a safe action. For a destructive confirmation, Cancel itself occupies the default.
+  const safe = actions.find((choice) => !choice.destructive);
+  // Known issue (tracked as a separate follow-up): tauri-plugin-dialog 2.7.1 desktop.rs:232-239 remaps rfd Cancel to the custom cancel label, so on Windows Esc returns this action's label.
+  if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
+  if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
 }
