@@ -8,6 +8,7 @@ import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult } from "./results";
 import { exportDocumentToSvg } from "./svg";
 import { preparePdfFonts } from "./pdfFonts";
+import { preparePdfHaloPaint } from "./pdfHaloPaint";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 
@@ -57,7 +58,9 @@ export async function exportDocumentToPdf(
   });
 
   const releaseFonts = await preparePdfFonts(svgElement, pdf);
+  let releaseHaloPaint = () => {};
   try {
+    releaseHaloPaint = await preparePdfHaloPaint(svgElement, pdf, svg2pdf, widthPt, heightPt);
     await svg2pdf(svgElement, pdf, {
       x: 0,
       y: 0,
@@ -66,6 +69,7 @@ export async function exportDocumentToPdf(
       loadExternalStyleSheets: false
     });
   } finally {
+    releaseHaloPaint();
     releaseFonts();
   }
 

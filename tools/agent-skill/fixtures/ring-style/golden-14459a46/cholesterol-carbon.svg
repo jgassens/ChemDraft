@@ -150,8 +150,23 @@
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">OH</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="31" data-bond-count="34" data-style-preset-id="chemdraft.synthetic" transform="translate(483.12 568.975)" data-atom-label="CH3" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">CH</text>
-    <text x="9.9" y="5.1" dy="0.35em" text-anchor="start" font-size="10.8" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">3</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-a26-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 493.55 542.992 L 512.243 522.137 L 539.639 527.899 L 548.359 554.511 L 529.665 575.36 L 502.264 569.598 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-a26" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-14.55" y="-47.838" width="80.788" height="63.804" viewBox="-14.550000000000011 -47.83823770494416 80.78807291177435 63.80423770494417">
+        <rect x="-14.55" y="-47.838" width="80.788" height="63.804" fill="#ffffff" />
+        <g transform="scale(1) translate(-483.1204499467259 -568.974915605762)">
+          <g data-label-halo-ring="b19|b20|b21|b22|b23|b30" clip-path="url(#label-halo-mol_clipboard_001-a26-clip-0)">
+            <path d="M 493.55 542.992 L 512.243 522.137 L 539.639 527.899 L 548.359 554.511 L 529.665 575.36 L 502.264 569.598 Z" stroke="none" fill="#e53935" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-a26">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-a26)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">CH</text>
+      <text x="9.9" y="5.1" dy="0.35em" text-anchor="start" font-size="10.8" fill="none" stroke="url(#label-halo-mol_clipboard_001-a26)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">3</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">CH</text>
     <text data-atom-label-run="subscript" x="9.9" y="5.1" dy="0.35em" text-anchor="start" font-size="10.8">3</text>
   </g>
@@ -162,15 +177,60 @@
     <text data-atom-label-run="subscript" x="9.9" y="5.1" dy="0.35em" text-anchor="start" font-size="10.8">3</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="31" data-bond-count="34" data-style-preset-id="chemdraft.synthetic" transform="translate(434.647 482.939)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-h_a11-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 385.742 514.381 L 411.352 525.71 L 430.039 504.86 L 415.983 480.64 L 388.615 486.531 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-h_a11" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-49.905" y="-13.35" width="59.805" height="57.12" viewBox="-49.904615556116426 -13.350000000000023 59.80461555611646 57.12020960914515">
+        <rect x="-49.905" y="-13.35" width="59.805" height="57.12" fill="#ffffff" />
+        <g transform="scale(1) translate(-434.64695205735893 -482.93934269403974)">
+          <g data-label-halo-ring="b10|b11|b27|b8|b9" clip-path="url(#label-halo-mol_clipboard_001-h_a11-clip-0)">
+            <path d="M 385.742 514.381 L 411.352 525.71 L 430.039 504.86 L 415.983 480.64 L 388.615 486.531 Z" stroke="none" fill="#43a047" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-h_a11">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-h_a11)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">H</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="31" data-bond-count="34" data-style-preset-id="chemdraft.synthetic" transform="translate(476.565 553.171)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-h_a15-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 457.435 510.623 L 466.154 537.229 L 493.55 542.992 L 512.243 522.137 L 503.53 495.531 L 476.128 489.768 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-h_a15" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-20.13" y="-64.403" width="56.808" height="77.753" viewBox="-20.129695163881024 -64.40297601175081 56.808341341637856 77.75297601175083">
+        <rect x="-20.13" y="-64.403" width="56.808" height="77.753" fill="#ffffff" />
+        <g transform="scale(1) translate(-476.56472461042324 -553.1709798597776)">
+          <g data-label-halo-ring="b15|b16|b17|b18|b19|b29" clip-path="url(#label-halo-mol_clipboard_001-h_a15-clip-0)">
+            <path d="M 457.435 510.623 L 466.154 537.229 L 493.55 542.992 L 512.243 522.137 L 503.53 495.531 L 476.128 489.768 Z" stroke="none" fill="#fdd835" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-h_a15">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-h_a15)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">H</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="31" data-bond-count="34" data-style-preset-id="chemdraft.synthetic" transform="translate(459.136 488.288)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <defs>
+      <clipPath id="label-halo-mol_clipboard_001-h_a16-clip-0" clipPathUnits="userSpaceOnUse">
+        <path d="M 457.435 510.623 L 466.154 537.229 L 493.55 542.992 L 512.243 522.137 L 503.53 495.531 L 476.128 489.768 Z" />
+      </clipPath>
+      <pattern id="label-halo-mol_clipboard_001-h_a16" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="-9.9" y="-13.35" width="64.007" height="69.054" viewBox="-9.899999999999977 -13.350000000000023 64.00738823876264 69.0539994039433">
+        <rect x="-9.9" y="-13.35" width="64.007" height="69.054" fill="#ffffff" />
+        <g transform="scale(1) translate(-459.1359825494174 -488.2875127827906)">
+          <g data-label-halo-ring="b15|b16|b17|b18|b19|b29" clip-path="url(#label-halo-mol_clipboard_001-h_a16-clip-0)">
+            <path d="M 457.435 510.623 L 466.154 537.229 L 493.55 542.992 L 512.243 522.137 L 503.53 495.531 L 476.128 489.768 Z" stroke="none" fill="#fdd835" fill-opacity="0.9" />
+          </g>
+        </g>
+      </pattern>
+    </defs>
+    <g data-label-halo-paint="label-halo-mol_clipboard_001-h_a16">
+      <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="none" stroke="url(#label-halo-mol_clipboard_001-h_a16)" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true" fill-opacity="1" stroke-opacity="1">H</text>
+    </g>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">H</text>
   </g>
 
@@ -204,16 +264,16 @@
 
 
 
-  <text data-object-id="ring-letter-A" data-layer-index="1" data-object-type="text" x="520.55" y="556.337" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
+  <text data-object-id="ring-letter-mol_clipboard_001-A" data-layer-index="1" data-object-type="text" x="520.55" y="556.337" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
     <tspan x="520.55">A</tspan>
   </text>
-  <text data-object-id="ring-letter-B" data-layer-index="2" data-object-type="text" x="484.435" y="523.968" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
+  <text data-object-id="ring-letter-mol_clipboard_001-B" data-layer-index="2" data-object-type="text" x="484.435" y="523.968" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
     <tspan x="484.435">B</tspan>
   </text>
-  <text data-object-id="ring-letter-C" data-layer-index="3" data-object-type="text" x="438.352" y="539.06" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
+  <text data-object-id="ring-letter-mol_clipboard_001-C" data-layer-index="3" data-object-type="text" x="438.352" y="539.06" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
     <tspan x="438.352">C</tspan>
   </text>
-  <text data-object-id="ring-letter-D" data-layer-index="4" data-object-type="text" x="406.742" y="509.84" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
+  <text data-object-id="ring-letter-mol_clipboard_001-D" data-layer-index="4" data-object-type="text" x="406.742" y="509.84" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
     <tspan x="406.742">D</tspan>
   </text>
 </svg>

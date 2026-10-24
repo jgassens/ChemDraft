@@ -10,6 +10,12 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane with light blue
+(25%), solid blue and a vivid alternating palette (90%). Check N+, NH, O and S: each fill reaches
+every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the
+halo must match the fill beneath it. Repeat with linear/radial gradients, shadow/glow/sketch, explicit
+label background colours and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
+
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
 centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back

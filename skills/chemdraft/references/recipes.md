@@ -298,11 +298,11 @@ each call creates unique decoration IDs and groups only its own artwork.
    the ring), in bold italic serif at 20 px, shrinking only to fit.
 4. **Letter colour.** Ring letters are white on a dark fill and near-black
    on a light one, chosen by the fill's relative luminance as drawn (white
-   below 0.34). A fill is notched only around labels of that ring's own
-   outline atoms, which keep their normal molecule colour and default
-   background. A non-ring substituent label left inside a fill keeps the
-   fill under it, has white or near-black text by that fill's luminance,
-   and uses a transparent per-atom background (no halo).
+   below 0.34). All atom labels on fills, including ring atoms and inward
+   substituents, use the same luminance rule and a transparent per-atom
+   background (no halo). The renderer preserves authored text colours;
+   its default halos match the fill beneath them. Fills are plain polygons
+   reaching the atom centres and bond lines.
 5. **Fill colours.** Twelve saturated colours in letter order, so each
    ring gets its own; beyond twelve, a greedy colouring over ring
    adjacency keeps rings that share an atom apart.
@@ -512,10 +512,10 @@ Open each PNG at full size and check: every letter sits in the ring the
 convention names and reads on its fill; the colours are loud and no two
 touching rings match; every wedge and hash is where it was, including on
 each new H; no label is clipped or sits on another label or a letter. Ring
-fills are notched around labels of their own outline atoms, so those labels
-sit on the page background without a white box; a non-ring substituent label
-inside a fill keeps it underneath with luminance-contrast text and no halo.
-The figure check verifies that no fill remains under a ring-atom label.
+fills reach every bond line as plain atom-centre polygons. All labels on fills
+use luminance-contrast text and no halo in this recipe. Default renderer halos
+match each fill beneath them, clipped per ring, with paper elsewhere.
+The figure check rejects any fill with a hole, evenodd notch or extra vertices.
 
 - **`STILL ON A FILL`.** Read the reason. "Enclosed by filled rings"
   means every direction from the attachment atom lies on a fill: the atom
