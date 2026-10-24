@@ -144,6 +144,76 @@ describe("PluginCanvasOverlay", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); contentRuntime.unregisterPlugin("widget"); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+  it("resumes following replies after the reader submits their own prompt", async () => {
+    await expand();
+    const log = container.querySelector<HTMLElement>('[role="log"]')!;
+    let scrollHeight = 200;
+    Object.defineProperties(log, { scrollHeight: { get: () => scrollHeight }, clientHeight: { value: 48 } });
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Previous" }]));
+    await act(async () => { log.scrollTop = 20; log.dispatchEvent(new Event("scroll")); });
+    await act(async () => enterText("Next question"));
+    await act(async () => container.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!.click());
+    expect(log.scrollTop).toBe(200);
+    scrollHeight = 350;
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Newest reply" }]));
+    expect(log.scrollTop).toBe(350);
+    await act(async () => { log.scrollTop = 20; log.dispatchEvent(new Event("scroll")); });
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Streaming further" }]));
+    expect(log.scrollTop).toBe(20);
+  });
+
+  it("renders safe inline Markdown in transcript and content without making HTML or URLs executable", async () => {
+    await expand();
+    const text = '**Bold** *italic* `code` [source](https://example.org/page) <img src=x onerror=alert(1)> [bad](javascript:alert)';
+    await act(async () => transcriptSource.set([{ role: "assistant", text }]));
+    await act(async () => { await contentRuntime.host.createCommandContext("widget").overlays!.setContent({ overlayId: overlay.id, sections: [{ kind: "text", body: text }] }); });
+    for (const selector of ['[role="log"]', '.plugin-canvas-overlay-content']) {
+      const element = container.querySelector(selector)!;
+      expect([...element.querySelectorAll("strong")].some(node => node.textContent === "Bold")).toBe(true);
+      expect(element.querySelector("em")?.textContent).toBe("italic");
+      expect(element.querySelector("code")?.textContent).toBe("code");
+      expect(element.textContent).toContain("source (https://example.org/page)");
+      expect(element.textContent).toContain("<img src=x onerror=alert(1)>");
+      expect(element.querySelector("img,script,a")).toBeNull();
+    }
+  });
+
+  it("keeps the first plugin actions outside scrolling content even when preceded by a long explanation", async () => {
+    await expand();
+    await act(async () => { await contentRuntime.host.createCommandContext("widget").overlays!.setContent({ overlayId: overlay.id, sections: [
+      { kind: "text", body: "Long setup explanation. ".repeat(150) },
+      { kind: "actions", id: "primary", buttons: [{ id: "install", label: "Install", commandId: overlay.commandId }] },
+      { kind: "actions", id: "secondary", buttons: [{ id: "help", label: "Help", commandId: overlay.commandId }] }
+    ] }); });
+    const scroll = container.querySelector<HTMLElement>(".plugin-canvas-overlay-content")!;
+    const pinned = container.querySelector<HTMLElement>(".plugin-canvas-overlay-primary-actions")!;
+    expect(pinned?.textContent).toContain("Install");
+    expect(scroll.contains(pinned)).toBe(false);
+    expect(scroll.textContent).toContain("Help");
+    expect(scroll.textContent).not.toContain("Install");
+    await act(async () => pinned.querySelector("button")!.click());
+    expect(action).toHaveBeenCalledWith({ sectionId: "primary", control: "button", controlId: "install" });
+  });
+
+  it("dispatches exactly one prompt for Enter, concurrent send, and key repeat, and refuses empty sends", async () => {
+    await expand(); await act(async () => enterText("Draw benzene"));
+    const textarea = container.querySelector("textarea")!;
+    const send = container.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
+    let finish!: (result: { ok: true }) => void;
+    action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(enter); send.click(); textarea.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(action).toHaveBeenCalledOnce();
+    await act(async () => finish({ ok: true }));
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true })));
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(action).toHaveBeenCalledOnce();
+    await act(async () => enterText("   "));
+    await act(async () => send.click());
+    expect(action).toHaveBeenCalledOnce();
+  });
+
   it.each(["macos", "windows"] as const)("opens without focus by default and focuses only on request on %s", async targetPlatform => {
     platform = targetPlatform; await render();
     await act(async () => { await contentRuntime.invokeCommand(overlay.commandId); });
@@ -195,7 +265,7 @@ describe("PluginCanvasOverlay", () => {
     expect(Number.parseFloat(widget().style.top) + Number.parseFloat(widget().style.height)).toBeLessThanOrEqual(776);
     expect(window.localStorage.getItem(`${storageKey}:height`)).toBe(remembered);
     expect(document.activeElement).toBe(container.querySelector("textarea"));
-    await act(async () => content.querySelector<HTMLButtonElement>("button")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!.click());
     expect(action).toHaveBeenCalledWith({ sectionId: "setup", control: "button", controlId: "install" });
     await act(async () => { await api.setContent({ overlayId: overlay.id, sections: [] }); });
     expect(widget().style.height).toBe("300px");

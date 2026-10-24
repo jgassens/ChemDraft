@@ -6,6 +6,23 @@ import { ToolInstallForm } from "./ToolInstallForm";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { toolInstallSnapshot } from "../externalTools/toolInstallSnapshot";
 
+it.each(["user", "managed"] as const)("asks only to use an installed %s tool, with disclosure said once", async source => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    for (const platform of ["macos", "windows"] as const) {
+      const snapshot = toolInstallSnapshot({ tool: "codex", publisher: "OpenAI", state: "installed", source,
+        pinnedVersion: "1", pinnedDownloadBytes: 167_000_000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" },
+      { id: "plugin", name: "ChemDraft Assistant" }, { status: "consent" });
+      await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction: vi.fn(), platform })));
+      expect(container.textContent).toContain("Allow ChemDraft Assistant to use Codex?");
+      expect(container.textContent).not.toMatch(/download|MB|free while installing/i);
+      expect(container.textContent?.match(/leave this computer and go to OpenAI/g)).toHaveLength(1);
+      expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
+    }
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});
+
 it.each([["Anthropic", "Claude Code"], ["OpenAI", "Codex"]])('names %s and web access in both download and consent copy', async (publisher, toolName) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);

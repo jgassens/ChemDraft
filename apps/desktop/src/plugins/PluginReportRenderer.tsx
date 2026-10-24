@@ -1,9 +1,10 @@
 import type { PluginPanelReport, PluginPanelSection } from "@chemdraft/plugin-api";
 
 import { LinkedFigureView } from "./LinkedFigureView";
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { writeClipboardText } from "../clipboard";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
+import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
 
 export type { PluginPanelActionHandler, PluginPanelActionRequest, PluginPanelActionResult } from "./pluginPanelActionTypes";
 
@@ -61,7 +62,7 @@ function PluginReportSectionView({ section, copyText, onAction }: {
       return (
         <section className="plugin-report-section plugin-report-text">
           {section.title ? <h4>{section.title}</h4> : null}
-          <p>{section.body}</p>
+          <p><PluginInlineMarkdown text={section.body} /></p>
         </section>
       );
     case "keyValue":
@@ -137,11 +138,14 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
   const [draft, setDraft] = useState("");
   const [message, setMessage] = useState<string>();
   const [pending, setPending] = useState(false);
+  // React state alone does not guard two events delivered before the next render.
+  const submitting = useRef(false);
   const [selected, setSelected] = useState(section.select?.value);
   useEffect(() => setSelected(section.select?.value), [section.select?.value]);
-  const canSubmit = !!onAction && !section.disabled && !pending;
+  const canSubmit = !!onAction && !section.disabled && !pending && draft.trim().length > 0;
   const submit = async (): Promise<void> => {
-    if (!canSubmit || !onAction) return;
+    if (!canSubmit || !onAction || submitting.current) return;
+    submitting.current = true;
     const submittedDraft = draft;
     setPending(true);
     setMessage(undefined);
@@ -153,6 +157,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
     } catch {
       setMessage("The action could not be completed.");
     } finally {
+      submitting.current = false;
       setPending(false);
     }
   };
@@ -160,6 +165,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
     const nativeEvent = event.nativeEvent;
     if (event.key !== "Enter" || event.shiftKey || nativeEvent.isComposing || nativeEvent.keyCode === 229) return;
     event.preventDefault();
+    if (event.repeat) return;
     void submit();
   };
   const select = section.select;

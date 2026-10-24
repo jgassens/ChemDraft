@@ -1,9 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { ASSISTANT_GAP, choosePlacement, overlaps, relativeRect } from "./placement";
+import { ASSISTANT_GAP, choosePlacement, choosePagePlacements, overlaps, relativeRect } from "./placement";
 
 const page = { width: 1000, height: 1000 };
 const size = { width: 100, height: 80 };
 describe("assistant placement", () => {
+  it("uses each item's width for column spacing and respects asymmetric margins", () => {
+    const page = { width: 612, height: 792, margin: { left: 48, right: 24, top: 80, bottom: 60 } };
+    const placed = choosePagePlacements({ page, occupied: [], columns: 3,
+      sizes: [{ width: 300, height: 100 }, { width: 50, height: 100 }, { width: 50, height: 100 }] });
+    expect(placed.warnings).toEqual([]);
+    expect(placed.rects.map(rect => [rect.x, rect.y])).toEqual([[48, 80], [404, 80], [510, 80]]);
+  });
+  it("fills a remaining hole after an oversized item and counts only actual overflow", () => {
+    const placed = choosePagePlacements({ page: { width: 612, height: 792 },
+      occupied: [{ x: 36, y: 200, width: 540, height: 556 }], sizes: [{ width: 600, height: 100 }, { width: 80, height: 60 }] });
+    expect(placed.warnings).toEqual([expect.stringMatching(/^assistant\.placement_overflow: 1 item /)]);
+    expect(placed.rects[0]!.x).toBe(36);
+    expect(placed.rects[0]!.y).toBeGreaterThan(792);
+    expect(placed.rects[1]!.y + placed.rects[1]!.height).toBeLessThan(200);
+  });
+  it("counts every item on a full page and keeps overflow objects separate", () => {
+    const placed = choosePagePlacements({ page, occupied: [{ x: 0, y: 0, ...page }], sizes: [size, size] });
+    expect(placed.warnings).toEqual([expect.stringMatching(/^assistant\.placement_overflow: 2 items /)]);
+    expect(placed.rects.every(rect => rect.y > page.height)).toBe(true);
+    expect(overlaps(placed.rects[0]!, placed.rects[1]!)).toBe(false);
+  });
   it("anchors at the visible viewport centre", () => {
     expect(choosePlacement({ page, size, occupied: [], viewport: { x: 200, y: 300, width: 400, height: 200 } }).rect)
       .toEqual({ x: 350, y: 360, ...size });

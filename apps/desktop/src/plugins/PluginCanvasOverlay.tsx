@@ -6,6 +6,7 @@ import { PluginPromptSection, PluginReportRenderer } from "./PluginReportRendere
 import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom } from "./pluginPanelAutoscroll";
+import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
 
 type Position = { x: number; y: number };
 type Mode = "collapsed" | "expanded";
@@ -52,23 +53,33 @@ type CanvasOverlayTranscriptSource = {
   subscribeCanvasOverlayTranscript: (listener: () => void) => () => void;
 };
 
-function OverlayTranscript({ overlayId, source, expanded }: {
-  overlayId: string; source: CanvasOverlayTranscriptSource | undefined; expanded: boolean;
+function OverlayTranscript({ overlayId, source, expanded, ownSubmit, height }: {
+  overlayId: string; source: CanvasOverlayTranscriptSource | undefined; expanded: boolean; ownSubmit: number; height: number;
 }) {
   const entries = useSyncExternalStore(source?.subscribeCanvasOverlayTranscript ?? subscribeNever,
     () => source?.getCanvasOverlayTranscripts().get(overlayId) ?? emptyTranscript,
     () => emptyTranscript);
   const ref = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  useLayoutEffect(() => { atBottom.current = true; }, [ownSubmit]);
   useLayoutEffect(() => {
     if (expanded && atBottom.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [entries, expanded]);
+  }, [entries, expanded, ownSubmit, height]);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!expanded || !element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current) element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [expanded]);
   return <div className="plugin-canvas-overlay-transcript" role="log" aria-label="Conversation"
     ref={ref} onScroll={() => { if (ref.current) atBottom.current = isScrolledToBottom(ref.current); }}>
     {entries.map((entry, index) => <div key={index} data-role={entry.role}
       className={`plugin-canvas-overlay-entry${entry.role === "error" ? " plugin-report-composer-error" : ""}`}>
       <strong>{entry.role === "user" ? "You" : entry.role[0]!.toUpperCase() + entry.role.slice(1)}</strong>
-      <span>{entry.text}</span>
+      <span><PluginInlineMarkdown text={entry.text} /></span>
     </div>)}
   </div>;
 }
@@ -113,8 +124,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const storageKey = `chemdraft:canvas-overlay:${windowId}:${overlay.id}`;
   const [height, setHeight] = useState(() => readHeight(`${storageKey}:height`));
   const [displayHeight, setDisplayHeight] = useState(height);
+  const [ownSubmit, setOwnSubmit] = useState(0);
   const content = useSyncExternalStore(contentSource?.subscribeCanvasOverlayContent ?? subscribeNever,
     () => contentSource?.getCanvasOverlayContents().get(overlay.id) ?? emptyContent, () => emptyContent);
+  const firstActions = content.find(section => section.kind === "actions");
+  const scrollingContent = content.filter(section => section !== firstActions);
   const openRequest = useSyncExternalStore(openSource?.subscribeCanvasOverlayOpen ?? subscribeNever,
     () => openSource?.getCanvasOverlayOpenRequests().get(overlay.id), () => undefined);
   const [expanded, setExpanded] = useState(false);
@@ -340,11 +354,17 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           onPointerDown={event => event.stopPropagation()}
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
-      <PluginPromptSection section={{ ...overlay.prompt, rows: 1 }} onAction={onAction} includeSelected />
-      {content.length > 0 ? <div className="plugin-canvas-overlay-content" ref={contentRef}>
-        <PluginReportRenderer report={{ title: overlay.title, sections: [...content] }} onAction={onAction} />
+      <PluginPromptSection section={{ ...overlay.prompt, rows: 1 }} onAction={request => {
+        if (request.control === "prompt") setOwnSubmit(value => value + 1);
+        return onAction(request);
+      }} includeSelected />
+      {firstActions ? <div className="plugin-canvas-overlay-primary-actions">
+        <PluginReportRenderer report={{ title: overlay.title, sections: [firstActions] }} onAction={onAction} />
       </div> : null}
-      <OverlayTranscript overlayId={overlay.id} source={transcriptSource} expanded={expanded} />
+      {content.length > 0 ? <div className="plugin-canvas-overlay-content" ref={contentRef}>
+        <PluginReportRenderer report={{ title: overlay.title, sections: [...scrollingContent] }} onAction={onAction} />
+      </div> : null}
+      <OverlayTranscript overlayId={overlay.id} source={transcriptSource} expanded={expanded} ownSubmit={ownSubmit} height={displayHeight} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
         {panelTitle ? `Open ${panelTitle}` : "Open panel"}

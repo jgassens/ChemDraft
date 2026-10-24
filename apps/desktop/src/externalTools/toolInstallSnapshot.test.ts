@@ -4,6 +4,13 @@ import states from "../dialogs/toolInstallButtonStates.json";
 import { validToolInstallSnapshot, type ToolInstallState } from "../dialogs/dialogProtocol";
 const base = { state: "missing" as const, pinnedVersion: "1", pinnedDownloadBytes: 274_675_680, freeDiskBytes: 4_000_000_000, canInstall: true, consented: false, probedAt: "now" };
 describe("toolInstallSnapshot", () => {
+  it.each(["user", "managed"] as const)("requires no download or disk budget for a %s installation at consent", source => {
+    const snapshot = toolInstallSnapshot({ ...base, tool: "codex", publisher: "OpenAI", state: "installed", source },
+      { id: "plugin", name: "Plugin" }, { status: "consent" });
+    expect(snapshot.downloadBytes).toBe(0);
+    expect(snapshot.requiredDiskBytes).toBe(0);
+    expect(validToolInstallSnapshot(snapshot)).toBe(true);
+  });
   it.each(states)("produces the shared buttons for $state.status", row => {
     const snapshot = toolInstallSnapshot({ ...base, tool: "claude", publisher: "Anthropic" }, { id: "plugin", name: "Plugin" }, row.state as ToolInstallState);
     expect(snapshot.buttons).toEqual(row.buttons);

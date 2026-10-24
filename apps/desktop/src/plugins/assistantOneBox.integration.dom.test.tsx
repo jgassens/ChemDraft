@@ -258,11 +258,12 @@ function expectCodexChoice(): void {
   const content = overlay().querySelector(".plugin-canvas-overlay-content")!;
   expect([...content.querySelectorAll("h4")].map(heading => heading.textContent)).toEqual(["AI: Codex (OpenAI)"]);
   expect(overlay().querySelector("select")).toBeNull();
-  expect([...content.querySelectorAll("button")].map(button => button.textContent)).toEqual([
+  const pinned = overlay().querySelector(".plugin-canvas-overlay-primary-actions")!;
+  expect([...pinned.querySelectorAll("button"), ...content.querySelectorAll("button")].map(button => button.textContent)).toEqual([
     "✓ Codex (OpenAI)", "Setup…", "New conversation"
   ]);
-  button("✓ Codex (OpenAI)", content);
-  button("Setup…", content);
+  button("✓ Codex (OpenAI)", pinned);
+  button("Setup…", pinned);
   button("New conversation", content);
 }
 
@@ -305,7 +306,8 @@ function expectCodexReply(): void {
   expect(native.invoke).toHaveBeenCalledWith("external_tool_run_poll", expect.objectContaining({ cursor: lines.length }));
   const transcript = overlay().querySelector('[role="log"]')!;
   expect(transcript.querySelector('[data-role="user"] span')!.textContent).toBe(prompt);
-  expect(transcript.querySelector('[data-role="assistant"] span')!.textContent).toBe(reply);
+  expect(transcript.querySelector('[data-role="assistant"] span')!.textContent).toBe(reply.replaceAll("`", ""));
+  expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
   expect(overlay().querySelector("textarea")!.compareDocumentPosition(transcript) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(status().textContent).toBe("Codex (OpenAI) replied — no changes to the page");
   expect(transcript.textContent).not.toMatch(/Done\.|Done —|replied — no changes to the page/i);

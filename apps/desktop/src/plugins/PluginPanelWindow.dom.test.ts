@@ -750,6 +750,11 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
         title: "Assistant",
         sections: [{ kind: "prompt", id: "ask", commandId: "plugin.exampleAnalyzer.run", submitLabel: "Send", maxLength: 4000, rows: 3, disabled: false }]
       } }));
+      await act(async () => {
+        const textarea = container!.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw benzene");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
       const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
       await act(async () => {
         send.dispatchEvent(new MouseEvent("click", { bubbles: true }));

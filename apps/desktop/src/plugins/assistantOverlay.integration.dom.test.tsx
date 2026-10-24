@@ -158,7 +158,8 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     expect(native.invoke).toHaveBeenCalledWith("external_tool_run_start", expect.anything());
     const transcript = container.querySelector('[role="log"]')!;
     expect(transcript.textContent).toContain("Draw benzene");
-    expect(transcript.textContent).toContain(reply);
+    expect(transcript.textContent).toContain(reply.replaceAll("`", ""));
+    expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
     const panel = runtime.panels.getDetachedPanels()[0]!;
     const windowId = pluginPanelWindowId(manifest.id, panel.panelId);
     window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
@@ -167,7 +168,8 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     panelRoot = createRoot(detached);
     await act(async () => panelRoot!.render(<PluginPanelWindow panelId={windowId} />));
     expect(detached.textContent).toContain("Draw benzene");
-    expect(detached.textContent).toContain(reply);
+    expect(detached.textContent).toContain(reply.replaceAll("`", ""));
+    expect([...detached.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
   } finally { descriptor.deactivate?.(); }
 });
 
@@ -205,7 +207,7 @@ it("dispatches live overlay content with no panel contribution and never opens a
   expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.expanded).toBe("true");
   expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull();
   expect(document.activeElement).toBe(container.querySelector(".plugin-canvas-overlay textarea"));
-  const button = () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-content button")!;
+  const button = () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
   const resolver = vi.spyOn(pluginPanelActions, "resolvePluginPanelAction");
   await act(async () => button().click());
   expect(handler).toHaveBeenLastCalledWith({ source: "overlay", overlayId, sectionId: "setup", control: "button", controlId: "run", payload: { choice: "live" } });

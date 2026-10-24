@@ -151,6 +151,11 @@ describe("PluginPanelSurface", () => {
         report: { title: "Assistant", sections: [{ kind: "prompt", id: "ask", commandId: RECOGNITION_FIXTURE_COMMAND_ID, maxLength: 4000, rows: 3, submitLabel: "Send", disabled: false }] }
       } })));
       expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
+      await act(async () => {
+        const textarea = container!.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw benzene");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
       const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
       await act(async () => {
         send.dispatchEvent(new MouseEvent("click", { bubbles: true }));

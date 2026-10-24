@@ -3,7 +3,7 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  createNativeTextObject, layoutGrid, layoutReactionScheme, nextObjectId,
+  createNativeTextObject, layoutReactionScheme, nextObjectId,
   nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
@@ -14,7 +14,7 @@ import {
   type AssistantToolContext
 } from "./AssistantToolContext";
 import {
-  ASSISTANT_GAP, ASSISTANT_MARGIN, choosePlacement, objectRect, relativeRect, unionRects,
+  ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
   type RelativeSide
 } from "./placement";
 import { toolSchemas, type ToolInput } from "./tools/schemas";
@@ -158,16 +158,22 @@ function freshObjects(document: ChemDraftDocument, objects: readonly DocumentObj
     return { ...object, id };
   });
 }
+function assistantText(document: ChemDraftDocument, text: string, style: Partial<NativeTextStyle> = {}) {
+  const object = createNativeTextObject(document, { x: 0, y: 0 }, text, style);
+  // Wrap captions at the content width, never at the outer paper edge. Only text boxes reflow;
+  // molecule geometry and the document's bond length are untouched.
+  return { ...object, ...nativeTextObjectSizeForText(text, object.style, { maxWidth: pageContentRect(document.pages[0]!).width }) };
+}
 function placement(context: AssistantToolContext, objects: readonly DocumentObject[], pageId?: string,
   relative?: { objectId: string; side: RelativeSide }, exclude: readonly string[] = []) {
   const document = requireDocument(context);
   const page = pageId ? document.pages.find(page => page.id === pageId)! : document.pages[0]!;
   const bounds = unionRects(objects.map(objectRect));
   const preferred = relative ? relativeRect(bounds, objectRect(findObject(document, relative.objectId).object), relative.side) : undefined;
-  const placed = choosePlacement({ page, size: bounds, occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
-    viewport: context.getViewportRect?.(context.tabId), preferred });
+  const placed = choosePagePlacements({ page, sizes: [bounds], occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
+    viewport: context.getViewportRect?.(context.tabId), preferred, ...(relative ? { gap: RELATIVE_GAP } : {}) });
   return { page, warnings: placed.warnings,
-    objects: objects.map(object => translateObject(object, placed.rect.x - bounds.x, placed.rect.y - bounds.y)) };
+    objects: objects.map(object => translateObject(object, placed.rects[0]!.x - bounds.x, placed.rects[0]!.y - bounds.y)) };
 }
 function insertWrite(pageId: string, objects: DocumentObject[], summary: string, warnings: string[], expectedSmiles?: ReadonlyMap<string, string>): AssistantWrite {
   return { patch: { op: "batch", patches: objects.map(object => ({ op: "addObject", pageId, object })) },
@@ -181,53 +187,48 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const sourceMolecules: MoleculeObject[] = [];
   for (const item of input.items) if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
   const columns = input.arrangement === "row" ? input.items.length : Math.ceil(Math.sqrt(input.items.length));
-  let objects: DocumentObject[];
-  if (sourceMolecules.length === input.items.length) {
-    const labels = input.items.map(item => item.kind === "molecule" && item.label
-      ? createNativeTextObject(document, { x: 0, y: 0 }, item.label) : undefined);
-    const grid = layoutGrid({ entries: sourceMolecules.map((molecule, index) => {
-      const bounds = objectRect(molecule);
-      const label = labels[index];
-      const full = label ? unionRects([bounds, {
-        x: bounds.x + (bounds.width - label.width) / 2, y: bounds.y + bounds.height + 8,
-        width: label.width, height: label.height
-      }]) : bounds;
-      // Include the label in the shared grid cell, so long labels cannot overlap neighbours.
-      return { molecule, bounds: { minX: full.x, minY: full.y, maxX: full.x + full.width, maxY: full.y + full.height }, label: null };
-    }), columns, gutter: ASSISTANT_GAP, anchor: { x: ASSISTANT_MARGIN, y: ASSISTANT_MARGIN }, pageWidth: page.width });
-    objects = grid.molecules.flatMap((molecule, index): DocumentObject[] => {
-      const label = labels[index];
-      const bounds = objectRect(molecule);
-      return label ? [molecule, { ...label, x: bounds.x + (bounds.width - label.width) / 2,
-        y: bounds.y + bounds.height + 8 }] : [molecule];
-    });
-  } else {
-    let moleculeIndex = 0;
-    const cells = input.items.map(item => {
-      if (item.kind === "text") return [createNativeTextObject(document, { x: 0, y: 0 }, item.text, nativeTextStyle(item.style))];
-      const molecule = sourceMolecules[moleculeIndex++]!;
-      const bounds = objectRect(molecule);
-      const cell: DocumentObject[] = [translateObject(molecule, -bounds.x, -bounds.y)];
-      if (item.label) {
-        const label = createNativeTextObject(document, { x: 0, y: 0 }, item.label);
-        cell.push({ ...label, x: (bounds.width - label.width) / 2, y: bounds.height + 8 });
-      }
-      return cell;
-    });
-    objects = arrangeCells(cells, columns);
-  }
-  const fresh = freshObjects(document, objects);
-  const placed = placement(context, fresh);
+  let moleculeIndex = 0;
+  const cells = input.items.map(item => {
+    if (item.kind === "text") return freshObjects(document, [assistantText(document, item.text, nativeTextStyle(item.style))]);
+    const molecule = sourceMolecules[moleculeIndex++]!;
+    const bounds = objectRect(molecule);
+    const cell: DocumentObject[] = [translateObject(molecule, -bounds.x, -bounds.y)];
+    if (item.label) {
+      const label = assistantText(document, item.label);
+      cell.push({ ...label, x: (bounds.width - label.width) / 2, y: bounds.height + 8 });
+    }
+    return freshObjects(document, cell);
+  });
+  const placed = arrangeCells(context, cells, page.id, columns);
   const inputs = input.items.filter(item => item.kind === "molecule");
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, inputs[index]!.smiles]));
-  return insertWrite(placed.page.id, placed.objects, `Inserted ${sourceMolecules.length} molecules and ${objects.length - sourceMolecules.length} text objects`, placed.warnings, expected);
+  return insertWrite(placed.page.id, placed.objects, `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`, placed.warnings, expected);
 }
-function arrangeCells(cells: DocumentObject[][], columns: number): DocumentObject[] {
+function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], pageId: string, columns: number, exclude: readonly string[] = []) {
+  const page = requireDocument(context).pages.find(page => page.id === pageId)!;
   const bounds = cells.map(cell => unionRects(cell.map(objectRect)));
-  const width = Math.max(...bounds.map(rect => rect.width)) + ASSISTANT_GAP;
-  const height = Math.max(...bounds.map(rect => rect.height)) + ASSISTANT_GAP;
-  return cells.flatMap((cell, index) => cell.map(object => translateObject(object,
-    (index % columns) * width - bounds[index]!.x, Math.floor(index / columns) * height - bounds[index]!.y)));
+  const placed = choosePagePlacements({ page, sizes: bounds, columns,
+    occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
+    viewport: context.getViewportRect?.(context.tabId) });
+  return { page, warnings: placed.warnings, objects: cells.flatMap((cell, index) => cell.map(object => translateObject(object,
+    placed.rects[index]!.x - bounds[index]!.x, placed.rects[index]!.y - bounds[index]!.y))) };
+}
+
+/** Retain nearby centred captions when the caller includes both objects in an arrangement. */
+function arrangementCells(objects: DocumentObject[]): DocumentObject[][] {
+  const cells: DocumentObject[][] = objects.filter(object => object.type !== "text").map(object => [object]);
+  for (const text of objects.filter(object => object.type === "text")) {
+    const label = objectRect(text);
+    const owner = cells.find(cell => {
+      if (cell[0]!.type !== "molecule") return false;
+      const molecule = objectRect(cell[0]!);
+      const gap = label.y - molecule.y - molecule.height;
+      return gap >= -1e-6 && gap <= 12 && Math.abs(label.x + label.width / 2 - molecule.x - molecule.width / 2) < 1;
+    });
+    if (owner) owner.push(text);
+    else cells.push([text]);
+  }
+  return cells;
 }
 export async function buildInsertReaction(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.insert_reaction.parse(raw);
@@ -264,7 +265,8 @@ export function buildInsertText(context: AssistantToolContext, raw: unknown): As
   const input = toolSchemas.insert_text.parse(raw);
   const document = requireDocument(context);
   const pageId = input.relativeTo ? findObject(document, input.relativeTo.objectId).page.id : undefined;
-  const object = freshObjects(document, [createNativeTextObject(document, { x: 0, y: 0 }, input.text, nativeTextStyle(input.style))]);
+  const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
+  const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
   const placed = placement(context, object, pageId, input.relativeTo);
   return insertWrite(placed.page.id, placed.objects, "Inserted text", placed.warnings);
 }
@@ -335,11 +337,13 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
   }
   const originals = entries.map(entry => entry.object);
-  const arranged = "arrange" in input.to ? arrangeCells(originals.map(object => [object]), input.to.arrange === "row" ? originals.length : Math.ceil(Math.sqrt(originals.length))) : originals;
   const relative = "relativeTo" in input.to ? { objectId: input.to.relativeTo, side: input.to.side } : undefined;
   if (relative && input.objectIds.includes(relative.objectId)) throw new Error("A move cannot be relative to an object being moved.");
   if (relative && findObject(document, relative.objectId).page.id !== entries[0]!.page.id) throw new Error("The relative object must be on the same page.");
-  const placed = placement(context, arranged, entries[0]!.page.id, relative, input.objectIds);
+  const cells = arrangementCells(originals);
+  const placed = "arrange" in input.to
+    ? arrangeCells(context, cells, entries[0]!.page.id, input.to.arrange === "row" ? cells.length : Math.ceil(Math.sqrt(cells.length)), input.objectIds)
+    : placement(context, originals, entries[0]!.page.id, relative, input.objectIds);
   const patches: DocumentPatch[] = placed.objects.map(object => {
     const original = findObject(document, object.id).object;
     const changes: Partial<DocumentObject> = {};
