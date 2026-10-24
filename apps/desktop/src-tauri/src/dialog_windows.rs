@@ -242,7 +242,15 @@ struct ToolInstallSnapshot {
     free_disk_bytes: Option<u64>,
     state: ToolInstallState,
     buttons: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_present_intent")]
     intent: Option<String>,
+}
+// Omission is allowed, but a present intent must be a string, never null.
+fn deserialize_present_intent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
@@ -1974,6 +1982,12 @@ mod tests {
             message.data["intent"] = intent.clone();
             assert!(message.validate().is_err(), "intent: {intent}");
         }
+    }
+    #[test]
+    fn tool_install_rejects_null_intent() {
+        let mut message = tool_install_snapshot();
+        message.data["intent"] = Value::Null;
+        assert!(message.validate().is_err());
     }
     #[test]
     fn tool_install_validates_spec_buttons_labels_and_capability_matcher() {
