@@ -92,8 +92,9 @@ const letterObjects = (doc: Json) => doc.pages[0].objects.filter((o: Json) => o.
 function ringAtomsFromDocument(mol: Json): Map<string, Set<string>> {
   return new Map(Object.keys(mol.style.ringStyles).map((ringKey) => {
     const bonds = new Set(ringKey.split("|"));
-    return [ringKey, new Set(mol.bonds.filter((bond: Json) => bonds.has(bond.id))
+    const atomIds = [...new Set(mol.bonds.filter((bond: Json) => bonds.has(bond.id))
       .flatMap((bond: Json) => [bond.fromAtomId, bond.toAtomId]))];
+    return [ringKey, new Set(ringPolygon(mol, { atomIds, bondIds: [...bonds] }).map((atom) => atom.id))];
   }));
 }
 function inside(point: { x: number; y: number }, poly: { x: number; y: number }[]): boolean {
@@ -106,7 +107,7 @@ function inside(point: { x: number; y: number }, poly: { x: number; y: number }[
 }
 
 /** Atom positions of a ring in cycle order, from the build's ring record. */
-function ringPolygon(mol: Json, ring: Json): { x: number; y: number }[] {
+function ringPolygon(mol: Json, ring: Json): { id: string; x: number; y: number }[] {
   const bonds = ring.bondIds.map((id: string) => mol.bonds.find((b: Json) => b.id === id));
   const order = [ring.atomIds[0]];
   while (order.length < ring.atomIds.length) {
@@ -462,6 +463,25 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
       expect(ringStyle.invalidRingFillPaths(broken, rings, mol.atoms)).toEqual([
         expect.objectContaining({ failure: expect.stringContaining("not the plain ring polygon") })
       ]);
+    }
+  });
+
+  it("rejects bow-tie fills and accepts either cyclic direction from any starting vertex", () => {
+    const atoms = [
+      { id: "a0", x: 0, y: 0 }, { id: "a1", x: 20, y: 0 },
+      { id: "a2", x: 20, y: 20 }, { id: "a3", x: 0, y: 20 }
+    ];
+    const rings = new Map([["square", new Set(atoms.map((atom) => atom.id))]]);
+    const svg = (d: string) => `<path data-molecule-fill-ring="true" data-ring-key="square" d="${d}"/>`;
+    expect(ringStyle.invalidRingFillPaths(svg("M 0 0 L 20 20 L 20 0 L 0 20 Z"), rings, atoms)).toEqual([
+      expect.objectContaining({ failure: expect.stringContaining("not the plain ring polygon") })
+    ]);
+    for (const direction of [atoms, [...atoms].reverse()]) {
+      for (let start = 0; start < atoms.length; start++) {
+        const points = [...direction.slice(start), ...direction.slice(0, start)];
+        const d = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ") + " Z";
+        expect(ringStyle.invalidRingFillPaths(svg(d), rings, atoms)).toEqual([]);
+      }
     }
   });
 

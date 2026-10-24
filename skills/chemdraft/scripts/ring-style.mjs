@@ -1540,7 +1540,8 @@ function polygonPathFaces(d) {
 }
 
 /** Every emitted ring fill must be its single, closed atom-centre polygon. Reject holes,
- * evenodd notches, extra vertices and moved vertices, including fills with no visible labels. */
+ * evenodd notches, extra vertices and moved vertices, including fills with no visible labels.
+ * ringAtomsByKey must iterate each ring's atom IDs in cyclic boundary order. */
 export function invalidRingFillPaths(svg, ringAtomsByKey, atoms = []) {
   const failures = [];
   for (const match of svg.matchAll(/<path\s((?:[^>"]|"[^"]*")*)\/?>/g)) {
@@ -1550,16 +1551,15 @@ export function invalidRingFillPaths(svg, ringAtomsByKey, atoms = []) {
     const expected = [...(ringAtomsByKey.get(ring) ?? [])].map((id) => atoms.find((atom) => atom.id === id));
     const faces = polygonPathFaces(d);
     const points = faces[0] ?? [];
-    const remaining = [...points];
-    const matches = expected.length >= 3 && expected.every((atom) => {
-      const index = atom && remaining.findIndex((p) => Math.abs(p.x - atom.x) <= 0.001 && Math.abs(p.y - atom.y) <= 0.001);
-      if (index === undefined || index === -1) return false;
-      remaining.splice(index, 1);
-      return true;
-    });
+    // Ring atom IDs are in boundary order. Only cyclic shifts and reversal preserve its edges.
+    const matches = expected.length >= 3 && points.length === expected.length
+      && points.some((_, start) => [1, -1].some((direction) => expected.every((atom, index) => {
+        const point = points[(start + direction * index + points.length) % points.length];
+        return atom && Math.abs(point.x - atom.x) <= 0.001 && Math.abs(point.y - atom.y) <= 0.001;
+      })));
     if (attr(tag, "fill-rule") === "evenodd" || faces.length !== 1 || !/[zZ]\s*$/.test(d)
       || (d.match(/[Mm]/g) ?? []).length !== 1 || (d.match(/[Zz]/g) ?? []).length !== 1
-      || /[^MmLlHhVvZz0-9eE+.,\s-]/.test(d) || !matches || remaining.length) {
+      || /[^MmLlHhVvZz0-9eE+.,\s-]/.test(d) || !matches) {
       failures.push({ ring, failure: `ring fill is not the plain ring polygon: ${ring}` });
     }
   }

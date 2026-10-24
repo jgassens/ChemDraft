@@ -61,6 +61,26 @@ describe("ring fills and glyph halos", () => {
       .every((f) => f.attrs.stroke === "#fff0c2")).toBe(true);
     expect(sulfur.children.flatMap(elementFragments).some((f) => f.attrs["data-label-halo-ring"])).toBe(false);
   });
+  it("keeps an explicitly white ring-atom halo while default halos match the fill", () => {
+    const { document, object } = ringHaloDocument("oxathiazinane", "solid"); // C1OCSCN1
+    object.style.atomLabelBackgroundColors = { a1: "#ffffff" };
+    const fragments = planPageSvgRender(document.pages[0]!).fragments.flatMap(elementFragments);
+    const labels = planMoleculeAtomLabels(object);
+    expect(labels.map((label) => label.atom.element)).toEqual(["O", "S", "N"]);
+    for (const label of labels) {
+      const group = fragments.find((f) => f.key === `label-${object.id}-${label.atom.id}`)!;
+      const children = group.children.flatMap(elementFragments);
+      const strokes = children.filter((f) => f.attrs.class === "native-atom-label-halo");
+      expect(strokes).toHaveLength(label.layout.runs.length);
+      if (label.atom.id === "a1") {
+        expect(strokes.every((f) => f.attrs.stroke === "#ffffff")).toBe(true);
+        expect(children.some((f) => f.attrs["data-label-halo-ring"])).toBe(false);
+      } else {
+        expect(strokes.every((f) => String(f.attrs.stroke).startsWith("url(#label-halo-"))).toBe(true);
+        expect(children.some((f) => f.attrs["data-label-halo-ring"])).toBe(true);
+      }
+    }
+  });
   it.each(["linear-gradient", "radial-gradient"] as const)("keeps %s paint coordinates and ring effects off halos", (kind) => {
     const { document, object } = ringHaloDocument("pyridinium", "solid");
     const ring = nativeMoleculeRings(object)[0]!;

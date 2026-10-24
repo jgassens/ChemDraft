@@ -1829,7 +1829,7 @@ function moleculeLabelHaloFragments(
 ): PageSvgFragment[] {
   if (!plan.backgroundVisible) return [];
   const paper = paperHalo();
-  if (plan.backgroundColor.toLowerCase() !== DefaultNativeDrawingStyle.atomLabelBackgroundColor.toLowerCase()) return paper;
+  if (Object.prototype.hasOwnProperty.call(object.style.atomLabelBackgroundColors ?? {}, plan.atom.id)) return paper;
   const extent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
   const box = {
     x: plan.anchor.x + plan.layout.bounds.x * scale - extent,
