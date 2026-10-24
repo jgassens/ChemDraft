@@ -1,4 +1,4 @@
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
 import { normalizeCommittedDocument } from "../documentWorkflow";
 import type { AssistantToolContext } from "./AssistantToolContext";
 import { inspectMolecule, inspectSmiles } from "./writeBuilder";
@@ -6,6 +6,11 @@ import { inspectMolecule, inspectSmiles } from "./writeBuilder";
 const objectsById = (document: ChemDraftDocument) => new Map(document.pages.flatMap(page =>
   page.objects.map(object => [object.id, { pageId: page.id, object }] as const)));
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+type ObjectEntry = { pageId: string; object: DocumentObject };
+// Patches and normalization share untouched objects. Do not serialize their atom/bond graphs
+// just to discover that they are unchanged; retain value comparison for replaced objects.
+const equalEntry = (a: ObjectEntry | undefined, b: ObjectEntry | undefined) =>
+  (a?.pageId === b?.pageId && a?.object === b?.object) || equal(a, b);
 
 /** Host boundary for every assistant tool write. Verify the exact desktop commit, not just
  * the patch: charge/radical reconciliation can also mutate unselected neighbouring objects.
@@ -16,7 +21,7 @@ function normalizeScopedWrite(before: ChemDraftDocument, patched: ChemDraftDocum
   for (const id of new Set([...previous.keys(), ...proposed.keys(), ...committed.keys()])) {
     if (scope.has(id)) continue;
     const old = previous.get(id), next = committed.get(id);
-    if (equal(old, next)) continue;
+    if (equalEntry(old, next)) continue;
     if (old?.object.type === "electron-mark" && next?.object.type === "electron-mark" && next.object.anchor.kind === "atom") {
       const mark = old.object;
       throw new Error(`refused: placing ${next.object.anchor.objectId} there would attach the unselected ${mark.markKind} mark ${id}` +
@@ -40,7 +45,7 @@ export async function verifyNormalizedAssistantWrite(context: AssistantToolConte
   // Include normalization's side effects, even when the patch itself only touched text or marks.
   for (const [id, entry] of committed) {
     const molecule = entry.object;
-    if (molecule.type !== "molecule" || equal(previous.get(id), entry)) continue;
+    if (molecule.type !== "molecule" || equalEntry(previous.get(id), entry)) continue;
     const source = expectedSmiles.has(id) ? proposed.get(id)?.object : previous.get(id)?.object ?? proposed.get(id)?.object;
     if (source?.type !== "molecule") throw new Error(`refused: cannot verify the chemistry of ${id}.`);
     const charges = (object: MoleculeObject) => object.atoms.map(atom => [atom.id, atom.formalCharge]);
@@ -76,8 +81,8 @@ export function recheckNormalizedAssistantWrite(before: ChemDraftDocument, patch
   const normalized = normalizeScopedWrite(before, patched, scope);
   const previous = objectsById(before), inspected = objectsById(verified), baseline = objectsById(verifiedBefore);
   for (const [id, entry] of objectsById(normalized)) {
-    if (entry.object.type === "molecule" && !equal(previous.get(id), entry) &&
-      (!equal(inspected.get(id), entry) || !equal(previous.get(id), baseline.get(id)))) {
+    if (entry.object.type === "molecule" && !equalEntry(previous.get(id), entry) &&
+      (!equalEntry(inspected.get(id), entry) || !equalEntry(previous.get(id), baseline.get(id)))) {
       throw new Error(`refused: the document changed while verifying molecule ${id}; read it again and choose another position.`);
     }
   }

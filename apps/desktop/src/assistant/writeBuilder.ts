@@ -1,5 +1,5 @@
 import {
-  applyPatch, cloneDocument, ChemDraftSyntheticStylePreset, stylePresetToObjectStyle, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
+  applyPatch, ChemDraftSyntheticStylePreset, stylePresetToObjectStyle, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
@@ -113,14 +113,14 @@ function buildGroup(label: string): MoleculeObject {
   });
 }
 
-/** Validate the entire batch on an isolated document before invoking the transaction. */
+/** Validate the entire batch immutably before invoking the transaction. */
 export async function applyAssistantWrite(context: AssistantToolContext, built: AssistantWrite) {
   const document = requireDocument(context);
   built.checkPreconditions?.(document);
   if (built.patch.op !== "batch" || built.patch.patches.length === 0 || built.patch.patches.length > 256) {
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
-  const validated = applyPatch(cloneDocument(document), built.patch, { now: context.now() });
+  const validated = applyPatch(document, built.patch, { now: context.now() });
   for (const [id, smiles] of built.expectedSmiles ?? []) {
     const { object } = findObject(validated, id);
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);

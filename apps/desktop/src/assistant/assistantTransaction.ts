@@ -1,4 +1,4 @@
-import { adoptDerivedDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { adoptDerivedDocument, isEngineDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { getAssistantHistoryPort, type AssistantHistoryPort } from "./historyPort";
 
 export interface BeginAssistantTransaction {
@@ -51,7 +51,9 @@ export class AssistantTransactions {
     for (const tx of this.transactions.values()) {
       if (!tx.ended && tx.tabId === input.tabId) throw new Error("An assistant request is already running in this tab.");
     }
-    const snapshot = structuredClone(this.document(input.tabId));
+    const current = this.document(input.tabId);
+    // Engine documents are immutable snapshots already; copying one breaks undo sharing.
+    const snapshot = isEngineDocument(current) ? current : structuredClone(current);
     const txId = crypto.randomUUID();
     this.transactions.set(txId, {
       ...input, sendSelection: structuredClone(input.sendSelection), snapshot,

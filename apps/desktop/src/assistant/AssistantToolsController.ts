@@ -1,4 +1,4 @@
-import { applyPatch, cloneDocument, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
@@ -149,7 +149,7 @@ export class AssistantToolsController implements PluginHostAssistant {
           const growth = approvedGrowth?.growth;
           const patchDocument = (document: ChemDraftDocument) => {
             const page = growth && document.pages.find(page => page.id === growth.pageId);
-            return applyPatch(cloneDocument(document), growth && page ? { op: "batch", patches: [
+            return applyPatch(document, growth && page ? { op: "batch", patches: [
               { op: "updatePageLayout", pageId: page.id,
                 layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
               ...writePatchOps(patch)

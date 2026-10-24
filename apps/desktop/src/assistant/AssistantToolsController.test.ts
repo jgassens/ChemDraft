@@ -69,6 +69,54 @@ function setup() {
 
 afterEach(() => vi.useRealTimers());
 
+describe("assistant write structural sharing", () => {
+  it.each([1, 5000])("inserts a caption without copying or comparing unchanged graphs (%i molecules, 20 atoms each)", async count => {
+    const s = setup();
+    const document = s.context.getDocument()!;
+    const page = document.pages[0]!;
+    const atoms = Array.from({ length: 20 }, (_, index) => ({ ...s.molecule.atoms[0]!,
+      id: `atom_${index}`, x: 100 + index * 10, y: 100 }));
+    const bonds = atoms.slice(1).map((atom, index) => ({ ...s.molecule.bonds[0]!,
+      id: `bond_${index}`, fromAtomId: atoms[index]!.id, toAtomId: atom.id }));
+    s.replace(toEngineDocument({ ...document, pages: [{ ...page, objects: [
+      ...Array.from({ length: count }, (_, index) => ({ ...s.molecule, id: `molecule_${index}`,
+        atoms, bonds, x: 100, y: 100, width: 190, height: 0 })), s.text
+    ] }] }));
+    s.select([]);
+    const before = s.context.getDocument()!;
+    const stringify = JSON.stringify;
+    let serializedCharacters = 0;
+    const serialization = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const result = stringify(...args);
+      serializedCharacters += result?.length ?? 0;
+      return result;
+    });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption" } });
+      // Count work rather than wall time: CI scheduling must not make this guard flaky.
+      // A full-document clone or per-molecule JSON comparison serializes megabytes here.
+      const serialized = serializedCharacters;
+      serialization.mockRestore();
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(serialized).toBeLessThan(20_000);
+      expect(clone.mock.calls.some(([value]) => value === before)).toBe(false);
+      expect(s.context.chemistry.inspectStructure).not.toHaveBeenCalled();
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toHaveLength(count + 2);
+      expect(before.pages[0]!.objects).toHaveLength(count + 1);
+      expect(after.pages[0]!.objects.slice(0, -1).every((object, index) => object === before.pages[0]!.objects[index])).toBe(true);
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.before).toBe(before);
+      expect(s.history[0]!.after).toBe(after);
+      const restored = undo({ past: [before], present: after, future: [] });
+      expect(restored.present).toBe(before);
+      expect(redo(restored).present).toBe(after);
+    } finally { serialization.mockRestore(); clone.mockRestore(); await s.finish(); }
+  });
+});
+
 function placementSetup() {
   const s = setup();
   const document = s.context.getDocument()!;
