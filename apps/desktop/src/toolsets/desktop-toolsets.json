@@ -888,21 +888,53 @@
             },
             {
               "commandId": "tool.art.rect",
-              "title": "Shape Tool",
+              "title": "Shapes",
               "icon": "bracket",
               "assetName": "Art_Shapes",
               "category": "annotation",
               "id": "tool.art.rect",
               "kind": "button",
-              "label": "Shape Tool",
+              "label": "Shapes",
               "primary": {
                 "type": "command",
                 "commandId": "tool.art.rect"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Shapes",
+                "columns": 2,
+                "items": [
+                  {
+                    "commandId": "tool.art.rect",
+                    "label": "Rectangle",
+                    "icon": "bracket",
+                    "assetName": "Art_Rectangle"
+                  },
+                  {
+                    "commandId": "tool.art.roundedRect",
+                    "label": "Rounded Rectangle",
+                    "icon": "bracket",
+                    "assetName": "Art_Rounded_Rectangle"
+                  },
+                  {
+                    "commandId": "tool.art.circle",
+                    "label": "Circle",
+                    "icon": "bracket",
+                    "assetName": "Art_Circle"
+                  },
+                  {
+                    "commandId": "tool.art.ellipse",
+                    "label": "Ellipse",
+                    "icon": "bracket",
+                    "assetName": "Art_Ellipse"
+                  }
+                ],
+                "id": "shapes"
+              },
               "tooltip": {
-                "title": "Shape Tool",
-                "shortcut": null
+                "title": "Shapes",
+                "shortcut": null,
+                "description": "Draw a rectangle. Long-press or press Arrow Down for Rectangle, Rounded Rectangle, Circle, or Ellipse."
               },
               "layout": {
                 "colSpan": 1,
@@ -2851,21 +2883,53 @@
             },
             {
               "commandId": "tool.art.rect",
-              "title": "Shape Tool",
+              "title": "Shapes",
               "icon": "bracket",
               "assetName": "Art_Shapes",
               "category": "annotation",
               "id": "tool.art.rect",
               "kind": "button",
-              "label": "Shape Tool",
+              "label": "Shapes",
               "primary": {
                 "type": "command",
                 "commandId": "tool.art.rect"
               },
-              "submenu": null,
+              "submenu": {
+                "type": "command-grid",
+                "title": "Shapes",
+                "columns": 2,
+                "items": [
+                  {
+                    "commandId": "tool.art.rect",
+                    "label": "Rectangle",
+                    "icon": "bracket",
+                    "assetName": "Art_Rectangle"
+                  },
+                  {
+                    "commandId": "tool.art.roundedRect",
+                    "label": "Rounded Rectangle",
+                    "icon": "bracket",
+                    "assetName": "Art_Rounded_Rectangle"
+                  },
+                  {
+                    "commandId": "tool.art.circle",
+                    "label": "Circle",
+                    "icon": "bracket",
+                    "assetName": "Art_Circle"
+                  },
+                  {
+                    "commandId": "tool.art.ellipse",
+                    "label": "Ellipse",
+                    "icon": "bracket",
+                    "assetName": "Art_Ellipse"
+                  }
+                ],
+                "id": "shapes"
+              },
               "tooltip": {
-                "title": "Shape Tool",
-                "shortcut": null
+                "title": "Shapes",
+                "shortcut": null,
+                "description": "Draw a rectangle. Long-press or press Arrow Down for Rectangle, Rounded Rectangle, Circle, or Ellipse."
               },
               "layout": {
                 "colSpan": 1,
