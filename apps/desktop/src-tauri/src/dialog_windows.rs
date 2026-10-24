@@ -242,6 +242,7 @@ struct ToolInstallSnapshot {
     free_disk_bytes: Option<u64>,
     state: ToolInstallState,
     buttons: Vec<String>,
+    intent: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
@@ -281,6 +282,10 @@ impl ToolInstallSnapshot {
             || self.download_bytes > MAX_SAFE_INTEGER
             || self.required_disk_bytes > MAX_SAFE_INTEGER
             || self.free_disk_bytes.is_some_and(|n| n > MAX_SAFE_INTEGER)
+            || self
+                .intent
+                .as_deref()
+                .is_some_and(|intent| !matches!(intent, "download" | "update" | "use"))
         {
             return false;
         }
@@ -1947,6 +1952,28 @@ mod tests {
             "pluginName":"ChemDraft Assistant", "pluginId":"org.chemdraft.assistant", "disclosure":"Use is subject to terms.", "requiredDiskBytes":500000000, "freeDiskBytes":2000000000,
             "state":{"status":"notInstalled"}, "buttons":["install","close"]});
         message
+    }
+    #[test]
+    fn tool_install_accepts_each_intent() {
+        for intent in ["download", "update", "use"] {
+            let mut message = tool_install_snapshot();
+            message.data["intent"] = json!(intent);
+            assert!(message.validate().is_ok(), "intent: {intent}");
+        }
+    }
+    #[test]
+    fn tool_install_accepts_absent_intent() {
+        let message = tool_install_snapshot();
+        assert!(message.data.get("intent").is_none());
+        assert!(message.validate().is_ok());
+    }
+    #[test]
+    fn tool_install_rejects_invalid_intent() {
+        for intent in [json!("unknown"), json!("Update"), json!(""), json!(42)] {
+            let mut message = tool_install_snapshot();
+            message.data["intent"] = intent.clone();
+            assert!(message.validate().is_err(), "intent: {intent}");
+        }
     }
     #[test]
     fn tool_install_validates_spec_buttons_labels_and_capability_matcher() {
