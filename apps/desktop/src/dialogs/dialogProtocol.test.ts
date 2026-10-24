@@ -105,9 +105,13 @@ it("validates tool install snapshots, states and actions fail closed", () => {
     { state: { status: "broken", detail: "Receipt missing" }, buttons: ["install", "close"] }
   ]) expect(parseDialogMessage({ ...message, data: { ...data, ...state } })).toBeDefined();
   expect(parseDialogMessage({ ...message, data: { ...data, freeDiskBytes: null } })).toBeDefined();
+  for (const intent of ["download", "update", "use"]) {
+    expect(parseDialogMessage({ ...message, data: { ...data, intent } })).toBeDefined();
+  }
   for (const action of ["install", "allow", "cancelInstall", "close"]) expect(parseDialogMessage({ ...message, type: "action", data: { action } })).toBeDefined();
   for (const change of [
     { publisher: "" }, { version: "x".repeat(41) }, { downloadBytes: -1 },
+    { intent: "repair" }, { intent: null }, { intent: ["update"] }, { intent: true },
     { freeDiskBytes: -1 }, { freeDiskBytes: "unknown" },
     { state: { status: "consent", extra: true } }, { buttons: ["install", "allow", "close"] },
     { state: { status: "installing", phase: "Downloading", bytesDone: 1.5 }, buttons: ["cancelInstall", "close"] }

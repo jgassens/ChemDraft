@@ -7,14 +7,23 @@ describe("toolInstallSnapshot", () => {
   it.each([["codex", "Codex"], ["claude", "Claude Code"]] as const)("explains the managed %s update at consent", (tool, name) => {
     const status = { ...base, tool, publisher: "", state: "broken" as const, source: "managed" as const };
     const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "consent" });
-    expect(snapshot.disclosure).toContain(`Update ChemDraft's copy of ${name} to add the helper ChemDraft now needs.`);
-    expect(snapshot.disclosure).toContain("Your own installation and sign-in are kept.");
+    expect(snapshot.title).toBe(`Update ${name}`);
+    expect(snapshot.intent).toBe("update");
+    expect(snapshot.disclosure).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
+    expect(snapshot.disclosure).toContain(`Updating downloads ${name} ${base.pinnedVersion} from ${snapshot.downloadHost} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
     expect(snapshot.downloadBytes).toBe(base.pinnedDownloadBytes);
     expect(snapshot.requiredDiskBytes).toBeGreaterThan(0);
     expect(validToolInstallSnapshot(snapshot)).toBe(true);
-    for (const other of [{ state: "missing" as const }, { state: "installed" as const }, { source: "user" as const }]) {
-      expect(toolInstallSnapshot({ ...status, ...other }, { id: "plugin", name: "Plugin" }, { status: "consent" }).disclosure).not.toContain("Update ChemDraft's copy");
+    for (const other of [{ state: "missing" as const }, { state: "installed" as const }, { source: "user" as const }, { canInstall: false }]) {
+      const unchanged = toolInstallSnapshot({ ...status, ...other }, { id: "plugin", name: "Plugin" }, { status: "consent" });
+      expect(unchanged.intent).not.toBe("update");
+      expect(unchanged.title).not.toContain("Update");
+      expect(unchanged.disclosure).not.toContain("older ChemDraft version");
     }
+    const installed = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "installed" });
+    expect(installed.intent).toBe("use");
+    expect(installed.title).not.toContain("Update");
+    expect(installed.requiredDiskBytes).toBe(0);
   });
   it.each(["user", "managed"] as const)("requires no download or disk budget for a %s installation at consent", source => {
     const snapshot = toolInstallSnapshot({ ...base, tool: "codex", publisher: "OpenAI", state: "installed", source },

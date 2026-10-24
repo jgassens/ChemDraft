@@ -6,6 +6,41 @@ import { ToolInstallForm } from "./ToolInstallForm";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { toolInstallSnapshot } from "../externalTools/toolInstallSnapshot";
 
+it.each(["macos", "windows"] as const)("shows and invokes Update for both tools on %s", async platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    for (const [tool, name, publisher, host] of [["codex", "Codex", "OpenAI", "github.com"], ["claude", "Claude Code", "Anthropic", "downloads.claude.ai"]] as const) {
+      const status = { tool, publisher: "", state: "broken" as const, source: "managed" as const,
+        pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" };
+      for (const state of [{ status: "consent" }, { status: "broken", detail: "Update required." }, { status: "failed", message: "Download failed." }] as const) {
+        const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "ChemDraft Assistant" }, state);
+        const onAction = vi.fn();
+        await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction, platform })));
+        expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(`Update ${name}`);
+        expect(container.querySelector("h2")?.textContent).toBe(`Update ${name}`);
+        expect(container.textContent).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
+        expect(container.textContent).toContain(`Updating downloads ${name} 2.0.0 from ${host} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
+        expect(container.textContent).toContain(`Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request.`);
+        expect(container.textContent?.match(/leave this computer/g)).toHaveLength(1);
+        expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
+        expect(container.textContent).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
+        if (state.status === "consent") expect(container.textContent).toContain(`Allow ChemDraft Assistant to update and use ${name}?`);
+        expect(container.textContent).not.toContain("download and use");
+        const buttons = [...container.querySelectorAll("button")];
+        expect(buttons.map(button => button.textContent)).toEqual(["Update", "Close"]);
+        await act(async () => buttons[0]!.click());
+        expect(onAction.mock.calls).toEqual([[state.status === "consent" ? "allow" : "install"]]);
+        onAction.mockClear();
+        await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction, platform, busy: true })));
+        expect(buttons[0]!.disabled).toBe(true);
+        await act(async () => buttons[0]!.click());
+        expect(onAction).not.toHaveBeenCalled();
+      }
+    }
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});
+
 it.each(["user", "managed"] as const)("asks only to use an installed %s tool, with disclosure said once", async source => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
