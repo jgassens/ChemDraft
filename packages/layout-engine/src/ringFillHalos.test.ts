@@ -81,7 +81,16 @@ describe("ring fills and glyph halos", () => {
       }
     }
   });
-  it.each(["#fff0c2", "#ffffff", "#FFF"])("respects molecule-wide label background %s", (background) => {
+  it.each([
+    ["white", true],
+    [" WHITE ", true],
+    ["rgb(255, 255, 255)", true],
+    ["rgba(255,255,255,1)", true],
+    ["#ffffff", true],
+    ["#FFF", true],
+    ["#fff0c2", false],
+    ["rgba(255,255,255,0.5)", false]
+  ] as const)("respects molecule-wide label background %s", (background, isDefault) => {
     const { document, object } = ringHaloDocument("oxathiazinane", "solid"); // C1OCSCN1
     object.style.atomLabelBackgroundColor = background;
     delete object.style.atomLabelBackgroundColors;
@@ -93,7 +102,7 @@ describe("ring fills and glyph halos", () => {
       const children = group.children.flatMap(elementFragments);
       const strokes = children.filter((f) => f.attrs.class === "native-atom-label-halo");
       expect(strokes).toHaveLength(label.layout.runs.length);
-      if (background === "#fff0c2") {
+      if (!isDefault) {
         expect(label.backgroundColor).toBe(background);
         expect(strokes.every((f) => f.attrs.stroke === background)).toBe(true);
         expect(children.some((f) => f.attrs["data-label-halo-ring"])).toBe(false);

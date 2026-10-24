@@ -1832,10 +1832,8 @@ function moleculeLabelHaloFragments(
   if (Object.prototype.hasOwnProperty.call(object.style.atomLabelBackgroundColors ?? {}, plan.atom.id)) return paper;
   // CLI documents and presets explicitly store paper white; only a different colour overrides fills.
   const background = object.style.atomLabelBackgroundColor;
-  const normalizeColor = (color: string) => color.trim().toLowerCase()
-    .replace(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/, "#$1$1$2$2$3$3");
   if (typeof background === "string"
-    && normalizeColor(background) !== normalizeColor(DefaultNativeDrawingStyle.atomLabelBackgroundColor)) return paper;
+    && !isDefaultAtomLabelBackgroundColor(background)) return paper;
   const extent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
   const box = {
     x: plan.anchor.x + plan.layout.bounds.x * scale - extent,
@@ -7197,6 +7195,21 @@ function parseCssRgbColor(value: string): { r: number; g: number; b: number } | 
     g: clamp(Number(rgb[2]), 0, 255),
     b: clamp(Number(rgb[3]), 0, 255)
   };
+}
+
+function isDefaultAtomLabelBackgroundColor(value: string): boolean {
+  const defaultColor = parseCssRgbColor(DefaultNativeDrawingStyle.atomLabelBackgroundColor);
+  const trimmed = value.trim();
+  const color = trimmed.toLowerCase() === "white"
+    ? { r: 255, g: 255, b: 255 }
+    : parseCssRgbColor(value);
+  if (!defaultColor || !color
+    || color.r !== defaultColor.r || color.g !== defaultColor.g || color.b !== defaultColor.b) {
+    return false;
+  }
+
+  const alpha = trimmed.match(/^rgba?\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?(?:\s*,\s*(\d*(?:\.\d+)?))?\s*\)$/i)?.[1];
+  return alpha === undefined || Number(alpha) === 1;
 }
 
 function rgbToHex(color: { r: number; g: number; b: number }): string {
