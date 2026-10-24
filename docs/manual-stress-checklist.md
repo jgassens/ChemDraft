@@ -232,6 +232,28 @@ remains. On Windows, confirm no console flash and that the Job Object kills chil
 
 ## ChemDraft Assistant tools (macOS and Windows)
 
+On both platforms, stress the assistant's one-box controls:
+
+- With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
+  header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
+  the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
+  double-click the header to restore the default height (or the available height in a small window).
+- Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
+  Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
+  without starting a request. Shorten to 4,000 and send; the complete shortened draft is submitted.
+  Check the same behavior in a plugin panel prompt.
+- During a slow request, type another draft and try Enter and Send. Both show “Wait for the current
+  request to finish, or press Stop.” The draft stays editable and no request runs automatically
+  after the first finishes. Stop stays available; after completion, explicitly Send the kept draft.
+- Relaunch, then expand the assistant icon before using its menu or Send. Its saved AI heading and
+  status (or setup content on first use) appear immediately. Collapse/re-expand without resetting
+  setup or conversation; initialization runs again only if plugin content is absent.
+- Click New conversation and other assistant action buttons, wait for completion, then type:
+  typing goes into the prompt. Move focus to the drawing before an action completes and verify
+  completion leaves focus there.
+- The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
+  its position remains remembered and its hover/focus feedback still works.
+
 Exercise this section once the Assistant plugin is installed. Submit an insertion request and verify
 that its objects land directly on the page (no approval window) and finish selected. One Undo removes
 the entire request; Redo restores exactly those objects and selection without starting the AI or
@@ -239,10 +261,72 @@ making another provider/tool call. Select one existing object, then ask to edit,
 delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
 selected: insertions work, while edits, restyles, moves, and deletes are refused.
 
+On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
+that wraps past the bottom: one document-owned native box names the item and new page size;
+Enlarge page preserves molecule size and grows the page, with one Undo/Redo restoring page and
+objects together. Don't enlarge omits non-fitting items and their captions but keeps fitting ones;
+the assistant reports the refusal. Fitting calls never prompt. Stop while the box is open, then
+click Enlarge page: nothing from that pending call appears (the native box may require dismissal).
+
 While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
 Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running
 request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its
 consent text must say that it does and that page content can leave the computer.
+
+## Plugin panel input and canvas overlay (macOS and Windows)
+
+With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the
+prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
+Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
+the box only as needed, up to about 70% of the drawing area, with scrolling for overflow; clearing
+it restores the user's remembered height. Repeat after resizing and moving the collapsed icon beside a ruler
+and after changing display scale. Drafts and focus survive updates. Disable/remove a button while
+clicking it: the stale control must not run. A plugin with no panel never shows an "Open …" link
+or opens a native panel on menu commands, prompt submissions, setup actions, or re-expansion.
+For a plugin that also has a panel, `showPanelLink: false` hides only the overlay's shortcut.
+
+With an API 0.1.11 chat plugin, verify the compact overlay shows the latest reply and distinguishes
+user, assistant, tool, notice, and error entries. Scroll back while replies arrive: the reader stays
+put; returning to the bottom resumes following replies. Drag the top edge up and down: the bottom
+edge stays fixed and the box cannot cross rulers, scrollbars, or the status row. Shrink the document
+window and check the box fits again. Resize, Escape, expand, then reopen the document window:
+height is remembered separately from icon/box positions. A second document window has its own size.
+Enter still sends, Shift+Enter adds a newline, and transcript updates never steal input focus.
+
+In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
+and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
+the composition must not submit early. Force a host refusal (for example by making the panel stale
+or disconnecting it) and confirm the inline host refusal keeps the draft; after host acceptance, the draft
+clears. Confirm a panel report containing a prompt hides Run again. A refusal or failure from the plugin's
+own command appears in that plugin's transcript or overlay status, while command failures also reach the
+document status line. While the transcript grows, scroll
+away from its bottom and submit or receive another report: it must not pull the reader down; submit
+from the prompt and it may follow the new output. Keep typing while a report refreshes: focus and the
+draft must stay in the textarea. Also invoke a plugin contribution at location `plugins` and confirm
+its item appears and works in the native Plugins menu.
+
+Exercise an installed or DEV canvas-overlay fixture: expand and collapse its icon, type and submit a
+prompt, and check the status line. Drag it toward every viewport edge and resize the viewport; its
+frame must remain clamped inside. Quit/reopen or hide/re-show the window and confirm its position is
+remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
+(and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
+keyboard focus to the drawing. It takes focus only when clicked or explicitly opened with
+`focus: true`, never merely when content changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
+or slight pointer jitter must still expand it. Resize the box upward, then collapse: the icon returns
+to its own position. Restart and verify both positions persist independently. Shrink the drawing area
+while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
+next shown, and the box must fit even when the drawing area is narrower than 300 px.
+
+For a plugin that contributes both surfaces (including older Assistant packages), use its overlay's
+"Open …" button and panel menu command. Each must show a titled report in a detached window.
+Close/reopen it and repeat after restarting the app; the initial report broadcast may precede the
+new webview, so the authenticated snapshot replay must also work. With the overlay-only Assistant,
+Plugins → ChemDraft Assistant… instead expands the one box; setup and conversation stay there.
+
+On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
+do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does
+not cause a foreground flash. Repeat the focus checks on macOS and Windows with the panel and drawing
+window on separate monitors.
 
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.

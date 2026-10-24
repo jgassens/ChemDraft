@@ -1,8 +1,12 @@
 import type { PluginPanelReport, PluginPanelSection } from "@chemdraft/plugin-api";
 
 import { LinkedFigureView } from "./LinkedFigureView";
-import { useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { writeClipboardText } from "../clipboard";
+import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
+import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
+
+export type { PluginPanelActionHandler, PluginPanelActionRequest, PluginPanelActionResult } from "./pluginPanelActionTypes";
 
 /**
  * Renders a validated {@link PluginPanelReport} with core desktop UI. Plugins never ship components;
@@ -10,28 +14,55 @@ import { writeClipboardText } from "../clipboard";
  * drawn through an `<img>` data URL so any embedded script is inert (an `<img>` never executes
  * script), matching the security contract documented on the panel-report schema.
  */
-export function PluginReportRenderer({ report, copyText = writeClipboardText }: {
+export function PluginReportRenderer({ report, copyText = writeClipboardText, onAction }: {
   report: PluginPanelReport;
   copyText?: (text: string) => Promise<boolean>;
+  onAction?: PluginPanelActionHandler;
 }) {
   return (
     <div className="plugin-report">
       {report.sections.map((section, index) => (
-        <PluginReportSectionView key={index} section={section} copyText={copyText} />
+        <PluginReportSectionView
+          key={(section.kind === "prompt" || section.kind === "actions") ? `ctl:${section.id}` : `idx:${index}`}
+          section={section}
+          copyText={copyText}
+          onAction={onAction}
+        />
       ))}
     </div>
   );
 }
 
-function PluginReportSectionView({ section, copyText }: { section: PluginPanelSection; copyText: (text: string) => Promise<boolean> }) {
+function PluginReportSectionView({ section, copyText, onAction }: {
+  section: PluginPanelSection;
+  copyText: (text: string) => Promise<boolean>;
+  onAction?: PluginPanelActionHandler;
+}) {
   switch (section.kind) {
+    case "prompt":
+      return <PluginPromptSection section={section} onAction={onAction} />;
+    case "actions":
+      return <ActionsSection section={section} onAction={onAction} />;
+    case "image":
+      return (
+        <section className="plugin-report-section plugin-report-image">
+          {section.title ? <h4>{section.title}</h4> : null}
+          <img
+            className="plugin-report-image-content"
+            src={section.dataUri}
+            alt={section.alt}
+            style={section.maxWidthPx ? { maxWidth: `${section.maxWidthPx}px` } : undefined}
+          />
+          {section.caption ? <p className="plugin-report-caption">{section.caption}</p> : null}
+        </section>
+      );
     case "chemicalName":
       return <ChemicalNameSection section={section} copyText={copyText} />;
     case "text":
       return (
         <section className="plugin-report-section plugin-report-text">
           {section.title ? <h4>{section.title}</h4> : null}
-          <p>{section.body}</p>
+          <p><PluginInlineMarkdown text={section.body} /></p>
         </section>
       );
     case "keyValue":
@@ -96,6 +127,134 @@ function PluginReportSectionView({ section, copyText }: { section: PluginPanelSe
       );
   }
   return <section className="plugin-report-section"><pre>{JSON.stringify(section, null, 2)}</pre></section>;
+}
+
+export function PluginPromptSection({ section, onAction, includeSelected = false, busyMessage }: {
+  section: Extract<PluginPanelSection, { kind: "prompt" }>;
+  onAction?: PluginPanelActionHandler;
+  /** Overlays retain the choice locally and include it with Send as well as select actions. */
+  includeSelected?: boolean;
+  /** Overlay submissions stay editable and explain why a running request cannot accept Send. */
+  busyMessage?: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const [message, setMessage] = useState<string>();
+  const [pending, setPending] = useState(false);
+  // React state alone does not guard two events delivered before the next render.
+  const submitting = useRef(false);
+  const [selected, setSelected] = useState(section.select?.value);
+  useEffect(() => setSelected(section.select?.value), [section.select?.value]);
+  const busy = section.disabled || pending;
+  const overLimit = draft.length > section.maxLength;
+  const lengthMessage = overLimit
+    ? `Your request is ${draft.length.toLocaleString("en-US")} characters; the limit is ${section.maxLength.toLocaleString("en-US")}. Shorten it to send.`
+    : undefined;
+  const canAttempt = !!onAction && draft.trim().length > 0;
+  const canSubmit = canAttempt && !busy && !overLimit;
+  const submit = async (): Promise<void> => {
+    if (section.disabled || pending || submitting.current) {
+      if (busyMessage) setMessage(busyMessage);
+      return;
+    }
+    if (!canSubmit || !onAction) return;
+    submitting.current = true;
+    const submittedDraft = draft;
+    setPending(true);
+    setMessage(undefined);
+    try {
+      const result = await onAction({ sectionId: section.id, control: "prompt", text: submittedDraft,
+        ...(includeSelected && selected !== undefined ? { selected } : {}) });
+      if (result.ok) setDraft(currentDraft => currentDraft === submittedDraft ? "" : currentDraft);
+      else setMessage(result.message);
+    } catch {
+      setMessage("The action could not be completed.");
+    } finally {
+      submitting.current = false;
+      setPending(false);
+    }
+  };
+  const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    const nativeEvent = event.nativeEvent;
+    if (event.key !== "Enter" || event.shiftKey || nativeEvent.isComposing || nativeEvent.keyCode === 229) return;
+    event.preventDefault();
+    if (event.repeat) return;
+    void submit();
+  };
+  const select = section.select;
+  return <section className="plugin-report-section plugin-report-composer">
+    {section.title ? <h4>{section.title}</h4> : null}
+    {section.label ? <label className="plugin-report-composer-label" htmlFor={`plugin-prompt-${section.id}`}>{section.label}</label> : null}
+    <textarea
+      id={`plugin-prompt-${section.id}`}
+      value={draft}
+      placeholder={section.placeholder}
+      rows={section.rows}
+      aria-invalid={overLimit || undefined}
+      aria-describedby={overLimit ? `plugin-prompt-${section.id}-error` : undefined}
+      onChange={(event) => { setDraft(event.target.value); setMessage(undefined); }}
+      onKeyDown={keyDown}
+    />
+    {draft.length > section.maxLength * 0.9 ? <p className="plugin-report-composer-counter">
+      {draft.length.toLocaleString("en-US")} / {section.maxLength.toLocaleString("en-US")}
+    </p> : null}
+    <div className="plugin-report-composer-controls">
+      {select ? <label className="plugin-report-composer-select">
+        <span>{select.label}</span>
+        <select
+          value={includeSelected ? selected : select.value}
+          disabled={section.disabled || !onAction || pending}
+          onChange={(event) => {
+            if (!onAction) return;
+            const value = event.target.value;
+            if (includeSelected) setSelected(value);
+            void onAction({ sectionId: section.id, control: "select", controlId: select.id, selected: value })
+              .then(result => {
+                if (!includeSelected) return;
+                setMessage(result.ok ? undefined : result.message);
+                if (!result.ok) setSelected(select.value);
+              }, () => {
+                if (!includeSelected) return;
+                setMessage("The action could not be completed.");
+                setSelected(select.value);
+              });
+          }}
+        >
+          {select.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label> : null}
+      <button type="button" className="plugin-report-action plugin-report-action-primary"
+        disabled={!canAttempt || (busy && !busyMessage)} aria-disabled={!canSubmit || undefined} onClick={() => void submit()}>
+        {section.submitLabel}
+      </button>
+    </div>
+    {section.hint ? <p className="plugin-report-composer-hint">{section.hint}</p> : null}
+    {lengthMessage || message ? <p id={`plugin-prompt-${section.id}-error`} className="plugin-report-composer-error" role="alert">{lengthMessage ?? message}</p> : null}
+  </section>;
+}
+
+function ActionsSection({ section, onAction }: {
+  section: Extract<PluginPanelSection, { kind: "actions" }>;
+  onAction?: PluginPanelActionHandler;
+}) {
+  return <section className="plugin-report-section plugin-report-actions">
+    {section.title ? <h4>{section.title}</h4> : null}
+    <div className="plugin-report-actions-buttons">
+      {section.buttons.map((button) => (
+        <button
+          key={button.id}
+          type="button"
+          className={`plugin-report-action plugin-report-action-${button.tone}`}
+          disabled={button.disabled || !onAction}
+          onClick={() => {
+            if (!onAction) return;
+            void onAction({ sectionId: section.id, control: "button", controlId: button.id }).catch(() => undefined);
+          }}
+        >
+          {button.label}
+        </button>
+      ))}
+    </div>
+  </section>;
 }
 
 function ChemicalNameSection({ section, copyText }: {

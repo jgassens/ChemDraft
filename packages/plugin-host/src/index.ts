@@ -9,11 +9,16 @@ import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
   PluginAnalysisAPI,
+  PluginCanvasOverlayContribution,
+  PluginOverlaysAPI,
+  PluginOverlayTranscriptEntry,
+  PluginOverlayContentSection,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
   PluginChemistryAPI,
   PluginCommandContext,
+  PluginCommandInput,
   PluginCommandContribution,
   PluginCommandHandler,
   PluginDialogsAPI,
@@ -78,6 +83,11 @@ import {
   PluginIsotopeEnvelopeRequestSchema,
   PluginNameToStructureRequestSchema,
   PluginPanelReportSchema,
+  PluginOverlayStatusRequestSchema,
+  PluginOverlayTranscriptRequestSchema,
+  PluginOverlayContentRequestSchema,
+  PluginOverlayOpenRequestSchema,
+  PluginCommandInputSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
   PluginStructureFromSmilesRequestSchema,
@@ -108,6 +118,7 @@ export interface CommandDefinition {
 }
 
 export interface CommandInvocationContext {
+  input?: PluginCommandInput;
   pluginId?: string;
   permissions?: ReadonlySet<PluginPermission>;
   /** Host-supplied selection captured at Send, instead of reading the live selection. */
@@ -329,6 +340,12 @@ export type PluginHostAssistant = {
 } & { closeAllForPlugin(pluginId: string): void };
 
 export interface PluginHostOptions {
+  overlays?: {
+    setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
+    setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
+    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean }): void | Promise<void>;
+    open?(pluginId: string, overlayId: string, focus: boolean): void | Promise<void>;
+  };
   assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
   getActiveDocument?: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
@@ -408,6 +425,7 @@ export class PluginHost {
   private readonly promptText?: PluginHostOptions["promptText"];
   private readonly externalTools?: PluginHostOptions["externalTools"];
   private readonly assistant?: PluginHostAssistant;
+  private readonly overlays?: PluginHostOptions["overlays"];
   private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
@@ -449,6 +467,7 @@ export class PluginHost {
     this.promptText = options.promptText;
     this.externalTools = options.externalTools;
     this.assistant = options.assistant;
+    this.overlays = options.overlays;
     this.requestImage = options.requestImage;
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
@@ -473,6 +492,11 @@ export class PluginHost {
 
     this.assertContributionPermissions(manifest);
     this.assertContributionCommands(manifest);
+    for (const overlay of manifest.contributes.canvasOverlays ?? []) {
+      if (this.listCanvasOverlays().some(entry => entry.overlay.id === overlay.id)) {
+        throw new PluginHostError(`Canvas overlay "${overlay.id}" is already contributed by another plugin.`);
+      }
+    }
     this.assertCommandIdsAvailable(manifest);
 
     const registered: RegisteredPlugin = {
@@ -517,13 +541,14 @@ export class PluginHost {
 
   async invokeCommand<Result = unknown>(
     commandId: string,
-    options: { writeSelection?: PluginSelectionSnapshot } = {}
+    options: { writeSelection?: PluginSelectionSnapshot; input?: PluginCommandInput } = {}
   ): Promise<Result> {
     const definition = this.commands.get(commandId);
     if (!definition) {
       throw new CommandRegistryError(`Command "${commandId}" is not registered.`);
     }
 
+    const input = this.parseCommandInput(definition.pluginId, options.input);
     if (!definition.pluginId) {
       return await this.commands.invoke<Result>(commandId);
     }
@@ -532,6 +557,7 @@ export class PluginHost {
     return await this.commands.invoke<Result>(commandId, {
       pluginId: definition.pluginId,
       permissions: plugin.permissions,
+      input,
       writeSelection: options.writeSelection
     });
   }
@@ -565,6 +591,11 @@ export class PluginHost {
         ? manifest.contributes.menus.filter((menu) => menu.location === location)
         : manifest.contributes.menus
     );
+  }
+
+  listCanvasOverlays(): { pluginId: string; overlay: PluginCanvasOverlayContribution }[] {
+    return this.collectContributions(manifest => manifest.contributes.canvasOverlays ?? [])
+      .map(({ pluginId, contribution }) => ({ pluginId, overlay: contribution }));
   }
 
   listPanelContributions(): RegisteredContribution<PluginPanelContribution>[] {
@@ -602,7 +633,24 @@ export class PluginHost {
     }
   }
 
-  createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
+  private parseCommandInput(pluginId: string | undefined, raw: PluginCommandInput | undefined): PluginCommandInput | undefined {
+    if (raw === undefined) return undefined;
+    const input = PluginCommandInputSchema.parse(raw);
+    if (!pluginId) throw new PluginHostError("Panel input can invoke only a plugin's own command.");
+    const plugin = this.requireRegisteredPlugin(pluginId);
+    if (input.source === "overlay") {
+      this.requirePermission(pluginId, "ui.canvas");
+      if (!plugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === input.overlayId)) {
+        throw new PluginHostError(`Plugin "${pluginId}" does not declare overlay "${input.overlayId}".`);
+      }
+    } else if (!plugin.manifest.contributes.panels.some(panel => panel.id === input.panelId)) {
+      throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${input.panelId}".`);
+    }
+    // Preserve the submitted values across asynchronous selection capture and in-process handlers.
+    return deepFreeze(structuredClone(input));
+  }
+
+  createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
     const assistantCall = <K extends keyof PluginAssistantAPI>(method: K, args: Parameters<PluginAssistantAPI[K]>): ReturnType<PluginAssistantAPI[K]> => {
       for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
@@ -630,6 +678,71 @@ export class PluginHost {
           }
         }
       : undefined;
+    const requireOwnOverlay = (overlayId: string) => {
+      this.requirePermission(pluginId, "ui.canvas");
+      const overlay = this.requireRegisteredPlugin(pluginId).manifest.contributes.canvasOverlays?.find(item => item.id === overlayId);
+      if (!overlay) throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${overlayId}".`);
+      return overlay;
+    };
+    const requireOwnReportCommands = (report: PluginPanelReport) => {
+      const current = this.requireRegisteredPlugin(pluginId);
+      const requireOwnCommand = (commandId: string) => {
+        if (!current.manifest.contributes.commands.some(command => command.id === commandId)
+            || this.commands.get(commandId)?.pluginId !== pluginId) {
+          throw new PluginHostError(`Panel controls must use this plugin's own commands: "${commandId}" is not owned by "${pluginId}".`);
+        }
+      };
+      for (const section of report.sections) {
+        if (section.kind === "prompt") {
+          requireOwnCommand(section.commandId);
+          if (section.select?.commandId) requireOwnCommand(section.select.commandId);
+        } else if (section.kind === "actions") section.buttons.forEach(button => requireOwnCommand(button.commandId));
+      }
+    };
+    const overlays: PluginOverlaysAPI | undefined = this.hasPermission(pluginId, "ui.canvas")
+      ? {
+          setStatus: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayStatusRequestSchema.parse(request);
+            const currentPlugin = this.requireRegisteredPlugin(pluginId);
+            if (!currentPlugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === parsed.overlayId)) {
+              throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
+            }
+            if (!this.overlays) throw new PluginHostError("This host provides no canvas overlays.");
+            await this.overlays.setStatus(pluginId, parsed.overlayId, parsed.text);
+          },
+          setTranscript: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayTranscriptRequestSchema.parse(request);
+            const currentPlugin = this.requireRegisteredPlugin(pluginId);
+            if (!currentPlugin.manifest.contributes.canvasOverlays?.some(overlay => overlay.id === parsed.overlayId)) {
+              throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
+            }
+            if (!this.overlays?.setTranscript) throw new PluginHostError("This host provides no canvas transcripts.");
+            await this.overlays.setTranscript(pluginId, parsed.overlayId, parsed.entries);
+          },
+          setContent: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayContentRequestSchema.parse(request);
+            const overlay = requireOwnOverlay(parsed.overlayId);
+            // Content control ids must also be distinct from the permanent composer/select.
+            const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });
+            requireOwnReportCommands(report);
+            if (!this.overlays?.setContent) throw new PluginHostError("This host provides no canvas content.");
+            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections, parsed.prompt);
+          },
+          open: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayOpenRequestSchema.parse(request);
+            requireOwnOverlay(parsed.overlayId);
+            if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+              throw new PluginHostError("Opening an overlay requires the plugin's own command to be running.");
+            }
+            if (!this.overlays?.open) throw new PluginHostError("This host cannot open canvas overlays.");
+            await this.overlays.open(pluginId, parsed.overlayId, parsed.focus === true);
+          }
+        }
+      : undefined;
     const panels: PluginPanelAPI | undefined =
       this.hasPermission(pluginId, "ui.panel") && this.showPanelReport
         ? {
@@ -640,6 +753,7 @@ export class PluginHost {
                 throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
               }
               const parsedReport = PluginPanelReportSchema.parse(report);
+              requireOwnReportCommands(parsedReport);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
             }
           }
@@ -764,6 +878,7 @@ export class PluginHost {
       : undefined;
 
     return {
+      ...(input === undefined ? {} : { input }),
       plugin: {
         id: plugin.manifest.id,
         name: plugin.manifest.name,
@@ -796,6 +911,7 @@ export class PluginHost {
       storage,
       selection,
       panels,
+      overlays,
       dialogs,
       images,
       recognition,
@@ -1060,6 +1176,7 @@ export class PluginHost {
               this.requirePermission(manifest.id, permission);
             }
 
+            const input = this.parseCommandInput(manifest.id, invocationContext.input);
             const invocationToken = Symbol(command.id);
             const documentKey = this.getActiveDocumentKey?.();
             // Snapshot ids only: the plugin-visible selection provider may build molfiles and
@@ -1080,7 +1197,7 @@ export class PluginHost {
               recognizedImages: []
             });
             try {
-              return await handler(this.createCommandContext(manifest.id, invocationToken));
+              return await handler(this.createCommandContext(manifest.id, invocationToken, input));
             } finally {
               this.finishCommandInvocation(invocationToken);
             }
@@ -1129,6 +1246,11 @@ export class PluginHost {
         );
       }
     };
+    for (const overlay of manifest.contributes.canvasOverlays ?? []) {
+      check(overlay.commandId, `overlay "${overlay.id}"`);
+      check(overlay.prompt.commandId, `overlay "${overlay.id}" prompt`);
+      check(overlay.prompt.select?.commandId, `overlay "${overlay.id}" select`);
+    }
     for (const menu of manifest.contributes.menus) {
       check(menu.commandId, `menu "${menu.id}"`);
     }

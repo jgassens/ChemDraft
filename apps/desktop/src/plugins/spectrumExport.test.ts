@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
+import { invoke } from "@tauri-apps/api/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -17,7 +18,12 @@ const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
-  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn().mockResolvedValue(undefined)
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  invoke: vi.fn(async (command: string, args: { event: string; payload: unknown }) => {
+    // Mirror the native allowlisted forwarder: detached panels cannot emit events directly.
+    if (command !== "plugin_panel_event_forward") throw new Error(`Unexpected command: ${command}`);
+    await bridgeEmit(args.event, args.payload);
+  })
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: nativeWriteTextFile }));
 const bridgeEmit = vi.hoisted(() => vi.fn());
@@ -242,6 +248,10 @@ describe("saveTextFile", () => {
       })
     ).resolves.toBe("cancelled");
     expect(nativeSave).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("plugin_panel_event_forward", {
+      event: ANALYSIS_WINDOW_ACTION_EVENT,
+      payload: expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data" })
+    });
     expect(bridgeEmit).toHaveBeenCalledWith(
       ANALYSIS_WINDOW_ACTION_EVENT,
       expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data" })
@@ -262,5 +272,6 @@ describe("saveTextFile", () => {
         mimeType: "chemical/x-jcamp-dx"
       })
     ).resolves.toBe("failed");
+    expect(bridgeListeners.has(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)).toBe(false);
   });
 });

@@ -22,6 +22,7 @@ export function testContext(selected = true) {
     plugin: { id: "org.chemdraft.assistant", name: "Assistant", permissions: [...pluginPermissions] },
     tabId: "tab_pinned", getDocument: () => document, getSelectionAtSend: () => selection,
     getViewportRect: vi.fn(() => ({ x: 0, y: 0, width: 600, height: 600 })),
+    confirmPageGrowth: vi.fn(async () => false),
     now: () => "2026-10-22T00:00:00Z",
     write: vi.fn(async (patch: DocumentPatch) => {
       document = applyPatch(document!, patch);

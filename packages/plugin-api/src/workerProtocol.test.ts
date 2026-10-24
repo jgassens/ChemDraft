@@ -114,6 +114,14 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.8", "0.1.7")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.9", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.9", "0.1.8")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.10", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.10", "0.1.9")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.11", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.11", "0.1.10")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.12", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.12", "0.1.11")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.13", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.13", "0.1.12")).toBe(false);
   });
 });
 
@@ -148,6 +156,17 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it("drops malformed command input before invoking plugin code", async () => {
+    const endpoint = new ControlledEndpoint();
+    let calls = 0;
+    runPluginWorker({ manifest: manifest([]), commandHandlers: { [commandId]: () => { calls++; } } }, endpoint);
+    endpoint.deliverRaw({ kind: "invokeCommand", commandRequestId: 1, commandId, input: {
+      source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "x".repeat(20001)
+    } });
+    await flush();
+    expect(calls).toBe(0);
+  });
+
   it.each([undefined, ...AssistantCapabilityPermissions])("gates the assistant stub when missing %s", async missing => {
     const permissions = AssistantCapabilityPermissions.filter(p => p !== missing && !(missing === "native.execute" && p === "assistant.run"));
     const endpoint = new ControlledEndpoint();

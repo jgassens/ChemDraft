@@ -1,6 +1,7 @@
 //! Host-owned external CLI runner and main-window-only Tauri boundary.
 #![allow(dead_code)] // Some catalog/platform helpers are exercised on the other platform or by tests.
 pub mod catalog;
+mod codex_auth;
 pub mod consent;
 pub mod env;
 pub mod install;
@@ -10,6 +11,8 @@ pub mod pins;
 pub mod probe;
 pub mod run;
 pub mod terminal;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -201,6 +204,10 @@ pub struct ExternalToolsInner {
 pub struct ExternalToolsState {
     pub inner: Mutex<ExternalToolsInner>,
     pub probes: probe::ProbeCache,
+    /// Tests opt into specific temporary candidates; default discovery can never see host installs.
+    #[cfg(test)]
+    test_candidates: Mutex<Vec<PathBuf>>,
+    codex_processes: Arc<run::CodexProcesses>,
     installing: AtomicBool,
     cancel_install: AtomicBool,
     install_snapshot: Mutex<Option<(ToolId, Option<ToolInstallProgress>)>>,
@@ -284,6 +291,10 @@ impl ExternalToolsState {
             &environment,
             Duration::from_millis(request.timeout_ms.unwrap_or(600_000)),
             binding,
+            (request.tool == ToolId::Codex).then(|| {
+                codex_auth::CodexAuth::new(probe::ProbePlatform::current(), base, parent)
+                    .tracked(&self.codex_processes)
+            }),
         )
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
         let started = ExternalToolRunStarted {
@@ -340,6 +351,7 @@ impl ExternalToolsState {
         for run in &runs {
             run.cancel(KillReason::AppExit);
         }
+        self.codex_processes.shutdown();
         for run in &runs {
             run.wait_finished(Duration::from_secs(5));
         }
@@ -433,6 +445,28 @@ fn status_impl(
     plugin_id: Option<&str>,
     parent: &env::ParentEnv,
 ) -> Result<ExternalToolStatus, String> {
+    // Auth reconciliation selects the home independently of binary discovery.
+    let mut status = status_prepared_impl(base, state, tool, refresh, plugin_id, parent)?;
+    let notice = (tool == ToolId::Codex)
+        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
+        .and_then(|home| home.fallback_reason);
+    if let Some(notice) = notice {
+        status.detail = Some(match status.detail {
+            Some(detail) => format!("{detail} {notice}"),
+            None => notice,
+        });
+    }
+    Ok(status)
+}
+
+fn status_prepared_impl(
+    base: &Path,
+    state: &ExternalToolsState,
+    tool: ToolId,
+    refresh: bool,
+    plugin_id: Option<&str>,
+    parent: &env::ParentEnv,
+) -> Result<ExternalToolStatus, String> {
     let platform = current_platform();
     let pin = pins::pin_for(tool, platform.unwrap_or(pins::ToolPlatform::DarwinArm64));
     let mut status = install::managed_status(base, pin);
@@ -464,9 +498,20 @@ fn status_impl(
         let run_dir = base.join("probes");
         private_dir(&run_dir).map_err(|e| e.to_string())?;
         let probe_platform = probe::ProbePlatform::current();
+        let codex_auth = (tool == ToolId::Codex).then(|| codex_auth::CodexAuth::new(probe_platform, base, parent).tracked(&state.codex_processes));
+        #[cfg(not(test))]
         let home = env::get(parent, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or("");
+        #[cfg(not(test))]
         let mut paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, None);
+        #[cfg(test)]
+        let paths = state.test_candidates.lock().unwrap().clone();
+        #[cfg(test)]
+        for path in &paths { test_support::check_path(path)?; }
+        #[cfg(not(test))]
         let mut candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+        #[cfg(test)]
+        let candidate = probe::resolve_candidates(&paths, |p| p.is_file());
+        #[cfg(not(test))]
         if probe_platform == probe::ProbePlatform::MacOS && !matches!(candidate, probe::Candidate::Runnable(_)) {
             if let Some(shell) = env::get(parent, "SHELL") {
                 if let Ok(path) = state.probes.login_path.capture(Path::new(shell), parent, &run_dir) {
@@ -476,13 +521,13 @@ fn status_impl(
             }
         }
         let user = match candidate {
-            probe::Candidate::Runnable(path) => Some(probe::probe_tool(&tool.spec(), &path, parent, &run_dir, false)),
+            probe::Candidate::Runnable(path) => Some(probe::probe_tool(&tool.spec(), &path, parent, &run_dir, false, codex_auth.as_ref())),
             probe::Candidate::ShimNeedsResolution(_) => Some(Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into())),
             probe::Candidate::Missing => None,
         };
         if let Some(Ok(result)) = user.as_ref() { return Ok(result.clone()); }
         if let Some(managed) = status.managed.as_ref() {
-            return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true);
+            return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true, codex_auth.as_ref());
         }
         user.unwrap_or_else(|| Err(status.detail.clone().unwrap_or_else(|| "Tool is not installed.".into())))
     });
@@ -882,7 +927,9 @@ fn run_start_impl(
             ));
         }
     }
-    let status = status_impl(base, state, request.tool, false, None, parent)
+    // Keep the binary selected by the cached status. Auth reconciliation happens at spawn;
+    // it must never force rediscovery and silently switch executables for this run.
+    let status = status_prepared_impl(base, state, request.tool, false, None, parent)
         .map_err(|e| ExternalToolRunError::new(RunErrorCode::SpawnFailed, e))?;
     // Probing may execute vendor code for seconds. Serialize only the commit, and
     // re-check consent and executable availability after taking the mutation lock.

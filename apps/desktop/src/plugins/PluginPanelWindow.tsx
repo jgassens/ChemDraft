@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
@@ -15,6 +15,7 @@ import {
   requestCopyMolecularInspectorText,
   requestCopyAnalysisText,
   requestPluginPanelRerun,
+  requestPluginPanelAction,
   requestPluginPanelReport,
   requestProposalDecision,
   type AnalysisWindowSnapshotPayload,
@@ -22,6 +23,8 @@ import {
   type PluginProposalReviewItem
 } from "./panelBridge";
 import { PluginReportRenderer } from "./PluginReportRenderer";
+import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
+import { isScrolledToBottom, shouldAutoscroll } from "./pluginPanelAutoscroll";
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
 import { PatchReviewList } from "./PatchReviewTray";
 import { MolecularInspectorPane } from "../analysis/MolecularInspectorPane";
@@ -57,6 +60,25 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   const [analysisPayload, setAnalysisPayload] = useState<AnalysisWindowSnapshotPayload | undefined>();
   const [staleness, setStaleness] = useState<{ revision: number; stale: boolean } | undefined>();
   const clearedRevisionRef = useRef(0);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const scrollAfterReportRef = useRef(false);
+
+  // The detached panel is deliberately only a messenger: the document window resolves this against
+  // its live report before it invokes a plugin command. A prompt send is also the one explicit
+  // request to follow the next replacement even if the reader had been reviewing older output.
+  const onAction = useCallback<PluginPanelActionHandler>(async (request) => {
+    if (!identity) return { ok: false, message: "This panel is no longer connected to ChemDraft." };
+    if (request.control === "prompt") scrollAfterReportRef.current = true;
+    try {
+      const result = await requestPluginPanelAction({ panelId: identity.panelId, ...request });
+      if (result.ok) return { ok: true };
+      if (result.reason === "timeout") return { ok: false, message: "ChemDraft did not answer; try again." };
+      if (result.reason === "unavailable") return { ok: false, message: "ChemDraft could not receive this action; try again." };
+      return { ok: false, message: result.reason };
+    } catch {
+      return { ok: false, message: "ChemDraft could not receive this action; try again." };
+    }
+  }, [identity?.panelId]);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-window-html");
@@ -83,7 +105,15 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         return;
       }
       if (next.revision <= clearedRevisionRef.current) return;
-      setPayload((current) => (current && current.revision >= next.revision ? current : next));
+      setPayload((current) => {
+        if (current && current.revision >= next.revision) return current;
+        const wasAtBottom = contentRef.current ? isScrolledToBottom(contentRef.current) : true;
+        scrollAfterReportRef.current = shouldAutoscroll({
+          wasAtBottom,
+          ownSubmit: scrollAfterReportRef.current
+        });
+        return next;
+      });
     });
     const unlistenAnalysis = listenForAnalysisWindowSnapshots((next) => {
       if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
@@ -117,6 +147,13 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       unlistenStaleness();
     };
   }, [identity?.panelId, identity?.pluginId]);
+
+  useLayoutEffect(() => {
+    if (!scrollAfterReportRef.current) return;
+    const content = contentRef.current;
+    if (content) content.scrollTop = content.scrollHeight;
+    scrollAfterReportRef.current = false;
+  }, [payload?.revision]);
 
   const isCoreAnalysisWindow = identity?.pluginId === ANALYSIS_WINDOW_OWNER_ID;
   const stale = payload !== undefined && staleness?.revision === payload.revision && staleness.stale;
@@ -180,7 +217,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           onClick={closeWindow}
         />
         <span className="palette-title-label">{title}</span>
-        {!isCoreAnalysisWindow && payload?.commandId ? (
+        {!isCoreAnalysisWindow && payload?.commandId && !payload.report.sections.some((section) => section.kind === "prompt") ? (
           <button
             type="button"
             className="plugin-panel-run-again"
@@ -190,7 +227,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
           </button>
         ) : null}
       </div>
-      <div className="plugin-panel-content">
+      <div ref={contentRef} className="plugin-panel-content">
         {isCoreAnalysisWindow ? (
           analysisPayload ? (
             <AnalysisWindowContent payload={analysisPayload} />
@@ -205,7 +242,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
                 refresh.
               </div>
             ) : null}
-            <PluginReportRenderer report={payload.report} copyText={requestCopyAnalysisText} />
+            <PluginReportRenderer report={payload.report} copyText={requestCopyAnalysisText} onAction={onAction} />
           </>
         ) : (
           <p className="plugin-panel-waiting">Waiting for plugin content…</p>

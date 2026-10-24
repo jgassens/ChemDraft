@@ -57,11 +57,14 @@ describe("app menu model", () => {
   it("routes synced plugin items by section in the shared native builder for both platforms", () => {
     const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]?.split("/// Close Window")[0];
-    expect(builder).toContain('item.location == "structure"');
+    expect(builder).toContain('plugin_menu_items_in(plugin_items, "structure")');
     expect(builder).toContain("structure_menu.append");
     expect(builder).toContain("&structure_menu,");
+    expect(builder).toContain('plugin_menu_items_in(plugin_items, "plugins")');
+    expect(builder).toContain("plugins_menu.append");
+    expect(builder).toContain("&plugins_menu,");
     const analyze = source.split("fn build_analyze_submenu<R: Runtime>")[1]?.split("fn create_app_menu")[0];
-    expect(analyze).toContain('item.location == "analyze"');
+    expect(analyze).toContain('plugin_menu_items_in(plugin_items, "analyze")');
     const install = source.split("fn install_app_menu<R: Runtime>")[1]?.split("fn reinstall_app_menu")[0];
     expect(install).toContain('#[cfg(target_os = "macos")]\n    app.set_menu(menu)?;');
     expect(install).toContain('#[cfg(not(target_os = "macos"))]');

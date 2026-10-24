@@ -16,6 +16,8 @@ import type {
   PluginIsotopeEnvelopeResult,
   PluginNameToStructureRequest,
   PluginCommandContext,
+  PluginCommandInput,
+  PluginOverlayTranscriptEntry,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -32,6 +34,9 @@ import {
   type PluginPatchApplicationRequest,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
+
+import type { RegisteredCanvasOverlay } from "./types";
+import type { CanvasOverlayContentSection } from "./pluginCanvasOverlayControls";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
@@ -68,6 +73,17 @@ export type DesktopNameToStructureProvider = (
 export type DesktopStructureFromSmilesProvider = (
   request: PluginStructureFromSmilesRequest
 ) => Promise<PluginStructureFromSmilesResult>;
+
+function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
+  const snapshot = structuredClone(sections);
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  };
+  freeze(snapshot);
+  return snapshot;
+}
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -204,10 +220,20 @@ export interface DesktopPluginRuntime {
    * the selection meanwhile, or this one reading it after its own patch changed the document, can
    * neither add to it nor take from it.
    */
-  invokeCommand(commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown>;
+  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  listCanvasOverlays(): RegisteredCanvasOverlay[];
+  getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
+  /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
+  subscribeCanvasOverlayStatus(listener: () => void): () => void;
+  getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
+  subscribeCanvasOverlayTranscript(listener: () => void): () => void;
+  getCanvasOverlayContents(): ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
+  subscribeCanvasOverlayContent(listener: () => void): () => void;
+  getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
+  subscribeCanvasOverlayOpen(listener: () => void): () => void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
-  /** Notified when the plugin toolset set changes (register/unregister). Returns unsubscribe. */
+  /** Notified when plugin contributions change. Returns unsubscribe. */
   onDidChange(listener: () => void): () => void;
 }
 
@@ -329,14 +355,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   };
   let proposingTabId: string | undefined;
   class DesktopPluginHost extends PluginHost {
-    override async invokeCommand<Result = unknown>(commandId: string): Promise<Result> {
+    override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
       const previousFrame = namingFrame;
       namingFrame = tokens;
       try {
-        const call = super.invokeCommand<Result>(commandId);
+        const call = super.invokeCommand<Result>(commandId, invokeOptions);
         namingFrame = previousFrame;
         return await call;
       } finally {
@@ -357,8 +383,8 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       super.unregisterPlugin(pluginId);
     }
 
-    override createCommandContext(pluginId: string, invocationToken?: symbol): PluginCommandContext {
-      const context = super.createCommandContext(pluginId, invocationToken);
+    override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
+      const context = super.createCommandContext(pluginId, invocationToken, input);
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
         if (invocationToken && namingFrame) {
@@ -409,9 +435,61 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       };
     }
   }
+  const canvasOverlayStatuses = new Map<string, string>();
+  const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
+  const canvasOverlayContents = new Map<string, readonly CanvasOverlayContentSection[]>();
+  const canvasOverlayContentListeners = new Set<() => void>();
+  const notifyCanvasOverlayContent = () => canvasOverlayContentListeners.forEach(listener => listener());
+  const canvasOverlayOpenRequests = new Map<string, { readonly focus: boolean }>();
+  const canvasOverlayOpenListeners = new Set<() => void>();
+  const notifyCanvasOverlayOpen = () => canvasOverlayOpenListeners.forEach(listener => listener());
+  const canvasOverlayTranscriptListeners = new Set<() => void>();
+  const notifyCanvasOverlayTranscript = () => canvasOverlayTranscriptListeners.forEach(listener => listener());
+  const listeners = new Set<() => void>();
+  const canvasOverlayStatusListeners = new Set<() => void>();
+  const notify = () => listeners.forEach((listener) => listener());
+  const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
+    overlays: {
+      setContent: (pluginId, overlayId, sections, prompt) => {
+        const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
+        const disabled = prompt?.disabled ?? false;
+        // The internal prompt section feeds the existing composer and command-dispatch guard.
+        // Each call replaces its state, including when content is empty or prompt is omitted.
+        const content: CanvasOverlayContentSection[] = disabled || declared.disabled
+          ? [...sections, { ...declared, disabled }] : sections;
+        if (content.length === 0) {
+          if (!canvasOverlayContents.delete(overlayId)) return;
+        } else {
+          canvasOverlayContents.set(overlayId, freezeOverlayContent(content));
+        }
+        notifyCanvasOverlayContent();
+      },
+      open: (_pluginId, overlayId, focus) => {
+        // A new identity for each request also makes repeated focus:true observable.
+        canvasOverlayOpenRequests.set(overlayId, Object.freeze({ focus }));
+        notifyCanvasOverlayOpen();
+      },
+      setTranscript: (_pluginId, overlayId, entries) => {
+        if (entries.length === 0) {
+          if (!canvasOverlayTranscripts.delete(overlayId)) return;
+        } else {
+          canvasOverlayTranscripts.set(overlayId, Object.freeze(entries.map(entry => Object.freeze({ ...entry }))));
+        }
+        notifyCanvasOverlayTranscript();
+      },
+      setStatus: (_pluginId, overlayId, text) => {
+        if (text === "") {
+          if (!canvasOverlayStatuses.delete(overlayId)) return;
+        } else {
+          if (canvasOverlayStatuses.get(overlayId) === text) return;
+          canvasOverlayStatuses.set(overlayId, text);
+        }
+        notifyCanvasOverlayStatus();
+      }
+    },
     getActiveDocument: options.getActiveDocument,
     getActiveDocumentKey:
       options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument())),
@@ -451,8 +529,6 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const toolsetsByPluginId = new Map<string, DesktopToolsetDefinition[]>();
   const pluginIdByToolsetId = new Map<string, string>();
   const registrations = new Map<string, { manifest: PluginManifest; options: RegisterPluginOptions }>();
-  const listeners = new Set<() => void>();
-  const notify = () => listeners.forEach((listener) => listener());
 
   const runtime: DesktopPluginRuntime = {
     host,
@@ -524,16 +600,69 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       (toolsetsByPluginId.get(pluginId) ?? []).forEach((toolset) => pluginIdByToolsetId.delete(toolset.id));
       toolsetsByPluginId.delete(pluginId);
       registrations.delete(pluginId);
+      let overlayStatusesChanged = false;
+      for (const overlayId of canvasOverlayStatuses.keys()) {
+        const overlayStillRegistered = host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId);
+        if (!overlayStillRegistered) {
+          overlayStatusesChanged = true;
+          canvasOverlayStatuses.delete(overlayId);
+        }
+      }
+      if (overlayStatusesChanged) notifyCanvasOverlayStatus();
+      let transcriptsChanged = false;
+      for (const overlayId of canvasOverlayTranscripts.keys()) {
+        if (!host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId)) {
+          canvasOverlayTranscripts.delete(overlayId);
+          transcriptsChanged = true;
+        }
+      }
+      if (transcriptsChanged) notifyCanvasOverlayTranscript();
+      const owned = new Set(host.listCanvasOverlays().map(entry => entry.overlay.id));
+      let contentChanged = false;
+      let openChanged = false;
+      for (const id of canvasOverlayContents.keys()) if (!owned.has(id)) {
+        canvasOverlayContents.delete(id); contentChanged = true;
+      }
+      for (const id of canvasOverlayOpenRequests.keys()) if (!owned.has(id)) {
+        canvasOverlayOpenRequests.delete(id); openChanged = true;
+      }
+      if (contentChanged) notifyCanvasOverlayContent();
+      if (openChanged) notifyCanvasOverlayOpen();
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
       armedSelectionWarnings = invokeOptions.selectionWarnings;
       try {
-        return host.invokeCommand(commandId);
+        return invokeOptions.input === undefined
+          ? host.invokeCommand(commandId)
+          : host.invokeCommand(commandId, { input: invokeOptions.input });
       } finally {
         // Unclaimed when the command is not a plugin's or failed before its context was built.
         armedSelectionWarnings = undefined;
       }
+    },
+    listCanvasOverlays: () => host.listCanvasOverlays(),
+    getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
+    getCanvasOverlayTranscripts: () => new Map(canvasOverlayTranscripts),
+    getCanvasOverlayContents: () => new Map(canvasOverlayContents),
+    getCanvasOverlayOpenRequests: () => new Map(canvasOverlayOpenRequests),
+    subscribeCanvasOverlayContent(listener) {
+      canvasOverlayContentListeners.add(listener);
+      return () => { canvasOverlayContentListeners.delete(listener); };
+    },
+    subscribeCanvasOverlayOpen(listener) {
+      canvasOverlayOpenListeners.add(listener);
+      return () => { canvasOverlayOpenListeners.delete(listener); };
+    },
+    subscribeCanvasOverlayTranscript(listener) {
+      canvasOverlayTranscriptListeners.add(listener);
+      return () => { canvasOverlayTranscriptListeners.delete(listener); };
+    },
+    subscribeCanvasOverlayStatus(listener) {
+      canvasOverlayStatusListeners.add(listener);
+      return () => {
+        canvasOverlayStatusListeners.delete(listener);
+      };
     },
     listPluginToolsets: () => [...toolsetsByPluginId.values()].flat(),
     pluginIdForToolset: (toolsetId) => pluginIdByToolsetId.get(toolsetId),

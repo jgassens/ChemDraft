@@ -13,8 +13,35 @@ on every method call. Manifests declaring `assistant.run` without `native.execut
 Registration is transactional across the shared command registry: all command ids are preflighted,
 partial registration is rolled back, and uninstall removes only commands still owned by that plugin.
 
+API 0.1.10 accepts `invokeCommand(commandId, { input })` for panel controls. The host validates and
+snapshots the input, requires the invoked plugin to declare its `panelId`, and delivers it as
+`context.input` only for that invocation. Reports may bind prompt, select, and action controls only
+to commands declared and registered by the reporting plugin.
+
 Direct writes enforce an invocation's initial selection plus its accepted insertions. Flat `batch`
 patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
 calling the plugin-visible selection provider. `writePatchOps` flattens a validated batch.
+
+Canvas overlays are registered only with `ui.canvas`, owned command references, and an overlay id
+unique across registered plugins. `listCanvasOverlays()` returns `{ pluginId, overlay }` entries.
+An embedding host can supply `overlays.setStatus(pluginId, overlayId, text)`; the capability
+re-checks permission, ownership, and the 120-character limit before forwarding each call. Without
+a sink the capability rejects with a specific error. Overlay input is accepted only for an overlay
+contributed by the invoked command's plugin, including invocation through the shared registry.
+
+API 0.1.11 adds the optional embedding sink `overlays.setTranscript(pluginId, overlayId, entries)`.
+The host snapshots and validates entries (50 maximum, 4,000 characters each, 64 KiB UTF-8 JSON total),
+checks ownership and `ui.canvas` on each call, and rejects specifically if no transcript sink exists.
+
+API 0.1.13 forwards a validated, snapshotted optional fourth argument `prompt: { disabled?: boolean }`
+to the `overlays.setContent` embedding sink. Hosts replace the prompt's disabled flag on every call;
+an omitted prompt or disabled flag means false. Permission and ownership checks remain unchanged.
+
+API 0.1.12 adds optional `overlays.setContent(pluginId, overlayId, sections)` and
+`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content is bounded to 20 existing
+text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique alongside the overlay's
+prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
+`ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
+focus defaults to false. Embedding hosts resolve action metadata from their current content store.

@@ -100,6 +100,8 @@ pub fn launch_sign_in(
     spawn: impl FnOnce(&TerminalCommand) -> io::Result<()>,
 ) -> Result<SignInLaunch, String> {
     super::private_dir(temp).map_err(|e| e.to_string())?;
+    // Deliberately use the original parent, never the run's isolated CODEX_HOME: sign-in writes
+    // the user's real auth.json. The next probe/run refreshes its link (also after atomic saves).
     let environment = env::child_env(platform, parent, &spec.program, temp, managed);
     let (command, method) = match platform {
         ProbePlatform::MacOS => {
