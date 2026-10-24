@@ -1830,6 +1830,12 @@ function moleculeLabelHaloFragments(
   if (!plan.backgroundVisible) return [];
   const paper = paperHalo();
   if (Object.prototype.hasOwnProperty.call(object.style.atomLabelBackgroundColors ?? {}, plan.atom.id)) return paper;
+  // CLI documents and presets explicitly store paper white; only a different colour overrides fills.
+  const background = object.style.atomLabelBackgroundColor;
+  const normalizeColor = (color: string) => color.trim().toLowerCase()
+    .replace(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/, "#$1$1$2$2$3$3");
+  if (typeof background === "string"
+    && normalizeColor(background) !== normalizeColor(DefaultNativeDrawingStyle.atomLabelBackgroundColor)) return paper;
   const extent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
   const box = {
     x: plan.anchor.x + plan.layout.bounds.x * scale - extent,
