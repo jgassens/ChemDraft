@@ -1,4 +1,4 @@
-import { applyPatch, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatch, cloneDocument, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
@@ -9,6 +9,7 @@ import { callAssistantTool, listAssistantTools } from "./assistantTools";
 import { getAssistantTransactions, type AssistantTransactions } from "./assistantTransaction";
 import { assistantDocumentContentUnchanged, getAssistantHistoryPort } from "./historyPort";
 import type { AssistantMcpEngine, McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
+import { recheckNormalizedAssistantWrite, verifyNormalizedAssistantWrite } from "./normalizedWrite";
 
 type Plugin = { id: string; name: string };
 interface Request {
@@ -141,10 +142,23 @@ export class AssistantToolsController implements PluginHostAssistant {
             if (!abort.signal.aborted) deadline = startDeadline();
           }
         },
-        write: async (patch, signal, checkPreconditions) => {
+        write: async (patch, signal, checkPreconditions, expectedSmiles) => {
           this.running(plugin, requestId);
           if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
           const plannedDocument = request.context.getDocument()!;
+          const growth = approvedGrowth?.growth;
+          const patchDocument = (document: ChemDraftDocument) => {
+            const page = growth && document.pages.find(page => page.id === growth.pageId);
+            return applyPatch(cloneDocument(document), growth && page ? { op: "batch", patches: [
+              { op: "updatePageLayout", pageId: page.id,
+                layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
+              ...writePatchOps(patch)
+            ] } : patch);
+          };
+          const scope = new Set([...request.selection, ...request.inserted]);
+          for (const op of writePatchOps(patch)) {
+            if (op.op === "addObject" || op.op === "addAnnotation") scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
+          }
           const dependencies = new Set(writePatchOps(patch).flatMap(op => "objectId" in op ? [op.objectId] : []));
           // Relative placement also depends on the anchor, even though the patch never edits it.
           const toolInput = input.input as { relativeTo?: { objectId: string }; to?: { relativeTo?: string } };
@@ -153,6 +167,7 @@ export class AssistantToolsController implements PluginHostAssistant {
           const dependencyContent = (document: ChemDraftDocument) => document.pages.flatMap(page =>
             page.objects.filter(object => dependencies.has(object.id)).map(object => ({ pageId: page.id, object })));
           const plannedContent = JSON.stringify(dependencyContent(plannedDocument));
+          const verified = await verifyNormalizedAssistantWrite(request.context, plannedDocument, patchDocument(plannedDocument), scope, expectedSmiles);
           const apply = () => {
             this.running(plugin, requestId);
             if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
@@ -171,17 +186,11 @@ export class AssistantToolsController implements PluginHostAssistant {
                   this.running(plugin, requestId);
                   if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
                   const before = request.context.getDocument()!;
-                  // Object writes still pass the plugin's fixed selection scope. Only the host's
-                  // accepted placement may append a page layout op, atomically in this transaction.
-                  const growth = approvedGrowth?.growth;
-                  const page = growth && before.pages.find(page => page.id === growth.pageId);
-                  const after = applyPatch(before, growth && page ? { op: "batch", patches: [
-                    { op: "updatePageLayout", pageId: page.id,
-                      layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
-                    ...writePatchOps(application.patch.patch)
-                  ] } : application.patch.patch);
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
                     op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                  // Recompute after a gesture or concurrent tool call, including every nearby
+                  // mark. No await separates this scope/chemistry recheck and the history commit.
+                  const after = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);
                   request.transactions.writeAssistantTransaction(requestId, after, touched);
                   const existing = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
                   for (const id of touched) { request.touched.add(id); if (!existing.has(id)) request.inserted.add(id); }

@@ -77,9 +77,22 @@ but an answer after cancellation cannot change the document.
 This growth confirmation applies only to assistant insert tools, not paste, Insert Name, templates,
 or import. It replaces the former off-page placement warning.
 
-Every write is first applied to a cloned document. Molecules built from SMILES are checked again
-against RDKit canonical SMILES after conversion. A mismatch, including isotope or radical loss,
-refuses the write; styling is revalidated and may not silently alter chemistry.
+Every write is first applied to a cloned document and passed through the exact desktop commit
+normalization, including charge/radical-mark attachment and native label bond sides. The host checks
+all resulting object changes against the request's scope, including changes to neighbouring objects
+and marks. Every changed molecule must retain its RDKit canonical isomeric SMILES, atom count and
+atom charges. Inserts and `edit_structure` instead use the requested SMILES as their expected
+identity, verified both after conversion and after normalization. Standalone literal groups, which
+may not have a complete molecular SMILES, retain their exact native label and chemical fields.
+
+For example, moving ethane near an unselected floating `+` can attach that mark even when their
+visible rectangles do not overlap. This refuses the entire tool write with the molecule and mark
+IDs and an instruction to choose another position. Selecting the mark does not authorize a move to
+change the molecule's chemistry. Refusals leave the document, selection and undo history unchanged;
+safe automatic placement and ordinary moves/inserts still work. Immediately inside the canvas write
+gate, the host repeats normalization and scope checks against the current document and requires all
+changed molecules to match those already verified. A newly placed mark during an asynchronous
+inspection or canvas gesture cannot bypass the guard.
 
 ## Write scope and history
 

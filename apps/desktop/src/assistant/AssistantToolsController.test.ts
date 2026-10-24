@@ -10,6 +10,8 @@ import { testContext } from "./tools/testContext";
 import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { objectRect } from "./placement";
+import { buildMoveObjects } from "./writeBuilder";
+import { applyChargeToolAtPoint } from "../documentWorkflow";
 
 function setup() {
   const fixture = testContext();
@@ -433,6 +435,30 @@ describe("assistant requests and MCP bridge", () => {
   });
   const queuedWrites = ["edit_structure", "style_objects", "delete_objects", "move_objects"].flatMap(name =>
     [true, false].map(targetChanged => ({ name, targetChanged })));
+  it("refuses a floating charge mark introduced after verification while waiting for a gesture", async () => {
+    const s = setup();
+    try {
+      const input = { objectIds: [s.molecule.id], to: { relativeTo: s.text.id, side: "right" as const } };
+      const planned = applyPatch(s.context.getDocument()!, buildMoveObjects(s.context, input).patch);
+      const moved = planned.pages[0]!.objects.find(object => object.id === s.molecule.id)!;
+      if (moved.type !== "molecule") throw new Error("Expected molecule");
+      const atom = moved.atoms[0]!;
+      await s.controller.beginRequest(s.plugin, { prompt: "move" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "move_objects", input });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      const before = s.context.getDocument()!;
+      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - 30, y: atom.y });
+      s.port.push(s.context.tabId, before, withMark, "Draw charge");
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(await pending).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("unselected charge mark") }] });
+      expect(s.context.getDocument()).toBe(withMark);
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.label).toBe("Draw charge");
+    } finally { await s.finish(); }
+  });
   it.each(queuedWrites)("rechecks queued $name after a gesture (target changed: $targetChanged)", async ({ name, targetChanged }) => {
     const s = setup();
     try {

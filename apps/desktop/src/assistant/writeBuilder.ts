@@ -148,7 +148,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   if (latest !== document && !assistantDocumentContentUnchanged(document, latest)) {
     throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
   }
-  const result = patch.patches.length ? await context.write(patch, context.signal, built.checkPreconditions) : { objectIds: [] };
+  const result = patch.patches.length ? await context.write(patch, context.signal, built.checkPreconditions, built.expectedSmiles) : { objectIds: [] };
   const inserted = patch.patches.filter(patch => patch.op === "addObject" || patch.op === "addAnnotation");
   if (inserted.length) {
     const insertedIds = new Set(inserted.map(patch => patch.op === "addObject" ? patch.object.id : patch.annotation.id));

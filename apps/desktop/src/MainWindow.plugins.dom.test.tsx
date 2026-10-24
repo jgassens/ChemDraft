@@ -1,9 +1,19 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PluginPanelReportSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, PluginPanelReportSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
+import { applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
+import { applyChargeToolAtPoint } from "./documentWorkflow";
+import { getAssistantHistoryPort } from "./assistant/historyPort";
+import { buildMoveObjects, inspectMolecule } from "./assistant/writeBuilder";
+import { testContext } from "./assistant/tools/testContext";
+import type { AssistantToolContext } from "./assistant/AssistantToolContext";
 import { pluginPanelWindowId, requestPluginPanelAction } from "./plugins/panelBridge";
 import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
@@ -11,7 +21,8 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined }));
+const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined,
+  assistantContext: undefined as import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions["assistantContext"] }));
 const panelActions = vi.hoisted(() => ({ handler: undefined as Parameters<typeof import("./plugins/panelBridge").listenForPluginPanelActions>[0] | undefined }));
 vi.mock("./plugins/panelBridge", async original => {
   const actual = await original<typeof import("./plugins/panelBridge")>();
@@ -23,7 +34,8 @@ vi.mock("./plugins/panelBridge", async original => {
 vi.mock("./plugins/createPluginRuntime", async original => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: (options: import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions) => {
-    captured.runtime = actual.createPluginRuntime(options);
+    captured.runtime = actual.createPluginRuntime({ ...options,
+      ...(captured.assistantContext ? { assistantContext: captured.assistantContext } : {}) });
     return captured.runtime;
   } };
 });
@@ -38,6 +50,145 @@ const submit = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 const select = vi.fn<(context: PluginCommandContext) => Promise<void>>();
 let root: Root;
 let container: HTMLDivElement;
+
+describe("assistant writes through mounted desktop normalization", () => {
+  let chemistry: AssistantToolContext["chemistry"];
+  beforeEach(() => {
+    // jsdom rewrites import.meta.url to HTTP, so load the real vendored WASM by filesystem path.
+    const glue = resolve("packages/rdkit-adapter/vendor/RDKit_minimal.js");
+    const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(
+      createRequire(glue), resolve("packages/rdkit-adapter/vendor"));
+    setRdkitModuleLoader(() => factory({ wasmBinary: new Uint8Array(readFileSync(resolve("packages/rdkit-adapter/vendor/RDKit_minimal.wasm"))) }));
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    vi.stubGlobal("CSS", { escape: (value: string) => value });
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    chemistry = { ...testContext().context.chemistry,
+      inspectStructure: async (_format, value) => {
+        const rdkit = await ensureRdkit();
+        const molecule = rdkit.get_mol(value);
+        if (!molecule) return { valid: false, reason: "Invalid structure" };
+        try {
+          const graph = JSON.parse((molecule as typeof molecule & { get_json(): string }).get_json());
+          return { valid: true, canonicalSmiles: molecule.get_smiles!(), formula: "test-only", warnings: [],
+            heavyAtoms: graph.molecules.reduce((n: number, mol: { atoms: { z?: number }[] }) =>
+              n + mol.atoms.filter(atom => (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
+        } finally { molecule.delete(); }
+      },
+      structureFromSmiles: async ({ smiles }) => ({ available: true, built: true,
+        object: createSmilesMolecule(getAssistantHistoryPort().read("initial")!, { x: 200, y: 200 },
+          pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles)), smiles) })
+    };
+    captured.assistantContext = () => ({ chemistry, now: () => new Date(), render: testContext().context.render });
+  });
+  afterEach(async () => {
+    await act(async () => root.unmount()); container.remove();
+    captured.runtime = undefined; captured.assistantContext = undefined;
+    vi.restoreAllMocks(); vi.unstubAllGlobals();
+  });
+
+  async function mount(drawing: ChemDraftDocument) {
+    await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden"
+      initialRulersVisible={false} nativePalette={false} />));
+    const port = getAssistantHistoryPort();
+    return { port, push: vi.spyOn(port, "push"), amend: vi.spyOn(port, "amend"), select: vi.spyOn(port, "select") };
+  }
+  async function call(name: string, input: unknown) {
+    let result!: PluginAssistantToolResult;
+    await act(async () => {
+      const id = "org.chemdraft.normalizationTest";
+      const command = "plugin.normalizationTest.run";
+      captured.runtime!.registerPlugin({ id, name: "Normalization test", version: "0.1.0", apiVersion: "^0.1.14",
+        entry: "test.js", permissions: [...AssistantCapabilityPermissions], contributes: { commands: [{ id: command, title: "Test" }] }
+      }, { commandHandlers: { [command]: async context => {
+        const request = await context.assistant!.beginRequest({ prompt: name });
+        try { result = await context.assistant!.callTool({ name, input }); }
+        finally { await context.assistant!.endRequest(request); }
+      } } });
+      await captured.runtime!.host.invokeCommand(command);
+    });
+    return result;
+  }
+
+  it.each([
+    { selectedMark: false, kind: "charge" }, { selectedMark: true, kind: "charge" },
+    { selectedMark: false, kind: "lone-pair" }, { selectedMark: true, kind: "radical-dot" }
+  ] as const)("refuses a relative move that would attach a $kind mark (selected: $selectedMark), without changing document or history", async ({ selectedMark, kind }) => {
+    const fixture = testContext();
+    const input = { objectIds: [fixture.molecule.id], to: { relativeTo: fixture.text.id, side: "right" as const } };
+    const drawing = fixture.context.getDocument()!;
+    const planned = applyPatch(drawing, buildMoveObjects(fixture.context, input).patch);
+    const moved = planned.pages[0]!.objects.find(object => object.id === fixture.molecule.id)! as MoleculeObject;
+    const atom = moved.atoms[0]!;
+    const withMark = applyChargeToolAtPoint(drawing, kind === "charge" ? 1 : { kind }, { x: atom.x - 30, y: atom.y });
+    const mark = withMark.pages[0]!.objects.find(object => object.type === "electron-mark")!;
+    const { port, push, amend, select } = await mount(applyPatch(withMark, { op: "setSelection",
+      objectIds: [fixture.molecule.id, ...(selectedMark ? [mark.id] : [])] }));
+    const before = port.read("initial")!;
+    expect(before.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({ anchor: { kind: "point" } });
+    expect((await inspectMolecule({ ...fixture.context, chemistry }, before.pages[0]!.objects[0] as MoleculeObject)).canonicalSmiles).toBe("CC");
+    const result = await call("move_objects", input);
+    // Before the guard, this mounted path reported success with [] warnings and committed
+    // [CH2+]C instead of CC, while changing the unselected mark's anchor from point to atom.
+    expect(result.isError, JSON.stringify(result)).toBe(true);
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(selectedMark
+      ? kind === "charge" ? "change its atom count or charges" : "canonical isomeric SMILES"
+      : `attach the unselected ${kind} mark ${mark.id}`) });
+    const after = port.read("initial")!;
+    expect(after).toBe(before);
+    expect(push).not.toHaveBeenCalled(); expect(amend).not.toHaveBeenCalled(); expect(select).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keep-position replacement that would absorb a floating charge mark atomically", async () => {
+    const fixture = testContext();
+    const drawing = fixture.context.getDocument()!;
+    const replacement = createSmilesMolecule(drawing, { x: 250, y: 250 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile("CCCCCCCC")), "CCCCCCCC");
+    const terminal = replacement.atoms.reduce((left, atom) => atom.x < left.x ? atom : left);
+    const withMark = applyChargeToolAtPoint(drawing, 1, terminal);
+    const mark = withMark.pages[0]!.objects.find(object => object.type === "electron-mark")!;
+    const { port, push, amend, select } = await mount(applyPatch(withMark, { op: "setSelection", objectIds: [fixture.molecule.id] }));
+    const before = port.read("initial")!;
+    expect(before.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({ anchor: { kind: "point" } });
+    const result = await call("edit_structure", { objectId: fixture.molecule.id, smiles: "CCCCCCCC", keepPosition: true });
+    expect(result.isError, JSON.stringify(result)).toBe(true);
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(`unselected charge mark ${mark.id}`) });
+    expect(port.read("initial")).toBe(before);
+    expect(push).not.toHaveBeenCalled(); expect(amend).not.toHaveBeenCalled(); expect(select).not.toHaveBeenCalled();
+  });
+
+  it("automatically inserts away from a floating charge mark and records the unchanged mark", async () => {
+    const drawing = applyChargeToolAtPoint(createEmptyDocument(), 1, { x: 300, y: 300 });
+    captured.assistantContext = () => ({ chemistry, now: () => new Date(), render: testContext().context.render,
+      getViewportRect: () => ({ x: 100, y: 100, width: 400, height: 400 }) });
+    const { port, push } = await mount(applyPatch(drawing, { op: "setSelection", objectIds: [] }));
+    const before = port.read("initial")!;
+    const mark = before.pages[0]!.objects[0]!;
+    const result = await call("insert_structures", { items: [{ kind: "molecule", smiles: "CC" }] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const after = port.read("initial")!;
+    expect(after.pages[0]!.objects.find(object => object.id === mark.id)).toEqual(mark);
+    const molecule = after.pages[0]!.objects.find(object => object.type === "molecule")! as MoleculeObject;
+    expect((await inspectMolecule({ ...testContext().context, chemistry }, molecule)).canonicalSmiles).toBe("CC");
+    expect(push).toHaveBeenCalledOnce();
+    expect(after.selection.objectIds).toEqual([molecule.id]);
+  });
+
+  it.each(["move_objects", "insert_structures", "edit_structure"])("keeps ordinary %s writes working", async name => {
+    const fixture = testContext();
+    const { port, push } = await mount(applyPatch(fixture.context.getDocument()!, { op: "setSelection", objectIds: [fixture.molecule.id] }));
+    const input = name === "move_objects" ? { objectIds: [fixture.molecule.id], to: { relativeTo: fixture.text.id, side: "right" } }
+      : name === "insert_structures" ? { items: [{ kind: "molecule", smiles: "CO" }] }
+        : { objectId: fixture.molecule.id, smiles: "CO", keepPosition: true };
+    const result = await call(name, input);
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const after = port.read("initial")!;
+    const molecule = after.pages[0]!.objects.find(object => after.selection.objectIds.includes(object.id))! as MoleculeObject;
+    expect((await inspectMolecule({ ...fixture.context, chemistry }, molecule)).canonicalSmiles).toBe(name === "move_objects" ? "CC" : "CO");
+    expect(push).toHaveBeenCalledOnce();
+  });
+});
+
 function input(value: string): void {
   const textarea = container.querySelector(".plugin-canvas-overlay textarea")!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
