@@ -272,6 +272,45 @@ describe("PluginCanvasOverlay", () => {
     expect(document.activeElement).toBe(container.querySelector("textarea"));
   });
 
+  it.each(["macos", "windows"] as const)("keeps focus on a mounted action button through content updates on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    const update = (body: string) => api.setContent({ overlayId: overlay.id, sections: [
+      { kind: "actions", id: "primary", buttons: [{ id: "stop", label: "Stop", commandId: overlay.commandId }] },
+      { kind: "text", body }
+    ] });
+    await act(async () => update("Running"));
+    const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+    button.focus();
+    await act(async () => update("Still running"));
+    expect(button.isConnected).toBe(true);
+    expect(document.activeElement).toBe(button);
+    expect(action).not.toHaveBeenCalled();
+
+    let finish!: (result: { ok: true }) => void;
+    action.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => button.click());
+    await act(async () => update("Stopping"));
+    expect(button.isConnected).toBe(true);
+    expect(document.activeElement).toBe(button);
+    await act(async () => finish({ ok: true }));
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
+  it.each(["macos", "windows"] as const)("does not restore focus when an unactivated action button is removed on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    await act(async () => api.setContent({ overlayId: overlay.id, sections: [
+      { kind: "actions", id: "primary", buttons: [{ id: "stop", label: "Stop", commandId: overlay.commandId }] }
+    ] }));
+    const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+    button.focus();
+    await act(async () => api.setContent({ overlayId: overlay.id, sections: [{ kind: "text", body: "Run ended" }] }));
+    expect(button.isConnected).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it.each(["macos", "windows"] as const)("restores focus after an action button is removed, respecting deliberate focus moves on %s", async targetPlatform => {
     platform = targetPlatform; await render(); await expand();
     const api = contentRuntime.host.createCommandContext("widget").overlays!;
