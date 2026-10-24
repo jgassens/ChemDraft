@@ -33,6 +33,10 @@ export type IconName =
   | "plugin"
   | "redo"
   | "ring"
+  | "ring3"
+  | "ring4"
+  | "ring7"
+  | "ring8"
   | "save"
   | "select"
   | "style"
@@ -265,6 +269,17 @@ export function Icon({ name, ...props }: IconProps) {
           <path d="M19 13c-2.2-4.4-9.5-5.4-13-1.4" />
         </svg>
       );
+    case "ring3":
+    case "ring4":
+    case "ring7":
+    case "ring8": {
+      const size = Number(name.slice(4));
+      const points = Array.from({ length: size }, (_, index) => {
+        const angle = -Math.PI / 2 + index * Math.PI * 2 / size;
+        return `${12 + 9 * Math.cos(angle)},${12 + 9 * Math.sin(angle)}`;
+      }).join(" ");
+      return <svg {...common}><polygon points={points} /></svg>;
+    }
     case "ring":
       return (
         <svg {...common}>
