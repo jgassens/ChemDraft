@@ -285,9 +285,9 @@ that wraps past the bottom: one document-owned native box names the item and new
 Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
 molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
 omits non-fitting items and their captions but keeps fitting ones; the assistant reports the refusal.
-Fitting calls never prompt. Esc chooses Cancel; Return never enlarges the page (on macOS it does
-nothing until a button is clicked or focused). On Windows, Return initially chooses Cancel.
-Enlarge Page requires an explicit choice. The native box is modal by design: its overlay Stop button cannot be clicked until
+Fitting calls never prompt. Esc or Cancel declines; Enlarge Page (Return where the platform makes
+it the default) enlarges, and one Undo reverses it. Closing the box must also decline; if the platform
+offers no close button, verify Esc instead. The native box is modal by design: its overlay Stop button cannot be clicked until
 the box closes. Cancel is the stop for that item. Immediately after answering, verify Stop can again
 cancel the remaining request and typing returns to the prompt.
 
@@ -473,7 +473,7 @@ for each drawing, suggesting its name and extension, and writes its exact saved 
 chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
 box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
 box without losing the drawing. Delete opens a second native confirmation saying “Delete the
-kept drawing? This cannot be undone.” Its default button and Escape are Cancel. Cancel returns
+kept drawing? This cannot be undone.” Delete is the affirmative/default button; Escape declines. Cancel returns
 to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
 hidden through the entire sequence, including save panels, failed saves and both confirmation
 boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
@@ -485,8 +485,8 @@ and Art toolbars open, including at 125%/150% display scale:
 - For every prompt below, confirm the message box uses the OS appearance, stays above the floating
   toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
   exactly Cancel, and Escape (on macOS too) and closing the box choose it; a notice has one OK
-  button that Return dismisses. No button appears twice. Enter must never choose a destructive
-  action. Repeat in the web preview with `?agentBridge=1`:
+  button that Return dismisses. No button appears twice. A two-button question puts its affirmative
+  action in the ok/default slot and Cancel in the cancel slot. Repeat in the web preview with `?agentBridge=1`:
   the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
 - With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
   open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:

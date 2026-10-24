@@ -31,7 +31,7 @@ describe("nativePrompt", () => {
       plugin.message.mockResolvedValue(answer);
       expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
       expect(plugin.message).toHaveBeenLastCalledWith(growth.message, {
-        title: growth.title, kind: "info", buttons: { ok: "Cancel", cancel: "Enlarge Page" }
+        title: growth.title, kind: "info", buttons: { ok: "Enlarge Page", cancel: "Cancel" }
       });
     }
     plugin.owner = "plugin-panel";
@@ -222,7 +222,7 @@ describe("nativePrompt", () => {
     expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: { ok: "OK" } }));
   });
 
-  it("never puts a destructive choice in the native default slot, regardless of input order", () => {
+  it("prefers the safe action in a three-button prompt, regardless of input order", () => {
     expect(nativePromptButtons(three)).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [...three.choices].reverse() })).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [
@@ -231,10 +231,10 @@ describe("nativePrompt", () => {
     ] })).toEqual({ yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" });
   });
 
-  it("defaults a destructive confirmation to Cancel without duplicating buttons", () => {
+  it("keeps a confirmation's action in ok and decline in cancel without duplicating buttons", () => {
     expect(nativePromptButtons({ ...three, choices: [
       { id: "remove", label: "Remove", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
-    ] })).toEqual({ ok: "Cancel", cancel: "Remove" });
+    ] })).toEqual({ ok: "Remove", cancel: "Cancel" });
     for (const prompt of [three, { ...three, choices: [{ id: "a", label: "Use A3 Page" }, { id: "c", label: "Cancel" as const, cancel: true as const }] }]) {
       const labels = Object.values(nativePromptButtons(prompt));
       expect(new Set(labels).size).toBe(labels.length);
@@ -250,7 +250,7 @@ describe("nativePrompt", () => {
       plugin.message.mockResolvedValue(result);
       expect(await nativePrompt(prompt)).toBe(id);
       expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({
-        buttons: { ok: "Cancel", cancel: "Delete" }
+        buttons: { ok: "Delete", cancel: "Cancel" }
       }));
     }
   });

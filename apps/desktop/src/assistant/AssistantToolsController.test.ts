@@ -186,9 +186,11 @@ describe("assistant host page enlargement", () => {
     } finally { restore(); await s.finish(); }
   });
 
-  it.each([false, true])("refusal omits the oversized item and its label, retaining fitting items (%s)", async mixed => {
+  it.each([false, true].flatMap(mixed => ["decline", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
+    "$answer omits the oversized item and its label, retaining fitting items ($mixed)", async ({ mixed, answer }) => {
     const s = placementSetup();
-    const prompt = vi.fn(async () => "decline");
+    const prompt = vi.fn(async (options: NativePromptOptions, fallback: (options: NativePromptOptions) => Promise<string>) =>
+      answer === "fallback" ? fallback(options) : answer);
     const restore = setNativePromptProvider(prompt);
     try {
       const before = structuredClone(s.context.getDocument()!.pages[0]!);

@@ -48,9 +48,10 @@ For `insert_structures`, `insert_reaction`, and `insert_text`, if an item is too
 wrapped set runs off the bottom, the host computes one enlarged page size for the entire call.
 It asks once in a native message box owned by the document window on macOS and Windows, naming
 the item (using its label when available) and the proposed size in points. Both platforms show
-exactly two buttons in the same library order: **Cancel**, then **Enlarge Page**. Esc chooses Cancel;
-Return never enlarges the page (on macOS it does nothing until a button is clicked or focused).
-On Windows, Cancel is the initial Return default. Enlarge Page must be chosen explicitly.
+exactly two buttons: **Enlarge Page** in the library's ok/default slot and **Cancel** in its cancel
+slot. Esc or Cancel declines; Enlarge Page (Return where the platform makes it the default)
+enlarges, and one Undo reverses it. Closing the box, unknown results and native dialog errors
+also decline; only the explicit Enlarge Page result approves enlargement.
 Internal CSS-pixel sizes are converted to physical points for this message.
 Approval adds a host-issued `updatePageLayout` alongside the object patches inside the same
 assistant request transaction. One Undo restores both page and objects; Redo restores both without
@@ -71,7 +72,8 @@ after the answer to cancel the remaining request. Write calls have a
 gate. Transport expiry sends cancellation and likewise ignores the pending answer.
 A document edit while confirmation is open invalidates the plan.
 The native API cannot programmatically close an open message box, so an ignored box may remain
-until dismissed; Escape chooses Cancel. Return declines on Windows and initially does nothing on macOS.
+until dismissed; Esc or Cancel declines. Return may activate Enlarge Page where it is the default,
+but an answer after cancellation cannot change the document.
 This growth confirmation applies only to assistant insert tools, not paste, Insert Name, templates,
 or import. It replaces the former off-page placement warning.
 

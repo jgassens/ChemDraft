@@ -124,10 +124,10 @@ export class AssistantToolsController implements PluginHostAssistant {
           try {
             const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
               message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
-              // Cancel first: Escape declines; Return declines on Windows and does nothing on
-              // macOS until a button is clicked or focused (see nativePromptButtons).
+              // Enlarge Page is the affirmative/default action; Escape and close decline.
+              // The request's single Undo restores both the page and inserted objects.
               choices: [{ id: "enlarge", label: "Enlarge Page", destructive: true }, { id: "decline", label: "Cancel", cancel: true }]
-            }, async () => { throw new Error("The native page enlargement confirmation is unavailable; nothing was inserted."); }, decision.signal);
+            }, async () => "decline", decision.signal);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();

@@ -9,8 +9,8 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
  * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". With Cancel first, AppKit gives neither button the Return default (native probe);
- * Windows defaults to that first, safe button. A notice has one "OK" button.
+ * "Cancel". The affirmative action goes first and may be activated by Return on either platform.
+ * A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -60,16 +60,11 @@ export function nativePromptButtons(prompt: NativePromptOptions,
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
-  // Windows source: rfd 0.16.0, src/backend/win_cid/message_dialog.rs, WinMessageDialog::run
-  // (tauri-plugin-dialog 2.7.1 enables common-controls-v6). OkCancelCustom orders IDs 1000/1001;
-  // TASKDIALOGCONFIG.nDefaultButton = 0 selects the first button. TDF_ALLOW_DIALOG_CANCELLATION
-  // makes Escape return IDCANCEL -> "Cancel", not custom ID 1001's label. Keep Cancel first.
-  // macOS rfd only calls NSAlert.addButtonWithTitle: the native probe with Cancel first found
-  // Escape selects Cancel and neither button is Return's default. Return thus never enlarges
-  // on opening either platform's box; an explicitly focused action can still be activated.
-  const safe = actions.find((choice) => !choice.destructive);
-  if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
-  if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
+  // tauri-plugin-dialog 2.7.1 src/desktop.rs:232-239 remaps rfd Ok/Cancel to these
+  // custom labels on BOTH platforms. In particular, Windows Esc/close returns IDCANCEL;
+  // putting an action in the cancel slot would approve that action on dismissal.
+  if (actions.length === 1) return { ok: actions[0]!.label, cancel: cancel.label };
+  const safe = actions.find((choice) => !choice.destructive)!;
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
 }
@@ -132,8 +127,8 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     console.error("Native prompt failed", error);
     return fallback(prompt);
   }
-  // Custom buttons return their label and an OS dismissal returns Cancel, which is also the cancel
-  // choice's label. Fail closed on any unexpected result; never read labels as positional button IDs.
+  // Tauri returns custom labels, including the configured cancel label for OS dismissal.
+  // Only an exact action label approves; unknown values and raw OS result names decline.
   return prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
 }
 
