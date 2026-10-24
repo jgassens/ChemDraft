@@ -594,8 +594,8 @@ impl Drop for Staged {
 
 /// Status checks the receipt and executable metadata; it deliberately does not rehash binaries.
 pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
-    let root = base.join(pin.tool.as_str()).join(pin.version);
-    let path = root.join(binary_name(pin));
+    let tool_root = base.join(pin.tool.as_str());
+    let mut root = tool_root.join(pin.version);
     let mut status = ExternalToolStatus {
         tool: pin.tool,
         publisher: pin.tool.spec().publisher.into(),
@@ -618,17 +618,36 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         consented: false,
         probed_at: chrono::Utc::now().to_rfc3339(),
     };
-    if !root.exists() {
-        return status;
+    // A pin bump can change the version directory as well as the archive. Ignore staging,
+    // retirement leftovers and links; discovery must never follow an external install.
+    if !root.exists() && reject_symlink(&tool_root).is_ok() {
+        let older = fs::read_dir(&tool_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && !name.ends_with(".partial")
+                    && !name.contains(".discard-")
+                    && (entry.path().join(RECEIPT).exists()
+                        || entry.path().join(binary_name(pin)).exists())
+            });
+        let Some(older) = older else { return status };
+        root = older.path();
     }
+    let path = root.join(binary_name(pin));
     let check = (|| -> Result<(), String> {
+        reject_symlink(&tool_root).map_err(|e| e.message)?;
         reject_symlink(&root).map_err(|e| e.message)?;
-        let bytes = fs::read(root.join(RECEIPT))
-            .map_err(|_| "The managed tool install receipt is missing or unreadable.".to_owned())?;
-        let receipt: InstallReceipt = serde_json::from_slice(&bytes)
-            .map_err(|_| "The managed tool install receipt is invalid.".to_owned())?;
+        if root != tool_root.join(pin.version) {
+            return Err(managed_update_detail(pin.tool));
+        }
+        let bytes = fs::read(root.join(RECEIPT)).map_err(|_| managed_update_detail(pin.tool))?;
+        let receipt: InstallReceipt =
+            serde_json::from_slice(&bytes).map_err(|_| managed_update_detail(pin.tool))?;
         if !receipt.matches(pin) {
-            return Err("The managed tool receipt does not match the pinned release.".into());
+            return Err(managed_update_detail(pin.tool));
         }
         let metadata = fs::symlink_metadata(&path)
             .map_err(|_| "The managed tool executable is missing.".to_owned())?;
@@ -643,7 +662,8 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
                 } else {
                     ProbePlatform::MacOS
                 },
-            )?;
+            )
+            .map_err(|_| managed_update_detail(pin.tool))?;
         }
         #[cfg(unix)]
         {
@@ -681,6 +701,13 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         }
     }
     status
+}
+
+pub(super) fn managed_update_detail(tool: ToolId) -> String {
+    format!(
+        "ChemDraft's copy of {} is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+        tool.spec().display_name
+    )
 }
 
 #[cfg(test)]

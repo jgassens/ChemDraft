@@ -234,6 +234,7 @@ remains. On Windows, confirm no console flash and that the Job Object kills chil
 
 On both platforms, stress the assistant's one-box controls:
 
+- Upgrade from a Codex installed by an older ChemDraft: Setup offers Update; it installs and works.
 - With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
   header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
   the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;

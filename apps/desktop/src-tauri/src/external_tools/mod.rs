@@ -450,7 +450,9 @@ fn status_impl(
     let notice = (tool == ToolId::Codex)
         .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
         .and_then(|home| home.fallback_reason);
-    if let Some(notice) = notice {
+    // Keep the actionable upgrade message plain without changing auth preparation.
+    let needs_update = status.detail.as_deref() == Some(&install::managed_update_detail(tool));
+    if let Some(notice) = notice.filter(|_| !needs_update) {
         status.detail = Some(match status.detail {
             Some(detail) => format!("{detail} {notice}"),
             None => notice,
@@ -528,6 +530,9 @@ fn status_prepared_impl(
         if let Some(Ok(result)) = user.as_ref() { return Ok(result.clone()); }
         if let Some(managed) = status.managed.as_ref() {
             return probe::probe_tool(&tool.spec(), &managed.path, parent, &run_dir, true, codex_auth.as_ref());
+        }
+        if matches!(status.source, Some(ToolSource::Managed)) {
+            return Err(status.detail.clone().unwrap_or_else(|| "The managed tool needs attention.".into()));
         }
         user.unwrap_or_else(|| Err(status.detail.clone().unwrap_or_else(|| "Tool is not installed.".into())))
     });

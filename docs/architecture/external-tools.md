@@ -77,6 +77,12 @@ It checks every header/path, refuses links, duplicates and oversized entries, an
 must pass codesign/Authenticode verification; `codex --version` must contain the pinned version and the
 helper must be present and executable. Claude remains a single native binary. The receipt is written last.
 
+An old-pin or corrupt managed receipt, an older managed version directory, or a missing managed
+Codex helper reports `broken`, source `managed`, with `canInstall: true` and a plain update hint.
+An explicit update uses the same verified staging and rename-first replacement as a fresh install;
+the old copy stays intact until verification succeeds. User installs still win discovery and are
+never replaced. Updating does not change the Codex home link or authentication handling.
+
 Discovery resolves the real Codex executable through filesystem links before checking for its sibling
 `codex-code-mode-host`. A missing helper reports `broken` with a reinstall/managed-install hint. Runs use
 the executable selected by their starting status; auth reconciliation never triggers binary rediscovery.

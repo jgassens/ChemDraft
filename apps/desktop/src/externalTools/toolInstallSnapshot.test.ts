@@ -4,6 +4,18 @@ import states from "../dialogs/toolInstallButtonStates.json";
 import { validToolInstallSnapshot, type ToolInstallState } from "../dialogs/dialogProtocol";
 const base = { state: "missing" as const, pinnedVersion: "1", pinnedDownloadBytes: 274_675_680, freeDiskBytes: 4_000_000_000, canInstall: true, consented: false, probedAt: "now" };
 describe("toolInstallSnapshot", () => {
+  it.each([["codex", "Codex"], ["claude", "Claude Code"]] as const)("explains the managed %s update at consent", (tool, name) => {
+    const status = { ...base, tool, publisher: "", state: "broken" as const, source: "managed" as const };
+    const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "consent" });
+    expect(snapshot.disclosure).toContain(`Update ChemDraft's copy of ${name} to add the helper ChemDraft now needs.`);
+    expect(snapshot.disclosure).toContain("Your own installation and sign-in are kept.");
+    expect(snapshot.downloadBytes).toBe(base.pinnedDownloadBytes);
+    expect(snapshot.requiredDiskBytes).toBeGreaterThan(0);
+    expect(validToolInstallSnapshot(snapshot)).toBe(true);
+    for (const other of [{ state: "missing" as const }, { state: "installed" as const }, { source: "user" as const }]) {
+      expect(toolInstallSnapshot({ ...status, ...other }, { id: "plugin", name: "Plugin" }, { status: "consent" }).disclosure).not.toContain("Update ChemDraft's copy");
+    }
+  });
   it.each(["user", "managed"] as const)("requires no download or disk budget for a %s installation at consent", source => {
     const snapshot = toolInstallSnapshot({ ...base, tool: "codex", publisher: "OpenAI", state: "installed", source },
       { id: "plugin", name: "Plugin" }, { status: "consent" });

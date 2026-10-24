@@ -13,11 +13,12 @@ export function toolInstallSnapshot(status: ExternalToolStatus, plugin: External
   const publisher = status.publisher || publisherForTool(status.tool);
   const selected = state ?? (status.state === "installed" ? { status: "installed" } : status.state === "broken" ? { status: "broken", detail: status.detail ?? "The installed tool needs attention." } : { status: "notInstalled" });
   const needsDownload = status.state !== "installed" && selected.status !== "installed";
+  const needsUpdate = needsDownload && status.state === "broken" && status.source === "managed" && status.canInstall;
   return {
     title: `${toolNameFor(status.tool)} for ${plugin.name}`,
     toolName: toolNameFor(status.tool), publisher, version: status.pinnedVersion,
     downloadHost: TOOL_DOWNLOAD_HOSTS[status.tool], downloadBytes: needsDownload ? status.pinnedDownloadBytes : 0, pluginName: plugin.name, pluginId: plugin.id,
-    disclosure: `The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
+    disclosure: `${needsUpdate ? `Update ChemDraft's copy of ${toolNameFor(status.tool)} to add the helper ChemDraft now needs. Your own installation and sign-in are kept. ` : ""}The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
     requiredDiskBytes: needsDownload ? status.pinnedDownloadBytes * 2 + 64 * 1024 * 1024 : 0, freeDiskBytes: status.freeDiskBytes, state: selected,
     buttons: selected.status === "consent" ? ["allow", "close"] : selected.status === "installing" ? ["cancelInstall", "close"] : selected.status === "installed" ? ["close"] : ["install", "close"]
   };

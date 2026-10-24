@@ -69,6 +69,39 @@ fn stub() -> &'static [u8] {
     })
 }
 
+fn codex_probe_stub() -> &'static [u8] {
+    static STUB: OnceLock<Vec<u8>> = OnceLock::new();
+    STUB.get_or_init(|| {
+        let temp = Temp::new();
+        let source = temp.0.join("codex_probe.rs");
+        let binary = temp.0.join(if cfg!(windows) { "stub.exe" } else { "stub" });
+        fs::write(
+            &source,
+            r#"fn main() {
+            match std::env::args().nth(1).as_deref() {
+                Some("--version") => println!("codex-cli 0.163.0"),
+                Some("login") => eprintln!("Logged in using ChatGPT"),
+                _ => panic!("unexpected fixture arguments"),
+            }
+        }"#,
+        )
+        .unwrap();
+        let output = Command::new("rustc")
+            .args(["--crate-name", "codex_probe_stub", "--edition=2021"])
+            .arg(source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read(binary).unwrap()
+    })
+}
+
 struct Signature(bool);
 impl SignatureChecker for Signature {
     fn verify(&self, binary: &Path) -> Result<(), String> {
@@ -479,7 +512,7 @@ fn invalid_receipts_and_non_executable_binaries_are_broken() {
     assert!(managed_status(&temp.0, &pin)
         .detail
         .unwrap()
-        .contains("receipt"));
+        .contains("older ChemDraft version"));
     let receipt = serde_json::json!({"receiptVersion":1,"tool":"claude","version":pin.version,"platform":pin.platform,
         "url":pin.url,"size":pin.size,"sha256":pin.sha256,"installedAt":chrono::Utc::now().to_rfc3339()});
     fs::write(
@@ -507,12 +540,12 @@ fn invalid_receipts_and_non_executable_binaries_are_broken() {
     assert!(managed_status(&temp.0, &pin)
         .detail
         .unwrap()
-        .contains("does not match"));
+        .contains("older ChemDraft version"));
     fs::write(root.join("install.json"), b"invalid JSON").unwrap();
     assert!(managed_status(&temp.0, &pin)
         .detail
         .unwrap()
-        .contains("invalid"));
+        .contains("older ChemDraft version"));
 }
 
 fn status_fixture(base: &Path, pin: &ToolPin) -> PathBuf {
@@ -1055,5 +1088,197 @@ fn codex_package_refuses_missing_duplicate_link_and_unsafe_entries() {
             FileOps::with_prefix("[test]", None),
         );
         assert!(result.is_err(), "accepted {bad}");
+    }
+}
+
+#[test]
+fn stale_managed_copies_offer_update_and_replace_without_touching_user_files() {
+    check_stale_managed_replacement(true);
+}
+
+#[test]
+fn stale_managed_replacement_filesystem_transaction_preserves_user_files() {
+    check_stale_managed_replacement(false);
+}
+
+fn check_stale_managed_replacement(loopback: bool) {
+    for platform in [
+        ToolPlatform::DarwinArm64,
+        ToolPlatform::DarwinX64,
+        ToolPlatform::WindowsX64,
+    ] {
+        for scenario in ["old-version", "old-archive", "corrupt", "missing-helper"] {
+            let temp = Temp::new();
+            let base = temp.0.join("external-tools");
+            let parent = super::test_support::fake_parent(&temp.0);
+            let auth = Path::new(parent.get("CODEX_HOME").unwrap()).join("auth.json");
+            let original_auth = fs::read(&auth).unwrap();
+            let home = super::env::prepare_codex_home(
+                super::probe::ProbePlatform::current(),
+                &base,
+                &parent,
+            );
+            assert!(home.fallback_reason.is_none());
+            let linked_auth = home.path.unwrap().join("auth.json");
+            let link_metadata = fs::symlink_metadata(&linked_auth).unwrap();
+            let binary = if platform == ToolPlatform::WindowsX64 {
+                "codex.exe"
+            } else {
+                "codex"
+            };
+            let helper = if platform == ToolPlatform::WindowsX64 {
+                "codex-code-mode-host.exe"
+            } else {
+                "codex-code-mode-host"
+            };
+            let user_dir = temp.0.join("user-bin");
+            fs::create_dir_all(&user_dir).unwrap();
+            let user_binary = user_dir.join(binary);
+            for path in [&user_binary, &user_dir.join(helper)] {
+                fs::write(path, codex_probe_stub()).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+            }
+            let body = package_tar(&[
+                (&format!("bin/{binary}"), codex_probe_stub(), b'0'),
+                (&format!("bin/{helper}"), stub(), b'0'),
+            ]);
+            let (url, server) = if loopback {
+                let (url, server) = serve(&body, true);
+                (url, Some(server))
+            } else {
+                ("https://github.com/openai/codex/fixture".into(), None)
+            };
+            let mut pin = pin(&body, ArchiveKind::TarGz, &url);
+            pin.tool = ToolId::Codex;
+            pin.version = "0.163.0";
+            pin.platform = platform;
+            pin.binary = binary;
+            pin.entry = leak(format!("bin/{binary}"));
+            let old_binary = status_fixture(&base, &pin);
+            let mut old_dir = old_binary.parent().unwrap().to_owned();
+            let receipt_path = old_dir.join("install.json");
+            match scenario {
+                "old-version" => {
+                    let mut receipt: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+                    receipt["version"] = serde_json::json!("0.162.1");
+                    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+                    let older = base.join("codex").join("0.162.1");
+                    fs::rename(&old_dir, &older).unwrap();
+                    old_dir = older;
+                }
+                "old-archive" => {
+                    let mut receipt: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+                    receipt["url"] = serde_json::json!(
+                        "https://github.com/openai/codex/releases/old-codex-only.tar.gz"
+                    );
+                    fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+                }
+                "corrupt" => fs::write(&receipt_path, b"{corrupt receipt").unwrap(),
+                "missing-helper" => (),
+                _ => unreachable!(),
+            }
+            fs::remove_file(old_dir.join(helper)).unwrap();
+            let old_receipt = fs::read(old_dir.join("install.json")).unwrap();
+            let expected_detail = "ChemDraft's copy of Codex is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.";
+            let status = managed_status(&base, &pin);
+            assert!(matches!(status.state, ToolState::Broken));
+            assert!(matches!(status.source, Some(super::ToolSource::Managed)));
+            assert!(status.can_install);
+            assert_eq!(status.detail.as_deref(), Some(expected_detail));
+            // Exercise the public status policy too, with discovery confined to fake paths.
+            if super::current_platform().is_some() {
+                let state = super::ExternalToolsState::default();
+                let status =
+                    super::status_impl(&base, &state, ToolId::Codex, true, None, &parent).unwrap();
+                assert!(matches!(status.state, ToolState::Broken));
+                assert!(matches!(status.source, Some(super::ToolSource::Managed)));
+                assert!(status.can_install);
+                assert_eq!(status.detail.as_deref(), Some(expected_detail));
+                if (platform == ToolPlatform::WindowsX64) == cfg!(windows) {
+                    // Inject the PATH candidate rather than searching this machine's PATH.
+                    *state.test_candidates.lock().unwrap() = vec![user_binary.clone()];
+                    let status =
+                        super::status_impl(&base, &state, ToolId::Codex, true, None, &parent)
+                            .unwrap();
+                    assert!(matches!(status.state, ToolState::Installed));
+                    assert!(matches!(status.source, Some(super::ToolSource::User)));
+                    assert_eq!(status.path, Some(fs::canonicalize(&user_binary).unwrap()));
+                }
+            }
+            let progress = |progress: super::ToolInstallProgress| {
+                if progress.phase == ToolInstallPhase::Installing {
+                    // Old files remain intact until the new download passes verification.
+                    assert_eq!(fs::read(old_dir.join("install.json")).unwrap(), old_receipt);
+                    assert!(!old_dir.join(helper).exists());
+                }
+            };
+            let installed = if loopback {
+                install_with_client(
+                    &base,
+                    &pin,
+                    &parent,
+                    &AtomicBool::new(false),
+                    &Signature(true),
+                    progress,
+                    &client(),
+                )
+            } else {
+                install_with_download(
+                    &base,
+                    &pin,
+                    &parent,
+                    &AtomicBool::new(false),
+                    &Signature(true),
+                    progress,
+                    |path, _| {
+                        fs::write(path, &body).unwrap();
+                        Ok(())
+                    },
+                )
+            }
+            .unwrap();
+            if let Some(server) = server {
+                server.join().unwrap();
+            }
+            let status = managed_status(&base, &pin);
+            assert!(matches!(status.state, ToolState::Installed));
+            assert!(matches!(status.source, Some(super::ToolSource::Managed)));
+            assert_eq!(status.path, Some(installed.path.clone()));
+            assert!(status.detail.is_none());
+            assert_eq!(fs::read_dir(base.join("codex")).unwrap().count(), 1);
+            assert_eq!(fs::read(&installed.path).unwrap(), codex_probe_stub());
+            if (platform == ToolPlatform::WindowsX64) == cfg!(windows) {
+                let probe = super::probe::probe_tool(
+                    &ToolId::Codex.spec(),
+                    &installed.path,
+                    &parent,
+                    &base,
+                    true,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(probe.version, pin.version);
+                assert!(probe.auth.signed_in);
+            }
+            assert_eq!(
+                fs::read(base.join("codex").join(pin.version).join(helper)).unwrap(),
+                stub()
+            );
+            assert_eq!(fs::read(user_binary).unwrap(), codex_probe_stub());
+            assert_eq!(fs::read(user_dir.join(helper)).unwrap(), codex_probe_stub());
+            assert_eq!(fs::read(&auth).unwrap(), original_auth);
+            assert_eq!(fs::read(&linked_auth).unwrap(), original_auth);
+            assert_eq!(
+                fs::symlink_metadata(&linked_auth).unwrap().file_type(),
+                link_metadata.file_type()
+            );
+            assert!(!auth.with_extension("json.bak").exists());
+        }
     }
 }
