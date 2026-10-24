@@ -1,5 +1,8 @@
+import type { ArrangementDraft } from "@chemdraft/layout-engine";
 import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
+import type { ConditionsSnapshot } from "./dialogProtocol";
+import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstallSnapshot, ToolInstallAction } from "./dialogProtocol";
 
@@ -23,7 +26,7 @@ interface Session {
   settledReason?: DialogCloseReason;
   inFlight: Map<string, Promise<void>>;
   terminalRequestId?: string;
-  previewRequest?: { requestId: string; percent: number };
+  previewRequest?: { requestId: string; percent: number; arrangement?: ArrangementDraft };
   previewing?: boolean;
   previewRequestId?: string;
   pendingFrame?: ExportFrame;
@@ -38,9 +41,12 @@ export class DialogCoordinator {
   private stopped = false;
   constructor(private transport: DialogTransport, private owner: {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
-    applyArrangementSpacing?(tabId: string, percent: number): void | Promise<void>;
-    previewArrangementSpacing?(tabId: string, percent: number): string | Promise<string>;
-    onSpacingSettled?(tabId: string): void;
+    applyReactionConditions?(tabId: string, arrowId: string, draft: ReactionConditionsDraft): void | Promise<void>;
+    applyArrangementSpacing?(tabId: string, percent: number, arrangement?: ArrangementDraft): void | Promise<void>;
+    previewArrangementSpacing?(tabId: string, percent: number, arrangement?: ArrangementDraft): string | Promise<string>;
+    onSpacingSettled?(tabId: string, reason: DialogCloseReason): void;
+    onSpacingClosed?(tabId: string, reason: DialogCloseReason): void;
+    onConditionsSettled?(tabId: string): void;
     export?(tabId: string, options: ExportOptions, live: () => boolean, progress: (notice: string) => Promise<void>): Promise<ExportDialogResult>;
     previewExport?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportPreviewResult>;
     chooseExportDestination?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportDialogResult>;
@@ -126,6 +132,12 @@ export class DialogCoordinator {
     const session = this.sessions.get(`${tabId}:toolInstall`);
     if (session) await this.settle(session, "close");
   }
+  async openReactionConditions(tabId: string, data: ConditionsSnapshot): Promise<void> {
+    const existing = this.sessions.get(`${tabId}:reactionConditions`);
+    if (existing?.snapshot.dialogKind === "reactionConditions" && existing.snapshot.data.arrowId !== data.arrowId)
+      throw new Error("Finish the open Reaction conditions editor before editing another arrow in this drawing.");
+    return this.open(tabId, "reactionConditions", data);
+  }
   private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
     const key = `${tabId}:${kind}`;
@@ -138,7 +150,7 @@ export class DialogCoordinator {
     }
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
-    const title = kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "reactionConditions" ? "Reaction conditions" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -153,7 +165,7 @@ export class DialogCoordinator {
       await this.flushExportFrame(session);
       if (session.settled) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
       else if (session.ready && session.previewRequest) {
-        await this.preview(session, session.previewRequest.requestId, session.previewRequest.percent);
+        await this.preview(session, session.previewRequest.requestId, session.previewRequest.percent, session.previewRequest.arrangement);
       }
     } catch (error) {
       session.toolInstall?.failed?.(error);
@@ -171,7 +183,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -184,9 +196,11 @@ export class DialogCoordinator {
       return;
     }
     if (message.type !== "action" || !session.ready) return;
+    if (session.snapshot.dialogKind === "arrangementSpacing" && "percent" in message.data &&
+        Boolean(session.snapshot.data.arrangement) !== Boolean(message.data.arrangement)) return;
     if (message.data.action === "preview" && "percent" in message.data) {
-      if (!session.registration) { session.previewRequest = { requestId: message.requestId, percent: message.data.percent }; return; }
-      await this.preview(session, message.requestId, message.data.percent); return;
+      if (!session.registration) { session.previewRequest = { requestId: message.requestId, percent: message.data.percent, ...(message.data.arrangement ? { arrangement: message.data.arrangement } : {}) }; return; }
+      await this.preview(session, message.requestId, message.data.percent, message.data.arrangement); return;
     }
     if (!session.registration) return;
     if (session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall") {
@@ -246,9 +260,12 @@ export class DialogCoordinator {
       });
       if (session.settled) return;
       if (message.data.action === "apply") {
-        if ("percent" in message.data) {
+        if ("draft" in message.data) {
+          if (!this.owner.applyReactionConditions || session.snapshot.dialogKind !== "reactionConditions") throw new Error("Reaction conditions are unavailable");
+          await this.owner.applyReactionConditions(message.documentTabId, session.snapshot.data.arrowId, message.data.draft);
+        } else if ("percent" in message.data) {
           if (!this.owner.applyArrangementSpacing) throw new Error("Spacing is unavailable");
-          await this.owner.applyArrangementSpacing(message.documentTabId, message.data.percent);
+          await this.owner.applyArrangementSpacing(message.documentTabId, message.data.percent, ...(message.data.arrangement ? [message.data.arrangement] as const : []));
         } else await this.owner.applyPageSize(message.documentTabId, message.data);
       } else if (message.data.action === "export" || message.data.action === "chooseDestination") {
         const callback = message.data.action === "export" ? this.owner.export : this.owner.chooseExportDestination;
@@ -282,18 +299,18 @@ export class DialogCoordinator {
     try { await this.transport.publish(session.registration.hostId, receipt); }
     finally { await this.settle(session, message.data.action === "apply" ? "apply" : "cancel"); }
   }
-  private async preview(session: Session, requestId: string, percent: number): Promise<void> {
+  private async preview(session: Session, requestId: string, percent: number, arrangement?: ArrangementDraft): Promise<void> {
     if (session.terminalRequestId || session.snapshot.dialogKind !== "arrangementSpacing") return;
-    session.previewRequest = { requestId, percent };
+    session.previewRequest = { requestId, percent, ...(arrangement ? { arrangement } : {}) };
     if (session.previewing) return;
     session.previewing = true;
     try {
       while (session.previewRequest && !session.settled && !session.terminalRequestId) {
-        const request: { requestId: string; percent: number } = session.previewRequest;
+        const request: { requestId: string; percent: number; arrangement?: ArrangementDraft } = session.previewRequest;
         let encoded = "", error: string | undefined;
         try {
           if (!this.owner.previewArrangementSpacing) throw new Error("Spacing preview is unavailable");
-          const svg = await this.owner.previewArrangementSpacing(session.snapshot.documentTabId, request.percent);
+          const svg = await this.owner.previewArrangementSpacing(session.snapshot.documentTabId, request.percent, ...(request.arrangement ? [request.arrangement] as const : []));
           const bytes = new TextEncoder().encode(svg);
           if (bytes.length > SPACING_PREVIEW_CHUNK_SIZE * SPACING_PREVIEW_MAX_CHUNKS * 3 / 4) throw new Error("This selection is too large to preview. Select fewer compounds.");
           // Base64 keeps JSON escaping bounded without relaxing the native channel limit.
@@ -319,7 +336,9 @@ export class DialogCoordinator {
     clearTimeout(session.timer);
     const key = `${session.snapshot.documentTabId}:${session.snapshot.dialogKind}`;
     if (this.sessions.get(key) === session) this.sessions.delete(key);
-    if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId);
+    // Release the source synchronously with its session, before a replacement can open.
+    if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId, reason);
+    if (session.snapshot.dialogKind === "reactionConditions") this.owner.onConditionsSettled?.(session.snapshot.documentTabId);
     // Preserve the existing Page Size callback contract.
     let finishToolClose: (() => void) | undefined;
     const toolClosed = session.toolInstall ? new Promise<void>(resolve => { finishToolClose = resolve; }) : undefined;
@@ -332,13 +351,23 @@ export class DialogCoordinator {
       catch (error) { this.owner.onError(`Could not close ${session.snapshot.dialogKind}: ${String(error)}`); }
     }
     finishToolClose?.();
+    // Restore the document's responder only once the native dialog has actually closed.
+    // Focusing before destroy lets the departing dialog take the responder back.
+    if (session.snapshot.dialogKind === "arrangementSpacing" && !this.sessions.has(key)) this.owner.onSpacingClosed?.(session.snapshot.documentTabId, reason);
   }
   async closeTab(tabId: string): Promise<void> {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.documentTabId === tabId).map(s => this.settle(s, "ownerTabClose")));
   }
   hasArrangementSpacing(tabId: string): boolean { return this.sessions.has(`${tabId}:arrangementSpacing`); }
+  reactionConditionsArrowId(tabId: string): string | undefined {
+    const snapshot = this.sessions.get(`${tabId}:reactionConditions`)?.snapshot;
+    return snapshot?.dialogKind === "reactionConditions" ? snapshot.data.arrowId : undefined;
+  }
   async closeArrangementSpacing(): Promise<void> {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "arrangementSpacing").map(s => this.settle(s, "cancel")));
+  }
+  async closeReactionConditions(): Promise<void> {
+    await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "reactionConditions").map(s => this.settle(s, "cancel")));
   }
   async dispose(reason: "quit" | "ownerClose" = "ownerClose"): Promise<void> {
     this.stopped = true;

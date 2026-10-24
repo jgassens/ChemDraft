@@ -99,7 +99,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   };
 }
 
-function serializeSvgFragment(fragment: PageSvgFragment, indent: number): string {
+function serializeSvgFragment(fragment: PageSvgFragment, indent: number, textContent = false): string {
   const pad = " ".repeat(indent);
   if (fragment.kind === "text") {
     return `${pad}${escapeXml(fragment.text)}`;
@@ -110,8 +110,11 @@ function serializeSvgFragment(fragment: PageSvgFragment, indent: number): string
   }
 
   const attrs = serializeSvgAttributes(fragment.attrs);
+  // Pretty-print whitespace is rendered as spaces inside SVG text. Keep adjacent formatted
+  // runs contiguous, matching React's canvas output and the measured native text width.
+  const inline = textContent || (fragment.tag === "text" && fragment.attrs["data-object-type"] === "text" && fragment.children.length > 1);
   const children = fragment.children
-    .map((child) => serializeSvgFragment(child, indent + 2))
+    .map((child) => serializeSvgFragment(child, inline ? 0 : indent + 2, inline))
     .filter((child) => child.length > 0);
   if (fragment.children.length === 0) {
     return `${pad}<${fragment.tag}${attrs} />`;
@@ -120,6 +123,8 @@ function serializeSvgFragment(fragment: PageSvgFragment, indent: number): string
   if (fragment.children.every((child) => child.kind === "text")) {
     return `${pad}<${fragment.tag}${attrs}>${fragment.children.map((child) => child.kind === "text" ? escapeXml(child.text) : "").join("")}</${fragment.tag}>`;
   }
+
+  if (inline) return `${pad}<${fragment.tag}${attrs}>${children.join("")}</${fragment.tag}>`;
 
   return [
     `${pad}<${fragment.tag}${attrs}>`,

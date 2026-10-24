@@ -6,6 +6,10 @@ Format-specific work should go through the correct adapters and compatibility pa
 
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
+Formatted native text and its nested spans serialize without formatting whitespace between runs, preserving
+authored spacing in formulas and reaction conditions and matching the canvas text geometry.
+Formatted runs also use explicit shared baseline offsets and per-line script clearance. PDF
+consumes that same SVG geometry; subscript/superscript offsets never accumulate into later lines.
 
 Filled-ring label halos use the shared SVG composite paint (paper plus clipped ring fills).
 PDF converts that paint to a tiling pattern and applies it through a glyph soft mask, preserving

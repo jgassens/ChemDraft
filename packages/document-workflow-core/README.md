@@ -17,10 +17,12 @@ desktop importers did not change.
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, including pixel style overrides; preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
-| `textObjects.ts` | Text object sizing, creation, insertion |
+| `textObjects.ts` | Plain/formatted text sizing, creation and insertion; formatted sizing respects script sizes and authored line breaks |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
 | `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and conditions |
 | `gridLayout.ts` | Pure placement of pre-depicted molecules and optional labels in a grid |
+
+| `reactionArrowAttachments.ts` | Editable curved offshoot insertion, formatted condition labels, and attachment reconciliation through patches; geometry comes from layout-engine/art-engine |
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata, and what is built on a label's reading: each group's verdict and free valence, and the recorded bond side. Re-exports layout-engine's element table, bond-order counting and atom-label grammar (`nativeAtomLabelReading`), under the same names |
 | `labelGroups.ts` | A group's expansion into real atoms appended after the drawn ones, so drawn indices never move. The formula, SMILES, molfile and analysis read that expansion; the document keeps the label. The group's shape and attachment atom (`NativeLabelGroup`, `nativeLabelGroupAttachment`) are layout-engine's, re-exported |
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
@@ -31,6 +33,10 @@ desktop importers did not change.
 | `testing.ts` | Test-only hooks, served as `@chemdraft/document-workflow-core/testing` and kept out of the barrel: the longest-path work counter |
 
 ## What belongs here
+
+`attachReactionArrowOffshoot` accepts the existing above/below side and optional `fullCurve` mode.
+The full curve remains ordinary editable Bezier art with native attachment metadata, matching
+parent head/style inheritance and attachment-tree copy/delete/condition workflows.
 
 - Pure functions from document data to document data (`ChemDraftDocument` in, `ChemDraftDocument` out),
   built on `chem-core` patches.

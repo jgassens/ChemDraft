@@ -1,5 +1,9 @@
 export {
   AnchorSchema,
+  ArrowAttachmentSchema,
+  ArrowAttachmentFrameSchema,
+  type ArrowAttachment,
+  type ArrowAttachmentFrame,
   AnnotationObjectSchema,
   ArrowObjectSchema,
   BracketObjectSchema,
