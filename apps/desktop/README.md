@@ -58,6 +58,12 @@ app bundle only; installed plugin packages stay in Application Support. See
 
 The desktop palette is a separate Tauri window behind `src/window-manager`. Palette buttons route command IDs back to the main document window, where the existing command registry invokes them. `pnpm dev:web` keeps an in-window docked palette only as a browser-preview fallback.
 
+The benzene icon on Main and Structure activates benzene on a normal click. Long-press it or
+press Arrow Down for Ring templates: benzene, saturated 3–8-membered carbocycles in size order,
+and both cyclohexane chair forms. Click the page to place a ring, an atom to attach, or a bond
+to fuse using the existing valence rules. Individual commands and shortcuts remain available;
+the default toolbars now group their ring buttons under benzene.
+
 Compound layouts are opt-in: enable **Compound layout tools** in Settings/Preferences.
 Select two or more compounds or groups, then use Arrange Selection in Main, Art or Layout;
 long-press or press Arrow Down for Circle, Oval, Grid left/center/right, Row or Column.

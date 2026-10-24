@@ -1403,6 +1403,14 @@ export function nativeBondStyleForToolCommand(commandId: string): NativeBondTool
 
 export function nativeTemplateForToolCommand(commandId: string): NativeMoleculeTemplateId | undefined {
   switch (commandId) {
+    case "tool.cyclopropane":
+      return "cyclopropane";
+    case "tool.cyclobutane":
+      return "cyclobutane";
+    case "tool.cycloheptane":
+      return "cycloheptane";
+    case "tool.cyclooctane":
+      return "cyclooctane";
     case "tool.cyclopentane":
       return "cyclopentane";
     case "tool.cyclohexane":

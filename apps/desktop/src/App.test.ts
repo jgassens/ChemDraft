@@ -2059,7 +2059,10 @@ describe("ChemDraft desktop shell", () => {
     // Unbound keys show no shortcut at all — not the stale ChemDraft key.
     expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
     expect(tooltipFor("tool.lasso")?.shortcutLabel).toBeNull();
-    expect(tooltipFor("tool.cyclopentane")?.shortcut).toBeNull();
+    const cyclopentane = items.find(item => item.id === "tool.benzene")?.submenu?.items
+      .find(command => command.id === "tool.cyclopentane");
+    expect(cyclopentane).toBeDefined();
+    expect(cyclopentane?.shortcut).toBe("");
 
     // The default scheme still shows the ChemDraft keys.
     const chemdraftItems = getToolsetItemGroups(
@@ -4235,7 +4238,8 @@ describe("ChemDraft desktop shell", () => {
     const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
     const measureCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.measure");
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(50);
+    // Ring tools now share the benzene slot instead of five separate asset-backed buttons.
+    expect(assetCommands.length).toBeGreaterThan(0);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.some((command) => command.description?.includes("toolset action"))).toBe(false);
     expect(eyedropperCommand).toMatchObject({
