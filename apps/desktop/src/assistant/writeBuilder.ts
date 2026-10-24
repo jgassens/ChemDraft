@@ -11,11 +11,11 @@ import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
-  type AssistantToolContext
+  type AssistantToolContext, type AssistantPageGrowth
 } from "./AssistantToolContext";
 import {
   ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
-  type RelativeSide
+  type RelativeSide, type PagePlacements
 } from "./placement";
 import { toolSchemas, type ToolInput } from "./tools/schemas";
 
@@ -25,7 +25,10 @@ export interface AssistantWrite {
   expectedSmiles?: ReadonlyMap<string, string>;
   /** Captured before preparation; also checked inside the desktop write gate. */
   checkPreconditions?: (document: ChemDraftDocument) => void;
+  pageGrowth?: AssistantPageGrowth & { items: { objectIds: string[]; label: string }[] };
 }
+
+export const PAGE_GROWTH_DECLINED = "declined: the user chose not to enlarge the page";
 
 /** Snapshot content, including page membership, before any asynchronous preparation. */
 export function captureWritePreconditions(document: ChemDraftDocument, objectIds: readonly string[],
@@ -104,20 +107,35 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);
     await assertCanonical(context, object, smiles);
   }
+  let declined: string[] = [];
+  let patch = built.patch;
+  let summary = built.summary;
+  if (built.pageGrowth) {
+    context.signal?.throwIfAborted();
+    const accepted = await context.confirmPageGrowth(built.pageGrowth, context.signal);
+    context.signal?.throwIfAborted();
+    if (!accepted) {
+      declined = built.pageGrowth.items.map(item => item.label);
+      const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
+      patch = { op: "batch", patches: patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) };
+      summary = `Inserted ${patch.patches.length} fitting objects; ${PAGE_GROWTH_DECLINED}: ${declined.join(", ")}.`;
+    }
+  }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
   const latest = requireDocument(context);
   built.checkPreconditions?.(latest);
   if (latest !== document && !assistantDocumentContentUnchanged(document, latest)) {
     throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
   }
-  const result = await context.write(built.patch, undefined, built.checkPreconditions);
-  const inserted = built.patch.patches.filter(patch => patch.op === "addObject" || patch.op === "addAnnotation");
+  const result = patch.patches.length ? await context.write(patch, context.signal, built.checkPreconditions) : { objectIds: [] };
+  const inserted = patch.patches.filter(patch => patch.op === "addObject" || patch.op === "addAnnotation");
   if (inserted.length) {
     const insertedIds = new Set(inserted.map(patch => patch.op === "addObject" ? patch.object.id : patch.annotation.id));
     // The host may rebase ids. Its returned ids are authoritative; update-only calls never widen scope.
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
-  return { ...result, summary: built.summary, warnings: built.warnings };
+  return { ...result, summary, warnings: built.warnings,
+    ...(declined.length ? { declined, reason: PAGE_GROWTH_DECLINED } : {}) };
 }
 
 /** Translate coordinates, preserving all chemistry. Anchored chemistry is refused separately. */
@@ -172,12 +190,25 @@ function placement(context: AssistantToolContext, objects: readonly DocumentObje
   const preferred = relative ? relativeRect(bounds, objectRect(findObject(document, relative.objectId).object), relative.side) : undefined;
   const placed = choosePagePlacements({ page, sizes: [bounds], occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
     viewport: context.getViewportRect?.(context.tabId), preferred, ...(relative ? { gap: RELATIVE_GAP } : {}) });
-  return { page, warnings: placed.warnings,
+  return { page, plan: placed,
     objects: objects.map(object => translateObject(object, placed.rects[0]!.x - bounds.x, placed.rects[0]!.y - bounds.y)) };
 }
 function insertWrite(pageId: string, objects: DocumentObject[], summary: string, warnings: string[], expectedSmiles?: ReadonlyMap<string, string>): AssistantWrite {
   return { patch: { op: "batch", patches: objects.map(object => ({ op: "addObject", pageId, object })) },
     summary, warnings, ...(expectedSmiles ? { expectedSmiles } : {}) };
+}
+
+/** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
+function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
+  pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
+  return { ...write,
+    checkPreconditions: plan.requiredSize ? latest => {
+      if (!assistantDocumentContentUnchanged(document, latest)) {
+        throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
+      }
+    } : undefined,
+    ...(plan.requiredSize ? { pageGrowth: { pageId, ...plan.requiredSize, description, itemCount: plan.nonFitting.length,
+      items: plan.nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
 }
 
 export async function buildInsertStructures(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
@@ -202,7 +233,17 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const placed = arrangeCells(context, cells, page.id, columns);
   const inputs = input.items.filter(item => item.kind === "molecule");
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, inputs[index]!.smiles]));
-  return insertWrite(placed.page.id, placed.objects, `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`, placed.warnings, expected);
+  const labels = input.items.map((item, index) => item.kind === "molecule" ? item.label ?? cells[index]![0]!.id : item.text.slice(0, 80));
+  const needsRoom = placed.plan.nonFitting.map(index => input.items[index]!);
+  const first = needsRoom[0];
+  const description = needsRoom.length === 1
+    ? first!.kind === "molecule" ? first!.label ?? "This molecule" : "This text"
+    : needsRoom.length <= 3 && needsRoom.every(item => item.kind === "molecule" && item.label)
+      ? needsRoom.map(item => item.kind === "molecule" ? item.label : "").join(", ")
+      : `These ${needsRoom.length} structures`;
+  return insertionPlan(document, insertWrite(placed.page.id, placed.objects,
+    `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`, [], expected),
+  placed.plan, placed.page.id, cells, labels, description);
 }
 function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], pageId: string, columns: number, exclude: readonly string[] = []) {
   const page = requireDocument(context).pages.find(page => page.id === pageId)!;
@@ -210,7 +251,7 @@ function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], 
   const placed = choosePagePlacements({ page, sizes: bounds, columns,
     occupied: page.objects.filter(object => !exclude.includes(object.id)).map(objectRect),
     viewport: context.getViewportRect?.(context.tabId) });
-  return { page, warnings: placed.warnings, objects: cells.flatMap((cell, index) => cell.map(object => translateObject(object,
+  return { page, plan: placed, objects: cells.flatMap((cell, index) => cell.map(object => translateObject(object,
     placed.rects[index]!.x - bounds[index]!.x, placed.rects[index]!.y - bounds[index]!.y))) };
 }
 
@@ -259,7 +300,8 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, placed.warnings, expected);
+  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+    placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);
@@ -268,7 +310,8 @@ export function buildInsertText(context: AssistantToolContext, raw: unknown): As
   const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
   const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
   const placed = placement(context, object, pageId, input.relativeTo);
-  return insertWrite(placed.page.id, placed.objects, "Inserted text", placed.warnings);
+  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
+    placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.edit_structure.parse(raw);
@@ -277,13 +320,14 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
   if (old.type !== "molecule") throw new Error(`${old.id} is not a molecule.`);
   const checkPreconditions = captureWritePreconditions(document, [old.id], "edit");
   let object = (freshObjects(document, [await buildMolecule(context, input.smiles)])[0]!) as MoleculeObject;
-  let warnings: string[] = [];
+  const warnings: string[] = [];
   if (input.keepPosition) {
     object = translateObject(object, old.x + old.width / 2 - object.x - object.width / 2,
       old.y + old.height / 2 - object.y - object.height / 2);
   } else {
     const placed = placement(context, [object], page.id, undefined, [old.id]);
-    object = placed.objects[0] as MoleculeObject; warnings = placed.warnings;
+    if (placed.plan.requiredSize) throw new Error("The replacement does not fit on this page; enlarge it with Page Setup first.");
+    object = placed.objects[0] as MoleculeObject;
   }
   return { patch: { op: "batch", patches: [{ op: "removeObject", objectId: old.id }, { op: "addObject", pageId: page.id, object }] },
     summary: `Replaced structure ${old.id}`, warnings, expectedSmiles: new Map([[object.id, input.smiles]]), checkPreconditions };
@@ -352,7 +396,8 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
     return { op: "updateObject", objectId: object.id, changes };
   });
-  return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: placed.warnings, checkPreconditions };
+  if (placed.plan.requiredSize) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
+  return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions };
 }
 
 /** All AnchorSchema fields in chem-core, including molecule attachment metadata. */

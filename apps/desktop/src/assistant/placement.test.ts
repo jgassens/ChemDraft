@@ -8,20 +8,23 @@ describe("assistant placement", () => {
     const page = { width: 612, height: 792, margin: { left: 48, right: 24, top: 80, bottom: 60 } };
     const placed = choosePagePlacements({ page, occupied: [], columns: 3,
       sizes: [{ width: 300, height: 100 }, { width: 50, height: 100 }, { width: 50, height: 100 }] });
-    expect(placed.warnings).toEqual([]);
+    expect(placed.nonFitting).toEqual([]);
+    expect(placed.requiredSize).toBeUndefined();
     expect(placed.rects.map(rect => [rect.x, rect.y])).toEqual([[48, 80], [404, 80], [510, 80]]);
   });
-  it("fills a remaining hole after an oversized item and counts only actual overflow", () => {
+  it("keeps a fitting item in a remaining hole and proposes growth only for the oversized item", () => {
     const placed = choosePagePlacements({ page: { width: 612, height: 792 },
       occupied: [{ x: 36, y: 200, width: 540, height: 556 }], sizes: [{ width: 600, height: 100 }, { width: 80, height: 60 }] });
-    expect(placed.warnings).toEqual([expect.stringMatching(/^assistant\.placement_overflow: 1 item /)]);
+    expect(placed.nonFitting).toEqual([0]);
+    expect(placed.requiredSize!.width).toBeGreaterThanOrEqual(672);
     expect(placed.rects[0]!.x).toBe(36);
-    expect(placed.rects[0]!.y).toBeGreaterThan(792);
+    expect(placed.rects[0]!.y).toBeGreaterThan(756);
     expect(placed.rects[1]!.y + placed.rects[1]!.height).toBeLessThan(200);
   });
-  it("counts every item on a full page and keeps overflow objects separate", () => {
+  it("computes one page size for every non-fitting item, keeping them separate", () => {
     const placed = choosePagePlacements({ page, occupied: [{ x: 0, y: 0, ...page }], sizes: [size, size] });
-    expect(placed.warnings).toEqual([expect.stringMatching(/^assistant\.placement_overflow: 2 items /)]);
+    expect(placed.nonFitting).toEqual([0, 1]);
+    expect(placed.requiredSize!.height).toBeGreaterThan(page.height);
     expect(placed.rects.every(rect => rect.y > page.height)).toBe(true);
     expect(overlaps(placed.rects[0]!, placed.rects[1]!)).toBe(false);
   });
@@ -41,7 +44,7 @@ describe("assistant placement", () => {
     expect(occupied.every(rect => !overlaps(first.rect, rect, ASSISTANT_GAP))).toBe(true);
     const second = choosePlacement({ page, size, occupied: [...occupied, first.rect], viewport: { x: 300, y: 300, width: 400, height: 400 } });
     expect(overlaps(second.rect, first.rect, ASSISTANT_GAP)).toBe(false);
-    expect(first.warnings).toEqual([]);
+    expect(first.fits).toBe(true);
   });
   it("falls below the lowest object when viewport is unavailable", () => {
     expect(choosePlacement({ page, size, occupied: [{ x: 50, y: 60, width: 100, height: 200 }] }).rect)
@@ -53,10 +56,10 @@ describe("assistant placement", () => {
     expect(placed.rect.x).toBe(336 + ASSISTANT_GAP);
     expect(overlaps(placed.rect, occupied[0]!, ASSISTANT_GAP)).toBe(false);
   });
-  it("warns on fallback when nothing can fit", () => {
+  it("reports no fit when the page is full", () => {
     const placed = choosePlacement({ page, size, occupied: [{ x: 0, y: 0, ...page }] });
     expect(placed.rect).toEqual({ x: 450, y: 460, ...size });
-    expect(placed.warnings).toEqual(["assistant.placement_overlaps"]);
+    expect(placed.fits).toBe(false);
   });
   it("uses a 12 pixel relative gap on every side", () => {
     const target = { x: 200, y: 200, width: 100, height: 100 };

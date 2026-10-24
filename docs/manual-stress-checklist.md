@@ -233,6 +233,13 @@ making another provider/tool call. Select one existing object, then ask to edit,
 delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
 selected: insertions work, while edits, restyles, moves, and deletes are refused.
 
+On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
+that wraps past the bottom: one document-owned native box names the item and new page size;
+Enlarge page preserves molecule size and grows the page, with one Undo/Redo restoring page and
+objects together. Don't enlarge omits non-fitting items and their captions but keeps fitting ones;
+the assistant reports the refusal. Fitting calls never prompt. Stop while the box is open, then
+click Enlarge page: nothing from that pending call appears (the native box may require dismissal).
+
 While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
 Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running
 request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its

@@ -7,7 +7,7 @@ export const ASSISTANT_MARGIN = 36;
 export const ASSISTANT_GAP = 2 * smilesPasteBondLengthPx;
 export const RELATIVE_GAP = 12;
 export type RelativeSide = "above" | "below" | "left" | "right";
-export interface PlacementResult { rect: AssistantRect; warnings: string[] }
+export interface PlacementResult { rect: AssistantRect; fits: boolean }
 type PlacementPage = { width: number; height: number; margin?: { top: number; right: number; bottom: number; left: number } };
 
 export function pageContentRect(page: PlacementPage): AssistantRect {
@@ -51,7 +51,7 @@ export function choosePlacement(options: {
     rect.x + rect.width <= content.x + content.width &&
     rect.y + rect.height <= content.y + content.height &&
     occupied.every(other => !overlaps(rect, other, gap));
-  if (preferred && fits(preferred)) return { rect: preferred, warnings: [] };
+  if (preferred && fits(preferred)) return { rect: preferred, fits: true };
   const lowest = Math.max(content.y - gap, ...occupied.map(rect => rect.y + rect.height));
   const anchor = preferred ?? (viewport
     ? { x: viewport.x + (viewport.width - size.width) / 2, y: viewport.y + (viewport.height - size.height) / 2, ...size }
@@ -89,55 +89,71 @@ export function choosePlacement(options: {
     }
     consider(left, maxX);
   }
-  if (best) return { rect: best, warnings: [] };
+  if (best) return { rect: best, fits: true };
   return { rect: { x: Math.max(0, (page.width - size.width) / 2),
-    y: Math.max(0, (page.height - size.height) / 2), ...size }, warnings: ["assistant.placement_overlaps"] };
+    y: Math.max(0, (page.height - size.height) / 2), ...size }, fits: false };
 }
 
 /** Pack complete cells (molecule plus caption) using actual widths, wrapping at the content edge.
  * Every cell searches the remaining page, including holes above the current row, before overflow.
- * Overflow stays beside the page below it, never collides with existing content, and is disclosed.
+ * Non-fitting cells have proposed positions on an enlarged page, usable only after host consent.
  */
 interface PagePlacementsOptions {
   page: PlacementPage; sizes: readonly { width: number; height: number }[];
   occupied: readonly AssistantRect[]; columns?: number; viewport?: AssistantRect; preferred?: AssistantRect; gap?: number;
 }
 
-export function choosePagePlacements(options: PagePlacementsOptions): { rects: AssistantRect[]; warnings: string[] } {
+export interface PagePlacements {
+  rects: AssistantRect[];
+  nonFitting: number[];
+  requiredSize?: { width: number; height: number };
+}
+export function choosePagePlacements(options: PagePlacementsOptions): PagePlacements {
   let best = packPagePlacements(options, options.gap ?? ASSISTANT_GAP);
   // Try readable compact spacing before claiming that the available page is full.
   for (const gap of [ASSISTANT_GAP / 2, RELATIVE_GAP]) {
-    if (!best.overflow) break;
+    if (!best.nonFitting.length) break;
     if (gap >= (options.gap ?? ASSISTANT_GAP)) continue;
     const candidate = packPagePlacements(options, gap);
-    if (candidate.overflow < best.overflow) best = candidate;
+    if (candidate.nonFitting.length < best.nonFitting.length) best = candidate;
   }
-  return { rects: best.rects, warnings: best.warnings };
+  if (!best.nonFitting.length) return { rects: best.rects, nonFitting: [] };
+  const content = pageContentRect(options.page);
+  const right = options.page.margin?.right ?? ASSISTANT_MARGIN;
+  const bottom = options.page.margin?.bottom ?? ASSISTANT_MARGIN;
+  const occupied = [...options.occupied, ...best.rects.filter((_, index) => !best.nonFitting.includes(index))];
+  let width = options.page.width, height = options.page.height;
+  for (const index of best.nonFitting) {
+    const size = options.sizes[index]!;
+    width = Math.ceil(Math.max(width, content.x + size.width + right) * 0.75) / 0.75;
+    const availableHeight = Math.ceil(Math.max(height, Math.max(content.y - best.gap,
+      ...occupied.map(rect => rect.y + rect.height)) + best.gap + size.height + bottom) * 0.75) / 0.75;
+    const placed = choosePlacement({ page: { ...options.page, width, height: availableHeight },
+      size, occupied, gap: best.gap, preferred: { x: content.x, y: content.y, ...size } });
+    if (!placed.fits) throw new Error("Could not find room on an enlarged page.");
+    best.rects[index] = placed.rect;
+    occupied.push(placed.rect);
+    height = Math.max(height, placed.rect.y + placed.rect.height + bottom);
+  }
+  // Document coordinates are CSS px. Round outward to whole physical points for the prompt.
+  return { rects: best.rects, nonFitting: best.nonFitting,
+    requiredSize: { width: Math.ceil(width * 0.75) / 0.75, height: Math.ceil(height * 0.75) / 0.75 } };
 }
 
 function packPagePlacements(options: PagePlacementsOptions, gap: number) {
   const content = pageContentRect(options.page);
   const occupied = [...options.occupied];
-  let x = content.x, y = content.y, rowBottom = y, column = 0, overflow = 0;
-  let overflowX = content.x;
-  let overflowY = Math.max(options.page.height, ...occupied.map(rect => rect.y + rect.height)) + gap;
-  let overflowBottom = overflowY;
-  const rects = options.sizes.map(size => {
+  let x = content.x, y = content.y, rowBottom = y, column = 0;
+  const nonFitting: number[] = [];
+  const rects = options.sizes.map((size, index) => {
     if (column >= (options.columns ?? Infinity) || x + size.width > content.x + content.width) {
       x = content.x; y = rowBottom + gap; column = 0;
     }
     const placed = choosePlacement({ ...options, occupied, size, gap,
       preferred: options.sizes.length === 1 ? options.preferred : { x, y, width: size.width, height: size.height } });
-    if (placed.warnings.length) {
-      overflow++;
-      if (overflowX > content.x && overflowX + size.width > content.x + content.width) {
-        overflowX = content.x; overflowY = overflowBottom + gap;
-      }
-      const rect = { x: overflowX, y: overflowY, width: size.width, height: size.height };
-      overflowX += size.width + gap;
-      overflowBottom = Math.max(overflowBottom, overflowY + size.height);
-      occupied.push(rect);
-      return rect;
+    if (!placed.fits) {
+      nonFitting.push(index);
+      return placed.rect; // Replaced by the growth proposal after every fitting cell is packed.
     }
     const rect = placed.rect;
     if (rect.y !== y) { column = 0; rowBottom = rect.y; }
@@ -146,7 +162,7 @@ function packPagePlacements(options: PagePlacementsOptions, gap: number) {
     occupied.push(rect);
     return rect;
   });
-  return { rects, overflow, warnings: overflow ? [`assistant.placement_overflow: ${overflow} ${overflow === 1 ? "item" : "items"} could not fit in the page's available area; placed below the page without rescaling.`] : [] };
+  return { rects, nonFitting, gap };
 }
 export function relativeRect(size: { width: number; height: number }, target: AssistantRect, side: RelativeSide): AssistantRect {
   size = { width: size.width, height: size.height };

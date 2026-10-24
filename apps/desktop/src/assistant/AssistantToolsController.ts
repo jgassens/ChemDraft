@@ -1,12 +1,13 @@
-import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
 import { runThumbnail } from "./runThumbnail";
-import type { AssistantToolContext } from "./AssistantToolContext";
+import type { AssistantToolContext, AssistantPageGrowth } from "./AssistantToolContext";
+import { nativePrompt } from "../nativePrompt";
 import { callAssistantTool, listAssistantTools } from "./assistantTools";
 import { getAssistantTransactions, type AssistantTransactions } from "./assistantTransaction";
-import { getAssistantHistoryPort } from "./historyPort";
+import { assistantDocumentContentUnchanged, getAssistantHistoryPort } from "./historyPort";
 import type { AssistantMcpEngine, McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 
 type Plugin = { id: string; name: string };
@@ -75,7 +76,9 @@ export class AssistantToolsController implements PluginHostAssistant {
     const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
       ended: false, cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
-        getInsertedObjectIds: () => [...request.inserted], write: async () => { throw new Error("No tool call is running."); } } };
+        getInsertedObjectIds: () => [...request.inserted],
+        confirmPageGrowth: async () => { throw new Error("No tool call is running."); },
+        write: async () => { throw new Error("No tool call is running."); } } };
     this.requests.set(requestId, request);
     return { requestId };
   }
@@ -93,13 +96,40 @@ export class AssistantToolsController implements PluginHostAssistant {
     const abort = new AbortController();
     request.cancellations.set(callId, abort);
     this.activeCalls++;
-    const deadline = setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded.")),
-      input.name === "name_to_structure" || input.name === "structure_to_name" ? 45_000 : input.name === "render" ? 60_000 : 120_000);
+    const timeoutMs = input.name === "name_to_structure" || input.name === "structure_to_name" ? 45_000 : input.name === "render" ? 60_000 : 120_000;
+    const startDeadline = () => setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded.")), timeoutMs);
+    let deadline = startDeadline();
+    let approvedGrowth: { growth: AssistantPageGrowth; document: ChemDraftDocument } | undefined;
+    let prompted = false;
     let work: Promise<PluginAssistantToolResult> | undefined;
     try {
       work = callAssistantTool({ ...request.context,
         plugin: this.plugin(plugin),
+        signal: abort.signal,
         getDocument: () => request.ended || abort.signal.aborted ? undefined : request.context.getDocument(),
+        confirmPageGrowth: async (growth, signal) => {
+          this.running(plugin, requestId);
+          abort.signal.throwIfAborted();
+          signal?.throwIfAborted();
+          if (prompted || !["insert_structures", "insert_reaction", "insert_text"].includes(input.name)) {
+            throw new Error("Page growth is only available once per assistant insertion.");
+          }
+          prompted = true;
+          const document = request.context.getDocument()!;
+          clearTimeout(deadline); // A human decision has no tool deadline; Stop still cancels it.
+          try {
+            const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
+              message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
+              choices: [{ id: "enlarge", label: "Enlarge page" }, { id: "decline", label: "Don't enlarge", cancel: true }]
+            }, async () => { throw new Error("The native page enlargement confirmation is unavailable; nothing was inserted."); }, signal);
+            this.running(plugin, requestId);
+            abort.signal.throwIfAborted();
+            signal?.throwIfAborted();
+            if (choice !== "enlarge") return false;
+            approvedGrowth = { growth, document };
+            return true;
+          } finally { if (!abort.signal.aborted) deadline = startDeadline(); }
+        },
         write: async (patch, signal, checkPreconditions) => {
           this.running(plugin, requestId);
           if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
@@ -116,6 +146,9 @@ export class AssistantToolsController implements PluginHostAssistant {
             this.running(plugin, requestId);
             if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
             checkPreconditions?.(request.context.getDocument()!);
+            if (approvedGrowth && !assistantDocumentContentUnchanged(approvedGrowth.document, request.context.getDocument()!)) {
+              throw new Error("The document changed while the page confirmation was open; read it again and retry.");
+            }
             // The gate may have waited for a gesture to commit. Never overwrite its new geometry.
             if (JSON.stringify(dependencyContent(request.context.getDocument()!)) !== plannedContent) {
               throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
@@ -127,7 +160,15 @@ export class AssistantToolsController implements PluginHostAssistant {
                   this.running(plugin, requestId);
                   if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
                   const before = request.context.getDocument()!;
-                  const after = applyPatch(before, application.patch.patch);
+                  // Object writes still pass the plugin's fixed selection scope. Only the host's
+                  // accepted placement may append a page layout op, atomically in this transaction.
+                  const growth = approvedGrowth?.growth;
+                  const page = growth && before.pages.find(page => page.id === growth.pageId);
+                  const after = applyPatch(before, growth && page ? { op: "batch", patches: [
+                    { op: "updatePageLayout", pageId: page.id,
+                      layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
+                    ...writePatchOps(application.patch.patch)
+                  ] } : application.patch.patch);
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
                     op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
                   request.transactions.writeAssistantTransaction(requestId, after, touched);

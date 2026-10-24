@@ -61,8 +61,13 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
   let timer: ReturnType<typeof setTimeout> | undefined;
   let active = true;
   const abort = new AbortController();
+  const cancel = () => abort.abort(context.signal?.reason);
+  context.signal?.addEventListener("abort", cancel, { once: true });
+  if (context.signal?.aborted) cancel();
   let waitForWrite: (() => void) | undefined;
+  let resumePreparation: (() => void) | undefined;
   try {
+    abort.signal.throwIfAborted();
     const tool = ASSISTANT_TOOLS.find(tool => tool.name === name);
     if (!tool) throw new Error(`Unknown assistant tool "${name}".`);
     requireDocument(context);
@@ -70,7 +75,13 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
       if (!context.plugin.permissions.includes(permission)) throw new Error(`Assistant tool ${name} requires ${permission}.`);
     }
     // Share run scope with the original context, but prevent work finishing after the deadline from writing.
-    const guarded: AssistantToolContext = { ...context, getInsertedObjectIds: () => [...assistantScope(context)],
+    const guarded: AssistantToolContext = { ...context, signal: abort.signal, getInsertedObjectIds: () => [...assistantScope(context)],
+      confirmPageGrowth: async growth => {
+        abort.signal.throwIfAborted();
+        if (timer) clearTimeout(timer);
+        try { return await context.confirmPageGrowth(growth, abort.signal); }
+        finally { resumePreparation?.(); }
+      },
       write: async (patch, _signal, checkPreconditions) => {
         if (!active) throw new Error(`Assistant tool ${name} timed out.`);
         requireDocument(context);
@@ -90,11 +101,15 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         // Preparation keeps its own deadline. Once ready, allow the desktop's 60s gesture
         // gate to settle (including its polling interval) before the tool itself times out.
         waitForWrite = () => deadline(61_000);
+        resumePreparation = () => { if (active) deadline(tool.timeoutMs); };
         deadline(tool.timeoutMs);
       })
     ]);
     return result(value);
   } catch (error) {
     return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
-  } finally { active = false; abort.abort(); if (timer) clearTimeout(timer); }
+  } finally {
+    active = false; abort.abort(); if (timer) clearTimeout(timer);
+    context.signal?.removeEventListener("abort", cancel);
+  }
 }
