@@ -8,6 +8,7 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { PluginCanvasOverlay } from "./PluginCanvasOverlay";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { MemoryStorage } from "../testSupport/memoryStorage";
+import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const overlay = PluginCanvasOverlayContributionSchema.parse({
@@ -33,6 +34,7 @@ let openPanel: ReturnType<typeof vi.fn>;
 let gestureActive: boolean;
 let status: string;
 let withPanel: boolean;
+let showPanelLink: boolean | undefined;
 let panelTitle: string | undefined;
 let platform: ShortcutPlatform;
 class CanvasOverlayStatusSource {
@@ -71,6 +73,7 @@ class CanvasOverlayTranscriptSource {
   get subscriberCount() { return this.listeners.size; }
 }
 let transcriptSource: CanvasOverlayTranscriptSource;
+let contentRuntime: DesktopPluginRuntime;
 const viewportRef = createRef<HTMLElement>();
 const overlayLayerRef = createRef<HTMLElement>();
 const statusRowRef = createRef<HTMLElement>();
@@ -88,11 +91,12 @@ function enterText(value: string): void {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 async function render(windowId = "main"): Promise<void> {
-  await act(async () => root.render(<PluginCanvasOverlay overlay={overlay} viewportRef={viewportRef}
+  await act(async () => root.render(<PluginCanvasOverlay overlay={{ ...overlay, showPanelLink }} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
     gestureActive={gestureActive} status={status} onAction={action} windowId={windowId} shortcutPlatform={platform}
     statusSource={statusSource}
     transcriptSource={transcriptSource}
+    contentSource={contentRuntime} openSource={contentRuntime}
     onOpenPanel={withPanel ? openPanel : undefined} panelTitle={panelTitle} onFocusDrawing={() => drawing.focus()} />));
 }
 async function expand(): Promise<void> {
@@ -102,6 +106,11 @@ function widget(): HTMLDivElement { return container.querySelector(".plugin-canv
 
 describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
+    showPanelLink = undefined;
+    contentRuntime = createPluginRuntime({ getActiveDocument: () => undefined });
+    contentRuntime.registerPlugin({ id: "widget", name: "Widget", version: "0", apiVersion: "^0.1.12", entry: "test.js",
+      permissions: ["ui.canvas"], contributes: { canvasOverlays: [overlay], commands: [{ id: overlay.commandId, title: "Open" }] }
+    }, { commandHandlers: { [overlay.commandId]: ctx => ctx.overlays!.open({ overlayId: overlay.id, focus: ctx.input?.text === "focus" }) } });
     vi.stubGlobal("localStorage", new MemoryStorage()); gestureActive = false; status = ""; withPanel = false; panelTitle = undefined; platform = "macos";
     statusSource = new CanvasOverlayStatusSource();
     transcriptSource = new CanvasOverlayTranscriptSource();
@@ -133,7 +142,66 @@ describe("PluginCanvasOverlay", () => {
     });
     await render();
   });
-  afterEach(async () => { await act(async () => root.unmount()); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(async () => { await act(async () => root.unmount()); contentRuntime.unregisterPlugin("widget"); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it.each(["macos", "windows"] as const)("opens without focus by default and focuses only on request on %s", async targetPlatform => {
+    platform = targetPlatform; await render();
+    await act(async () => { await contentRuntime.invokeCommand(overlay.commandId); });
+    expect(widget().dataset.expanded).toBe("true");
+    expect(document.activeElement).toBe(drawing);
+    const focus = () => contentRuntime.invokeCommand(overlay.commandId, { input: {
+      source: "overlay", overlayId: overlay.id, sectionId: "message", control: "prompt", text: "focus"
+    } });
+    await act(async () => { await focus(); });
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+    gestureActive = true; await render(); drawing.focus();
+    await act(async () => { await focus(); });
+    expect(document.activeElement).toBe(drawing);
+    gestureActive = false; await render();
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+    drawing.focus();
+    await act(async () => { await focus(); });
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+    await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(widget().dataset.expanded).toBe("false");
+    await render(); // A retained request must not reopen a user-collapsed overlay.
+    expect(widget().dataset.expanded).toBe("false");
+    await act(async () => { await focus(); });
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
+  it("renders report content above the transcript, grows within the drawing area, then restores remembered height", async () => {
+    viewportHeight = 800;
+    await act(async () => root.unmount());
+    window.localStorage.setItem(`${storageKey}:height`, "300");
+    root = createRoot(container); await render();
+    await expand();
+    await act(async () => enterText("Draft"));
+    const api = contentRuntime.host.createCommandContext("widget").overlays!;
+    const remembered = window.localStorage.getItem(`${storageKey}:height`);
+    await act(async () => { await api.setContent({ overlayId: overlay.id, sections: [
+      { kind: "text", body: "Choose an AI" }, { kind: "keyValue", rows: [{ label: "Status", value: "Ready" }] },
+      { kind: "actions", id: "setup", buttons: [{ id: "install", label: "Install", commandId: overlay.commandId }] },
+      { kind: "image", alt: "Preview", dataUri: "data:image/png;base64,YQ==" }
+    ] }); });
+    const content = container.querySelector<HTMLElement>(".plugin-canvas-overlay-content")!;
+    expect(content.querySelector(".plugin-report")?.textContent).toContain("Choose an AI");
+    expect(content.querySelector("img")?.alt).toBe("Preview");
+    expect(content.nextElementSibling?.getAttribute("role")).toBe("log");
+    Object.defineProperty(content.firstElementChild!, "scrollHeight", { value: 1000 });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.height).toBe(`${Math.floor((800 - 32 - 24) * 0.7)}px`);
+    expect(Number.parseFloat(widget().style.top)).toBeGreaterThanOrEqual(32);
+    expect(Number.parseFloat(widget().style.top) + Number.parseFloat(widget().style.height)).toBeLessThanOrEqual(776);
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe(remembered);
+    expect(document.activeElement).toBe(container.querySelector("textarea"));
+    await act(async () => content.querySelector<HTMLButtonElement>("button")!.click());
+    expect(action).toHaveBeenCalledWith({ sectionId: "setup", control: "button", controlId: "install" });
+    await act(async () => { await api.setContent({ overlayId: overlay.id, sections: [] }); });
+    expect(widget().style.height).toBe("300px");
+    expect(container.querySelector(".plugin-canvas-overlay-content")).toBeNull();
+    expect(container.querySelector("textarea")!.value).toBe("Draft");
+  });
 
   it.each(["macos", "windows"] as const)("keeps a compact default, grows upward, clamps and remembers height on %s", async targetPlatform => {
     platform = targetPlatform; await render(); await expand();
@@ -366,6 +434,8 @@ describe("PluginCanvasOverlay", () => {
     expect(container.querySelector(".plugin-canvas-overlay-panel")?.textContent).toBe("Open Assistant panel");
     await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-panel")!.click());
     expect(openPanel).toHaveBeenCalledOnce();
+    showPanelLink = false; await render();
+    expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull();
   });
 
   it("uses a generic panel label when no title is supplied", async () => {

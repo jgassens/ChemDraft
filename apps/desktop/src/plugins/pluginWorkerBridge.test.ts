@@ -152,6 +152,8 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
     const overlayId = "overlay.chat.main";
     const setStatus = vi.fn();
     const setTranscript = vi.fn();
+    const setContent = vi.fn();
+    const open = vi.fn();
     const manifest = parsePluginManifest({
       id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
       permissions: ["ui.canvas"], contributes: {
@@ -164,6 +166,10 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       [commandId]: async context => {
         await context.overlays!.setStatus({ overlayId, text: "Working" });
         await context.overlays!.setTranscript({ overlayId, entries: [{ role: "assistant", text: "Done" }] });
+        await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }] });
+        await context.overlays!.open({ overlayId, focus: true });
+        await expect(context.overlays!.setContent({ overlayId: "overlay.other.main", sections: [] })).rejects.toThrow(/does not own/);
+        await expect(context.overlays!.open({ overlayId: "overlay.other.main" })).rejects.toThrow(/does not own/);
         await expect(context.overlays!.setTranscript({ overlayId: "overlay.other.main", entries: [] }))
           .rejects.toThrow(/does not own/);
         await expect(context.overlays!.setTranscript({ overlayId, entries: [{ role: "error", text: "x".repeat(4001) }] }))
@@ -175,13 +181,15 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
         return context.input;
       }
     } });
-    const host = new PluginHost({ overlays: { setStatus, setTranscript } });
+    const host = new PluginHost({ overlays: { setStatus, setTranscript, setContent, open } });
     host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
     const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
     try {
       expect(await host.invokeCommand(commandId, { input })).toEqual(input);
       expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
       expect(setTranscript.mock.calls).toEqual([[manifest.id, overlayId, [{ role: "assistant", text: "Done" }]]]);
+      expect(setContent.mock.calls).toEqual([[manifest.id, overlayId, [{ kind: "text", body: "Setup" }]]]);
+      expect(open.mock.calls).toEqual([[manifest.id, overlayId, true]]);
     } finally { bridge.terminate(); }
   });
 

@@ -73,7 +73,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   storage: ["get", "set", "delete", "listKeys"],
   documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
-  overlays: ["setStatus", "setTranscript"],
+  overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
   dialogs: ["promptText"],
   images: ["requestImage"],

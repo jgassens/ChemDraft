@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
-import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry } from "@chemdraft/plugin-api";
+import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry, PluginOverlayContentSection } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
-import { PluginPromptSection } from "./PluginReportRenderer";
+import { PluginPromptSection, PluginReportRenderer } from "./PluginReportRenderer";
 import { isBrowserReloadChord } from "../keyboardShortcuts";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom } from "./pluginPanelAutoscroll";
@@ -38,6 +38,15 @@ type CanvasOverlayStatusSource = {
 
 const subscribeNever = () => () => undefined;
 const emptyTranscript: readonly PluginOverlayTranscriptEntry[] = Object.freeze([]);
+const emptyContent: readonly PluginOverlayContentSection[] = Object.freeze([]);
+type CanvasOverlayContentSource = {
+  getCanvasOverlayContents: () => ReadonlyMap<string, readonly PluginOverlayContentSection[]>;
+  subscribeCanvasOverlayContent: (listener: () => void) => () => void;
+};
+type CanvasOverlayOpenSource = {
+  getCanvasOverlayOpenRequests: () => ReadonlyMap<string, { readonly focus: boolean }>;
+  subscribeCanvasOverlayOpen: (listener: () => void) => () => void;
+};
 type CanvasOverlayTranscriptSource = {
   getCanvasOverlayTranscripts: () => ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
   subscribeCanvasOverlayTranscript: (listener: () => void) => () => void;
@@ -79,7 +88,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   viewportRef: RefObject<HTMLElement | null>;
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
@@ -91,6 +100,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   statusSource?: CanvasOverlayStatusSource;
   /** Transcript updates likewise bypass contribution/toolset synchronization. */
   transcriptSource?: CanvasOverlayTranscriptSource;
+  contentSource?: CanvasOverlayContentSource;
+  openSource?: CanvasOverlayOpenSource;
   onAction: PluginPanelActionHandler;
   onOpenPanel?: () => void;
   /** The contributed panel's live title, supplied by the document window. */
@@ -101,6 +112,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
 }) {
   const storageKey = `chemdraft:canvas-overlay:${windowId}:${overlay.id}`;
   const [height, setHeight] = useState(() => readHeight(`${storageKey}:height`));
+  const [displayHeight, setDisplayHeight] = useState(height);
+  const content = useSyncExternalStore(contentSource?.subscribeCanvasOverlayContent ?? subscribeNever,
+    () => contentSource?.getCanvasOverlayContents().get(overlay.id) ?? emptyContent, () => emptyContent);
+  const openRequest = useSyncExternalStore(openSource?.subscribeCanvasOverlayOpen ?? subscribeNever,
+    () => openSource?.getCanvasOverlayOpenRequests().get(overlay.id), () => undefined);
   const [expanded, setExpanded] = useState(false);
   const [positions, setPositions] = useState<Positions>(() => ({
     collapsed: readPosition(`${storageKey}:collapsed`),
@@ -110,12 +126,18 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const mode: Mode = expanded ? "expanded" : "collapsed";
   const position = positions[mode];
   const elementRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const focusOnExpandRef = useRef(false);
   const expandedSizeRef = useRef({ width: 300, height: 220 });
   const anchorNextExpansionRef = useRef(false);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
   const resizeRef = useRef<{ pointerId: number; startY: number; height: number; bottom: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!openRequest) return;
+    focusOnExpandRef.current = openRequest.focus;
+    setExpanded(true);
+  }, [openRequest]);
   const drawingArea = () => {
     const viewport = viewportRef.current?.getBoundingClientRect();
     const layer = overlayLayerRef?.current?.getBoundingClientRect() ?? viewport;
@@ -157,10 +179,17 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       // Size to the drawing area, not the larger overlay layer behind rulers/status/scrollbars.
       element.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
       element.style.maxHeight = `${Math.max(0, bounds.bottom - bounds.top)}px`;
+      const available = Math.max(0, bounds.bottom - bounds.top);
+      const contentHeight = contentRef.current?.firstElementChild?.scrollHeight ?? 0;
+      const fittedHeight = Math.min(available, content.length > 0
+        ? Math.max(height, Math.min(MIN_CHAT_HEIGHT + contentHeight, Math.floor(available * 0.7)))
+        : height);
+      setDisplayHeight(fittedHeight);
+      if (expanded) element.style.height = `${fittedHeight}px`;
       const size = element.getBoundingClientRect();
       if (expanded) expandedSizeRef.current = {
         width: Math.min(size.width || 300, Math.max(0, bounds.right - bounds.left)),
-        height: Math.min(height, Math.max(0, bounds.bottom - bounds.top))
+        height: fittedHeight
       };
       setPositions(current => {
         const collapsed = clampPosition(current.collapsed ?? {
@@ -177,6 +206,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
     observer?.observe(viewport);
     observer?.observe(element);
+    if (contentRef.current?.firstElementChild) observer?.observe(contentRef.current.firstElementChild);
     if (overlayLayerRef?.current) observer?.observe(overlayLayerRef.current);
     if (statusRowRef?.current) observer?.observe(statusRowRef.current);
     for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
@@ -186,7 +216,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
     return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [expanded, gestureActive, height, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+  }, [expanded, gestureActive, height, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
   useEffect(() => {
     try { window.localStorage.setItem(`${storageKey}:height`, JSON.stringify(height)); } catch { /* Optional persistence. */ }
@@ -264,7 +294,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     data-expanded={expanded}
     hidden={gestureActive}
     style={{ ...(position ? { left: position.x, top: position.y } : { right: 12, bottom: 12 }),
-      height: expanded ? height : undefined }}
+      height: expanded ? displayHeight : undefined }}
     onPointerDown={event => event.stopPropagation()}
     onPointerMove={event => event.stopPropagation()}
     onPointerUp={event => event.stopPropagation()}
@@ -311,9 +341,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
       <PluginPromptSection section={{ ...overlay.prompt, rows: 1 }} onAction={onAction} includeSelected />
+      {content.length > 0 ? <div className="plugin-canvas-overlay-content" ref={contentRef}>
+        <PluginReportRenderer report={{ title: overlay.title, sections: [...content] }} onAction={onAction} />
+      </div> : null}
       <OverlayTranscript overlayId={overlay.id} source={transcriptSource} expanded={expanded} />
       <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
-      {onOpenPanel ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
+      {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
         {panelTitle ? `Open ${panelTitle}` : "Open panel"}
       </button> : null}
     </div>

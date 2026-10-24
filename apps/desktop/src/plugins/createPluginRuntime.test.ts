@@ -33,6 +33,44 @@ describe("createPluginRuntime canvas overlays", () => {
     }
   };
 
+  it("keeps content/open notifications separate from toolset sync and clears them on replacement", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    runtime.registerPlugin(manifest, { commandHandlers: { [commandId]: ctx => ctx.overlays!.open({ overlayId, focus: true }) } });
+    const sync = vi.fn(); const changed = vi.fn(); const opened = vi.fn();
+    runtime.onDidChange(sync);
+    const offContent = runtime.subscribeCanvasOverlayContent(changed);
+    const offOpen = runtime.subscribeCanvasOverlayOpen(opened);
+    const api = runtime.host.createCommandContext(manifest.id).overlays!;
+    await api.setContent({ overlayId, sections: [{ kind: "actions", id: "setup", buttons: [
+      { id: "go", label: "Go", commandId, payload: { nested: ["original"] } }
+    ] }] });
+    const snapshot = runtime.getCanvasOverlayContents();
+    const action = snapshot.get(overlayId)![0]!;
+    expect(Object.isFrozen(action)).toBe(true);
+    if (action.kind !== "actions") throw new Error("Expected actions");
+    expect(Object.isFrozen(action.buttons[0]!.payload)).toBe(true);
+    (snapshot as Map<string, unknown>).clear();
+    expect(runtime.getCanvasOverlayContents().size).toBe(1);
+    await runtime.invokeCommand(commandId);
+    const first = runtime.getCanvasOverlayOpenRequests().get(overlayId);
+    await runtime.invokeCommand(commandId);
+    expect(runtime.getCanvasOverlayOpenRequests().get(overlayId)).not.toBe(first);
+    expect(opened).toHaveBeenCalledTimes(2);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(sync).not.toHaveBeenCalled();
+    await api.setContent({ overlayId, sections: [] });
+    expect(runtime.getCanvasOverlayContents().size).toBe(0);
+    await api.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }] });
+    runtime.replacePlugin(manifest.id, manifest);
+    expect(runtime.getCanvasOverlayContents().size).toBe(0);
+    expect(runtime.getCanvasOverlayOpenRequests().size).toBe(0);
+    offContent(); offOpen();
+    changed.mockClear(); opened.mockClear();
+    await runtime.host.createCommandContext(manifest.id).overlays!.setContent({ overlayId, sections: [] });
+    expect(changed).not.toHaveBeenCalled();
+    runtime.unregisterPlugin(manifest.id);
+  });
+
   it("publishes status changes only to overlay status subscribers without leaking snapshots", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, getSelection: () => emptySelection });
     const contributionChanges: { ids: string[]; statuses: [string, string][] }[] = [];

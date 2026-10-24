@@ -895,7 +895,8 @@ textarea:focus-visible,
 .plugin-canvas-overlay[data-expanded="false"] { border: 0; }
 .plugin-canvas-overlay-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .plugin-canvas-overlay-chat[hidden] { display: none; }
-.plugin-canvas-overlay-chat > :not(.plugin-canvas-overlay-transcript) { flex-shrink: 0; }
+.plugin-canvas-overlay-chat > :not(.plugin-canvas-overlay-transcript):not(.plugin-canvas-overlay-content) { flex-shrink: 0; }
+.plugin-canvas-overlay-content { flex: 0 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .plugin-canvas-overlay-resize {
   position: absolute; top: 0; left: 0; right: 0; height: 7px;
   cursor: ns-resize; touch-action: none;

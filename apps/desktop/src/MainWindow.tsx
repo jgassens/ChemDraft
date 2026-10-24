@@ -1614,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.23.17.30-codex";
+const CURRENT_BUILD_STAMP = "10.24.07.45-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -11213,11 +11213,11 @@ export function MainWindow({
     const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
     if (!declaration) return { ok: false, message: "This overlay is no longer available." };
     const overlay = declaration.overlay;
-    if (request.sectionId !== overlay.prompt.id) return { ok: false, message: "Unknown overlay section." };
     // Reuse the panel validator for live limits, controls and ownership. The overlay's top-level
     // command owns Send; its prompt.commandId is never trusted as an alternate submit route.
     const resolved = resolvePluginPanelAction({ title: overlay.title, sections: [
-      { ...overlay.prompt, commandId: overlay.commandId }
+      { ...overlay.prompt, commandId: overlay.commandId },
+      ...(runtime.getCanvasOverlayContents().get(overlayId) ?? [])
     ] }, { ...request, panelId: "panel.overlay.input" }, commandId => {
       const command = registry.get(commandId);
       return command?.source === "plugin" && command.pluginId === pluginId
@@ -20117,10 +20117,12 @@ export function MainWindow({
               gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
               statusSource={pluginRuntime.runtime}
               transcriptSource={pluginRuntime.runtime}
+              contentSource={pluginRuntime.runtime}
+              openSource={pluginRuntime.runtime}
               onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
               onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
               panelTitle={panel?.title}
-              onOpenPanel={panel ? () => {
+              onOpenPanel={panel && overlay.showPanelLink !== false ? () => {
                 const manifest = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest;
                 const commandId = manifest && pluginPanelOpenCommand(manifest, panel.id);
                 if (commandId) void Promise.resolve(invokeCommandRef.current(commandId)).catch(() => undefined);

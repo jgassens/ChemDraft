@@ -61,14 +61,15 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.11`). API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
+`0.1.12`). API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
+should declare `^0.1.12`. API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
 `^0.1.10`. API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
 API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
 `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.11` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.12` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -298,7 +299,7 @@ command ends is refused. A plugin that holds `document.read` receives the insert
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
 
-## Panel input and canvas overlays (0.1.10–0.1.11)
+## Panel input and canvas overlays (0.1.10–0.1.12)
 
 API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
 `apiVersion: "^0.1.10"`; add `ui.panel` for a panel and `ui.canvas` for a canvas overlay. Panels
@@ -366,7 +367,43 @@ height is 220 px (clipped further for a smaller drawing area); height is remembe
 from position for each document window. Escape collapses without forgetting the height; Enter
 sends and Shift+Enter adds a newline. Overlay prompts display one row to preserve room for replies.
 Transcript updates use their own runtime subscription and never synchronize toolsets. The floating
-panel remains the long-form view.
+panel is optional; a plugin can use its canvas overlay as its complete chat UI.
+
+API **0.1.12** adds `overlays.setContent({ overlayId, sections })` and
+`overlays.open({ overlayId, focus?: boolean })`. Declare `apiVersion: "^0.1.12"` and
+`ui.canvas`; a plugin with no panel needs neither a panel contribution nor `ui.panel`.
+
+`setContent` replaces content above the transcript, using the existing report `text`, `keyValue`,
+`actions`, and `image` schemas and the same `PluginReportRenderer` as native panels. It accepts at
+most 20 sections whose JSON serialization fits in 64 KiB of UTF-8 (including image data and payloads).
+An empty list clears it. Section/button ids must be unique across this content and the permanent
+overlay prompt/select; action commands must be declared and registered by this plugin. Button
+dispatch resolves the **live** content, refusing removed or disabled controls, and sends
+`context.input = { source: "overlay", overlayId, sectionId, control: "button", controlId, payload? }`.
+Content updates have their own runtime subscription, separate from contribution/toolset updates.
+
+An overlay grows to fit content up to about 70% of the visible drawing-area height (a larger
+user-chosen height is retained), always clamped inside rulers, scrollbars and the status row.
+Clearing content restores the remembered height. Updates preserve the prompt draft and focus.
+`open` is allowed only while one of the plugin's own commands is running. It expands without
+moving focus unless `focus: true`; a menu command can use that option to focus the prompt.
+The "Open …" panel shortcut exists only if the plugin contributes a panel. An overlay contribution
+can set `showPanelLink: false` to suppress the shortcut even when a panel exists.
+
+```ts
+// Inside the plugin's menu/open command. Buttons use this plugin's registered commands.
+await context.overlays?.setContent({
+  overlayId: "overlay.prompt.main",
+  sections: [
+    { kind: "text", title: "Setup", body: "Choose an installed provider to begin." },
+    { kind: "actions", id: "setup", buttons: [
+      { id: "check", label: "Check again", commandId: "plugin.prompt.check" }
+    ] }
+  ]
+});
+await context.overlays?.open({ overlayId: "overlay.prompt.main", focus: true });
+// After setup: await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [] });
+```
 
 ```ts
 await context.overlays?.setTranscript({

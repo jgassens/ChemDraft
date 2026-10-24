@@ -18,6 +18,7 @@ import type {
   PluginCommandContext,
   PluginCommandInput,
   PluginOverlayTranscriptEntry,
+  PluginOverlayContentSection,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -36,6 +37,7 @@ import {
 } from "@chemdraft/plugin-host";
 
 import type { RegisteredCanvasOverlay } from "./types";
+
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
 import { PluginPromptTextController } from "./PluginPromptTextController";
@@ -71,6 +73,17 @@ export type DesktopNameToStructureProvider = (
 export type DesktopStructureFromSmilesProvider = (
   request: PluginStructureFromSmilesRequest
 ) => Promise<PluginStructureFromSmilesResult>;
+
+function freezeOverlayContent(sections: PluginOverlayContentSection[]): readonly PluginOverlayContentSection[] {
+  const snapshot = structuredClone(sections);
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  };
+  freeze(snapshot);
+  return snapshot;
+}
 
 export interface DesktopPluginRuntimeOptions {
   /** Reads the current active document. Called on demand; must reflect the latest state. */
@@ -214,6 +227,10 @@ export interface DesktopPluginRuntime {
   subscribeCanvasOverlayStatus(listener: () => void): () => void;
   getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
   subscribeCanvasOverlayTranscript(listener: () => void): () => void;
+  getCanvasOverlayContents(): ReadonlyMap<string, readonly PluginOverlayContentSection[]>;
+  subscribeCanvasOverlayContent(listener: () => void): () => void;
+  getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
+  subscribeCanvasOverlayOpen(listener: () => void): () => void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when plugin contributions change. Returns unsubscribe. */
@@ -420,6 +437,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   }
   const canvasOverlayStatuses = new Map<string, string>();
   const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
+  const canvasOverlayContents = new Map<string, readonly PluginOverlayContentSection[]>();
+  const canvasOverlayContentListeners = new Set<() => void>();
+  const notifyCanvasOverlayContent = () => canvasOverlayContentListeners.forEach(listener => listener());
+  const canvasOverlayOpenRequests = new Map<string, { readonly focus: boolean }>();
+  const canvasOverlayOpenListeners = new Set<() => void>();
+  const notifyCanvasOverlayOpen = () => canvasOverlayOpenListeners.forEach(listener => listener());
   const canvasOverlayTranscriptListeners = new Set<() => void>();
   const notifyCanvasOverlayTranscript = () => canvasOverlayTranscriptListeners.forEach(listener => listener());
   const listeners = new Set<() => void>();
@@ -430,6 +453,19 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
     overlays: {
+      setContent: (_pluginId, overlayId, sections) => {
+        if (sections.length === 0) {
+          if (!canvasOverlayContents.delete(overlayId)) return;
+        } else {
+          canvasOverlayContents.set(overlayId, freezeOverlayContent(sections));
+        }
+        notifyCanvasOverlayContent();
+      },
+      open: (_pluginId, overlayId, focus) => {
+        // A new identity for each request also makes repeated focus:true observable.
+        canvasOverlayOpenRequests.set(overlayId, Object.freeze({ focus }));
+        notifyCanvasOverlayOpen();
+      },
       setTranscript: (_pluginId, overlayId, entries) => {
         if (entries.length === 0) {
           if (!canvasOverlayTranscripts.delete(overlayId)) return;
@@ -575,6 +611,17 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         }
       }
       if (transcriptsChanged) notifyCanvasOverlayTranscript();
+      const owned = new Set(host.listCanvasOverlays().map(entry => entry.overlay.id));
+      let contentChanged = false;
+      let openChanged = false;
+      for (const id of canvasOverlayContents.keys()) if (!owned.has(id)) {
+        canvasOverlayContents.delete(id); contentChanged = true;
+      }
+      for (const id of canvasOverlayOpenRequests.keys()) if (!owned.has(id)) {
+        canvasOverlayOpenRequests.delete(id); openChanged = true;
+      }
+      if (contentChanged) notifyCanvasOverlayContent();
+      if (openChanged) notifyCanvasOverlayOpen();
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
@@ -591,6 +638,16 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     listCanvasOverlays: () => host.listCanvasOverlays(),
     getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
     getCanvasOverlayTranscripts: () => new Map(canvasOverlayTranscripts),
+    getCanvasOverlayContents: () => new Map(canvasOverlayContents),
+    getCanvasOverlayOpenRequests: () => new Map(canvasOverlayOpenRequests),
+    subscribeCanvasOverlayContent(listener) {
+      canvasOverlayContentListeners.add(listener);
+      return () => { canvasOverlayContentListeners.delete(listener); };
+    },
+    subscribeCanvasOverlayOpen(listener) {
+      canvasOverlayOpenListeners.add(listener);
+      return () => { canvasOverlayOpenListeners.delete(listener); };
+    },
     subscribeCanvasOverlayTranscript(listener) {
       canvasOverlayTranscriptListeners.add(listener);
       return () => { canvasOverlayTranscriptListeners.delete(listener); };

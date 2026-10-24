@@ -240,6 +240,16 @@ consent text must say that it does and that page content can leave the computer.
 
 ## Plugin panel input and canvas overlay (macOS and Windows)
 
+With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the
+prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
+Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
+the box only as needed, up to about 70% of the drawing area, with scrolling for overflow; clearing
+it restores the user's remembered height. Repeat after resizing and moving the box beside a ruler
+and after changing display scale. Drafts and focus survive updates. Disable/remove a button while
+clicking it: the stale control must not run. A plugin with no panel never shows an "Open …" link
+or opens a native panel on menu commands, prompt submissions, setup actions, or re-expansion.
+For a plugin that also has a panel, `showPanelLink: false` hides only the overlay's shortcut.
+
 With an API 0.1.11 chat plugin, verify the compact overlay shows the latest reply and distinguishes
 user, assistant, tool, notice, and error entries. Scroll back while replies arrive: the reader stays
 put; returning to the bottom resumes following replies. Drag the top edge up and down: the bottom
@@ -265,17 +275,18 @@ prompt, and check the status line. Drag it toward every viewport edge and resize
 frame must remain clamped inside. Quit/reopen or hide/re-show the window and confirm its position is
 remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
 (and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
-keyboard focus to the drawing. It takes focus only when clicked, never merely when it appears or the
-report changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
+keyboard focus to the drawing. It takes focus only when clicked or explicitly opened with
+`focus: true`, never merely when content changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
 or slight pointer jitter must still expand it. Move the box elsewhere, then collapse: the icon returns
 to its own position. Restart and verify both positions persist independently. Shrink the drawing area
 while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
 next shown, and the box must fit even when the drawing area is narrower than 300 px.
 
-Install the real ChemDraft Assistant package and use both its overlay's "Open ChemDraft Assistant"
-button and Plugins → ChemDraft Assistant…. Each must show a titled chat report with provider controls
-in a detached window. Close/reopen it and repeat after restarting the app; the initial report broadcast
-may precede the new webview, so the authenticated snapshot replay must also work.
+For a plugin that contributes both surfaces (including older Assistant packages), use its overlay's
+"Open …" button and panel menu command. Each must show a titled report in a detached window.
+Close/reopen it and repeat after restarting the app; the initial report broadcast may precede the
+new webview, so the authenticated snapshot replay must also work. With the overlay-only Assistant,
+Plugins → ChemDraft Assistant… instead expands the one box; setup and conversation stay there.
 
 On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
 do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does

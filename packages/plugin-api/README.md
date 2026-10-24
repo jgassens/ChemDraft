@@ -4,6 +4,12 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.12 adds `overlays.setContent({ overlayId, sections })` (text, keyValue, actions, image;
+20 sections and 64 KiB UTF-8 JSON maximum) and command-scoped `overlays.open({ overlayId, focus? })`.
+Both require `ui.canvas` and overlay ownership. Content reuses the panel report schemas and action
+rules; control ids also cannot collide with the permanent prompt/select. `showPanelLink: false`
+on an overlay contribution hides its optional panel shortcut. Plugins without panels have no shortcut.
+
 API 0.1.11 adds `overlays.setTranscript({ overlayId, entries })`: up to 50 role/text entries,
 4,000 characters per text, and 64 KiB of UTF-8 JSON for the entries array. Roles are `user`,
 `assistant`, `tool`, `notice`, and `error`. This replaces the owned overlay's transcript; an empty

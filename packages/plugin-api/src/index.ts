@@ -18,6 +18,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.9 adds `PluginAssistantAPI` (ChemDraft's tool set for an AI run, MCP tool sessions)
  * 0.1.10 adds panel input sections (prompt, actions, image), context.input and canvas overlays
  * 0.1.11 adds bounded canvas chat transcripts via `PluginOverlaysAPI.setTranscript`.
+ * 0.1.12 adds bounded overlay report content, command-scoped open/focus, and optional panel links.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -27,7 +28,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.11" as const;
+export const PluginApiVersion = "0.1.12" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -266,6 +267,8 @@ export const PluginCanvasOverlayContributionSchema = z.object({
   icon: CanvasOverlayIconSchema,
   commandId: PluginCommandIdSchema,
   prompt: PluginPanelPromptSectionSchema,
+  /** Hide the panel shortcut even when this plugin contributes a panel. Defaults to showing it. */
+  showPanelLink: z.boolean().optional(),
   defaultCorner: z.enum(["bottom-right", "bottom-left", "top-right", "top-left"]).default("bottom-right"),
   requiredPermissions: OptionalPermissionListSchema
 }).strict();
@@ -293,7 +296,16 @@ export interface PluginOverlaysAPI {
   setStatus(request: z.infer<typeof PluginOverlayStatusRequestSchema>): Promise<void>;
   /** Replace an owned overlay's transcript; an empty list clears it. Requires ui.canvas. */
   setTranscript(request: z.infer<typeof PluginOverlayTranscriptRequestSchema>): Promise<void>;
+  /** Replace content above the transcript; [] clears it. Requires ui.canvas and owned commands. */
+  setContent(request: z.input<typeof PluginOverlayContentRequestSchema>): Promise<void>;
+  /** Expand during an owned command. Only focus:true may move keyboard focus to the prompt. */
+  open(request: z.infer<typeof PluginOverlayOpenRequestSchema>): Promise<void>;
 }
+
+export const PluginOverlayOpenRequestSchema = z.object({
+  overlayId: PluginCanvasOverlayIdSchema,
+  focus: z.boolean().optional()
+}).strict();
 
 export const PluginContributionsSchema = z
   .object({
@@ -670,23 +682,41 @@ export const PluginPanelReportSchema = z
     rerunCommandId: NonEmptyStringSchema.optional()
   })
   .strict()
-  .superRefine((report, ctx) => {
-    const ids = new Set<string>();
-    const add = (id: string, path: (string | number)[]) => {
-      if (ids.has(id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `Duplicate panel control id "${id}".` });
-      ids.add(id);
-    };
-    report.sections.forEach((section, index) => {
-      if (section.kind === "prompt" || section.kind === "actions") {
-        add(section.id, ["sections", index, "id"]);
-        if (section.kind === "prompt" && section.select) add(section.select.id, ["sections", index, "select", "id"]);
-        if (section.kind === "actions") section.buttons.forEach((button, b) => add(button.id, ["sections", index, "buttons", b, "id"]));
-      }
-    });
+  .superRefine((report, ctx) => validatePanelControlIds(report.sections, ctx));
+
+function validatePanelControlIds(sections: PluginPanelSection[], ctx: z.RefinementCtx): void {
+  const ids = new Set<string>();
+  const add = (id: string, path: (string | number)[]) => {
+    if (ids.has(id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `Duplicate panel control id "${id}".` });
+    ids.add(id);
+  };
+  sections.forEach((section, index) => {
+    if (section.kind === "prompt" || section.kind === "actions") {
+      add(section.id, ["sections", index, "id"]);
+      if (section.kind === "prompt" && section.select) add(section.select.id, ["sections", index, "select", "id"]);
+      if (section.kind === "actions") section.buttons.forEach((button, b) => add(button.id, ["sections", index, "buttons", b, "id"]));
+    }
   });
+}
 
 export type PluginPanelSection = z.infer<typeof PluginPanelSectionSchema>;
 export type PluginPanelReport = z.infer<typeof PluginPanelReportSchema>;
+
+/** A deliberately small report subset, drawn by the same renderer as native panels. */
+export const PluginOverlayContentSectionSchema = z.discriminatedUnion("kind", [
+  PluginPanelSectionSchema.options[1], // actions
+  PluginPanelSectionSchema.options[2], // image
+  PluginPanelSectionSchema.options[3], // text
+  PluginPanelSectionSchema.options[4]  // keyValue
+]);
+export const PluginOverlayContentRequestSchema = z.object({
+  overlayId: PluginCanvasOverlayIdSchema,
+  sections: z.array(PluginOverlayContentSectionSchema).max(20).refine(
+    sections => new TextEncoder().encode(JSON.stringify(sections)).byteLength <= 64 * 1024,
+    "Overlay content must be at most 64 KiB of UTF-8 JSON."
+  )
+}).strict().superRefine((request, ctx) => validatePanelControlIds(request.sections, ctx));
+export type PluginOverlayContentSection = z.infer<typeof PluginOverlayContentSectionSchema>;
 
 /** The interactive figure section (ADR-0015), extracted for composers and the core renderer. */
 export type PluginLinkedFigureSection = Extract<PluginPanelSection, { kind: "linkedFigure" }>;

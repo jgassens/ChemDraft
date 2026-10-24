@@ -12,6 +12,7 @@ import type {
   PluginCanvasOverlayContribution,
   PluginOverlaysAPI,
   PluginOverlayTranscriptEntry,
+  PluginOverlayContentSection,
   PluginAnalysisQuery,
   PluginAnalysisRecord,
   PluginAnalyzerContribution,
@@ -84,6 +85,8 @@ import {
   PluginPanelReportSchema,
   PluginOverlayStatusRequestSchema,
   PluginOverlayTranscriptRequestSchema,
+  PluginOverlayContentRequestSchema,
+  PluginOverlayOpenRequestSchema,
   PluginCommandInputSchema,
   PluginPromptTextRequestSchema,
   PluginPromptTextResultSchema,
@@ -340,6 +343,8 @@ export interface PluginHostOptions {
   overlays?: {
     setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
     setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
+    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[]): void | Promise<void>;
+    open?(pluginId: string, overlayId: string, focus: boolean): void | Promise<void>;
   };
   assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
@@ -673,6 +678,27 @@ export class PluginHost {
           }
         }
       : undefined;
+    const requireOwnOverlay = (overlayId: string) => {
+      this.requirePermission(pluginId, "ui.canvas");
+      const overlay = this.requireRegisteredPlugin(pluginId).manifest.contributes.canvasOverlays?.find(item => item.id === overlayId);
+      if (!overlay) throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${overlayId}".`);
+      return overlay;
+    };
+    const requireOwnReportCommands = (report: PluginPanelReport) => {
+      const current = this.requireRegisteredPlugin(pluginId);
+      const requireOwnCommand = (commandId: string) => {
+        if (!current.manifest.contributes.commands.some(command => command.id === commandId)
+            || this.commands.get(commandId)?.pluginId !== pluginId) {
+          throw new PluginHostError(`Panel controls must use this plugin's own commands: "${commandId}" is not owned by "${pluginId}".`);
+        }
+      };
+      for (const section of report.sections) {
+        if (section.kind === "prompt") {
+          requireOwnCommand(section.commandId);
+          if (section.select?.commandId) requireOwnCommand(section.select.commandId);
+        } else if (section.kind === "actions") section.buttons.forEach(button => requireOwnCommand(button.commandId));
+      }
+    };
     const overlays: PluginOverlaysAPI | undefined = this.hasPermission(pluginId, "ui.canvas")
       ? {
           setStatus: async request => {
@@ -694,6 +720,26 @@ export class PluginHost {
             }
             if (!this.overlays?.setTranscript) throw new PluginHostError("This host provides no canvas transcripts.");
             await this.overlays.setTranscript(pluginId, parsed.overlayId, parsed.entries);
+          },
+          setContent: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayContentRequestSchema.parse(request);
+            const overlay = requireOwnOverlay(parsed.overlayId);
+            // Content control ids must also be distinct from the permanent composer/select.
+            const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });
+            requireOwnReportCommands(report);
+            if (!this.overlays?.setContent) throw new PluginHostError("This host provides no canvas content.");
+            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections);
+          },
+          open: async request => {
+            this.requirePermission(pluginId, "ui.canvas");
+            const parsed = PluginOverlayOpenRequestSchema.parse(request);
+            requireOwnOverlay(parsed.overlayId);
+            if (!invocationToken || this.activeCommandInvocations.get(invocationToken)?.pluginId !== pluginId) {
+              throw new PluginHostError("Opening an overlay requires the plugin's own command to be running.");
+            }
+            if (!this.overlays?.open) throw new PluginHostError("This host cannot open canvas overlays.");
+            await this.overlays.open(pluginId, parsed.overlayId, parsed.focus === true);
           }
         }
       : undefined;
@@ -707,20 +753,7 @@ export class PluginHost {
                 throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
               }
               const parsedReport = PluginPanelReportSchema.parse(report);
-              const requireOwnCommand = (commandId: string) => {
-                if (!plugin.manifest.contributes.commands.some(command => command.id === commandId)
-                    || this.commands.get(commandId)?.pluginId !== pluginId) {
-                  throw new PluginHostError(`Panel controls must use this plugin's own commands: "${commandId}" is not owned by "${pluginId}".`);
-                }
-              };
-              for (const section of parsedReport.sections) {
-                if (section.kind === "prompt") {
-                  requireOwnCommand(section.commandId);
-                  if (section.select?.commandId) requireOwnCommand(section.select.commandId);
-                } else if (section.kind === "actions") {
-                  section.buttons.forEach(button => requireOwnCommand(button.commandId));
-                }
-              }
+              requireOwnReportCommands(parsedReport);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
             }
           }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   dangerousPluginPermissions, pluginPermissions, PluginCanvasOverlayContributionSchema,
-  PluginManifestSchema, PluginOverlayStatusRequestSchema, PluginPanelPromptSectionSchema
+  PluginManifestSchema, PluginOverlayStatusRequestSchema, PluginPanelPromptSectionSchema,
+  PluginOverlayContentRequestSchema, PluginOverlayOpenRequestSchema, PluginPanelSectionSchema, PluginOverlayContentSectionSchema
 } from "./index";
 import { PLUGIN_WORKER_CAPABILITY_METHODS } from "./workerProtocol";
 
@@ -71,9 +72,28 @@ describe("canvas overlay schemas", () => {
     expect(PluginOverlayStatusRequestSchema.safeParse({ overlayId: overlay.id, text: "x".repeat(121) }).success).toBe(false);
   });
 
-  it("exposes ui.canvas as non-dangerous and whitelists status and transcript updates", () => {
+  it("reuses existing section schemas, bounds UTF-8 content, and validates controls", () => {
+    for (const schema of PluginOverlayContentSectionSchema.options) {
+      expect(PluginPanelSectionSchema.options).toContain(schema);
+    }
+    const request = { overlayId: overlay.id, sections: [{ kind: "text", body: "Hello" }] };
+    expect(PluginOverlayContentRequestSchema.parse(request)).toEqual(request);
+    expect(PluginOverlayContentRequestSchema.safeParse({ ...request, sections: Array(20).fill(request.sections[0]) }).success).toBe(true);
+    expect(PluginOverlayContentRequestSchema.safeParse({ ...request, sections: Array(21).fill(request.sections[0]) }).success).toBe(false);
+    expect(PluginOverlayContentRequestSchema.safeParse({ ...request, sections: [{ kind: "text", body: "界".repeat(22000) }] }).success).toBe(false);
+    expect(PluginOverlayContentRequestSchema.safeParse({ ...request, sections: [prompt] }).success).toBe(false);
+    expect(PluginOverlayContentRequestSchema.safeParse({ ...request, sections: [{ kind: "actions", id: "same", buttons: [
+      { id: "same", label: "Duplicate", commandId }
+    ] }] }).success).toBe(false);
+    expect(PluginOverlayContentRequestSchema.parse({ ...request, sections: [] }).sections).toEqual([]);
+    expect(PluginCanvasOverlayContributionSchema.parse({ ...overlay, showPanelLink: false }).showPanelLink).toBe(false);
+    expect(PluginOverlayOpenRequestSchema.parse({ overlayId: overlay.id })).toEqual({ overlayId: overlay.id });
+    expect(PluginOverlayOpenRequestSchema.safeParse({ overlayId: overlay.id, focus: 1 }).success).toBe(false);
+  });
+
+  it("exposes ui.canvas as non-dangerous and whitelists all overlay capabilities", () => {
     expect(pluginPermissions).toContain("ui.canvas");
     expect(dangerousPluginPermissions as readonly string[]).not.toContain("ui.canvas");
-    expect(PLUGIN_WORKER_CAPABILITY_METHODS.overlays).toEqual(["setStatus", "setTranscript"]);
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.overlays).toEqual(["setStatus", "setTranscript", "setContent", "open"]);
   });
 });

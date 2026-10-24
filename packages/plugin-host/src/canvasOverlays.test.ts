@@ -15,6 +15,61 @@ const manifest = {
 const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
 
 describe("PluginHost canvas overlays", () => {
+  it("bounds content, snapshots it, and checks permissions, ownership and report control rules", async () => {
+    const setContent = vi.fn();
+    const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });
+    host.registerPlugin(manifest);
+    const api = host.createCommandContext(manifest.id).overlays!;
+    const sections = [{ kind: "actions" as const, id: "setup", buttons: [{ id: "go", label: "Go", commandId }] }];
+    await api.setContent({ overlayId, sections });
+    sections[0]!.buttons[0]!.label = "mutated";
+    expect(setContent.mock.calls[0]![2][0].buttons[0].label).toBe("Go");
+    await expect(api.setContent({ overlayId: "overlay.other.main", sections: [] })).rejects.toThrow(/does not own/);
+    await expect(api.setContent({ overlayId, sections: Array(21).fill({ kind: "text", body: "" }) })).rejects.toThrow();
+    await expect(api.setContent({ overlayId, sections: [{ kind: "text", body: "界".repeat(22000) }] })).rejects.toThrow(/64 KiB/);
+    await expect(api.setContent({ overlayId, sections: [...sections, ...sections] })).rejects.toThrow(/Duplicate/);
+    await expect(api.setContent({ overlayId, sections: [{ ...sections[0]!, id: "composer" }] })).rejects.toThrow(/Duplicate/);
+    await expect(api.setContent({ overlayId, sections: [{ kind: "actions", id: "actions", buttons: [
+      { id: "foreign", label: "Foreign", commandId: "plugin.other.run" }
+    ] }] })).rejects.toThrow(/own commands/);
+    // Non-overlay report kinds must not slip through the shared renderer's larger vocabulary.
+    await expect(api.setContent({ overlayId, sections: [{ kind: "svg", svg: "<svg/>" }] } as never)).rejects.toThrow();
+    expect(setContent).toHaveBeenCalledTimes(1);
+    await api.setContent({ overlayId, sections: [] });
+    const permissions = host.getPlugin(manifest.id)!.permissions as Set<PluginPermission>;
+    permissions.delete("ui.canvas");
+    await expect(api.setContent({ overlayId, sections: [] })).rejects.toThrow(/ui.canvas/);
+    permissions.add("ui.canvas");
+    host.unregisterPlugin(manifest.id);
+    await expect(api.setContent({ overlayId, sections: [] })).rejects.toThrow(/not registered/);
+    const noSink = new PluginHost(); noSink.registerPlugin(manifest);
+    await expect(noSink.createCommandContext(manifest.id).overlays!.setContent({ overlayId, sections: [] }))
+      .rejects.toThrow(/no canvas content/);
+  });
+
+  it("opens only an owned overlay during its plugin's live command, with explicit focus", async () => {
+    const open = vi.fn();
+    const host = new PluginHost({ overlays: { setStatus: vi.fn(), open } });
+    let retained: PluginCommandContext;
+    host.registerPlugin(manifest, { commandHandlers: { [commandId]: async ctx => {
+      retained = ctx;
+      await ctx.overlays!.open({ overlayId });
+      await ctx.overlays!.open({ overlayId, focus: true });
+      await expect(ctx.overlays!.open({ overlayId: "overlay.other.main" })).rejects.toThrow(/does not own/);
+      await expect(ctx.overlays!.open({ overlayId, focus: "true" } as never)).rejects.toThrow();
+      const permissions = host.getPlugin(manifest.id)!.permissions as Set<PluginPermission>;
+      permissions.delete("ui.canvas");
+      await expect(ctx.overlays!.open({ overlayId })).rejects.toThrow(/ui.canvas/);
+      permissions.add("ui.canvas");
+    } } });
+    await expect(host.createCommandContext(manifest.id).overlays!.open({ overlayId })).rejects.toThrow(/own command/);
+    await host.invokeCommand(commandId);
+    expect(open.mock.calls).toEqual([[manifest.id, overlayId, false], [manifest.id, overlayId, true]]);
+    await expect(retained!.overlays!.open({ overlayId })).rejects.toThrow(/own command/);
+    const noSink = new PluginHost();
+    noSink.registerPlugin(manifest, { commandHandlers: { [commandId]: ctx => ctx.overlays!.open({ overlayId }) } });
+    await expect(noSink.invokeCommand(commandId)).rejects.toThrow(/cannot open canvas/);
+  });
   it("validates, snapshots and gates transcripts on every call", async () => {
     const setTranscript = vi.fn();
     const host = new PluginHost({ overlays: { setStatus: vi.fn(), setTranscript } });

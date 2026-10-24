@@ -34,3 +34,10 @@ contributed by the invoked command's plugin, including invocation through the sh
 API 0.1.11 adds the optional embedding sink `overlays.setTranscript(pluginId, overlayId, entries)`.
 The host snapshots and validates entries (50 maximum, 4,000 characters each, 64 KiB UTF-8 JSON total),
 checks ownership and `ui.canvas` on each call, and rejects specifically if no transcript sink exists.
+
+API 0.1.12 adds optional `overlays.setContent(pluginId, overlayId, sections)` and
+`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content is bounded to 20 existing
+text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique alongside the overlay's
+prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
+`ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
+focus defaults to false. Embedding hosts resolve action metadata from their current content store.
