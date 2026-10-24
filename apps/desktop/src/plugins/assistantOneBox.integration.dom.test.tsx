@@ -319,6 +319,33 @@ function expectCodexReply(): void {
 }
 
 describe.each(["tauri://localhost", "http://tauri.localhost"])("Assistant 0.1.3 one box (%s)", origin => {
+  it("honours live prompt state through the host and resumes the loaded bundle after content clears it", async () => {
+    await openFromPluginsMenu(origin);
+    await finishCodexSetup();
+    // This release fixture predates prompt overrides. Exercise the new capability against its
+    // real registered overlay, MainWindow dispatcher and command bundle without rewriting it.
+    const api = native.runtime!.host.createCommandContext(descriptor!.manifest.id).overlays!;
+    const overlayId = descriptor!.manifest.contributes.canvasOverlays![0]!.id;
+    await act(async () => api.setContent({ overlayId, sections: [{ kind: "text", body: "Working" }], prompt: { disabled: true } }));
+    expect(overlay().querySelector(".plugin-canvas-overlay-content")!.textContent).toContain("Working");
+    const textarea = overlay().querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, prompt);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const settlements = native.workerSettlements.length;
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    await act(async () => button("Send").click());
+    expect(native.workerSettlements).toHaveLength(settlements);
+    expectNothingRan();
+    expect(overlay().textContent).toContain("Wait for the current request to finish, or press Stop.");
+    expect(textarea.disabled).toBe(false);
+    expect(textarea.value).toBe(prompt);
+    await act(async () => api.setContent({ overlayId, sections: [] }));
+    await command(() => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expectCodexReply();
+  });
+
   it("loads the saved AI heading on the first expansion after relaunch", async () => {
     await loadAssistant(origin);
     const storage = native.runtime!.host.createCommandContext(descriptor!.manifest.id).storage!;

@@ -4,7 +4,7 @@ import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import type { DocumentObject } from "@chemdraft/chem-core";
 import { testContext } from "./tools/testContext";
 import { callAssistantTool } from "./assistantTools";
-import { objectRect, overlaps } from "./placement";
+import { objectRect, overlaps, pageContentRect } from "./placement";
 import { translateObject } from "./writeBuilder";
 
 function setup() {
@@ -45,6 +45,48 @@ function assertInsideAndClear(objects: DocumentObject[]) {
 }
 
 describe("assistant page-aware arrangement", () => {
+  it("keeps a rounded full-width A3 caption on the page without requesting growth", async () => {
+    const { context, page } = setup();
+    Object.assign(page, { width: 297 * 96 / 25.4, height: 420 * 96 / 25.4,
+      margin: { top: 72, right: 72, bottom: 72, left: 72 }, objects: [] });
+    Object.assign(page.layout, { widthPx: page.width, heightPx: page.height,
+      marginTopPx: 72, marginRightPx: 72, marginBottomPx: 72, marginLeftPx: 72 });
+    const text = "A descriptive caption ".repeat(30);
+    const result = await callAssistantTool(context, "insert_text", { text });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(context.confirmPageGrowth).not.toHaveBeenCalled();
+    const objects = context.getDocument()!.pages[0]!.objects;
+    expect(objects).toHaveLength(1);
+    expect(objects[0]).toMatchObject({ type: "text", text });
+    const rect = objectRect(objects[0]!);
+    const content = pageContentRect(page);
+    expect(rect.width).toBeLessThanOrEqual(content.width);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(content.x + content.width);
+    expect(rect.y + rect.height).toBeLessThanOrEqual(content.y + content.height);
+  });
+
+  it.each(["row", "grid", "auto"])("keeps a fitting %s batch within the visible viewport", async arrangement => {
+    const { context, page } = setup();
+    Object.assign(page, { width: 2000, height: 2000,
+      margin: { top: 72, right: 72, bottom: 72, left: 72 }, objects: [] });
+    Object.assign(page.layout, { widthPx: page.width, heightPx: page.height,
+      marginTopPx: 72, marginRightPx: 72, marginBottomPx: 72, marginLeftPx: 72 });
+    context.getViewportRect = () => ({ x: 900, y: 900, width: 400, height: 400 });
+    const result = await callAssistantTool(context, "insert_structures", { arrangement,
+      items: [{ kind: "text", text: "First" }, { kind: "text", text: "Second" }] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(context.confirmPageGrowth).not.toHaveBeenCalled();
+    const objects = context.getDocument()!.pages[0]!.objects;
+    expect(objects).toHaveLength(2);
+    for (const rect of objects.map(objectRect)) {
+      expect(rect.x).toBeGreaterThanOrEqual(900);
+      expect(rect.y).toBeGreaterThanOrEqual(900);
+      expect(rect.x + rect.width).toBeLessThanOrEqual(1300);
+      expect(rect.y + rect.height).toBeLessThanOrEqual(1300);
+    }
+    expect(overlaps(objectRect(objects[0]!), objectRect(objects[1]!))).toBe(false);
+  });
+
   it("wraps a long caption inside the page without changing its text or molecule size", async () => {
     const { context } = setup();
     const label = "A descriptive macrocycle caption ".repeat(8);

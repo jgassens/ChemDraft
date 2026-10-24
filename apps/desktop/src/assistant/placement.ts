@@ -109,6 +109,20 @@ export interface PagePlacements {
   requiredSize?: { width: number; height: number };
 }
 export function choosePagePlacements(options: PagePlacementsOptions): PagePlacements {
+  if (options.sizes.length > 1 && options.viewport && !options.preferred) {
+    const content = pageContentRect(options.page);
+    const viewport = options.viewport;
+    const left = Math.max(content.x, viewport.x), top = Math.max(content.y, viewport.y);
+    const right = Math.min(content.x + content.width, viewport.x + viewport.width);
+    const bottom = Math.min(content.y + content.height, viewport.y + viewport.height);
+    if (right > left && bottom > top) {
+      // Pack the whole batch in the visible content first; if it cannot fit, search the page.
+      const visible = packPagePlacements({ ...options, page: { ...options.page,
+        margin: { left, top, right: options.page.width - right, bottom: options.page.height - bottom }
+      } }, options.gap ?? ASSISTANT_GAP);
+      if (!visible.nonFitting.length) return { rects: visible.rects, nonFitting: [] };
+    }
+  }
   let best = packPagePlacements(options, options.gap ?? ASSISTANT_GAP);
   // Try readable compact spacing before claiming that the available page is full.
   for (const gap of [ASSISTANT_GAP / 2, RELATIVE_GAP]) {

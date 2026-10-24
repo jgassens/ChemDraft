@@ -18,7 +18,6 @@ import type {
   PluginCommandContext,
   PluginCommandInput,
   PluginOverlayTranscriptEntry,
-  PluginOverlayContentSection,
   PluginNameToStructureResult,
   PluginStructureFromSmilesRequest,
   PluginStructureFromSmilesResult,
@@ -37,6 +36,7 @@ import {
 } from "@chemdraft/plugin-host";
 
 import type { RegisteredCanvasOverlay } from "./types";
+import type { CanvasOverlayContentSection } from "./pluginCanvasOverlayControls";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
 import { PluginPanelController } from "./PluginPanelController";
@@ -74,7 +74,7 @@ export type DesktopStructureFromSmilesProvider = (
   request: PluginStructureFromSmilesRequest
 ) => Promise<PluginStructureFromSmilesResult>;
 
-function freezeOverlayContent(sections: PluginOverlayContentSection[]): readonly PluginOverlayContentSection[] {
+function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly CanvasOverlayContentSection[] {
   const snapshot = structuredClone(sections);
   const freeze = (value: unknown): void => {
     if (value === null || typeof value !== "object") return;
@@ -227,7 +227,7 @@ export interface DesktopPluginRuntime {
   subscribeCanvasOverlayStatus(listener: () => void): () => void;
   getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
   subscribeCanvasOverlayTranscript(listener: () => void): () => void;
-  getCanvasOverlayContents(): ReadonlyMap<string, readonly PluginOverlayContentSection[]>;
+  getCanvasOverlayContents(): ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
   subscribeCanvasOverlayContent(listener: () => void): () => void;
   getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
   subscribeCanvasOverlayOpen(listener: () => void): () => void;
@@ -437,7 +437,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   }
   const canvasOverlayStatuses = new Map<string, string>();
   const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
-  const canvasOverlayContents = new Map<string, readonly PluginOverlayContentSection[]>();
+  const canvasOverlayContents = new Map<string, readonly CanvasOverlayContentSection[]>();
   const canvasOverlayContentListeners = new Set<() => void>();
   const notifyCanvasOverlayContent = () => canvasOverlayContentListeners.forEach(listener => listener());
   const canvasOverlayOpenRequests = new Map<string, { readonly focus: boolean }>();
@@ -453,11 +453,17 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const host = new DesktopPluginHost({
     commandRegistry: options.commandRegistry,
     overlays: {
-      setContent: (_pluginId, overlayId, sections) => {
-        if (sections.length === 0) {
+      setContent: (pluginId, overlayId, sections, prompt) => {
+        const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
+        const disabled = prompt?.disabled ?? false;
+        // The internal prompt section feeds the existing composer and command-dispatch guard.
+        // Each call replaces its state, including when content is empty or prompt is omitted.
+        const content: CanvasOverlayContentSection[] = disabled || declared.disabled
+          ? [...sections, { ...declared, disabled }] : sections;
+        if (content.length === 0) {
           if (!canvasOverlayContents.delete(overlayId)) return;
         } else {
-          canvasOverlayContents.set(overlayId, freezeOverlayContent(sections));
+          canvasOverlayContents.set(overlayId, freezeOverlayContent(content));
         }
         notifyCanvasOverlayContent();
       },

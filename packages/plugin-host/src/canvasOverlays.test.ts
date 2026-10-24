@@ -15,6 +15,21 @@ const manifest = {
 const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
 
 describe("PluginHost canvas overlays", () => {
+  it("validates and snapshots prompt overrides before forwarding them to the embedding host", async () => {
+    const setContent = vi.fn();
+    const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });
+    host.registerPlugin(manifest);
+    const api = host.createCommandContext(manifest.id).overlays!;
+    const prompt = { disabled: true };
+    await api.setContent({ overlayId, sections: [], prompt });
+    prompt.disabled = false;
+    expect(setContent).toHaveBeenLastCalledWith(manifest.id, overlayId, [], { disabled: true });
+    await expect(api.setContent({ overlayId, sections: [], prompt: { disabled: true, label: "Busy" } } as never)).rejects.toThrow();
+    expect(setContent).toHaveBeenCalledOnce();
+    await api.setContent({ overlayId, sections: [] });
+    expect(setContent).toHaveBeenLastCalledWith(manifest.id, overlayId, [], undefined);
+  });
+
   it("bounds content, snapshots it, and checks permissions, ownership and report control rules", async () => {
     const setContent = vi.fn();
     const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });

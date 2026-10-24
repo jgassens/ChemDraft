@@ -2,8 +2,8 @@ import type { PluginCanvasOverlayContribution, PluginManifest, PluginOverlayCont
 
 export const OVERLAY_BUSY_MESSAGE = "Wait for the current request to finish, or press Stop.";
 
-// Accept live prompt state in the host without introducing a second composer. The public
-// overlay-content schema must admit prompt sections before plugins can publish these updates.
+// The host synthesizes the internal prompt section from setContent's prompt.disabled override.
+// Public content sections never admit a second composer or plugin-supplied prompt controls.
 export type CanvasOverlayContentSection = PluginOverlayContentSection | Extract<PluginPanelSection, { kind: "prompt" }>;
 
 export function canvasOverlayPrompt(overlay: PluginCanvasOverlayContribution, content: readonly CanvasOverlayContentSection[]) {

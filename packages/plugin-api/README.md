@@ -4,6 +4,9 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.13 adds optional `prompt: { disabled?: boolean }` to `overlays.setContent`. The prompt
+object is strict; every call replaces the disabled state, defaulting to false when omitted.
+
 API 0.1.12 adds `overlays.setContent({ overlayId, sections })` (text, keyValue, actions, image;
 20 sections and 64 KiB UTF-8 JSON maximum) and command-scoped `overlays.open({ overlayId, focus? })`.
 Both require `ui.canvas` and overlay ownership. Content reuses the panel report schemas and action

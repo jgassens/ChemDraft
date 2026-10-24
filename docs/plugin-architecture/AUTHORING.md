@@ -61,7 +61,8 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.12`). API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
+`0.1.13`). API 0.1.13 adds live prompt disabled state to overlay content; plugins using it
+should declare `^0.1.13`. API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
 should declare `^0.1.12`. API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
 `^0.1.10`. API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
 API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
@@ -69,7 +70,7 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.12` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.13` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -299,7 +300,7 @@ command ends is refused. A plugin that holds `document.read` receives the insert
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
 
-## Panel input and canvas overlays (0.1.10–0.1.12)
+## Panel input and canvas overlays (0.1.10–0.1.13)
 
 API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
 `apiVersion: "^0.1.10"`; add `ui.panel` for a panel and `ui.canvas` for a canvas overlay. Panels
@@ -368,6 +369,24 @@ from position for each document window. Escape collapses without forgetting the 
 sends and Shift+Enter adds a newline. Overlay prompts display one row to preserve room for replies.
 Transcript updates use their own runtime subscription and never synchronize toolsets. The floating
 panel is optional; a plugin can use its canvas overlay as its complete chat UI.
+
+### Live overlay prompt state (0.1.13)
+
+Declare `apiVersion: "^0.1.13"` to use
+`overlays.setContent({ overlayId, sections, prompt: { disabled: true } })` while a request runs.
+The optional `prompt` object accepts only an optional boolean `disabled`; other keys are rejected.
+Every `setContent` call replaces this state: `prompt.disabled` overrides the declared overlay prompt,
+and omitting `prompt` or `disabled` means not disabled. Send and Enter refuse submission with an
+inline hint while busy; the textarea remains editable. The existing `ui.canvas`, ownership, section
+limits and command checks still apply. No prompt section is allowed in `sections`.
+
+```ts
+await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [], prompt: { disabled: true } });
+// After the run, restore sending by replacing content without a prompt override.
+await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [] });
+```
+
+### Overlay content and opening (0.1.12)
 
 API **0.1.12** adds `overlays.setContent({ overlayId, sections })` and
 `overlays.open({ overlayId, focus?: boolean })`. Declare `apiVersion: "^0.1.12"` and

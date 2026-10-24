@@ -166,7 +166,9 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       [commandId]: async context => {
         await context.overlays!.setStatus({ overlayId, text: "Working" });
         await context.overlays!.setTranscript({ overlayId, entries: [{ role: "assistant", text: "Done" }] });
-        await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }] });
+        await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }], prompt: { disabled: true } });
+        await expect(context.overlays!.setContent({ overlayId, sections: [], prompt: { disabled: true, label: "Busy" } } as never)).rejects.toThrow();
+        await context.overlays!.setContent({ overlayId, sections: [] });
         await context.overlays!.open({ overlayId, focus: true });
         await expect(context.overlays!.setContent({ overlayId: "overlay.other.main", sections: [] })).rejects.toThrow(/does not own/);
         await expect(context.overlays!.open({ overlayId: "overlay.other.main" })).rejects.toThrow(/does not own/);
@@ -188,7 +190,10 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       expect(await host.invokeCommand(commandId, { input })).toEqual(input);
       expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
       expect(setTranscript.mock.calls).toEqual([[manifest.id, overlayId, [{ role: "assistant", text: "Done" }]]]);
-      expect(setContent.mock.calls).toEqual([[manifest.id, overlayId, [{ kind: "text", body: "Setup" }]]]);
+      expect(setContent.mock.calls).toEqual([
+        [manifest.id, overlayId, [{ kind: "text", body: "Setup" }], { disabled: true }],
+        [manifest.id, overlayId, [], undefined]
+      ]);
       expect(open.mock.calls).toEqual([[manifest.id, overlayId, true]]);
     } finally { bridge.terminate(); }
   });

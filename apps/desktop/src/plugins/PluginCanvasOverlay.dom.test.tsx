@@ -228,10 +228,9 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => finish({ ok: true }));
     expect(textarea.value).toBe("Next");
     // The plugin owns live prompt state; host content must update the one composer in place.
-    const sections = [{ ...overlay.prompt, disabled: true }];
-    contentSource = { getCanvasOverlayContents: () => new Map([[overlay.id, sections]]),
-      subscribeCanvasOverlayContent: () => () => undefined };
-    await render();
+    await act(async () => contentRuntime.host.createCommandContext("widget").overlays!.setContent({
+      overlayId: overlay.id, sections: [], prompt: { disabled: true }
+    }));
     expect(container.querySelectorAll("textarea")).toHaveLength(1);
     expect(container.querySelector("textarea")).toBe(textarea);
     await act(async () => enter());
@@ -240,9 +239,10 @@ describe("PluginCanvasOverlay", () => {
     expect(container.textContent).toContain("Wait for the current request to finish, or press Stop.");
     expect(textarea.value).toBe("Next");
     expect(textarea.disabled).toBe(false);
-    const ready = [{ ...overlay.prompt, disabled: false }];
-    contentSource = { ...contentSource, getCanvasOverlayContents: () => new Map([[overlay.id, ready]]) };
-    await render(); await act(async () => enter());
+    await act(async () => contentRuntime.host.createCommandContext("widget").overlays!.setContent({
+      overlayId: overlay.id, sections: []
+    }));
+    await act(async () => enter());
     expect(action).toHaveBeenCalledTimes(2);
     expect(textarea.value).toBe("");
   });
@@ -334,7 +334,11 @@ describe("PluginCanvasOverlay", () => {
     expect(enter.defaultPrevented).toBe(true);
     expect(action).toHaveBeenCalledOnce();
     await act(async () => finish({ ok: true }));
+    await act(async () => enterText("Next request"));
     await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true })));
+    expect(action).toHaveBeenCalledOnce();
+    expect(textarea.value).toBe("Next request");
+    await act(async () => enterText(""));
     await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     expect(action).toHaveBeenCalledOnce();
     await act(async () => enterText("   "));

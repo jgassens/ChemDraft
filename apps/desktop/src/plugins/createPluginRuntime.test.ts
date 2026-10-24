@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPhase4Document } from "../documentWorkflow";
 import { RECOGNITION_FIXTURE_COMMAND_ID, recognitionFixtureDescriptor } from "../testSupport/recognitionFixturePlugin";
 import { createPluginRuntime } from "./createPluginRuntime";
+import { canvasOverlayPrompt } from "./pluginCanvasOverlayControls";
 import { ImageSourceRegistry } from "./ImageSourceProvider";
 import { proposalReviewItem } from "./PatchReviewTray";
 import { recognitionDisagreementWarning } from "./recognitionAgreement";
@@ -32,6 +33,24 @@ describe("createPluginRuntime canvas overlays", () => {
         commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
     }
   };
+
+  it.each([false, true])("replaces prompt disabled state on every content call (declared %s)", async disabled => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    runtime.registerPlugin({ ...manifest, contributes: { ...manifest.contributes,
+      canvasOverlays: [{ ...manifest.contributes.canvasOverlays[0], prompt: { kind: "prompt", id: "composer", commandId, disabled } }]
+    } });
+    const overlay = runtime.listCanvasOverlays()[0]!.overlay;
+    const live = () => canvasOverlayPrompt(overlay, runtime.getCanvasOverlayContents().get(overlayId) ?? []);
+    const api = runtime.host.createCommandContext(manifest.id).overlays!;
+    expect(live().disabled).toBe(disabled);
+    for (const prompt of [{ disabled: true }, undefined, { disabled: true }, {}, { disabled: true }, { disabled: false }]) {
+      await api.setContent({ overlayId, sections: [], ...(prompt ? { prompt } : {}) });
+      expect(live().disabled ?? false).toBe(prompt?.disabled ?? false);
+    }
+    expect(overlay.prompt.disabled).toBe(disabled);
+    runtime.unregisterPlugin(manifest.id);
+    expect(runtime.getCanvasOverlayContents().size).toBe(0);
+  });
 
   it("keeps content/open notifications separate from toolset sync and clears them on replacement", async () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined });

@@ -180,7 +180,10 @@ function assistantText(document: ChemDraftDocument, text: string, style: Partial
   const object = createNativeTextObject(document, { x: 0, y: 0 }, text, style);
   // Wrap captions at the content width, never at the outer paper edge. Only text boxes reflow;
   // molecule geometry and the document's bond length are untouched.
-  return { ...object, ...nativeTextObjectSizeForText(text, object.style, { maxWidth: pageContentRect(document.pages[0]!).width }) };
+  const maxWidth = pageContentRect(document.pages[0]!).width;
+  const size = nativeTextObjectSizeForText(text, object.style, { maxWidth });
+  // Text measurement rounds to hundredths; a fractional paper width must remain the ceiling.
+  return { ...object, ...size, width: Math.min(size.width, maxWidth) };
 }
 function placement(context: AssistantToolContext, objects: readonly DocumentObject[], pageId?: string,
   relative?: { objectId: string; side: RelativeSide }, exclude: readonly string[] = []) {

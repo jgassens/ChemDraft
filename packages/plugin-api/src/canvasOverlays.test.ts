@@ -16,6 +16,16 @@ const manifest = {
 };
 
 describe("canvas overlay schemas", () => {
+  it("accepts only the optional disabled flag in a content prompt override", () => {
+    const request = { overlayId: overlay.id, sections: [] };
+    for (const prompt of [{ disabled: true }, { disabled: false }, {}]) {
+      expect(PluginOverlayContentRequestSchema.parse({ ...request, prompt })).toEqual({ ...request, prompt });
+    }
+    for (const prompt of [{ disabled: true, label: "Busy" }, { disabled: "true" }, { commandId }, null]) {
+      expect(PluginOverlayContentRequestSchema.safeParse({ ...request, prompt }).success).toBe(false);
+    }
+  });
+
   it("reuses the panel prompt schema and supplies overlay defaults", () => {
     expect(PluginCanvasOverlayContributionSchema.shape.prompt).toBe(PluginPanelPromptSectionSchema);
     expect(PluginManifestSchema.parse(manifest).contributes.canvasOverlays).toEqual([{

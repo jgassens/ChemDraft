@@ -343,7 +343,7 @@ export interface PluginHostOptions {
   overlays?: {
     setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
     setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
-    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[]): void | Promise<void>;
+    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean }): void | Promise<void>;
     open?(pluginId: string, overlayId: string, focus: boolean): void | Promise<void>;
   };
   assistant?: PluginHostAssistant;
@@ -729,7 +729,7 @@ export class PluginHost {
             const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });
             requireOwnReportCommands(report);
             if (!this.overlays?.setContent) throw new PluginHostError("This host provides no canvas content.");
-            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections);
+            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections, parsed.prompt);
           },
           open: async request => {
             this.requirePermission(pluginId, "ui.canvas");
