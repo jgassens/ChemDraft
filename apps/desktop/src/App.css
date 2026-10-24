@@ -3082,6 +3082,7 @@ textarea:focus-visible,
 }
 
 .toolbar-command-flyout-menu button[data-command-id^="layout.arrange."] > svg,
+.toolbar-command-flyout-menu button[data-command-id="layout.arrangeOptions"] > svg,
 .toolbar-command-flyout-menu button[data-command-id="layout.adjustArrangementSpacing"] > svg {
   width: 18px;
   height: 18px;
@@ -7536,6 +7537,11 @@ textarea:focus-visible,
 .arrangement-spacing-dialog { box-sizing: border-box; font-size: 13px; padding: 18px; color: var(--cd-text-primary); background: var(--cd-bg-panel); min-height: 100vh; max-height: 100vh; overflow-y: auto; }
 .plugin-prompt-backdrop > .arrangement-spacing-dialog { min-height: 0; width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--cd-border); border-radius: var(--cd-radius-panel); }
 .arrangement-spacing-dialog h2 { margin-top: 0; font-size: 16px; }
+.arrangement-options { display: grid; gap: 10px; border: 0; padding: 0; margin: 0 0 16px; }
+.arrangement-options label { display: flex; align-items: center; gap: 8px; }
+.arrangement-options select { flex: 1; min-width: 0; padding: 6px; font: inherit; color: inherit; background: var(--cd-bg-control); border: 1px solid var(--cd-border); border-radius: 4px; }
+.arrangement-options input[type="checkbox"] { accent-color: var(--cd-accent); }
+.arrangement-options p { margin: 0; }
 .arrangement-spacing-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .arrangement-spacing-actions button { padding: 6px 14px; }
 .arrangement-spacing-dialog input[type="range"] { width: 100%; accent-color: var(--cd-accent); }

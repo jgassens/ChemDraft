@@ -38,9 +38,10 @@ describe("opt-in compound layouts", () => {
     expect(off.some(i => isCompoundLayoutCommand(i.id))).toBe(false);
     const on = getToolsetPaletteGroups(toolset, undefined, undefined, true).flatMap(g => g.items);
     const item = on.find(i => i.id === "layout.arrange.circle")!;
-    expect(item).toBeDefined(); expect(item.submenu?.items).toHaveLength(8);
+    expect(item).toBeDefined(); expect(item.submenu?.items).toHaveLength(9);
+    expect(item.submenu?.items.some(choice => choice.id === "layout.arrangeOptions")).toBe(true);
     const commands = createLayerActions(createPhase4Document(), false).filter(c => isCompoundLayoutCommand(c.id));
-    expect(commands).toHaveLength(8);
+    expect(commands).toHaveLength(9);
     for (const command of commands) expect(command).toMatchObject({ enabled: false, disabledReason: "Enable Compound layout tools in Settings" });
   });
 });

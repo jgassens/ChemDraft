@@ -1,3 +1,4 @@
+import { type ArrangementDraft } from "@chemdraft/layout-engine";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
@@ -818,7 +819,7 @@ import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } f
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
-import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
+import { selectedArrangementDraft, arrangeSelectedDocumentObjectsWithOptions, arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative } from "./nativeRasterExport";
@@ -1607,7 +1608,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.08.16-codex";
+const CURRENT_BUILD_STAMP = "10.23.09.35-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -2812,9 +2813,10 @@ export function MainWindow({
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
+  const [arrangementDraft, setArrangementDraft] = useState<ArrangementDraft>();
   const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
-  const openArrangementSpacingRef = useRef<() => void>(() => {});
+  const openArrangementSpacingRef = useRef<(options?: boolean) => void>(() => {});
   const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
   const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
   useEffect(() => {
@@ -8504,21 +8506,22 @@ export function MainWindow({
     if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
     return source;
   };
-  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
-  previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
-  const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
-  applySpacingRef.current = (tabId, percent) => {
+  const previewSpacingRef = useRef<(tabId: string, percent: number, arrangement?: ArrangementDraft) => string>(() => "");
+  previewSpacingRef.current = (tabId, percent, arrangement) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent, arrangement);
+  const applySpacingRef = useRef<(tabId: string, percent: number, arrangement?: ArrangementDraft) => void>(() => {});
+  applySpacingRef.current = (tabId, percent, arrangement) => {
     const source = spacingSourceForTab(tabId);
     if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then save the spacing again.");
-    const result = adjustArrangementSpacing(source, percent / 100);
+    const result = arrangement ? arrangeSelectedDocumentObjectsWithOptions(source, arrangement) : adjustArrangementSpacing(source, percent / 100);
+    const label = arrangement ? "Arrange selection" : "Adjust arrangement spacing";
     if (!result.ok) throw new Error(result.status);
     if (tabId === activeDocumentTabIdRef.current) {
-      commitDocumentChange(result.document, "Adjust arrangement spacing"); setStatus(result.status); return;
+      commitDocumentChange(result.document, label); setStatus(result.status); return;
     }
     const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
     if (result.document === source) return;
     const present = normalizeCommittedDocument(result.document);
-    documentUndoLabelsRef.current.set(present, "Adjust arrangement spacing");
+    documentUndoLabelsRef.current.set(present, label);
     for (const listener of assistantUserEditListenersRef.current) listener(tabId);
     documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
       history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
@@ -8526,8 +8529,8 @@ export function MainWindow({
     nonPristineTabsRef.current.add(tabId);
     setDocumentTabs([...documentTabsRef.current]);
   };
-  openArrangementSpacingRef.current = () => {
-    if (!isDesktopRuntime()) { setSpacingSource(documentRef.current); return; }
+  openArrangementSpacingRef.current = (options = false) => {
+    if (!isDesktopRuntime()) { setArrangementDraft(options ? selectedArrangementDraft(documentRef.current) : undefined); setSpacingSource(documentRef.current); return; }
     const coordinator = dialogCoordinatorRef.current;
     if (!coordinator) { setStatus("Adjust spacing could not open: the dialog host is unavailable."); return; }
     const tabId = activeDocumentTabIdRef.current;
@@ -8535,16 +8538,20 @@ export function MainWindow({
     if (!coordinator.hasArrangementSpacing(tabId)) nativeSpacingSourcesRef.current.set(tabId, source);
     const range = arrangementSpacingRange(source);
     const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
-    void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
+    void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100), ...(options ? { arrangement: selectedArrangementDraft(source) } : {}) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
-      previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
-      applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
-      onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
+      previewArrangementSpacing: (tabId, percent, arrangement) => previewSpacingRef.current(tabId, percent, arrangement),
+      applyArrangementSpacing: (tabId, percent, arrangement) => applySpacingRef.current(tabId, percent, arrangement),
+      onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); },
+      onSpacingClosed: (tabId, reason) => {
+        if (tabId === activeDocumentTabIdRef.current && (reason === 'apply' || reason === 'cancel' || reason === 'close'))
+          void focusCurrentWindowAndWebview({ onlyIfAppActive: true });
+      }, onError: setStatus,
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
@@ -9935,7 +9942,7 @@ export function MainWindow({
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
           if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
-          if (action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(); return; }
+          if (action.id === "layout.arrangeOptions" || action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(action.id === "layout.arrangeOptions"); return; }
           const layout = arrangementLayoutForCommand(action.id)!;
           let operationStatus = "";
           commitDocumentChange(current => {
@@ -20088,14 +20095,14 @@ export function MainWindow({
           />
         ) : null}
       </section>
-      {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
-        onSave={factor => {
+      {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} arrangement={arrangementDraft} onCancel={() => setSpacingSource(undefined)}
+        onSave={(factor, arrangement) => {
           if (documentRef.current !== spacingSource) {
             setSpacingSource(undefined); setStatus("Drawing changed. Reopen Adjust spacing to preview the current selection."); return;
           }
           let ok = false, operationStatus = "";
-          commitDocumentChange(current => { const result = adjustArrangementSpacing(current, factor);
-            ok = result.ok; operationStatus = result.status; return result.document; }, "Adjust arrangement spacing");
+          commitDocumentChange(current => { const result = arrangement ? arrangeSelectedDocumentObjectsWithOptions(current, arrangement) : adjustArrangementSpacing(current, factor);
+            ok = result.ok; operationStatus = result.status; return result.document; }, arrangement ? "Arrange selection" : "Adjust arrangement spacing");
           if (ok) setSpacingSource(undefined); setStatus(operationStatus);
         }} /> : null}
       {objectContextMenu ? (
@@ -23461,18 +23468,18 @@ export function ObjectLayerContextMenu({
                   choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
                 }
               }}>
-              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
+              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing" && action.id !== "layout.arrangeOptions").map(action => (
                 <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
                   data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
                   {action.title.replace(/^Arrange in (?:a|an) /, "")}
                 </button>
               ))}
-              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
+              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing" || action.id === "layout.arrangeOptions").map(action => (
                 <Fragment key={action.id}>
                   <div className="object-context-menu-separator" role="separator" />
                   <button type="button" role="menuitem" className="object-context-menu-item"
                     data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                    Adjust spacing…
+                    {action.id === "layout.arrangeOptions" ? "Arrange with options…" : "Adjust spacing…"}
                   </button>
                 </Fragment>
               ))}

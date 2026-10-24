@@ -10,6 +10,7 @@ import {
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
+import { nativeTextObjectLineMetrics, nativeTextSpanMetrics } from '@chemdraft/layout-engine';
 
 export const nativeTextObjectDimensions = {
   width: 240,
@@ -62,6 +63,21 @@ export function nativeTextObjectSizeForText(
     width: roundToTextBoxPixel(width),
     height: roundToTextBoxPixel(height)
   };
+}
+
+/** Measure formatted conditions with the same character metrics as native text sizing.
+ * SVG text breaks only at authored newlines; never claim a long line wrapped inside a capped box. */
+export function nativeFormattedTextObjectSize(object: Pick<TextObject, "text" | "spans" | "style">): { width: number; height: number } {
+  const widths=[0];
+  const spans=object.spans.map(s=>s.text).join('')===object.text ? object.spans : [{text:object.text,script:'normal' as const,style:{}}];
+  for(const span of spans) {
+    const style=nativeTextStyleFromObjectStyle({...object.style,...span.style});
+    const font=nativeTextSpanMetrics(span,object.style).fontSize;
+    const lines=normalizeTextLines(span.text);
+    lines.forEach((line,i)=>{if(i)widths.push(0);widths[widths.length-1]+=estimateNativeTextLineWidth(line,{...style,fontSizePx:font});});
+  }
+  return {width:roundToTextBoxPixel(Math.max(nativeTextObjectMinimumDimensions.width,Math.max(...widths)+nativeTextBoxHorizontalPadding)),
+    height:Math.ceil(Math.max(nativeTextObjectMinimumDimensions.height,nativeTextObjectLineMetrics(object).height)*100)/100};
 }
 
 export function createNativeTextObject(
