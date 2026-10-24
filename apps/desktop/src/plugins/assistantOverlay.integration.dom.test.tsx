@@ -15,6 +15,7 @@ import { MainWindow } from "../MainWindow";
 import { createPhase4Document } from "../documentWorkflow";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { pluginPanelWindowId } from "./panelBridge";
+import * as pluginPanelActions from "./pluginPanelActions";
 
 const native = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -177,19 +178,22 @@ it("dispatches live overlay content with no panel contribution and never opens a
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
   const runtime = native.runtime!;
   const commandId = "plugin.single.submit";
+  const replacementCommandId = "plugin.single.replace";
   const openId = "plugin.single.open";
   const overlayId = "overlay.single.chat";
   const handler = vi.fn();
+  const replacementHandler = vi.fn();
   await act(async () => { runtime.registerPlugin({
     id: "single", name: "Single box", version: "0", apiVersion: "^0.1.12", entry: "test.js", permissions: ["ui.canvas", "ui.menu"],
     contributes: {
-      commands: [{ id: commandId, title: "Send" }, { id: openId, title: "Open" }],
+      commands: [{ id: commandId, title: "Send" }, { id: replacementCommandId, title: "Replace" }, { id: openId, title: "Open" }],
       menus: [{ id: "menu.single.open", title: "Single box", commandId: openId, location: "plugins" }],
       canvasOverlays: [{ id: overlayId, title: "Single box", icon: "data:image/png;base64,YQ==", commandId,
         prompt: { kind: "prompt", id: "prompt", commandId } }]
     }
   }, { commandHandlers: {
     [commandId]: ctx => { handler(ctx.input); },
+    [replacementCommandId]: ctx => { replacementHandler(ctx.input); },
     [openId]: ctx => ctx.overlays!.open({ overlayId, focus: true })
   } }); });
   const api = runtime.host.createCommandContext("single").overlays!;
@@ -202,23 +206,44 @@ it("dispatches live overlay content with no panel contribution and never opens a
   expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull();
   expect(document.activeElement).toBe(container.querySelector(".plugin-canvas-overlay textarea"));
   const button = () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-content button")!;
+  const resolver = vi.spyOn(pluginPanelActions, "resolvePluginPanelAction");
   await act(async () => button().click());
   expect(handler).toHaveBeenLastCalledWith({ source: "overlay", overlayId, sectionId: "setup", control: "button", controlId: "run", payload: { choice: "live" } });
   expect(handler).toHaveBeenCalledTimes(1);
   // Invoke the still-rendered widget before React paints replacement content. Dispatch must use
   // the runtime's current definition, so an old enabled button cannot bypass a live disable/removal.
+  resolver.mockClear();
   await act(async () => {
     const stale = button();
-    await api.setContent({ overlayId, sections: [{ ...sections[0]!, buttons: [{ ...sections[0]!.buttons[0]!, disabled: true }] }] });
+    const update = api.setContent({ overlayId, sections: [{ ...sections[0]!, buttons: [{ ...sections[0]!.buttons[0]!, disabled: true }] }] });
+    expect(stale.isConnected).toBe(true);
+    expect(stale.disabled).toBe(false);
     stale.click();
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveLastReturnedWith({ ok: false, reason: "This action button is disabled." });
+    await update;
   });
   expect(handler).toHaveBeenCalledTimes(1);
   await act(async () => { await api.setContent({ overlayId, sections }); });
+  resolver.mockClear();
   await act(async () => {
     const stale = button();
-    await api.setContent({ overlayId, sections: [] });
+    const update = api.setContent({ overlayId, sections: [] });
+    expect(stale.isConnected).toBe(true);
+    expect(stale.disabled).toBe(false);
     stale.click();
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveLastReturnedWith({ ok: false, reason: 'Unknown panel section "setup".' });
+    await update;
   });
+  expect(handler).toHaveBeenCalledTimes(1);
+  expect(replacementHandler).not.toHaveBeenCalled();
+  await act(async () => { await api.setContent({ overlayId, sections: [{ ...sections[0]!, buttons: [{
+    ...sections[0]!.buttons[0]!, commandId: replacementCommandId, payload: { choice: "replacement" }
+  }] }] }); });
+  await act(async () => button().click());
+  expect(replacementHandler).toHaveBeenCalledExactlyOnceWith({ source: "overlay", overlayId,
+    sectionId: "setup", control: "button", controlId: "run", payload: { choice: "replacement" } });
   expect(handler).toHaveBeenCalledTimes(1);
   const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
   await act(async () => {
@@ -234,4 +259,3 @@ it("dispatches live overlay content with no panel contribution and never opens a
   expect(native.invoke.mock.calls.some(([command]) => command === "open_plugin_panel_window")).toBe(false);
   await act(async () => runtime.unregisterPlugin("single"));
 });
-
