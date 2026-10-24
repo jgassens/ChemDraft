@@ -555,6 +555,9 @@ import {
   nativeMoleculeTransformState,
   isNativeArrowGraphic,
   nativeArtToolForCommand,
+  nativeArtToolIsOrbital,
+  nativeOrbitalAnchorPoint,
+  aimNativeOrbitalPlacement,
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
@@ -959,7 +962,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -974,6 +977,8 @@ type NativePlacementDragState = {
   /** Pointer path (page coords) accumulated across the drag for the flexible chain. */
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
+  orbitalCommandId?: string;
+  shiftKey?: boolean;
   dragging: boolean;
   altKey: boolean;
 };
@@ -1607,7 +1612,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.08.16-codex";
+const CURRENT_BUILD_STAMP = "10.24.12.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -13046,6 +13051,7 @@ export function MainWindow({
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
+      | { kind: "orbital"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
@@ -13056,7 +13062,9 @@ export function MainWindow({
           ? applyNativeChainTool(startDocument, point, undefined, placement.anchor)
           : placement.kind === "art-line"
             ? applyNativeArtLineToolDefaultAtPoint(startDocument, point, placement.commandId)
-            : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+            : placement.kind === "orbital"
+              ? insertNativeArtGraphicObject(startDocument, point, placement.commandId)
+              : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
     const objectId = placementDocument.selection.objectIds[0];
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
@@ -13079,6 +13087,8 @@ export function MainWindow({
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
+      orbitalCommandId: placement.kind === "orbital" ? placement.commandId : undefined,
+      shiftKey: event.shiftKey,
       altKey: event.altKey,
       dragging: false
     };
@@ -13455,6 +13465,9 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "orbital") {
+      return aimNativeOrbitalPlacement(drag.placementDocument, drag.objectId, point, drag.shiftKey);
+    }
     if (drag.kind === "arrow") {
       // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
       return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
@@ -13536,6 +13549,7 @@ export function MainWindow({
 
     drag.latestPoint = point;
     drag.altKey = event.altKey;
+    drag.shiftKey = event.shiftKey;
     placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
     const nowDragging = placementMachineRef.current.phase === "dragging";
     if (!drag.dragging && nowDragging) {
@@ -13808,6 +13822,13 @@ export function MainWindow({
   const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     if (!drag.target) {
+      const object = findDocumentObject(drag.startDocument, drag.objectId);
+      if (object && nativeOrbitalAnchorPoint(object)) {
+        const startAngle = Math.atan2(drag.startPoint.y - drag.centerPoint.y, drag.startPoint.x - drag.centerPoint.x);
+        const endAngle = Math.atan2(point.y - drag.centerPoint.y, point.x - drag.centerPoint.x);
+        const angle = ((endAngle - startAngle) * 180 / Math.PI + 540) % 360 - 180;
+        return drag.shiftKey ? snapRotationDegrees(angle, { shiftKey: true, referenceDegrees: drag.startRotationDegrees }) : angle;
+      }
       return snapRotationDegrees(degrees, {
         shiftKey: drag.shiftKey,
         referenceDegrees: drag.startRotationDegrees
@@ -15203,6 +15224,10 @@ export function MainWindow({
         startNativeArtLineDrawOrDefault(event, point, activeNativeArtTool.commandId, activeNativeArtTool.title);
         return;
       }
+      if (nativeArtToolIsOrbital(activeNativeArtTool.commandId)) {
+        startNativePlacementDrag(event, point, { kind: "orbital", commandId: activeNativeArtTool.commandId });
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -16523,6 +16548,10 @@ export function MainWindow({
     if (activeNativeArtTool && point) {
       event.preventDefault();
       event.stopPropagation();
+      if (nativeArtToolIsOrbital(activeNativeArtTool.commandId)) {
+        startNativePlacementDrag(event, point, { kind: "orbital", commandId: activeNativeArtTool.commandId });
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -17397,6 +17426,7 @@ export function MainWindow({
       centerPoint: (selectedFragmentBounds && selectedFragmentTarget && object.type === "molecule"
         ? nativeMoleculePartRotationPivot(object, selectedFragmentTarget) ?? documentObjectCenter(selectedFragmentBounds)
         : undefined)
+        ?? nativeOrbitalAnchorPoint(object)
         ?? (object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object)),
       startPoint: point,
       startRotationDegrees: object.type === "molecule"
@@ -19242,6 +19272,7 @@ export function MainWindow({
     let interaction: ModifierHintInteraction = "idle";
     if (objectRotateDragRef.current || groupTransformDragRef.current?.mode === "rotate") interaction = "rotate-drag";
     else if (objectResizeDragRef.current || groupTransformDragRef.current?.mode === "resize") interaction = "resize-drag";
+    else if (nativePlacementDragRef.current?.kind === "orbital") interaction = "rotate-drag";
     else if (tapeMeasureDragRef.current) interaction = "measure-drag";
     else if (graphicMarkerDragRef.current) interaction = "arrowhead-drag";
     else if (selectionLassoRef.current) interaction = "lasso";
@@ -19841,9 +19872,9 @@ export function MainWindow({
                         nativeGraphicCornerRadiusEditPoint(object) !== undefined
                         ? viewport.scale : undefined}
                       spinning={spinning}
-                      selected={selected}
+                      selected={selected && !nativeArtToolIsOrbital(activeToolState.activeCommandId)}
                       inGroupSelection={inGroupSelection}
-                      graphicTransformActive={activeGraphicTransformObjectId === object.id}
+                      graphicTransformActive={activeGraphicTransformObjectId === object.id || nativeOrbitalAnchorPoint(object) !== undefined}
                       graphicArrowEditActive={arrowEditTargetId === object.id && activeArtLineDrawToolActive}
                       graphicShiftTransformActive={shiftHoveredArrowId === object.id}
                       graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
@@ -19887,7 +19918,7 @@ export function MainWindow({
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
                       }
                       rotationInput={rotationInput?.objectId === object.id ? rotationInput : undefined}
-                      rotationHandlesVisible={transformRotationHandlesVisible}
+                      rotationHandlesVisible={transformRotationHandlesVisible || nativeOrbitalAnchorPoint(object) !== undefined}
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
                       objectTransformPreview={
@@ -21727,6 +21758,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
   }

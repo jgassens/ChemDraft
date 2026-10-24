@@ -646,3 +646,11 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Orbital overlap and rotation
+
+- On Windows/WebView2 and macOS, select Lobe, Shaded Lobe, p Orbital and s Orbital. Click repeatedly without reselecting the tool; each press/release adds one object and Escape returns to Selection.
+- Connect two lobes at their pointed ends, then place three p orbitals at a common centre. Repeat on molecule atoms, across rotated/overlapping orbitals and near page edges. New clicks choose an unused direction and drags set the exact angle.
+- Drag from the node to aim freely; hold Shift for 15-degree steps. Preview and release must match. Cancel a page-started and object-started drag; the pre-gesture document must return. Undo/Redo each placement once.
+- Select an orbital: its rotation handle should be visible without Shift or a double-click on its body. Rotate to an arbitrary angle about its node; Shift snaps and double-clicking the handle permits exact numeric entry. Direct Edit must still expose path nodes.
+- Verify existing orbitals and molecules do not move or change chemistry, and native save/reopen plus SVG/PDF export retain all overlapping shapes. Test zoomed and mixed-DPI configurations.
