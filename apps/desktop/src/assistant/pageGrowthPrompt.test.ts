@@ -102,12 +102,11 @@ describe.each(["macos", "windows"] as const)("fail-closed page growth on %s", pl
   });
 });
 
-it.skip('Windows Esc must not confirm a destructive single action (follow-up)', async () => {
+it('Windows Esc must not confirm a destructive single action', async () => {
   const destructive: NativePromptOptions = { ...growth, choices: [
     { id: "delete", label: "Delete", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
   ] };
   // IDCANCEL passes through rfd Cancel and Tauri's custom cancel-label remap (sources above).
-  // The preserved destructive mapping currently returns "Delete"; fixing it needs a separate decision.
   const buttons = nativePromptButtons(destructive, "windows") as Buttons;
   dialog.message.mockResolvedValue(tauriResult(rfdResult("taskdialog", 2, buttons), buttons));
   expect(await nativePrompt(destructive, undefined, undefined, undefined, "windows")).toBe("cancel");

@@ -41,7 +41,7 @@ export function setNativePromptProvider(next: NativePromptProvider): () => void 
 }
 
 export function nativePromptButtons(prompt: NativePromptOptions,
-  _platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
   const { choices } = prompt;
   const cancel = choices.find((choice) => choice.cancel);
   if (!cancel || choices.filter((choice) => choice.cancel).length !== 1 ||
@@ -59,11 +59,14 @@ export function nativePromptButtons(prompt: NativePromptOptions,
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
-  // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
-  // must be a safe action. For a destructive confirmation, Cancel itself occupies the default.
+  // The first button (ok/yes) is the Return default. AppKit finds Escape's button by its literal
+  // title "Cancel", so macOS can safely default a destructive-only confirmation to Cancel.
+  // On Windows/Linux the plugin remaps native Cancel to the cancel-slot label: that slot must
+  // stay Cancel so Escape/close cancel, while Return chooses the action on those platforms.
   const safe = actions.find((choice) => !choice.destructive);
-  // Known issue (tracked as a separate follow-up): tauri-plugin-dialog 2.7.1 desktop.rs:232-239 remaps rfd Cancel to the custom cancel label, so on Windows Esc returns this action's label.
-  if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
+  if (!safe) return platform === "macos"
+    ? { ok: cancel.label, cancel: actions[0]!.label }
+    : { ok: actions[0]!.label, cancel: cancel.label };
   if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
