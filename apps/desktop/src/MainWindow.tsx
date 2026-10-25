@@ -219,6 +219,7 @@ import {
   planMoleculeAtomLabels,
   recordedLabelBondSide,
   planPageSvgRender,
+  moleculeSvgFragmentsInObjectFrame,
   planNativeArtVisual,
   placementAimDegrees,
   sameBondRef,
@@ -1617,7 +1618,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.08.30-codex";
+const CURRENT_BUILD_STAMP = "10.25.08.45-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -26105,7 +26106,7 @@ function DocumentObjectViewContent({
   onMechanismHandlePointerUp,
   onMechanismHandlePointerCancel,
   doubleBondSidePreview,
-  nativeMoleculeSvgFragments,
+  nativeMoleculeSvgFragments: pageMoleculeSvgFragments,
   rotateReadout,
   projectedPlaneTiltReadout,
   rotationInput,
@@ -26227,6 +26228,9 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const nativeMoleculeSvgFragments = useMemo(() => object.type === "molecule" && pageMoleculeSvgFragments
+    ? moleculeSvgFragmentsInObjectFrame(object, pageMoleculeSvgFragments) : pageMoleculeSvgFragments,
+  [object, pageMoleculeSvgFragments]);
 
   useEffect(() => {
     if (!editingText || object.type !== "text") {

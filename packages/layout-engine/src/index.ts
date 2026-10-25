@@ -956,6 +956,20 @@ export interface PageSvgRenderPlan {
   warnings: PageSvgRenderWarning[];
 }
 
+/** Page plans already include the molecule's authored rotation. An object-owned canvas
+ * frame applies that rotation itself, so cancel it around the entire page-space plan
+ * (including crossing hits) before handing the fragments to that frame. Exporters use
+ * the original page plan. Keeping this conversion here prevents a second canvas rotation
+ * from moving a crossing gap away from its intersection. */
+export function moleculeSvgFragmentsInObjectFrame(
+  object: MoleculeObject, fragments: readonly PageSvgElementFragment[]
+): readonly PageSvgElementFragment[] {
+  if (object.rotation === 0) return fragments;
+  return [elementFragment("g", `molecule-object-frame-${object.id}`, {
+    transform: rotationTransform({ ...object, rotation: -object.rotation })
+  }, [...fragments])];
+}
+
 type DoubleBondSide = NonNullable<CoreMoleculeBond["display"]>["doubleBondSide"];
 type BondDisplayStyle = NonNullable<CoreMoleculeBond["display"]>["bondStyle"];
 

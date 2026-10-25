@@ -9,6 +9,7 @@ import {
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings, planFigureInterlockCrossings, planPageSvgRender } from "@chemdraft/layout-engine";
+import { unselectedObjectOrderChange } from "@chemdraft/chem-core";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 import {
@@ -131,7 +132,9 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     }
     const ids = op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
       op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
-      op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
+      op.op === "setObjectOrder" ? [unselectedObjectOrderChange(
+        document.pages.find(page => page.id === op.pageId)!, op.objectIds, scope
+      )].filter((id): id is string => id !== undefined) : "objectId" in op ? [op.objectId] : [];
     for (const id of ids) if (!scope.has(id)) throw new Error(`${id} was not selected when you sent the request`);
   }
   for (const [id, smiles] of built.expectedSmiles ?? []) {

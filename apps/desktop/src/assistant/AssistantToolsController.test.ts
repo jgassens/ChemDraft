@@ -1,11 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { applyPatch, createCustomPageLayout, DocumentObjectSchema, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
 import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
-import { cbpqt, crown } from "./figureFixtures";
+import { cbpqt, crown, ttf } from "./figureFixtures";
 import { inspectMolecule, translateObject } from "./writeBuilder";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
@@ -16,7 +17,7 @@ import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/appl
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { objectRect } from "./placement";
 import { buildMoveObjects } from "./writeBuilder";
-import { applyChargeToolAtPoint, rotateSelectedDocumentObjects90 } from "../documentWorkflow";
+import { applyChargeToolAtPoint, openNativeDocument, rotateSelectedDocumentObjects90 } from "../documentWorkflow";
 import { testCommandRegistry } from "./testCommandRegistry";
 
 function setup() {
@@ -113,6 +114,48 @@ describe("assistant offset moves", () => {
 });
 
 describe("live MCP figure recipe through the plugin host and assistant transaction", () => {
+  it("inserts and threads TTF/CBPQT beside the unselected saved catenane without touching it", async () => {
+    const s = setup();
+    try {
+      const loaded = openNativeDocument(readFileSync("packages/cdx-compat/src/fixtures/c5-catenane.chemdraft", "utf8")).document!;
+      s.replace(applyPatch(toEngineDocument(loaded), { op: "updatePageLayout", pageId: loaded.pages[0]!.id,
+        layout: createCustomPageLayout(1600, 1400, "css-px") }));
+      s.select([]);
+      const before = s.context.getDocument()!;
+      const bystanders = before.pages[0]!.objects;
+      const originalBytes = bystanders.map(object => JSON.stringify(object));
+      // This scope regression uses deterministic real native graphs with mocked chemistry
+      // inspection; the figure recipe tests independently verify their canonical SMILES.
+      const components = [cbpqt("box"), ttf("ttf")];
+      let next = 0;
+      s.context.chemistry.inspectStructure = async () => ({ valid: true, canonicalSmiles: "CC", heavyAtoms: 2, formula: "test-only", warnings: [] });
+      s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true, object: structuredClone(components[next++]!) });
+      const apply = vi.spyOn(s.host, "applyPatchForPlugin");
+      const { requestId } = await s.commandContext.assistant!.beginRequest({ prompt: "thread TTF through CBPQT4+ as a pseudorotaxane" });
+      const inserted = await s.controller.callTool(s.plugin, { name: "insert_structures",
+        input: { items: [{ kind: "molecule", smiles: "CC" }, { kind: "molecule", smiles: "CC" }],
+          to: { relativeTo: bystanders[0]!.id, anchor: "center", offset: { dx: 20, dy: 8 } } } });
+      expect(inserted.isError, JSON.stringify(inserted)).not.toBe(true);
+      const [box, axle] = s.context.getDocument()!.pages[0]!.objects.filter(o => !bystanders.some(b => b.id === o.id));
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects", input: {
+        objectIds: [axle!.id], to: { relativeTo: box!.id, anchor: "center" }, crossings: "auto", zOrder: "behind"
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const patch = apply.mock.calls[1]![2].patch;
+      expect(patch).toMatchObject({ op: "batch", patches: expect.arrayContaining([
+        { op: "setObjectOrder", pageId: before.pages[0]!.id, objectIds: [axle!.id, ...bystanders.map(o => o.id), box!.id] }
+      ]) });
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects.filter(o => bystanders.some(b => b.id === o.id)).map(o => JSON.stringify(o))).toEqual(originalBytes);
+      expect(after.pages[0]!.crossings.filter(c => c.bonds.some(r => bystanders.some(b => b.id === r.objectId))))
+        .toEqual(before.pages[0]!.crossings);
+      expect(after.selection.objectIds.some(id => bystanders.some(b => b.id === id))).toBe(false);
+      expect(s.history).toHaveLength(1);
+      await s.commandContext.assistant!.endRequest({ requestId });
+      expect(undo({ past: [before], present: after, future: [] }).present).toBe(before);
+      expect(redo({ past: [], present: before, future: [after] }).present).toBe(after);
+    } finally { await s.finish(); }
+  });
   it("builds a [2]catenane with auto crossings, unchanged canonical SMILES, cumulative selection and one undo/redo", async () => {
     const s = setup();
     try {

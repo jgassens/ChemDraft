@@ -193,7 +193,8 @@ export class AssistantToolsController implements PluginHostAssistant {
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
                     op.op === "addAnnotation" ? [op.annotation.id] :
                     op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
-                    op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                    op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) : "objectId" in op ? [op.objectId] :
+                    op.op === "setObjectOrder" ? op.objectIds.filter(id => scope.has(id)) : []);
                   // Recompute after a gesture or concurrent tool call, including every nearby
                   // mark. No await separates this scope/chemistry recheck and the history commit.
                   const after = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);

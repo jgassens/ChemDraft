@@ -3,7 +3,7 @@
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
-import { applyPatch, CrossingOverrideSchema, sameCrossingBondPair } from "@chemdraft/chem-core";
+import { applyPatch, CrossingOverrideSchema, sameCrossingBondPair, unselectedObjectOrderChange } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
@@ -1068,6 +1068,17 @@ export class PluginHost {
         }
         scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
       } else {
+        if (op.op === "setObjectOrder" && requestScope?.assistantTransactionId?.trim()) {
+          const document = requestScope.getDocument ? requestScope.getDocument() : await this.getActiveDocument?.();
+          const page = document?.pages.find(page => page.id === op.pageId);
+          if (!page) throw new PluginHostError("Cannot check object order write scope without the request page.");
+          // A reorder cannot change object content. Permit scoped objects to move past
+          // bystanders only if the unselected subsequence is unchanged. Content and crossing
+          // operations retain their own gates; the assistant also checks the normalized commit.
+          const outside = unselectedObjectOrderChange(page, op.objectIds, scope);
+          if (outside) throw new PluginHostError(`${outside} was not selected when the command started`);
+          continue;
+        }
         const ids = op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
           op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
           op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];

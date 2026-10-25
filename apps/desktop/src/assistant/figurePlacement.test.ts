@@ -8,7 +8,8 @@ import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
 import { callAssistantTool } from "./assistantTools";
 import { testContext } from "./tools/testContext";
 import { cbpqt, crown, ttf } from "./figureFixtures";
-import { translateObject } from "./writeBuilder";
+import { buildMoveObjects, translateObject } from "./writeBuilder";
+import { normalizeCommittedDocument } from "../documentWorkflow";
 import { toolSchemas } from "./tools/schemas";
 
 beforeAll(() => installNodeRdkitModuleLoader());
@@ -226,14 +227,30 @@ describe("figure placement options and atomic refusals", () => {
     const patch = vi.mocked(s.context.write).mock.calls[0]![0];
     expect(patch.op === "batch" && patch.patches.some(p => p.op === "setObjectOrder")).toBe(true);
   });
-  it("refuses ordering atomically when the full page includes an out-of-scope object", async () => {
+  it("threads with z-order beside an unchanged out-of-scope object (the formerly refused patch)", async () => {
     const s = fixture([cbpqt("box"), ttf("ttf"), crown("bystander")]);
     s.context.getSelectionAtSend = () => ["box", "ttf"];
     const before = structuredClone(s.context.getDocument());
+    const built = buildMoveObjects(s.context, { objectIds: ["ttf"],
+      to: { relativeTo: "box", anchor: "center" }, crossings: "auto", zOrder: "front" });
+    expect(built.patch).toMatchSnapshot("formerly refused threading patch");
+    // Capture the exact refused write before relaxing any gate: the only operation naming
+    // bystander is [box, bystander, ttf] page order, and normalization preserves its content.
+    expect(built.patch).toMatchObject({ op: "batch", patches: [
+      { op: "updateObject", objectId: "ttf" },
+      { op: "setObjectOrder", objectIds: ["box", "bystander", "ttf"] },
+      ...Array.from({ length: built.patch.op === "batch" ? built.patch.patches.length - 2 : 0 }, () =>
+        ({ op: "setCrossingOverride" }))
+    ] });
+    const normalized = normalizeCommittedDocument(applyPatch(s.context.getDocument()!, built.patch));
+    expect(JSON.stringify(normalized.pages[0]!.objects.find(o => o.id === "bystander")))
+      .toBe(JSON.stringify(before!.pages[0]!.objects.find(o => o.id === "bystander")));
     const result = await callAssistantTool(s.context, "move_objects", { objectIds: ["ttf"],
       to: { relativeTo: "box", anchor: "center" }, crossings: "auto", zOrder: "front" });
-    expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("bystander was not selected") }] });
-    expect(s.context.getDocument()).toEqual(before);
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(s.context.getDocument()!.pages[0]!.objects.map(o => o.id)).toEqual(["box", "bystander", "ttf"]);
+    expect(JSON.stringify(s.context.getDocument()!.pages[0]!.objects.find(o => o.id === "bystander")))
+      .toBe(JSON.stringify(before!.pages[0]!.objects.find(o => o.id === "bystander")));
   });
   it("applies explicit over/under references and refuses nonexistent crossings without moving anything", async () => {
     const s = fixture([cbpqt("box"), ttf("ttf")]);
