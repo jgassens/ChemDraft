@@ -52,6 +52,18 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Branch slice: Ring tools under a benzene dropdown
+
+User-requested scope for `feat/ring-tools-dropdown`: consolidate the default Main and Structure
+ring buttons into one benzene button. Normal click activates benzene; long-press/Arrow Down
+opens benzene, saturated rings ordered from three through eight members, then both chair forms.
+Expose the existing 3/4/7/8-membered geometry through command-backed drawing tools, including
+distinct polygon icons. Preserve command IDs, shortcuts, attachment/fusion rules, and chemistry.
+
+Verify menu invocation and native popover payloads, command activation, ring size, bond lengths,
+attachment/fusion, preview/commit and Undo. Check saved benzene customization. Before merge,
+complete CI and packaged macOS/Windows checks; do not build a Windows installer locally.
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.

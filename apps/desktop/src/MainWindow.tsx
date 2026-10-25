@@ -1615,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.08.45-codex";
+const CURRENT_BUILD_STAMP = "10.25.11.18-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -21968,6 +21968,15 @@ function nativeReactionArrowStatusLabel(arrowKind: ArrowObject["arrowKind"]): st
 
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
   switch (templateId) {
+    case "cyclopropane":
+      return "cyclopropane";
+    case "cyclobutane":
+      return "cyclobutane";
+    case "cycloheptane":
+      return "cycloheptane";
+    case "cyclooctane":
+      return "cyclooctane";
+
     case "cyclopentane":
       return "cyclopentane";
     case "cyclohexane":

@@ -340,18 +340,17 @@
               }
             },
             {
-              "commandId": "tool.cyclopentane",
-              "title": "Cyclopentane Template",
+              "commandId": "tool.benzene",
+              "title": "Benzene Template",
               "icon": "ring",
-              "assetName": "Custom_Cyclopentane",
-              "shortcutDisplay": "R",
+              "assetName": "Custom_Benzene",
               "category": "structure",
-              "id": "tool.cyclopentane",
+              "id": "tool.benzene",
               "kind": "button",
-              "label": "Cyclopentane Template",
+              "label": "Ring templates",
               "primary": {
                 "type": "command",
-                "commandId": "tool.cyclopentane"
+                "commandId": "tool.benzene"
               },
               "submenu": {
                 "type": "command-grid",
@@ -359,8 +358,24 @@
                 "columns": 3,
                 "items": [
                   {
+                    "commandId": "tool.benzene",
+                    "label": "Benzene",
+                    "icon": "ring",
+                    "assetName": "Custom_Benzene"
+                  },
+                  {
+                    "commandId": "tool.cyclopropane",
+                    "label": "Cyclopropane (3-membered)",
+                    "icon": "ring3"
+                  },
+                  {
+                    "commandId": "tool.cyclobutane",
+                    "label": "Cyclobutane (4-membered)",
+                    "icon": "ring4"
+                  },
+                  {
                     "commandId": "tool.cyclopentane",
-                    "label": "Cyclopentane Template",
+                    "label": "Cyclopentane (5-membered)",
                     "icon": "ring",
                     "assetName": "Custom_Cyclopentane",
                     "tooltip": {
@@ -370,25 +385,29 @@
                   },
                   {
                     "commandId": "tool.cyclohexane",
-                    "label": "Cyclohexane Template",
+                    "label": "Cyclohexane (6-membered)",
                     "icon": "ring",
                     "assetName": "Custom_Cyclohexane"
                   },
                   {
-                    "commandId": "tool.benzene",
-                    "label": "Benzene Template",
-                    "icon": "ring",
-                    "assetName": "Custom_Benzene"
+                    "commandId": "tool.cycloheptane",
+                    "label": "Cycloheptane (7-membered)",
+                    "icon": "ring7"
+                  },
+                  {
+                    "commandId": "tool.cyclooctane",
+                    "label": "Cyclooctane (8-membered)",
+                    "icon": "ring8"
                   },
                   {
                     "commandId": "tool.chairCyclohexaneA",
-                    "label": "Chair Cyclohexane Template A",
+                    "label": "Chair Cyclohexane A",
                     "icon": "ring",
                     "assetName": "Custom_Chair1"
                   },
                   {
                     "commandId": "tool.chairCyclohexaneB",
-                    "label": "Chair Cyclohexane Template B",
+                    "label": "Chair Cyclohexane B",
                     "icon": "ring",
                     "assetName": "Custom_Chair2"
                   }
@@ -396,101 +415,9 @@
                 "id": "ring-templates"
               },
               "tooltip": {
-                "title": "Cyclopentane Template",
-                "shortcut": "R",
-                "description": "Insert a ring template. Long-press for common rings."
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.cyclohexane",
-              "title": "Cyclohexane Template",
-              "icon": "ring",
-              "assetName": "Custom_Cyclohexane",
-              "category": "structure",
-              "id": "tool.cyclohexane",
-              "kind": "button",
-              "label": "Cyclohexane Template",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.cyclohexane"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Cyclohexane Template",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.benzene",
-              "title": "Benzene Template",
-              "icon": "ring",
-              "assetName": "Custom_Benzene",
-              "category": "structure",
-              "id": "tool.benzene",
-              "kind": "button",
-              "label": "Benzene Template",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.benzene"
-              },
-              "submenu": null,
-              "tooltip": {
                 "title": "Benzene Template",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.chairCyclohexaneA",
-              "title": "Chair Cyclohexane Template A",
-              "icon": "ring",
-              "assetName": "Custom_Chair1",
-              "category": "structure",
-              "id": "tool.chairCyclohexaneA",
-              "kind": "button",
-              "label": "Chair Cyclohexane Template A",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.chairCyclohexaneA"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Chair Cyclohexane Template A",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.chairCyclohexaneB",
-              "title": "Chair Cyclohexane Template B",
-              "icon": "ring",
-              "assetName": "Custom_Chair2",
-              "category": "structure",
-              "id": "tool.chairCyclohexaneB",
-              "kind": "button",
-              "label": "Chair Cyclohexane Template B",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.chairCyclohexaneB"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Chair Cyclohexane Template B",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Draw benzene. Long-press or press Arrow Down for 3–8-membered rings and chair cyclohexanes."
               },
               "layout": {
                 "colSpan": 1,
@@ -2259,18 +2186,17 @@
               }
             },
             {
-              "commandId": "tool.cyclopentane",
-              "title": "Cyclopentane Template",
+              "commandId": "tool.benzene",
+              "title": "Benzene Template",
               "icon": "ring",
-              "assetName": "Custom_Cyclopentane",
-              "shortcutDisplay": "R",
+              "assetName": "Custom_Benzene",
               "category": "structure",
-              "id": "tool.cyclopentane",
+              "id": "tool.benzene",
               "kind": "button",
-              "label": "Cyclopentane Template",
+              "label": "Ring templates",
               "primary": {
                 "type": "command",
-                "commandId": "tool.cyclopentane"
+                "commandId": "tool.benzene"
               },
               "submenu": {
                 "type": "command-grid",
@@ -2278,8 +2204,24 @@
                 "columns": 3,
                 "items": [
                   {
+                    "commandId": "tool.benzene",
+                    "label": "Benzene",
+                    "icon": "ring",
+                    "assetName": "Custom_Benzene"
+                  },
+                  {
+                    "commandId": "tool.cyclopropane",
+                    "label": "Cyclopropane (3-membered)",
+                    "icon": "ring3"
+                  },
+                  {
+                    "commandId": "tool.cyclobutane",
+                    "label": "Cyclobutane (4-membered)",
+                    "icon": "ring4"
+                  },
+                  {
                     "commandId": "tool.cyclopentane",
-                    "label": "Cyclopentane Template",
+                    "label": "Cyclopentane (5-membered)",
                     "icon": "ring",
                     "assetName": "Custom_Cyclopentane",
                     "tooltip": {
@@ -2289,25 +2231,29 @@
                   },
                   {
                     "commandId": "tool.cyclohexane",
-                    "label": "Cyclohexane Template",
+                    "label": "Cyclohexane (6-membered)",
                     "icon": "ring",
                     "assetName": "Custom_Cyclohexane"
                   },
                   {
-                    "commandId": "tool.benzene",
-                    "label": "Benzene Template",
-                    "icon": "ring",
-                    "assetName": "Custom_Benzene"
+                    "commandId": "tool.cycloheptane",
+                    "label": "Cycloheptane (7-membered)",
+                    "icon": "ring7"
+                  },
+                  {
+                    "commandId": "tool.cyclooctane",
+                    "label": "Cyclooctane (8-membered)",
+                    "icon": "ring8"
                   },
                   {
                     "commandId": "tool.chairCyclohexaneA",
-                    "label": "Chair Cyclohexane Template A",
+                    "label": "Chair Cyclohexane A",
                     "icon": "ring",
                     "assetName": "Custom_Chair1"
                   },
                   {
                     "commandId": "tool.chairCyclohexaneB",
-                    "label": "Chair Cyclohexane Template B",
+                    "label": "Chair Cyclohexane B",
                     "icon": "ring",
                     "assetName": "Custom_Chair2"
                   }
@@ -2315,101 +2261,9 @@
                 "id": "ring-templates"
               },
               "tooltip": {
-                "title": "Cyclopentane Template",
-                "shortcut": "R",
-                "description": "Insert a ring template. Long-press for common rings."
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.cyclohexane",
-              "title": "Cyclohexane Template",
-              "icon": "ring",
-              "assetName": "Custom_Cyclohexane",
-              "category": "structure",
-              "id": "tool.cyclohexane",
-              "kind": "button",
-              "label": "Cyclohexane Template",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.cyclohexane"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Cyclohexane Template",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.benzene",
-              "title": "Benzene Template",
-              "icon": "ring",
-              "assetName": "Custom_Benzene",
-              "category": "structure",
-              "id": "tool.benzene",
-              "kind": "button",
-              "label": "Benzene Template",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.benzene"
-              },
-              "submenu": null,
-              "tooltip": {
                 "title": "Benzene Template",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.chairCyclohexaneA",
-              "title": "Chair Cyclohexane Template A",
-              "icon": "ring",
-              "assetName": "Custom_Chair1",
-              "category": "structure",
-              "id": "tool.chairCyclohexaneA",
-              "kind": "button",
-              "label": "Chair Cyclohexane Template A",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.chairCyclohexaneA"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Chair Cyclohexane Template A",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.chairCyclohexaneB",
-              "title": "Chair Cyclohexane Template B",
-              "icon": "ring",
-              "assetName": "Custom_Chair2",
-              "category": "structure",
-              "id": "tool.chairCyclohexaneB",
-              "kind": "button",
-              "label": "Chair Cyclohexane Template B",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.chairCyclohexaneB"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Chair Cyclohexane Template B",
-                "shortcut": null
+                "shortcut": null,
+                "description": "Draw benzene. Long-press or press Arrow Down for 3–8-membered rings and chair cyclohexanes."
               },
               "layout": {
                 "colSpan": 1,
