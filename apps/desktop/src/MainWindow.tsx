@@ -1,6 +1,5 @@
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
-import { perfProbe } from "./perf/runtime";
-import { CURRENT_BUILD_STAMP } from "./perf/buildStamp";
+import { perfProbe, startPerfProbe } from "./perf/runtime";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
@@ -1617,6 +1616,11 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
+const CURRENT_BUILD_STAMP = "10.25.12.40-codex";
+/** Called for the document webview before mounting, under the existing probe gate. */
+export function startMainWindowPerfProbe(): Promise<void> {
+  return startPerfProbe(CURRENT_BUILD_STAMP);
+}
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;

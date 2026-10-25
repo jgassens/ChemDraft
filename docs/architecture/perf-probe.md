@@ -60,7 +60,7 @@ v1 envelope before writing. No key text, pointer coordinates, file names or docu
 | `commandId` | Shared registry command ID when available. Absent for input with no command. |
 | `window` | Input origin: `main`, `palette`, `palette-popover`, `dialog`, `plugin-panel`, `preferences`, or `spin3d-debugger`. |
 | `platform` | `macos`, `windows`, or `linux`; tests pass the platform explicitly. |
-| `buildStamp` | Shared `CURRENT_BUILD_STAMP` source stamp, build stamp and worktree label. |
+| `buildStamp` | `CURRENT_BUILD_STAMP` from `MainWindow.tsx`, build stamp and worktree label. |
 | `t0` | Input timestamp, aligned to the process's monotonic epoch, in milliseconds. |
 | `firstFrameMs` | First eligible rAF observation, minus `t0`; see `extra.frameSource`. For async commands this can precede the eventual state update or completion. Document-open and window-show samples wait for their explicit boundary; dialog-open uses the destination frame. It is a paint opportunity, not a compositor or display presentation timestamp. |
 | `doneMs` | Completion signal timestamp minus `t0`. It may precede or follow the first frame. |
@@ -110,6 +110,14 @@ open is measured separately. Name that boundary when reporting results; this is 
 from clicking the application's icon.
 
 ## One monotonic clock across webviews
+
+The literal `CURRENT_BUILD_STAMP` stays in `MainWindow.tsx`, where CI reads it. When the gated
+main-window probe starts, its first clock call registers the combined stamp with Rust. Only the
+native-authenticated main window may register it; a different stamp cannot replace it during that
+process. Clock replies share that stamp with secondary webviews without importing `MainWindow`.
+Rust overwrites `buildStamp` on every appended row, including dialog rows, with the registered
+value, and refuses writes before registration. Disabled runs cannot register a stamp or write a log.
+Web preview passes the same main-window literal directly to its browser-buffer writer.
 
 Rust samples an `Instant` and the wall-clock epoch once at startup. Subsequent timestamps use
 `startup_epoch_ms + Instant::elapsed()`; later wall-clock adjustments cannot change durations.

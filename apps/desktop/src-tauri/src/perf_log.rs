@@ -23,6 +23,7 @@ struct Clock {
 }
 pub(crate) struct PerfLog {
     clock: Option<Clock>,
+    build_stamp: Mutex<Option<String>>,
     writer: Mutex<()>,
     error_reported: AtomicBool,
 }
@@ -31,6 +32,7 @@ pub(crate) struct PerfLog {
 pub(crate) struct ClockSample {
     now: f64,
     process_start: f64,
+    build_stamp: Option<String>,
 }
 impl PerfLog {
     /// Call at the beginning of run(), before constructing the Tauri builder. Disabled runs do
@@ -46,6 +48,7 @@ impl PerfLog {
                     * 1000.0,
             }),
             writer: Mutex::new(()),
+            build_stamp: Mutex::new(None),
             error_reported: AtomicBool::new(false),
         }
     }
@@ -54,11 +57,39 @@ impl PerfLog {
         Ok(ClockSample {
             now: clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0,
             process_start: clock.epoch_ms,
+            build_stamp: self
+                .build_stamp
+                .lock()
+                .map_err(|_| "Perf stamp lock poisoned")?
+                .clone(),
         })
     }
+    fn register_stamp(&self, source: &str, stamp: String) -> Result<(), String> {
+        self.sample()?;
+        if source != "main" || stamp.is_empty() || stamp.chars().count() > 256 {
+            return Err("Invalid perf build stamp or source window".into());
+        }
+        let mut stored = self
+            .build_stamp
+            .lock()
+            .map_err(|_| "Perf stamp lock poisoned")?;
+        if stored.as_ref().is_some_and(|previous| previous != &stamp) {
+            return Err("Perf build stamp already registered".into());
+        }
+        *stored = Some(stamp);
+        Ok(())
+    }
     fn append(&self, directory: &Path, line: &str, max_bytes: u64) -> Result<(), String> {
-        self.sample()?; // Gate BEFORE validation, path access, mkdir and opening files.
+        let sample = self.sample()?; // Gate BEFORE validation, path access, mkdir and opening files.
+        let stamp = sample
+            .build_stamp
+            .ok_or("Perf build stamp not registered")?;
         validate_line(line)?;
+        let mut record: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| e.to_string())?;
+        record["buildStamp"] = stamp.into();
+        let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+        validate_line(&line)?;
         let bytes = line.len() as u64 + 1;
         if bytes > max_bytes {
             return Err("Perf record exceeds log size cap".into());
@@ -194,7 +225,14 @@ fn validate_line(line: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn perf_log_clock(state: tauri::State<'_, PerfLog>) -> Result<ClockSample, String> {
+pub(crate) fn perf_log_clock(
+    state: tauri::State<'_, PerfLog>,
+    window: tauri::WebviewWindow,
+    build_stamp: Option<String>,
+) -> Result<ClockSample, String> {
+    if let Some(stamp) = build_stamp {
+        state.register_stamp(window.label(), stamp)?;
+    }
     state.sample()
 }
 
@@ -291,12 +329,39 @@ mod tests {
         serde_json::json!({"v":1,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
     }
     #[test]
+    fn dialog_rows_use_only_the_main_windows_registered_stamp() {
+        let path = dir();
+        let state = PerfLog::new(true);
+        let mut dialog: serde_json::Value = serde_json::from_str(&line()).unwrap();
+        dialog["window"] = "dialog".into();
+        dialog["buildStamp"] = "secondary stamp".into();
+        let dialog = dialog.to_string();
+        assert!(state.append(&path, &dialog, MAX_BYTES).is_err());
+        assert!(!path.exists());
+        assert!(state
+            .register_stamp("dialog-main-export-1", "wrong".into())
+            .is_err());
+        state.register_stamp("main", "main stamp".into()).unwrap();
+        assert!(state.register_stamp("main", "replacement".into()).is_err());
+        state.append(&path, &dialog, MAX_BYTES).unwrap();
+        let row: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(path.join("perf-log.jsonl"))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(row["window"], "dialog");
+        assert_eq!(row["buildStamp"], "main stamp");
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn failed_rename_copies_before_truncating_and_logging_continues() {
         let directory = dir();
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("perf-log.jsonl");
         let backup = directory.join("perf-log.1.jsonl");
         let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
         let line = line();
         state.append(&directory, &line, MAX_BYTES).unwrap();
         fs::write(&backup, "old backup").unwrap();
@@ -326,6 +391,7 @@ mod tests {
         fs::write(&path, "keep this log").unwrap();
         fs::create_dir(&backup).unwrap();
         let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
         assert!(state
             .rotate_with(&path, &backup, |_, _| Err(std::io::Error::from(
                 std::io::ErrorKind::PermissionDenied
@@ -372,6 +438,7 @@ mod tests {
     fn disabled_rejects_without_creating_directory_or_file() {
         let path = dir();
         let state = PerfLog::new(false);
+        assert!(state.register_stamp("main", "test".into()).is_err());
         assert!(state.sample().is_err());
         assert!(state.append(&path, &line(), MAX_BYTES).is_err());
         assert!(!path.exists());
@@ -380,6 +447,7 @@ mod tests {
     fn appends_and_rotates_once_before_crossing_cap() {
         let path = dir();
         let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
         let line = line();
         let cap = (line.len() as u64 + 1) * 2;
         for _ in 0..7 {
@@ -400,6 +468,7 @@ mod tests {
     fn invalid_and_oversized_lines_never_create_files() {
         let path = dir();
         let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
         for bad in [
             "{}".to_string(),
             format!("{}\n{}", line(), line()),
@@ -415,6 +484,7 @@ mod tests {
     #[test]
     fn clock_is_shared_and_monotonic() {
         let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
         let a = state.sample().unwrap();
         let b = state.sample().unwrap();
         assert_eq!(a.process_start, b.process_start);

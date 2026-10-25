@@ -1,6 +1,5 @@
 import { detectShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { perfProbeRequestedFromWindow } from "./gate";
-import { CURRENT_BUILD_STAMP } from "./buildStamp";
 import { createPerfProbe, type DoneSignal, type PerfRecord, type PerfProbe } from "./probe";
 
 declare global { interface Window { readonly __CHEMDRAFT_PERF_ALLOWED__?: boolean; } }
@@ -36,31 +35,38 @@ export function windowRole(search: string): PerfRecord["window"] {
 export function alignEventTime(timeStamp: number, timeOrigin: number, offset: number): number {
   return (timeStamp > 1e12 ? timeStamp - timeOrigin : timeStamp) + offset;
 }
-export interface NativeClock { now: number; processStart: number; }
+export interface NativeClock { now: number; processStart: number; buildStamp?: string | null; }
 export async function calibrateClock(now: () => number, clock: () => Promise<NativeClock>) {
-  let best: { offset: number; error: number; processStart: number } | undefined;
+  let best: { offset: number; error: number; processStart: number; buildStamp?: string } | undefined;
   for (let i = 0; i < 3; i++) {
     const before = now();
     const sample = await clock();
     const after = now();
     const error = (after - before) / 2;
-    if (!best || error < best.error) best = { offset: sample.now - (before + after) / 2, error, processStart: sample.processStart };
+    if (!best || error < best.error) best = { offset: sample.now - (before + after) / 2, error, processStart: sample.processStart,
+      ...(sample.buildStamp == null ? {} : { buildStamp: sample.buildStamp }) };
   }
   return best!;
 }
 
 /** Called before mounting React. Rust injects the marker only under its existing env/argv gate. */
-export async function startPerfProbe(): Promise<void> {
+export async function startPerfProbe(sourceStamp?: string): Promise<void> {
   if (!perfProbeRequestedFromWindow()) return;
   const native = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
   const desktop = Boolean(native.__TAURI_INTERNALS__ || native.__TAURI__);
   let offset = performance.timeOrigin;
   let processStart = offset;
   let clockErrorMs = 0;
+  let buildStamp = sourceStamp === undefined ? "" : `${sourceStamp} · ${__BUILD_STAMP__} · ${__WORKTREE_LABEL__}`;
   let write: (record: PerfRecord) => void;
   if (desktop) {
     const { invoke } = await import("@tauri-apps/api/core");
-    const aligned = await calibrateClock(() => performance.now(), () => invoke<NativeClock>("perf_log_clock"));
+    let registration = buildStamp || undefined;
+    const aligned = await calibrateClock(() => performance.now(), () => {
+      const buildStamp = registration; registration = undefined;
+      return invoke<NativeClock>("perf_log_clock", { buildStamp });
+    });
+    buildStamp = aligned.buildStamp ?? buildStamp;
     offset = aligned.offset; processStart = aligned.processStart; clockErrorMs = aligned.error;
     // Serialize only our writes; never make a command or render await logging.
     let queue = Promise.resolve();
@@ -86,7 +92,7 @@ export async function startPerfProbe(): Promise<void> {
     frame: callback => requestAnimationFrame(callback), cancelFrame: id => cancelAnimationFrame(id),
     defer: callback => queueMicrotask(callback), timeout: callback => setTimeout(callback, 120_000), clearTimeout,
     write, window: windowRole(location.search), platform: probePlatform(),
-    buildStamp: `${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__} · ${__WORKTREE_LABEL__}`, processStart, clockErrorMs }));
+    buildStamp, processStart, clockErrorMs }));
   if (desktop) window.addEventListener("chemdraft:perf-complete", event => {
     const detail = (event as CustomEvent<{ requestKey: string; signal: DoneSignal; at: number; frameAt?: number; window: string }>).detail;
     if (!detail) return;

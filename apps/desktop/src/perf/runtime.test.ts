@@ -4,7 +4,10 @@ import { MemoryStorage } from "../testSupport/memoryStorage";
 import { probeRequested } from "./gate";
 import { alignEventTime, calibrateClock, perfProbe, probePlatform, startPerfProbe, windowRole } from "./runtime";
 import { PerfRecordSchema } from "./probe";
-import { CURRENT_BUILD_STAMP } from "./buildStamp";
+import { readFileSync } from "node:fs";
+
+const source = readFileSync("apps/desktop/src/MainWindow.tsx", "utf8");
+const sourceStamp = source.match(/^const CURRENT_BUILD_STAMP = "([^"]+)";$/m)![1];
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -31,7 +34,7 @@ describe("probe gate and cross-webview clocks", () => {
     const timeout = vi.spyOn(window, "setTimeout");
     const write = vi.spyOn(localStorage, "setItem");
     const observer = vi.fn(); vi.stubGlobal("MutationObserver", observer);
-    await startPerfProbe();
+    await startPerfProbe(sourceStamp);
     expect(listen).not.toHaveBeenCalled(); expect(timeout).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
     expect(observer).not.toHaveBeenCalled(); expect(invoke).not.toHaveBeenCalled();
   });
@@ -42,22 +45,44 @@ describe("probe gate and cross-webview clocks", () => {
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     invoke.mockImplementation(async (command: string) => command === "perf_log_clock" ? { now: 1700000000000, processStart: 1699999999000 } : undefined);
-    await startPerfProbe(); perfProbe!.readyCanvas(); frames.splice(0).forEach(callback => callback(0));
+    await startPerfProbe(sourceStamp); perfProbe!.readyCanvas(); frames.splice(0).forEach(callback => callback(0));
     await vi.waitFor(() => expect(invoke.mock.calls.some(call => call[0] === "perf_log_append")).toBe(true));
     const written = invoke.mock.calls.find(call => call[0] === "perf_log_append")![1] as { line: string };
-    expect(PerfRecordSchema.parse(JSON.parse(written.line))).toMatchObject({ kind: "cold-launch", v: 1, window: "main", buildStamp: `${CURRENT_BUILD_STAMP} · test · test` });
-    expect(invoke.mock.calls.filter(call => call[0] === "perf_log_clock")).toHaveLength(3);
+    expect(PerfRecordSchema.parse(JSON.parse(written.line))).toMatchObject({ kind: "cold-launch", v: 1, window: "main", buildStamp: `${sourceStamp} · test · test` });
+    expect(invoke.mock.calls.filter(call => call[0] === "perf_log_clock").map(call => call[1])).toEqual([
+      { buildStamp: `${sourceStamp} · test · test` }, { buildStamp: undefined }, { buildStamp: undefined }
+    ]);
   });
   it("web uses the existing storage gate and writes JSONL without native invokes", async () => {
     localStorage.setItem("chemdraft.agentBridge", "1");
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    await startPerfProbe(); perfProbe!.readyCanvas(); frames.splice(0).forEach(callback => callback(0));
+    await startPerfProbe(sourceStamp); perfProbe!.readyCanvas(); frames.splice(0).forEach(callback => callback(0));
     const lines = localStorage.getItem("chemdraft.perfLog")!.trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(PerfRecordSchema.parse(JSON.parse(lines[0])).kind).toBe("cold-launch");
     expect(invoke).not.toHaveBeenCalled();
+  });
+  it("dialog rows use the main stamp returned by Rust without registering their own", async () => {
+    history.replaceState({}, "", "/?window=dialog");
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    Object.defineProperty(window, "__CHEMDRAFT_PERF_ALLOWED__", { configurable: true, value: true });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const buildStamp = `${sourceStamp} · test · test`;
+    invoke.mockImplementation(async (command: string) => command === "perf_log_clock"
+      ? { now: 1700000000000, processStart: 1699999999000, buildStamp } : undefined);
+    await startPerfProbe();
+    window.dispatchEvent(new CustomEvent("chemdraft:native-command", { detail: { commandId: "test.dialog" } }));
+    perfProbe!.dispatchReturned(perfProbe!.command("test.dialog"));
+    await Promise.resolve();
+    frames.splice(0).forEach(callback => callback(0));
+    await vi.waitFor(() => expect(invoke.mock.calls.some(call => call[0] === "perf_log_append")).toBe(true));
+    const written = invoke.mock.calls.find(call => call[0] === "perf_log_append")![1] as { line: string };
+    expect(PerfRecordSchema.parse(JSON.parse(written.line))).toMatchObject({ window: "dialog", buildStamp });
+    expect(invoke.mock.calls.filter(call => call[0] === "perf_log_clock").every(call => call[1].buildStamp === undefined)).toBe(true);
   });
   it("exercises Mac and Windows platform values from one host", () => {
     expect(probePlatform("macos")).toBe("macos"); expect(probePlatform("windows")).toBe("windows");
