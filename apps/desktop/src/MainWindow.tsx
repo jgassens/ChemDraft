@@ -199,7 +199,7 @@ import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenComma
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
-import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
+import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
   atomLabelHaloWidthPx,
@@ -1851,6 +1851,7 @@ export interface MainWindowProps {
   initialCrosshairsVisible?: boolean;
   initialDocument?: ChemDraftDocument;
   initialActiveToolCommandId?: string;
+  shortcutPlatform?: ShortcutPlatform;
   /**
    * Floating native palette windows instead of in-window palettes. Defaults to on only in the desktop
    * runtime (`shouldDefaultToNativePalettes`), and nothing in the app turns it on elsewhere. Forcing it
@@ -1880,6 +1881,7 @@ export function MainWindow({
   initialCrosshairsVisible = true,
   initialDocument,
   initialActiveToolCommandId,
+  shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   useInAppModalUtilitySuspension();
@@ -2953,8 +2955,8 @@ export function MainWindow({
     [keybindingScheme, layerActions, quickActions, toolCommandSpecs]
   );
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(shortcutCommands),
-    [shortcutCommands]
+    () => createDesktopShortcutRegistry(shortcutCommands, shortcutPlatform),
+    [shortcutCommands, shortcutPlatform]
   );
   // The hover leaving the labelled atom (and its own bonds) does not end a hover-label continuation:
   // a pointer drifting mid-word is common on small atoms, so the next key decides
@@ -19752,6 +19754,14 @@ export function MainWindow({
           tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
+          onPointerDownCapture={() => {
+            // Page tools can prevent the browser's default focus move. Hand keyboard and
+            // native Edit-menu routing back from the overlay before those handlers run.
+            // Its document pointer listener has already cancelled action-focus recovery.
+            if (globalThis.document.activeElement?.closest(".plugin-canvas-overlay")) {
+              canvasRegionRef.current?.focus({ preventScroll: true });
+            }
+          }}
           onDragOver={(event) => {
             if (event.dataTransfer.types.includes("Files")) event.preventDefault();
           }}
@@ -20133,6 +20143,7 @@ export function MainWindow({
             const panel = manifest?.contributes.panels[0];
             const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
             return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+              shortcutPlatform={shortcutPlatform}
               viewportRef={canvasRegionRef}
               overlayLayerRef={canvasOverlayLayerRef}
               statusRowRef={statusRowRef}

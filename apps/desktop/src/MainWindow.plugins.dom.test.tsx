@@ -217,6 +217,25 @@ async function typeAtFocus(text: string): Promise<void> {
   });
 }
 
+/** Dispatch through the actual DOM path without supplying the focus handoff under test.
+ * In particular, do not call canvas.focus(): page tools can cancel browser focus defaults. */
+async function canvasPointer(target: Element, type: "pointerdown" | "pointerup"): Promise<void> {
+  await act(async () => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500 });
+    Object.defineProperty(event, "pointerId", { value: 1 });
+    target.dispatchEvent(event);
+  });
+}
+
+async function undoAtFocus(platform: "macos" | "windows"): Promise<void> {
+  await act(async () => {
+    const options = { key: "z", code: "KeyZ", bubbles: true, cancelable: true,
+      metaKey: platform === "macos", ctrlKey: platform === "windows" };
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", options));
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keyup", options));
+  });
+}
+
 describe("MainWindow canvas overlays", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("ResizeObserver", TestResizeObserver); vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -250,6 +269,71 @@ describe("MainWindow canvas overlays", () => {
     expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: "message",
       control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("");
+  });
+
+  describe.each(["macos", "windows"] as const)("canvas focus handoff on %s", platform => {
+    it.each([
+      { method: "shortcut", draft: "" }, { method: "menu", draft: "" },
+      { method: "shortcut", draft: "Next draft" }, { method: "menu", draft: "Next draft" }
+    ])("routes $method Undo to the document after a page press (draft: '$draft')", async ({ method, draft }) => {
+      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
+        nativePalette={false} shortcutPlatform={platform} />));
+      const port = getAssistantHistoryPort();
+      const before = port.read("initial")!;
+      submit.mockImplementationOnce(async () => {
+        port.push("initial", before, applyPatch(before, { op: "addObject", pageId: before.pages[0]!.id,
+          object: { id: "assistant_caption", type: "text", x: 50, y: 50, width: 100, height: 20,
+            rotation: 0, style: {}, text: "Assistant result", spans: [] } }), "Assistant result");
+      });
+      await typeAtFocus("Draw");
+      await send();
+      const after = port.read("initial")!;
+      expect(after.pages[0]!.objects.some(object => object.id === "assistant_caption")).toBe(true);
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea.value).toBe("");
+      // An empty composer still owns text undo until the user deliberately leaves it.
+      await undoAtFocus(platform);
+      expect(port.read("initial")).toBe(after);
+      await typeAtFocus(draft);
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      expect(document.activeElement).toBe(canvas);
+      await canvasPointer(canvas, "pointerup");
+      expect(widget.hidden).toBe(false);
+      expect(widget.dataset.expanded).toBe("true");
+      expect(document.activeElement).toBe(canvas);
+      if (method === "shortcut") await undoAtFocus(platform);
+      else await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })));
+      expect(port.read("initial")!.pages).toEqual(before.pages);
+      expect(textarea.value).toBe(draft);
+      expect(document.activeElement).toBe(canvas);
+    });
+
+    it("does not restore an activated action's focus after a canvas press", async () => {
+      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
+        nativePalette={false} shortcutPlatform={platform} />));
+      const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
+      await act(async () => api.setContent({ overlayId, sections: [
+        { kind: "actions", id: "actions", buttons: [{ id: "action", label: "New conversation", commandId: selectId }] }
+      ] }));
+      let finish!: () => void;
+      select.mockImplementationOnce(async context => {
+        await new Promise<void>(resolve => { finish = resolve; });
+        await context.overlays!.setContent({ overlayId, sections: [] });
+      });
+      const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+      await act(async () => { button.focus(); button.click(); });
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      try {
+        await canvasPointer(canvas, "pointerdown");
+        expect(document.activeElement).toBe(canvas);
+      } finally { await act(async () => finish()); }
+      await canvasPointer(canvas, "pointerup");
+      expect(button.isConnected).toBe(false);
+      expect(document.activeElement).toBe(canvas);
+    });
   });
 
   it("stacks the canvas overlay above the build stamp but below floating panels", () => {
