@@ -21,6 +21,8 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+// Keep the ruler's DOM hit surface; jsdom does not implement its canvas painting context.
+vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined,
   assistantContext: undefined as import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions["assistantContext"] }));
 const panelActions = vi.hoisted(() => ({ handler: undefined as Parameters<typeof import("./plugins/panelBridge").listenForPluginPanelActions>[0] | undefined }));
@@ -219,10 +221,12 @@ async function typeAtFocus(text: string): Promise<void> {
 
 /** Dispatch through the actual DOM path without supplying the focus handoff under test.
  * In particular, do not call canvas.focus(): page tools can cancel browser focus defaults. */
-async function canvasPointer(target: Element, type: "pointerdown" | "pointerup"): Promise<void> {
+async function canvasPointer(target: Element, type: "pointerdown" | "pointerup",
+  options: MouseEventInit & { pointerType?: string; isPrimary?: boolean } = {}): Promise<void> {
   await act(async () => {
-    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500 });
-    Object.defineProperty(event, "pointerId", { value: 1 });
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500, ...options });
+    Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: options.pointerType ?? "mouse" },
+      isPrimary: { value: options.isPrimary ?? true } });
     target.dispatchEvent(event);
   });
 }
@@ -245,6 +249,13 @@ describe("MainWindow canvas overlays", () => {
     submit.mockReset().mockResolvedValue(undefined); select.mockReset().mockResolvedValue(undefined);
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    // jsdom has no layout. Model a bordered, offset viewport with native scrollbar gutters.
+    const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ x: 100, y: 100, left: 100, top: 100,
+      width: 820, height: 620, right: 920, bottom: 720, toJSON: () => ({}) });
+    for (const [key, value] of Object.entries({ clientLeft: 2, clientTop: 2, clientWidth: 800, clientHeight: 600 })) {
+      vi.spyOn(canvas, key as "clientLeft" | "clientTop" | "clientWidth" | "clientHeight", "get").mockReturnValue(value);
+    }
     await act(async () => {
       captured.runtime!.registerPlugin({ id: pluginId, name: "Overlay test", version: "0.1.0", apiVersion: "^0.1.10",
         entry: "test.js", permissions: ["ui.canvas"], contributes: {
@@ -272,12 +283,79 @@ describe("MainWindow canvas overlays", () => {
   });
 
   describe.each(["macos", "windows"] as const)("canvas focus handoff on %s", platform => {
+    beforeEach(async () => {
+      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
+        nativePalette={false} shortcutPlatform={platform} />));
+    });
+
+    it("keeps the prompt focused for a press inside the overlay", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
+      await canvasPointer(textarea, "pointerdown");
+      await canvasPointer(textarea, "pointerup");
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it.each([
+      { name: "right button", button: 2 }, { name: "middle button", button: 1 },
+      { name: "pen barrel button", button: 2, pointerType: "pen" },
+      { name: "secondary pen", button: 0, pointerType: "pen", isPrimary: false },
+      { name: "secondary touch", button: 0, pointerType: "touch", isPrimary: false }
+    ])("keeps the prompt focused for a $name press", async options => {
+      const textarea = document.activeElement;
+      await canvasPointer(container.querySelector(".page")!, "pointerdown", options);
+      await canvasPointer(container.querySelector(".canvas-region")!, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it.each([
+      { name: "vertical scrollbar", clientX: 902, clientY: 500 },
+      { name: "horizontal scrollbar", clientX: 500, clientY: 702 },
+      { name: "scrollbar corner", clientX: 910, clientY: 710 },
+      { name: "left border", clientX: 101, clientY: 500 },
+      { name: "top border", clientX: 500, clientY: 101 }
+    ])("keeps the prompt focused for a press on the $name", async options => {
+      const textarea = document.activeElement;
+      const canvas = container.querySelector(".canvas-region")!;
+      await canvasPointer(canvas, "pointerdown", options);
+      await canvasPointer(canvas, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it.each([
+      { selector: ".ruler-top canvas", clientX: 500, clientY: 110 },
+      { selector: ".ruler-left canvas", clientX: 110, clientY: 500 },
+      { selector: ".ruler-corner", clientX: 110, clientY: 110 },
+      // Rulers are pointer-transparent in the browser: the underlying canvas can be the target.
+      { selector: ".canvas-region", clientX: 500, clientY: 110 },
+      { selector: ".canvas-region", clientX: 110, clientY: 500 }
+    ])("keeps the prompt focused under ruler $selector at ($clientX, $clientY)", async ({ selector, ...options }) => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "view.toggleRulers" } })));
+      const textarea = document.activeElement;
+      const target = container.querySelector(selector)!;
+      expect(target).not.toBeNull();
+      await canvasPointer(target, "pointerdown", options);
+      await canvasPointer(target, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it("keeps an active canvas text editor focused after a canvas press", async () => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "tool.text" } })));
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      await canvasPointer(container.querySelector(".page")!, "pointerup");
+      const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+      expect(editor).not.toBeNull();
+      expect(document.activeElement).toBe(editor);
+      const canvas = container.querySelector(".canvas-region")!;
+      await canvasPointer(canvas, "pointerdown");
+      await canvasPointer(canvas, "pointerup");
+      expect(document.activeElement).toBe(editor);
+    });
+
     it.each([
       { method: "shortcut", draft: "" }, { method: "menu", draft: "" },
       { method: "shortcut", draft: "Next draft" }, { method: "menu", draft: "Next draft" }
     ])("routes $method Undo to the document after a page press (draft: '$draft')", async ({ method, draft }) => {
-      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
-        nativePalette={false} shortcutPlatform={platform} />));
       const port = getAssistantHistoryPort();
       const before = port.read("initial")!;
       submit.mockImplementationOnce(async () => {
@@ -312,8 +390,6 @@ describe("MainWindow canvas overlays", () => {
     });
 
     it("does not restore an activated action's focus after a canvas press", async () => {
-      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
-        nativePalette={false} shortcutPlatform={platform} />));
       const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
       await act(async () => api.setContent({ overlayId, sections: [
         { kind: "actions", id: "actions", buttons: [{ id: "action", label: "New conversation", commandId: selectId }] }

@@ -19754,12 +19754,23 @@ export function MainWindow({
           tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
-          onPointerDownCapture={() => {
+          onPointerDownCapture={(event) => {
+            if (event.button !== 0 || event.isPrimary === false) return;
+            const canvas = event.currentTarget;
+            const target = event.target instanceof Element ? event.target : undefined;
+            if (target?.closest(".plugin-canvas-overlay, .document-rulers-overlay")) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left - canvas.clientLeft;
+            const y = event.clientY - rect.top - canvas.clientTop;
+            // Client dimensions exclude native scrollbars (including a left-side scrollbar).
+            // Rulers are pointer-transparent, so their occupied strips also need a point check.
+            const inset = rulersVisible ? RULER_THICKNESS : 0;
+            if (x < inset || y < inset || x >= canvas.clientWidth || y >= canvas.clientHeight) return;
             // Page tools can prevent the browser's default focus move. Hand keyboard and
             // native Edit-menu routing back from the overlay before those handlers run.
             // Its document pointer listener has already cancelled action-focus recovery.
             if (globalThis.document.activeElement?.closest(".plugin-canvas-overlay")) {
-              canvasRegionRef.current?.focus({ preventScroll: true });
+              canvas.focus({ preventScroll: true });
             }
           }}
           onDragOver={(event) => {
