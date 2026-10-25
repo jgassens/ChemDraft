@@ -373,14 +373,12 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     throw new Error("V2000 molfile is missing its atom/bond counts line.");
   }
 
-  const countsLine = lines[countsLineIndex] ?? "";
-  const counts = countsLine.match(/^\s*(\d+)\s+(\d+)/);
+  const counts = parseV2000Counts(lines[countsLineIndex] ?? "");
   if (!counts) {
     throw new Error("V2000 molfile is missing its atom/bond counts line.");
   }
 
-  const atomCount = Number(counts[1]);
-  const bondCount = Number(counts[2]);
+  const { atomCount, bondCount } = counts;
   const atomStartIndex = countsLineIndex + 1;
   const atomLines = lines.slice(atomStartIndex, atomStartIndex + atomCount);
   const bondLines = lines.slice(atomStartIndex + atomCount, atomStartIndex + atomCount + bondCount);
@@ -714,6 +712,19 @@ function findV2000CountsLineIndex(lines: readonly string[]): number {
   return lines.findIndex((line) =>
     /^\s*\d+\s+\d+/.test(line) && (/\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6)
   );
+}
+
+function parseV2000Counts(line: string): { atomCount: number; bondCount: number } | undefined {
+  // atoms[0,3) bonds[3,6). Once both counts reach three digits the columns touch, so
+  // "110126  0 …" is 110 atoms and 126 bonds; splitting on whitespace would read 110126 atoms.
+  const atomColumn = line.slice(0, 3);
+  const bondColumn = line.slice(3, 6);
+  if (/^\s*\d+$/.test(atomColumn) && /^\s*\d+$/.test(bondColumn)) {
+    return { atomCount: Number(atomColumn), bondCount: Number(bondColumn) };
+  }
+  // Hand-typed or loosely pasted molfiles do not always keep the columns.
+  const fields = line.match(/^\s*(\d+)\s+(\d+)/);
+  return fields ? { atomCount: Number(fields[1]), bondCount: Number(fields[2]) } : undefined;
 }
 
 function decodeMacLengthPrefixedMolfile(text: string): string | undefined {

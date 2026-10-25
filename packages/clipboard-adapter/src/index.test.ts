@@ -185,6 +185,49 @@ describe("clipboard-adapter", () => {
     expect(graph.atoms[2]).toMatchObject({ element: "N", formalCharge: 1 });
   });
 
+  it("reads touching three-digit V2000 atom and bond counts by column", () => {
+    // A 101-carbon chain: counts "101100" are 101 atoms and 100 bonds, not 101100 atoms.
+    const column = (value: number) => String(value).padStart(3);
+    const atoms = Array.from({ length: 101 }, (_, index) =>
+      `${(index * 1.5).toFixed(4).padStart(10)}    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0`
+    );
+    const bonds = Array.from({ length: 100 }, (_, index) => `${column(index + 1)}${column(index + 2)}  1  0`);
+    const molfile = [
+      "",
+      "  ChemDraft",
+      "",
+      "101100  0  0  0  0  0  0  0  0999 V2000",
+      ...atoms,
+      ...bonds,
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(molfile);
+
+    expect(graph.atoms).toHaveLength(101);
+    expect(graph.bonds).toHaveLength(100);
+    expect(graph.atoms[100]).toMatchObject({ element: "C", x: 150 });
+    expect(graph.bonds[99]).toMatchObject({ fromAtomId: "atom_100", toAtomId: "atom_101", order: "single" });
+  });
+
+  it("still reads loosely spaced V2000 counts", () => {
+    const molfile = [
+      "",
+      "  pasted",
+      "",
+      "2 1 0 0 0 0 0 0 0 0 999 V2000",
+      "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0",
+      "    1.5000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0",
+      "  1  2  1  0",
+      "M  END"
+    ].join("\n");
+
+    const graph = parseMolfileGraph(molfile);
+
+    expect(graph.atoms.map((atom) => atom.element)).toEqual(["C", "O"]);
+    expect(graph.bonds).toHaveLength(1);
+  });
+
   it("preserves V2000 wedge/hash bond stereo as bondStyle", () => {
     const wedgeHashV2000 = [
       "ChemDraft stereo",
