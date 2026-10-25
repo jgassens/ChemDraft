@@ -1295,6 +1295,7 @@ pub fn run() {
             set_keybinding_scheme,
             plugin_storage_read,
             plugin_storage_write,
+            plugin_storage_delete,
             open_plugin_panel_window,
             plugin_panel_action_forward,
             plugin_panel_event_forward,
@@ -2663,7 +2664,7 @@ fn is_valid_plugin_storage_id(plugin_id: &str) -> bool {
 
 #[cfg(test)]
 mod plugin_storage_id_tests {
-    use super::is_valid_plugin_storage_id;
+    use super::{delete_plugin_storage, is_valid_plugin_storage_id};
 
     #[test]
     fn accepts_reverse_domain_plugin_ids() {
@@ -2679,6 +2680,41 @@ mod plugin_storage_id_tests {
         assert!(!is_valid_plugin_storage_id("a/b"));
         assert!(!is_valid_plugin_storage_id("a\\b"));
         assert!(!is_valid_plugin_storage_id("a b"));
+    }
+
+    #[test]
+    fn plugin_storage_delete_removes_only_storage_and_accepts_missing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "chemdraft-plugin-storage-delete-{}",
+            std::process::id()
+        ));
+        let plugin_id = "org.chemdraft.fixture";
+        let directory = root.join("plugins").join(plugin_id);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("storage.json");
+        std::fs::write(&path, r#"{"setupDone":true}"#).unwrap();
+        delete_plugin_storage(&root, plugin_id).unwrap();
+        assert!(!path.exists());
+        assert!(!directory.exists());
+        delete_plugin_storage(&root, plugin_id).unwrap();
+
+        // Never recursively remove other plugin data while cleaning up an empty directory.
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        let other = directory.join("other.json");
+        std::fs::write(&other, "keep").unwrap();
+        delete_plugin_storage(&root, plugin_id).unwrap();
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep");
+        delete_plugin_storage(&root, plugin_id).unwrap();
+
+        for invalid in ["", "..", ".hidden", "a/b", "a\\b"] {
+            assert!(delete_plugin_storage(&root, invalid)
+                .unwrap_err()
+                .contains("Invalid plugin id"));
+        }
+        assert!(other.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -2723,6 +2759,52 @@ fn plugin_storage_write(
     }
     let path = plugin_storage_path(&app, &plugin_id)?;
     write_file_atomic(&path, &contents)
+}
+
+fn delete_plugin_storage(app_data_dir: &Path, plugin_id: &str) -> Result<(), String> {
+    if !is_valid_plugin_storage_id(plugin_id) {
+        return Err(format!("Invalid plugin id \"{plugin_id}\"."));
+    }
+    let directory = app_data_dir.join("plugins").join(plugin_id);
+    let path = directory.join("storage.json");
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not delete plugin storage at {}: {error}",
+                path.display()
+            ));
+        }
+    }
+    match std::fs::remove_dir(&directory) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "Could not remove empty plugin storage directory {}: {error}",
+            directory.display()
+        )),
+    }
+}
+
+#[tauri::command]
+fn plugin_storage_delete(app: tauri::AppHandle, plugin_id: String) -> Result<(), String> {
+    // Validate before even resolving the application data directory, like read and write.
+    if !is_valid_plugin_storage_id(&plugin_id) {
+        return Err(format!("Invalid plugin id \"{plugin_id}\"."));
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    delete_plugin_storage(&app_data_dir, &plugin_id)
 }
 
 #[derive(Clone, serde::Deserialize)]

@@ -121,6 +121,16 @@ const runWidget: PluginCommandHandler = async (context) => {
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
+## Plugin storage
+
+Declare `plugin.storage` to use `context.storage`, a per-plugin key/value store. Desktop builds
+persist it in `app_data_dir/plugins/<pluginId>/storage.json`; the web build keeps it in memory.
+Explicit **Uninstall clears the plugin's stored settings**, including cached values in the current
+session. **Updates keep storage**, as does handing an installed plugin's id back to its bundled copy.
+Uninstall stops the plugin and removes its catalog entry before clearing storage, so pending saves
+cannot recreate it. If deletion fails, uninstall still completes and reports that the stored settings
+could not be deleted; those settings may remain on disk.
+
 ## One-line text prompts
 
 A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command

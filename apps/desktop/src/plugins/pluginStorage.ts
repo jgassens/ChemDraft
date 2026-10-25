@@ -3,6 +3,30 @@ import { isDesktopRuntime } from "../window-manager";
 
 const WRITE_DEBOUNCE_MS = 250;
 
+interface StorageCache {
+  prepareDelete: () => Promise<void>;
+  finishDelete: () => void;
+}
+
+// The host retains storage objects across unregister/register. Reset those objects in place so
+// reinstalling in this session cannot reuse their loaded values (including the web-only backend).
+const cachesByPluginId = new Map<string, Set<StorageCache>>();
+
+/** Host-only cleanup, called after teardown on explicit uninstall, never on update or id handover. */
+export async function deletePersistentPluginStorage(pluginId: string): Promise<void> {
+  const caches = [...(cachesByPluginId.get(pluginId) ?? [])];
+  try {
+    await Promise.all(caches.map((cache) => cache.prepareDelete()));
+    if (isDesktopRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("plugin_storage_delete", { pluginId });
+    }
+  } finally {
+    // Also invalidate after a disk failure: a subsequent install must read what is actually on disk.
+    caches.forEach((cache) => cache.finishDelete());
+  }
+}
+
 /** Where a storage failure is reported. Defaults to the console; tests pass their own sink. */
 export type PluginStorageDiagnostic = (message: string) => void;
 
@@ -24,6 +48,8 @@ export function createPersistentPluginStorage(
   const values = new Map<string, unknown>();
   let loaded: Promise<void> | undefined;
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingWrite = Promise.resolve();
+  let deleting = false;
   // Set when the existing contents could not be read, so persisting would clobber them.
   let persistDisabled = false;
 
@@ -76,7 +102,7 @@ export function createPersistentPluginStorage(
   };
 
   const scheduleWrite = (): void => {
-    if (!isDesktopRuntime() || persistDisabled) {
+    if (!isDesktopRuntime() || persistDisabled || deleting) {
       return;
     }
     if (writeTimer !== undefined) {
@@ -84,7 +110,7 @@ export function createPersistentPluginStorage(
     }
     writeTimer = setTimeout(() => {
       writeTimer = undefined;
-      void (async () => {
+      pendingWrite = pendingWrite.then(async () => {
         try {
           // The whole body is guarded, not just the invoke. The dynamic import can fail, and
           // JSON.stringify throws on a cyclic value or a BigInt that a plugin stored quite
@@ -98,9 +124,34 @@ export function createPersistentPluginStorage(
           // rejection there — but it must not vanish either. Values stay readable in memory.
           report("could not be saved", error);
         }
-      })();
+      });
     }, WRITE_DEBOUNCE_MS);
   };
+
+  const cache: StorageCache = {
+    async prepareDelete() {
+      deleting = true;
+      if (writeTimer !== undefined) {
+        clearTimeout(writeTimer);
+        writeTimer = undefined;
+      }
+      // A write already invoking Rust must finish before deletion, or it could recreate the file.
+      await loaded;
+      await pendingWrite;
+    },
+    finishDelete() {
+      values.clear();
+      loaded = undefined;
+      persistDisabled = false;
+      deleting = false;
+    }
+  };
+  let caches = cachesByPluginId.get(pluginId);
+  if (!caches) {
+    caches = new Set();
+    cachesByPluginId.set(pluginId, caches);
+  }
+  caches.add(cache);
 
   return {
     async get(key) {

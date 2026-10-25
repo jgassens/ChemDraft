@@ -19,7 +19,10 @@ import {
   type PluginManifest,
   type PluginWorkerHandle
 } from "@chemdraft/plugin-api";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const storageInvoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: storageInvoke }));
 
 import { createZipFixture, sidecarFor, tamperByte } from "../testSupport/zipFixture";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
@@ -41,6 +44,7 @@ import {
 } from "./installPluginPackage";
 import { PluginPackageError, PluginPackageErrorCodes } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
+import { createPersistentPluginStorage, deletePersistentPluginStorage } from "./pluginStorage";
 
 const PLUGIN_ID = "org.chemdraft.test.installable";
 const COMMAND_ID = "plugin.installable.run";
@@ -222,8 +226,9 @@ function createFakeWorker(options: FakeWorkerOptions = {}): { handle: PluginWork
   return { handle, terminated: () => terminated };
 }
 
-function createRuntime(): DesktopPluginRuntime {
+function createRuntime(createStorage?: typeof createPersistentPluginStorage): DesktopPluginRuntime {
   return createPluginRuntime({
+    createStorage,
     getActiveDocument: () => undefined,
     getSelection: () => ({ objectIds: [], molecules: [] })
   });
@@ -1148,6 +1153,113 @@ describe("uninstallPlugin", () => {
 
     expect(fs.pathsUnder(`${updated.record.stagedPath}/`)).toEqual([]);
     expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+  });
+});
+
+describe("plugin storage lifecycle", () => {
+  const files = new Map<string, string>();
+
+  beforeEach(() => {
+    files.clear();
+    storageInvoke.mockReset();
+    storageInvoke.mockImplementation(async (command: string, args: { pluginId: string; contents?: string }) => {
+      if (command === "plugin_storage_read") return files.get(args.pluginId) ?? null;
+      if (command === "plugin_storage_write") files.set(args.pluginId, args.contents!);
+      if (command === "plugin_storage_delete") files.delete(args.pluginId);
+    });
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+  });
+
+  afterEach(async () => {
+    storageInvoke.mockResolvedValue(undefined);
+    await deletePersistentPluginStorage(PLUGIN_ID);
+    vi.unstubAllGlobals();
+  });
+
+  async function installWithStorage() {
+    const runtime = createRuntime(createPersistentPluginStorage);
+    const zip = await createPackage({
+      manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "plugin.storage"] })
+    });
+    return { ...(await installFixture({ runtime, zip })), zip };
+  }
+
+  it("uninstalls then reinstalls in the same host with empty storage on disk and in its retained cache", async () => {
+    const { fs, runtime, result, zip } = await installWithStorage();
+    files.set(PLUGIN_ID, '{"setupDone":true}');
+    const storage = runtime.host.getStorage(PLUGIN_ID);
+    expect(await storage.get("setupDone")).toBe(true);
+    // Leave a debounced write pending: it must not recreate storage after uninstall.
+    await storage.set("pending", "old settings");
+    await uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor });
+    expect(files.has(PLUGIN_ID)).toBe(false);
+    expect(storageInvoke).toHaveBeenCalledWith("plugin_storage_delete", { pluginId: PLUGIN_ID });
+
+    await installFixture({ fs, runtime, zip });
+    expect(runtime.host.getStorage(PLUGIN_ID)).toBe(storage);
+    expect(await storage.listKeys()).toEqual([]);
+    expect(await storage.get("setupDone")).toBeUndefined();
+    await storage.set("newSetup", true);
+    await vi.waitFor(() => expect(files.get(PLUGIN_ID)).toBe('{"newSetup":true}'));
+  });
+
+  it("keeps stored and cached settings through an update", async () => {
+    const { fs, runtime, result } = await installWithStorage();
+    files.set(PLUGIN_ID, '{"setupDone":true}');
+    const storage = runtime.host.getStorage(PLUGIN_ID);
+    expect(await storage.get("setupDone")).toBe(true);
+    await storage.set("provider", "chosen");
+    const inspection = await updateInspection("2.1.0", { permissions: ["ui.menu", "ui.panel", "plugin.storage"] });
+    await updateInstalledPluginPackage({
+      runtime, fs, current: installedCatalogEntry(result), inspection, disabled: false,
+      origin: ORIGIN, createWorker: () => createFakeWorker().handle
+    });
+    expect(await runtime.host.getStorage(PLUGIN_ID).get("provider")).toBe("chosen");
+    await vi.waitFor(() => expect(JSON.parse(files.get(PLUGIN_ID)!)).toEqual({ setupDone: true, provider: "chosen" }));
+    expect(storageInvoke.mock.calls.some(([command]) => command === "plugin_storage_delete")).toBe(false);
+  });
+
+  it.each([false, true])("keeps storage when returning the id to a bundled plugin (disabled: %s)", async (disabled) => {
+    const runtime = createRuntime(createPersistentPluginStorage);
+    const bundled = bundledCopy();
+    bundled.manifest.permissions.push("plugin.storage");
+    runtime.registerPlugin(bundled.manifest, bundled.options);
+    files.set(PLUGIN_ID, '{"setupDone":true}');
+    const storage = runtime.host.getStorage(PLUGIN_ID);
+    expect(await storage.get("setupDone")).toBe(true);
+    const zip = await createPackage({ manifest: manifestDocument({ permissions: ["ui.menu", "ui.panel", "plugin.storage"] }) });
+    const { fs, result } = await installFixture({ runtime, zip, replaces: bundled });
+    expect(await runtime.host.getStorage(PLUGIN_ID).get("setupDone")).toBe(true);
+    await storage.set("provider", "chosen");
+    await uninstallPlugin({
+      runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor,
+      restores: bundled as never, disabledIds: new Set(disabled ? [PLUGIN_ID] : [])
+    });
+    if (disabled) runtime.registerPlugin(bundled.manifest, bundled.options);
+    expect(runtime.host.getStorage(PLUGIN_ID)).toBe(storage);
+    expect(await storage.get("provider")).toBe("chosen");
+    await vi.waitFor(() => expect(JSON.parse(files.get(PLUGIN_ID)!)).toEqual({ setupDone: true, provider: "chosen" }));
+    expect(storageInvoke.mock.calls.some(([command]) => command === "plugin_storage_delete")).toBe(false);
+  });
+
+  it("reports a storage deletion failure after completing runtime, package, catalog, and consent cleanup", async () => {
+    const { fs, runtime, result, worker } = await installWithStorage();
+    const clearConsent = vi.spyOn(runtime.externalTools, "consentClearPlugin");
+    const originalInvoke = storageInvoke.getMockImplementation()!;
+    storageInvoke.mockImplementation((command, args) => {
+      if (command !== "plugin_storage_delete") return originalInvoke(command, args);
+      expect(worker.terminated()).toBe(true);
+      expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+      throw new Error("storage.json: permission denied");
+    });
+    await expect(uninstallPlugin({ runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor }))
+      .rejects.toMatchObject({
+        code: PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+        message: expect.stringContaining("was uninstalled, but its stored settings could not be deleted: storage.json: permission denied")
+      });
+    expect(clearConsent).toHaveBeenCalledWith(PLUGIN_ID);
+    expect(await loadInstalledPluginRecords(fs)).toEqual([]);
+    expect(fs.pathsUnder(`${result.record.stagedPath}/`)).toEqual([]);
   });
 });
 

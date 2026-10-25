@@ -32,6 +32,7 @@
     "allow-take-pending-crash-report",
     "allow-plugin-storage-read",
     "allow-plugin-storage-write",
+    "allow-plugin-storage-delete",
     "allow-open-plugin-panel-window",
     "allow-open-toolset-popover",
     "allow-prewarm-toolset-popover",

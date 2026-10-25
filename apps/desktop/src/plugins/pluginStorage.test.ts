@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args)
 }));
 
-import { createPersistentPluginStorage } from "./pluginStorage";
+import { createPersistentPluginStorage, deletePersistentPluginStorage } from "./pluginStorage";
 
 const tauriGlobal = globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown };
 
@@ -180,6 +180,50 @@ describe("createPersistentPluginStorage", () => {
     expect(diagnostics.join(" ")).toContain("could not be parsed");
     // Writing stays enabled: overwriting an unparseable file is the repair, unlike an unreadable one.
     expect(writeCalls()).toHaveLength(1);
+  });
+
+  it("clears all retained web storage instances for the id, leaving other plugins alone", async () => {
+    delete tauriGlobal.__TAURI_INTERNALS__;
+    const first = createPersistentPluginStorage("org.test.web");
+    const second = createPersistentPluginStorage("org.test.web");
+    const other = createPersistentPluginStorage("org.test.other");
+    await first.set("setupDone", true);
+    await second.set("provider", "old");
+    await other.set("keep", true);
+
+    await deletePersistentPluginStorage("org.test.web");
+
+    expect(await first.listKeys()).toEqual([]);
+    expect(await second.listKeys()).toEqual([]);
+    expect(await createPersistentPluginStorage("org.test.web").listKeys()).toEqual([]);
+    expect(await other.get("keep")).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("waits for an in-flight save before deleting, so it cannot recreate uninstalled settings", async () => {
+    let contents: string | null = '{"setupDone":true}';
+    let finishWrite: (() => void) | undefined;
+    invoke.mockImplementation((command: string, args: { contents: string }) => {
+      if (command === "plugin_storage_read") return Promise.resolve(contents);
+      if (command === "plugin_storage_write") {
+        return new Promise<void>((resolve) => {
+          finishWrite = () => { contents = args.contents; resolve(); };
+        });
+      }
+      contents = null;
+      return Promise.resolve();
+    });
+    const storage = createPersistentPluginStorage("org.test.inflight");
+    await storage.set("pending", true);
+    await waitUntil(() => finishWrite !== undefined);
+    const deletion = deletePersistentPluginStorage("org.test.inflight");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(invoke.mock.calls.some(([command]) => command === "plugin_storage_delete")).toBe(false);
+    finishWrite!();
+    await deletion;
+
+    expect(contents).toBeNull();
+    expect(await storage.listKeys()).toEqual([]);
   });
 
   it("keeps working when the tauri module itself fails to load", async () => {

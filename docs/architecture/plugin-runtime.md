@@ -27,6 +27,10 @@ changes. Core and plugin commands share one stable `CommandRegistry`; core
 bindings are synchronized in place as state changes. React re-renders on
 host/panel changes via subscriptions.
 
+Plugin storage survives updates and bundled/installed id handovers; explicit Uninstall clears the
+stored file and session cache after teardown and catalog removal, reporting deletion failures after
+completing uninstall (including its UI entry and disabled preference).
+
 ## Capability APIs (permission-gated, optional)
 
 The command context exposes capabilities as optional properties, present only

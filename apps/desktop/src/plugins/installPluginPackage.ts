@@ -67,6 +67,7 @@ import {
 } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
 import { comparePluginVersions } from "./pluginVersion";
+import { deletePersistentPluginStorage } from "./pluginStorage";
 
 /** Stable codes for the install-level failures (the archive's own codes live in the archive module). */
 export const PluginInstallErrorCodes = {
@@ -80,6 +81,7 @@ export const PluginInstallErrorCodes = {
   UpdateVersionNotNewer: "PLUGIN_UPDATE_VERSION_NOT_NEWER",
   UpdateStateChanged: "PLUGIN_UPDATE_STATE_CHANGED",
   UpdateFailed: "PLUGIN_UPDATE_FAILED",
+  UninstallStorageDeleteFailed: "PLUGIN_UNINSTALL_STORAGE_DELETE_FAILED",
   Unsupported: "PLUGIN_INSTALL_UNSUPPORTED"
 } as const;
 
@@ -845,6 +847,21 @@ export async function uninstallPlugin(options: {
   if (restores && !disabledIds?.has(pluginId)) {
     restores.activate?.();
     runtime.registerPlugin(restores.manifest, restores.options);
+  }
+
+  // A bundled/installed handover keeps the same plugin id and its settings. Otherwise, delete
+  // only after teardown and the catalog commit: no live worker or pending save may recreate them.
+  // Failure reports that uninstall completed but settings remain; the hook still removes its UI
+  // entry and disabled preference before surfacing this specific cleanup error.
+  if (!restores) {
+    try {
+      await deletePersistentPluginStorage(pluginId);
+    } catch (error) {
+      throw new PluginInstallError(
+        PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+        `Plugin "${pluginId}" was uninstalled, but its stored settings could not be deleted: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 }
 
