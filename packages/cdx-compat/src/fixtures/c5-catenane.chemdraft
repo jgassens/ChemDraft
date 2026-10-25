@@ -136,7 +136,7 @@
       <b id="121" B="93" E="94" Order="1"/>
       <b id="122" B="94" E="65" Order="1"/>
     </fragment>
-  
+
     <objecttag Name="org.chemdraft/codec-version" Persistent="yes" TagType="String" Value="chemdraft.cdxml.v2"/>
     <objecttag Name="org.chemdraft/schema-version" Persistent="yes" TagType="String" Value="chemdraft.document.v1"/>
     <objecttag Name="org.chemdraft/native-payload-hash" Persistent="yes" TagType="String" Value="19f2976b75968942dc4b17c34906b6b709de0ab8f641a77690c700d3dd57466b"/>
