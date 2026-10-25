@@ -1793,6 +1793,41 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(openChemDraftPayload(exported.contents).document?.pages[0].crossings).toEqual(document.pages[0].crossings);
   });
 
+  it("round-trips two distinct crossings whose bond IDs alias under delimiter joining", () => {
+    const refs = [
+      { objectId: "a::b", bondId: "c" },
+      { objectId: "a", bondId: "b::c" },
+      { objectId: "front", bondId: "bond" }
+    ];
+    const objects = refs.map((ref) => {
+      const molecule = singleBondMolecule();
+      return { ...molecule, id: ref.objectId, bonds: [{ ...molecule.bonds[0], id: ref.bondId }] };
+    });
+    const base = documentWithObjects(objects);
+    const document = ChemDraftDocumentSchema.parse({
+      ...base,
+      pages: [{
+        ...base.pages[0],
+        crossings: refs.slice(0, 2).map((ref) => ({ bonds: [ref, refs[2]], front: refs[2] }))
+      }]
+    });
+    const exported = exportDocumentToCdxml(document);
+    expect(exported.warnings).toEqual([]);
+    expect(openChemDraftPayload(exported.contents).document?.pages[0].crossings).toEqual(document.pages[0].crossings);
+
+    // Exercise the actual visible CDXML mapping, independently of the embedded native payload.
+    const visible = openChemDraftPayload(
+      exported.contents.replace(/<objecttag Name="org\.chemdraft\/native-document"[^>]*\/>/, "")
+    );
+    expect(visible.source).toBe("external-cdxml");
+    const front = { objectId: "cdxml_molecule_1_3", bondId: "bond_001" };
+    expect(visible.document?.pages[0].crossings).toEqual([1, 2].map((index) => ({
+      bonds: [{ objectId: `cdxml_molecule_1_${index}`, bondId: "bond_001" }, front],
+      front
+    })));
+    expect(visible.warnings.map((item) => item.code)).not.toContain("cdxml.crossing_bond_unresolved");
+  });
+
   it("imports synthetic text, plus text, molecule, and reaction arrow fixtures", () => {
     const textPlusMolecule = openChemDraftPayload(cdxmlFixture("text-plus-molecule.cdxml"));
     const reactionArrow = openChemDraftPayload(cdxmlFixture("reaction-arrow.cdxml"));

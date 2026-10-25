@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bondRefFromKey, bondRefKey, crossingPairKey,
   applyPatch, createEmptyDocument, CrossingOverrideSchema, deserializeDocument, DocumentObjectSchema,
   sameBondRef, sameCrossingBondPair, serializeDocument, type BondRef, type CrossingOverride
 } from "./index";
@@ -73,5 +74,37 @@ describe("structured crossing identity", () => {
     expect(roundTrip.schema).toBe(legacy.schema);
     expect(roundTrip.pages[0]!.crossings).toHaveLength(2);
     expect(applyPatch(roundTrip, { op: "clearCrossingOverride", pageId, bonds: scoped }).pages[0]!.crossings).toEqual([existing]);
+  });
+});
+
+describe("crossing keys", () => {
+  it("keeps delimiter-bearing bond tuples distinct and decodes arbitrary IDs", () => {
+    const refs = [
+      { objectId: "a::b", bondId: "c" },
+      { objectId: "a", bondId: "b::c" },
+      { objectId: 'a|["\\\n', bondId: "::|]\u0000" }
+    ];
+    expect(new Set(refs.map(bondRefKey)).size).toBe(refs.length);
+    for (const ref of refs) expect(bondRefFromKey(bondRefKey(ref))).toEqual(ref);
+  });
+
+  it("canonicalizes unordered pairs even when collation equates distinct IDs", () => {
+    const refs = [
+      { objectId: "a::b", bondId: "c" },
+      { objectId: "a", bondId: "b::c" },
+      { objectId: "é", bondId: "b" },
+      { objectId: "e\u0301", bondId: "b" }
+    ];
+    const partner = { objectId: "other", bondId: "bond" };
+    expect(new Set(refs.map((ref) => crossingPairKey([ref, partner]))).size).toBe(refs.length);
+    for (const left of refs) {
+      for (const right of refs) {
+        expect(crossingPairKey([left, right])).toBe(crossingPairKey([right, left]));
+      }
+    }
+  });
+
+  it.each(['a::b', '{}', '["a"]', '["a", 1]', '["a", "b", "c"]'])("rejects invalid key %s", (key) => {
+    expect(() => bondRefFromKey(key)).toThrow();
   });
 });

@@ -1,7 +1,13 @@
+export { bondRefKey, crossingPairKey, sameBondRef } from "@chemdraft/chem-core";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 
 import {
+  bondRefKey,
+  canonicalBondRefs,
+  compareBondRefs,
+  crossingPairKey,
+  sameBondRef,
   DefaultNativeDrawingStyle,
   DocumentStylePreset,
   drawnLabelBondSide,
@@ -1021,20 +1027,6 @@ const minimumCrossingClearancePx = 7;
 const maximumCrossingClearancePx = 30;
 const minimumCrossingAngleSin = 0.28;
 
-/** Collision-free map key for a bond reference. Ids are arbitrary strings, so no delimiter can stand
- *  in for the (objectId, bondId) tuple; this mirrors chem-core's structured `sameBondRef` identity. */
-export function bondRefKey(ref: BondRef): string {
-  return JSON.stringify([ref.objectId, ref.bondId]);
-}
-
-function compareBondRefs(left: BondRef, right: BondRef): number {
-  return left.objectId.localeCompare(right.objectId) || left.bondId.localeCompare(right.bondId);
-}
-
-export function crossingPairKey(bonds: [BondRef, BondRef]): string {
-  return JSON.stringify(canonicalBondRefs(bonds).map((ref) => [ref.objectId, ref.bondId]));
-}
-
 export function compareBondDepth(
   left: BondDepthCandidate,
   right: BondDepthCandidate,
@@ -1348,15 +1340,6 @@ function crossingHitTargetFragment(crossing: ResolvedBondCrossing): PageSvgEleme
     fill: "transparent",
     stroke: "transparent"
   });
-}
-
-function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
-  const [left, right] = bonds;
-  return compareBondRefs(left, right) <= 0 ? [left, right] : [right, left];
-}
-
-export function sameBondRef(left: BondRef, right: BondRef): boolean {
-  return left.objectId === right.objectId && left.bondId === right.bondId;
 }
 
 function cross(left: LayoutPoint, right: LayoutPoint): number {

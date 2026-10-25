@@ -1,4 +1,7 @@
-export { sameBondRef, sameCrossingBondPair } from "./crossings";
+export {
+  bondRefKey, bondRefFromKey, compareBondRefs, canonicalBondRefs, crossingPairKey,
+  sameBondRef, sameCrossingBondPair
+} from "./crossings";
 
 export {
   AnchorSchema,

@@ -9,6 +9,10 @@ delimiters inside either ID are literal characters. Validation and patch applica
 comparisons. Saved crossings already use structured references, so existing documents load without
 a schema change or key migration.
 
+`bondRefKey` / `bondRefFromKey` encode and decode bond references as JSON tuples;
+`crossingPairKey` canonicalizes an unordered pair. Layout and CDXML compatibility share these
+helpers, along with `canonicalBondRefs` and `compareBondRefs`, rather than maintaining their own keys.
+
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial
 map preserves unmapped aromatic bonds as type 4 and returns one warning per ring system, naming its
