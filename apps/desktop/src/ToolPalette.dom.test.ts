@@ -1104,12 +1104,12 @@ describe("ToolPalette arrange flyouts", () => {
     expect(onInvoke).toHaveBeenCalledWith("layout.ungroup");
   });
 
-  it("consolidates art shape tools behind one active flyout button", () => {
+  it.each(["core.main", "core.annotations", "core.art"])("exposes all drawing shapes through the %s flyout", async (toolsetId) => {
     const onInvoke = vi.fn();
-    act(() => {
+    await act(async () => {
       root.render(createElement(ToolPalette, {
-        groups: getToolsetCommandGroups("core.art"),
-        itemGroups: getToolsetItemGroups("core.art"),
+        groups: getToolsetCommandGroups(toolsetId),
+        itemGroups: getToolsetItemGroups(toolsetId),
         activeTool: "tool.art.circle",
         orientation: "horizontal",
         onInvoke
@@ -1128,21 +1128,49 @@ describe("ToolPalette arrange flyouts", () => {
     const shapeMenu = container.querySelector<HTMLElement>('[data-command-flyout-menu="shapes"]');
     expect(shapeMenu?.hidden).toBe(true);
 
-    act(() => {
-      shapeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    expect(shapeMenu?.hidden).toBe(false);
-
-    const ellipse = container.querySelector<HTMLButtonElement>('[data-command-flyout-menu="shapes"] [data-command-id="tool.art.ellipse"]');
-    if (!ellipse) {
-      throw new Error("Expected ellipse menu command.");
+    for (const commandId of ["tool.art.rect", "tool.art.roundedRect", "tool.art.circle", "tool.art.ellipse"]) {
+      onInvoke.mockClear();
+      act(() => {
+        shapeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      });
+      expect(shapeMenu?.hidden).toBe(false);
+      const choice = shapeMenu?.querySelector<HTMLButtonElement>(`[data-command-id="${commandId}"]`);
+      expect(choice).toBeTruthy();
+      act(() => {
+        choice!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith(commandId);
+      expect(shapeMenu?.hidden).toBe(true);
     }
-    act(() => {
-      ellipse.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+  });
 
-    expect(onInvoke).toHaveBeenCalledWith("tool.art.ellipse");
-    expect(shapeMenu?.hidden).toBe(true);
+  it.each(["core.main", "core.annotations"])("opens the %s Shapes menu in the native popover", async (toolsetId) => {
+    const onRequestFlyout = vi.fn();
+    const onInvoke = vi.fn();
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups(toolsetId),
+        itemGroups: getToolsetItemGroups(toolsetId),
+        activeTool: "tool.select",
+        orientation: "horizontal",
+        onRequestFlyout,
+        onInvoke
+      }));
+    });
+    const owner = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="shapes"]')!;
+    expect(owner.getAttribute("aria-haspopup")).toBe("menu");
+    expect(owner.getAttribute("aria-controls")).toBeNull();
+    act(() => {
+      owner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(onInvoke).not.toHaveBeenCalled();
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+    const request = onRequestFlyout.mock.calls[0][0];
+    expect(request.flyout.flyoutId).toBe("shapes");
+    expect(request.flyout.commands.map((command: { id: string }) => command.id)).toEqual([
+      "tool.art.rect", "tool.art.roundedRect", "tool.art.circle", "tool.art.ellipse"
+    ]);
+    expect(container.querySelector<HTMLElement>('[data-command-flyout-menu="shapes"]')?.hidden).toBe(true);
   });
 });
 

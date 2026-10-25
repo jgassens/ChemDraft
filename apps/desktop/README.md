@@ -58,6 +58,11 @@ app bundle only; installed plugin packages stay in Application Support. See
 
 The desktop palette is a separate Tauri window behind `src/window-manager`. Palette buttons route command IDs back to the main document window, where the existing command registry invokes them. `pnpm dev:web` keeps an in-window docked palette only as a browser-preview fallback.
 
+The **Shapes** button on Main, Annotations, and Art draws a rectangle on a normal click.
+Long-press it or press Arrow Down to choose Rectangle, Rounded Rectangle, Circle, or Ellipse;
+then click the page to place the shape and use its selection handles to resize it.
+The submenu uses the same tools as the Art toolbar.
+
 Compound layouts are opt-in: enable **Compound layout tools** in Settings/Preferences.
 Select two or more compounds or groups, then use Arrange Selection in Main, Art or Layout;
 long-press or press Arrow Down for Circle, Oval, Grid left/center/right, Row or Column.
