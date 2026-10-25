@@ -1,7 +1,9 @@
 import type { DocumentObject } from "@chemdraft/chem-core";
-import { moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement } from "@chemdraft/layout-engine";
+import { figurePlacementFrame, nativeMoleculeRings, representativeMoleculeBondLength, rotateFigurePoint,
+  moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { smilesPasteBondLengthPx } from "@chemdraft/document-workflow-core";
 import type { AssistantRect } from "./AssistantToolContext";
+import type { FigureTarget } from "./tools/schemas";
 
 export const ASSISTANT_MARGIN = 36;
 export const ASSISTANT_GAP = 2 * smilesPasteBondLengthPx;
@@ -14,6 +16,30 @@ export function pageContentRect(page: PlacementPage): AssistantRect {
   const margin = page.margin ?? { top: ASSISTANT_MARGIN, right: ASSISTANT_MARGIN, bottom: ASSISTANT_MARGIN, left: ASSISTANT_MARGIN };
   return { x: margin.left, y: margin.top, width: Math.max(0, page.width - margin.left - margin.right),
     height: Math.max(0, page.height - margin.top - margin.bottom) };
+}
+
+/** Explicit figure placement permits overlap; ordinary free-space placement stays unchanged.
+ * Returns rigid transforms only. The write builder translates all native coordinate fields. */
+export function figureTransforms(objects: readonly DocumentObject[], target: DocumentObject, to: FigureTarget) {
+  const ringKey = typeof to.anchor === "object" ? to.anchor.ringKey : to.anchor === "axis" && target.type === "molecule"
+    ? [...nativeMoleculeRings(target)].sort((a, b) => b.area - a.area || a.ringKey.localeCompare(b.ringKey))[0]?.ringKey : undefined;
+  const destination = figurePlacementFrame(target, ringKey);
+  const primary = objects.filter(object => object.type === "molecule");
+  const centers = (primary.length ? primary : objects).map(object => figurePlacementFrame(object).center);
+  const center = { x: centers.reduce((sum, p) => sum + p.x, 0) / centers.length,
+    y: centers.reduce((sum, p) => sum + p.y, 0) / centers.length };
+  const sourceAxis = figurePlacementFrame(primary[0] ?? objects[0]!).axis;
+  const angle = (to.rotateDeg ?? 0) + (to.anchor === "axis"
+    ? (Math.atan2(destination.axis.y, destination.axis.x) - Math.atan2(sourceAxis.y, sourceAxis.x)) * 180 / Math.PI : 0);
+  const bondLength = target.type === "molecule" ? representativeMoleculeBondLength(target) ?? smilesPasteBondLengthPx : smilesPasteBondLengthPx;
+  const x = destination.center.x + (to.offset?.dx ?? 0) * bondLength;
+  const y = destination.center.y + (to.offset?.dy ?? 0) * bondLength;
+  return objects.map(object => {
+    const pivot = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
+    const rotated = rotateFigurePoint(pivot, center, angle);
+    return { object, dx: rotated.x - pivot.x + x - center.x, dy: rotated.y - pivot.y + y - center.y,
+      rotation: object.rotation + angle };
+  });
 }
 
 export function objectRect(object: DocumentObject): AssistantRect {
@@ -107,6 +133,24 @@ export interface PagePlacements {
   rects: AssistantRect[];
   nonFitting: number[];
   requiredSize?: { width: number; height: number };
+}
+/** Keep explicit anchors exact, including intentional overlaps. Only page size may grow. */
+export function anchoredPagePlacements(page: PlacementPage, rects: AssistantRect[]): PagePlacements {
+  const content = pageContentRect(page);
+  // Page layout has no movable origin. Enlarging cannot make a negative/left-margin anchor fit;
+  // moving its reference (possibly outside Send scope) would silently change the requested figure.
+  if (rects.some(rect => rect.x < content.x - 1e-6 || rect.y < content.y - 1e-6)) {
+    throw new Error("The anchored figure extends past the left or top page margin; move its anchor inward or adjust the offset before retrying. Enlarging the page cannot move its origin.");
+  }
+  const nonFitting = rects.flatMap((rect, index) => rect.x + rect.width > content.x + content.width + 1e-6 ||
+    rect.y + rect.height > content.y + content.height + 1e-6 ? [index] : []);
+  if (!nonFitting.length) return { rects, nonFitting };
+  const right = page.margin?.right ?? ASSISTANT_MARGIN;
+  const bottom = page.margin?.bottom ?? ASSISTANT_MARGIN;
+  return { rects, nonFitting, requiredSize: {
+    width: Math.ceil(Math.max(page.width, ...rects.map(rect => rect.x + rect.width + right)) * 0.75) / 0.75,
+    height: Math.ceil(Math.max(page.height, ...rects.map(rect => rect.y + rect.height + bottom)) * 0.75) / 0.75
+  } };
 }
 export function choosePagePlacements(options: PagePlacementsOptions): PagePlacements {
   if (options.sizes.length > 1 && options.viewport && !options.preferred) {

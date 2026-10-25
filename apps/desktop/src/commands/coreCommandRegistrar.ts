@@ -1,8 +1,23 @@
-import type { CommandDefinition, CommandRegistry } from "@chemdraft/plugin-host";
+import type { CommandDefinition, CommandInvocationContext, CommandRegistry } from "@chemdraft/plugin-host";
+import type { AssistantCommandTarget } from "../assistant/AssistantToolContext";
+import { assistantCommand } from "../assistant/commandCatalog";
+
+// Host-only, per invocation: neither plugin input nor model arguments can manufacture this target.
+const documentTargets = new WeakMap<CommandInvocationContext, AssistantCommandTarget>();
+export async function invokeAssistantRegistryCommand(registry: CommandRegistry, id: string, target: AssistantCommandTarget): Promise<void> {
+  if (!assistantCommand(id) || registry.get(id)?.source !== "core") throw new Error(`Command ${id} is not allowlisted.`);
+  const invocation: CommandInvocationContext = {};
+  documentTargets.set(invocation, target);
+  try {
+    const result = await registry.invoke<{ ok: boolean }>(id, invocation);
+    if (!result?.ok) throw new Error(`Command ${id} is unavailable.`);
+  } finally { documentTargets.delete(invocation); }
+}
 
 export interface CoreCommandBinding {
   spec: CommandDefinition;
-  run: () => void | Promise<void>;
+  run: (target?: AssistantCommandTarget) => void | Promise<void>;
+  acceptsDocumentTarget?: boolean;
 }
 
 export type CoreCommandBindings = ReadonlyMap<string, CoreCommandBinding>;
@@ -38,15 +53,22 @@ export function createCoreCommandRegistrar(
         continue;
       }
 
-      registry.register({ ...binding.spec, enabled: true }, async () => {
+      registry.register({ ...binding.spec, enabled: true }, async invocation => {
         const current = getLiveBindings().get(commandId);
         if (!current) {
           return { ok: false, commandId };
         }
-        if (current.spec.enabled === false) {
+        const target = documentTargets.get(invocation);
+        if (target && (!current.acceptsDocumentTarget || !assistantCommand(commandId))) {
+          throw new Error(`Command ${commandId} does not support an isolated document target.`);
+        }
+        // The menu's enabled state describes its live selection. Target handlers validate the
+        // captured selection themselves, without changing the user's live selection.
+        if (!target && current.spec.enabled === false) {
           throw new Error(`Command "${commandId}" is disabled.`);
         }
-        await current.run();
+        target?.assertActive();
+        await current.run(target);
         return { ok: true, commandId };
       });
       registeredIds.add(commandId);

@@ -4,6 +4,7 @@ import { toolJsonSchema, toolSchemas, type AssistantToolName } from "./tools/sch
 import { testContext } from "./tools/testContext";
 
 const validInputs: Record<AssistantToolName, unknown> = {
+  list_commands: {}, run_command: { id: "layout.rotate90" },
   get_document: {}, get_selection: {}, get_structure: { objectId: "mol", format: "smiles" },
   render: { target: "document" }, name_to_structure: { name: "ethane" }, validate_smiles: { smiles: "CC" },
   structure_to_name: { objectId: "mol" }, insert_structures: { items: [{ kind: "molecule", smiles: "CC" }] },
@@ -15,7 +16,7 @@ afterEach(() => vi.useRealTimers());
 describe("assistant catalog and schema mirrors", () => {
   it("ships every name in the amended table with its Zod-derived JSON schema", () => {
     expect(ASSISTANT_TOOLS.map(tool => tool.name).sort()).toEqual(Object.keys(validInputs).sort());
-    expect(new Set(ASSISTANT_TOOLS.map(tool => tool.name)).size).toBe(14);
+    expect(new Set(ASSISTANT_TOOLS.map(tool => tool.name)).size).toBe(16);
     for (const tool of ASSISTANT_TOOLS) {
       expect(tool.inputSchema).toEqual(toolJsonSchema(tool.name));
       expect(tool.inputSchema).toMatchObject({ type: "object", additionalProperties: false });
@@ -54,6 +55,8 @@ describe("assistant catalog and schema mirrors", () => {
     }
   });
   it.each([
+    ["list_commands", { category: "all" }], ["run_command", { id: "" }],
+    ["run_command", { id: "layout.rotate90", args: { objectIds: ["outside"] } }],
     ["get_document", { maxObjects: 501 }], ["get_document", { maxObjects: 0 }],
     ["get_structure", { objectId: "x", format: "xyz" }],
     ["render", { target: "document", maxDimensionPx: 2049 }],
@@ -74,8 +77,8 @@ describe("assistant catalog and schema mirrors", () => {
   });
   it("has read-only and idempotent hints on every read and chemistry tool", () => {
     for (const tool of listAssistantTools()) expect(tool.annotations).toEqual({
-      readOnlyHint: !["insert_structures", "insert_reaction", "insert_text", "edit_structure", "delete_objects", "style_objects", "move_objects"].includes(tool.name),
-      idempotentHint: !["insert_structures", "insert_reaction", "insert_text", "edit_structure", "delete_objects", "style_objects", "move_objects"].includes(tool.name)
+      readOnlyHint: !["run_command", "insert_structures", "insert_reaction", "insert_text", "edit_structure", "delete_objects", "style_objects", "move_objects"].includes(tool.name),
+      idempotentHint: !["run_command", "insert_structures", "insert_reaction", "insert_text", "edit_structure", "delete_objects", "style_objects", "move_objects"].includes(tool.name)
     });
   });
 });

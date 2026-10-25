@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, DocumentObjectSchema, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
+import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
+import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
+import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
+import { cbpqt, crown } from "./figureFixtures";
+import { inspectMolecule, translateObject } from "./writeBuilder";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
@@ -11,7 +16,8 @@ import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/appl
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
 import { objectRect } from "./placement";
 import { buildMoveObjects } from "./writeBuilder";
-import { applyChargeToolAtPoint } from "../documentWorkflow";
+import { applyChargeToolAtPoint, rotateSelectedDocumentObjects90 } from "../documentWorkflow";
+import { testCommandRegistry } from "./testCommandRegistry";
 
 function setup() {
   const fixture = testContext();
@@ -68,6 +74,78 @@ function setup() {
 }
 
 afterEach(() => vi.useRealTimers());
+beforeAll(() => installNodeRdkitModuleLoader());
+
+describe("live MCP figure recipe through the plugin host and assistant transaction", () => {
+  it("builds a [2]catenane with auto crossings, unchanged canonical SMILES, cumulative selection and one undo/redo", async () => {
+    const s = setup();
+    try {
+      const document = s.context.getDocument()!;
+      s.replace({ ...document, pages: document.pages.map(page => ({ ...page, objects: [] })), selection: { objectIds: [] } });
+      s.select([]);
+      s.context.chemistry.inspectStructure = async (_format, value) => {
+        const mol = (await ensureRdkit()).get_mol(value) as { get_smiles(): string; get_json(): string; delete(): void } | null;
+        if (!mol) return { valid: false, reason: "RDKit could not parse the structure" };
+        try {
+          const graph = JSON.parse(mol.get_json()) as { defaults?: { atom?: { z?: number } }; molecules: { atoms: { z?: number }[] }[] };
+          return { valid: true, canonicalSmiles: mol.get_smiles(), formula: "test-only", warnings: [],
+            heavyAtoms: graph.molecules.reduce((sum, molecule) => sum + molecule.atoms.filter(atom => (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
+        } finally { mol.delete(); }
+      };
+      const components = [cbpqt("box"), crown("crown")];
+      const smiles = await Promise.all(components.map(async object => (await inspectMolecule(s.context, object)).canonicalSmiles));
+      // Deterministic native depictions, independently checked by real RDKit before/after writing.
+      s.context.chemistry.structureFromSmiles = async ({ smiles: input }) => {
+        const component = components[smiles.indexOf(input)];
+        if (!component) throw new Error("Unexpected recipe component");
+        return { available: true, built: true, object: structuredClone(component) };
+      };
+      const before = structuredClone(s.context.getDocument()!);
+      const apply = vi.spyOn(s.host, "applyPatchForPlugin");
+      const { requestId } = await s.commandContext.assistant!.beginRequest({ prompt: "Draw a [2]catenane" });
+      const session = await s.commandContext.assistant!.createToolSession({ requestId });
+      const inserted = await s.bridge(session.sessionId, "insert_structures", { items: [{ kind: "molecule", smiles: smiles[0] }] });
+      expect(inserted).toMatchObject({ result: { structuredContent: { objectIds: [expect.any(String)] } } });
+      const box = s.context.getDocument()!.pages[0]!.objects[0]!;
+      if (box.type !== "molecule") throw new Error("Expected macrocycle");
+      const ring = [...nativeMoleculeRings(box)].sort((a, b) => b.area - a.area)[0]!;
+      const threaded = await s.bridge(session.sessionId, "insert_structures", {
+        items: [{ kind: "molecule", smiles: smiles[1] }],
+        to: { relativeTo: box.id, anchor: { ringKey: ring.ringKey }, offset: { dx: 4, dy: 0.2 } }, crossings: "auto"
+      });
+      expect(threaded).toMatchObject({ result: { structuredContent: { objectIds: expect.arrayContaining([box.id]) } } });
+      await s.commandContext.assistant!.endRequest({ requestId });
+      const after = structuredClone(s.context.getDocument()!);
+      const page = after.pages[0]!;
+      expect(page.objects).toHaveLength(2);
+      expect(page.crossings.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(page.crossings.map(crossing => crossing.front.objectId))).toEqual(new Set(page.objects.map(object => object.id)));
+      expect(planPageSvgRender(page).crossings.filter(crossing => crossing.hasOverride).length).toBe(page.crossings.length);
+      expect(new Set(after.selection.objectIds)).toEqual(new Set(page.objects.map(object => object.id)));
+      for (let index = 0; index < components.length; index++) {
+        const object = page.objects[index]!;
+        if (object.type !== "molecule") throw new Error("Expected macrocycle");
+        expect((await inspectMolecule(s.context, object)).canonicalSmiles).toBe(smiles[index]);
+        expect(object.bonds).toEqual(components[index]!.bonds);
+        expect(object.atoms.map(({ x: _x, y: _y, ...atom }) => atom)).toEqual(components[index]!.atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+      }
+      expect(apply).toHaveBeenCalledTimes(2);
+      expect(apply.mock.calls[1]![2].patch).toMatchObject({ op: "batch", patches: expect.arrayContaining([
+        expect.objectContaining({ op: "setCrossingOverride" })
+      ]) });
+      expect(apply.mock.calls[1]![3]).toMatchObject({ assistantTransactionId: requestId });
+      expect(s.history).toHaveLength(1);
+      let history = { past: s.history.map(entry => entry.before), present: after, future: [] as typeof before[] };
+      history = undo(history);
+      expect(history.present).toEqual(before);
+      expect(history.present.pages[0]!.objects).toEqual([]);
+      expect(history.present.pages[0]!.crossings).toEqual([]);
+      history = redo(history);
+      expect(history.present).toEqual(after);
+      expect(apply).toHaveBeenCalledTimes(2); // Redo never re-enters tools or the host.
+    } finally { await s.finish(); }
+  });
+});
 
 describe("assistant write structural sharing", () => {
   it.each([1, 5000])("inserts a caption without copying or comparing unchanged graphs (%i molecules, 20 atoms each)", async count => {
@@ -138,6 +216,85 @@ function placementSetup() {
 }
 
 describe("assistant host page enlargement", () => {
+  it.each(["insert_structures", "move_objects"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
+    "gates anchored $name, including crossings and order, on host consent ($accepted)", async ({ name, accepted }) => {
+    const s = setup();
+    const document = s.context.getDocument()!;
+    const pageId = document.pages[0]!.id;
+    const box = translateObject(cbpqt("box"), 250, 200);
+    const partner = translateObject(crown("crown"), 150, 200);
+    s.replace(applyPatch({ ...document, pages: [{ ...document.pages[0]!, objects: name === "move_objects" ? [box, partner] : [box] }] }, {
+      op: "updatePageLayout", pageId, layout: createCustomPageLayout(400, 400, "css-px", { top: 36, right: 36, bottom: 36, left: 36 })
+    }));
+    s.select(s.context.getDocument()!.pages[0]!.objects.map(object => object.id));
+    s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true, object: crown("new") });
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const restore = setNativePromptProvider(prompt);
+    const apply = vi.spyOn(s.host, "applyPatchForPlugin");
+    try {
+      const before = structuredClone(s.context.getDocument()!);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Interlock the rings" });
+      const result = await s.controller.callTool(s.plugin, { name, input: {
+        ...(name === "move_objects" ? { objectIds: [partner.id] } : { items: [{ kind: "molecule", smiles: "CC" }] }),
+        to: { relativeTo: box.id, anchor: "center", offset: { dx: 4, dy: 0.2 } }, crossings: "auto", zOrder: "front"
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      const after = s.context.getDocument()!;
+      if (accepted) {
+        expect(after.pages[0]!.width).toBeGreaterThan(before.pages[0]!.width);
+        expect(after.pages[0]!.crossings.length).toBeGreaterThanOrEqual(2);
+        expect(after.pages[0]!.objects).toHaveLength(2);
+        expect(new Set(after.selection.objectIds)).toEqual(new Set(after.pages[0]!.objects.map(object => object.id)));
+        for (const object of after.pages[0]!.objects) {
+          const rect = objectRect(object);
+          expect(rect.x + rect.width).toBeLessThanOrEqual(after.pages[0]!.width - 36 + 1e-6);
+          expect(rect.y + rect.height).toBeLessThanOrEqual(after.pages[0]!.height - 36 + 1e-6);
+        }
+        expect(s.history).toHaveLength(1);
+        const history = { past: s.history.map(entry => entry.before), present: after, future: [] as typeof before[] };
+        expect(undo(history).present).toEqual(before);
+        expect(redo(undo(history)).present).toEqual(after);
+        expect(apply).toHaveBeenCalledOnce();
+      } else {
+        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page" });
+        expect(after).toEqual(before);
+        expect(s.history).toHaveLength(0);
+        expect(apply).not.toHaveBeenCalled();
+      }
+    } finally { restore(); await s.finish(); }
+  });
+
+  it.each(["insert_text", "insert_reaction"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
+    "gates anchored $name on host consent ($accepted)", async ({ name, accepted }) => {
+    const s = setup();
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = structuredClone(s.context.getDocument()!);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Place beside the figure" });
+      const result = await s.controller.callTool(s.plugin, { name, input: {
+        ...(name === "insert_text" ? { text: "Caption" } : { reactants: ["CC"], products: ["CC"] }),
+        to: { relativeTo: s.molecule.id, anchor: "center", offset: { dx: 30, dy: 30 } }
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      const after = s.context.getDocument()!;
+      if (accepted) {
+        expect(after.pages[0]!.width).toBeGreaterThan(before.pages[0]!.width);
+        expect(after.pages[0]!.height).toBeGreaterThan(before.pages[0]!.height);
+        expect(s.history).toHaveLength(1);
+        expect(undo({ past: [before], present: after, future: [] }).present).toEqual(before);
+      } else {
+        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page" });
+        expect(after).toEqual(before);
+        expect(s.history).toHaveLength(0);
+      }
+    } finally { restore(); await s.finish(); }
+  });
+
   it.each([false, true])("applies the same page-growth decision to native group labels (accepted: %s)", async accepted => {
     const s = placementSetup();
     const document = s.context.getDocument()!;
@@ -413,6 +570,24 @@ describe("assistant host page enlargement", () => {
 });
 
 describe("assistant requests and MCP bridge", () => {
+  it("groups registry command writes and another tool into one request undo entry", async () => {
+    const s = setup();
+    try {
+      const before = structuredClone(s.context.getDocument());
+      const registry = testCommandRegistry(s.context, "layout.rotate90", target => { target.commit(rotateSelectedDocumentObjects90); });
+      const invoke = vi.spyOn(registry, "invoke");
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Rotate and caption" });
+      s.select([s.text.id]); // A changed live selection cannot redirect the command.
+      expect((await s.controller.callTool(s.plugin, { name: "run_command", input: { id: "layout.rotate90" } })).isError).not.toBe(true);
+      expect((await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption" } })).isError).not.toBe(true);
+      await s.controller.endRequest(s.plugin, { requestId });
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.before).toEqual(before);
+      expect(s.history[0]!.label).toBe("ChemDraft Assistant: Rotate and caption");
+      expect(s.context.getDocument()!.selection.objectIds).toContain(s.molecule.id);
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally { await s.finish(); }
+  });
   it.each(["edited", "moved", "unchanged"])("rechecks the source %s during asynchronous structure building", async change => {
     const s = setup();
     let releaseBuild!: () => void;

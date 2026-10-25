@@ -1,3 +1,5 @@
+export { sameBondRef, sameCrossingBondPair } from "./crossings";
+
 export {
   AnchorSchema,
   AnnotationObjectSchema,

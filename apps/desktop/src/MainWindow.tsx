@@ -123,6 +123,8 @@ import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
+import type { AssistantCommandTarget } from "./assistant/AssistantToolContext";
+import { assistantCommand } from "./assistant/commandCatalog";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
@@ -1615,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.10.16-codex";
+const CURRENT_BUILD_STAMP = "10.24.20.46-opus";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -4299,20 +4301,23 @@ export function MainWindow({
     setStatus(`Placed ${placedNoun} on hovered atom`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
-  const cleanUpSelectedStructure = useCallback(() => {
-    const currentDocument = documentRef.current;
+  const cleanUpSelectedStructure = useCallback(async (target?: AssistantCommandTarget) => {
+    const currentDocument = target?.getDocument() ?? documentRef.current;
+    const commit = target?.commit ?? commitDocumentChange;
+    const reportStatus = target ? (_message: string) => {} : setStatus;
     const targetObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...(!target && selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
       ])
     ];
     if (targetObjectIds.length === 0) {
-      setStatus("No selected structure to clean up");
+      reportStatus("No selected structure to clean up");
       return;
     }
 
     const resetCleanupChrome = () => {
+      if (target) return;
       setActiveEditorObjectId(undefined);
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
@@ -4341,19 +4346,19 @@ export function MainWindow({
     });
     const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
     if (engineTargetIds.length === 0) {
-      const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
+      const changed = commit((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
       resetCleanupChrome();
-      setStatus(cleanedStatus(changed));
+      reportStatus(cleanedStatus(changed));
       return;
     }
 
     resetCleanupChrome();
-    setStatus(`Cleaning up selected ${targetLabel}…`);
-    void (async () => {
+    reportStatus(`Cleaning up selected ${targetLabel}…`);
+    await (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
-        const changed = commitDocumentChange((current) =>
+        const changed = commit((current) =>
           engineTargetIds.reduce((next, objectId) => {
             // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
             // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
@@ -4370,9 +4375,10 @@ export function MainWindow({
             });
           }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
-        setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
+        reportStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
-        setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (target) throw error;
+        reportStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
@@ -4675,7 +4681,13 @@ export function MainWindow({
     return { bondPairs, atomLabels, atomLabelStyles, atoms: molecule.atoms, placement: { centerX, centerY, scale } };
   }, []);
 
-  const startSpin3d = useCallback(async () => {
+  const startSpin3d = useCallback(async (target?: AssistantCommandTarget) => {
+    const assertViewTarget = () => {
+      target?.assertActive();
+      if (target && target.tabId !== activeDocumentTabIdRef.current) throw new Error("Activate the assistant's document tab to open its 3D view.");
+    };
+    assertViewTarget();
+    let openingError: string | undefined;
     const plannedRequestId = spin3dRequestRef.current + 1;
     const sessionId = `spin3d:${plannedRequestId}:${Date.now()}`;
     const emitTrace = (event: Spin3dTraceEvent): void => {
@@ -4700,14 +4712,15 @@ export function MainWindow({
       kind: "spin",
       stage: "spin.command",
     }, emitTrace);
-    const currentDocument = documentRef.current;
+    const currentDocument = target?.getDocument() ?? documentRef.current;
     const selectedIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...(!target && selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
       ])
     ];
     if (selectedIds.length !== 1) {
+      if (target) throw new Error("Select a single molecule to spin in 3D");
       traceInfo("spin.selection", { message: `selected ${selectedIds.length}` });
       commandSpan.complete({ message: "selection rejected" });
       setStatus("Select a single molecule to spin in 3D");
@@ -4718,6 +4731,7 @@ export function MainWindow({
       (object): object is MoleculeObject => object.id === objectId && object.type === "molecule"
     );
     if (!molecule || !isNativeMoleculeGraph(molecule) || molecule.atoms.length < 2) {
+      if (target) throw new Error("Spin 3D needs an editable molecule");
       traceInfo("spin.selection", { message: "not an editable molecule" });
       commandSpan.complete({ message: "molecule rejected" });
       setStatus("Spin 3D needs an editable molecule");
@@ -4726,6 +4740,7 @@ export function MainWindow({
     const unknownBondIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
     if (unknownBondIds.length > 0) {
       const error = new UnknownBondOrderError(unknownBondIds);
+      if (target) throw error;
       commandSpan.fail(error);
       setStatus(`3D spin unavailable: ${error.message}`);
       return;
@@ -4743,6 +4758,7 @@ export function MainWindow({
     // exactly where the chemistry is interesting.
     const unmodeledMetals = nativeMoleculeUnmodeledMetalElements(molecule);
     if (unmodeledMetals.length > 0) {
+      if (target) throw new Error(`Spin 3D cannot model coordination geometry for ${formatElementList(unmodeledMetals)}.`);
       traceInfo("spin.unmodeled-metal", { message: unmodeledMetals.join(",") });
       commandSpan.complete({ message: "metal rejected" });
       setStatus(
@@ -4827,11 +4843,13 @@ export function MainWindow({
     } catch (error) {
       molfileSpan.fail(error, { atomCount: molecule.atoms.length });
       commandSpan.fail(error);
+      if (target) throw error;
       setStatus(`3D spin unavailable: ${(error as Error).message}`);
       return;
     }
     const pendingSpin = spin3dPendingRef.current;
     if (pendingSpin?.molfile === molfile) {
+      if (target) throw new Error("3D generation is already in progress; retry once the view opens.");
       // Same structure is already being generated — absorb the repeat click
       // instead of stacking another multi-second engine job in the worker.
       traceInfo("spin.duplicate", { message: "generation already pending" });
@@ -4868,17 +4886,22 @@ export function MainWindow({
       clearSlowTimer();
       setSpin3dGenerating(undefined);
       spin3dPendingRef.current = undefined;
+      // A cancelled request or switched tab must not open a late view.
+      try { assertViewTarget(); } catch (error) { openingError = String(error); return; }
       traceInfo("spin.embedded-callback", {
         atomCount: conformer.originalAtomCount,
         warningCount: conformer.warnings.length,
         message: conformer.embed.status
       });
       if (conformer.embed.status !== "ok") {
+        openingError = `Could not generate a 3D conformer: ${conformer.embed.failureReason ?? "unknown"}`;
         setStatus(`Could not generate a 3D conformer: ${conformer.embed.failureReason ?? "unknown"}`);
         return;
       }
       // Spin may only begin if the molecule is still selected and unchanged.
-      if (documentRef.current.pages[0]?.objects.find((object) => object.id === objectId) !== molecule) {
+      const liveMolecule = documentRef.current.pages[0]?.objects.find((object) => object.id === objectId);
+      if (target ? JSON.stringify(liveMolecule) !== JSON.stringify(molecule) : liveMolecule !== molecule) {
+        openingError = "The molecule changed; spin cancelled.";
         traceInfo("spin.cancelled", { message: "selection changed" });
         setStatus("Selection changed; spin cancelled");
         return;
@@ -4996,11 +5019,13 @@ export function MainWindow({
           error: (error as Error).message
         });
         setStatus(`3D spin unavailable: ${(error as Error).message}`);
+        openingError = `3D spin unavailable: ${(error as Error).message}`;
       }
     };
 
     const client = getConformerWorkerClient();
     if (client) {
+      const cancelPending = () => spin3dPendingRef.current?.cancel();
       traceInfo("worker.client", { path: "worker", message: "available" });
       let retriedAfterCrash = false;
       const dispatch = (): void => {
@@ -5029,22 +5054,46 @@ export function MainWindow({
               return;
             }
             setSpin3dGenerating(undefined);
+            openingError = `Could not generate a 3D conformer: ${message}`;
             setStatus(`Could not generate a 3D conformer: ${message}`);
           }
         }, { sessionId });
         spin3dPendingRef.current = { molfile, objectId, cancel };
       };
       dispatch();
+      if (target) {
+        // The menu may return while embedding; the assistant reports success only once a view exists.
+        try {
+          while (spin3dStateRef.current?.objectId !== objectId) {
+            assertViewTarget();
+            if (openingError || spin3dRequestRef.current !== requestToken) {
+              throw new Error(openingError ?? "3D generation was cancelled.");
+            }
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        } catch (error) {
+          if (spin3dRequestRef.current === requestToken) {
+            cancelPending();
+            spin3dPendingRef.current = undefined;
+            spin3dRequestRef.current += 1;
+            clearSlowTimer();
+            setSpin3dGenerating(undefined);
+          }
+          throw error;
+        }
+      }
       return;
     }
     traceInfo("worker.client", { message: "unavailable" });
     if (molecule.atoms.length > SPIN_IN_PAGE_MAX_ATOMS) {
       clearSlowTimer();
       setSpin3dGenerating(undefined);
+      if (target) throw new Error("Spin 3D is unavailable for structures this large without background worker support");
       setStatus("Spin 3D is unavailable for structures this large without background worker support");
       return;
     }
     await runInPage();
+    if (target && spin3dStateRef.current?.objectId !== objectId) throw new Error(openingError ?? "Could not open the 3D view.");
   }, [applySpin, selectedNativeMoleculePart, spinPlacementFor]);
 
   // Opt-in console mirror of the spin3d trace stream (localStorage flag / ?spin3dlog=1),
@@ -5281,55 +5330,62 @@ export function MainWindow({
     }
   }, [applySpin]);
 
-  const cleanUpSelectedStructure3d = useCallback(() => {
-    const currentDocument = documentRef.current;
+  const cleanUpSelectedStructure3d = useCallback(async (target?: AssistantCommandTarget) => {
+    const currentDocument = target?.getDocument() ?? documentRef.current;
+    const commit = target?.commit ?? commitDocumentChange;
+    const reportStatus = target ? (_message: string) => {} : setStatus;
     const selectedObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...(!target && selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
       ])
     ];
 
     if (selectedObjectIds.length === 0) {
-      setStatus("No selected structure for 3D cleanup");
+      reportStatus("No selected structure for 3D cleanup");
       return;
     }
 
     if (selectedObjectIds.length !== 1) {
-      setStatus("Select a single structure for 3D cleanup");
+      if (target) throw new Error("Select a single structure for 3D cleanup");
+      reportStatus("Select a single structure for 3D cleanup");
       return;
     }
 
     const objectId = selectedObjectIds[0];
     const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
     if (!objectId || object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
-      setStatus("3D cleanup needs an editable native molecule");
+      if (target) throw new Error("3D cleanup needs an editable native molecule");
+      reportStatus("3D cleanup needs an editable native molecule");
       return;
     }
 
-    setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(undefined);
-    setActiveAtomLabelEdit(undefined);
-    setHoveredNativeAtom(undefined);
-    assignHoveredNativeDeleteTarget(undefined);
-    setFreeformNativeBond(undefined);
-    setNativeDoubleBondSidePreview(undefined);
-    setObjectContextMenu(undefined);
-    setStatus("Rebuilding clean 2D layout…");
+    if (!target) {
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setNativeDoubleBondSidePreview(undefined);
+      setObjectContextMenu(undefined);
+      reportStatus("Rebuilding clean 2D layout…");
+    }
     // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
-    void (async () => {
+    await (async () => {
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
-        const changed = commitDocumentChange((current) =>
+        const changed = commit((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
             warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
           })
         );
-        setStatus((changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout") + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
+        reportStatus((changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout") + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
-        setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (target) throw error;
+        reportStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
@@ -5499,12 +5555,17 @@ export function MainWindow({
   // and ARMS the tug attach; the attach effect below opens the sidecar session seeded from
   // that conformer and streams eased coordinates back into the same overlay. There is no
   // separate window or WebGL stage — the molecule the user manipulates IS the drawing.
-  const openInteractive3dWorkspace = useCallback(async () => {
-    const currentDocument = documentRef.current;
+  const openInteractive3dWorkspace = useCallback(async (target?: AssistantCommandTarget) => {
+    const assertViewTarget = () => {
+      target?.assertActive();
+      if (target && target.tabId !== activeDocumentTabIdRef.current) throw new Error("Activate the assistant's document tab to open its 3D view.");
+    };
+    assertViewTarget();
+    const currentDocument = target?.getDocument() ?? documentRef.current;
     const selectedObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...(!target && selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
       ])
     ];
 
@@ -5513,6 +5574,7 @@ export function MainWindow({
       return;
     }
     if (selectedObjectIds.length !== 1) {
+      if (target) throw new Error("Select a single structure for Interactive 3D");
       setStatus("Select a single structure for Interactive 3D");
       return;
     }
@@ -5520,12 +5582,14 @@ export function MainWindow({
     const objectId = selectedObjectIds[0];
     const object = objectId ? findDocumentObject(currentDocument, objectId) : undefined;
     if (object?.type !== "molecule" || !isNativeMoleculeGraph(object) || object.atoms.length < 2) {
+      if (target) throw new Error("Interactive 3D needs an editable native molecule");
       setStatus("Interactive 3D needs an editable native molecule");
       return;
     }
     // Same as Spin 3D: the sidecar optimises with UFF, whose metal geometry is not trustworthy.
     const unmodeledMetals = nativeMoleculeUnmodeledMetalElements(object);
     if (unmodeledMetals.length > 0) {
+      if (target) throw new Error(`Interactive 3D cannot model coordination geometry for ${formatElementList(unmodeledMetals)}.`);
       setStatus(
         `Interactive 3D can't model ${formatElementList(unmodeledMetals)}: UFF has no usable ` +
         "parameters for coordination geometry"
@@ -5534,7 +5598,9 @@ export function MainWindow({
     }
 
     const status = await readEngine3dSidecarStatus();
+    assertViewTarget();
     if (!status?.available) {
+      if (target) throw new Error("Interactive 3D unavailable; the sidecar is not configured or the Tauri bridge is absent.");
       setStatus(
         status
           ? `Interactive 3D unavailable; sidecar not configured: ${status.bundledBinaryName}`
@@ -5547,10 +5613,17 @@ export function MainWindow({
     // BOTH the fresh-embed path (spin3dState changes when the overlay mounts) and the reuse
     // path (spin overlay already up — only the token changes). Then ensure the spin overlay
     // is live: startSpin3d reuses a stored conformer or embeds a real one — never flat 2D.
-    interactive3dArmRef.current = { objectId };
-    setInteractive3dArmToken((token) => token + 1);
+    if (!target) {
+      interactive3dArmRef.current = { objectId };
+      setInteractive3dArmToken((token) => token + 1);
+    }
     if (spin3dStateRef.current?.objectId !== objectId) {
-      await startSpin3d();
+      await startSpin3d(target);
+    }
+    if (target) {
+      assertViewTarget();
+      interactive3dArmRef.current = { objectId };
+      setInteractive3dArmToken((token) => token + 1);
     }
   }, [selectedNativeMoleculePart, startSpin3d]);
 
@@ -9687,12 +9760,16 @@ export function MainWindow({
   // itself is created once (below) and its handlers delegate to this ref, so plugin
   // commands registered into the same registry survive re-renders (Phase 2 depends on this).
   const coreCommandBindings = useMemo(() => {
-    const bindings = new Map<string, { spec: CommandSpec; run: () => Promise<void> }>();
-    const register = (definition: CommandSpec, handler?: () => void | Promise<void>) => {
+    const bindings = new Map<string, { spec: CommandSpec; run: (target?: AssistantCommandTarget) => Promise<void>; acceptsDocumentTarget: boolean }>();
+    const register = (definition: CommandSpec, handler?: (target?: AssistantCommandTarget) => void | Promise<void>) => {
       bindings.set(definition.id, {
         spec: definition,
-        run: async () => {
-          await handler?.();
+        acceptsDocumentTarget: !!assistantCommand(definition.id),
+        run: async target => {
+          // Match commitDocumentChange's normalization before the assistant checks scope and
+          // chemistry. Charge-mark reconciliation can touch objects beyond the explicit selection.
+          await handler?.(target ? { ...target, commit: update => target.commit(current =>
+            normalizeCommittedDocument(typeof update === "function" ? update(current) : update)) } : undefined);
         }
       });
     };
@@ -9982,10 +10059,12 @@ export function MainWindow({
     });
 
     layerActions.forEach((action) => {
-      register(action, () => {
+      register(action, target => {
+        const commit = target?.commit ?? commitDocumentChange;
+        const reportStatus = target ? (_message: string) => {} : setStatus;
         if (isCompoundLayoutCommand(action.id)) {
-          if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
-          if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
+          if (!compoundLayoutsEnabled) { reportStatus("Enable Compound layout tools in Settings"); return; }
+          if (selectedArrangementObjectIds(documentRef.current).length < 2) { reportStatus("Select at least two objects or groups"); return; }
           if (action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(); return; }
           const layout = arrangementLayoutForCommand(action.id)!;
           let operationStatus = "";
@@ -9993,12 +10072,12 @@ export function MainWindow({
             const result = arrangeSelectedDocumentObjects(current, layout, { gridAlignment: arrangementGridAlignmentForCommand(action.id) });
             operationStatus = result.status; return result.document;
           }, action.title);
-          setStatus(operationStatus); return;
+          reportStatus(operationStatus); return;
         }
         if (action.id === distributeModeCommandIds.centers || action.id === distributeModeCommandIds.spacing) {
           const nextMode: DocumentDistributeMode = action.id === distributeModeCommandIds.spacing ? "spacing" : "centers";
           setDistributeMode(nextMode);
-          setStatus(nextMode === "spacing" ? "Distribute mode: equal gaps" : "Distribute mode: centers");
+          reportStatus(nextMode === "spacing" ? "Distribute mode: equal gaps" : "Distribute mode: centers");
           return;
         }
 
@@ -10012,69 +10091,69 @@ export function MainWindow({
           });
           setHoveredNativeAtom(undefined);
           setSelectedNativeMoleculePart(undefined);
-          setStatus(operationStatus || (changed ? action.title : "Select at least two closed art shapes"));
+          reportStatus(operationStatus || (changed ? action.title : "Select at least two closed art shapes"));
           return;
         }
 
         if (action.id === "layout.flipHorizontal" || action.id === "layout.flipVertical") {
           const axis = action.id === "layout.flipHorizontal" ? "horizontal" : "vertical";
-          const changed = commitDocumentChange((current) => flipSelectedDocumentObjects(current, axis));
-          setStatus(changed ? action.title : "No selected object");
+          const changed = commit((current) => flipSelectedDocumentObjects(current, axis));
+          reportStatus(changed ? action.title : "No selected object");
           return;
         }
 
         const alignMode = alignModeForCommandId(action.id);
         if (alignMode) {
-          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode));
-          setStatus(changed ? action.title : "Select at least two objects");
+          const changed = commit((current) => alignSelectedDocumentObjects(current, alignMode));
+          reportStatus(changed ? action.title : "Select at least two objects");
           return;
         }
 
         const distributeAxis = distributeAxisForCommandId(action.id);
         if (distributeAxis) {
-          const changed = commitDocumentChange((current) =>
+          const changed = commit((current) =>
             distributeSelectedDocumentObjects(current, distributeAxis, distributeMode)
           );
-          setStatus(changed ? action.title : "Select at least three objects");
+          reportStatus(changed ? action.title : "Select at least three objects");
           return;
         }
 
         if (action.id === "layout.rotate90") {
-          const changed = commitDocumentChange((current) => rotateSelectedDocumentObjects90(current));
-          setStatus(changed ? action.title : "No selected object");
+          const changed = commit((current) => rotateSelectedDocumentObjects90(current));
+          reportStatus(changed ? action.title : "No selected object");
           return;
         }
 
         if (action.id === "layout.duplicate") {
           const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current));
-          setStatus(changed ? action.title : "No selected object");
+          reportStatus(changed ? action.title : "No selected object");
           return;
         }
 
         if (action.id === "layout.group") {
-          const changed = commitDocumentChange((current) => groupSelectedDocumentObjects(current));
-          setStatus(changed ? "Grouped selection" : "Select at least two objects");
+          const changed = commit((current) => groupSelectedDocumentObjects(current));
+          reportStatus(changed ? "Grouped selection" : "Select at least two objects");
           return;
         }
 
         if (action.id === "layout.ungroup") {
-          const changed = commitDocumentChange((current) => ungroupSelectedDocumentObjects(current));
-          setStatus(changed ? "Ungrouped selection" : "Select a group");
+          const changed = commit((current) => ungroupSelectedDocumentObjects(current));
+          reportStatus(changed ? "Ungrouped selection" : "Select a group");
           return;
         }
 
         let result: LayerCommandSelectionResult | undefined;
-        const changed = commitDocumentChange((current) => {
-          result = applyLayerCommandToDocumentSelection(current, action.id, { selectedNativeMoleculePart });
+        const changed = commit((current) => {
+          result = applyLayerCommandToDocumentSelection(current, action.id, { selectedNativeMoleculePart: target ? undefined : selectedNativeMoleculePart });
           return result.document;
         });
         if (result?.bondDepthCommandId) {
-          setStatus(changed
+          reportStatus(changed
             ? bondDepthStatusForCommand(result.bondDepthCommandId)
             : result.bondDepthContext ? "Bond depth unchanged" : "No crossing bond under selected molecule part");
           return;
         }
-        setStatus(changed ? action.title : "No selected object");
+        reportStatus(changed ? action.title : "No selected object");
       });
     });
 
@@ -10121,29 +10200,29 @@ export function MainWindow({
         return;
       }
 
-      register(tool, () => {
+      register(tool, async target => {
         if (isDisabledPlaceholderCommand(tool)) {
           setStatus(tool.disabledReason ?? "Tool unavailable");
           return;
         }
 
         if (tool.id === structureCleanupCommandId) {
-          cleanUpSelectedStructure();
+          await cleanUpSelectedStructure(target);
           return;
         }
 
         if (tool.id === structureSpin3dCommandId) {
-          void startSpin3d();
+          await startSpin3d(target);
           return;
         }
 
         if (tool.id === structureInteractive3dCommandId) {
-          void openInteractive3dWorkspace();
+          await openInteractive3dWorkspace(target);
           return;
         }
 
         if (tool.id === structureCleanup3dCommandId) {
-          cleanUpSelectedStructure3d();
+          await cleanUpSelectedStructure3d(target);
           return;
         }
 

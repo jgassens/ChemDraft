@@ -5365,6 +5365,90 @@ export function moleculeAnchorForArrangement(object:MoleculeObject):LayoutPoint 
   return transformPointForObject(object,point);
 }
 
+/** Page-space centroid and oriented principal axis for rigid figure placement. A named ring
+ * uses the same polygon centroid as rendering; otherwise molecules use their atom centroid.
+ * The axis sign is fixed in local coordinates, then follows the object's authored rotation. */
+export function figurePlacementFrame(object: DocumentObject, targetRing?: string | NativeMoleculeRing): { center: LayoutPoint; axis: LayoutPoint } {
+  const ring = typeof targetRing === "string" ? object.type === "molecule"
+    ? nativeMoleculeRings(object).find(r => r.ringKey === targetRing) : undefined : targetRing;
+  if (targetRing && !ring) throw new Error(`Ring ${targetRing} does not exist in ${object.id}.`);
+  const points = ring ? ring.points : object.type === "molecule" ? object.atoms : [];
+  const center = ring ? ring.center : points.length ? {
+    x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+    y: points.reduce((sum, p) => sum + p.y, 0) / points.length
+  } : objectRotationCenter(object);
+  let xx = 0, yy = 0, xy = 0;
+  for (const p of points) { const x = p.x - center.x, y = p.y - center.y; xx += x * x; yy += y * y; xy += x * y; }
+  // Near-isotropic rings use local x; tiny round-off must not flip an axis by 90 degrees.
+  let angle = Math.hypot(xx - yy, 2 * xy) < 1e-8 * Math.max(1, xx + yy) ? 0 : Math.atan2(2 * xy, xx - yy) / 2;
+  if (Math.abs(Math.cos(angle)) < 1e-8) angle = Math.PI / 2;
+  const oriented = angle + degreesToRadians(object.rotation);
+  return { center: transformPointForObject(object, center), axis: { x: Math.cos(oriented), y: Math.sin(oriented) } };
+}
+
+/** Rigid placement uses the renderer's rotation convention, in degrees clockwise on the page. */
+export function rotateFigurePoint(point: LayoutPoint, center: LayoutPoint, degrees: number): LayoutPoint {
+  return rotatePoint(point, center, degreesToRadians(degrees));
+}
+
+/** Choose over/under only at actual rendered intersections. No bonds or geometry are invented.
+ * The positive normal of the target ring's long axis is its front side. A passage along that
+ * axis uses the axis itself when the normal cannot distinguish the intersections. This handles
+ * both an axle and a partner macrocycle, including multiple bonds at either side of a passage. */
+export function planFigureInterlockCrossings(page: DocumentPage, objectIds: readonly string[], targetId: string,
+  ringKey?: string): CrossingOverride[] {
+  const target = page.objects.find(object => object.id === targetId);
+  if (!target || target.type !== "molecule") throw new Error("Auto crossings require a molecule with a target ring.");
+  const rings = nativeMoleculeRings(target);
+  const ring = ringKey ? rings.find(r => r.ringKey === ringKey) : [...rings].sort((a, b) => b.area - a.area || a.ringKey.localeCompare(b.ringKey))[0];
+  if (!ring) throw new Error(`Auto crossings require an existing ring in ${targetId}.`);
+  const frame = figurePlacementFrame(target, ring);
+  const normal = { x: -frame.axis.y, y: frame.axis.x };
+  const resolved = planPageSvgRender(page).crossings;
+  const overrides: CrossingOverride[] = [];
+  const molecules = page.objects.filter(object => objectIds.includes(object.id) && object.type === "molecule");
+  if (!molecules.length) throw new Error("Auto crossings require a placed molecule.");
+  for (const molecule of molecules) {
+    const crossings = resolved.filter(c => c.bonds.some(b => b.objectId === molecule.id) && c.bonds.some(b => b.objectId === targetId));
+    const onRing = crossings.map(c => c.bonds.some(b => b.objectId === targetId && ring.bondIds.includes(b.bondId)));
+    if (onRing.filter(Boolean).length < 2) throw new Error(`Auto crossings need at least two intersections between ${molecule.id} and ring ${ring.ringKey}; adjust offset or rotation and retry.`);
+    let sideAxis = normal;
+    // In a ring-to-ring interlock the two passages lie on either side of the line joining
+    // the apertures. Splitting by whole-object depth would put an entire ring in front.
+    if (molecule.type === "molecule") {
+      const partnerRing = nativeMoleculeRings(molecule).filter(r => r.atomIds.length >= 12)
+        .sort((a, b) => b.area - a.area || a.ringKey.localeCompare(b.ringKey))[0];
+      if (partnerRing) {
+        const partner = figurePlacementFrame(molecule, partnerRing).center;
+        const dx = partner.x - frame.center.x, dy = partner.y - frame.center.y;
+        const length = Math.hypot(dx, dy);
+        if (length > 1e-6) {
+          sideAxis = { x: -dy / length, y: dx / length };
+          const orientation = sideAxis.x * normal.x + sideAxis.y * normal.y;
+          const sign = Math.abs(orientation) > 1e-6 ? orientation : sideAxis.x * frame.axis.x + sideAxis.y * frame.axis.y;
+          if (sign < 0) sideAxis = { x: -sideAxis.x, y: -sideAxis.y };
+        }
+      }
+    }
+    const project = (axis: LayoutPoint) => crossings.map(c => (c.point.x - frame.center.x) * axis.x + (c.point.y - frame.center.y) * axis.y);
+    let sides = project(sideAxis);
+    let ringSides = sides.filter((_, index) => onRing[index]);
+    if (Math.max(...ringSides) - Math.min(...ringSides) < 1e-6) {
+      sides = project(frame.axis); ringSides = sides.filter((_, index) => onRing[index]);
+    }
+    const low = Math.min(...ringSides), high = Math.max(...ringSides);
+    if (high - low < 1e-6) throw new Error("Auto crossings cannot distinguish the two sides of this interlock; provide explicit crossings.");
+    const middle = (low + high) / 2;
+    // Apply the side choice to the partner's other bonds too (e.g. both edges of a
+    // pyridinium unit), so a second edge cannot silently revert to whole-object depth.
+    crossings.forEach((crossing, index) => {
+      const overId = sides[index]! > middle ? molecule.id : targetId;
+      overrides.push({ bonds: crossing.bonds, front: crossing.bonds.find(b => b.objectId === overId)! });
+    });
+  }
+  return overrides;
+}
+
 /** Visible labels can extend beyond a molecule's stored atom frame (notably long nicknames). */
 export function moleculeVisualBoundsForArrangement(object: MoleculeObject): LayoutBounds {
   const bounds = [object, ...planMoleculeAtomLabels(object).map((plan) => ({

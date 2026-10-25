@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { applyPatch } from "@chemdraft/chem-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../../packages/rdkit-adapter/src/conformer";
 import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
@@ -6,6 +7,8 @@ import { callAssistantTool } from "./assistantTools";
 import { buildInsertStructures, inspectMolecule } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
 import type { AssistantToolContext } from "./AssistantToolContext";
+import { testCommandRegistry } from "./testCommandRegistry";
+import { translateObject } from "./writeBuilder";
 
 beforeAll(() => installNodeRdkitModuleLoader());
 function realContext(selected = true): AssistantToolContext {
@@ -93,5 +96,49 @@ describe("RDKit assistant write identity", () => {
       const input = await context.chemistry.inspectStructure("smiles", smiles);
       expect((await inspectMolecule(context, object)).canonicalSmiles).toBe(input.valid ? input.canonicalSmiles : "");
     }
+  });
+});
+
+describe("RDKit registry command stereochemistry guard", () => {
+  it.each(["structure.cleanup2d", "structure.cleanup3d"].flatMap(id => [
+    { id, beforeSmiles: "F[C@H](Cl)Br", afterSmiles: "F[C@@H](Cl)Br", reason: "stereochemistry" },
+    { id, beforeSmiles: "F/C=C/Cl", afterSmiles: "F/C=C\\Cl", reason: "stereochemistry" },
+    { id, beforeSmiles: "CCO", afterSmiles: "CCN", reason: "identity" }
+  ]))("$id refuses a change to $reason ($beforeSmiles)", async ({ id, beforeSmiles, afterSmiles, reason }) => {
+    const context = realContext();
+    const objectId = context.getSelectionAtSend()[0]!;
+    const build = async (smiles: string) => ({ ...createSmilesMolecule(context.getDocument()!, { x: 200, y: 200 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles)), smiles), id: objectId });
+    const source = await build(beforeSmiles);
+    await context.write({ op: "updateObject", objectId, changes: source });
+    vi.mocked(context.write).mockClear();
+    const replacement = await build(afterSmiles);
+    const before = structuredClone(context.getDocument());
+    if (source.type !== "molecule") throw new Error("Expected molecule");
+    const expected = await context.chemistry.inspectStructure("smiles", beforeSmiles);
+    expect((await inspectMolecule(context, source)).canonicalSmiles).toBe(expected.valid && expected.canonicalSmiles);
+    testCommandRegistry(context, id, target => {
+      // Two tentative commits: even the earlier safe coordinate change must never land.
+      target.commit(doc => applyPatch(doc, { op: "updateObject", objectId, changes: translateObject(source, 50, 20) }));
+      target.commit(doc => applyPatch(doc, { op: "updateObject", objectId, changes: replacement }));
+    });
+    expect(await callAssistantTool(context, "run_command", { id })).toMatchObject({ isError: true,
+      content: [{ text: `refused: would change ${reason}` }] });
+    expect(context.write).not.toHaveBeenCalled();
+    expect(context.getDocument()).toEqual(before);
+  });
+  it.each(["F[C@H](Cl)Br", "F/C=C/Cl"])("accepts coordinate changes preserving %s", async smiles => {
+    const context = realContext();
+    const objectId = context.getSelectionAtSend()[0]!;
+    const object = { ...createSmilesMolecule(context.getDocument()!, { x: 200, y: 200 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles)), smiles), id: objectId };
+    await context.write({ op: "updateObject", objectId, changes: object });
+    vi.mocked(context.write).mockClear();
+    testCommandRegistry(context, "structure.cleanup2d", target => {
+      target.commit(doc => applyPatch(doc, { op: "updateObject", objectId, changes: translateObject(object, 50, 20) }));
+    });
+    const result = await callAssistantTool(context, "run_command", { id: "structure.cleanup2d" });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(context.write).toHaveBeenCalledOnce();
   });
 });

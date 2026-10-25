@@ -1,4 +1,4 @@
-import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { figurePlacementFrame, nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { assistantScope, requireDocument, type AssistantToolContext } from "./AssistantToolContext";
 
@@ -57,7 +57,12 @@ export async function documentSummary(context: AssistantToolContext, options: {
         const labels = object.atoms.filter(atom => atom.labelLiteral);
         if (labels.length) entry.atomLabels = labels.slice(0, 100).map(atom => ({ atomId: atom.id, label: atom.element, literal: true }));
         if (labels.length > 100) summary.truncated = true;
-        entry.ringKeys = nativeMoleculeRings(object).slice(0, 100).map(ring => ring.ringKey);
+        const rings = nativeMoleculeRings(object).slice(0, 100);
+        entry.ringKeys = rings.map(ring => ring.ringKey);
+        entry.rings = rings.map(ring => ({ ringKey: ring.ringKey, atomCount: ring.atomIds.length,
+          bondIds: ring.bondIds, ...figurePlacementFrame(object, ring) }));
+        entry.bonds = object.bonds.slice(0, 1000).map(bond => ({ bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId }));
+        if (object.bonds.length > 1000) summary.truncated = true;
         if (options.includeSmiles !== false) {
           try {
             const warnings: string[] = [];

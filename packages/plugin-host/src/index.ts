@@ -3,7 +3,7 @@
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
-import { applyPatch } from "@chemdraft/chem-core";
+import { applyPatch, CrossingOverrideSchema, sameCrossingBondPair } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
@@ -1003,7 +1003,16 @@ export class PluginHost {
     invocationToken: symbol | undefined,
     patch: ProposedDocumentPatch,
     /** Trusted embedding-host override, never exposed on the plugin context. */
-    requestScope?: { objectIds: readonly string[]; apply: NonNullable<PluginHostOptions["applyDocumentPatch"]> }
+    requestScope?: {
+      objectIds: readonly string[];
+      /** Trusted host attestation: apply writes into this live assistant request's undo transaction.
+       * Never exposed on a plugin context; the embedding host rechecks liveness when applying. */
+      assistantTransactionId?: string;
+      /** Trusted host read of the request's own document (an assistant run is bound to its tab,
+       * not the active one). Crossing scope is checked against it; absent, the active document. */
+      getDocument?: () => ChemDraftDocument | undefined;
+      apply: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
+    }
   ): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
     const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) :
@@ -1015,8 +1024,37 @@ export class PluginHost {
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
     const scope = new Set(requestScope?.objectIds ?? invocation.writeScope);
+    let crossingDocument: ChemDraftDocument | undefined;
     for (const op of writePatchOps(parsedPatch.patch)) {
-      if (!(DirectWritePatchOps as readonly string[]).includes(op.op)) {
+      const crossing = op.op === "setCrossingOverride" || op.op === "clearCrossingOverride";
+      if (crossing && !requestScope?.assistantTransactionId?.trim()) {
+        throw new PluginHostError(`Plugin "${pluginId}" may write crossings only inside an assistant request transaction.`);
+      }
+      if (crossing) {
+        // ProposedDocumentPatchSchema validates the envelope, not native op payloads. Never
+        // forward malformed references or a third front owner to the transaction sink.
+        const parsed = CrossingOverrideSchema.safeParse(op.op === "setCrossingOverride" ? op.crossing :
+          { bonds: op.bonds, front: op.bonds?.[0] });
+        if (!parsed.success || typeof op.pageId !== "string" || !op.pageId.trim()) {
+          throw new PluginHostError(`Invalid ${op.op} patch: provide a pageId and two distinct bond references, with front belonging to the pair.`);
+        }
+        crossingDocument ??= requestScope?.getDocument ? requestScope.getDocument() : await this.getActiveDocument?.();
+        if (!crossingDocument) {
+          throw new PluginHostError("Cannot check crossing write scope without an active document.");
+        }
+        // Check the owners of every existing entry the native operation can replace or clear,
+        // using the same structured identity as chem-core rather than trusting supplied owners.
+        const existing = crossingDocument.pages.find(page => page.id === op.pageId)?.crossings ?? [];
+        for (const candidate of existing) {
+          if (!sameCrossingBondPair(candidate.bonds, parsed.data.bonds)) continue;
+          for (const ref of candidate.bonds) {
+            if (!scope.has(ref.objectId)) {
+              throw new PluginHostError(`${ref.objectId} was not selected when the command started`);
+            }
+          }
+        }
+      }
+      if (!crossing && !(DirectWritePatchOps as readonly string[]).includes(op.op)) {
         throw new PluginHostError(`Plugin "${pluginId}" passed an unsupported "${op.op}" patch to documents.applyPatch.`);
       }
       if (op.op === "addObject" || op.op === "addAnnotation") {
@@ -1030,7 +1068,9 @@ export class PluginHost {
         }
         scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
       } else {
-        const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
+        const ids = op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+          op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
+          op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
         for (const id of ids) {
           if (!scope.has(id)) throw new PluginHostError(`${id} was not selected when the command started`);
         }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sameBondRef } from "./crossings";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -384,10 +385,6 @@ export const BondRefSchema = z
   })
   .strict();
 
-function bondRefKey(ref: z.infer<typeof BondRefSchema>): string {
-  return `${ref.objectId}::${ref.bondId}`;
-}
-
 export const CrossingOverrideSchema = z
   .object({
     bonds: z.tuple([BondRefSchema, BondRefSchema]),
@@ -397,7 +394,7 @@ export const CrossingOverrideSchema = z
   .strict()
   .superRefine((crossing, context) => {
     const [left, right] = crossing.bonds;
-    if (bondRefKey(left) === bondRefKey(right)) {
+    if (sameBondRef(left, right)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["bonds"],
@@ -405,8 +402,7 @@ export const CrossingOverrideSchema = z
       });
     }
 
-    const frontKey = bondRefKey(crossing.front);
-    if (frontKey !== bondRefKey(left) && frontKey !== bondRefKey(right)) {
+    if (!sameBondRef(crossing.front, left) && !sameBondRef(crossing.front, right)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["front"],

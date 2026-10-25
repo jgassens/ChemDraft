@@ -11,6 +11,15 @@ export type AssistantStructureInspection =
   | { valid: true; canonicalSmiles: string; formula: string; heavyAtoms: number; warnings: string[] }
   | { valid: false; reason: string };
 
+/** Host-only target for the same core handlers used by menus. Commits stage an isolated result. */
+export interface AssistantCommandTarget {
+  tabId: string;
+  getDocument(): ChemDraftDocument;
+  commit(next: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)): boolean;
+  /** Recheck the request lifetime and source document before any deferred effect. */
+  assertActive(): void;
+}
+
 /** All hooks are bound to the run's tab, never the currently active tab. */
 export interface AssistantToolContext {
   plugin: Pick<PluginManifest, "id" | "name" | "permissions">;
@@ -24,6 +33,10 @@ export interface AssistantToolContext {
   signal?: AbortSignal;
   /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
   confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
+  commands?: {
+    has(id: string): boolean;
+    invoke(id: string, target: AssistantCommandTarget): Promise<void>;
+  };
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.
    * Recheck the signal and preparation preconditions after waiting for an active canvas gesture.
    * expectedSmiles comes only from the typed insert/edit builders; other writes preserve identity.

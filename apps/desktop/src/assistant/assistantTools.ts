@@ -6,6 +6,7 @@ import { toolJsonSchema, toolSchemas, type AssistantToolName, type ToolInput } f
 import * as read from "./tools/read";
 import * as chemistry from "./tools/chemistry";
 import * as write from "./tools/write";
+import * as commands from "./tools/commands";
 
 export interface AssistantToolResult {
   content: ({ type: "text"; text: string } | { type: "image"; mimeType: "image/png"; data: string })[];
@@ -29,22 +30,23 @@ function define<N extends AssistantToolName>(name: N, description: string, permi
   return { name, description, inputSchema: toolJsonSchema(name), permissions, timeoutMs, readOnly,
     handler: async (context, input) => handler(context, toolSchemas[name].parse(input) as ToolInput<N>) };
 }
-// The amended table enumerates fourteen names (four reads, three chemistry, seven writes).
 export const ASSISTANT_TOOLS: readonly AssistantToolDefinition[] = [
-  define("get_document", "Read a bounded summary of the pinned document. inScope marks objects the request may change.", READ, true, read.getDocument),
+  define("list_commands", "Discover ChemDraft's allowed drawing, layout, cleanup and 3D commands. Call this before saying ChemDraft cannot do something; use run_command for a matching capability.", READ, true, commands.listCommands),
+  define("run_command", "Run an id returned by list_commands on the selection captured at Send. Writes use this request's scope and one Undo entry; cleanup refuses identity or stereochemistry changes. 3D view commands open the view without editing the document. Current commands take no args.", [...CHEM_WRITE, "selection.read", "native.execute"], false, commands.runCommand, 60_000),
+  define("get_document", "Read a bounded summary of the pinned document. inScope marks objects the request may change; rings and bond IDs support figure placement and explicit crossing references.", READ, true, read.getDocument),
   define("get_selection", "Read the objects selected when Send was pressed; empty means only insertion is allowed.", ["selection.read"], true, read.getSelection),
   define("get_structure", "Read a molecule's live graph as SMILES or molfile, with conversion warnings.", READ, true, read.getStructure),
   define("render", "Render a page or objects as PNG, at most 4 MiB and 1568 px by default.", READ, true, read.render),
   define("name_to_structure", "Parse a chemical name with the local OPSIN engine.", ["chemistry.compute", "native.execute"], true, chemistry.nameToStructure, 60_000),
   define("validate_smiles", "Validate SMILES using RDKit, reporting canonical SMILES, formula, and heavy atom count (maximum 500).", ["chemistry.compute"], true, chemistry.validateSmiles),
   define("structure_to_name", "Name a document molecule using the installed naming engine; never opens an install dialog.", ["chemistry.compute", "native.execute", "selection.read"], true, chemistry.structureToName, 60_000),
-  define("insert_structures", "Insert up to 24 molecule/group/text items in a host-positioned row or grid. Molecule labels are captions; group labels are native abbreviation or condensed-formula atoms (e.g. methyl: {kind:'group',label:'CH3'}, Ph, Boc, OTs).", CHEM_WRITE, false, write.insertStructures, 60_000),
-  define("insert_reaction", "Insert a reaction scheme with up to six reactants and six products, plus reagent and condition labels.", CHEM_WRITE, false, write.insertReaction, 60_000),
-  define("insert_text", "Insert up to 2000 characters, optionally beside a document object. The host chooses coordinates.", WRITE, false, write.insertText),
+  define("insert_structures", "Insert up to 24 molecule/group/text items in a host-positioned row or grid. Molecule labels are captions; group labels are native abbreviation or condensed-formula atoms (e.g. methyl: {kind:'group',label:'CH3'}, Ph, Boc, OTs). Optional to anchors the figure at a center, ring centroid or axis with bond-length offsets and rotation; zOrder sets stacking and crossings:auto or explicit over/under bond references create interlocks without merging molecules. Both crossing objects must be in scope. Render to inspect and refine.", CHEM_WRITE, false, write.insertStructures, 60_000),
+  define("insert_reaction", "Insert a reaction scheme with up to six reactants and six products, plus reagent and condition labels. Optional to anchors the whole scheme as a rigid figure; zOrder and crossings use the same scoped batch.", CHEM_WRITE, false, write.insertReaction, 60_000),
+  define("insert_text", "Insert up to 2000 characters, optionally beside an object or at a to center/ring/axis anchor, with bond-length offset, rotation and zOrder. The host computes page coordinates.", WRITE, false, write.insertText),
   define("edit_structure", "Replace an in-scope molecule with verified SMILES, preserving its centre by default.", CHEM_WRITE, false, write.editStructure, 60_000),
   define("delete_objects", "Delete up to 100 in-scope objects. Any out-of-scope id refuses the entire call.", WRITE, false, write.deleteObjects),
   define("style_objects", "Change only style on up to 100 in-scope objects; atoms and bonds stay unchanged.", WRITE, false, write.styleObjects),
-  define("move_objects", "Move up to 100 in-scope objects beside another object or into a row/grid, using host coordinates.", WRITE, false, write.moveObjects)
+  define("move_objects", "Move up to 100 in-scope objects beside another or into a row/grid. For threading use to:{relativeTo,anchor:'center'|{ringKey}|'axis',offset?:{dx,dy},rotateDeg?}; offsets are page-axis bond lengths, axis aligns long axes before rotation. Explicit anchors allow overlap. crossings:'auto' makes an axle pass over one ring side and under the other, and handles ring-to-ring interlocks; both objects must be in scope. For a catenane offset the rings until they intersect; for Olympiadane place three CBPQT4+ rings and two crown macrocycles successively in a chain. If auto refuses, render and adjust offset/rotation or give [{over:{objectId,bondId},under:{objectId,bondId}}]. zOrder:'front'|'behind'|{above:id}|{below:id} changes whole-object stacking, not threading; its whole-page order requires all page objects in scope. Chemistry and separate molecules are preserved.", WRITE, false, write.moveObjects)
 ];
 export function listAssistantTools() {
   return ASSISTANT_TOOLS.map(({ name, description, inputSchema, readOnly }) => ({ name, description,
@@ -53,7 +55,7 @@ export function listAssistantTools() {
 function result(value: unknown): AssistantToolResult {
   if (value && typeof value === "object" && "content" in value) return value as AssistantToolResult;
   return { content: [{ type: "text", text: JSON.stringify(value) }],
-    ...(value && typeof value === "object" ? { structuredContent: value as Record<string, unknown> } : {}) };
+    ...(value && typeof value === "object" && !Array.isArray(value) ? { structuredContent: value as Record<string, unknown> } : {}) };
 }
 
 /** Runtime validation and permission enforcement also apply to in-process callers. */
@@ -75,7 +77,9 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
       if (!context.plugin.permissions.includes(permission)) throw new Error(`Assistant tool ${name} requires ${permission}.`);
     }
     // Share run scope with the original context, but prevent work finishing after the deadline from writing.
-    const guarded: AssistantToolContext = { ...context, signal: abort.signal, getInsertedObjectIds: () => [...assistantScope(context)],
+    const guarded: AssistantToolContext = { ...context, signal: abort.signal,
+      getDocument: () => active ? context.getDocument() : undefined,
+      getInsertedObjectIds: () => [...assistantScope(context)],
       confirmPageGrowth: async growth => {
         abort.signal.throwIfAborted();
         if (timer) clearTimeout(timer);

@@ -33,7 +33,7 @@ export interface AssistantToolsControllerOptions {
   runWrite: PluginWriteGate["run"];
   readDocument?(tabId: string): ChemDraftDocument | undefined;
   transactions?(): AssistantTransactions;
-  createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now">;
+  createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now" | "commands">;
 }
 
 /** Owns request lifetimes; plugin code receives only the typed, permission-checked host facade. */
@@ -112,8 +112,8 @@ export class AssistantToolsController implements PluginHostAssistant {
           this.running(plugin, requestId);
           abort.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (prompted || !["insert_structures", "insert_reaction", "insert_text"].includes(input.name)) {
-            throw new Error("Page growth is only available once per assistant insertion.");
+          if (prompted || !["insert_structures", "insert_reaction", "insert_text", "move_objects"].includes(input.name)) {
+            throw new Error("Page growth is only available once per assistant placement.");
           }
           prompted = true;
           const document = request.context.getDocument()!;
@@ -159,7 +159,10 @@ export class AssistantToolsController implements PluginHostAssistant {
           for (const op of writePatchOps(patch)) {
             if (op.op === "addObject" || op.op === "addAnnotation") scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
           }
-          const dependencies = new Set(writePatchOps(patch).flatMap(op => "objectId" in op ? [op.objectId] : []));
+          const dependencies = new Set(writePatchOps(patch).flatMap(op =>
+            op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+            op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
+            op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : []));
           // Relative placement also depends on the anchor, even though the patch never edits it.
           const toolInput = input.input as { relativeTo?: { objectId: string }; to?: { relativeTo?: string } };
           const anchor = toolInput?.relativeTo?.objectId ?? toolInput?.to?.relativeTo;
@@ -181,13 +184,16 @@ export class AssistantToolsController implements PluginHostAssistant {
             }
             return this.options.host().applyPatchForPlugin(plugin.id, undefined,
               { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
-                objectIds: [...request.selection, ...request.inserted],
+                objectIds: [...request.selection, ...request.inserted], assistantTransactionId: requestId,
+                getDocument: () => request.context.getDocument(),
                 apply: application => {
                   this.running(plugin, requestId);
                   if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
                   const before = request.context.getDocument()!;
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
-                    op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                    op.op === "addAnnotation" ? [op.annotation.id] :
+                    op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+                    op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
                   // Recompute after a gesture or concurrent tool call, including every nearby
                   // mark. No await separates this scope/chemistry recheck and the history commit.
                   const after = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);
