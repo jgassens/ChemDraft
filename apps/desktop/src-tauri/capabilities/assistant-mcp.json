@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "assistant-mcp",
+  "description": "Assistant MCP sessions for the document window.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-assistant-mcp-session-open",
+    "allow-assistant-mcp-session-close",
+    "allow-assistant-mcp-respond",
+    "allow-assistant-mcp-status"
+  ]
+}

@@ -1,7 +1,9 @@
+mod assistant_mcp;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
 mod export;
+mod external_tools;
 mod fonts;
 mod installed_plugins;
 mod local_engine;
@@ -16,9 +18,13 @@ mod ocsr_engine;
 mod opsin;
 mod panel_window;
 mod plugin_package;
+#[cfg(test)]
+mod plugin_panel_acl_tests;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
+#[cfg(test)]
+mod utility_suspension_tests;
 mod window_drag;
 mod windows_clipboard;
 
@@ -43,7 +49,7 @@ use tauri::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
     },
     webview::PageLoadEvent,
-    Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 #[cfg(target_os = "macos")]
@@ -628,6 +634,16 @@ fn default_menu_item_enabled() -> bool {
     true
 }
 
+fn plugin_menu_items_in<'a>(
+    items: &'a [PluginMenuItemInput],
+    location: &str,
+) -> Vec<&'a PluginMenuItemInput> {
+    items
+        .iter()
+        .filter(|item| item.location == location)
+        .collect()
+}
+
 /// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
 /// survive toolset-driven rebuilds, not only plugin syncs.
 #[derive(Default)]
@@ -884,6 +900,7 @@ pub fn run() {
         .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
+        .manage(external_tools::ExternalToolsState::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
         .manage(PluginNativeMenuItems::default())
@@ -1000,6 +1017,8 @@ pub fn run() {
                         APP_QUITTING.store(true, Ordering::SeqCst);
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                        external_tools::shutdown(window.app_handle());
+                        assistant_mcp::shutdown();
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
@@ -1164,6 +1183,14 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            // Programmatic panel removal hides a reusable window, so it produces neither
+            // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
+            // messages that clear the report and notify the host of a panel's close control.
+            for event in [PLUGIN_PANEL_REPORT_CLEARED_EVENT, PLUGIN_PANEL_CLOSED_EVENT] {
+                app.listen(event, |event| {
+                    cancel_plugin_panel_restore(&UTILITY_SUSPENSION, event.payload());
+                });
+            }
             problem_reports::install_panic_hook(app);
             #[cfg(target_os = "macos")]
             if let Err(error) = macos_quit::install(app) {
@@ -1172,6 +1199,7 @@ pub fn run() {
             let ocsr = app.state::<ocsr_engine::OcsrEngineState>();
             ocsr.start_idle_reaper();
             ocsr.remove_stale_staging(app);
+            external_tools::setup(app);
             let naming = app.state::<naming_engine::NamingEngineState>();
             naming.start_idle_reaper();
             naming.remove_stale_staging(app);
@@ -1226,6 +1254,23 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            assistant_mcp::assistant_mcp_session_open,
+            assistant_mcp::assistant_mcp_session_close,
+            assistant_mcp::assistant_mcp_respond,
+            assistant_mcp::assistant_mcp_status,
+            external_tools::external_tool_status,
+            external_tools::external_tool_install,
+            external_tools::external_tool_cancel_install,
+            external_tools::external_tool_uninstall,
+            external_tools::external_tool_sign_in,
+            external_tools::external_tool_consent_set,
+            external_tools::external_tool_consent_list,
+            external_tools::external_tool_consent_revoke,
+            external_tools::external_tool_consent_clear_plugin,
+            external_tools::external_tool_run_start,
+            external_tools::external_tool_run_poll,
+            external_tools::external_tool_run_cancel,
+            external_tools::external_tool_conversation_clear,
             diagnose_download_host,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
@@ -1251,6 +1296,8 @@ pub fn run() {
             plugin_storage_read,
             plugin_storage_write,
             open_plugin_panel_window,
+            plugin_panel_action_forward,
+            plugin_panel_event_forward,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
@@ -1327,6 +1374,8 @@ pub fn run() {
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                    external_tools::shutdown(app);
+                    assistant_mcp::shutdown();
                     app.state::<naming_engine::NamingEngineState>().shutdown();
                 }
             }
@@ -1336,6 +1385,8 @@ pub fn run() {
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
+                external_tools::shutdown(app);
+                assistant_mcp::shutdown();
                 app.state::<naming_engine::NamingEngineState>().shutdown();
             }
             // Dock-icon click with no visible windows; a macOS-only event.
@@ -2068,6 +2119,15 @@ fn buffer_utility_recovery_position<R: Runtime>(window: &tauri::WebviewWindow<R>
 fn restore_utility_in_document_group<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    // A close/removal may arrive after the restore list was collected or while a deferred
+    // WebView2 build was waiting for the main thread. Never reveal that cancelled window.
+    if !UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .needs_restore(window.label())
+    {
+        return Ok(());
+    }
     let app = window.app_handle();
     let main = app
         .get_webview_window(MAIN_WINDOW_LABEL)
@@ -2707,6 +2767,83 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelActionForwardRequest {
+    id: String,
+    request: serde_json::Value,
+}
+
+/// Only native IPC supplies `sourceLabel`; callers cannot nominate another panel's label.
+fn authenticated_plugin_panel_action(
+    label: &str,
+    request: PluginPanelActionForwardRequest,
+) -> Result<serde_json::Value, String> {
+    if !is_plugin_panel_window_label(label) {
+        return Err("Only a ChemDraft panel window may forward panel actions.".into());
+    }
+    Ok(serde_json::json!({
+        "id": request.id,
+        "request": request.request,
+        "sourceLabel": label,
+    }))
+}
+
+#[tauri::command]
+fn plugin_panel_action_forward(
+    window: tauri::WebviewWindow,
+    request: PluginPanelActionForwardRequest,
+) -> Result<(), String> {
+    let payload = authenticated_plugin_panel_action(window.label(), request)?;
+    window
+        .app_handle()
+        .emit_to(
+            MAIN_WINDOW_LABEL,
+            "chemdraft://plugin-panel-action",
+            payload,
+        )
+        .map_err(|error| error.to_string())
+}
+
+/// Panel windows cannot emit arbitrary events (including forged authenticated actions).
+/// Preserve their existing non-command bridges through this fixed list only.
+fn validate_plugin_panel_event(
+    label: &str,
+    event: &str,
+    payload: &serde_json::Value,
+) -> Result<(), String> {
+    if !is_plugin_panel_window_label(label) {
+        return Err("Only a ChemDraft panel window may forward panel events.".into());
+    }
+    match event {
+        "chemdraft://plugin-panel-request"
+        | "chemdraft://plugin-panel-rerun"
+        | "chemdraft://plugin-panel-closed" => {
+            let plugin_id = payload["pluginId"].as_str().ok_or("Missing panel owner.")?;
+            let panel_id = payload["panelId"].as_str().ok_or("Missing panel id.")?;
+            if plugin_panel_identity_window_label(plugin_id, panel_id) != label {
+                return Err("This event does not belong to its source panel.".into());
+            }
+            Ok(())
+        }
+        "chemdraft://analysis-window-action" => Ok(()),
+        _ => Err("This event cannot be forwarded by a panel window.".into()),
+    }
+}
+
+#[tauri::command]
+fn plugin_panel_event_forward(
+    window: tauri::WebviewWindow,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    validate_plugin_panel_event(window.label(), &event, &payload)?;
+    window
+        .app_handle()
+        .emit_to(MAIN_WINDOW_LABEL, &event, payload)
+        .map_err(|error| error.to_string())
+}
+
 /// The IPC injects the calling window; it never accepts a caller-selected target label.
 fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
     if is_plugin_panel_window_label(label) {
@@ -2841,6 +2978,44 @@ async fn set_plugin_panel_input_focus(
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
 const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
+const PLUGIN_PANEL_REPORT_CLEARED_EVENT: &str = "chemdraft://plugin-panel-report-cleared";
+const PLUGIN_PANEL_CLOSED_EVENT: &str = "chemdraft://plugin-panel-closed";
+
+/// Mirror panelBridge.ts's UTF-8 hex identity, including the plugin owner: contributed panel ids
+/// alone are not unique. Extra payload fields (such as the report revision) are intentionally ignored.
+fn cancel_plugin_panel_restore(
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+    payload: &str,
+) {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PanelIdentity {
+        plugin_id: String,
+        panel_id: String,
+    }
+    let Ok(identity) = serde_json::from_str::<PanelIdentity>(payload) else {
+        return;
+    };
+    if identity.plugin_id.is_empty() || identity.panel_id.is_empty() {
+        return;
+    }
+    let label = plugin_panel_identity_window_label(&identity.plugin_id, &identity.panel_id);
+    suspension
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .closed(&label);
+}
+
+fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String {
+    let hex = |value: &str| {
+        value
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
+}
 
 fn is_plugin_panel_window_label(label: &str) -> bool {
     label.len() > PLUGIN_PANEL_WINDOW_LABEL_PREFIX.len()
@@ -2867,6 +3042,67 @@ mod plugin_panel_label_tests {
         choose_analysis_window_position, is_plugin_panel_window_label, is_valid_plugin_storage_id,
         plugin_panel_window_label, OpenPluginPanelRequest, ScreenRect,
     };
+
+    #[test]
+    fn plugin_panel_action_forward_authenticates_the_injected_caller() {
+        use super::{authenticated_plugin_panel_action, PluginPanelActionForwardRequest};
+        let request = || PluginPanelActionForwardRequest {
+            id: "request-1".into(),
+            request: serde_json::json!({"panelId": "panel.b.chat", "sectionId": "message"}),
+        };
+        for label in ["main", "preferences", "toolset-core-main", "plugin-panel-"] {
+            assert!(authenticated_plugin_panel_action(label, request()).is_err());
+        }
+        let label = plugin_panel_window_label("v1x61x70616e656c");
+        let forwarded = authenticated_plugin_panel_action(&label, request()).unwrap();
+        assert_eq!(forwarded["sourceLabel"], label);
+        assert_eq!(forwarded["id"], "request-1");
+        assert_eq!(forwarded["request"]["panelId"], "panel.b.chat");
+        // Even a forged extra field is refused by the IPC argument schema.
+        assert!(
+            serde_json::from_value::<PluginPanelActionForwardRequest>(serde_json::json!({
+                "id": "forged", "request": {}, "sourceLabel": "plugin-panel-other"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn plugin_panel_event_forward_cannot_spoof_authenticated_actions() {
+        use super::validate_plugin_panel_event;
+        let label = plugin_panel_window_label("v1x61x62");
+        let payload = serde_json::json!({"pluginId": "a", "panelId": "b"});
+        for event in [
+            "chemdraft://plugin-panel-action",
+            "chemdraft://plugin-panel-action-result",
+            "menu-command",
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_err());
+        }
+        for event in [
+            "chemdraft://plugin-panel-request",
+            "chemdraft://plugin-panel-rerun",
+            "chemdraft://plugin-panel-closed",
+            "chemdraft://analysis-window-action",
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_ok());
+            assert!(validate_plugin_panel_event("main", event, &payload).is_err());
+        }
+        for event in [
+            "chemdraft://plugin-panel-request",
+            "chemdraft://plugin-panel-rerun",
+            "chemdraft://plugin-panel-closed",
+        ] {
+            assert!(validate_plugin_panel_event(
+                &label,
+                event,
+                &serde_json::json!({
+                    "pluginId": "other", "panelId": "b"
+                })
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
@@ -3220,12 +3456,20 @@ fn resume_deferred_plugin_panels(
                 .release(true);
             return Ok(());
         }
+        if !suspension
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .needs_restore(&label)
+        {
+            continue;
+        }
         request._focus = false;
         if let Err(error) = builder(request.clone()) {
-            suspension
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .defer_panel(label, request);
+            let mut state = suspension.lock().unwrap_or_else(|p| p.into_inner());
+            // A removal during the native build must not be undone by its error/retry path.
+            if state.needs_restore(&label) {
+                state.defer_panel(label, request);
+            }
             result = Err(error);
         } else {
             suspension
@@ -5770,9 +6014,8 @@ fn build_analyze_submenu<R: Runtime>(
     // Separates the core Analyze commands from the plugin-contributed items below them.
     let core_separator = PredefinedMenuItem::separator(app)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let plugin_menu_items = plugin_items
-        .iter()
-        .filter(|item| item.location == "analyze")
+    let plugin_menu_items = plugin_menu_items_in(plugin_items, "analyze")
+        .into_iter()
         .map(|item| {
             MenuItem::with_id(
                 app,
@@ -5858,10 +6101,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             )?,
         ],
     )?;
-    let structure_plugin_items = plugin_items
-        .iter()
-        .filter(|item| item.location == "structure")
-        .collect::<Vec<_>>();
+    let structure_plugin_items = plugin_menu_items_in(plugin_items, "structure");
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in structure_plugin_items {
@@ -5887,6 +6127,19 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             None::<&str>,
         )?],
     )?;
+    let plugins_plugin_items = plugin_menu_items_in(plugin_items, "plugins");
+    if !plugins_plugin_items.is_empty() {
+        plugins_menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for item in plugins_plugin_items {
+            plugins_menu.append(&MenuItem::with_id(
+                app,
+                item.id.as_str(),
+                item.label.as_str(),
+                item.enabled,
+                None::<&str>,
+            )?)?;
+        }
+    }
 
     Menu::with_items(
         app,
@@ -8215,6 +8468,7 @@ mod tests {
         send_sync::<QuitFlow>();
         send_sync::<tauri::AppHandle<tauri::Wry>>();
         send_sync::<ocsr_engine::OcsrEngineState>();
+        send_sync::<external_tools::ExternalToolsState>();
         send_sync::<naming_engine::NamingEngineState>();
     }
 
@@ -8459,13 +8713,14 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),
-            include_str!("../capabilities/download-diagnosis.json")
+            include_str!("../capabilities/download-diagnosis.json"),
+            include_str!("../capabilities/external-tools.json")
         );
 
         let handler_start = lib_source
@@ -8648,6 +8903,54 @@ mod tests {
             "plugin.molscribeOcsr.recognizeImage",
         ));
         expect_false(is_routed_menu_command("definitely.not.a.routed.command"));
+    }
+
+    #[test]
+    fn plugin_menu_items_in_filters_by_location_and_keeps_order() {
+        let items = vec![
+            PluginMenuItemInput {
+                id: "plugin.first".to_owned(),
+                label: "First".to_owned(),
+                location: "plugins".to_owned(),
+                enabled: true,
+            },
+            PluginMenuItemInput {
+                id: "plugin.analyze".to_owned(),
+                label: "Analyze".to_owned(),
+                location: "analyze".to_owned(),
+                enabled: true,
+            },
+            PluginMenuItemInput {
+                id: "plugin.second".to_owned(),
+                label: "Second".to_owned(),
+                location: "plugins".to_owned(),
+                enabled: false,
+            },
+        ];
+
+        let plugin_ids = plugin_menu_items_in(&items, "plugins")
+            .into_iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(plugin_ids, vec!["plugin.first", "plugin.second"]);
+        assert_eq!(plugin_menu_items_in(&items, "structure").len(), 0);
+    }
+
+    #[test]
+    fn plugin_menu_block_uses_location_helper() {
+        let source = include_str!("lib.rs");
+        let plugins_menu_block = source
+            .split("let plugins_menu =")
+            .nth(1)
+            .and_then(|section| section.split("Menu::with_items(").next())
+            .expect("Plugins menu block");
+
+        assert!(plugins_menu_block.contains("plugin_menu_items_in(plugin_items, \"plugins\")"));
+    }
+
+    #[test]
+    fn plugin_menu_command_is_routed() {
+        expect_true(is_routed_menu_command("plugin.assistant.open"));
     }
 
     #[test]

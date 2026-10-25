@@ -303,3 +303,18 @@ it("cancels an engine opening while the previous failure window is closing", asy
   expect(presenter.closed).toHaveBeenCalledOnce();
   await h.coordinator.dispose();
 });
+
+it("opens, updates, and closes a retained tool install dialog", async () => {
+  const { toolInstallFixture } = await import("./toolInstallTestFixtures");
+  const h = host(); const presenter = { action: vi.fn(), closed: vi.fn() };
+  await h.coordinator.openToolInstall("tab-1", toolInstallFixture(), presenter);
+  await h.deliver(h.message("ready", {}));
+  await h.coordinator.updateToolInstall("tab-1", { ...toolInstallFixture(), state: { status: "consent" }, buttons: ["allow", "close"] });
+  expect(vi.mocked(h.transport.publish).mock.calls.at(-1)?.[1]).toMatchObject({ data: { state: { status: "consent" } } });
+  await h.deliver(h.message("action", { action: "allow" }));
+  expect(presenter.action).toHaveBeenCalledWith("allow");
+  await h.coordinator.closeToolInstall("tab-1");
+  expect(presenter.closed).toHaveBeenCalledOnce();
+  expect(h.transport.close).toHaveBeenCalledWith("opaque", "close");
+  await h.coordinator.dispose();
+});

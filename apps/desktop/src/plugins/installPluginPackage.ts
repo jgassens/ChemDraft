@@ -812,9 +812,12 @@ export async function uninstallPlugin(options: {
     );
   }
 
+  const registered = runtime.host.getPlugin(pluginId);
+
   closePluginPanels(runtime, pluginId);
   descriptor?.deactivate?.();
-  if (runtime.host.getPlugin(pluginId)) {
+  runtime.externalTools.cancelAllForPlugin(pluginId);
+  if (registered) {
     runtime.unregisterPlugin(pluginId);
   }
   if (stagedPath !== undefined) {
@@ -827,6 +830,15 @@ export async function uninstallPlugin(options: {
     }
   }
   await removeInstalledPluginRecord(fs, pluginId);
+
+  // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
+  // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
+  // half-uninstalled plugin.
+  try {
+    await runtime.externalTools.consentClearPlugin(pluginId);
+  } catch (error) {
+    console.warn(`Uninstalling "${pluginId}": could not clear external-tool consent.`, error);
+  }
 
   // Hand the id back to the bundled copy the install had taken it from, so uninstalling a package
   // built from a bundled plugin returns the build to its shipped state rather than losing the plugin.

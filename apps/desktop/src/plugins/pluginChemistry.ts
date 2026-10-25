@@ -10,6 +10,9 @@
  * same session cache, same engine hashes in the fingerprint. A plugin's envelope and the core Analyze
  * panel's envelope are therefore the same computation, and cannot drift.
  */
+import { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
+export { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
+
 import { invoke } from "@tauri-apps/api/core";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
@@ -173,16 +176,6 @@ function structureGenerationFailureReason(smiles: string, error: unknown): strin
     : message.split(/\r\n|\r|\n/, 1)[0].trim();
   return `No 2D structure could be generated for "${smiles}": ${specificMessage || "The depiction engine did not provide a reason."}`;
 }
-
-/**
- * Ids this runtime has minted for proposals that have not landed yet.
- *
- * Module-scoped because the collision is across CALLS, not within one. Entries are never removed: an
- * accepted object puts its id in the document, where `nextObjectId` already sees it, and a rejected
- * one leaves a gap in the numbering, which costs nothing. The set is bounded by how many structures a
- * plugin builds in a session.
- */
-const RESERVED_PLUGIN_OBJECT_IDS = new Set<string>();
 
 /**
  * Where a plugin's structure lands.

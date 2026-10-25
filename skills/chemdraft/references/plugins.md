@@ -11,6 +11,7 @@ user action from configuring a headless tool.
 |---|---|
 | NMR Shift Predictor (`org.chemdraft.nmr.predictor`) | Desktop plugin; `nmr` / `predict_nmr` loads a separate owner-trusted source checkout |
 | Name to Structure (OPSIN) (`org.chemdraft.opsin.nameToStructure`) | Desktop insertion plugin; `name` / `name_to_structure` independently uses the bundled OPSIN runtime, without loading this plugin |
+| Name from Structure (Orthonym) (`org.chemdraft.naming.orthonym`) | Desktop-only structure-to-name plugin from `github.com/jgassens/ChemDraft-Orthonym-Plugin`; no CLI/MCP structure-to-name capability. Inside the app, the assistant tool `structure_to_name` reports the host naming-engine result and does not open installation UI |
 | Structure from Image (MolScribe) (`org.chemdraft.ocsr.molscribe`) | Experimental desktop-only recognition, through proposal review; no CLI/MCP image-recognition tool |
 
 MolScribe runs locally, with a host-managed engine installed only on
@@ -20,6 +21,22 @@ often misread. Check every atom and bond before insertion. Its proposed
 structure, candidates and warnings are uncertain inferred output, never
 presented as certain. The source image stays unless the user deletes it.
 An agent must not use name conversion to pretend it recognized an image.
+
+## Structure to name
+
+Orthonym appears only after the user installs it. Its local naming engine also
+installs only on explicit user action. In the app it contributes Structure >
+Convert Structure to Name, Analyze-menu entries, and Insert Name as Text.
+Every proposed name is checked exactly before display: OPSIN parses it back,
+then RDKit compares canonical isomeric SMILES with the drawn structure. A
+mismatch displays no name. Metals, charged zwitterions, and some radicals may
+be declined with a plain reason.
+
+The headless `name` command and `name_to_structure` MCP tool go in the other
+direction, from name to structure. CLI and MCP cannot name a structure today.
+Never invent or recall a structure name, offer a headless structure-to-name
+result, or claim a name the plugin declined; direct the user to Orthonym in
+the desktop app.
 
 ## Headless trust
 
@@ -45,10 +62,12 @@ Plugin imports may use only `@chemdraft/plugin-api` among ChemDraft packages,
 plus ordinary npm dependencies and their own modules.
 
 A manifest declares `id`, `name`, `version`, `apiVersion`, `entry`,
-`permissions`, and any `contributes` entries. Current API is `0.1.6`;
+`permissions`, and any `contributes` entries. Current API is `0.1.10`;
 declare the caret version needed. Additive API changes bump patch, breaking
 changes bump minor. Code `license` and dataset `dataLicenses` are separate
 claims; a code licence alone does not cover bundled data.
+
+API 0.1.10 adds panel input sections and canvas overlays for declared plugin UI.
 
 Capabilities are typed, declared and least privilege. The dangerous
 permissions are `filesystem.write`, `network.fetch`, `native.execute`,

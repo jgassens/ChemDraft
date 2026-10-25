@@ -1,13 +1,14 @@
 ---
 name: chemdraft
-description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (coloured or shaded rings, ring letters, highlighted substructures, colour-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Never draw molecules by hand or quote chemistry numbers from memory.
+description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (coloured or shaded rings, ring letters, highlighted substructures, colour-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Make same-scale document-style figures inserted at natural size; name a structure through the app plugin, not headless. Never draw molecules by hand or quote chemistry numbers from memory.
 ---
 
 # ChemDraft
 
 ## Two non-negotiables
 
-1. Never hand-draw a molecule: no ASCII structure, hand-written SVG, HTML
+1. Never hand-draw a molecule or invent or recall a structure-to-name result
+   from memory: no ASCII structure, hand-written SVG, HTML
    canvas, matplotlib, or ad-hoc RDKit/Python drawing script. Use ChemDraft's
    shared depiction and export path.
 2. Never quote a chemistry number from memory when ChemDraft computes it.
@@ -118,6 +119,28 @@ Do not simulate a successful ChemDraft response.
 PDF output currently misplaces atom labels and text. View every PDF
 before delivering it, and prefer SVG or PNG figures until this is fixed.
 
+## Fixed-scale figures for documents
+
+For every structure going into Word, a handout, an exam, slides or a report,
+use `--style document` and SVG: `render`, `grid`, `reaction`, `document`, and
+`render-document` all accept it. With MCP, send `style: "document"` to the
+corresponding tool. Document style fixes one bond at 14.4 pt, the plain line
+width at 1.134 pt, and labels at Arial 10 pt; its SVG root dimensions and
+viewBox are in points. Insert the SVG at its natural size (100%). Use the
+returned `widthPt` and `heightPt` when software needs dimensions.
+
+Never scale, zoom, stretch or crop a structure to fit a page, cell or slide.
+Change the layout around it instead: wrap text, use fewer structures per row,
+start a new page, or use a two-column table. Every structure in one document
+must share the same scale.
+
+Use document-style PNG only for a viewer that cannot show SVG: add `--dpi`
+(default 300; 72–1200), then insert the PNG at the SVG's reported physical
+`widthPt` and `heightPt`, never at a fitted width. `--dpi` is only valid with
+document style. Keep width-fitted `--style fit` for a one-off image only when
+the user asks for a particular size; do not combine document style with
+`--width`, `--bond-length`, or `--padding`.
+
 ## Core workflow
 
 1. Decide what chemistry the user intends: compounds, charges, isotopes,
@@ -151,6 +174,22 @@ labels. Use `stereo` to state R/S. For a question asserting a fully
 specified stereoisomer, both unspecified counts must be zero. An exercise
 explicitly asking about unspecified stereochemistry can retain it and
 must say so. E/Z geometry is also checked through `stereo`.
+
+## Structure to name
+
+The desktop app can name a drawn structure only through the Orthonym plugin
+from `github.com/jgassens/ChemDraft-Orthonym-Plugin`. Once installed, it adds
+Structure > Convert Structure to Name, Analyze-menu entries, and Insert Name
+as Text. Its local naming engine installs only when the user asks. Before a
+name is shown, OPSIN parses it back and RDKit compares its canonical isomeric
+SMILES with the drawn structure exactly; a mismatch shows no name. Metals,
+charged zwitterions, and some radicals can be declined with a plain reason.
+
+The CLI and MCP cannot name a structure today: `name` and `name_to_structure`
+only convert a name to a structure through OPSIN. Do not offer a
+structure-to-name result from a headless route, invent or recall one from
+memory, or claim a name that Orthonym declined. Point a user who needs a name
+to the app's Orthonym plugin.
 
 ## Appearance and style requests
 

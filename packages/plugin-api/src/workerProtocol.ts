@@ -13,7 +13,7 @@
  * runtime ({@link runPluginWorker}) and the desktop-side bridge both speak this protocol.
  */
 
-import { PluginApiVersion } from "./index";
+import { PluginApiVersion, PluginCommandInputSchema, type PluginCommandInput } from "./index";
 
 /**
  * Protocol wire version. Bumped only on a breaking change to the message shapes below. The worker
@@ -39,11 +39,14 @@ export type PluginWorkerCapabilityNamespace =
   | "analysis"
   | "storage"
   | "panels"
+  | "overlays"
   | "documents"
   | "chemistry"
   | "dialogs"
   | "images"
-  | "recognition";
+  | "recognition"
+  | "tools"
+  | "assistant";
 
 /**
  * The methods each namespace exposes. The host bridge validates an incoming request against this map
@@ -70,10 +73,13 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   storage: ["get", "set", "delete", "listKeys"],
   documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
+  overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
   dialogs: ["promptText"],
   images: ["requestImage"],
-  recognition: ["recognizeStructure"]
+  recognition: ["recognizeStructure"],
+  tools: ["status", "install", "signIn", "run", "poll", "cancel", "clearConversation"],
+  assistant: ["listTools", "callTool", "beginRequest", "endRequest", "createToolSession", "closeToolSession"]
 } as const satisfies Readonly<Record<PluginWorkerCapabilityNamespace, readonly string[]>>;
 
 /**
@@ -110,7 +116,7 @@ export type WorkerToHostMessage =
 
 /** host → worker messages. */
 export type HostToWorkerMessage =
-  | { kind: "invokeCommand"; commandRequestId: number; commandId: string }
+  | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput }
   | { kind: "capabilityResult"; requestId: number; ok: true; value: unknown }
   | { kind: "capabilityResult"; requestId: number; ok: false; error: PluginWorkerErrorPayload }
   /** Reverse signal: a contributed panel closed (ADR-0012) so the plugin can cancel in-flight work. */
@@ -174,6 +180,7 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   switch (message.kind) {
     case "invokeCommand":
       return isIndex(message.commandRequestId) && typeof message.commandId === "string"
+        && (message.input === undefined || PluginCommandInputSchema.safeParse(message.input).success)
         ? (message as unknown as HostToWorkerMessage)
         : undefined;
     case "capabilityResult": {

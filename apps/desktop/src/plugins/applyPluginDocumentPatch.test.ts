@@ -36,6 +36,86 @@ function moleculeObject(): MoleculeObject {
 }
 
 describe("desktop direct plugin patch application", () => {
+  it("rebases a direct batch and grants scope only for its actual inserted ids", async () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    document = applyPatch(document, { op: "addObject", pageId, object: moleculeObject() });
+    const host = new PluginHost({
+      getSelection: () => ({ objectIds: [], molecules: [] }),
+      applyDocumentPatch: (request) => {
+        const result = applyPluginDocumentPatch(document, request.patch);
+        document = result.document;
+        return result.receipt;
+      }
+    });
+    host.registerPlugin({
+      id: "org.test.rebase", name: "Rebase", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.rebase.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.rebase.run": async (context) => {
+      const receipt = await context.documents.applyPatch!({ reason: "insert and edit", patch: { op: "batch", patches: [
+        { op: "addObject", pageId, object: moleculeObject() },
+        { op: "updateObject", objectId: "mol_direct", changes: { x: 12 } }
+      ] } });
+      const [insertedId] = receipt.objectIds;
+      expect(insertedId).not.toBe("mol_direct");
+      await expect(context.documents.applyPatch!({ reason: "existing object", patch: {
+        op: "removeObject", objectId: "mol_direct"
+      } })).rejects.toThrow("mol_direct was not selected when the command started");
+      return context.documents.applyPatch!({ reason: "inserted object", patch: {
+        op: "updateObject", objectId: insertedId!, changes: { x: 34 }
+      } });
+    } } });
+    const receipt = await host.invokeCommand<{ objectIds: string[] }>("plugin.rebase.run");
+    expect(document.pages[0].objects[0]).toMatchObject({ id: "mol_direct", x: 80 });
+    expect(document.pages[0].objects[1]).toMatchObject({ id: receipt.objectIds[0], x: 34 });
+    expect(document.selection.objectIds).toEqual(receipt.objectIds);
+  });
+
+  it("keeps a missing page on a direct write an atomic failure", () => {
+    const document = createEmptyDocument();
+    expect(() => applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "missing page", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: document.pages[0].id, object: moleculeObject() },
+        { op: "addObject", pageId: "missing", object: moleculeObject() }
+      ]
+    } }))).toThrow(/page "missing" does not exist/);
+    expect(document.pages[0].objects).toEqual([]);
+  });
+
+  it("selects every surviving insertion and edit in a batch, excluding removals", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    for (const id of ["edit", "move", "remove", "unchanged"]) {
+      document = applyPatch(document, { op: "addObject", pageId, object: { ...moleculeObject(), id } });
+    }
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "batch", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId, object: { ...moleculeObject(), id: "insert" } },
+        { op: "updateObject", objectId: "edit", changes: { style: { color: "#ff0000" } } },
+        { op: "moveObject", objectId: "move", x: 50, y: 60 },
+        { op: "addObject", pageId, object: { ...moleculeObject(), id: "temporary" } },
+        { op: "removeObject", objectId: "temporary" },
+        { op: "updateObject", objectId: "remove", changes: { x: 10 } },
+        { op: "removeObject", objectId: "remove" }
+      ]
+    } }));
+    expect(result.receipt.objectIds).toEqual(["edit", "move", "insert"]);
+    expect(result.document.selection.objectIds).toEqual(result.receipt.objectIds);
+    expect(document.pages[0].objects.map((object) => object.id)).toEqual(["edit", "move", "remove", "unchanged"]);
+  });
+
+  it("clears selection for a deletion-only patch", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    document = applyPatch(document, { op: "addObject", pageId, object: moleculeObject() });
+    document = applyPatch(document, { op: "setSelection", objectIds: ["mol_direct"] });
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({
+      reason: "delete", patch: { op: "removeObject", objectId: "mol_direct" }
+    }));
+    expect(result.receipt.objectIds).toEqual([]);
+    expect(result.document.selection.objectIds).toEqual([]);
+  });
+
   it("creates one undo entry, selects inserted objects, and queues no proposal review", async () => {
     const now = "2026-09-24T15:00:00.000Z";
     let history: DocumentHistory = createDocumentHistory(createEmptyDocument({ now }));
@@ -137,6 +217,85 @@ describe("accepting a proposal into a document it was not laid out for", () => {
     return document;
   }
 
+  it("rebases colliding batch insertions and remaps only later targets, preserving chemistry", () => {
+    const document = documentWith(["mol_001", "mol_002"]);
+    const pageId = document.pages[0].id;
+    const source = recognizedMolecule("mol_001");
+    const proposed = ProposedDocumentPatchSchema.parse({ reason: "batch", patch: { op: "batch", patches: [
+      { op: "updateObject", objectId: "mol_001", changes: { x: 12 } },
+      { op: "addObject", pageId, object: source },
+      { op: "updateObject", objectId: "mol_001", changes: { id: "mol_001", style: { color: "#ff0000" } } },
+      { op: "moveObject", objectId: "mol_001", x: 30, y: 40 },
+      { op: "addObject", pageId, object: recognizedMolecule("mol_002") },
+      { op: "removeObject", objectId: "mol_002" },
+      // The first allocator must leave this name free for the later insertion.
+      { op: "addObject", pageId, object: recognizedMolecule("mol_004") }
+    ] } });
+    const rebased = rebaseProposedInsertion(document, proposed);
+    if (rebased.patch.op !== "batch") throw new Error("Expected batch");
+    const insertion = rebased.patch.patches[1];
+    if (insertion?.op !== "addObject") throw new Error("Expected insertion");
+    const newId = insertion.object.id;
+    expect(newId).not.toBe("mol_001");
+    expect(newId).not.toBe("mol_004");
+    expect(rebased.patch.patches[0]).toMatchObject({ objectId: "mol_001" });
+    expect(rebased.patch.patches[2]).toMatchObject({ objectId: newId, changes: { id: newId } });
+    expect(rebased.patch.patches[3]).toMatchObject({ objectId: newId });
+    const result = applyAcceptedPluginProposal(document, proposed, { now });
+    expect(result.document.pages[0].objects.find((object) => object.id === "mol_001")).toMatchObject({ x: 12 });
+    expect(result.document.pages[0].objects.find((object) => object.id === "mol_002")).toBe(document.pages[0].objects[1]);
+    const inserted = result.document.pages[0].objects.find((object) => object.id === newId);
+    expect(inserted).toMatchObject({ x: 30, y: 40, atoms: source.atoms, bonds: source.bonds, structure: source.structure });
+    expect(result.receipt.objectIds).toEqual(["mol_001", newId, "mol_004"]);
+    expect(result.document.selection.objectIds).toEqual(result.receipt.objectIds);
+  });
+
+  it("remaps setObjectOrder and removeAnnotation after colliding insertions", () => {
+    let document = documentWith(["mol_001"]);
+    const pageId = document.pages[0].id;
+    const annotation = {
+      id: "note", type: "annotation" as const, x: 0, y: 0, width: 10, height: 10,
+      rotation: 0, style: {}, targetObjectIds: [], message: "note"
+    };
+    document = applyPatch(document, { op: "addAnnotation", pageId, annotation });
+    const proposed = ProposedDocumentPatchSchema.parse({ reason: "batch", patch: { op: "batch", patches: [
+      { op: "removeObject", objectId: "mol_001" },
+      { op: "addObject", pageId, object: recognizedMolecule("mol_001") },
+      { op: "setObjectOrder", pageId, objectIds: ["note", "mol_001"] },
+      { op: "addAnnotation", pageId, annotation },
+      { op: "removeAnnotation", annotationId: "note" }
+    ] } });
+    const rebased = rebaseProposedInsertion(document, proposed);
+    if (rebased.patch.op !== "batch") throw new Error("Expected batch");
+    const add = rebased.patch.patches[1];
+    if (add?.op !== "addObject") throw new Error("Expected addObject");
+    expect(rebased.patch.patches[2]).toMatchObject({ objectIds: ["note", add.object.id] });
+    const note = rebased.patch.patches[3];
+    if (note?.op !== "addAnnotation") throw new Error("Expected addAnnotation");
+    expect(note.annotation.id).not.toBe("note");
+    expect(rebased.patch.patches[4]).toMatchObject({ annotationId: note.annotation.id });
+    const result = applyAcceptedPluginProposal(document, proposed);
+    expect(result.document.pages[0].objects.map((object) => object.id)).toEqual(["note", add.object.id]);
+    expect(result.document.selection.objectIds).toEqual(["note", add.object.id]);
+  });
+
+  it("remaps native references in later insertions and updates, preserving opaque metadata", () => {
+    const document = documentWith(["mol_001"]);
+    const pageId = document.pages[0].id;
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "references", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId, object: recognizedMolecule("mol_001") },
+        { op: "addAnnotation", pageId, annotation: {
+          id: "note", type: "annotation", x: 0, y: 0, width: 10, height: 10, rotation: 0,
+          style: { objectId: "mol_001" }, targetObjectIds: ["mol_001"], message: "mol_001"
+        } },
+        { op: "updateObject", objectId: "note", changes: { targetObjectIds: ["mol_001"] } }
+      ]
+    } }));
+    const [, inserted, note] = result.document.pages[0].objects;
+    expect(note).toMatchObject({ targetObjectIds: [inserted!.id], style: { objectId: "mol_001" }, message: "mol_001" });
+  });
+
   it("gives an insertion whose id is taken a fresh id, and inserts it", () => {
     const document = documentWith(["mol_ocsr_004"]);
     const accepted = applyAcceptedPluginProposal(
@@ -150,10 +309,9 @@ describe("accepting a proposal into a document it was not laid out for", () => {
     expect(inserted).toMatch(/^mol_ocsr_\d{3}$/);
     expect(inserted).not.toBe("mol_ocsr_004");
     expect(accepted.document.selection.objectIds).toEqual([inserted]);
-    // Verbatim, the same proposal can never be accepted here.
-    expect(() =>
-      applyPluginDocumentPatch(document, proposal(document.pages[0].id, recognizedMolecule("mol_ocsr_004")), { now })
-    ).toThrow(/already exists/);
+    // Direct writes also allocate fresh ids, while returning the actual ids to the command.
+    const direct = applyPluginDocumentPatch(document, proposal(document.pages[0].id, recognizedMolecule("mol_ocsr_004")), { now });
+    expect(direct.receipt.objectIds).toEqual(accepted.receipt.objectIds);
   });
 
   it("puts an insertion for a page this document lacks on its first page, re-centred, chemistry untouched", () => {

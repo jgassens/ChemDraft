@@ -3,6 +3,26 @@ use std::process::Command;
 
 use super::pins;
 
+/// Shared process platform without the individual engines' package restrictions.
+pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return Ok(Box::new(MacPlatform::new(MacArchitecture::Aarch64)));
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return Ok(Box::new(MacPlatform::new(MacArchitecture::X86_64)));
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    return Ok(Box::new(WindowsPlatform));
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(windows, target_arch = "x86_64")
+    )))]
+    Err(format!(
+        "Local tools are unsupported on {}-{}.",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ))
+}
+
 /// Everything about a local engine that differs by operating system: which pinned uv archive to
 /// fetch, where uv and the venv's interpreter live, and how child processes are spawned. Adding a
 /// target means one more implementation plus its reviewed pins in `pins.rs`; nothing else in the

@@ -1,12 +1,14 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   AppliedPatchReceipt,
+  PluginCommandInput,
   PluginImageSource,
   PluginManifest,
   PluginSelectionSnapshot,
   PluginStorage
 } from "@chemdraft/plugin-api";
 import type { CommandRegistry, PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
+import type { RegisteredCanvasOverlay } from "./types";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { PluginAppMenuItem } from "../appMenu";
@@ -45,6 +47,7 @@ import type {
 import type { StructureRecognitionEngineStatus } from "./structureRecognitionEngine";
 import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 import { mountStructureNamingHost } from "./StructureNamingInstallDialog";
+import { presentExternalToolInstall } from "../externalTools/presentExternalToolInstall";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 
 /**
@@ -60,6 +63,7 @@ export function pluginCommandFailure(result: unknown): string | undefined {
 }
 
 export interface PluginRuntimeProviders {
+  assistantMcpEngine?: import("../assistant/assistantMcpEngine").AssistantMcpEngine;
   getActiveDocument: () => ChemDraftDocument | undefined;
   /** Identifies the working document for a plugin's `documents.applyPatch` (see
    *  `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Without one, two documents created by
@@ -104,6 +108,7 @@ export interface PluginRuntimeView {
   updateInstalledPlugin: ((prepared: PreparedPluginUpdate) => Promise<void>) | undefined;
   plugins: readonly PluginManifest[];
   pluginMenuItems: readonly PluginAppMenuItem[];
+  canvasOverlays: readonly RegisteredCanvasOverlay[];
   openPanel: OpenPluginPanel | undefined;
   /** Desktop-native report windows: per plugin+panel id, several may float at once. */
   detachedPanels: readonly OpenPluginPanel[];
@@ -116,7 +121,7 @@ export interface PluginRuntimeView {
   diagnostics: readonly PluginDiagnostic[];
   isPluginCommand: (commandId: string) => boolean;
   /** `selectionWarnings` collects the selection warnings of this invocation alone. */
-  invokePluginCommand: (commandId: string, options?: { selectionWarnings?: string[] }) => Promise<unknown>;
+  invokePluginCommand: (commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }) => Promise<unknown>;
   closePanel: () => void;
   submitTextPrompt: (id: number, value: string) => void;
   cancelTextPrompt: (id: number) => void;
@@ -174,7 +179,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         }
         return apply(request);
       },
-      defaultPanelSurface: isTauriHost() ? "window" : "inApp"
+      defaultPanelSurface: isTauriHost() ? "window" : "inApp",
+      assistantMcpEngine: providers.assistantMcpEngine
     });
     const bundledPlugins = registerBundledPlugins(runtime);
     ownerRef.current = { runtime, bundledPlugins };
@@ -186,8 +192,13 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     coordinator: () => providersRef.current.getDialogCoordinator?.(),
     documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
   }), [runtime]);
+  useEffect(() => presentExternalToolInstall(runtime.externalTools, {
+    coordinator: () => providersRef.current.getDialogCoordinator?.(),
+    documentTabId: () => providersRef.current.getActiveDocumentTab?.().id
+  }), [runtime]);
   useEffect(() => {
     const unsubscribeHost = runtime.host.subscribe(bumpVersion);
+    const unsubscribeRuntime = runtime.onDidChange(bumpVersion);
     const unsubscribePanels = runtime.panels.subscribe(bumpVersion);
     const unsubscribePrompts = runtime.prompts.subscribe(bumpVersion);
     const unsubscribeImages = runtime.images.subscribe(bumpVersion);
@@ -213,6 +224,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     return () => {
       detachInstallPresenter();
       unsubscribeHost();
+      unsubscribeRuntime();
       unsubscribePanels();
       unsubscribePrompts();
       unsubscribeImages();
@@ -441,7 +453,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [runtime]
   );
   const invokePluginCommand = useCallback(
-    (commandId: string, options?: { selectionWarnings?: string[] }): Promise<unknown> =>
+    (commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown> =>
       runtime.invokeCommand(commandId, options),
     [runtime]
   );
@@ -510,6 +522,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       stagingFs && installedPluginCatalogReady ? updateInstalledPlugin : undefined,
     plugins,
     pluginMenuItems,
+    canvasOverlays: runtime.listCanvasOverlays(),
     openPanel,
     detachedPanels,
     openTextPrompt,

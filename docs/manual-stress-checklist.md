@@ -10,6 +10,12 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane with light blue
+(25%), solid blue and a vivid alternating palette (90%). Check N+, NH, O and S: each fill reaches
+every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the
+halo must match the fill beneath it. Repeat with linear/radial gradients, shadow/glow/sketch, explicit
+label background colours and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
+
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
 centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back
@@ -215,6 +221,137 @@ it and turning as the bond swings to its other side (the overlay opens on the co
 not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
 centred on the atom.
 
+## External tools (macOS and Windows)
+
+Install Claude Code and Codex from the dialog: confirm download progress, cancel part way through,
+then retry successfully. Confirm the consent dialog names Anthropic or OpenAI and says the page
+leaves the computer. Probe must find Homebrew, npm, WinGet, and `~/.local/bin` installs, while never
+running a `.cmd` shim. Start sign-in: it opens Terminal on macOS / a new console on Windows, then
+refresh status until it flips. Quit during a run and confirm no `claude`, `codex`, or `node` process
+remains. On Windows, confirm no console flash and that the Job Object kills child processes.
+
+## ChemDraft Assistant tools (macOS and Windows)
+
+On both platforms, stress the assistant's one-box controls:
+
+- Upgrade from a Codex installed by an older ChemDraft: Setup offers Update; it installs and works.
+- With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
+  header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
+  the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
+  double-click the header to restore the 280 px default height, showing about three transcript lines
+  above the composer (or the available height in a small window).
+- Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
+  Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
+  without starting a request. Shorten to 4,000 and send; the complete shortened draft is submitted.
+  Check the same behavior in a plugin panel prompt.
+- During a slow request, type another draft and try Enter and Send. Both show “Wait for the current
+  request to finish, or press Stop.” The draft stays editable and no request runs automatically
+  after the first finishes. The refusal hint clears when the request ends, when the plugin re-enables
+  Send, when the draft changes, and when the document changes. Stop stays available; after completion,
+  explicitly Send the kept draft.
+- Relaunch, then expand the assistant icon before using its menu or Send. Its saved AI heading and
+  status (or setup content on first use) appear immediately. Collapse/re-expand without resetting
+  setup or conversation; initialization runs again only if plugin content is absent.
+- Click Finish setup, New conversation, Stop, and other assistant action buttons, wait for completion,
+  then type “draw aspirin”: typing goes into the prompt and the drawing tool does not change, even
+  when the activated button disappeared. Click the drawing or Tab to another control before an action
+  completes and verify completion leaves focus there. Tab to a still-mounted action without activating
+  it and verify a content update keeps focus on that button.
+- With an API 0.1.14 plugin, decline provider consent before a request is sent: the submitted text
+  returns to the empty prompt without sending. Repeat while typing a new draft during the pending
+  consent: restoration must preserve the new draft, including whitespace. Clear the draft afterward;
+  unrelated status/transcript updates must not replay the restoration. A new `setContent` restoration
+  can restore the same text once again. Immediately follow that restoration with `setContent` without
+  `restoreDraft`: an empty prompt must still receive the text, without sending. While Send is settling,
+  type and erase a new draft before the pending restoration applies: the prompt must stay empty.
+- The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
+  its position remains remembered and its hover/focus feedback still works.
+
+Exercise this section once the Assistant plugin is installed. Submit an insertion request and verify
+that its objects land directly on the page (no approval window) and finish selected. One Undo removes
+the entire request; Redo restores exactly those objects and selection without starting the AI or
+making another provider/tool call. Select one existing object, then ask to edit, restyle, move, and
+delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
+selected: insertions work, while edits, restyles, moves, and deletes are refused.
+
+Ask to draw a methyl group (`CH3`), `Ph`, `Boc`, and `OTs`: each is one editable native molecule
+label, not a caption or placeholder. Compare rendering, formula and valence warnings with typing
+the same isolated atom label on the canvas. Unknown labels are refused with accepted examples.
+Mix groups, molecules and captions; check placement, selection, Undo/Redo, and the growth question
+when the page is full. An isolated `Ac` is an element in the native grammar and must be refused as
+a group rather than changed to acetyl.
+
+On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
+that wraps past the bottom: one document-owned native box names the item and new page size;
+Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
+molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
+omits non-fitting items and their captions but keeps fitting ones; the assistant reports the refusal.
+Fitting calls never prompt. Esc or Cancel declines; Enlarge Page (Return where the platform makes
+it the default) enlarges, and one Undo reverses it. Closing the box must also decline; if the platform
+offers no close button, verify Esc instead. The native box is modal by design: its overlay Stop button cannot be clicked until
+the box closes. Cancel is the stop for that item. Immediately after answering, verify Stop can again
+cancel the remaining request and typing returns to the prompt.
+
+While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
+Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running
+request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its
+consent text must say that it does and that page content can leave the computer.
+
+## Plugin panel input and canvas overlay (macOS and Windows)
+
+With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the
+prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
+Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
+the box only as needed, up to about 70% of the drawing area, with scrolling for overflow; clearing
+it restores the user's remembered height. Repeat after resizing and moving the collapsed icon beside a ruler
+and after changing display scale. Drafts and focus survive updates. Disable/remove a button while
+clicking it: the stale control must not run. A plugin with no panel never shows an "Open …" link
+or opens a native panel on menu commands, prompt submissions, setup actions, or re-expansion.
+For a plugin that also has a panel, `showPanelLink: false` hides only the overlay's shortcut.
+
+With an API 0.1.11 chat plugin, verify the compact overlay shows the latest reply and distinguishes
+user, assistant, tool, notice, and error entries. Scroll back while replies arrive: the reader stays
+put; returning to the bottom resumes following replies. Drag the top edge up and down: the bottom
+edge stays fixed and the box cannot cross rulers, scrollbars, or the status row. Shrink the document
+window and check the box fits again. Resize, Escape, expand, then reopen the document window:
+height is remembered separately from icon/box positions. A second document window has its own size.
+Enter still sends, Shift+Enter adds a newline, and transcript updates never steal input focus.
+
+In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
+and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
+the composition must not submit early. Force a host refusal (for example by making the panel stale
+or disconnecting it) and confirm the inline host refusal keeps the draft; after host acceptance, the draft
+clears. Confirm a panel report containing a prompt hides Run again. A refusal or failure from the plugin's
+own command appears in that plugin's transcript or overlay status, while command failures also reach the
+document status line. While the transcript grows, scroll
+away from its bottom and submit or receive another report: it must not pull the reader down; submit
+from the prompt and it may follow the new output. Keep typing while a report refreshes: focus and the
+draft must stay in the textarea. Also invoke a plugin contribution at location `plugins` and confirm
+its item appears and works in the native Plugins menu.
+
+Exercise an installed or DEV canvas-overlay fixture: expand and collapse its icon, type and submit a
+prompt, and check the status line. Drag it toward every viewport edge and resize the viewport; its
+frame must remain clamped inside. Quit/reopen or hide/re-show the window and confirm its position is
+remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
+(and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
+keyboard focus to the drawing. It takes focus only when clicked or explicitly opened with
+`focus: true`, never merely when content changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
+or slight pointer jitter must still expand it. Resize the box upward, then collapse: the icon returns
+to its own position. Restart and verify both positions persist independently. Shrink the drawing area
+while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
+next shown, and the box must fit even when the drawing area is narrower than 300 px.
+
+For a plugin that contributes both surfaces (including older Assistant packages), use its overlay's
+"Open …" button and panel menu command. Each must show a titled report in a detached window.
+Close/reopen it and repeat after restarting the app; the initial report broadcast may precede the
+new webview, so the authenticated snapshot replay must also work. With the overlay-only Assistant,
+Plugins → ChemDraft Assistant… instead expands the one box; setup and conversation stay there.
+
+On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
+do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does
+not cause a foreground flash. Repeat the focus checks on macOS and Windows with the panel and drawing
+window on separate monitors.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
@@ -337,8 +474,9 @@ for each drawing, suggesting its name and extension, and writes its exact saved 
 chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
 box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
 box without losing the drawing. Delete opens a second native confirmation saying “Delete the
-kept drawing? This cannot be undone.” Its default button and Escape are Cancel. Cancel returns
-to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
+kept drawing? This cannot be undone.” Cancel occupies the ok/default slot; Delete occupies the cancel slot.
+Escape declines except for the known Windows issue below. Cancel returns to the summary; Delete removes
+the kept drawings. Floating toolbars stay
 hidden through the entire sequence, including save panels, failed saves and both confirmation
 boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
 Restore a kept drawing's supported schema and relaunch: it opens normally without a prompt.
@@ -348,10 +486,14 @@ and Art toolbars open, including at 125%/150% display scale:
 
 - For every prompt below, confirm the message box uses the OS appearance, stays above the floating
   toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
-  exactly Cancel, and Escape (on macOS too) and closing the box choose it; a notice has one OK
-  button that Return dismisses. No button appears twice. Enter must never choose a destructive
-  action. Repeat in the web preview with `?agentBridge=1`:
-  the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+  exactly Cancel, and Escape (on macOS too) and closing the box choose it, except for the known Windows
+  issue below; a notice has one OK
+  button that Return dismisses. No button appears twice. A destructive single-action confirmation (Delete,
+  Clear Overrides, Remove Engine) puts Cancel in the ok/default slot and the action in the cancel slot.
+  A non-destructive single action (Enlarge Page) occupies the ok/default slot, with Cancel in the cancel slot.
+  Known pre-existing Windows issue (tracked for a separate fix): Esc on a destructive single-action confirmation currently returns the action; expect and report it.
+  Repeat in the web preview with `?agentBridge=1`: the retained in-app dialog renders and its buttons
+  and Escape produce the expected outcomes without the native Windows issue.
 - With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
   open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:
   nothing happens and the active drawing tool stays unchanged. Close the box: exactly the previously

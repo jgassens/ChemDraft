@@ -15,9 +15,12 @@ desktop importers did not change.
 | File | Holds |
 |---|---|
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
+| `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, including pixel style overrides; preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
+| `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and conditions |
+| `gridLayout.ts` | Pure placement of pre-depicted molecules and optional labels in a grid |
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata, and what is built on a label's reading: each group's verdict and free valence, and the recorded bond side. Re-exports layout-engine's element table, bond-order counting and atom-label grammar (`nativeAtomLabelReading`), under the same names |
 | `labelGroups.ts` | A group's expansion into real atoms appended after the drawn ones, so drawn indices never move. The formula, SMILES, molfile and analysis read that expansion; the document keeps the label. The group's shape and attachment atom (`NativeLabelGroup`, `nativeLabelGroupAttachment`) are layout-engine's, re-exported |
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
@@ -58,3 +61,22 @@ desktop importers did not change.
 `src/boundary.test.ts` fails if any file here imports from `apps/`, React, Tauri, or the plugin and
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server
 imports from `apps/` again.
+
+`applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
+(objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
+bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming
+that value, preserving relative geometry rather than normalizing molecules separately. Later pages
+remain unchanged. Arrows and graphics without authored strokes use the fixed document line width
+(1.134 pt); authored graphic strokes scale with the page, and image styles remain unchanged.
+Text defaults to Arial, Helvetica, sans-serif at 10 pt. Explicit object/span font sizes scale with
+the page. Only whole-molecule size/geometry style keys are replaced; other styling is preserved.
+
+`layoutGrid` and `layoutReactionScheme` accept `style: "fit" | "document"` (default `"fit"`)
+and an optional `textStyle` override. Document style applies `DocumentTextStyle` to grid labels,
+reaction conditions and plus signs; measurements and placement use the same resolved text style.
+Grid cells in document style accommodate the wider of the molecule or label, and the custom page
+fits all rows and columns with margins given by the anchor. Reaction pages fit the complete scheme;
+condition width sets the minimum arrow length and plus-sign width sets component spacing.
+Callers supply pre-depicted molecules at the intended bond length and a reaction anchor with enough
+room above its centre for the conditions. These layout functions translate molecules without
+rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.

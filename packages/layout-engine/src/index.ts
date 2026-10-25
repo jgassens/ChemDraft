@@ -1,5 +1,9 @@
+export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
+export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
+
 import {
   DefaultNativeDrawingStyle,
+  DocumentStylePreset,
   drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
@@ -66,7 +70,6 @@ import {
 } from "./valence";
 import { formatNumber } from "./formatNumber";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
-import { atomLabelRingClearance, notchedRingPath, ringOverlappingClearances } from "./ringFillNotches";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
@@ -1698,9 +1701,8 @@ function planNativeMoleculeGraphSvg(
   const labelDepthWeightByAtomId = new Map<string, number | undefined>(
     atomLabels.map((plan) => [plan.atom.id, averageDefinedDepthWeights(incidentBondWeights.get(plan.atom.id) ?? [])])
   );
-  const fillUnderlayFragments = moleculeFillUnderlayFragments(
-    object, atomLabels, labelDepthWeightByAtomId
-  );
+  const fillRings = nativeMoleculeRings(object);
+  const fillUnderlayFragments = moleculeFillUnderlayFragments(object, fillRings);
   // Paint labels far → near so a nearer heteroatom's glyph sits over a farther one where the 3D
   // projection stacks them (the "ONH" pile-ups on a symmetric cage). Halos share the order.
   const orderedAtomLabels = [...atomLabels].sort(
@@ -1713,7 +1715,8 @@ function planNativeMoleculeGraphSvg(
   // a nearer heteroatom's halo knocks a clean gap out of a farther label it overlaps. Per-atom
   // Inspector styling feeds the SAME halo: the per-atom "background color" IS the halo stroke
   // (default paper #ffffff; "transparent" opts out), and the halo width tracks the per-atom font
-  // size via the plan's resolved drawing style, so styled labels keep their depth cues.
+  // size via the plan's resolved drawing style, so styled labels keep their depth cues. On ring
+  // fills the default paper paint is replaced by the composited fill beneath each glyph part.
   const labelFragments = orderedAtomLabels.map((plan) => {
     const depthWeight = labelDepthWeightByAtomId.get(plan.atom.id);
     const scale = depthCuedLabelScale(depthWeight);
@@ -1755,9 +1758,8 @@ function planNativeMoleculeGraphSvg(
       "font-weight": plan.fontWeight,
       "font-style": plan.fontStyle
     }, [
-      ...(plan.backgroundVisible
-        ? plan.layout.runs.map((run, index) => labelRun(run, index, "halo"))
-        : []),
+      ...moleculeLabelHaloFragments(object, plan, scale, fillRings, () =>
+        plan.layout.runs.map((run, index) => labelRun(run, index, "halo"))),
       ...plan.layout.runs.map((run, index) => labelRun(run, index, "fill"))
     ]);
   });
@@ -1817,14 +1819,76 @@ function planNativeMoleculeGraphSvg(
   ]);
 }
 
-function moleculeFillUnderlayFragments(
-  object: MoleculeObject,
-  atomLabels: readonly AtomLabelPlan[],
-  labelDepthWeightByAtomId: ReadonlyMap<string, number | undefined>
+/** Repaint paper, then the underlying fills in their original order within the glyph halo.
+ * Alpha composites as the underlay does, including overlapping rings. Clip paths and gradient
+ * coordinates move into label space together. A paint server composites before glyph antialiasing.
+ * Ring effects never apply to these copies. */
+function moleculeLabelHaloFragments(
+  object: MoleculeObject, plan: AtomLabelPlan, scale: number, moleculeRings: readonly NativeMoleculeRing[],
+  paperHalo: () => PageSvgElementFragment[]
 ): PageSvgFragment[] {
-  const rings = nativeMoleculeRings(object);
-  // Lazily build these only if there is a painted ring. Unfilled molecules retain their exact plan.
-  let clearances: ReturnType<typeof atomLabelRingClearance>[] | undefined;
+  if (!plan.backgroundVisible) return [];
+  const paper = paperHalo();
+  if (Object.prototype.hasOwnProperty.call(object.style.atomLabelBackgroundColors ?? {}, plan.atom.id)) return paper;
+  // CLI documents and presets explicitly store paper white; only a different colour overrides fills.
+  const background = object.style.atomLabelBackgroundColor;
+  if (typeof background === "string"
+    && !isDefaultAtomLabelBackgroundColor(background)) return paper;
+  const extent = atomLabelHaloWidthPx(plan.drawingStyle) * scale / 2;
+  const box = {
+    x: plan.anchor.x + plan.layout.bounds.x * scale - extent,
+    y: plan.anchor.y + plan.layout.bounds.y * scale - extent,
+    width: plan.layout.bounds.width * scale + 2 * extent,
+    height: plan.layout.bounds.height * scale + 2 * extent
+  };
+  const rings = moleculeRings.filter((ring) => {
+    if (moleculeRingFillPaint(object, ring.ringKey).kind === "none") return false;
+    const xs = ring.points.map((p) => p.x), ys = ring.points.map((p) => p.y);
+    return Math.min(...xs) <= box.x + box.width && Math.max(...xs) >= box.x
+      && Math.min(...ys) <= box.y + box.height && Math.max(...ys) >= box.y;
+  });
+  if (!rings.length) return paper;
+  const inverse = `scale(${1 / scale}) translate(${-plan.anchor.x} ${-plan.anchor.y})`;
+  const id = `label-halo-${object.id}-${plan.atom.id}`;
+  const xs = rings.flatMap((ring) => ring.points.map((p) => p.x));
+  const ys = rings.flatMap((ring) => ring.points.map((p) => p.y));
+  const x = Math.min(box.x, ...xs) - 1, y = Math.min(box.y, ...ys) - 1;
+  const width = Math.max(box.x + box.width, ...xs) - x + 1;
+  const height = Math.max(box.y + box.height, ...ys) - y + 1;
+  // Compose the background BEFORE painting the glyph stroke. Repainting separate antialiased
+  // glyphs would leave a faint paper fringe even with identical solid colours.
+  return [
+    elementFragment("defs", `${id}-defs`, {}, [
+      ...rings.map((ring, index) => elementFragment("clipPath", `${id}-clip-${index}`, {
+        id: `${id}-clip-${index}`, clipPathUnits: "userSpaceOnUse"
+      }, [elementFragment("path", `${id}-polygon-${index}`, { d: ring.pathD })])),
+      elementFragment("pattern", `${id}-paint`, {
+        id, patternUnits: "userSpaceOnUse", patternContentUnits: "userSpaceOnUse",
+        x: (x - plan.anchor.x) / scale, y: (y - plan.anchor.y) / scale, width: width / scale, height: height / scale,
+        viewBox: `${(x - plan.anchor.x) / scale} ${(y - plan.anchor.y) / scale} ${width / scale} ${height / scale}`
+      }, [
+        elementFragment("rect", `${id}-paper`, { x: (x - plan.anchor.x) / scale, y: (y - plan.anchor.y) / scale,
+          width: width / scale, height: height / scale, fill: plan.backgroundColor }),
+        elementFragment("g", `${id}-page-paints`, { transform: inverse }, rings.map((ring, index) => {
+          const paint = moleculeRingFillPaint(object, ring.ringKey);
+          const paintId = `molecule-fill-${object.id}-${stableSvgIdPart(ring.ringKey)}`;
+          return elementFragment("g", `${id}-ring-${index}`, {
+            "data-label-halo-ring": ring.ringKey, "clip-path": `url(#${id}-clip-${index})`
+          }, [elementFragment("path", `${id}-fill-${index}`, {
+            d: ring.pathD, stroke: "none",
+            ...moleculePaintAttrs("fill", paint, paintId, moleculeRingFillOpacity(object, ring.ringKey, paint))
+          })]);
+        }))
+      ])
+    ]),
+    elementFragment("g", `${id}-glyphs`, { "data-label-halo-paint": id }, paper.map((run, index) => ({
+      ...run, key: `${id}-${index}`,
+      attrs: { ...run.attrs, fill: "none", stroke: `url(#${id})`, "fill-opacity": 1, "stroke-opacity": 1 }
+    })))
+  ];
+}
+
+function moleculeFillUnderlayFragments(object: MoleculeObject, rings: readonly NativeMoleculeRing[]): PageSvgFragment[] {
 
   return rings.flatMap((ring) => {
     const paint = moleculeRingFillPaint(object, ring.ringKey);
@@ -1833,20 +1897,7 @@ function moleculeFillUnderlayFragments(
     }
 
     const opacity = moleculeRingFillOpacity(object, ring.ringKey, paint);
-    const labelClearances = clearances ??= atomLabels.map((plan) => atomLabelRingClearance(
-      plan, depthCuedLabelScale(labelDepthWeightByAtomId.get(plan.atom.id))
-    ));
-    // Only this ring's own atoms notch its outline. Floating substituent labels retain fill
-    // underneath and their usual background halo. Reject distant labels before boolean work.
-    const candidates = ringOverlappingClearances(ring.points, labelClearances)
-      .filter((index) => ring.atomIds.includes(atomLabels[index]!.atom.id));
-    const difference = candidates.length > 0
-      ? notchedRingPath(ring.points, candidates.map((index) => labelClearances[index]!))
-      : { pathD: ring.pathD, overlappingCutoutIndices: [] };
-    const pathD = difference.overlappingCutoutIndices.length > 0 ? difference.pathD : ring.pathD;
-    if (!pathD) {
-      return [];
-    }
+    const pathD = ring.pathD;
     const effects = visualEffectPlansForStyle({
       objectId: `${object.id}-${stableSvgIdPart(ring.ringKey)}`,
       style: moleculeRingStyle(object, ring.ringKey),
@@ -1872,7 +1923,6 @@ function moleculeFillUnderlayFragments(
         "data-molecule-fill-ring": "true",
         "data-ring-key": ring.ringKey,
         d: pathD,
-        "fill-rule": difference.overlappingCutoutIndices.length > 0 ? "evenodd" : undefined,
         ...moleculePaintAttrs("fill", paint, paintId, opacity),
         filter,
         stroke: "none",
@@ -3758,7 +3808,7 @@ function mechanismArrowFragment(
       d: geometry.pathD,
       fill: "none",
       stroke: "#111111",
-      "stroke-width": 1.6,
+      "stroke-width": typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.6,
       "stroke-linecap": "round"
     }),
     elementFragment("polygon", `mechanism-head-${object.id}`, {
@@ -4607,6 +4657,7 @@ export function planNativeArtVisual(
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.5;
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
@@ -4628,7 +4679,7 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
         x2: end.x,
         y2: end.y,
         stroke: "#172026",
-        "stroke-width": 1.5,
+        "stroke-width": strokeWidth,
         "stroke-linecap": "round"
       });
     }),
@@ -4642,7 +4693,7 @@ function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvg
           .join(" "),
         fill: head.filled ? "#172026" : "none",
         stroke: head.filled ? "none" : "#172026",
-        "stroke-width": head.filled ? undefined : 1.5,
+        "stroke-width": head.filled ? undefined : strokeWidth,
         "stroke-linejoin": head.filled ? undefined : "round"
       })
     )
@@ -6153,6 +6204,8 @@ function nativeDashedBondDashes(
 }
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
+  // The physical preset specifies its broad wedge end explicitly, like its bold bonds.
+  if (drawingStyle.stylePresetId === DocumentStylePreset.id) return drawingStyle.bondBoldWidthPx;
   // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
   // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
   // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining
@@ -7142,6 +7195,21 @@ function parseCssRgbColor(value: string): { r: number; g: number; b: number } | 
     g: clamp(Number(rgb[2]), 0, 255),
     b: clamp(Number(rgb[3]), 0, 255)
   };
+}
+
+function isDefaultAtomLabelBackgroundColor(value: string): boolean {
+  const defaultColor = parseCssRgbColor(DefaultNativeDrawingStyle.atomLabelBackgroundColor);
+  const trimmed = value.trim();
+  const color = trimmed.toLowerCase() === "white"
+    ? { r: 255, g: 255, b: 255 }
+    : parseCssRgbColor(value);
+  if (!defaultColor || !color
+    || color.r !== defaultColor.r || color.g !== defaultColor.g || color.b !== defaultColor.b) {
+    return false;
+  }
+
+  const alpha = trimmed.match(/^rgba?\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?(?:\s*,\s*(\d*(?:\.\d+)?))?\s*\)$/i)?.[1];
+  return alpha === undefined || Number(alpha) === 1;
 }
 
 function rgbToHex(color: { r: number; g: number; b: number }): string {

@@ -1380,6 +1380,30 @@ describe("PluginManagerDialog", () => {
     expect(document.querySelector(`[data-action="uninstall-plugin"][data-plugin-id="${pluginId}"]`)).toBeNull();
   });
 
+  it("lists and revokes granted AI tool access for an installed plugin", async () => {
+    const runtime = createRuntime();
+    const list = vi.spyOn(runtime.externalTools, "consentList")
+      .mockResolvedValueOnce([{ tool: "claude", pluginId: installedPluginId, granted: true, at: "2026-10-22T12:00:00Z" }])
+      .mockResolvedValueOnce([]);
+    const revoke = vi.spyOn(runtime.externalTools, "consentRevoke").mockResolvedValue();
+    const entry = installedEntry();
+    mount(createElement(Harness, {
+      runtime,
+      onClose: vi.fn(),
+      onPluginsChanged: vi.fn(),
+      installedPlugins: [entry]
+    }));
+
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')?.textContent)
+      .toContain("AI tool access: Claude Code (Anthropic): allowed"));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="revoke-external-tool-consent"][data-plugin-id="${installedPluginId}"]`)!.click();
+    });
+    await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith("claude", installedPluginId));
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')).toBeNull());
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
   it("waits for the installed-plugin catalog before enabling package and update actions", async () => {
     const runtime = createRuntime();
     const entry = installedEntry();

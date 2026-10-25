@@ -77,6 +77,38 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("rejects DPI on every tool format that produces no PNG", async () => {
+    const client = await connect();
+    const cases = [
+      { name: "build_document", args: { smiles: "CC" } },
+      { name: "render_structure", args: { smiles: "CC", format: "svg" } },
+      { name: "render_grid", args: { items: [{ name: "a", smiles: "CC" }], format: "svg" } },
+      { name: "render_reaction", args: { reactants: ["CC"], products: ["CC"], format: "svg" } },
+      ...["svg", "pdf", "chemdraft"].map((format) => ({ name: "render_document",
+        args: { documentJson: serializeDocument(createEmptyDocument()), format } }))
+    ];
+    for (const { name, args } of cases) {
+      const error = await client.callTool({ name, arguments: { ...args, style: "document", dpi: 300 } });
+      expect(error.isError, name).toBe(true);
+      expect(textBlocks(error.content).join("\n"), name).toMatch(/--dpi requires PNG output/);
+    }
+  });
+  it("renders document style at its natural point size and surfaces conflicts", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "render_structure", arguments: {
+      smiles: "CCO", style: "document", format: "svg"
+    } });
+    expect(result.isError).not.toBe(true);
+    const svg = textBlocks(result.content).find((text) => text.startsWith("<svg"))!;
+    expect(svg).toMatch(/width="[\d.]+pt" height="[\d.]+pt"/);
+    expect(jsonPayload(result.content)).toMatchObject({ style: "document", widthPt: expect.any(Number), heightPt: expect.any(Number) });
+    for (const args of [{ style: "document", width: 600 }, { style: "document", bondLength: 22 },
+      { style: "document", padding: 4 }, { dpi: 300 }, { style: "document", dpi: 1201 }]) {
+      const error = await client.callTool({ name: "render_structure", arguments: { smiles: "CC", ...args } });
+      expect(error.isError).toBe(true);
+      expect(textBlocks(error.content).join("\n")).toMatch(/--style|--dpi/);
+    }
+  });
   it.each(chargeSeparationCases)("renders neutral-drawn $name with an info note", async ({ molecule, smiles }) => {
     const document = createEmptyDocument();
     document.pages[0]!.objects = [molecule];

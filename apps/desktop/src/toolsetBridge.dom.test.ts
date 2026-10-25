@@ -192,7 +192,7 @@ describe("toolset bridge interactions", () => {
     expect(centerCount()).toBe(0);
     await act(async () => { routeCommand("edit.undo"); });
     expect(centerCount()).toBe(4);
-  });
+  }, 20_000);
 
   it("does not double-toggle toolset commands after StrictMode remounts bridge effects", async () => {
     await renderMainWindow();

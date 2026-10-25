@@ -12,6 +12,7 @@ import {
   unavailableDesktopPluginPermissions,
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
+import type { ExternalToolConsent } from "../externalTools/externalToolsEngine";
 import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
 import { keepFocusInsideDialog } from "./PluginImageRequestDialog";
 import type { PickedPluginPackage } from "./pickPluginPackage";
@@ -167,6 +168,8 @@ export function PluginManagerDialog({
   const [updateResultsState, setUpdateResultsState] = useState<CatalogBoundUpdateResults | undefined>(undefined);
   const [noticeState, setNoticeState] = useState<PluginManagerNotice | undefined>(undefined);
   const [busyOperation, setBusyOperation] = useState<PluginManagerBusyOperation | undefined>(undefined);
+  const [externalToolConsents, setExternalToolConsents] = useState<readonly ExternalToolConsent[]>([]);
+  const [revokingExternalToolConsent, setRevokingExternalToolConsent] = useState<string | undefined>(undefined);
   /** Disk size of the recognition engine the user may also want gone, asked once after MolScribe's
    *  plugin is uninstalled. The engine is host-owned and outlives the plugin unless the user says so. */
   const [engineRemovalOfferBytes, setEngineRemovalOfferBytes] = useState<number | undefined>(undefined);
@@ -191,6 +194,14 @@ export function PluginManagerDialog({
   // Keep the checkboxes truthful even when a registration changes outside this dialog.
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
   useEffect(() => runtime.naming.subscribe(refreshFromHost), [runtime]);
+  useEffect(() => {
+    let current = true;
+    void runtime.externalTools.consentList().then(
+      (consents) => { if (current) setExternalToolConsents(consents); },
+      () => { if (current) setExternalToolConsents([]); }
+    );
+    return () => { current = false; };
+  }, [runtime, installedCatalogKey]);
 
   // A row's button swaps label mid-operation (Install -> Downloading…, Install engine -> Cancel
   // install, Uninstall -> Removing…) by becoming disabled; keep the keyboard on this dialog instead
@@ -388,6 +399,17 @@ export function PluginManagerDialog({
       }
     );
 
+  const revokeExternalToolConsent = (tool: "claude" | "codex", pluginId: string): void => {
+    const key = `${pluginId}\0${tool}`;
+    setRevokingExternalToolConsent(key);
+    setError(undefined);
+    void runtime.externalTools.consentRevoke(tool, pluginId)
+      .then(() => runtime.externalTools.consentList())
+      .then((consents) => setExternalToolConsents(consents))
+      .catch((cause: unknown) => setError(`Could not revoke AI tool access: ${messageOf(cause)}`))
+      .finally(() => setRevokingExternalToolConsent(undefined));
+  };
+
   const removeRecognitionEngineAfterUninstall = (): Promise<void> =>
     run({ kind: "removeRecognitionEngine" }, async () => {
       setEngineRemovalOfferBytes(undefined);
@@ -571,6 +593,14 @@ export function PluginManagerDialog({
                       </p>
                     ) : null}
                     {installed ? <PermissionList permissions={manifest.permissions} /> : null}
+                    {installed ? (
+                      <ExternalToolConsentRows
+                        consents={externalToolConsents}
+                        pluginId={manifest.id}
+                        revoking={revokingExternalToolConsent}
+                        onRevoke={revokeExternalToolConsent}
+                      />
+                    ) : null}
                     {!installed ? (
                       <p className="plugin-manager-update-status">Included with ChemDraft — updated with the app.</p>
                     ) : null}
@@ -1295,6 +1325,45 @@ function PermissionList({ permissions }: { permissions: readonly PluginPermissio
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+function ExternalToolConsentRows({
+  consents,
+  pluginId,
+  revoking,
+  onRevoke
+}: {
+  consents: readonly ExternalToolConsent[];
+  pluginId: string;
+  revoking: string | undefined;
+  onRevoke: (tool: "claude" | "codex", pluginId: string) => void;
+}) {
+  const granted = consents.filter((consent) => consent.pluginId === pluginId && consent.granted);
+  if (granted.length === 0) return null;
+  return (
+    <div className="plugin-manager-external-tool-access" data-testid="plugin-external-tool-access">
+      {granted.map((consent) => {
+        const label = consent.tool === "claude" ? "Claude Code (Anthropic)" : "Codex (OpenAI)";
+        const key = `${pluginId}\0${consent.tool}`;
+        return (
+          <div className="plugin-manager-package-actions" data-tool={consent.tool} key={consent.tool}>
+            <p className="plugin-manager-update-status">AI tool access: {label}: allowed</p>
+            <button
+              className="plugin-manager-button"
+              data-action="revoke-external-tool-consent"
+              data-plugin-id={pluginId}
+              data-tool={consent.tool}
+              disabled={revoking === key}
+              onClick={() => onRevoke(consent.tool, pluginId)}
+              type="button"
+            >
+              {revoking === key ? "Revoking…" : "Revoke"}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

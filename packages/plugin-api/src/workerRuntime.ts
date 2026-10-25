@@ -16,17 +16,21 @@
  * unit-tests without a real Worker (a linked in-memory endpoint pair stands in).
  */
 
+import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "./index";
 import type {
   PluginAnalysisAPI,
   PluginChemistryAPI,
   PluginCommandContext,
+  PluginCommandInput,
   PluginCommandHandler,
   PluginDialogsAPI,
   PluginDocumentAPI,
   PluginImagesAPI,
   PluginRecognitionAPI,
+  PluginToolsAPI,
   PluginManifest,
   PluginPanelAPI,
+  PluginOverlaysAPI,
   PluginPermission,
   PluginSelectionAPI,
   PluginStorage
@@ -97,6 +101,14 @@ export function runPluginWorker(
 ): void {
   const permissions = new Set<PluginPermission>(registration.manifest.permissions);
   const has = (permission: PluginPermission): boolean => permissions.has(permission);
+  const requirePermission = (permission: PluginPermission): void => {
+    if (!has(permission)) {
+      throw new PluginWorkerCapabilityError({
+        code: "PLUGIN_PERMISSION_DENIED",
+        message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
+      });
+    }
+  };
 
   let nextCapabilityId = 1;
   const pendingCapabilities = new Map<
@@ -143,7 +155,7 @@ export function runPluginWorker(
       post({ kind: "capabilityRequest", requestId, commandRequestId, namespace, method, args });
     });
 
-  const buildContext = (commandRequestId: number): PluginCommandContext => {
+  const buildContext = (commandRequestId: number, input?: PluginCommandInput): PluginCommandContext => {
     // `method` is typed against PLUGIN_WORKER_CAPABILITY_METHODS rather than being a bare `string`, so
     // the stub and the host bridge's allow-list are one list instead of two. This is the fix for the
     // real defect: `nameToStructure` and `structureFromSmiles` were added here, and to the in-process
@@ -183,6 +195,21 @@ export function runPluginWorker(
       ? { getSelection: () => call("selection", "getSelection", []) as ReturnType<PluginSelectionAPI["getSelection"]> }
       : undefined;
 
+    const overlays: PluginOverlaysAPI | undefined = has("ui.canvas")
+      ? { setStatus: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "setStatus", [request]) as Promise<void>;
+        }, setTranscript: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "setTranscript", [request]) as Promise<void>;
+        }, setContent: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "setContent", [request]) as Promise<void>;
+        }, open: request => {
+          requirePermission("ui.canvas");
+          return call("overlays", "open", [request]) as Promise<void>;
+        } }
+      : undefined;
     const panels: PluginPanelAPI | undefined = has("ui.panel")
       ? { showReport: (panelId, report) => call("panels", "showReport", [panelId, report]) as ReturnType<PluginPanelAPI["showReport"]> }
       : undefined;
@@ -213,6 +240,37 @@ export function runPluginWorker(
               >
           }
         : undefined;
+
+    const callAssistant = (method: CapabilityMethodOf<"assistant">, args: unknown[]): Promise<unknown> => {
+      for (const permission of AssistantCapabilityPermissions) requirePermission(permission);
+      return call("assistant", method, args);
+    };
+    const assistant: PluginAssistantAPI | undefined = AssistantCapabilityPermissions.every(has) ? {
+      listTools: () => callAssistant("listTools", []) as ReturnType<PluginAssistantAPI["listTools"]>,
+      callTool: r => callAssistant("callTool", [r]) as ReturnType<PluginAssistantAPI["callTool"]>,
+      beginRequest: r => callAssistant("beginRequest", [r]) as ReturnType<PluginAssistantAPI["beginRequest"]>,
+      endRequest: r => callAssistant("endRequest", [r]) as ReturnType<PluginAssistantAPI["endRequest"]>,
+      createToolSession: r => callAssistant("createToolSession", [r]) as ReturnType<PluginAssistantAPI["createToolSession"]>,
+      closeToolSession: r => callAssistant("closeToolSession", [r]) as ReturnType<PluginAssistantAPI["closeToolSession"]>
+    } : undefined;
+
+    const callTools = (method: CapabilityMethodOf<"tools">, request: unknown): Promise<unknown> => {
+      requirePermission("assistant.run");
+      requirePermission("native.execute");
+      return call("tools", method, [request]);
+    };
+    const tools: PluginToolsAPI | undefined = has("assistant.run") && has("native.execute")
+      ? {
+          status: (request) => callTools("status", request) as ReturnType<PluginToolsAPI["status"]>,
+          install: (request) => callTools("install", request) as ReturnType<PluginToolsAPI["install"]>,
+          signIn: (request) => callTools("signIn", request) as ReturnType<PluginToolsAPI["signIn"]>,
+          run: (request) => callTools("run", request) as ReturnType<PluginToolsAPI["run"]>,
+          poll: (request) => callTools("poll", request) as ReturnType<PluginToolsAPI["poll"]>,
+          cancel: (request) => callTools("cancel", request) as ReturnType<PluginToolsAPI["cancel"]>,
+          clearConversation: (request) =>
+            callTools("clearConversation", request) as ReturnType<PluginToolsAPI["clearConversation"]>
+        }
+      : undefined;
 
     // Gated on the permission alone, exactly like the others. The host still decides whether it can
     // actually serve the call: a host with no chemistry engine resolves the stub's request with
@@ -270,6 +328,7 @@ export function runPluginWorker(
       : undefined;
 
     return {
+      ...(input === undefined ? {} : { input }),
       plugin: {
         id: registration.manifest.id,
         name: registration.manifest.name,
@@ -277,27 +336,23 @@ export function runPluginWorker(
         permissions: registration.manifest.permissions
       },
       documents,
+      tools,
+      assistant,
       storage,
       selection,
       panels,
+      overlays,
       dialogs,
       images,
       recognition,
       analysis,
       chemistry,
       hasPermission: has,
-      requirePermission: (permission) => {
-        if (!has(permission)) {
-          throw new PluginWorkerCapabilityError({
-            code: "PLUGIN_PERMISSION_DENIED",
-            message: `Plugin "${registration.manifest.id}" requires permission "${permission}".`
-          });
-        }
-      }
+      requirePermission
     };
   };
 
-  const invoke = (commandRequestId: number, commandId: string): void => {
+  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput): void => {
     const handler = registration.commandHandlers[commandId];
     if (!handler) {
       post({
@@ -310,7 +365,7 @@ export function runPluginWorker(
     }
     // Defer to a microtask so a synchronous throw is captured as a rejection, mirroring the host.
     Promise.resolve()
-      .then(() => handler(buildContext(commandRequestId)))
+      .then(() => handler(buildContext(commandRequestId, input)))
       .then(
         (value) => {
           if (abortedCommands.has(commandRequestId)) {
@@ -350,7 +405,7 @@ export function runPluginWorker(
   const handle = (message: HostToWorkerMessage): void => {
     switch (message.kind) {
       case "invokeCommand":
-        invoke(message.commandRequestId, message.commandId);
+        invoke(message.commandRequestId, message.commandId, message.input);
         return;
       case "capabilityResult": {
         const pending = pendingCapabilities.get(message.requestId);

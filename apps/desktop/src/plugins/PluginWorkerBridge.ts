@@ -142,7 +142,7 @@ export class PluginWorkerBridge {
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(commandRequestId, { context, resolve, reject });
       try {
-        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId });
+        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));
@@ -405,6 +405,8 @@ export class PluginWorkerBridge {
         return context.analysis;
       case "storage":
         return context.storage;
+      case "overlays":
+        return context.overlays;
       case "panels":
         return context.panels;
       case "documents":
@@ -417,6 +419,10 @@ export class PluginWorkerBridge {
         return context.images;
       case "recognition":
         return context.recognition;
+      case "tools":
+        return context.tools;
+      case "assistant":
+        return context.assistant;
     }
   }
 

@@ -5,6 +5,8 @@ import {
   AppliedPatchReceiptSchema,
   PluginImageRequestResultSchema,
   PluginImageRequestSchema,
+  PluginExternalToolRunRequestSchema,
+  PluginExternalToolPollRequestSchema,
   PluginApiVersion,
   PluginPanelReportSchema,
   PluginPromptTextRequestSchema,
@@ -171,6 +173,21 @@ describe("createStructureSourceFingerprint", () => {
 });
 
 describe("validatePluginManifest", () => {
+  it("refuses assistant.run without native.execute and accepts the permission pair", () => {
+    const candidate = {
+      id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run"]
+    };
+    const result = validatePluginManifest(candidate);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      'permissions: Plugin "org.test.tools" declares "assistant.run" without "native.execute". External tools spawn processes; declare both permissions.'
+    ]);
+    expect(() => parsePluginManifest(candidate)).toThrow(/assistant\.run.*without.*native\.execute/);
+    expect(validatePluginManifest({ ...candidate, permissions: ["assistant.run", "native.execute"] }).ok).toBe(true);
+    expect(validatePluginManifest({ ...candidate, permissions: ["native.execute"] }).ok).toBe(true);
+  });
+
   it("accepts a manifest with command, menu, panel, toolbar, and recognizer contributions", () => {
     const result = validatePluginManifest({
       id: "org.chemdraft.demo",
@@ -487,6 +504,19 @@ describe("RecognizedStructureResult", () => {
   it("keeps dangerous permission names explicit for host review surfaces", () => {
     expect(dangerousPluginPermissions).toContain("native.execute");
     expect(dangerousPluginPermissions).toContain("model.download");
+    expect(dangerousPluginPermissions).toContain("assistant.run");
+  });
+
+  it("validates external-tool request caps", () => {
+    expect(
+      PluginExternalToolRunRequestSchema.parse({
+        tool: "codex", conversationId: "conversation_1", prompt: "draw benzene", systemPrompt: "help", mcpSessionId: "session", timeoutMs: 1_000
+      })
+    ).toMatchObject({ tool: "codex", timeoutMs: 1_000 });
+    expect(() => PluginExternalToolRunRequestSchema.parse({ tool: "claude", conversationId: "short", prompt: "", systemPrompt: "", mcpSessionId: "s" })).toThrow();
+    expect(() => PluginExternalToolRunRequestSchema.parse({ tool: "claude", conversationId: "conversation_1", prompt: "x".repeat(32_769), systemPrompt: "", mcpSessionId: "s" })).toThrow();
+    expect(() => PluginExternalToolPollRequestSchema.parse({ runId: "run", cursor: 0, maxLines: 5_001 })).toThrow();
+    expect(() => PluginExternalToolPollRequestSchema.parse({ runId: "run", cursor: 0, waitMs: 1_001 })).toThrow();
   });
 
   // The patch interior is deliberately `passthrough()` (chem-core owns its shape, and the SDK boundary

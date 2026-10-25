@@ -10,6 +10,7 @@ import {
   type AppliedPatchReceipt,
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
+import { writePatchOps } from "@chemdraft/plugin-host";
 
 export interface AppliedPluginDocumentPatch {
   document: ChemDraftDocument;
@@ -17,7 +18,7 @@ export interface AppliedPluginDocumentPatch {
 }
 
 /**
- * Apply a validated plugin patch through chem-core, then select every object that the patch inserted.
+ * Apply a validated plugin patch through chem-core, then select surviving inserted and changed objects.
  * Both patch operations are assembled before the caller commits the returned document, so the desktop
  * records exactly one history entry for the command.
  */
@@ -27,10 +28,21 @@ export function applyPluginDocumentPatch(
   options: ApplyPatchOptions = {}
 ): AppliedPluginDocumentPatch {
   const now = options.now ?? new Date();
-  const beforeIds = new Set(document.pages.flatMap((page) => page.objects.map((object) => object.id)));
+  proposed = rebasePluginPatch(document, proposed, false);
   const patched = applyPatch(document, proposed.patch, { ...options, now });
+  const touched = new Set<string>();
+  for (const op of writePatchOps(proposed.patch)) {
+    switch (op.op) {
+      case "addObject": touched.add(op.object.id); break;
+      case "addAnnotation": touched.add(op.annotation.id); break;
+      case "updateObject":
+      case "moveObject":
+      case "reorderObject": touched.add(op.objectId); break;
+      case "setObjectOrder": op.objectIds.forEach((id) => touched.add(id)); break;
+    }
+  }
   const objectIds = patched.pages.flatMap((page) =>
-    page.objects.filter((object) => !beforeIds.has(object.id)).map((object) => object.id)
+    page.objects.filter((object) => touched.has(object.id)).map((object) => object.id)
   );
 
   let selected = patched;
@@ -45,6 +57,8 @@ export function applyPluginDocumentPatch(
         { ...options, now }
       );
     }
+  } else {
+    selected = applyPatch(patched, { op: "setSelection", objectIds: [] }, { ...options, now });
   }
 
   return {
@@ -78,9 +92,8 @@ export function describePatchFailure(error: unknown): string {
  *
  * So an insertion whose object id is taken gets a fresh one, and an insertion onto a page this document
  * does not have goes onto its first page, a molecule re-centred there. Nothing else changes: atoms,
- * bonds, charges, stereo and every other chemical field are carried over exactly (AGENTS.md §10). This
- * is for the user's accept only — a plugin's own direct write was built from the live document it read,
- * and a collision there is the plugin's error to see.
+ * bonds, charges, stereo and every other chemical field are carried over exactly (AGENTS.md §7).
+ * Direct writes also rebase colliding ids, but must target an existing page.
  */
 export function applyAcceptedPluginProposal(
   document: ChemDraftDocument,
@@ -95,26 +108,92 @@ export function rebaseProposedInsertion(
   document: ChemDraftDocument,
   proposed: NormalizedProposedDocumentPatch
 ): NormalizedProposedDocumentPatch {
+  return rebasePluginPatch(document, proposed, true);
+}
+
+function rebasePluginPatch(
+  document: ChemDraftDocument,
+  proposed: NormalizedProposedDocumentPatch,
+  retargetMissingPages: boolean
+): NormalizedProposedDocumentPatch {
   const patch = proposed.patch as DocumentPatch;
-  if (patch.op !== "addObject" && patch.op !== "addAnnotation") return proposed;
-  const object: DocumentObject = patch.op === "addObject" ? patch.object : patch.annotation;
-  const fallbackPage = document.pages[0];
-  const pageExists = document.pages.some((page) => page.id === patch.pageId);
-  // No page at all: nothing to re-target onto; chem-core's own error says so.
-  if (!pageExists && !fallbackPage) return proposed;
-
+  const ops = writePatchOps(patch);
   const existingIds = new Set(document.pages.flatMap((page) => page.objects.map((candidate) => candidate.id)));
-  let rebased: DocumentObject = object;
-  if (existingIds.has(object.id)) rebased = { ...rebased, id: freshObjectId(existingIds, object.id) };
-  const pageId = pageExists ? patch.pageId : fallbackPage!.id;
-  if (!pageExists) rebased = centredOnPage(rebased, fallbackPage!);
-  if (rebased === object && pageId === patch.pageId) return proposed;
+  // Reserve future insertion ids as well, so an allocated id cannot steal a later insertion's name.
+  const reservedIds = new Set(existingIds);
+  for (const op of ops) {
+    if (op.op === "addObject") reservedIds.add(op.object.id);
+    if (op.op === "addAnnotation") reservedIds.add(op.annotation.id);
+  }
+  const remappedIds = new Map<string, string>();
+  const rebasedOps = ops.map((op): DocumentPatch => {
+    const remap = (id: string): string => remappedIds.get(id) ?? id;
+    if (op.op !== "addObject" && op.op !== "addAnnotation") {
+      if ("objectId" in op) {
+        if (op.op !== "updateObject") return { ...op, objectId: remap(op.objectId) };
+        const changes = remapObjectReferences(op.changes, remap);
+        return { ...op, objectId: remap(op.objectId), changes: {
+          ...changes, ...(changes.id === undefined ? {} : { id: remap(changes.id) })
+        } };
+      }
+      if ("objectIds" in op) return { ...op, objectIds: op.objectIds.map(remap) };
+      if (op.op === "removeAnnotation") return { ...op, annotationId: remap(op.annotationId) };
+      const bondRef = (ref: { objectId: string; bondId: string }) => ({ ...ref, objectId: remap(ref.objectId) });
+      if (op.op === "setCrossingOverride") return { ...op, crossing: {
+        ...op.crossing, bonds: [bondRef(op.crossing.bonds[0]), bondRef(op.crossing.bonds[1])], front: bondRef(op.crossing.front)
+      } };
+      if (op.op === "clearCrossingOverride") return { ...op, bonds: [bondRef(op.bonds[0]), bondRef(op.bonds[1])] };
+      return op;
+    }
+    // Native object references follow prior insertions; atom/bond ids and opaque metadata stay intact.
+    const insertion = rebaseInsertion(remappedIds.size === 0 ? op : op.op === "addObject"
+      ? { ...op, object: remapObjectReferences(op.object, remap) as DocumentObject }
+      : { ...op, annotation: remapObjectReferences(op.annotation, remap) as typeof op.annotation });
+    const id = insertion.op === "addObject" ? insertion.object.id : insertion.annotation.id;
+    const originalId = op.op === "addObject" ? op.object.id : op.annotation.id;
+    remappedIds.set(originalId, id);
+    existingIds.add(id);
+    reservedIds.add(id);
+    return insertion;
+  });
+  if (patch.op === "batch") return { ...proposed, patch: { op: "batch", patches: rebasedOps } };
+  if (rebasedOps[0] === patch) return proposed;
+  return { ...proposed, patch: rebasedOps[0]! };
 
-  const nextPatch: DocumentPatch =
-    patch.op === "addObject"
-      ? { op: "addObject", pageId, object: rebased }
-      : { op: "addAnnotation", pageId, annotation: rebased as typeof patch.annotation };
-  return { ...proposed, patch: nextPatch as NormalizedProposedDocumentPatch["patch"] };
+  function rebaseInsertion(patch: Extract<DocumentPatch, { op: "addObject" | "addAnnotation" }>) {
+    const object: DocumentObject = patch.op === "addObject" ? patch.object : patch.annotation;
+    const fallbackPage = document.pages[0];
+    const pageExists = document.pages.some((page) => page.id === patch.pageId);
+    // Missing pages on a direct write remain an error for chem-core to report.
+    const retarget = retargetMissingPages && !pageExists && fallbackPage;
+    let rebased: DocumentObject = object;
+    if (existingIds.has(object.id)) rebased = { ...rebased, id: freshObjectId(reservedIds, object.id) };
+    const pageId = retarget ? fallbackPage.id : patch.pageId;
+    if (retarget) rebased = centredOnPage(rebased, fallbackPage);
+    if (rebased === object && pageId === patch.pageId) return patch;
+
+    return patch.op === "addObject"
+      ? { ...patch, pageId, object: rebased }
+      : { ...patch, pageId, annotation: rebased as typeof patch.annotation };
+  }
+}
+
+/** Remap only native object references, never arbitrary strings in chemistry or plugin metadata. */
+function remapObjectReferences(object: Partial<DocumentObject>, remap: (id: string) => string): Partial<DocumentObject> {
+  const next = { ...object };
+  if ("components" in next && next.components) next.components = next.components.map((c) => ({ ...c, objectId: remap(c.objectId) }));
+  if ("conditionsTextObjectIds" in next && next.conditionsTextObjectIds) next.conditionsTextObjectIds = next.conditionsTextObjectIds.map(remap);
+  if ("containedObjectIds" in next && next.containedObjectIds) next.containedObjectIds = next.containedObjectIds.map(remap);
+  if ("childObjectIds" in next && next.childObjectIds) next.childObjectIds = next.childObjectIds.map(remap);
+  if ("targetObjectIds" in next && next.targetObjectIds) next.targetObjectIds = next.targetObjectIds.map(remap);
+  if ("labels" in next && next.labels) next.labels = next.labels.map(remap);
+  for (const key of ["start", "end", "source", "target", "anchor"] as const) {
+    if (key in next) {
+      const anchor = (next as Partial<Record<typeof key, { objectId?: string }>>)[key];
+      if (anchor?.objectId) Object.assign(next, { [key]: { ...anchor, objectId: remap(anchor.objectId) } });
+    }
+  }
+  return next;
 }
 
 /**
@@ -179,6 +258,8 @@ export interface PluginWriteGate {
  *  would otherwise hold the plugin's command open for good. */
 export const PLUGIN_WRITE_MAX_WAIT_MS = 60_000;
 
+export class PluginWriteGateTimeoutError extends Error {}
+
 export function createPluginWriteGate({
   isGestureActive,
   pollMs = 50,
@@ -211,7 +292,7 @@ export function createPluginWriteGate({
     while (queue.length > 0 && !isGestureActive()) queue.shift()!.write();
     // Still busy: refuse what has waited too long, plainly, rather than apply it into the session.
     while (queue.length > 0 && now() - queue[0]!.queuedAt >= maxWaitMs) {
-      queue.shift()!.abandon(new Error("The canvas stayed busy with another edit; nothing was inserted. Try again."));
+      queue.shift()!.abandon(new PluginWriteGateTimeoutError("The canvas stayed busy with another edit; nothing was inserted. Try again."));
     }
     schedule();
   };

@@ -4,6 +4,7 @@ import {
   adoptDerivedDocument,
   applyPatch,
   applyPatches,
+  BatchDocumentPatchSchema,
   DocumentPatchError,
   isEngineDocument,
   toEngineDocument
@@ -28,6 +29,38 @@ function documentWith(count: number): ChemDraftDocument {
 }
 
 describe("patch engine structural sharing", () => {
+  it("applies a batch sequentially and atomically, including on an engine document", () => {
+    const before = documentWith(2);
+    const after = applyPatch(before, { op: "batch", patches: [
+      { op: "addObject", pageId: before.pages[0]!.id, object: textObject("new", 0) },
+      { op: "updateObject", objectId: "new", changes: { x: 90 } },
+      { op: "removeObject", objectId: "t1" }
+    ] }, { now });
+    expect(after.pages[0]!.objects.map(({ id, x }) => ({ id, x }))).toEqual([
+      { id: "t0", x: 0 }, { id: "new", x: 90 }
+    ]);
+    expect(() => applyPatch(before, { op: "batch", patches: [
+      { op: "moveObject", objectId: "t0", x: 99, y: 99 },
+      { op: "removeObject", objectId: "missing" }
+    ] }, { now })).toThrow(/missing/);
+    expect(before.pages[0]!.objects.map(({ id, x }) => ({ id, x }))).toEqual([
+      { id: "t0", x: 0 }, { id: "t1", x: 1 }
+    ]);
+  });
+
+  it("refuses empty, oversized, and nested batches in the schema and engine", () => {
+    const before = documentWith(1);
+    const leaf = { op: "moveObject" as const, objectId: "t0", x: 1, y: 2 };
+    for (const patches of [[], Array.from({ length: 257 }, () => leaf), [{ op: "batch" as const, patches: [leaf] }]]) {
+      const batch = { op: "batch" as const, patches };
+      expect(BatchDocumentPatchSchema.safeParse(batch).success).toBe(false);
+      expect(() => applyPatch(before, batch, { now })).toThrow();
+    }
+    const maximum = { op: "batch" as const, patches: Array.from({ length: 256 }, () => leaf) };
+    expect(BatchDocumentPatchSchema.safeParse(maximum).success).toBe(true);
+    expect(applyPatch(before, maximum, { now }).pages[0]!.objects[0]).toMatchObject({ x: 1, y: 2 });
+  });
+
   it("shares every object a patch does not touch, and replaces the one it does", () => {
     const before = documentWith(4);
     const after = applyPatch(before, { op: "moveObject", objectId: "t2", x: 50, y: 60 }, { now });

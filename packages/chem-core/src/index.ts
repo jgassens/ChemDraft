@@ -147,6 +147,7 @@ export {
 
 export {
   DocumentPatchError,
+  BatchDocumentPatchSchema,
   admitParsedDocument,
   adoptDerivedDocument,
   applyPatch,
@@ -168,6 +169,10 @@ export {
 
 export {
   ChemDraftSyntheticStylePreset,
+  DOCUMENT_STYLE_UNITS_PER_PT,
+  DocumentMoleculeSizeStyle,
+  DocumentStylePreset,
+  DocumentTextStyle,
   DefaultNativeTextStyle,
   DefaultNativeDrawingStyle,
   nativeDrawingStyleFromObjectStyle,

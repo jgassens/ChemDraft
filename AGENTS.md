@@ -47,7 +47,9 @@ other platform is a follow-up" is not an acceptable state to merge.
   did not run.
 - **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
   the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
-  version the other does not. See `docs/releasing/`.
+  version the other does not. See `docs/releasing/`. The Windows installer is
+  built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
+  2026-10-22), never on a local machine or VM; the Windows session tests the installer CI built.
 
 ## 2. Orientation
 
@@ -100,7 +102,7 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.7`. For a 0.x version the minor is the compatibility boundary, so additive
+`PluginApiVersion` is `0.1.14`. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
@@ -143,13 +145,15 @@ Naming: commands `plugin.<pluginName>.<action>` (schema-enforced for toolset con
 
 ### 4.4 Writing to the document
 
-Plugins mutate documents only through patches. **Proposal review** is for results the user did not
-author and cannot vouch for; image recognition is always proposal-only. When the user supplied the
-input and the conversion is deterministic (a typed name parsed by OPSIN), the plugin declares
-`document.write` and calls `documents.applyPatch`, which works only while one of its own commands is
-running; the host commits one labelled undo entry, selects what was inserted, and opens no review
-window. `applyPatch` only inserts (`addObject`, `addAnnotation`); changing or removing what is already
-there goes through proposal review. Reports are for failures; success needs no window.
+Plugins mutate documents only through patches. A plugin with `document.write` calls
+`documents.applyPatch` only while one of its own commands is running. It may insert objects, and may
+change or remove only objects selected when that command started plus objects it inserted during
+that command. Writes land directly, leaving what changed selected. The assistant transaction groups
+writes into one labelled undo entry per AI request; for other plugins, each `documents.applyPatch`
+call creates its own labelled undo entry (including a batch patch). Undo and redo restore recorded
+states exactly; they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
+results (MolScribe); other plugin writes need no review window. Reports are for failures; success
+needs no window.
 
 ### 4.5 Structure recognition (MolScribe OCSR)
 
@@ -334,6 +338,11 @@ the first time and reopen where they were left, and use the shared dialog host
 (`docs/architecture/native-dialog-host.md`). Dialogs are modeless unless an answer is required: the floating
 toolbars stay usable beside them and a dialog can come in front of them. Simple confirmations use native message
 boxes. Existing in-viewport dialogs are being migrated; add no new ones.
+
+**Canvas overlay exception (owner rule, 2026-10-22).** One declared canvas overlay per plugin — an icon
+that expands into a prompt box with a status line, permission `ui.canvas` — is the only permitted
+in-viewport plugin surface. It is draggable, remembers its place, hides during canvas gestures and in
+exports, and takes focus only when clicked. Dialogs, palettes and panels still float as native windows.
 
 ## 13. Security, errors, and performance
 

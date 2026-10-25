@@ -180,6 +180,21 @@ not. The first field focuses on mount, and dialog Undo/Redo stays local to text 
 Cmd+A and the native Edit > Select All route to the focused dialog field; with no field focused
 they do not change document selection.
 
+## Tool installation
+
+`toolInstall` is the modeless native dialog for an external assistant tool requested by a plugin.
+It is 520 × 460 logical pixels, resizable, and retains the shared owner, placement, lifecycle and
+private-channel rules. Its typed snapshot records the requested tool, publisher, pinned download
+facts, disclosure, disk space and a bounded install state. The Rust and TypeScript validators both
+fail closed, including the 3400-byte delivery budget used by `engineInstall`.
+
+The initial download view lists the publisher, version, host and download size. Both the initial
+and consent views explicitly name the publisher that receives the prompt and open page, including
+unpublished structures; the disclosure is shown verbatim. The accepted actions are `install`,
+`allow`, `cancelInstall`, and `close`, with the state-specific button set validated by both hosts.
+The document coordinator owns opening, progress updates and closure; plugins receive only the
+typed callback and do not receive native window or download authority.
+
 ## Adding a later kind
 
 Add a discriminated payload/action adapter and validators in TypeScript and Rust, a lazy trusted
