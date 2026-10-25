@@ -69,11 +69,7 @@ a { color: inherit; }
 .site-nav a:hover, .site-footer a:hover, .action-line a:hover, .site-nav a[aria-current="page"] { color: var(--ink); }
 
 .brand { display: inline-flex; align-items: center; gap: 0.8rem; color: var(--ink); text-decoration: none; }
-.brand-mark {
-  display: inline-grid; width: 28px; height: 28px; place-items: center;
-  border: 1px solid var(--blue); background: var(--blue); color: var(--surface);
-  font-family: var(--font-display); font-size: 0.72rem; font-weight: 700; line-height: 1;
-}
+.brand-icon { display: block; width: 28px; height: 28px; }
 .brand-name { font-size: 0.98rem; font-weight: 600; }
 
 .app-hero { display: grid; gap: 1.1rem; max-width: 860px; padding: clamp(48px, 8vw, 86px) 0 clamp(36px, 6vw, 56px); }
