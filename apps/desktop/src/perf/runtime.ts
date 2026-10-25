@@ -4,20 +4,26 @@ import { createPerfProbe, type DoneSignal, type PerfRecord, type PerfProbe } fro
 
 declare global { interface Window { readonly __CHEMDRAFT_PERF_ALLOWED__?: boolean; } }
 export let perfProbe: PerfProbe | undefined;
+function reportPerfFailure(error: unknown): void {
+  perfProbe?.guard(() => { throw error; });
+}
 
 /** Forward a numeric completion only; Rust authenticates windows and enforces the launch gate. */
 export function sendPerfCompletion(target: string, requestKey: string, signal: DoneSignal, at?: number, frameAt?: number): void {
-  if (!perfProbe) return;
-  const completionTime = at ?? perfProbe.timestamp();
-  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("perf_log_complete", {
-    completion: { target, requestKey, signal, at: completionTime, frameAt }
-  })).catch(error => console.warn("Perf probe completion failed", error));
+  perfProbe?.guard(() => {
+    const completionTime = at ?? perfProbe?.timestamp();
+    if (completionTime === undefined) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("perf_log_complete", {
+      completion: { target, requestKey, signal, at: completionTime, frameAt }
+    })).catch(reportPerfFailure);
+  });
 }
 /** Hidden windows must be shown before requesting their first frame. */
 export function perfSurfaceReady(target: string, requestKey: string, signal: DoneSignal): void {
-  if (!perfProbe) return;
-  const at = perfProbe.timestamp();
-  requestAnimationFrame(() => sendPerfCompletion(target, requestKey, signal, at, perfProbe?.timestamp()));
+  perfProbe?.guard(() => {
+    const at = perfProbe?.timestamp();
+    window.requestAnimationFrame(() => perfProbe?.guard(() => sendPerfCompletion(target, requestKey, signal, at, perfProbe?.timestamp())));
+  });
 }
 
 export function probePlatform(platform = detectShortcutPlatform()): PerfRecord["platform"] {
@@ -54,7 +60,7 @@ export async function startPerfProbe(sourceStamp?: string): Promise<void> {
   if (!perfProbeRequestedFromWindow()) return;
   const native = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
   const desktop = Boolean(native.__TAURI_INTERNALS__ || native.__TAURI__);
-  let offset = performance.timeOrigin;
+  let offset = window.performance.timeOrigin;
   let processStart = offset;
   let clockErrorMs = 0;
   let buildStamp = sourceStamp === undefined ? "" : `${sourceStamp} · ${__BUILD_STAMP__} · ${__WORKTREE_LABEL__}`;
@@ -62,7 +68,7 @@ export async function startPerfProbe(sourceStamp?: string): Promise<void> {
   if (desktop) {
     const { invoke } = await import("@tauri-apps/api/core");
     let registration = buildStamp || undefined;
-    const aligned = await calibrateClock(() => performance.now(), () => {
+    const aligned = await calibrateClock(() => window.performance.now(), () => {
       const buildStamp = registration; registration = undefined;
       return invoke<NativeClock>("perf_log_clock", { buildStamp });
     });
@@ -75,7 +81,7 @@ export async function startPerfProbe(sourceStamp?: string): Promise<void> {
       if (queued >= 256) { console.warn("Perf probe log queue full; sample dropped"); return; }
       queued++;
       queue = queue.then(() => invoke<void>("perf_log_append", { line: JSON.stringify(record) }))
-        .catch(error => console.warn("Perf probe log append failed", error)).finally(() => { queued--; });
+        .catch(reportPerfFailure).finally(() => { queued--; });
     };
   } else {
     // Web preview has no app_data_dir. Keep the same JSONL shape in a bounded browser buffer.
@@ -84,22 +90,26 @@ export async function startPerfProbe(sourceStamp?: string): Promise<void> {
         const line = `${JSON.stringify(record)}\n`;
         const previous = localStorage.getItem("chemdraft.perfLog") ?? "";
         localStorage.setItem("chemdraft.perfLog", previous.length + line.length > 1024 * 1024 ? line : previous + line);
-      } catch (error) { console.warn("Perf probe browser log failed", error); }
+      } catch (error) { reportPerfFailure(error); }
     };
   }
-  perfProbe = createPerfProbe(true, () => ({ target: window, now: () => performance.now() + offset,
-    eventTime: stamp => alignEventTime(stamp, performance.timeOrigin, offset),
-    frame: callback => requestAnimationFrame(callback), cancelFrame: id => cancelAnimationFrame(id),
-    defer: callback => queueMicrotask(callback), timeout: callback => setTimeout(callback, 120_000), clearTimeout,
+  perfProbe = createPerfProbe(true, () => ({ target: {
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => window.addEventListener(type, listener, options),
+    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => window.removeEventListener(type, listener, options)
+  }, now: () => window.performance.now() + offset,
+    eventTime: stamp => alignEventTime(stamp, window.performance.timeOrigin, offset),
+    frame: callback => window.requestAnimationFrame(callback), cancelFrame: id => window.cancelAnimationFrame(id),
+    defer: callback => window.queueMicrotask(callback), timeout: callback => window.setTimeout(callback, 120_000),
+    clearTimeout: id => window.clearTimeout(id),
     write, window: windowRole(location.search), platform: probePlatform(),
     buildStamp, processStart, clockErrorMs }));
-  if (desktop) window.addEventListener("chemdraft:perf-complete", event => {
+  if (desktop) window.addEventListener("chemdraft:perf-complete", event => perfProbe?.guard(() => {
     const detail = (event as CustomEvent<{ requestKey: string; signal: DoneSignal; at: number; frameAt?: number; window: string }>).detail;
     if (!detail) return;
     if (detail.window === "main" && windowRole(location.search) === "dialog" && detail.signal === "dialog-open") {
-      requestAnimationFrame(() => sendPerfCompletion("main", detail.requestKey, detail.signal, detail.at, perfProbe?.timestamp()));
+      window.requestAnimationFrame(() => sendPerfCompletion("main", detail.requestKey, detail.signal, detail.at, perfProbe?.timestamp()));
     } else perfProbe?.remoteCompletion(detail.requestKey, detail.signal, detail.at, detail.frameAt, detail.window);
-  });
+  }));
   // All secondary React roots share this one observer. It measures DOM commits, including async
   // state updates, without touching their event handlers or requiring extra IPC permissions.
   const root = document.getElementById("root");

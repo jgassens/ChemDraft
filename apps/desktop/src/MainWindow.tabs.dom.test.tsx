@@ -258,7 +258,7 @@ describe("documents in one window", () => {
     perfState.current = createPerfProbe(true, () => ({
       target: window, now: () => performance.now(), eventTime: stamp => stamp,
       frame: callback => { frames.set(++id, callback); return id; }, cancelFrame: key => { frames.delete(key); },
-      defer: queueMicrotask, timeout: callback => setTimeout(callback, 120_000), clearTimeout,
+      defer: callback => window.queueMicrotask(callback), timeout: callback => window.setTimeout(callback, 120_000), clearTimeout: id => window.clearTimeout(id),
       write: record => records.push(record), window: "main", platform: "macos", buildStamp: "test", processStart: 0, clockErrorMs: 0
     }));
     return () => {

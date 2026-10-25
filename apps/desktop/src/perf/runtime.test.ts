@@ -20,6 +20,51 @@ afterEach(() => {
 });
 
 describe("probe gate and cross-webview clocks", () => {
+  it("writes cold launch before input with WebKit-style receiver checks on browser globals", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    Object.defineProperty(window, "__CHEMDRAFT_PERF_ALLOWED__", { configurable: true, value: true });
+    const frames = new Map<number, FrameRequestCallback>();
+    const timers = new Set<number>();
+    let id = 0;
+    const check = (receiver: unknown) => {
+      if (receiver !== window) throw new TypeError("Can only call Window method on instances of Window");
+    };
+    vi.stubGlobal("setTimeout", function (this: unknown) { check(this); timers.add(++id); return id; });
+    vi.stubGlobal("clearTimeout", function (this: unknown, key: number) { check(this); timers.delete(key); });
+    vi.stubGlobal("requestAnimationFrame", function (this: unknown, callback: FrameRequestCallback) {
+      check(this); frames.set(++id, callback); return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", function (this: unknown, key: number) { check(this); frames.delete(key); });
+    vi.stubGlobal("queueMicrotask", function (this: unknown, callback: () => void) { check(this); callback(); });
+    for (const method of ["addEventListener", "removeEventListener"] as const) {
+      const original = window[method].bind(window);
+      vi.spyOn(window, method).mockImplementation(function (this: unknown, ...args: Parameters<typeof original>) {
+        check(this); original(args[0], args[1], args[2]);
+      });
+    }
+    const originalNow = window.performance.now.bind(window.performance);
+    vi.spyOn(window.performance, "now").mockImplementation(function (this: unknown) {
+      if (this !== window.performance) throw new TypeError("Illegal invocation of performance.now");
+      return originalNow();
+    });
+    invoke.mockImplementation(async (command: string) => command === "perf_log_clock"
+      ? { now: 1700000000000, processStart: 1699999999000 } : undefined);
+    await startPerfProbe(sourceStamp);
+    // This is the startup hydration hook; no pointer or command event has occurred.
+    perfProbe!.readyCanvas();
+    const launchFrames = [...frames.values()]; frames.clear();
+    for (const callback of launchFrames) callback(0);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const rows = invoke.mock.calls.filter(call => call[0] === "perf_log_append");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0][1].line)).toMatchObject({ kind: "cold-launch", doneSignal: "canvas-ready" });
+    expect(timers.size).toBe(0);
+    // Exercise deferred input frames, cancellation and event listener teardown as well.
+    window.dispatchEvent(new CustomEvent("chemdraft:native-command", { detail: { commandId: "test.input" } }));
+    perfProbe!.rendered(); perfProbe!.rendered(); perfProbe!.stop();
+    expect(timers.size).toBe(0);
+    expect(frames.size).toBe(0);
+  });
   it("uses exclusively the authoritative native gate on desktop and existing browser gate on web", () => {
     expect(probeRequested(true, false, "?agentBridge=1", "1")).toBe(false);
     expect(probeRequested(true, true, "")).toBe(true);

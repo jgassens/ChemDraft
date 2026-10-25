@@ -18,8 +18,8 @@ function harness(window: PerfRecord["window"] = "palette") {
     now: () => now, eventTime: stamp => 900 + stamp,
     frame: vi.fn(callback => { frames.set(++id, callback); return id; }),
     cancelFrame: vi.fn(key => { frames.delete(key); }), defer: callback => { tasks.push(callback); },
-    timeout: vi.fn(callback => { timers.set(++id, callback); return id as unknown as ReturnType<typeof setTimeout>; }),
-    clearTimeout: vi.fn(key => { timers.delete(key as unknown as number); }),
+    timeout: vi.fn(callback => { timers.set(++id, callback); return id; }),
+    clearTimeout: vi.fn(key => { timers.delete(key); }),
     write: vi.fn(record => { records.push(record); }), window, platform: "macos", buildStamp: "test", processStart: 500, clockErrorMs: 0.2
   };
   return {
@@ -32,6 +32,41 @@ function harness(window: PerfRecord["window"] = "palette") {
 }
 
 describe("bridge-gated timing probe", () => {
+  it("contains a throwing capture hook so the app pointer handler still runs, and disables once", () => {
+    const h = harness();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const probe = createPerfProbe(true, () => h.env)!;
+    const capture = h.listeners.get("pointerdown")!;
+    h.env.eventTime = () => { throw new Error("broken diagnostic clock"); };
+    const appPointerHandler = vi.fn();
+    // Dispatch capture first, then the application's handler, just as a trusted pointer does.
+    const dispatch = () => {
+      capture({ type: "pointerdown", isTrusted: true, timeStamp: 90 } as Event);
+      appPointerHandler();
+    };
+    expect(dispatch).not.toThrow(); expect(dispatch).not.toThrow();
+    expect(appPointerHandler).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(h.listeners.size).toBe(0);
+    expect(h.timers.size).toBe(0);
+    probe.readyCanvas(); h.tasks(); h.paint(); expect(h.records).toEqual([]);
+    warn.mockRestore();
+  });
+  it("contains frame and cleanup failures and preserves registry command behavior", async () => {
+    const h = harness();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const probe = createPerfProbe(true, () => h.env)!;
+    const registry = new CommandRegistry();
+    registry.register({ id: "test.ok", title: "OK", source: "core" }, () => 42);
+    probe.instrumentRegistry(registry);
+    h.input(); h.tasks();
+    h.env.clearTimeout = () => { throw new Error("illegal invocation"); };
+    expect(() => h.paint()).not.toThrow();
+    expect(await registry.invoke("test.ok")).toBe(42);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(h.listeners.size).toBe(0);
+    warn.mockRestore();
+  });
   it.each(["queued", "already-open"] as const)("labels %s opens without claiming a document commit", outcome => {
     const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
     h.native("document.open"); h.tasks();

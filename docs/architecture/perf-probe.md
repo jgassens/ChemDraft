@@ -40,6 +40,20 @@ The stable build and branch build never share logs. No Web Inspector is needed: 
 the run. Leave the app open briefly after the final interaction so queued asynchronous writes finish.
 Logging does not delay commands; an abrupt process exit can lose queued lines.
 
+Browser methods in the probe environment always call their owning `window` or `performance`
+object. WebKit and WebView2 can reject a detached method with an illegal-invocation error.
+In particular, cold launch clears its expiry timer before appending its first row: an unbound
+`clearTimeout` previously prevented even that startup row from being written, before any input.
+The startup path remains clock/stamp registration before React mount, then session hydration,
+`readyCanvas()` and its first rAF; no click is required to create the log.
+
+Probe listeners, deferred callbacks, frame/timer callbacks and app-facing hooks contain diagnostic
+errors. The first failure logs one warning and disables the probe, clears pending samples and
+attempts every listener/timer/frame cleanup even if one cleanup fails. Later hooks are inert;
+normal pointer handlers and registry command results/rejections continue unchanged. Native append
+or completion failures also disable the probe. Restart the app after correcting a logging failure
+to collect a new run.
+
 Each UTF-8 JSON line is capped at 16 KiB. Before an append would exceed 20 MiB, Rust replaces
 `perf-log.1.jsonl` with the current file and starts a new `perf-log.jsonl`. A process-wide mutex
 serializes rotation and appends from all webviews. Rotation first tries rename with replacement;
