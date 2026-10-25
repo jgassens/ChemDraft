@@ -124,3 +124,13 @@ Turning the option off cannot recover an older session after new work has replac
 The preference uses the same localStorage mechanism as other boolean preferences. It is captured
 synchronously once by the document window before its asynchronous session read; no live document
 broadcast is needed for a next-launch-only option. No native command or session migration is added.
+
+## Adjustable wavy lines
+
+Select a Wavy Line and open Object Settings to adjust **Wave smoothness**, **Wave height** and
+**Wave width** with sliders. Height is peak-to-trough; width is wave spacing in document pixels.
+Dragging previews the shape and release saves one Undo step. Settings survive native save/reopen
+and use the same geometry for canvas and export. Escape or cancelling a drag restores the starting
+shape. Width fits whole cycles between the endpoints, so actual spacing may differ on short lines.
+Only selected wavy art paths change, including in mixed selections; molecules and other graphics
+stay unchanged. Existing lines keep their legacy shape until a wave slider is explicitly adjusted.

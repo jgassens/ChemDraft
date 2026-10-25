@@ -1,4 +1,4 @@
-import { graphicMarkerRenderedSizeFloorPx, graphicMarkerRenderedSizePx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
+import { graphicWaveSettings, graphicMarkerRenderedSizeFloorPx, graphicMarkerRenderedSizePx, planNativeArtVisual, visualEffectsForStyle } from "@chemdraft/art-engine";
 import type { ChemDraftDocument, GraphicMarker, GraphicObject, GraphicPaint, MoleculeObject, VisualEffect } from "@chemdraft/chem-core";
 import { graphicObjectHasShaftMark, graphicObjectSupportsMarkersWithPlan, nativeArrowToolIdForGraphic } from "./documentWorkflow";
 import type { MoleculeInspectorRingsModel } from "./moleculeInspectorModel";
@@ -71,6 +71,12 @@ export type ArtInspectorAppearanceTarget =
     };
 
 export interface ArtInspectorModel {
+  wavy?: {
+    count: number;
+    smoothness: ArtInspectorMixedValue<number>;
+    height: ArtInspectorMixedValue<number>;
+    width: ArtInspectorMixedValue<number>;
+  };
   selectedCount: number;
   selectedObjectIds: string[];
   selectedGraphicIds: string[];
@@ -235,7 +241,14 @@ export function createArtInspectorModel({
     sketch: effectModelForKind(planned, "sketch", selectedCount)
   } satisfies Record<ArtInspectorEffectKind, ArtInspectorEffectModel>;
 
+  const waves = graphics.filter((object) => object.graphicKind === "path" && object.data.artPathKind === "wavy");
+  const waveValues = (key: "smoothness" | "height" | "width") => {
+    const values = waves.map((object) => graphicWaveSettings(object)[key]);
+    const mixed = values.some((value) => value !== values[0]);
+    return { value: mixed ? null : values[0] ?? null, mixed };
+  };
   return {
+    ...(waves.length ? { wavy: { count: waves.length, smoothness: waveValues("smoothness"), height: waveValues("height"), width: waveValues("width") } } : {}),
     selectedCount,
     selectedObjectIds: styleObjects.map((object) => object.id),
     selectedGraphicIds: graphics.map((object) => object.id),
