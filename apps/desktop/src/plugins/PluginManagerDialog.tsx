@@ -1,3 +1,4 @@
+import { perfProbe } from "../perf/runtime";
 import { NAMING_ENGINE_DISCLOSURE, NAMING_INSTALL_PROFILE } from "./StructureNamingInstallDialog";
 import { useNativePrompt } from "../nativePrompt";
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
@@ -181,6 +182,10 @@ export function PluginManagerDialog({
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
   const dialogRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const shown = perfProbe?.surfaceStarted("dialog", "plugins.manage", "plugin-manager");
+    perfProbe?.surfaceShown(shown, "dialog-open");
+  }, []);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =

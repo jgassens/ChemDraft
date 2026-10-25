@@ -99,17 +99,27 @@ export async function startPerfProbe(sourceStamp?: string): Promise<void> {
   }, now: () => window.performance.now() + offset,
     eventTime: stamp => alignEventTime(stamp, window.performance.timeOrigin, offset),
     frame: callback => window.requestAnimationFrame(callback), cancelFrame: id => window.cancelAnimationFrame(id),
-    defer: callback => window.queueMicrotask(callback), timeout: callback => window.setTimeout(callback, 120_000),
+    defer: callback => window.queueMicrotask(callback), timeout: (callback, delayMs = 120_000) => window.setTimeout(callback, delayMs),
     clearTimeout: id => window.clearTimeout(id),
     write, window: windowRole(location.search), platform: probePlatform(),
     buildStamp, processStart, clockErrorMs }));
   if (desktop) window.addEventListener("chemdraft:perf-complete", event => perfProbe?.guard(() => {
     const detail = (event as CustomEvent<{ requestKey: string; signal: DoneSignal; at: number; frameAt?: number; window: string }>).detail;
     if (!detail) return;
-    if (detail.window === "main" && windowRole(location.search) === "dialog" && detail.signal === "dialog-open") {
+    if (["popover-shown", "no-op", "failed"].includes(detail.signal) && windowRole(location.search) === "palette") {
+      const shown = detail as typeof detail & { flyoutId: string };
+      perfProbe?.popoverShown(shown.flyoutId, shown.at, shown.frameAt ?? undefined, shown.window, shown.signal as "popover-shown" | "no-op" | "failed");
+    } else if (detail.window === "main" && windowRole(location.search) === "dialog" && detail.signal === "dialog-open") {
       window.requestAnimationFrame(() => sendPerfCompletion("main", detail.requestKey, detail.signal, detail.at, perfProbe?.timestamp()));
     } else perfProbe?.remoteCompletion(detail.requestKey, detail.signal, detail.at, detail.frameAt, detail.window);
   }));
+  if (desktop && windowRole(location.search) === "palette") {
+    const toolsetId = new URLSearchParams(location.search).get("toolsetId") ?? "core.main";
+    const { listenForToolsetPopoverContent } = await import("../window-manager");
+    await listenForToolsetPopoverContent(payload => perfProbe?.guard(() => {
+      if (payload.toolsetId === toolsetId && payload.kind === "flyout" && payload.flyout.commands.length > 0) perfProbe?.popoverRequested(payload.flyout.flyoutId);
+    }));
+  }
   // All secondary React roots share this one observer. It measures DOM commits, including async
   // state updates, without touching their event handlers or requiring extra IPC permissions.
   const root = document.getElementById("root");

@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { createDesktopShortcutRegistry, createMainWindowShortcutCommands } from "../keyboardShortcuts";
+import { createQuickActions } from "../commands";
+import { createPhase4Document } from "../documentWorkflow";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { createPerfProbe, PerfRecordSchema, type PerfRecord, type ProbeEnvironment } from "./probe";
 
@@ -24,7 +27,7 @@ function harness(window: PerfRecord["window"] = "palette") {
   };
   return {
     env, records, timers, listeners, frames, setTime(value: number) { now = value; },
-    input(type = "click", trusted = true) { listeners.get(type)?.({ type, isTrusted: trusted, timeStamp: 90 } as Event); },
+    input(type = "click", trusted = true, options: Partial<KeyboardEvent> = {}) { listeners.get(type)?.({ type, isTrusted: trusted, timeStamp: 90, ...options } as Event); },
     native(commandId: string) { listeners.get("chemdraft:native-command")?.({ detail: { commandId } } as unknown as Event); },
     tasks() { for (const task of tasks.splice(0)) task(); },
     paint() { const callbacks = [...frames.values()]; frames.clear(); for (const frame of callbacks) frame(); }
@@ -32,6 +35,61 @@ function harness(window: PerfRecord["window"] = "palette") {
 }
 
 describe("bridge-gated timing probe", () => {
+  it.each(["macos", "windows"] as const)("resolves bound %s chords using the app registry, including native clipboard and redo", platform => {
+    const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
+    const quickActions = createQuickActions(createPhase4Document(), undefined, { canUndo: true, canRedo: true, hasMoleculeFragmentSelection: true });
+    const commands = createMainWindowShortcutCommands({ quickActions, layerActions: [], toolCommandSpecs: [] }, "chemdraft");
+    const registry = createDesktopShortcutRegistry(commands, platform);
+    probe.setShortcutRegistry(registry);
+    const modifier = platform === "macos" ? { metaKey: true } : { ctrlKey: true };
+    for (const [key, shiftKey, commandId] of [
+      ["z", false, "edit.undo"], ["z", true, "edit.redo"], ["a", false, "edit.selectAll"],
+      ["c", false, "clipboard.copy"], ["+", true, "view.zoomIn"], ["-", false, "view.zoomOut"]
+    ] as const) {
+      h.input("keydown", true, { key, shiftKey, ...modifier }); h.tasks(); h.paint();
+      expect(h.records.at(-1)).toMatchObject({ kind: "keydown", commandId, extra: { chord: expect.any(String) } });
+    }
+    if (platform === "windows") {
+      h.input("keydown", true, { key: "y", ctrlKey: true }); h.tasks(); h.paint();
+      expect(h.records.at(-1)?.commandId).toBe("edit.redo");
+    }
+    const count = h.records.length;
+    for (const key of ["Meta", "Control", "Shift", "Alt"]) h.input("keydown", true, { key, ...modifier });
+    h.tasks(); h.paint(); expect(h.records).toHaveLength(count);
+    h.input("keydown", true, { key: "unbound text" }); h.tasks(); h.paint();
+    expect(h.records.at(-1)?.extra?.chord).toBeUndefined();
+    probe.stop();
+  });
+  it.each([false, true])("uses one document-open frame source across a DOM commit after completion (%s)", domCommit => {
+    const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("document.open"); const open = probe.documentOpenStarted();
+    h.tasks(); probe.rendered(); h.paint(); expect(h.records).toEqual([]);
+    h.setTime(1400); probe.documentOpenCommitted(open);
+    if (domCommit) probe.rendered();
+    h.setTime(1420); h.paint();
+    expect(h.records).toHaveLength(2);
+    for (const record of h.records) {
+      expect(record.extra?.frameSource).toBe("document-open");
+      expect(record.firstFrameMs).toBeGreaterThanOrEqual(record.doneMs!);
+    }
+    probe.stop();
+  });
+  it.each([["preferences", "view.togglePreferences", "window-shown"], ["dialog", "plugins.manage", "dialog-open"]] as const)(
+    "records the %s shown row from its initiating command, after its show boundary", (role, command, signal) => {
+      const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+      h.native(command); h.tasks(); h.paint();
+      const shown = probe.surfaceStarted(role, command);
+      probe.rendered(); h.paint(); expect(h.records).toEqual([]);
+      h.setTime(1100); probe.surfaceShown(shown, signal); probe.rendered();
+      h.setTime(1120); h.paint();
+      expect(h.records).toHaveLength(2);
+      expect(h.records.find(row => row.window === role)).toMatchObject({
+        kind: role === "dialog" ? "dialog-open" : "window-shown", commandId: command, doneSignal: signal, doneMs: 100, firstFrameMs: 120
+      });
+      probe.stop();
+    }
+  );
+
   it("contains a throwing capture hook so the app pointer handler still runs, and disables once", () => {
     const h = harness();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

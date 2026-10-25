@@ -13,10 +13,12 @@ import type { DialogMessage } from "./dialogProtocol";
 import type { DialogDelivery } from "./dialogTransport";
 import * as atomLabelDraft from "../atomLabelDraft";
 import * as workflow from "../documentWorkflow";
+import { perfProbe, startPerfProbe } from "../perf/runtime";
+import { Window as TauriWindow } from "@tauri-apps/api/window";
 
 const native = vi.hoisted(() => ({
   snapshot: undefined as DialogMessage | undefined, receive: undefined as ((message: DialogDelivery) => void) | undefined,
-  publish: vi.fn(), invoke: vi.fn(), events: new Map<string, (event: { payload: unknown }) => void>()
+  publish: vi.fn(), invoke: vi.fn(), preferences: vi.fn().mockResolvedValue(undefined), events: new Map<string, (event: { payload: unknown }) => void>()
 }));
 vi.mock("./dialogTransport", () => ({ nativeDialogTransport: {
   subscribe: async (receive: typeof native.receive) => { native.receive = receive; return () => {}; },
@@ -26,6 +28,7 @@ vi.mock("./dialogTransport", () => ({ nativeDialogTransport: {
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("../window-manager", async original => ({
   ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true,
+  togglePreferencesWindow: native.preferences,
   loadDocumentSession: async () => undefined, saveDocumentSession: async () => {},
   loadToolsetLayoutState: async () => undefined, listToolsetWindowStates: async () => [],
   setToolbarsMenu: async () => {}, setQuitPromptEnabled: async () => {},
@@ -59,7 +62,26 @@ beforeEach(async () => {
     initialPaletteMode: "hidden", initialCrosshairsVisible: false, initialRulersVisible: false, nativePalette: true
   })));
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "/"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { perfProbe?.stop(); act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "/"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it("records Preferences shown and hidden without leaving either command pending", async () => {
+  const frames = new Map<number, FrameRequestCallback>(); let id = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { frames.set(++id, callback); return id; });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(key => { frames.delete(key); });
+  const visible = vi.fn().mockResolvedValue(true);
+  vi.spyOn(TauriWindow, "getByLabel").mockResolvedValue({ isVisible: visible } as unknown as TauriWindow);
+  await startPerfProbe("preferences-test");
+  for (const open of [true, false]) {
+    visible.mockResolvedValue(open);
+    await command("view.togglePreferences");
+    for (const frame of [...frames.values()]) frame(0);
+    frames.clear();
+    const rows = (localStorage.getItem("chemdraft.perfLog") ?? "").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ commandId: "view.togglePreferences", doneSignal: open ? "window-shown" : "command-finished" });
+    expect(rows.some(row => row.kind === "window-shown" && row.window === "preferences" && row.doneSignal === "window-shown")).toBe(true);
+  }
+  expect(native.preferences).toHaveBeenCalledTimes(2);
+});
 
 it("does not compute content frames or publish preview traffic with the preference off, including drawing edits", async () => {
   const crop = vi.spyOn(workflow, "copyAsScopedDocument");

@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { keyboardEventChord, type ShortcutRegistry } from "@chemdraft/shortcut-engine";
 import type { CommandRegistry } from "@chemdraft/plugin-host";
 
 export const PerfRecordSchema = z.object({
   v: z.literal(1),
-  kind: z.enum(["pointerdown", "click", "keydown", "native-command", "cold-launch", "document-open"]),
+  kind: z.enum(["pointerdown", "click", "keydown", "native-command", "cold-launch", "document-open", "window-shown", "dialog-open"]),
   commandId: z.string().max(256).optional(),
   window: z.enum(["main", "palette", "palette-popover", "dialog", "plugin-panel", "preferences", "spin3d-debugger"]),
   platform: z.enum(["macos", "windows", "linux"]),
@@ -11,7 +12,7 @@ export const PerfRecordSchema = z.object({
   t0: z.number().finite().nonnegative(),
   firstFrameMs: z.number().finite().nonnegative().optional(),
   doneMs: z.number().finite().nonnegative().optional(),
-  doneSignal: z.enum(["document-commit", "window-shown", "dialog-open", "export-written", "command-finished", "gesture-ended", "frame", "canvas-ready", "timeout", "failed"]).optional(),
+  doneSignal: z.enum(["document-commit", "window-shown", "dialog-open", "export-written", "command-finished", "gesture-ended", "frame", "canvas-ready", "popover-shown", "no-op", "timeout", "failed"]).optional(),
   extra: z.record(z.unknown()).optional()
 }).strict();
 export type PerfRecord = z.infer<typeof PerfRecordSchema>;
@@ -25,7 +26,7 @@ export interface ProbeEnvironment {
   frame(callback: () => void): number;
   cancelFrame(id: number): void;
   defer(callback: () => void): void;
-  timeout(callback: () => void): number;
+  timeout(callback: () => void, delayMs?: number): number;
   clearTimeout(id: number): void;
   write(record: PerfRecord): void;
   window: PerfRecord["window"];
@@ -34,7 +35,7 @@ export interface ProbeEnvironment {
   processStart: number;
   clockErrorMs: number;
 }
-interface Span { record: PerfRecord; done?: number; frame?: number; raf?: number; timer?: number; expected?: DoneSignal; requestKey?: string; registryObserved?: boolean; parent?: Span; pointerId?: number; }
+interface Span { record: PerfRecord; done?: number; frame?: number; raf?: number; timer?: number; expected?: DoneSignal; requestKey?: string; registryObserved?: boolean; parent?: Span; pointerId?: number; noopTimer?: number; }
 
 /** Constructed only after the existing bridge gate. No global listeners/timers at module load. */
 export class PerfProbe {
@@ -42,6 +43,7 @@ export class PerfProbe {
   private activeRegistry = new Set<Span>();
   private task?: Span;
   private launch?: Span;
+  private shortcuts?: ShortcutRegistry;
   private ready = false;
   private stopped = false;
   /** Every diagnostic entry point is best effort, including callbacks after teardown. */
@@ -64,7 +66,30 @@ export class PerfProbe {
   }
   private input = (event: Event) => this.guard(() => {
     if (!event.isTrusted) return;
+    if (event.type === "keydown" && ["Meta", "Control", "Shift", "Alt"].includes((event as KeyboardEvent).key)) return;
     const span = this.capture(event.type as PerfRecord["kind"], this.env.eventTime(event.timeStamp));
+    if (event.type === "keydown") {
+      const key = event as KeyboardEvent;
+      const commandId = this.shortcuts?.resolve(key);
+      // Keep only bound chords, never arbitrary typed text.
+      if (commandId) {
+        span.record.extra!.chord = keyboardEventChord(key);
+        this.command(commandId);
+      }
+    }
+    if (this.env.window === "palette" && typeof Element !== "undefined" && event.target instanceof Element) {
+      const flyoutId = event.target.closest("[data-command-flyout-button]")?.getAttribute("data-command-flyout-button");
+      if (flyoutId) {
+        span.expected = "popover-shown";
+        span.record.extra!.flyoutId = flyoutId;
+        const alreadyRequested = [...this.pending].some(p => p !== span && p.expected === "popover-shown"
+          && p.record.extra?.flyoutId === flyoutId && p.noopTimer === undefined && p.done === undefined);
+        if (!alreadyRequested) span.noopTimer = this.env.timeout(() => this.guard(() => {
+          span.record.extra = { ...span.record.extra, approximateCompletion: true, frameSource: "no-op" };
+          this.finish(span, "no-op"); this.flush(span, true);
+        }), 1500);
+      }
+    }
     if (event.type === "pointerdown") span.pointerId = (event as PointerEvent).pointerId;
     // Drawing gestures commit on pointerup; keep pointerdown alive across the preview frames.
     if (event.type === "pointerdown" && this.env.window === "main" && typeof Element !== "undefined"
@@ -95,7 +120,7 @@ export class PerfProbe {
     // this frame; an input with no DOM update is explicitly labelled input-task instead.
     this.env.defer(() => this.guard(() => {
       if (this.task === span) this.task = undefined;
-      if (!span.record.commandId && !span.expected && span.done === undefined) span.expected = "frame";
+      if (!span.registryObserved && !span.expected && span.done === undefined) span.expected = "frame";
       this.scheduleFrame(span, "input-task");
     }));
     return span;
@@ -116,12 +141,66 @@ export class PerfProbe {
       if (!span || commandId.length > 256) return undefined;
       const firstBinding = span.record.commandId !== commandId;
       span.record.commandId = commandId;
-      if (firstBinding || span.expected === undefined) {
-        span.expected = commandId === "document.open" ? "document-commit"
+      if (span.noopTimer !== undefined) { this.env.clearTimeout(span.noopTimer); span.noopTimer = undefined; }
+      if (firstBinding || span.expected === undefined || span.expected === "popover-shown") {
+        span.expected = commandId === "view.togglePreferences" ? "window-shown"
+          : commandId === "plugins.manage" ? "dialog-open"
+          : commandId === "document.open" ? "document-commit"
           : commandId === "export.open" || commandId === "page.setSizeCustom" || commandId === "layout.arrangementSpacing" ? "dialog-open"
           : commandId.startsWith("view.toolset.toggle.") ? "window-shown" : undefined;
       }
       return span;
+    });
+  }
+  setShortcutRegistry(registry: ShortcutRegistry | undefined): void {
+    this.guard(() => { this.shortcuts = registry; });
+  }
+  /** A content broadcast proves the hold requested an open; wait for its actual reveal. */
+  popoverRequested(flyoutId: string): void {
+    this.guard(() => {
+      for (const span of this.pending) {
+        if (span.expected !== "popover-shown" || span.record.extra?.flyoutId !== flyoutId) continue;
+        if (span.noopTimer !== undefined) this.env.clearTimeout(span.noopTimer);
+        span.noopTimer = undefined;
+      }
+    });
+  }
+  popoverShown(flyoutId: string, at: number, frameAt: number | undefined, window: string, signal: "popover-shown" | "no-op" | "failed" = "popover-shown"): void {
+    this.guard(() => {
+      for (const span of [...this.pending]) {
+        if (span.expected !== "popover-shown" || span.record.extra?.flyoutId !== flyoutId || span.done !== undefined) continue;
+        if (!Number.isFinite(at) || at < span.record.t0 - COMPLETION_CLOCK_SKEW_MS) continue;
+        if (signal === "popover-shown" && frameAt === undefined) continue;
+        if (frameAt !== undefined && (!Number.isFinite(frameAt) || frameAt < at - COMPLETION_CLOCK_SKEW_MS)) continue;
+        // Content has no request token. Disclose the palette/flyout matching inference.
+        span.record.extra = { ...span.record.extra, approximateCompletion: true };
+        span.requestKey = "popover-shown";
+        span.expected = signal;
+        this.remoteCompletion("popover-shown", signal, at, frameAt, window);
+        if (span.done !== undefined && signal !== "popover-shown") this.flush(span, true);
+      }
+    });
+  }
+  /** Destination rows inherit the initiating command's timestamp when it is still pending. */
+  surfaceStarted(window: PerfRecord["window"], commandId?: string, surface?: string): Span | undefined {
+    return this.guard(() => {
+      const parent = commandId === undefined ? undefined : [...this.pending].reverse().find(p => p.record.commandId === commandId && p.done === undefined);
+      const span = this.start(window === "dialog" ? "dialog-open" : "window-shown", parent?.record.t0, commandId);
+      span.parent = parent;
+      span.expected = window === "dialog" ? "dialog-open" : "window-shown";
+      span.record.window = window;
+      span.record.extra = { ...span.record.extra, originWindow: this.env.window, surface };
+      return span;
+    });
+  }
+  surfaceShown(span: Span | undefined, signal: DoneSignal): void {
+    this.guard(() => {
+      if (!span || span.done !== undefined) return;
+      span.record.extra = { ...span.record.extra, frameWindow: this.env.window };
+      this.finish(span, signal); this.scheduleFrame(span, "window-shown");
+      // Hidden/dismissed destinations may suspend rAF. A no-op claims no visible frame.
+      if (signal === "no-op" || signal === "failed") this.flush(span, true);
+      if (span.parent) { this.finish(span.parent, signal); this.scheduleFrame(span.parent, "window-shown"); }
     });
   }
   /** Wrap this instance only, preserving arguments, results, rejection and invocation count. */
@@ -218,6 +297,11 @@ export class PerfProbe {
   documentOpenCommitted(span: Span | undefined): void {
     return this.guard(() => {
       if (!span) return;
+      for (const item of [span, span.parent]) {
+        if (!item) continue;
+        if (item.raf !== undefined) this.env.cancelFrame(item.raf);
+        item.raf = undefined; item.frame = undefined;
+      }
       this.finish(span, "document-commit");
       const command = span.parent;
       if (command) { this.finish(command, "document-commit"); this.scheduleFrame(command, "document-open"); }
@@ -261,9 +345,11 @@ export class PerfProbe {
   }
   private scheduleFrame(span: Span, source: string) {
     if (!this.pending.has(span) || span.frame !== undefined || span.record.kind === "cold-launch") return;
+    if ((span.record.kind === "window-shown" || span.record.kind === "dialog-open") && span.done === undefined) return;
     if (span.record.kind === "document-open" && span.done === undefined) return;
     if (span.record.commandId === "document.open" && span.done === undefined) return;
-    if (span.expected === "window-shown" && span.done === undefined) return;
+    if ((span.expected === "window-shown" || span.expected === "popover-shown") && span.done === undefined) return;
+    if (span.record.kind === "document-open" || span.record.commandId === "document.open") source = "document-open";
     if (span.raf !== undefined) this.env.cancelFrame(span.raf);
     span.raf = this.env.frame(() => this.guard(() => {
       span.raf = undefined;
@@ -288,6 +374,7 @@ export class PerfProbe {
   private flush(span: Span, incomplete = false) {
     if (this.stopped || !this.pending.has(span) || span.done === undefined || (!incomplete && span.frame === undefined)) return;
     if (span.timer !== undefined) this.env.clearTimeout(span.timer);
+    if (span.noopTimer !== undefined) this.env.clearTimeout(span.noopTimer);
     if (span.raf !== undefined) this.env.cancelFrame(span.raf);
     this.pending.delete(span);
     const elapsed = (time: number) => Math.max(0, time - span.record.t0);
@@ -304,6 +391,7 @@ export class PerfProbe {
     for (const kind of ["pointerup", "pointercancel"]) cleanup(() => this.env.target.removeEventListener(kind, this.release));
     for (const span of this.pending) {
       if (span.timer !== undefined) cleanup(() => this.env.clearTimeout(span.timer!));
+      if (span.noopTimer !== undefined) cleanup(() => this.env.clearTimeout(span.noopTimer!));
       if (span.raf !== undefined) cleanup(() => this.env.cancelFrame(span.raf!));
     }
     this.pending.clear();

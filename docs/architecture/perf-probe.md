@@ -65,14 +65,14 @@ queued writes to 256 each. Invalid lines are refused before creating a directory
 ## Fields and timing boundaries
 
 Every line follows `PerfRecordSchema` in `apps/desktop/src/perf/probe.ts`; Rust also validates the
-v1 envelope before writing. No key text, pointer coordinates, file names or document contents are logged.
+v1 envelope before writing. No unbound key text, pointer coordinates, file names or document contents are logged.
 
 | Field | Meaning |
 | --- | --- |
 | `v` | Schema version, currently `1`. |
-| `kind` | `pointerdown`, `click`, `keydown`, `native-command`, `cold-launch`, or `document-open`. |
+| `kind` | `pointerdown`, `click`, `keydown`, `native-command`, `cold-launch`, `document-open`, `window-shown`, or `dialog-open`. The last two are additional surface rows, not additional inputs. |
 | `commandId` | Shared registry command ID when available. Absent for input with no command. |
-| `window` | Input origin: `main`, `palette`, `palette-popover`, `dialog`, `plugin-panel`, `preferences`, or `spin3d-debugger`. |
+| `window` | Input origin, or destination role for surface rows: `main`, `palette`, `palette-popover`, `dialog`, `plugin-panel`, `preferences`, or `spin3d-debugger`. |
 | `platform` | `macos`, `windows`, or `linux`; tests pass the platform explicitly. |
 | `buildStamp` | `CURRENT_BUILD_STAMP` from `MainWindow.tsx`, build stamp and worktree label. |
 | `t0` | Input timestamp, aligned to the process's monotonic epoch, in milliseconds. |
@@ -80,10 +80,21 @@ v1 envelope before writing. No key text, pointer coordinates, file names or docu
 | `doneMs` | Completion signal timestamp minus `t0`. It may precede or follow the first frame. |
 | `doneSignal` | Observed completion boundary, described below. |
 | `extra` | Clock calibration error bound, process start for grouping runs, frame source and optional completion window/ambiguity/incomplete markers. |
+| `extra.chord` | Shortcut-engine normalized chord (for example `Meta+z` or `Ctrl+z`), only for keydowns resolved by the live shortcut registry. Modifier-only keydowns are excluded entirely. |
+| `extra.surface` | Surface identifier on shown rows: `preferences`, `plugin-manager`, a flyout ID, or `artColor`. |
+| `extra.originWindow`, `extra.frameWindow` | Webview starting a surface row and webview observing its frame. In particular, Preferences uses a requesting-main frame; Plugin Manager is a committed dialog in the main webview. |
+| `extra.flyoutId` | Flyout identifier on the originating palette input. The corresponding popover surface row uses `extra.surface`. |
 
 Only `isTrusted` pointerdown/click/keydown events start input samples. Synthetic agent pointer events
 are excluded. A real click can produce both pointerdown and click rows: compare each kind separately,
 not their sum. Canvas pointerdown remains pending across preview frames until the document commits.
+The main window gives the probe the **same live shortcut registry instance** used by its keydown
+handler. Resolution honors the active binding scheme, platform alternates (including Windows Ctrl+Y),
+disabled commands, and text-field filtering. This also identifies clipboard shortcuts which are
+left to native clipboard events rather than dispatched through `invoke`. Dispatch instrumentation
+can refine the command ID; internal forced-document-history wrappers are stripped from Undo/Redo.
+Unclaimed keydowns may still produce a frame sample, without a chord or command ID. A resolved
+clipboard shortcut with no registry invocation completes at `frame`, not at a claimed file write.
 The `chemdraft:native-command` delivery is measured from entry into the receiving page. That existing
 delivery path also carries forwarded palette commands; its rows are not proof of a menu-only source.
 
@@ -98,12 +109,36 @@ command arguments, return values, rejections and invocation count. Completion bo
   Opens queued for hydration or a pending prompt, and requests for an already open file, finish
   with `command-finished` and `extra.openOutcome` of `queued` or `already-open`; they do not claim
   a new document installation. A queued request gets a fresh row when retried.
+  All document-open rows and their initiating command rows use `extra.frameSource: "document-open"`,
+  including when a subsequent DOM observer callback reschedules the frame. Successful installation
+  discards any earlier frame and requests one after completion: `firstFrameMs >= doneMs`.
 - `window-shown`: the native toolbar or report open operation has returned successfully. Toolbar/report
   frame observations are in the requesting main page; they do not measure the destination's content
   readiness. An explicitly declared plugin panel opener waits for the panel window's open result.
+  Preferences produces an additional `kind: "window-shown"`, `window: "preferences"` row after
+  the native toggle returns and visibility is confirmed. It measures native visibility, not content
+  readiness; its frame is in main. Toggling it closed completes with `command-finished` instead.
 - `dialog-open`: the native ready handshake returned after showing the dialog. The destination then
   sends its first rAF timestamp to the originating sample. Reopening a retained dialog uses the
   completed native open call and a new destination rAF.
+  Plugin Manager produces a `kind: "dialog-open"`, `window: "dialog"` row when its existing
+  in-viewport dialog commits; `extra.surface` is `plugin-manager` and its frame is in main.
+- `popover-shown`: a palette popover's reveal call returned after content commit and sizing.
+  Its additional `kind: "window-shown"`, `window: "palette-popover"` row starts when the destination
+  receives content and takes its first frame after reveal. Prewarmed placeholders produce no row.
+  Rust relays this logged boundary only from the authenticated `toolset-popover-*` window to its
+  derived owning `toolset-*` palette. It requires no new capability or generic event emission.
+  Matching pending flyout inputs then use the popover's completion and destination frame, rather
+  than a palette frame. Because the existing content protocol has no request token, these matches
+  carry `extra.approximateCompletion`; the destination row itself directly observes the reveal.
+- `no-op`: a flyout press/click with no observed nonempty content request settles after **1500 ms**,
+  with `extra.approximateCompletion` and `frameSource: "no-op"`. This prevents a suppressed click or
+  a hold that opens nothing from waiting for the 120-second operation timeout. Observed requests
+  clear this short timer and wait for the actual reveal. Empty or superseded popover content also
+  finishes its destination row as `no-op`. These no-op rows can omit `firstFrameMs`; they do not
+  wait for a frame in a hidden webview and do not claim a visible result.
+  The same owner-only relay forwards a destination `no-op` or `failed` result, so an already
+  requested but dismissed/superseded popover also settles its palette inputs without a timeout.
 - `export-written`: the document owner's export callback returned an `exported` result after the
   final file write. A request-ID receipt carries this timestamp back to the originating dialog;
   progress/accepted/preview results cannot finish an export sample. Dialog Apply uses the same receipt
@@ -147,14 +182,15 @@ timestamps consequently share the Rust epoch even when they originate in differe
 Dialog completion receipts contain only bounded IDs, numeric times and an allowed signal. Rust
 authenticates the sender and permits only main-to-dialog/dialog-to-main routes; it never grants
 general event emission or filesystem access to dialog or plugin windows.
-Only main and shared dialog windows have the completion-forwarding capability. Receipts tolerate
+Only main and shared dialog windows have the general completion-forwarding capability. Popover
+shown rows have the narrower authenticated owner-only relay described above. Receipts tolerate
 up to **10 ms** of negative skew between completion and destination frame, or between input and
 remote completion, to accommodate independent midpoint calibrations. Larger reversals are refused.
 Durations before the input are clamped to zero and adjusted rows carry `extra.clockSkewAdjusted`.
 This bound is a tolerance, not a claim that every calibration has at most 10 ms of error.
 
 `extra.frameSource` identifies `dom-commit`, `input-task`, `document-open`,
-`window-shown`, `gesture-end`, or `destination-window`. Concurrent commands with ambiguous commit attribution are labelled
+`window-shown`, `no-op`, `gesture-end`, or `destination-window`. Concurrent commands with ambiguous commit attribution are labelled
 `extra.ambiguousCompletion`; compare serial operations and exclude those rows. The probe does not
 claim command-specific completion for arbitrary plugin background work after its command returns.
 `input-task` means the frame was scheduled from the input's microtask and no DOM observation
@@ -184,6 +220,9 @@ The Windows first-frame observation is 40 ms longer (220 − 180); commit comple
 The differing absolute `t0` values do not enter that comparison. Filter out `failed`, `timeout`,
 `extra.incomplete`, `extra.ambiguousCompletion` and `extra.approximateCompletion` rows, and report calibration bounds beside small
 differences. Treat illustrative numbers as examples, never benchmark claims.
+For flyout input latency, explicitly report the approximate palette/flyout matching policy if those
+rows are included; compare the direct popover surface rows separately, since their start excludes
+the hold threshold, native window creation, and content delivery before receipt in the destination.
 
 The packaged macOS/Windows hands-on pass should also verify the bridge-off run creates no log,
 dialog/window focus is unchanged, and an export row appears only after its file is written.

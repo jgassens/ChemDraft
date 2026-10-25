@@ -1616,7 +1616,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.14.47-codex";
+const CURRENT_BUILD_STAMP = "10.25.15.12-codex";
 /** Called for the document webview before mounting, under the existing probe gate. */
 export function startMainWindowPerfProbe(): Promise<void> {
   return startPerfProbe(CURRENT_BUILD_STAMP);
@@ -2961,6 +2961,10 @@ export function MainWindow({
     () => createDesktopShortcutRegistry(shortcutCommands),
     [shortcutCommands]
   );
+  useEffect(() => {
+    perfProbe?.setShortcutRegistry(shortcutRegistry);
+    return () => perfProbe?.setShortcutRegistry(undefined);
+  }, [shortcutRegistry]);
   // The hover leaving the labelled atom (and its own bonds) does not end a hover-label continuation:
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). Leaving only marks that the pointer left, after which a capital
@@ -10288,12 +10292,23 @@ export function MainWindow({
       register(action, () => {
         if (action.id === PREFERENCES_COMMAND_ID) {
           if (!isDesktopRuntime()) {
+            const perfWindow = perfProbe?.expectSignal("command-finished", action.id);
             setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
               ? "Preferences opened in browser"
               : "Preferences pop-up blocked");
+            if (perfWindow) perfProbe?.complete(perfWindow, "command-finished");
             return;
           }
-          void togglePreferencesWindow().catch(() => {
+          const shown = perfProbe?.surfaceStarted("preferences", action.id, "preferences");
+          void togglePreferencesWindow().then(() => {
+            if (perfProbe) {
+              void import("@tauri-apps/api/window").then(async ({ Window }) => {
+                const preferences = await Window.getByLabel("preferences");
+                perfProbe?.surfaceShown(shown, await preferences?.isVisible() ? "window-shown" : "command-finished");
+              }).catch(error => perfProbe?.guard(() => { throw error; }));
+            }
+          }, () => {
+            perfProbe?.surfaceShown(shown, "failed");
             setStatus("Preferences unavailable");
           });
           return;
@@ -11228,7 +11243,7 @@ export function MainWindow({
     if (!perfProbe) return invokeUnmeasured;
     const probe = perfProbe;
     return async (commandId: string, options?: { input?: PluginCommandInput }) => {
-      const span = probe.command(commandId);
+      const span = probe.command(isForcedDocumentHistoryCommandId(commandId) ? stripForcedDocumentHistorySuffix(commandId) : commandId);
       if (pluginCommandExists(commandId)) probe.registryExpected(span);
       try { return await invokeUnmeasured(commandId, options); }
       finally { probe.dispatchReturned(span); }

@@ -175,6 +175,8 @@ fn validate_line(line: &str) -> Result<(), String> {
                 "native-command",
                 "cold-launch",
                 "document-open",
+                "window-shown",
+                "dialog-open",
             ],
         )
         || !one_of(
@@ -214,6 +216,8 @@ fn validate_line(line: &str) -> Result<(), String> {
                     "gesture-ended",
                     "frame",
                     "canvas-ready",
+                    "popover-shown",
+                    "no-op",
                     "timeout",
                     "failed",
                 ],
@@ -237,16 +241,75 @@ pub(crate) fn perf_log_clock(
 }
 
 #[tauri::command]
-pub(crate) async fn perf_log_append(app: tauri::AppHandle, line: String) -> Result<(), String> {
+pub(crate) async fn perf_log_append(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    line: String,
+) -> Result<(), String> {
     // Reject before even resolving app_data_dir. The state was constructed using precisely the
     // existing agent_bridge_status env/argument parser, never renderer flags.
     app.state::<PerfLog>().sample()?;
+    let receipt = popover_receipt(window.label(), &line);
+    let writer_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let directory = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        app.state::<PerfLog>().append(&directory, &line, MAX_BYTES)
+        let directory = writer_app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+        writer_app
+            .state::<PerfLog>()
+            .append(&directory, &line, MAX_BYTES)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    // Recording is already granted to popovers. Relay only their own shown boundary to their
+    // owning palette, derived from the authenticated label, without granting general emission
+    // or perf_log_complete access to either window.
+    if let Some((target, payload)) = receipt {
+        if let Some(destination) = app.get_webview_window(&target) {
+            destination
+                .eval(format!(
+                    "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Value)> {
+    let owner = source.strip_prefix("toolset-popover-")?;
+    if owner.is_empty() || validate_line(line).is_err() {
+        return None;
+    }
+    let row: serde_json::Value = serde_json::from_str(line).ok()?;
+    if row["kind"] != "window-shown"
+        || row["window"] != "palette-popover"
+        || !matches!(
+            row["doneSignal"].as_str(),
+            Some("popover-shown" | "no-op" | "failed")
+        )
+    {
+        return None;
+    }
+    let flyout = row["extra"]["surface"].as_str()?;
+    if flyout.is_empty() || flyout.len() > 256 {
+        return None;
+    }
+    let t0 = row["t0"].as_f64()?;
+    let at = t0 + row["doneMs"].as_f64()?;
+    let frame = row["firstFrameMs"].as_f64().map(|elapsed| t0 + elapsed);
+    if !at.is_finite()
+        || (row["doneSignal"] == "popover-shown" && frame.is_none())
+        || frame.is_some_and(|frame| !frame.is_finite() || frame < at - COMPLETION_CLOCK_SKEW_MS)
+    {
+        return None;
+    }
+    Some((
+        format!("toolset-{owner}"),
+        serde_json::json!({ "requestKey": "popover-shown", "signal": row["doneSignal"],
+            "flyoutId": flyout, "at": at, "frameAt": frame, "window": source }),
+    ))
 }
 
 /// A completion has no command payload and cannot open windows or write arbitrary files. The
@@ -327,6 +390,48 @@ mod tests {
     }
     fn line() -> String {
         serde_json::json!({"v":1,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
+    }
+    #[test]
+    fn popover_shown_receipt_is_restricted_to_the_authenticated_owner() {
+        let row = serde_json::json!({"v":1,"kind":"window-shown","window":"palette-popover",
+            "platform":"macos","buildStamp":"test","t0":100,"doneMs":30,
+            "firstFrameMs":40,"doneSignal":"popover-shown","extra":{"surface":"arrows"}})
+        .to_string();
+        let (target, receipt) = popover_receipt("toolset-popover-core-main", &row).unwrap();
+        assert_eq!(target, "toolset-core-main");
+        assert_eq!(receipt["at"], 130.0);
+        assert_eq!(receipt["frameAt"], 140.0);
+        assert_eq!(receipt["flyoutId"], "arrows");
+        let mut cancelled: serde_json::Value = serde_json::from_str(&row).unwrap();
+        cancelled["doneSignal"] = "no-op".into();
+        cancelled.as_object_mut().unwrap().remove("firstFrameMs");
+        let (_, receipt) =
+            popover_receipt("toolset-popover-core-main", &cancelled.to_string()).unwrap();
+        assert_eq!(receipt["signal"], "no-op");
+        for source in [
+            "main",
+            "preferences",
+            "toolset-core-main",
+            "toolset-popover-",
+        ] {
+            assert!(popover_receipt(source, &row).is_none());
+        }
+        for changed in [
+            row.replace("popover-shown", "document-commit"),
+            row.replace("window-shown", "click"),
+            row.replace("palette-popover", "main"),
+        ] {
+            assert!(popover_receipt("toolset-popover-core-main", &changed).is_none());
+        }
+        for (kind, signal, role) in [
+            ("dialog-open", "dialog-open", "dialog"),
+            ("window-shown", "window-shown", "preferences"),
+        ] {
+            let row = serde_json::json!({"v":1,"kind":kind,"window":role,"platform":"windows",
+                "buildStamp":"test","t0":1,"doneSignal":signal})
+            .to_string();
+            validate_line(&row).unwrap();
+        }
     }
     #[test]
     fn dialog_rows_use_only_the_main_windows_registered_stamp() {
