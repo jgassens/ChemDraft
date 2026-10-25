@@ -56,6 +56,7 @@ describe("assistant page ordering scope",() => {
   });
   it("refuses assistant ordering without the request document instead of checking the active tab", async () => {
     const s = fixture();
+    s.getActiveDocument.mockClear();
     try {
       await expect(s.host.applyPatchForPlugin("org.test.order", undefined, {
         patch: { op: "setObjectOrder", pageId: s.pageId, objectIds: ["first", "second", "moving"] }, reason: "Order"

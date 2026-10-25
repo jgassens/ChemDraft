@@ -2058,6 +2058,25 @@ mod tests {
             assert!(serde_json::to_vec(&message).unwrap().len() <= 3400);
             assert_eq!(message.data["intent"], "update");
             assert!(message.data.get("managedUpdateDetail").is_none());
+            if row["fixtureOnly"] == Value::Bool(true) {
+                assert_eq!(
+                    message.data["disclosure"]
+                        .as_str()
+                        .unwrap()
+                        .encode_utf16()
+                        .count(),
+                    1024
+                );
+                assert_eq!(message.data["state"]["status"], "failed");
+                assert_eq!(
+                    message.data["state"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .encode_utf16()
+                        .count(),
+                    1024
+                );
+            }
         }
     }
     #[test]

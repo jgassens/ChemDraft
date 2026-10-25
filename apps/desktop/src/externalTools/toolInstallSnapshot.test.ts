@@ -10,14 +10,18 @@ const managedUpdateDetail = (tool: "codex" | "claude") => managedUpdates.find(ro
 describe("toolInstallSnapshot", () => {
   // Rust dialog_windows::tool_install_ts_managed_update_snapshots validates these exact envelopes.
   it.each(managedUpdates)("matches the Rust-validated $status.tool managed-update envelope ($message.data.state.status)", row => {
-    const data = toolInstallSnapshot(row.status as ExternalToolStatus, row.plugin, row.state as ToolInstallState | undefined);
+    const data = row.fixtureOnly ? row.message.data : toolInstallSnapshot(row.status as ExternalToolStatus, row.plugin, row.state as ToolInstallState | undefined);
     const message = { ...row.message, data };
-    expect(JSON.stringify(message)).toBe(JSON.stringify(row.message));
+    if (!row.fixtureOnly) expect(JSON.stringify(message)).toBe(JSON.stringify(row.message));
     expect(parseDialogMessage(message)).toEqual(message);
     expect(data.disclosure.length).toBeLessThanOrEqual(1024);
     expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(3400);
     expect(data).not.toHaveProperty("managedUpdateDetail");
     expect(data.state.status).not.toBe("broken");
+    if (row.fixtureOnly) {
+      expect(data.disclosure).toHaveLength(1024);
+      expect(data.state).toEqual({ status: "failed", message: "M".repeat(1024) });
+    }
   });
 
   it.each(["codex", "claude"] as const)("keeps %s update disclosure and distinct failure within native limits", tool => {
