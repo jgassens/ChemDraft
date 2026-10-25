@@ -5,7 +5,7 @@ export const PerfRecordSchema = z.object({
   v: z.literal(1),
   kind: z.enum(["pointerdown", "click", "keydown", "native-command", "cold-launch", "document-open"]),
   commandId: z.string().max(256).optional(),
-  window: z.enum(["main", "palette", "palette-popover", "dialog", "plugin-panel"]),
+  window: z.enum(["main", "palette", "palette-popover", "dialog", "plugin-panel", "preferences", "spin3d-debugger"]),
   platform: z.enum(["macos", "windows", "linux"]),
   buildStamp: z.string().max(256),
   t0: z.number().finite().nonnegative(),
@@ -16,6 +16,8 @@ export const PerfRecordSchema = z.object({
 }).strict();
 export type PerfRecord = z.infer<typeof PerfRecordSchema>;
 export type DoneSignal = NonNullable<PerfRecord["doneSignal"]>;
+/** Tolerate at most 10 ms between independently calibrated webview timestamps. */
+export const COMPLETION_CLOCK_SKEW_MS = 10;
 export interface ProbeEnvironment {
   target: Pick<Window, "addEventListener" | "removeEventListener">;
   now(): number;
@@ -131,6 +133,9 @@ export class PerfProbe {
     const span = commandId ? [...this.pending].reverse().find(p => p.record.commandId === commandId && p.done === undefined)
       : this.task ?? (this.activeRegistry.size === 1 ? [...this.activeRegistry][0] : undefined);
     if (span) span.expected = signal;
+    // The sole active registry invocation is a heuristic after an async yield. An unrelated
+    // operation can request a signal then, so keep that attribution visible to log consumers.
+    if (span && !commandId && !this.task) span.record.extra = { ...span.record.extra, approximateCompletion: true };
     return span;
   }
   complete(span: Span, signal: DoneSignal): void { this.finish(span, signal); }
@@ -159,11 +164,13 @@ export class PerfProbe {
   }
   remoteCompletion(requestKey: string, signal: DoneSignal, at: number, frameAt?: number, window?: string): void {
     const span = [...this.pending].find(p => p.requestKey === requestKey && p.expected === signal);
-    if (!span || !Number.isFinite(at) || at < span.record.t0) return;
-    span.done = at; span.record.doneSignal = signal;
+    if (!span || !Number.isFinite(at) || at < 0 || at < span.record.t0 - COMPLETION_CLOCK_SKEW_MS) return;
+    if (frameAt !== undefined && (!Number.isFinite(frameAt) || frameAt < 0 || frameAt < at - COMPLETION_CLOCK_SKEW_MS)) return;
+    span.done = Math.max(at, span.record.t0); span.record.doneSignal = signal;
     span.record.extra = { ...span.record.extra, completionWindow: window };
-    if (frameAt !== undefined && Number.isFinite(frameAt) && frameAt >= span.record.t0) {
-      span.frame = frameAt;
+    if (at < span.record.t0 || (frameAt !== undefined && frameAt < at)) span.record.extra.clockSkewAdjusted = true;
+    if (frameAt !== undefined) {
+      span.frame = Math.max(frameAt, span.record.t0);
       span.record.extra.frameSource = "destination-window";
     }
     this.flush(span);
@@ -180,6 +187,14 @@ export class PerfProbe {
     if (command) { this.finish(command, "document-commit"); this.scheduleFrame(command, "document-open"); }
     // Called after open's last state update. rAF follows its React commit.
     this.scheduleFrame(span, "document-open");
+  }
+  documentOpenSkipped(span: Span, outcome: "queued" | "already-open"): void {
+    for (const item of [span, span.parent]) {
+      if (!item) continue;
+      item.record.extra = { ...item.record.extra, openOutcome: outcome };
+      this.finish(item, "command-finished");
+      this.scheduleFrame(item, "document-open");
+    }
   }
   documentOpenFailed(span: Span): void {
     this.finish(span, "failed"); this.scheduleFrame(span, "failed");

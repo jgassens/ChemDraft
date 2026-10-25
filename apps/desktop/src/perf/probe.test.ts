@@ -32,6 +32,40 @@ function harness(window: PerfRecord["window"] = "palette") {
 }
 
 describe("bridge-gated timing probe", () => {
+  it.each(["queued", "already-open"] as const)("labels %s opens without claiming a document commit", outcome => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("document.open"); h.tasks();
+    const open = probe.documentOpenStarted();
+    probe.documentOpenSkipped(open, outcome); h.paint();
+    expect(h.records).toHaveLength(2);
+    for (const record of h.records) expect(record).toMatchObject({ doneSignal: "command-finished", extra: { openOutcome: outcome } });
+    probe.stop();
+  });
+  it("marks a sole active registry fallback as approximate, but keeps explicit command attribution exact", async () => {
+    const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
+    const registry = new CommandRegistry(); let resume!: () => void;
+    registry.register({ id: "plugin.demo.open", title: "Open", source: "core" }, async () => {
+      await new Promise<void>(resolve => { resume = resolve; });
+      const span = probe.expectSignal("window-shown");
+      expect(span).toBeDefined(); probe.complete(span!, "window-shown");
+    });
+    probe.instrumentRegistry(registry); h.input(); const result = registry.invoke("plugin.demo.open");
+    h.tasks(); resume(); await result; h.paint();
+    expect(h.records[0]).toMatchObject({ doneSignal: "window-shown", extra: { approximateCompletion: true } });
+    h.input(); probe.command("plugin.demo.explicit"); h.tasks();
+    const explicit = probe.expectSignal("window-shown", "plugin.demo.explicit")!;
+    probe.complete(explicit, "window-shown"); h.paint();
+    expect(h.records[1].extra?.approximateCompletion).toBeUndefined(); probe.stop();
+  });
+  it("accepts up to 10 ms of cross-webview clock skew and labels clamped durations", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("export.open"); probe.expectCompletion("dialog-open", "skew"); h.tasks();
+    probe.remoteCompletion("skew", "dialog-open", 995, 984, "dialog-main-export-1");
+    expect(h.records).toHaveLength(0); // More than 10 ms between completion and frame is refused.
+    probe.remoteCompletion("skew", "dialog-open", 995, 990, "dialog-main-export-1");
+    expect(h.records[0]).toMatchObject({ doneSignal: "dialog-open", doneMs: 0, firstFrameMs: 0, extra: { clockSkewAdjusted: true } });
+    probe.stop();
+  });
   it("off does not even construct the environment, listeners, timers or writer", () => {
     const h = harness(); const factory = vi.fn(() => h.env);
     expect(createPerfProbe(false, factory)).toBeUndefined();

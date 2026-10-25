@@ -1,5 +1,6 @@
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { perfProbe } from "./perf/runtime";
+import { CURRENT_BUILD_STAMP } from "./perf/buildStamp";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
@@ -1616,7 +1617,6 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.12.40-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8398,7 +8398,7 @@ export function MainWindow({
     if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      return;
+      return "queued" as const;
     }
     const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
     const existing = documentTabsRef.current.find((tab) =>
@@ -8409,13 +8409,13 @@ export function MainWindow({
         browserFileKeysRef.current.get(tab.id) === browserKey);
     if (existing) {
       activateDocumentTab(existing.id);
-      return;
+      return "already-open" as const;
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
     if (quitInteractionRef.current) {
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      return;
+      return "queued" as const;
     }
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
@@ -8450,6 +8450,7 @@ export function MainWindow({
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
+    return "installed" as const;
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
@@ -8467,10 +8468,13 @@ export function MainWindow({
     const run = documentOpenQueueRef.current.then(() =>
       openDocumentContentsNowRef.current(contents, displayName, path, options));
     if (perfProbe && timing) {
-      void run.then(() => perfProbe?.documentOpenCommitted(timing), () => perfProbe?.documentOpenFailed(timing));
+      void run.then(outcome => {
+        if (outcome === "installed") perfProbe?.documentOpenCommitted(timing);
+        else perfProbe?.documentOpenSkipped(timing, outcome);
+      }, () => perfProbe?.documentOpenFailed(timing));
     }
     documentOpenQueueRef.current = run.catch(() => undefined);
-    return run;
+    return run.then(() => undefined);
   }, []);
 
   const openDocumentContentsRef = useRef(openDocumentContents);

@@ -42,8 +42,10 @@ Logging does not delay commands; an abrupt process exit can lose queued lines.
 
 Each UTF-8 JSON line is capped at 16 KiB. Before an append would exceed 20 MiB, Rust replaces
 `perf-log.1.jsonl` with the current file and starts a new `perf-log.jsonl`. A process-wide mutex
-serializes rotation and appends from all webviews; Windows' rename semantics are handled by removing
-the previous backup first. There is at most one backup. The frontend bounds pending samples and
+serializes rotation and appends from all webviews. Rotation first tries rename with replacement;
+if that fails (for example a Windows sharing restriction), it copies to the backup and truncates the
+current file only after the copy succeeds. The first rotation error per process is reported to stderr,
+and later appends can retry a failed rotation. There is at most one backup. The frontend bounds pending samples and
 queued writes to 256 each. Invalid lines are refused before creating a directory or opening a file.
 
 ## Fields and timing boundaries
@@ -56,11 +58,11 @@ v1 envelope before writing. No key text, pointer coordinates, file names or docu
 | `v` | Schema version, currently `1`. |
 | `kind` | `pointerdown`, `click`, `keydown`, `native-command`, `cold-launch`, or `document-open`. |
 | `commandId` | Shared registry command ID when available. Absent for input with no command. |
-| `window` | Input origin: `main`, `palette`, `palette-popover`, `dialog`, or `plugin-panel`. |
+| `window` | Input origin: `main`, `palette`, `palette-popover`, `dialog`, `plugin-panel`, `preferences`, or `spin3d-debugger`. |
 | `platform` | `macos`, `windows`, or `linux`; tests pass the platform explicitly. |
-| `buildStamp` | Source stamp, build stamp and worktree label. This slice's source stamp is `10.25.12.40-codex`. |
+| `buildStamp` | Shared `CURRENT_BUILD_STAMP` source stamp, build stamp and worktree label. |
 | `t0` | Input timestamp, aligned to the process's monotonic epoch, in milliseconds. |
-| `firstFrameMs` | First rAF observation after the state/DOM update, minus `t0`. It is a paint opportunity, not a compositor or display presentation timestamp. |
+| `firstFrameMs` | First eligible rAF observation, minus `t0`; see `extra.frameSource`. For async commands this can precede the eventual state update or completion. Document-open and window-show samples wait for their explicit boundary; dialog-open uses the destination frame. It is a paint opportunity, not a compositor or display presentation timestamp. |
 | `doneMs` | Completion signal timestamp minus `t0`. It may precede or follow the first frame. |
 | `doneSignal` | Observed completion boundary, described below. |
 | `extra` | Clock calibration error bound, process start for grouping runs, frame source and optional completion window/ambiguity/incomplete markers. |
@@ -79,6 +81,9 @@ command arguments, return values, rejections and invocation count. Completion bo
   final state update, then requests its frame. `document-open` also gets its own row, starting at the
   open command if present, otherwise at entry to the contents-open funnel (for example a shell open).
   File-picker/user-choice time is included when the command is the origin.
+  Opens queued for hydration or a pending prompt, and requests for an already open file, finish
+  with `command-finished` and `extra.openOutcome` of `queued` or `already-open`; they do not claim
+  a new document installation. A queued request gets a fresh row when retried.
 - `window-shown`: the native toolbar or report open operation has returned successfully. Toolbar/report
   frame observations are in the requesting main page; they do not measure the destination's content
   readiness. An explicitly declared plugin panel opener waits for the panel window's open result.
@@ -120,11 +125,22 @@ timestamps consequently share the Rust epoch even when they originate in differe
 Dialog completion receipts contain only bounded IDs, numeric times and an allowed signal. Rust
 authenticates the sender and permits only main-to-dialog/dialog-to-main routes; it never grants
 general event emission or filesystem access to dialog or plugin windows.
+Only main and shared dialog windows have the completion-forwarding capability. Receipts tolerate
+up to **10 ms** of negative skew between completion and destination frame, or between input and
+remote completion, to accommodate independent midpoint calibrations. Larger reversals are refused.
+Durations before the input are clamped to zero and adjusted rows carry `extra.clockSkewAdjusted`.
+This bound is a tolerance, not a claim that every calibration has at most 10 ms of error.
 
-`extra.frameSource` identifies `dom-commit`, `input-task` (no DOM mutation observed), `document-open`,
+`extra.frameSource` identifies `dom-commit`, `input-task`, `document-open`,
 `window-shown`, `gesture-end`, or `destination-window`. Concurrent commands with ambiguous commit attribution are labelled
 `extra.ambiguousCompletion`; compare serial operations and exclude those rows. The probe does not
 claim command-specific completion for arbitrary plugin background work after its command returns.
+`input-task` means the frame was scheduled from the input's microtask and no DOM observation
+rescheduled it before that rAF ran. For async commands it can show the initial or busy state,
+before the awaited work changes the DOM; it does not mean that the command never mutated the DOM.
+An expected signal inferred from the sole active registry invocation after an async yield carries
+`extra.approximateCompletion`; that inference can belong to unrelated work and should be excluded
+from comparisons requiring exact attribution.
 
 ## Comparing macOS and Windows
 
@@ -144,7 +160,7 @@ For example, these illustrative rows represent matching warm document-open runs:
 
 The Windows first-frame observation is 40 ms longer (220 − 180); commit completion is 35 ms longer.
 The differing absolute `t0` values do not enter that comparison. Filter out `failed`, `timeout`,
-`extra.incomplete` and `extra.ambiguousCompletion` rows, and report calibration bounds beside small
+`extra.incomplete`, `extra.ambiguousCompletion` and `extra.approximateCompletion` rows, and report calibration bounds beside small
 differences. Treat illustrative numbers as examples, never benchmark claims.
 
 The packaged macOS/Windows hands-on pass should also verify the bridge-off run creates no log,

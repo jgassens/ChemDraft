@@ -4,13 +4,18 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 16 * 1024;
+// Independent webview midpoint calibrations: allow at most 10 ms of receipt clock skew.
+const COMPLETION_CLOCK_SKEW_MS: f64 = 10.0;
 
 struct Clock {
     instant: Instant,
@@ -19,6 +24,7 @@ struct Clock {
 pub(crate) struct PerfLog {
     clock: Option<Clock>,
     writer: Mutex<()>,
+    error_reported: AtomicBool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +46,7 @@ impl PerfLog {
                     * 1000.0,
             }),
             writer: Mutex::new(()),
+            error_reported: AtomicBool::new(false),
         }
     }
     fn sample(&self) -> Result<ClockSample, String> {
@@ -66,13 +73,8 @@ impl PerfLog {
         };
         if size.saturating_add(bytes) > max_bytes {
             let rotated = directory.join("perf-log.1.jsonl");
-            // Windows rename does not replace an existing destination.
-            match fs::remove_file(&rotated) {
-                Ok(()) => (),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error.to_string()),
-            }
-            fs::rename(&path, &rotated).map_err(|e| e.to_string())?;
+            self.rotate_with(&path, &rotated, |from, to| fs::rename(from, to))
+                .map_err(|e| e.to_string())?;
         }
         let mut file = OpenOptions::new()
             .create(true)
@@ -81,6 +83,27 @@ impl PerfLog {
             .map_err(|e| e.to_string())?;
         file.write_all(format!("{line}\n").as_bytes())
             .map_err(|e| e.to_string())
+    }
+    fn report_error_once(&self, error: &std::io::Error) {
+        if !self.error_reported.swap(true, Ordering::Relaxed) {
+            eprintln!("Perf log rotation failed; trying copy and truncate: {error}");
+        }
+    }
+    fn rotate_with(
+        &self,
+        path: &Path,
+        rotated: &Path,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        // Try replacement without deleting the backup first. Windows sharing restrictions can
+        // refuse rename while still allowing copy and in-place truncation of the current log.
+        if let Err(error) = rename(path, rotated) {
+            self.report_error_once(&error);
+            fs::copy(path, rotated)?;
+            // Never truncate the current log until the backup copy has succeeded.
+            OpenOptions::new().write(true).open(path)?.set_len(0)?;
+        }
+        Ok(())
     }
 }
 
@@ -131,6 +154,8 @@ fn validate_line(line: &str) -> Result<(), String> {
                 "palette-popover",
                 "dialog",
                 "plugin-panel",
+                "preferences",
+                "spin3d-debugger",
             ],
         )
         || !one_of("platform", &["macos", "windows", "linux"])
@@ -247,7 +272,7 @@ fn valid_completion(
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':'))
         && at.is_finite()
         && at >= 0.0
-        && frame.is_none_or(|f| f.is_finite() && f >= at)
+        && frame.is_none_or(|f| f.is_finite() && f >= 0.0 && f >= at - COMPLETION_CLOCK_SKEW_MS)
 }
 
 #[cfg(test)]
@@ -264,6 +289,84 @@ mod tests {
     }
     fn line() -> String {
         serde_json::json!({"v":1,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
+    }
+    #[test]
+    fn failed_rename_copies_before_truncating_and_logging_continues() {
+        let directory = dir();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("perf-log.jsonl");
+        let backup = directory.join("perf-log.1.jsonl");
+        let state = PerfLog::new(true);
+        let line = line();
+        state.append(&directory, &line, MAX_BYTES).unwrap();
+        fs::write(&backup, "old backup").unwrap();
+        for _ in 0..2 {
+            state
+                .rotate_with(&path, &backup, |_, _| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated Windows sharing restriction",
+                    ))
+                })
+                .unwrap();
+            assert!(state.error_reported.load(Ordering::Relaxed));
+            assert_eq!(fs::read_to_string(&backup).unwrap(), format!("{line}\n"));
+            assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+            state.append(&directory, &line, MAX_BYTES).unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{line}\n"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn failed_fallback_preserves_current_log_for_a_later_retry() {
+        let directory = dir();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("perf-log.jsonl");
+        let backup = directory.join("perf-log.1.jsonl");
+        fs::write(&path, "keep this log").unwrap();
+        fs::create_dir(&backup).unwrap();
+        let state = PerfLog::new(true);
+        assert!(state
+            .rotate_with(&path, &backup, |_, _| Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )))
+            .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep this log");
+        fs::remove_dir(&backup).unwrap();
+        state
+            .rotate_with(&path, &backup, |from, to| fs::rename(from, to))
+            .unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "keep this log");
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn completion_accepts_only_bounded_clock_skew_and_distinct_roles_validate() {
+        for delta in [0.0, 10.0] {
+            assert!(valid_completion(
+                "dialog-main-export-1",
+                "main",
+                "session-1",
+                "dialog-open",
+                100.0,
+                Some(100.0 - delta)
+            ));
+        }
+        for frame in [89.9, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(!valid_completion(
+                "dialog-main-export-1",
+                "main",
+                "session-1",
+                "dialog-open",
+                100.0,
+                Some(frame)
+            ));
+        }
+        for role in ["preferences", "spin3d-debugger"] {
+            validate_line(
+                &line().replace("\"window\":\"main\"", &format!("\"window\":\"{role}\"")),
+            )
+            .unwrap();
+        }
     }
     #[test]
     fn disabled_rejects_without_creating_directory_or_file() {
@@ -364,7 +467,7 @@ mod tests {
             "dialog-main-export-1",
             "request-1",
             "export-written",
-            2.0,
+            20.0,
             Some(1.0)
         ));
     }

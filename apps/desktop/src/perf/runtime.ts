@@ -1,10 +1,10 @@
 import { detectShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { perfProbeRequestedFromWindow } from "./gate";
+import { CURRENT_BUILD_STAMP } from "./buildStamp";
 import { createPerfProbe, type DoneSignal, type PerfRecord, type PerfProbe } from "./probe";
 
 declare global { interface Window { readonly __CHEMDRAFT_PERF_ALLOWED__?: boolean; } }
 export let perfProbe: PerfProbe | undefined;
-export const PERF_BUILD_STAMP = "10.25.12.40-codex";
 
 /** Forward a numeric completion only; Rust authenticates windows and enforces the launch gate. */
 export function sendPerfCompletion(target: string, requestKey: string, signal: DoneSignal, at?: number, frameAt?: number): void {
@@ -26,8 +26,9 @@ export function probePlatform(platform = detectShortcutPlatform()): PerfRecord["
 }
 export function windowRole(search: string): PerfRecord["window"] {
   const role = new URLSearchParams(search).get("window");
-  return role === "dialog" || role === "preferences" ? "dialog"
-    : role === "pluginPanel" || role === "spin3d-debugger" ? "plugin-panel"
+  return role === "preferences" || role === "spin3d-debugger" ? role
+    : role === "dialog" ? "dialog"
+    : role === "pluginPanel" ? "plugin-panel"
     : role === "toolsetPopover" || role === "toolsetTooltip" ? "palette-popover"
     : role === "toolset" || role === "tool-palette" ? "palette" : "main";
 }
@@ -85,7 +86,7 @@ export async function startPerfProbe(): Promise<void> {
     frame: callback => requestAnimationFrame(callback), cancelFrame: id => cancelAnimationFrame(id),
     defer: callback => queueMicrotask(callback), timeout: callback => setTimeout(callback, 120_000), clearTimeout,
     write, window: windowRole(location.search), platform: probePlatform(),
-    buildStamp: `${PERF_BUILD_STAMP} · ${__BUILD_STAMP__} · ${__WORKTREE_LABEL__}`, processStart, clockErrorMs }));
+    buildStamp: `${CURRENT_BUILD_STAMP} · ${__BUILD_STAMP__} · ${__WORKTREE_LABEL__}`, processStart, clockErrorMs }));
   if (desktop) window.addEventListener("chemdraft:perf-complete", event => {
     const detail = (event as CustomEvent<{ requestKey: string; signal: DoneSignal; at: number; frameAt?: number; window: string }>).detail;
     if (!detail) return;

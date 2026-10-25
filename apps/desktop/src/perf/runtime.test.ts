@@ -4,6 +4,7 @@ import { MemoryStorage } from "../testSupport/memoryStorage";
 import { probeRequested } from "./gate";
 import { alignEventTime, calibrateClock, perfProbe, probePlatform, startPerfProbe, windowRole } from "./runtime";
 import { PerfRecordSchema } from "./probe";
+import { CURRENT_BUILD_STAMP } from "./buildStamp";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -44,7 +45,7 @@ describe("probe gate and cross-webview clocks", () => {
     await startPerfProbe(); perfProbe!.readyCanvas(); frames.splice(0).forEach(callback => callback(0));
     await vi.waitFor(() => expect(invoke.mock.calls.some(call => call[0] === "perf_log_append")).toBe(true));
     const written = invoke.mock.calls.find(call => call[0] === "perf_log_append")![1] as { line: string };
-    expect(PerfRecordSchema.parse(JSON.parse(written.line))).toMatchObject({ kind: "cold-launch", v: 1, window: "main" });
+    expect(PerfRecordSchema.parse(JSON.parse(written.line))).toMatchObject({ kind: "cold-launch", v: 1, window: "main", buildStamp: `${CURRENT_BUILD_STAMP} · test · test` });
     expect(invoke.mock.calls.filter(call => call[0] === "perf_log_clock")).toHaveLength(3);
   });
   it("web uses the existing storage gate and writes JSONL without native invokes", async () => {
@@ -63,7 +64,7 @@ describe("probe gate and cross-webview clocks", () => {
     expect(probePlatform("linux")).toBe("linux");
   });
   it("labels every recording window role", () => {
-    for (const [query, role] of [["", "main"], ["?window=toolset", "palette"], ["?window=toolsetPopover", "palette-popover"], ["?window=toolsetTooltip", "palette-popover"], ["?window=dialog", "dialog"], ["?window=preferences", "dialog"], ["?window=pluginPanel", "plugin-panel"], ["?window=spin3d-debugger", "plugin-panel"]]) expect(windowRole(query)).toBe(role);
+    for (const [query, role] of [["", "main"], ["?window=toolset", "palette"], ["?window=toolsetPopover", "palette-popover"], ["?window=toolsetTooltip", "palette-popover"], ["?window=dialog", "dialog"], ["?window=preferences", "preferences"], ["?window=pluginPanel", "plugin-panel"], ["?window=spin3d-debugger", "spin3d-debugger"]]) expect(windowRole(query)).toBe(role);
   });
   it("aligns relative and legacy epoch event timestamps without sampling wall time per event", () => {
     expect(alignEventTime(42, 1700000000000, 1700000000100)).toBe(1700000000142);

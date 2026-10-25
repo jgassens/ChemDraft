@@ -20,6 +20,27 @@ import { describe, expect, it } from "vitest";
  * requirement, but keeping the feature without the grant fails here.
  */
 describe("core capability grants", () => {
+  it("pins perf recording grants and restricts completion forwarding to main and shared dialogs", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name => ({
+      name, capability: JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+        windows: string[]; permissions: (string | { identifier: string })[];
+      }
+    }));
+    const owners = (permission: string) => grants.filter(({ capability }) => capability.permissions.some(p =>
+      (typeof p === "string" ? p : p.identifier) === permission));
+    expect(owners("allow-perf-log-complete").map(g => [g.name, g.capability.windows])).toEqual([
+      ["perf-probe.json", ["main", "dialog-main-*"]]
+    ]);
+    expect(grants.find(g => g.name === "perf-probe.json")!.capability.permissions).toEqual(["allow-perf-log-complete"]);
+    for (const permission of ["allow-perf-log-clock", "allow-perf-log-append"]) {
+      expect(owners(permission).map(g => [g.name, g.capability.windows])).toEqual([
+        ["perf-probe-recording.json", ["main", "toolset-*", "plugin-panel-*", "dialog-main-*", "preferences", "spin3d-debugger"]]
+      ]);
+    }
+    expect(grants.find(g => g.name === "perf-probe-recording.json")!.capability.permissions)
+      .toEqual(["allow-perf-log-clock", "allow-perf-log-append"]);
+  });
   const capabilities = readFileSync(
     new URL("../src-tauri/capabilities/default.json", import.meta.url),
     "utf8"
