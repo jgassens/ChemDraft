@@ -11,12 +11,32 @@ export const textStyleSchema = z.object({
   italic: z.boolean().optional(), color: color.optional()
 }).strict();
 const side = z.enum(["above", "below", "left", "right"]);
+const moveOffset = z.object({
+  dx: z.number({ error: "Offset dx must be a finite number." }).min(-5000, "Offset dx must be within ±5000 document points.").max(5000, "Offset dx must be within ±5000 document points."),
+  dy: z.number({ error: "Offset dy must be a finite number." }).min(-5000, "Offset dy must be within ±5000 document points.").max(5000, "Offset dy must be within ±5000 document points.")
+}).strict();
 const relativeTo = z.object({ objectId: id, side }).strict();
+export const figureTargetSchema = z.object({
+  relativeTo: id,
+  // A ring key encodes every bond ID; macrocycles routinely exceed one object's ID limit.
+  anchor: z.union([z.enum(["center", "axis"]), z.object({ ringKey: z.string().min(1).max(65_536) }).strict()]),
+  offset: z.object({ dx: z.number().min(-100).max(100), dy: z.number().min(-100).max(100) }).strict().optional(),
+  rotateDeg: z.number().min(-360).max(360).optional()
+}).strict();
+const bondRef = z.object({ objectId: id, bondId: id }).strict();
+const figureOptions = {
+  zOrder: z.union([z.enum(["front", "behind"]), z.object({ above: id }).strict(), z.object({ below: id }).strict()]).optional(),
+  crossings: z.union([z.literal("auto"), z.array(z.object({ over: bondRef, under: bondRef }).strict()).min(1).max(100)]).optional()
+};
+export type FigureTarget = z.output<typeof figureTargetSchema>;
 const molecule = z.object({ kind: z.literal("molecule"), smiles: SMILES, label: text.optional() }).strict();
 const group = z.object({ kind: z.literal("group"), label: z.string().trim().min(1).max(80)
   .describe("Native standalone abbreviation or condensed formula label, e.g. CH3 (methyl), Me, Et, Ph, Bn, Boc, OTs, OMe, NO2, CF3. No placeholders or bare element symbols.") }).strict();
 const textItem = z.object({ kind: z.literal("text"), text, style: textStyleSchema.optional() }).strict();
 export const toolSchemas = {
+  list_commands: z.object({}).strict(),
+  // All current commands encode their values in the id; reserve args without admitting hidden parameters.
+  run_command: z.object({ id, args: z.object({}).strict().optional() }).strict(),
   get_document: z.object({ includeSmiles: z.boolean().default(true), maxObjects: z.number().int().min(1).max(500).default(200) }).strict(),
   get_selection: z.object({}).strict(),
   get_structure: z.object({ objectId: id, format: z.enum(["smiles", "molfile"]) }).strict(),
@@ -30,14 +50,17 @@ export const toolSchemas = {
   structure_to_name: z.object({ objectId: id }).strict(),
   insert_structures: z.object({
     items: z.array(z.discriminatedUnion("kind", [molecule, group, textItem])).min(1).max(24),
-    arrangement: z.enum(["row", "grid", "auto"]).default("auto")
+    arrangement: z.enum(["row", "grid", "auto"]).default("auto"),
+    to: figureTargetSchema.optional(), ...figureOptions
   }).strict(),
   insert_reaction: z.object({
     reactants: z.array(SMILES).min(1).max(6), products: z.array(SMILES).min(1).max(6),
     reagents: z.array(text).max(3).optional(), conditions: z.array(text).max(3).optional(),
-    arrowKind: z.enum(["forward", "equilibrium", "retrosynthetic", "resonance"]).default("forward")
+    arrowKind: z.enum(["forward", "equilibrium", "retrosynthetic", "resonance"]).default("forward"),
+    to: figureTargetSchema.optional(), ...figureOptions
   }).strict(),
-  insert_text: z.object({ text, relativeTo: relativeTo.optional(), style: textStyleSchema.optional() }).strict(),
+  insert_text: z.object({ text, relativeTo: relativeTo.optional(), style: textStyleSchema.optional(),
+    to: figureTargetSchema.optional(), ...figureOptions }).strict(),
   edit_structure: z.object({ objectId: id, smiles: SMILES, keepPosition: z.boolean().default(true) }).strict(),
   delete_objects: z.object({ objectIds: ids }).strict(),
   style_objects: z.object({ objectIds: ids, style: z.object({
@@ -49,8 +72,9 @@ export const toolSchemas = {
     }).strict()).max(100).optional()
   }).strict() }).strict(),
   move_objects: z.object({ objectIds: ids, to: z.union([
-    z.object({ relativeTo: id, side }).strict(), z.object({ arrange: z.enum(["row", "grid"]) }).strict()
-  ]) }).strict()
+    z.object({ relativeTo: id, side }).strict(), z.object({ arrange: z.enum(["row", "grid"]) }).strict(),
+    z.object({ by: moveOffset }).strict(), figureTargetSchema
+  ]), ...figureOptions }).strict()
 };
 export type AssistantToolName = keyof typeof toolSchemas;
 export type ToolInput<N extends AssistantToolName> = z.output<(typeof toolSchemas)[N]>;

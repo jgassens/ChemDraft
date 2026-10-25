@@ -9,17 +9,26 @@ export const TOOL_DOWNLOAD_HOSTS: Record<PluginExternalToolId, string> = {
 };
 export function publisherForTool(tool: PluginExternalToolId): string { return tool === "claude" ? "Anthropic" : "OpenAI"; }
 export function toolNameFor(tool: PluginExternalToolId): string { return tool === "claude" ? "Claude Code" : "Codex"; }
+// Keep this exact host explanation in step with external_tools/install.rs::managed_update_detail.
+function managedUpdateDetail(tool: PluginExternalToolId): string {
+  return `ChemDraft's copy of ${toolNameFor(tool)} is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.`;
+}
 export function toolInstallSnapshot(status: ExternalToolStatus, plugin: ExternalToolPlugin, state?: ToolInstallSnapshot["state"]): ToolInstallSnapshot {
   const publisher = status.publisher || publisherForTool(status.tool);
-  const selected = state ?? (status.state === "installed" ? { status: "installed" } : status.state === "broken" ? { status: "broken", detail: status.detail ?? "The installed tool needs attention." } : { status: "notInstalled" });
+  let selected: ToolInstallSnapshot["state"] = state ?? (status.state === "installed" ? { status: "installed" } : status.state === "broken" ? { status: "broken", detail: status.detail ?? "The installed tool needs attention." } : { status: "notInstalled" });
   const needsDownload = status.state !== "installed" && selected.status !== "installed";
-  const needsUpdate = needsDownload && status.state === "broken" && status.source === "managed" && status.canInstall;
+  const needsUpdate = needsDownload && status.state === "broken" && status.source === "managed" && status.canInstall && status.detail === managedUpdateDetail(status.tool);
+  const updateDetail = needsUpdate ? status.detail : undefined;
+  // Suppress the duplicate here using an existing state, keeping the native envelope unchanged.
+  // Distinct failures still travel as alerts.
+  if (updateDetail && ((selected.status === "broken" && selected.detail === updateDetail) ||
+      (selected.status === "failed" && selected.message === updateDetail))) selected = { status: "notInstalled" };
   return {
     intent: needsUpdate ? "update" : needsDownload ? "download" : "use",
     title: needsUpdate ? `Update ${toolNameFor(status.tool)}` : `${toolNameFor(status.tool)} for ${plugin.name}`,
     toolName: toolNameFor(status.tool), publisher, version: status.pinnedVersion,
     downloadHost: TOOL_DOWNLOAD_HOSTS[status.tool], downloadBytes: needsDownload ? status.pinnedDownloadBytes : 0, pluginName: plugin.name, pluginId: plugin.id,
-    disclosure: `${needsUpdate ? `ChemDraft's copy of ${toolNameFor(status.tool)} is from an older ChemDraft version. Updating downloads ${toolNameFor(status.tool)} ${status.pinnedVersion} from ${TOOL_DOWNLOAD_HOSTS[status.tool]} and replaces ChemDraft's copy; your own installs and your sign-in are not touched. ` : ""}The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
+    disclosure: `${needsUpdate ? `${updateDetail ? `${updateDetail} ` : ""}Updating downloads ${toolNameFor(status.tool)} ${status.pinnedVersion} from ${TOOL_DOWNLOAD_HOSTS[status.tool]} and replaces ChemDraft's copy; your own installs and your sign-in are not touched. ` : ""}The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.`,
     requiredDiskBytes: needsDownload ? status.pinnedDownloadBytes * 2 + 64 * 1024 * 1024 : 0, freeDiskBytes: status.freeDiskBytes, state: selected,
     buttons: selected.status === "consent" ? ["allow", "close"] : selected.status === "installing" ? ["cancelInstall", "close"] : selected.status === "installed" ? ["close"] : ["install", "close"]
   };

@@ -1,5 +1,10 @@
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import {
+  bondRefKey,
+  bondRefFromKey,
+  canonicalBondRefs,
+  crossingPairKey,
+  sameBondRef,
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
   atomicNumberForElementSymbol,
@@ -3346,31 +3351,6 @@ function idFor(ids: Map<string, string>, nativeId: string, allocator: IdAllocato
   const allocated = allocator.next();
   ids.set(nativeId, allocated);
   return allocated;
-}
-
-function bondRefKey(ref: BondRef): string {
-  return `${ref.objectId}::${ref.bondId}`;
-}
-
-function bondRefFromKey(key: string): BondRef {
-  const separatorIndex = key.indexOf("::");
-  return {
-    objectId: separatorIndex >= 0 ? key.slice(0, separatorIndex) : key,
-    bondId: separatorIndex >= 0 ? key.slice(separatorIndex + 2) : ""
-  };
-}
-
-function crossingPairKey(bonds: [BondRef, BondRef]): string {
-  return canonicalBondRefs(bonds).map(bondRefKey).join("|");
-}
-
-function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
-  const [left, right] = bonds;
-  return bondRefKey(left).localeCompare(bondRefKey(right)) <= 0 ? [left, right] : [right, left];
-}
-
-function sameBondRef(left: BondRef, right: BondRef): boolean {
-  return left.objectId === right.objectId && left.bondId === right.bondId;
 }
 
 function splitCdxmlIdList(value: string | undefined): string[] {

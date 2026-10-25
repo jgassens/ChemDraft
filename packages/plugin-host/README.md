@@ -49,3 +49,14 @@ text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique a
 prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
 `ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
 focus defaults to false. Embedding hosts resolve action metadata from their current content store.
+
+Crossing set/clear patches are accepted only through the trusted embedding host's assistant
+request transaction (`assistantTransactionId` plus its transaction application sink). Both bond
+owners must belong to the Send selection or request insertions, including earlier additions in
+the same flat batch. Ordinary plugin direct writes cannot use these operations. The complete
+batch is checked before application, and a refusal names the out-of-scope object.
+The host also checks both owners of existing crossings that a set/clear operation would affect,
+using chem-core's structured pair comparison. The check reads the request's own document from
+the trusted request scope's `getDocument` (an assistant run is bound to its tab, not the active
+one), falling back to `getActiveDocument`; with neither document the write is refused, so this
+check cannot be skipped.

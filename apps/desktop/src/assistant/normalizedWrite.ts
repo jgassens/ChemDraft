@@ -1,4 +1,5 @@
 import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
+import { unselectedObjectOrderChange } from "@chemdraft/chem-core";
 import { normalizeCommittedDocument } from "../documentWorkflow";
 import type { AssistantToolContext } from "./AssistantToolContext";
 import { inspectMolecule, inspectSmiles } from "./writeBuilder";
@@ -28,6 +29,13 @@ function normalizeScopedWrite(before: ChemDraftDocument, patched: ChemDraftDocum
         `${mark.markKind === "lone-pair" ? "" : " and change its chemistry"}; choose another position.`);
     }
     throw new Error(`refused: desktop normalization would change or remove unselected ${old?.object.type ?? next?.object.type ?? "object"} ${id}; choose another position.`);
+  }
+  // Identical content is necessary but not sufficient: scoped insertions/reorders may
+  // shift bystanders' indices, while their order relative to one another must stay fixed.
+  for (const page of before.pages) {
+    const after = normalized.pages.find(candidate => candidate.id === page.id);
+    const changed = unselectedObjectOrderChange(page, after?.objects.map(object => object.id) ?? [], scope);
+    if (changed) throw new Error(`refused: desktop normalization would reorder unselected object ${changed}.`);
   }
   for (const [id, { object }] of proposed) {
     if (object.type === "molecule" && committed.get(id)?.object.type !== "molecule") {

@@ -23,6 +23,9 @@ interface Request {
   ended: boolean;
   cancellations: Map<string, AbortController>;
   opening: number;
+  lifetime: AbortController;
+  /** One human decision shared by every placement in this request, including concurrent calls. */
+  pageGrowthDecision?: Promise<boolean | { reason: string }>;
 }
 export interface AssistantToolsControllerOptions {
   host(): PluginHost;
@@ -33,7 +36,7 @@ export interface AssistantToolsControllerOptions {
   runWrite: PluginWriteGate["run"];
   readDocument?(tabId: string): ChemDraftDocument | undefined;
   transactions?(): AssistantTransactions;
-  createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now">;
+  createContext(request: { plugin: PluginManifest; tabId: string; getDocument(): ChemDraftDocument | undefined }): Pick<AssistantToolContext, "chemistry" | "render" | "getViewportRect" | "now" | "commands">;
 }
 
 /** Owns request lifetimes; plugin code receives only the typed, permission-checked host facade. */
@@ -75,7 +78,7 @@ export class AssistantToolsController implements PluginHostAssistant {
     const requestId = transactions.beginAssistantTransaction({ pluginId: plugin.id, runId: crypto.randomUUID(), tabId,
       label: input.label ?? input.prompt, sendSelection: { objectIds: selection } });
     const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
-      ended: false, cancellations: new Map(), opening: 0,
+      ended: false, lifetime: new AbortController(), cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
         getInsertedObjectIds: () => [...request.inserted],
         confirmPageGrowth: async () => { throw new Error("No tool call is running."); },
@@ -112,33 +115,41 @@ export class AssistantToolsController implements PluginHostAssistant {
           this.running(plugin, requestId);
           abort.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (prompted || !["insert_structures", "insert_reaction", "insert_text"].includes(input.name)) {
-            throw new Error("Page growth is only available once per assistant insertion.");
+          if (prompted || !["insert_structures", "insert_reaction", "insert_text", "move_objects"].includes(input.name)) {
+            throw new Error("Page growth is only available once per assistant placement.");
           }
           prompted = true;
           const document = request.context.getDocument()!;
           clearTimeout(deadline); // Pause preparation, but bound the human decision separately.
-          const decision = new AbortController();
-          const cancelDecision = () => decision.abort();
-          signal?.addEventListener("abort", cancelDecision, { once: true });
-          const decisionDeadline = setTimeout(cancelDecision, 300_000);
           try {
-            const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
-              message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
-              // Enlarge Page is the affirmative/default action; Escape and close decline.
-              // The request's single Undo restores both the page and inserted objects.
-              choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
-            }, async () => "decline", decision.signal);
+            request.pageGrowthDecision ??= (async () => {
+              const decision = new AbortController();
+              const cancelDecision = () => decision.abort();
+              request.lifetime.signal.addEventListener("abort", cancelDecision, { once: true });
+              if (request.lifetime.signal.aborted) cancelDecision();
+              const decisionDeadline = setTimeout(cancelDecision, 300_000);
+              try {
+                const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
+                  message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit? Your answer applies to the rest of this request.`,
+                  // The answer covers subsequent growth in this request. Its single Undo
+                  // restores every page enlargement and all inserted objects.
+                  choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
+                }, async () => "decline", decision.signal);
+                if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
+                return choice === "enlarge";
+              } finally {
+                clearTimeout(decisionDeadline);
+                request.lifetime.signal.removeEventListener("abort", cancelDecision);
+              }
+            })();
+            const accepted = await waitForDecision(request.pageGrowthDecision, [abort.signal, ...(signal ? [signal] : [])]);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
-            if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
-            if (choice !== "enlarge") return false;
+            if (accepted !== true) return accepted;
             approvedGrowth = { growth, document };
             return true;
           } finally {
-            clearTimeout(decisionDeadline);
-            signal?.removeEventListener("abort", cancelDecision);
             if (!abort.signal.aborted) deadline = startDeadline();
           }
         },
@@ -151,7 +162,7 @@ export class AssistantToolsController implements PluginHostAssistant {
             const page = growth && document.pages.find(page => page.id === growth.pageId);
             return applyPatch(document, growth && page ? { op: "batch", patches: [
               { op: "updatePageLayout", pageId: page.id,
-                layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
+                layout: createCustomPageLayout(Math.max(page.width, growth.width), Math.max(page.height, growth.height), "css-px", page.margin) },
               ...writePatchOps(patch)
             ] } : patch);
           };
@@ -159,7 +170,10 @@ export class AssistantToolsController implements PluginHostAssistant {
           for (const op of writePatchOps(patch)) {
             if (op.op === "addObject" || op.op === "addAnnotation") scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
           }
-          const dependencies = new Set(writePatchOps(patch).flatMap(op => "objectId" in op ? [op.objectId] : []));
+          const dependencies = new Set(writePatchOps(patch).flatMap(op =>
+            op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+            op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
+            op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : []));
           // Relative placement also depends on the anchor, even though the patch never edits it.
           const toolInput = input.input as { relativeTo?: { objectId: string }; to?: { relativeTo?: string } };
           const anchor = toolInput?.relativeTo?.objectId ?? toolInput?.to?.relativeTo;
@@ -181,13 +195,17 @@ export class AssistantToolsController implements PluginHostAssistant {
             }
             return this.options.host().applyPatchForPlugin(plugin.id, undefined,
               { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
-                objectIds: [...request.selection, ...request.inserted],
+                objectIds: [...request.selection, ...request.inserted], assistantTransactionId: requestId,
+                getDocument: () => request.context.getDocument(),
                 apply: application => {
                   this.running(plugin, requestId);
                   if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
                   const before = request.context.getDocument()!;
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
-                    op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
+                    op.op === "addAnnotation" ? [op.annotation.id] :
+                    op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+                    op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) : "objectId" in op ? [op.objectId] :
+                    op.op === "setObjectOrder" ? op.objectIds.filter(id => scope.has(id)) : []);
                   // Recompute after a gesture or concurrent tool call, including every nearby
                   // mark. No await separates this scope/chemistry recheck and the history commit.
                   const after = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);
@@ -223,6 +241,7 @@ export class AssistantToolsController implements PluginHostAssistant {
   async endRequest(plugin: Plugin, { requestId }: { requestId: string }) {
     const request = this.ownedRequest(plugin, requestId);
     request.ended = true;
+    request.lifetime.abort();
     request.cancellations.forEach(stop => stop.abort());
     // Mark ended before awaiting IPC, so a queued bridge call cannot write meanwhile.
     try {
@@ -278,6 +297,7 @@ export class AssistantToolsController implements PluginHostAssistant {
   }
   private abandonRequest(id: string, request: Request): void {
     request.ended = true;
+    request.lifetime.abort();
     request.cancellations.forEach(stop => stop.abort());
     try { request.transactions.endAssistantTransaction(id, { touchedIds: [...request.touched] }); } catch { /* Tab already closed. */ }
     this.requests.delete(id);
@@ -300,5 +320,19 @@ export class AssistantToolsController implements PluginHostAssistant {
       else throw new Error(`Unsupported MCP method ${message.method}.`);
     } catch (error) { response = { error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }; }
     try { await this.options.engine.respond(message.sessionId, message.requestId, response); } catch { /* Rust may already have closed or timed out the call. */ }
+  }
+}
+
+/** Cancelling a call releases only that waiter, leaving the request's shared question alive. */
+async function waitForDecision<T>(decision: Promise<T>, signals: AbortSignal[]): Promise<T> {
+  let stop!: () => void;
+  try {
+    return await Promise.race([decision, new Promise<never>((_, reject) => {
+      stop = () => reject(signals.find(signal => signal.aborted)?.reason ?? new Error("Assistant tool call was cancelled."));
+      for (const signal of signals) signal.addEventListener("abort", stop, { once: true });
+      if (signals.some(signal => signal.aborted)) stop();
+    })]);
+  } finally {
+    for (const signal of signals) signal.removeEventListener("abort", stop);
   }
 }

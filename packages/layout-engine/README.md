@@ -90,6 +90,12 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+`figurePlacementFrame` exposes a page-space atom/ring centroid and oriented principal axis;
+`rotateFigurePoint` shares the renderer's clockwise rotation convention. `planFigureInterlockCrossings`
+uses `planPageSvgRender` intersections to choose native crossing overrides for axle/ring and
+macrocycle/macrocycle figures. It changes no geometry or chemistry and refuses missing/ambiguous
+passages. Callers apply its overrides through their normal permission-checked patch transaction.
+
 `DocumentStylePreset` and `DocumentTextStyle` are native style data in `@chemdraft/chem-core`.
 `DocumentStyleScale` and point conversion stay here in `src/documentStyle.ts`. Native coordinates
 use 22 units per bond; the physical scale is 14.4/22 pt per unit. Canvas plans and exporters use those same dimensions,

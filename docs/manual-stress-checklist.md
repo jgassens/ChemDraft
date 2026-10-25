@@ -232,6 +232,16 @@ remains. On Windows, confirm no console flash and that the Job Object kills chil
 
 ## ChemDraft Assistant tools (macOS and Windows)
 
+- Insert two macrocycles in one assistant request, then anchor one through the other with auto
+  crossings. Confirm both remain separate molecules, each passes over and under its partner, and
+  both are selected. One Undo removes the complete request; Redo restores geometry and crossings.
+- Place an anchored figure past the right/bottom edge. Enlarge Page must grow the page and place
+  the figure in one undo entry; Cancel/Escape must preserve the page and skip geometry, stacking
+  and crossings with the explicit declined result. Repeat for an anchored move. Left/top overflow
+  must refuse with an offset hint rather than moving a read-only anchor.
+- Select only one existing crossing partner at Send: auto/explicit crossing writes must refuse
+  the entire operation, name the other object, and leave chemistry and geometry unchanged.
+
 On both platforms, stress the assistant's one-box controls:
 
 - Upgrade from a Codex installed by an older ChemDraft: Setup offers Update; it installs and works.

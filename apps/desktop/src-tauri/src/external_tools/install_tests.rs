@@ -1092,6 +1092,18 @@ fn codex_package_refuses_missing_duplicate_link_and_unsafe_entries() {
 }
 
 #[test]
+fn managed_update_detail_matches_ts_snapshot_fixtures() {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+        "../../../src/dialogs/managedUpdateSnapshots.json"
+    ))
+    .unwrap();
+    for row in rows {
+        let tool: ToolId = serde_json::from_value(row["status"]["tool"].clone()).unwrap();
+        assert_eq!(row["status"]["detail"], managed_update_detail(tool));
+    }
+}
+
+#[test]
 fn stale_managed_copies_offer_update_and_replace_without_touching_user_files() {
     check_stale_managed_replacement(true);
 }

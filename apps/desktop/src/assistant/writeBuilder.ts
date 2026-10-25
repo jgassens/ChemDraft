@@ -8,7 +8,8 @@ import {
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
-import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { nativeMoleculeRings, planFigureInterlockCrossings, planPageSvgRender } from "@chemdraft/layout-engine";
+import { unselectedObjectOrderChange } from "@chemdraft/chem-core";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 import {
@@ -16,10 +17,10 @@ import {
   type AssistantToolContext, type AssistantPageGrowth
 } from "./AssistantToolContext";
 import {
-  ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
+  ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, figureTransforms, anchoredPagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
   type RelativeSide, type PagePlacements
 } from "./placement";
-import { toolSchemas, type ToolInput } from "./tools/schemas";
+import { toolSchemas, type FigureTarget, type ToolInput } from "./tools/schemas";
 
 export interface AssistantWrite {
   patch: DocumentPatch; summary: string; warnings: string[];
@@ -121,6 +122,21 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
   const validated = applyPatch(document, built.patch, { now: context.now() });
+  // Validate the complete write before chemistry or host effects, including references which
+  // change page-level state. Only insertions earlier in this batch can extend its scope.
+  const scope = assistantScope(context);
+  for (const op of built.patch.patches) {
+    if (op.op === "addObject" || op.op === "addAnnotation") {
+      scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
+      continue;
+    }
+    const ids = op.op === "setCrossingOverride" ? op.crossing.bonds.map(ref => ref.objectId) :
+      op.op === "clearCrossingOverride" ? op.bonds.map(ref => ref.objectId) :
+      op.op === "setObjectOrder" ? [unselectedObjectOrderChange(
+        document.pages.find(page => page.id === op.pageId)!, op.objectIds, scope
+      )].filter((id): id is string => id !== undefined) : "objectId" in op ? [op.objectId] : [];
+    for (const id of ids) if (!scope.has(id)) throw new Error(`${id} was not selected when you sent the request`);
+  }
   for (const [id, smiles] of built.expectedSmiles ?? []) {
     const { object } = findObject(validated, id);
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);
@@ -138,8 +154,14 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
       if (accepted !== false) declineReason = accepted.reason;
       declined = built.pageGrowth.items.map(item => item.label);
       const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
-      patch = { op: "batch", patches: patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) };
-      summary = `Inserted ${patch.patches.length} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
+      patch = { op: "batch", patches: patch.patches.filter(op => {
+        if (op.op === "addObject") return !ids.has(op.object.id);
+        if (op.op === "setObjectOrder") return !op.objectIds.some(id => ids.has(id));
+        if (op.op === "setCrossingOverride") return !op.crossing.bonds.some(ref => ids.has(ref.objectId));
+        if (op.op === "clearCrossingOverride") return !op.bonds.some(ref => ids.has(ref.objectId));
+        return !("objectId" in op) || !ids.has(op.objectId);
+      }) };
+      summary = `Applied ${patch.patches.length} fitting operations; ${declineReason}: ${declined.join(", ")}.`;
     }
   }
   // The pinned tab may close or a user may edit while chemistry is awaited. Never apply a stale plan.
@@ -207,8 +229,17 @@ function assistantText(document: ChemDraftDocument, text: string, style: Partial
   return { ...object, ...size, width: Math.min(size.width, maxWidth) };
 }
 function placement(context: AssistantToolContext, objects: readonly DocumentObject[], pageId?: string,
-  relative?: { objectId: string; side: RelativeSide }, exclude: readonly string[] = []) {
+  relative?: { objectId: string; side: RelativeSide }, exclude: readonly string[] = [], to?: FigureTarget) {
   const document = requireDocument(context);
+  if (to) {
+    if (relative) throw new Error("Use either to or relativeTo, not both.");
+    const target = findObject(document, to.relativeTo);
+    if (exclude.includes(to.relativeTo)) throw new Error("A move cannot be relative to an object being moved.");
+    if (pageId && target.page.id !== pageId) throw new Error("The relative object must be on the same page.");
+    const placed = figureTransforms(objects, target.object, to)
+      .map(({ object, dx, dy, rotation }) => translateObject({ ...object, rotation }, dx, dy));
+    return { page: target.page, objects: placed, plan: anchoredPagePlacements(target.page, [unionRects(placed.map(objectRect))]) };
+  }
   const page = pageId ? document.pages.find(page => page.id === pageId)! : document.pages[0]!;
   const bounds = unionRects(objects.map(objectRect));
   const preferred = relative ? relativeRect(bounds, objectRect(findObject(document, relative.objectId).object), relative.side) : undefined;
@@ -222,23 +253,76 @@ function insertWrite(pageId: string, objects: DocumentObject[], summary: string,
     summary, warnings, ...(expectedSmiles ? { expectedSmiles } : {}) };
 }
 
+type FigureOptions = Pick<ToolInput<"insert_structures">, "to" | "zOrder" | "crossings">;
+/** The same flat batch contains geometry, ordering and per-bond depth. Rendering resolves all
+ * intersections; this layer only translates the requested figure semantics into native patches. */
+function finishFigureWrite(context: AssistantToolContext, before: ChemDraftDocument, built: AssistantWrite,
+  input: FigureOptions, pageId: string, objectIds: string[]): AssistantWrite {
+  if (!input.to && !input.zOrder && !input.crossings) return built;
+  const previous = built.checkPreconditions;
+  built.checkPreconditions = latest => {
+    previous?.(latest);
+    if (!assistantDocumentContentUnchanged(before, latest)) {
+      throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
+    }
+  };
+  built.checkPreconditions(requireDocument(context));
+  if (built.patch.op !== "batch") throw new Error("Figure writes require a batch.");
+  const planned = applyPatch(before, built.patch, { now: context.now() });
+  const page = planned.pages.find(p => p.id === pageId)!;
+  if (input.zOrder) {
+    const moving = page.objects.filter(o => objectIds.includes(o.id)).map(o => o.id);
+    const remaining = page.objects.filter(o => !objectIds.includes(o.id)).map(o => o.id);
+    let index = input.zOrder === "front" ? remaining.length : 0;
+    if (typeof input.zOrder === "object") {
+      const above = "above" in input.zOrder;
+      const id = "above" in input.zOrder ? input.zOrder.above : input.zOrder.below;
+      index = remaining.indexOf(id);
+      if (index < 0) throw new Error("The zOrder reference must be another object on the same page.");
+      if (above) index++;
+    }
+    remaining.splice(index, 0, ...moving);
+    built.patch.patches.push({ op: "setObjectOrder", pageId, objectIds: remaining });
+  }
+  if (input.crossings) {
+    if (input.crossings === "auto" && !input.to) throw new Error("Auto crossings require to.relativeTo and an anchor.");
+    const crossings = input.crossings === "auto"
+      ? planFigureInterlockCrossings(page, objectIds, input.to!.relativeTo,
+        typeof input.to!.anchor === "object" ? input.to!.anchor.ringKey : undefined)
+      : input.crossings.map(({ over, under }) => ({ bonds: [over, under] as [typeof over, typeof under], front: over }));
+    if (input.crossings !== "auto") {
+      const resolved = planPageSvgRender(page).crossings;
+      for (const crossing of crossings) if (!resolved.some(c => crossing.bonds.every(ref =>
+        c.bonds.some(b => b.objectId === ref.objectId && b.bondId === ref.bondId)))) {
+        throw new Error("The requested bonds do not cross after placement; adjust the placement or bond references.");
+      }
+    }
+    built.patch.patches.push(...crossings.map(crossing => ({ op: "setCrossingOverride" as const, pageId, crossing })));
+  }
+  return built;
+}
+
 /** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
 function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
-  pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
+  pageId: string, cells: DocumentObject[][], labels: (string | string[])[], description: string): AssistantWrite {
   return { ...write,
     checkPreconditions: plan.requiredSize ? latest => {
+      write.checkPreconditions?.(latest);
       if (!assistantDocumentContentUnchanged(document, latest)) {
         throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
       }
-    } : undefined,
+    } : write.checkPreconditions,
     ...(plan.requiredSize ? { pageGrowth: { pageId, ...plan.requiredSize, description, itemCount: plan.nonFitting.length,
-      items: plan.nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
+      items: plan.nonFitting.flatMap(index => [labels[index]!].flat().map(label => ({
+        objectIds: cells[index]!.map(object => object.id), label
+      }))) } } : {}) };
 }
 
 export async function buildInsertStructures(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.insert_structures.parse(raw);
   const document = requireDocument(context);
-  const page = document.pages[0]!;
+  const page = input.to ? findObject(document, input.to.relativeTo).page : document.pages[0]!;
+  const textDocument = { ...document, pages: [page] };
   const sourceMolecules: MoleculeObject[] = [];
   for (const item of input.items) {
     if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
@@ -247,17 +331,18 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const columns = input.arrangement === "row" ? input.items.length : Math.ceil(Math.sqrt(input.items.length));
   let moleculeIndex = 0;
   const cells = input.items.map(item => {
-    if (item.kind === "text") return freshObjects(document, [assistantText(document, item.text, nativeTextStyle(item.style))]);
+    if (item.kind === "text") return freshObjects(document, [assistantText(textDocument, item.text, nativeTextStyle(item.style))]);
     const molecule = sourceMolecules[moleculeIndex++]!;
     const bounds = objectRect(molecule);
     const cell: DocumentObject[] = [translateObject(molecule, -bounds.x, -bounds.y)];
     if (item.kind === "molecule" && item.label) {
-      const label = assistantText(document, item.label);
+      const label = assistantText(textDocument, item.label);
       cell.push({ ...label, x: (bounds.width - label.width) / 2, y: bounds.height + 8 });
     }
     return freshObjects(document, cell);
   });
-  const placed = arrangeCells(context, cells, page.id, columns);
+  const arranged = arrangeCells(context, cells, page.id, columns);
+  const placed = input.to ? placement(context, arranged.objects, page.id, undefined, [], input.to) : arranged;
   const expected = new Map(input.items.flatMap((item, index) => item.kind === "molecule"
     ? [[cells[index]![0]!.id, item.smiles] as const] : []));
   const labels = input.items.map((item, index) => item.kind === "text" ? item.text.slice(0, 80) : item.label ?? cells[index]![0]!.id);
@@ -268,10 +353,11 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
     : needsRoom.length <= 3 && needsRoom.every(item => item.kind !== "text" && item.label)
       ? needsRoom.map(item => item.kind !== "text" ? item.label : "").join(", ")
       : `These ${needsRoom.length} structures`;
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects,
+  return finishFigureWrite(context, document, insertionPlan(document, insertWrite(placed.page.id, placed.objects,
     `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`,
     sourceMolecules.flatMap(molecule => molecule.chemistry?.warnings?.map(warning => warning.message) ?? []), expected),
-  placed.plan, placed.page.id, cells, labels, description);
+  placed.plan, placed.page.id, input.to ? [placed.objects] : cells, input.to ? [labels] : labels, input.to ? "This figure" : description),
+  input, placed.page.id, placed.objects.map(object => object.id));
 }
 function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], pageId: string, columns: number, exclude: readonly string[] = []) {
   const page = requireDocument(context).pages.find(page => page.id === pageId)!;
@@ -324,22 +410,25 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
     scheme.condition.y = scheme.arrow.start.point!.y - size.height - ASSISTANT_GAP / 2;
   }
   const fresh = freshObjects(document, scheme.document.pages[0]!.objects);
-  const placed = placement(context, fresh);
+  const placed = placement(context, fresh, undefined, undefined, [], input.to);
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
-    placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
+  return finishFigureWrite(context, document, insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+    placed.plan, placed.page.id, [fresh], [fresh.map(object => object.id)], "This reaction"),
+    input, placed.page.id, placed.objects.map(object => object.id));
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);
   const document = requireDocument(context);
-  const pageId = input.relativeTo ? findObject(document, input.relativeTo.objectId).page.id : undefined;
+  const pageId = input.relativeTo ? findObject(document, input.relativeTo.objectId).page.id :
+    input.to ? findObject(document, input.to.relativeTo).page.id : undefined;
   const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
   const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
-  const placed = placement(context, object, pageId, input.relativeTo);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
-    placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
+  const placed = placement(context, object, pageId, input.relativeTo, [], input.to);
+  return finishFigureWrite(context, document, insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
+    placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text"),
+    input, placed.page.id, placed.objects.map(object => object.id));
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.edit_structure.parse(raw);
@@ -409,13 +498,33 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
   }
   const originals = entries.map(entry => entry.object);
-  const relative = "relativeTo" in input.to ? { objectId: input.to.relativeTo, side: input.to.side } : undefined;
+  const relative = "side" in input.to ? { objectId: input.to.relativeTo, side: input.to.side } : undefined;
   if (relative && input.objectIds.includes(relative.objectId)) throw new Error("A move cannot be relative to an object being moved.");
   if (relative && findObject(document, relative.objectId).page.id !== entries[0]!.page.id) throw new Error("The relative object must be on the same page.");
   const cells = arrangementCells(originals);
-  const placed = "arrange" in input.to
+  const figureTo = "anchor" in input.to ? input.to : undefined;
+  const by = "by" in input.to ? input.to.by : undefined;
+  if (by && by.dx === 0 && by.dy === 0) throw new Error("Offset move (0, 0) is a no-op; provide a non-zero dx or dy in document points.");
+  if (by && Math.abs(by.dx) < 0.01 && Math.abs(by.dy) < 0.01) {
+    // Intentional minimum move size, independent of stored coordinate precision.
+    throw new Error("Offset move is a no-op below the minimum move size; provide at least 0.01 pt in dx or dy.");
+  }
+  const offsetObjects = by ? originals.map(object => translateObject(object, by.dx, by.dy)) : undefined;
+  if (offsetObjects) {
+    const content = pageContentRect(entries[0]!.page);
+    const outside = offsetObjects.find(object => {
+      const rect = objectRect(object);
+      return rect.x < content.x - 1e-6 || rect.y < content.y - 1e-6 ||
+        rect.x + rect.width > content.x + content.width + 1e-6 || rect.y + rect.height > content.y + content.height + 1e-6;
+    });
+    if (outside) throw new Error(`Moving by (${by!.dx}, ${by!.dy}) would put ${outside.id} off the page; nothing moved.`);
+  }
+  const placed = offsetObjects
+    ? { page: entries[0]!.page, objects: offsetObjects,
+      plan: anchoredPagePlacements(entries[0]!.page, [unionRects(offsetObjects.map(objectRect))]) }
+    : "arrange" in input.to
     ? arrangeCells(context, cells, entries[0]!.page.id, input.to.arrange === "row" ? cells.length : Math.ceil(Math.sqrt(cells.length)), input.objectIds)
-    : placement(context, originals, entries[0]!.page.id, relative, input.objectIds);
+    : placement(context, originals, entries[0]!.page.id, relative, input.objectIds, figureTo);
   const patches: DocumentPatch[] = placed.objects.map(object => {
     const original = findObject(document, object.id).object;
     const changes: Partial<DocumentObject> = {};
@@ -424,8 +533,11 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
     return { op: "updateObject", objectId: object.id, changes };
   });
-  if (placed.plan.requiredSize) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
-  return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions };
+  if (placed.plan.requiredSize && !figureTo) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
+  return finishFigureWrite(context, document, insertionPlan(document, { patch: { op: "batch", patches },
+    summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions },
+    placed.plan, placed.page.id, [placed.objects], [input.objectIds], "This figure"),
+    { ...input, to: figureTo }, placed.page.id, input.objectIds);
 }
 
 /** All AnchorSchema fields in chem-core, including molecule attachment metadata. */

@@ -1,4 +1,9 @@
 export {
+  bondRefKey, bondRefFromKey, compareBondRefs, canonicalBondRefs, crossingPairKey,
+  sameBondRef, sameCrossingBondPair
+} from "./crossings";
+
+export {
   AnchorSchema,
   AnnotationObjectSchema,
   ArrowObjectSchema,
@@ -230,3 +235,4 @@ export { isDativeBond, moleculeToMolfileV2000, moleculeToMolfileV3000, UnknownBo
 export { bridgeBondIndices } from "./bondGraph";
 export { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
 export { drawnLabelBondSide } from "./labelBondSide";
+export { unselectedObjectOrderChange } from "./writeScope";

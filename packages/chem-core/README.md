@@ -4,6 +4,15 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Crossing identity compares an unordered pair of structured `{ objectId, bondId }` references;
+delimiters inside either ID are literal characters. Validation and patch application share these
+comparisons. Saved crossings already use structured references, so existing documents load without
+a schema change or key migration.
+
+`bondRefKey` / `bondRefFromKey` encode and decode bond references as JSON tuples;
+`crossingPairKey` canonicalizes an unordered pair. Layout and CDXML compatibility share these
+helpers, along with `canonicalBondRefs` and `compareBondRefs`, rather than maintaining their own keys.
+
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial
 map preserves unmapped aromatic bonds as type 4 and returns one warning per ring system, naming its

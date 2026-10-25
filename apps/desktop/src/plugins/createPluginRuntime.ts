@@ -1,5 +1,6 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
+import { invokeAssistantRegistryCommand } from "../commands/coreCommandRegistrar";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
@@ -307,6 +308,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
     transactions: options.assistantTransactions,
     createContext: options.assistantContext ?? (({ getDocument }) => ({
+      commands: {
+        has: id => options.commandRegistry?.get(id)?.source === "core",
+        invoke: async (id, target) => {
+          if (!options.commandRegistry) throw new Error("The document command registry is unavailable.");
+          await invokeAssistantRegistryCommand(options.commandRegistry, id, target);
+        }
+      },
       getViewportRect: options.getAssistantViewportRect ?? (tabId => getAssistantHistoryPort().getViewportRect?.(tabId)),
       now: options.now ?? (() => new Date()),
       render: (svg, settings) => rasterizeSvgNative(svg, "png", settings),

@@ -154,6 +154,8 @@ call creates its own labelled undo entry (including a batch patch). Undo and red
 states exactly; they never re-run a plugin or an AI. **Proposal review** stays mandatory for image recognition
 results (MolScribe); other plugin writes need no review window. Reports are for failures; success
 needs no window.
+Assistant crossing overrides (set or clear) require both referenced objects in the Send-selection-plus-insertions scope and a running assistant request transaction; any violation refuses the whole batch. Anchored figures use the host enlargement confirmation when they need a wider or taller page, without changing chemistry.
+Assistant `run_command` uses only its explicit allowlist and the same Send-selection-plus-insertions scope and request undo transaction; any out-of-scope effect refuses the whole call.
 
 ### 4.5 Structure recognition (MolScribe OCSR)
 
@@ -214,7 +216,8 @@ Rules:
 - **The bridge is an automation surface, not a product API.** Keep it gated; add no new way to turn it
   on. Its events are synthetic and skip browser default actions such as moving focus, so focus- and
   blur-sensitive behavior also needs a real-event test.
-- **Agent edits** follow §4.4.
+- **Agent edits** follow §4.4. Assistant figure anchors are rigid placements; crossing writes scope both bond owners and share the request's single undo entry.
+- In-app `run_command` uses the menu command registry's explicit allowlist, the selection captured at Send, and the request's fixed write scope; it cannot invoke arbitrary commands.
 - New CLI commands and MCP tools ship with README entries, an entry in `skills/chemdraft`, and tests, and run on both platforms (§1).
 
 ## 6. Package boundaries
