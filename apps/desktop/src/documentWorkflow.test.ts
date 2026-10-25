@@ -2250,12 +2250,12 @@ describe("Phase 4 document workflow", () => {
     expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
   });
 
-  it("keeps open-space orbital placement unchanged and holds lobe tips through snapped-drag and typed rotations", () => {
+  it("places open-space lobes from their tip and holds lobe tips through snapped-drag and typed rotations", () => {
     const blank = createPhase4Document("Lobe Rotation");
     const openSpaceLobe = createNativeArtGraphicObject(blank, { x: 400, y: 320 }, "tool.lobe");
     if (!openSpaceLobe) throw new Error("Expected orbital lobe.");
     expect(openSpaceLobe.x + openSpaceLobe.width / 2).toBeCloseTo(400, 6);
-    expect(openSpaceLobe.y + openSpaceLobe.height / 2).toBeCloseTo(320, 6);
+    expect(openSpaceLobe.y + openSpaceLobe.height).toBeCloseTo(320, 6);
     expect(openSpaceLobe.rotation).toBe(0);
 
     for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {

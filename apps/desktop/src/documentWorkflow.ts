@@ -1473,10 +1473,34 @@ export function createNativeArtGraphicObject(
   };
 }
 
+export function nativeArtToolIsOrbital(commandId: string): boolean {
+  return ["tool.lobe", "tool.shadedLobe", "tool.pOrbital", "tool.sOrbital"].includes(commandId);
+}
+
+/** The node shared by lobes, in page coordinates; no persistent chemical attachment. */
+export function nativeOrbitalAnchorPoint(object: DocumentObject): PagePoint | undefined {
+  if (object.type !== "graphic" || !(nativeArtToolIsOrbital(String(object.style.artToolCommandId)) ||
+      ["lobe", "shadedLobe", "pOrbital", "sOrbital"].includes(String(object.data.artToolId)))) return undefined;
+  const offset = (object.data.artToolId === "lobe" || object.data.artToolId === "shadedLobe")
+    ? nativeOrbitalLobeTip(object, object.rotation)
+    : { x: object.width / 2, y: object.height / 2 };
+  return { x: object.x + offset.x, y: object.y + offset.y };
+}
+
+/** Aim about the same node used for snapping and subsequent rotation. */
+export function aimNativeOrbitalPlacement(document: ChemDraftDocument, objectId: string, point: PagePoint, shiftKey = false): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  const anchor = object && nativeOrbitalAnchorPoint(object);
+  if (!object || !anchor || Math.hypot(point.x - anchor.x, point.y - anchor.y) < 1) return document;
+  const angle = radiansToDegrees(Math.atan2(point.y - anchor.y, point.x - anchor.x)) + 90;
+  const rotation = shiftKey ? Math.round(angle / 15) * 15 : angle;
+  return rotateDocumentObject(document, objectId, rotation - object.rotation);
+}
+
 type NativeOrbitalPlacement = Pick<GraphicObject, "x" | "y" | "rotation">;
 
 /**
- * Place orbital art at the atom under the pointer, without creating a persistent anchor.
+ * Place orbital art at a molecule atom or an existing orbital node, without a persistent anchor.
  *
  * A single lobe's local tip is at the bottom centre of its frame, and a p orbital's
  * coincident lobe nodes are at its frame centre. The angle is chosen from the largest
@@ -1487,20 +1511,43 @@ function nativeOrbitalPlacementAtPoint(
   point: PagePoint,
   tool: NativeArtToolDefinition
 ): NativeOrbitalPlacement | undefined {
-  if (tool.id !== "lobe" && tool.id !== "shadedLobe" && tool.id !== "pOrbital") {
+  if (!nativeArtToolIsOrbital(tool.commandId)) {
     return undefined;
   }
 
   const target = nativeOrbitalAtomAtPoint(document, point);
-  if (!target) {
-    return undefined;
+  const existingNodeOnAtom = target && firstPage(document).objects.some(object => {
+    const node = nativeOrbitalAnchorPoint(object);
+    return node && Math.hypot(node.x - target.atom.x, node.y - target.atom.y) < 0.01;
+  });
+  if (!target || existingNodeOnAtom) {
+    const orbitals = firstPage(document).objects.flatMap(object => {
+      const anchor = nativeOrbitalAnchorPoint(object);
+      return anchor && Math.hypot(point.x - anchor.x, point.y - anchor.y) <= 12 ? [{ object, anchor }] : [];
+    }).sort((a, b) => Math.hypot(point.x - a.anchor.x, point.y - a.anchor.y) - Math.hypot(point.x - b.anchor.x, point.y - b.anchor.y));
+    const anchor = target?.atom ?? orbitals[0]?.anchor ?? point;
+    // Choose a visible, unoccupied direction for repeated clicks at the same node. A p
+    // orbital is an axis (180 degrees); a single lobe has a direction (360 degrees).
+    const period = tool.id === "pOrbital" ? 180 : 360;
+    const angles = orbitals.filter(entry => Math.hypot(entry.anchor.x - anchor.x, entry.anchor.y - anchor.y) < 0.01)
+      .filter(entry => entry.object.type === "graphic" && entry.object.data.artToolId !== "sOrbital")
+      .map(entry => ((entry.object.rotation % period) + period) % period).sort((a, b) => a - b);
+    let rotation = 0, gap = -1;
+    angles.forEach((angle, index) => {
+      const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? period : 0);
+      if (next - angle > gap) { gap = next - angle; rotation = (angle + gap / 2) % period; }
+    });
+    const tip = tool.id === "lobe" || tool.id === "shadedLobe"
+      ? rotatePointAround({ x: tool.width / 2, y: tool.height }, { x: tool.width / 2, y: tool.height / 2 }, degreesToRadians(rotation))
+      : { x: tool.width / 2, y: tool.height / 2 };
+    return { x: anchor.x - tip.x, y: anchor.y - tip.y, rotation };
   }
 
   const gapBisector = nativeAtomLargestBondGapBisector(target.molecule, target.atom.id);
-  if (tool.id === "pOrbital") {
+  if (tool.id === "pOrbital" || tool.id === "sOrbital") {
     // The p-orbital's local axis is vertical. Its axis, unlike a single lobe's direction,
     // is perpendicular to the unoccupied-gap bisector.
-    const rotation = gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
+    const rotation = tool.id === "sOrbital" || gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
     return {
       x: target.atom.x - tool.width / 2,
       y: target.atom.y - tool.height / 2,

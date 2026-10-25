@@ -52,6 +52,24 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Orbital placement and rotation (branch fix/orbital-overlap-rotation)
+
+Keep orbital tools active for repeated placement. Place lobes from their pointed end, snap to
+existing orbital nodes, and orient each placement by dragging around that node. Show a rotation
+handle directly when an orbital is selected, with free angles unless Shift is held.
+Scope: documentWorkflow.ts, MainWindow.tsx, drawingTools.ts, dedicated
+orbital geometry/DOM regressions, existing orbital placement expectations and manual checklist.
+Preserve molecule data, document formats, explicit Direct Edit, and one Undo step per gesture.
+920 focused tests across nine files and root TypeScript checking pass. The actual SVG exporter
+produces the shared-centre three-axis example, visually checked after rasterizing it. A full-suite
+attempt with bail=1 stopped at an RDKit-loader failure in abbreviationChemistry (1204 tests passed,
+8 skipped); it is not certified green or established as pre-existing. The production web build is
+blocked by the local SWC native binding. Rust/Cargo is unavailable here, so native app launch and
+Windows/macOS hands-on verification remain pending. Checks use a hoisted dependency install with
+workspace copies and a local filesystem shim, outside this change. Repeat in standard CI before merge.
+
+---
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.
